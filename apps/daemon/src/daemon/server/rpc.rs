@@ -270,9 +270,8 @@ pub(crate) struct AgentManagementCtx {
     refresh: Option<Arc<crate::runtime::refresh::RuntimeRefreshCoordinator>>,
     refresh_watch_registry:
         Option<Arc<crate::runtime::refresh::refresh_watch::RefreshWatchRegistry>>,
-    results: Arc<
-        AsyncMutex<HashMap<String, (std::time::Instant, crate::proto::teamclu::RpcResponse)>>,
-    >,
+    results:
+        Arc<AsyncMutex<HashMap<String, (std::time::Instant, crate::proto::teamclu::RpcResponse)>>>,
 }
 
 fn management_failure(
@@ -1208,7 +1207,7 @@ impl DaemonServer {
             amux::acp_command::Command::StartAgent(start) => {
                 let requested =
                     amux::AgentType::try_from(start.agent_type).unwrap_or(amux::AgentType::Unknown);
-                let at = resolve_requested_agent_type(&self.config, requested);
+                let at = resolve_requested_agent_type(requested);
 
                 info!(
                     workspace_id = %start.workspace_id,
@@ -1224,12 +1223,12 @@ impl DaemonServer {
                         &start.worktree,
                         &start.session_id,
                         &start.initial_prompt,
-                None,
-                &sender_actor_id,
-                false,
-                None,
-            )
-            .await;
+                        None,
+                        &sender_actor_id,
+                        false,
+                        None,
+                    )
+                    .await;
 
                 match outcome {
                     Ok(res) => {
@@ -1282,16 +1281,16 @@ impl DaemonServer {
                         let agents = self.agents.lock().await;
                         agents.default_agent_type()
                     };
-                    let workspace_id = self
-                        .resolve_collab_workspace_id(&session_id)
-                        .await
-                        .or_else(|| {
-                            self.resolve_binding_workspace_for_cold_attach(
-                                &session_id,
-                                agent_type,
-                                None,
-                            )
-                        });
+                    let workspace_id =
+                        self.resolve_collab_workspace_id(&session_id)
+                            .await
+                            .or_else(|| {
+                                self.resolve_binding_workspace_for_cold_attach(
+                                    &session_id,
+                                    agent_type,
+                                    None,
+                                )
+                            });
                     if let Some(workspace_id) = workspace_id {
                         match self
                             .attach_collab_from_binding(
@@ -1312,14 +1311,12 @@ impl DaemonServer {
                                 self.publish_session_event(
                                     agent_id,
                                     amux::SessionEvent {
-                                        event: Some(
-                                            amux::session_event::Event::PromptRejected(
-                                                amux::PromptRejected {
-                                                    command_id,
-                                                    reason: err.error_message,
-                                                },
-                                            ),
-                                        ),
+                                        event: Some(amux::session_event::Event::PromptRejected(
+                                            amux::PromptRejected {
+                                                command_id,
+                                                reason: err.error_message,
+                                            },
+                                        )),
                                     },
                                 )
                                 .await;
@@ -1766,7 +1763,10 @@ mod agent_management_tests {
 
     #[test]
     fn personal_skill_ids_address_exactly_one_directory() {
-        assert_eq!(personal_skill_dir_name("personal:research"), Some("research"));
+        assert_eq!(
+            personal_skill_dir_name("personal:research"),
+            Some("research")
+        );
         assert_eq!(
             personal_skill_dir_name("personal:my.skill-2"),
             Some("my.skill-2")

@@ -1,0 +1,11 @@
+{
+  "name": "teamclu-pi-runtime",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "amuxd-managed pi runtime: materialized into <amuxd cache>/pi and installed with `npm ci` on the amuxd-managed Node. Versions are pinned exactly; bump them together with apps/daemon/pi.lock.json.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

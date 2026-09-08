@@ -94,7 +94,6 @@ pub const DEFAULT_TEAM_REPO_DIR: &str = "teamclu-team";
 pub struct RuntimeEnvBundle {
     pub extra_env: HashMap<String, String>,
     pub resolved_env: ResolvedEnvSnapshot,
-    pub opencode_json_original: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -137,21 +136,18 @@ pub fn assemble_runtime_env(
     system: SystemEnvContext,
     managed_llm: &ManagedLlmState,
 ) -> anyhow::Result<RuntimeEnvBundle> {
-    opencode_db::maybe_migrate_legacy_opencode_db(workspace)?;
-
     let ai_proxy_base = system.ai_proxy_base.clone();
     let personal = personal_secrets::load_personal_env()?;
     let resolved_env = resolved_env::resolve_runtime_env(personal, team_env, system);
     sync_global_team_provider(managed_llm, &resolved_env.bindings, ai_proxy_base.as_deref())?;
-    let sync = resolve_workspace_runtime_config(
+    let _sync = resolve_workspace_runtime_config(
         workspace,
         &resolved_env.bindings,
-        SecretResolveScope::FullConfig,
+        SecretResolveScope::SkipWorkspaceResolve,
     )?;
     Ok(RuntimeEnvBundle {
         extra_env: resolved_env.bindings.clone(),
         resolved_env,
-        opencode_json_original: sync.opencode_json_original,
     })
 }
 
@@ -218,6 +214,5 @@ mod tests {
         assert!(!raw.contains("model-a"), "cloud model list is not used");
         let workspace_raw = std::fs::read_to_string(dir.path().join("opencode.json")).unwrap();
         assert!(!workspace_raw.contains("\"team\""));
-        assert!(bundle.opencode_json_original.is_none());
     }
 }

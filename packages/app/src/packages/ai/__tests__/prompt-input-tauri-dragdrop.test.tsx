@@ -8,7 +8,8 @@
  *   - twice throws. `_unlisten` calls `unregisterListener(event, eventId)`, and
  *     the second call reaches an eventId Tauri has already dropped, so
  *     `listeners[eventId].handlerId` raises a TypeError. Nothing awaits
- *     `unlisten()`, so that surfaced as an unhandled rejection.
+ *     `unlisten()`, so that surfaced as an unhandled rejection and became the
+ *     largest error group in the app (TEAMCLU-REACT-7Q/99/6F, ~2.5k events).
  *   - zero times leaks: a listener registered after cleanup already ran stays
  *     attached for the lifetime of the window and fires into a dead closure.
  *
@@ -207,7 +208,8 @@ describe('PromptInput tauri drag-drop teardown', () => {
 
     // A new closure identity must not tear the subscription down: the drop
     // handler reads the ref, so re-registering only churns Tauri listeners and
-    // drops OS file drops on the floor while ChatPanel re-renders.
+    // drops OS file drops on the floor while ChatPanel re-renders, and widens
+    // the teardown window this file exists to close.
     rerender(React.createElement(PromptInput, { onFilesChange: () => {} }, null))
     await flush()
 

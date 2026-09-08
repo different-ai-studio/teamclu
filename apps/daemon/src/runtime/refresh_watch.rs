@@ -524,8 +524,6 @@ pub fn suppress_for_workspace_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
-    use crate::runtime::opencode_http::host_pool::HostLifecycle;
     use crate::runtime::RuntimeManager;
     use tokio::sync::Mutex as AsyncMutex;
 
@@ -709,69 +707,6 @@ mod tests {
             .unwrap();
         assert_eq!(status.refresh.status, "pending");
         assert_eq!(status.refresh.change_kinds, vec!["skills".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn skill_change_records_pending_without_host_invalidation() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace_id = workspace_runtime_id(dir.path());
-        let domain = IsolationDomainKey::Workspace(workspace_id.clone());
-        let revision = ProcessEnvRevision::from_bindings(&HashMap::new());
-        let pool = crate::runtime::test_support::test_host_pool();
-        let old = pool
-            .acquire(
-                domain.clone(),
-                revision.clone(),
-                HashMap::new(),
-                Instant::now() + Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-        let old_generation_id = old.generation.generation_id.clone();
-        let supervisor = RuntimeSupervisor::new_with_host_pool(
-            Arc::new(AsyncMutex::new(RuntimeManager::new(
-                RuntimeManager::default_launch_configs(),
-                None,
-            ))),
-            pool.clone(),
-        );
-        let workspaces = vec![WatchedWorkspace::new(
-            workspace_id.clone(),
-            dir.path().to_path_buf(),
-            None,
-        )];
-        let mut debounce = RefreshDebounce::new(Duration::from_millis(250));
-
-        record_classified_changes(
-            &supervisor.refresh_coordinator(),
-            Some(&supervisor),
-            &mut debounce,
-            &workspaces,
-            None,
-            &dir.path().join(".claude/skills/demo-skill/SKILL.md"),
-            Instant::now(),
-        )
-        .await;
-
-        assert_eq!(old.generation.lifecycle(), HostLifecycle::Ready);
-        let dto = supervisor
-            .refresh_coordinator()
-            .runtime_refresh_dto(&workspace_id)
-            .await;
-        assert_eq!(dto.status, "pending");
-        assert_eq!(dto.recommended_action, "none");
-
-        let same = pool
-            .acquire(
-                domain,
-                revision,
-                HashMap::new(),
-                Instant::now() + Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-        assert_eq!(same.generation.generation_id, old_generation_id);
-        assert_eq!(old.generation.lifecycle(), HostLifecycle::Ready);
     }
 
     #[tokio::test]

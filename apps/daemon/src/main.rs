@@ -1,11 +1,8 @@
-mod agent_discover;
 mod backend;
 mod channels;
-mod claude_install;
 mod cli;
 mod collab;
 mod config;
-mod cursor_install;
 mod daemon;
 mod device_id;
 mod download_progress;
@@ -16,9 +13,8 @@ mod logging;
 mod mcp_probe;
 mod mqtt;
 mod nats;
+mod node_install;
 mod onboarding;
-mod opencode_install;
-mod opencode_settings;
 mod pi_install;
 mod process_util;
 mod proto;
@@ -122,9 +118,7 @@ fn main() -> anyhow::Result<()> {
                             // boot writes its stack to stderr and nothing at all to
                             // stdout.
                             .add_directive("pi_rpc=info".parse().unwrap())
-                            .add_directive("opencode_serve=info".parse().unwrap())
-                            .add_directive("cursor_bridge=info".parse().unwrap())
-                            .add_directive("claude_bridge=info".parse().unwrap()),
+                            .add_directive("opencode_serve=info".parse().unwrap()),
                     )
                     .with(
                         tracing_subscriber::fmt::layer()
@@ -169,14 +163,16 @@ fn main() -> anyhow::Result<()> {
             if let Err(e) = config::team_config::hydrate(&mut daemon_config) {
                 tracing::warn!(error = %e, "team.toml unreadable; running with default team config");
             }
-            // Boot is the moment "which runtime does this team run here" is
-            // decided, and the only caller that should write an answer down —
-            // the other `hydrate` callers are readers (status, channel reload).
-            if let Err(e) = config::team_config::seed_local_agent_if_unset(&mut daemon_config) {
-                tracing::warn!(error = %e, "could not seed team local_agent; keeping the default");
-            }
-            if let Err(e) = agent_discover::discover_and_persist(&mut daemon_config, &config_path) {
-                tracing::warn!("agent auto-discovery failed: {e}");
+            if daemon_config
+                .agents
+                .pi
+                .as_ref()
+                .and_then(|pi| pi.binary.as_deref())
+                .is_some_and(|b| !b.trim().is_empty())
+            {
+                tracing::warn!(
+                    "[agents.pi] binary is ignored since #1250: amuxd runs its own pi package; use `package_root` (and `node`) for a developer override"
+                );
             }
 
             let rt = tokio::runtime::Runtime::new()?;
@@ -201,96 +197,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Status => {
             cli::process::run_status()?;
         }
-        Commands::TestSpawn { prompt, worktree } => {
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::from_default_env()
-                        .add_directive("amuxd=debug".parse().unwrap()),
-                )
-                .init();
-
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-                let binary = "opencode".to_string();
-                println!(
-                    "Spawning opencode agent: {} with prompt \"{}\" in {}",
-                    binary, prompt, worktree
-                );
-
-                let (startup_tx, _startup_rx) = tokio::sync::oneshot::channel::<
-                    Result<runtime::adapter::AcpStartupMetadata, String>,
-                >();
-                let _cmd_tx = runtime::adapter::start_standalone_runtime(
-                    binary,
-                    Vec::new(),
-                    worktree.clone(),
-                    prompt.clone(),
-                    proto::amux::AgentType::Opencode,
-                    tx,
-                    None,
-                    startup_tx,
-                    None,
-                    None,
-                    std::collections::HashMap::new(),
-                )?;
-
-                println!("--- Streaming events (Ctrl+C to stop) ---\n");
-                let mut count = 0u32;
-                while let Some(frame) = rx.recv().await {
-                    count += 1;
-                    match &frame.event.event {
-                        Some(proto::amux::acp_event::Event::Output(o)) => {
-                            print!("{}", o.text);
-                        }
-                        Some(proto::amux::acp_event::Event::Thinking(t)) => {
-                            println!(
-                                "\n[THINKING] {}",
-                                if t.text.len() > 100 {
-                                    &t.text[..100]
-                                } else {
-                                    &t.text
-                                }
-                            );
-                        }
-                        Some(proto::amux::acp_event::Event::ToolUse(tu)) => {
-                            println!("\n[TOOL] {} ({})", tu.tool_name, tu.tool_id);
-                        }
-                        Some(proto::amux::acp_event::Event::ToolResult(tr)) => {
-                            println!(
-                                "[TOOL RESULT] success={} summary={}",
-                                tr.success,
-                                if tr.summary.len() > 80 {
-                                    &tr.summary[..80]
-                                } else {
-                                    &tr.summary
-                                }
-                            );
-                        }
-                        Some(proto::amux::acp_event::Event::StatusChange(sc)) => {
-                            println!("\n[STATUS] {:?} -> {:?}", sc.old_status, sc.new_status);
-                        }
-                        Some(proto::amux::acp_event::Event::Error(e)) => {
-                            println!("\n[ERROR] {}", e.message);
-                        }
-                        _ => {
-                            println!("\n[OTHER EVENT]");
-                        }
-                    }
-                }
-
-                println!("\n\n--- Done. {} events received ---", count);
-                Ok::<(), anyhow::Error>(())
-            })?;
-        }
         Commands::Doctor => {
             cli::doctor::run()?;
-        }
-        Commands::InstallOpencode { force } => {
-            cli::install_opencode::run(force)?;
-        }
-        Commands::OpencodeVersions => {
-            cli::install_opencode::print_versions();
         }
         Commands::InstallPi { force } => {
             pi_install::run_install(force)?;
@@ -321,13 +229,6 @@ fn main() -> anyhow::Result<()> {
             // 1 that git reports as an unrelated failure.
             std::process::exit(cli::git_ssh::run(&sock, &args.app, &args.args));
         }
-        Commands::CursorPermissionHook(args) => {
-            let sock = args
-                .sock
-                .clone()
-                .unwrap_or_else(config::DaemonConfig::sock_path);
-            cli::cursor_permission_hook::run(&sock, &args.worktree)?;
-        }
         Commands::TestClient { config, action } => {
             tracing_subscriber::fmt()
                 .with_env_filter(
@@ -337,10 +238,7 @@ fn main() -> anyhow::Result<()> {
                 .init();
 
             let config_path = config.unwrap_or_else(config::DaemonConfig::default_path);
-            let mut daemon_config = config::DaemonConfig::load(&config_path)?;
-            if let Err(e) = agent_discover::discover_and_persist(&mut daemon_config, &config_path) {
-                tracing::warn!("agent auto-discovery failed: {e}");
-            }
+            let daemon_config = config::DaemonConfig::load(&config_path)?;
 
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {

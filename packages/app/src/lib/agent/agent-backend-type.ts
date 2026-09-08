@@ -46,8 +46,7 @@ export function resolveAgentBackendType(args: {
       .getState()
       .byTeam[teamId]?.actors?.find((a) => a.id === agentId);
     if (!row) return undefined;
-    const configured = row.default_agent_type?.trim() || row.agent_types?.[0]?.trim();
-    return configured || undefined;
+    return "pi";
   } catch {
     return undefined;
   }

@@ -5,41 +5,22 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
-  shouldRebuildSidecar,
+  daemonSourceRoots,
   installSidecarAtomic,
 } = require("../ensure-amuxd-sidecar");
 
-test("rebuilds bundled amuxd sidecar when installed sidecar version is older", () => {
-  assert.equal(
-    shouldRebuildSidecar({
-      expectedVersion: "0.2.16",
-      existingVersion: "0.2.10",
-      exists: true,
-    }),
-    true,
-  );
-});
+// The staleness rules themselves live in lib/sidecar-staleness.test.js — this
+// file covers what is specific to the daemon's sidecar.
 
-test("keeps bundled amuxd sidecar when version matches", () => {
-  assert.equal(
-    shouldRebuildSidecar({
-      expectedVersion: "0.2.16",
-      existingVersion: "0.2.16",
-      exists: true,
-    }),
-    false,
-  );
-});
-
-test("builds bundled amuxd sidecar when file is missing", () => {
-  assert.equal(
-    shouldRebuildSidecar({
-      expectedVersion: "0.2.16",
-      existingVersion: null,
-      exists: false,
-    }),
-    true,
-  );
+test("daemonSourceRoots watches the crate, its path dependencies and the lockfile", () => {
+  // amuxd is rebuilt when any of these move. Dropping `crates` would stage a
+  // daemon built against the previous teamclu-proto and say nothing about it.
+  const roots = daemonSourceRoots("/repo").map((p) => p.replace(/\\/g, "/"));
+  assert.deepEqual(roots, [
+    "/repo/apps/daemon",
+    "/repo/crates",
+    "/repo/Cargo.lock",
+  ]);
 });
 
 test("installSidecarAtomic replaces dest with a new inode", () => {

@@ -31,9 +31,11 @@ describe('TeamProviderCard', () => {
     for (const id of ['default', 'pro', 'max']) {
       expect(screen.getByText(id)).toBeTruthy()
     }
-    expect(screen.getByText('标准')).toBeTruthy()
-    expect(screen.getByText('高级')).toBeTruthy()
-    expect(screen.getByText('旗舰')).toBeTruthy()
+    // The tier id is the display name — never a translated label, so that the
+    // tier picked here is the tier named in billing and usage reports.
+    for (const label of ['标准', '高级', '旗舰']) {
+      expect(screen.queryByText(label)).toBeNull()
+    }
 
     // The whole point of the card: the team's plan is the credential, so there
     // is no control here that could take it away.
@@ -49,17 +51,15 @@ describe('TeamProviderCard', () => {
 
 describe('team gateway runtime compatibility', () => {
   // Source-scan guard, in the spirit of no-supabase-import.test.ts: the team
-  // tiers reach a session through opencode's `provider.team` or pi's provider
-  // config. cursor and claude-code drive their own vendor accounts and have no
-  // hook for it, so pinning the card in their panes would promise a model those
-  // runtimes cannot serve.
+  // tiers reach a session through pi's provider config, so the card belongs in
+  // the pi pane — the only runtime pane left (#1247) — and nowhere else.
   const settingsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
-  it('is imported by the opencode and pi panes only', () => {
-    const panes = ['LLMSection.tsx', 'PiLLMSection.tsx', 'CursorLLMSection.tsx', 'ClaudeLLMSection.tsx']
+  it('is imported by the pi pane only', () => {
+    const panes = ['PiLLMSection.tsx', 'LLMSectionRouter.tsx']
     const importers = panes.filter((f) =>
       fs.readFileSync(path.join(settingsDir, f), 'utf8').includes('TeamProviderCard'),
     )
-    expect(importers.sort()).toEqual(['LLMSection.tsx', 'PiLLMSection.tsx'])
+    expect(importers.sort()).toEqual(['PiLLMSection.tsx'])
   })
 })

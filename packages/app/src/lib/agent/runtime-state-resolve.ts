@@ -1,4 +1,4 @@
-import { AgentType, RuntimeLifecycle } from "@/lib/proto/amux_pb";
+import { RuntimeLifecycle } from "@/lib/proto/amux_pb";
 import {
   attachmentsForSession,
   resolveSessionAttachmentEntry,
@@ -612,21 +612,10 @@ export function backendTypeFromRuntimeEntry(
   entry: RuntimeStateEntry | undefined,
   fallback?: string | null,
 ): string | undefined {
-  const explicit = fallback?.trim();
-  if (explicit) return explicit;
-  if (!entry) return undefined;
-  switch (entry.info.agentType) {
-    case AgentType.CLAUDE_CODE:
-      return "claude-code";
-    case AgentType.OPENCODE:
-      return "opencode";
-    case AgentType.PI:
-      return "pi";
-    case AgentType.CURSOR:
-      return "cursor";
-    default:
-      return undefined;
-  }
+  const explicit = fallback?.trim()
+  if (explicit) return explicit
+  if (!entry) return undefined
+  return "pi"
 }
 
 // Re-export the runtime-state-store hook so other modules don't need to import

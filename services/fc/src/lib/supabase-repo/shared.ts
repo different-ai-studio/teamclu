@@ -306,6 +306,10 @@ export function mapSession(row) {
     primaryAgentId: row?.primary_agent_id ?? null,
     createdByActorId: row?.created_by_actor_id ?? null,
     participantCount: Number(row?.participant_count ?? 0),
+    // The app this session belongs to, added to the list RPC in
+    // 20260907000000. `null` covers both "not an app session" and a database
+    // that predates the migration — the client draws nothing either way.
+    appId: row?.app_id ?? null,
   };
 }
 

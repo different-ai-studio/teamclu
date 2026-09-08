@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { getSession } from '@/lib/auth/session-store'
-import { buildConfig, localAgent } from '@/lib/config/build-config'
+import { buildConfig } from '@/lib/config/build-config'
 import { getConsoleEntries } from '@/lib/diagnostics/console-capture'
 import { resolveCurrentMemberActorId } from '@/lib/actor/current-actor'
 import { probeDaemonHttp, type DaemonHttpProbe } from '@/lib/daemon/daemon-local-client'
@@ -894,25 +894,10 @@ function buildTeamEnvCheck(teamEnv: TeamEnvDiagnostics | null, teamId: string | 
 }
 
 function buildLocalAgentCheck(doctor: unknown | null): DiagnosticCheck {
-  // Key and label must move together: claude-code had no arm, so a claude daemon
-  // read opencode's `satisfied`/`version` out of the doctor report and presented
-  // it under the label "OpenCode" — a pass/fail about a different program.
-  const runtimeKey =
-    localAgent === 'pi'
-      ? 'pi'
-      : localAgent === 'cursor'
-        ? 'cursor'
-        : localAgent === 'claude-code'
-          ? 'claude'
-          : 'opencode'
-  const runtimeLabel =
-    localAgent === 'pi'
-      ? 'Pi'
-      : localAgent === 'cursor'
-        ? 'Cursor'
-        : localAgent === 'claude-code'
-          ? 'Claude Code'
-          : 'OpenCode'
+  // pi is the only runtime (#1247): its `satisfied` folds in the managed Node
+  // and the MCP SDK, so a failing check here names the runtime as a whole.
+  const runtimeKey = 'pi'
+  const runtimeLabel = 'Pi'
   const doc = doctor as Record<string, Record<string, unknown>> | null
   const runtime = doc?.[runtimeKey] as { satisfied?: boolean; version?: string } | undefined
 
@@ -1013,7 +998,6 @@ async function collectRustBundle(): Promise<DiagnosticBundleParts | null> {
     }>('collect_diagnostic_bundle', {
       teamId,
       workspacePath,
-      localAgent,
     })
     return raw
   } catch (err) {

@@ -98,12 +98,6 @@ export interface BuildConfig {
      *  out of the mistake. Absent means on. */
     updater?: boolean
   }
-  /** Which local agent runtime this build targets. "opencode" (default) drives
-   *  the official opencode over `opencode serve` HTTP; "pi" selects the pi
-   *  coding-agent RPC backend; "cursor" selects the Cursor SDK bridge
-   *  (see docs/architecture/cursor-sdk-backend.md).
-   *  Flows into the daemon config (`agents.local_agent`) during onboarding. */
-  localAgent?: 'opencode' | 'pi' | 'cursor' | 'claude-code' | 'claude_code' | 'claude'
   defaults: {
     theme: string
   }
@@ -251,25 +245,6 @@ export function resolveDeeplinkSchemes(scheme: string | undefined): string[] {
 }
 
 export const deeplinkSchemes: readonly string[] = resolveDeeplinkSchemes(buildConfig.app.scheme)
-/**
- * Local agent runtime for this build. Defaults to opencode.
- *
- * It is the runtime the dependency probe and the diagnostic report assume for
- * this build — NOT what onboarding writes into `agents.local_agent`; that is
- * the user's pick on the setup step (see `stores/daemon-onboarding.ts`). A
- * missing arm here still mislabels every one of those, so keep them in sync:
- * claude-code was missing, and its build.config value silently became opencode.
- */
-export const localAgent: 'opencode' | 'pi' | 'cursor' | 'claude-code' =
-  buildConfig.localAgent === 'pi'
-    ? 'pi'
-    : buildConfig.localAgent === 'cursor'
-      ? 'cursor'
-      : buildConfig.localAgent === 'claude-code' ||
-          buildConfig.localAgent === 'claude_code' ||
-          buildConfig.localAgent === 'claude'
-        ? 'claude-code'
-        : 'opencode'
 export const DEFAULT_WORKSPACE_PATH = `~/${buildConfig.app.name}`
 export const TEAMCLU_DIR = isOfficialBrand(appShortName) ? '.teamclu' : `.${appShortName}`
 /** Team share link + global sync dir name. Fixed across brands so daemon, git, and all clients agree. */

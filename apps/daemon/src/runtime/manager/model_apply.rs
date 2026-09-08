@@ -8,7 +8,7 @@
 //! Child module of `runtime::manager`, so the `impl RuntimeManager` block
 //! reaches the private `agents` map directly.
 
-use crate::runtime::adapter;
+use crate::runtime::backend;
 
 use super::RuntimeManager;
 
@@ -87,7 +87,7 @@ impl RuntimeManager {
             .as_ref()
             .ok_or_else(|| crate::error::AmuxError::Agent("no ACP command channel".into()))?;
         #[cfg(not(test))]
-        tx.send(adapter::AcpCommand::SetModel {
+        tx.send(backend::AcpCommand::SetModel {
             acp_session_id: handle.acp_session_id.clone(),
             model_id: model_id.to_string(),
         })

@@ -1,9 +1,9 @@
-//! Workspace configuration control — provider, permission, allowlist, runtime APIs.
+//! Workspace configuration control — provider, MCP, runtime APIs.
 //!
 //! `WorkspaceControlStore` is the daemon-internal abstraction that owns
 //! all reads and writes to workspace-scoped settings. HTTP handlers call
-//! into this trait; they never touch `opencode.json` or the allowlist file
-//! directly. The single production implementation is `OpenCodeCompatStore`,
+//! into this trait; they never touch `opencode.json` directly. The single
+//! production implementation is `OpenCodeCompatStore`,
 //! which maps TeamClu-native types to/from the on-disk formats OpenCode
 //! already uses. This keeps the compatibility surface below the daemon
 //! boundary so future replacements only require a new `WorkspaceControlStore`
@@ -90,54 +90,6 @@ pub struct ProviderAuthRequest {
 pub struct ProviderModelConfig {
     pub model_id: String,
     pub model_name: Option<String>,
-}
-
-// ── Permission types ──────────────────────────────────────────────────────────
-
-/// Maps skill name / glob pattern to an allow/deny/ask action.
-/// Corresponds to `permission.skill` in opencode.json.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionAction {
-    Allow,
-    Deny,
-    Ask,
-}
-
-/// Skill permission configuration for a workspace. The `skills` map uses
-/// the same key format opencode.json uses: exact skill name or glob like
-/// `"myns/*"`. The special key `"*"` sets the default.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PermissionConfig {
-    #[serde(default)]
-    pub skills: HashMap<String, PermissionAction>,
-    /// Non-skill permission defaults (e.g. `"bash"`, `"read"`) stored at the
-    /// root of `permission` in opencode.json, outside the `skill` sub-object.
-    #[serde(default)]
-    pub tools: HashMap<String, PermissionAction>,
-}
-
-// ── Allowlist types ───────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AllowlistDecision {
-    Allow,
-    Deny,
-}
-
-/// A permanently-remembered tool-call decision for a workspace project.
-/// Stored in `<workspace>/{meta}/allowlist.json` (daemon-owned, brand meta dir).
-/// Fields intentionally mirror the component's `PermissionRule` shape so
-/// the frontend can use them directly without transformation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AllowlistRule {
-    pub project_id: String,
-    /// Tool / skill name (e.g. `"bash"`, `"read_file"`).
-    pub permission: String,
-    /// Argument or file-path pattern being allowlisted.
-    pub pattern: String,
-    pub decision: AllowlistDecision,
 }
 
 // ── MCP types ─────────────────────────────────────────────────────────────────
@@ -236,7 +188,7 @@ pub struct EnvActivationDiagnostics {
     pub workspace_has_active_turn: bool,
     pub refresh: RuntimeRefreshDto,
     /// Workspace-scoped OpenCode host generation and capacity state.
-    pub host_pool: crate::runtime::opencode_http::host_pool::DomainHostStats,
+    pub host_pool: crate::runtime::host_pool_stats::DomainHostStats,
     /// Personal keys shadowed by the host OS env at opencode serve spawn.
     pub host_env_shadowed_keys: Vec<String>,
     /// Fingerprint most recently resolved/requested for this workspace.
@@ -290,28 +242,6 @@ pub trait WorkspaceControlStore: Send + Sync {
         &self,
         workspace_id: &str,
         provider_id: &str,
-    ) -> Result<ApplyOutcome, WorkspaceControlError>;
-
-    fn get_permissions(
-        &self,
-        workspace_id: &str,
-    ) -> Result<PermissionConfig, WorkspaceControlError>;
-
-    fn put_permissions(
-        &self,
-        workspace_id: &str,
-        config: PermissionConfig,
-    ) -> Result<ApplyOutcome, WorkspaceControlError>;
-
-    fn get_allowlist(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Vec<AllowlistRule>, WorkspaceControlError>;
-
-    fn put_allowlist(
-        &self,
-        workspace_id: &str,
-        rules: Vec<AllowlistRule>,
     ) -> Result<ApplyOutcome, WorkspaceControlError>;
 
     fn get_mcp(
@@ -379,8 +309,6 @@ pub trait WorkspaceControlStore: Send + Sync {
 struct OpencodeJson {
     #[serde(default)]
     provider: HashMap<String, OcProviderEntry>,
-    #[serde(default)]
-    permission: OcPermissionSection,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     mcp: HashMap<String, McpServerConfig>,
     #[serde(flatten)]
@@ -400,23 +328,11 @@ struct OcProviderEntry {
     models: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
-struct OcPermissionSection {
-    /// skill name / glob → "allow" | "deny" | "ask"
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    skill: HashMap<String, String>,
-    #[serde(flatten)]
-    extra: HashMap<String, serde_json::Value>,
-}
-
 // ── OpenCodeCompatStore ───────────────────────────────────────────────────────
 
 /// Production implementation of `WorkspaceControlStore` that persists to the
-/// on-disk formats OpenCode already uses. The daemon owns reads/writes to:
-/// - `<workspace_path>/opencode.json` — providers, skill permissions
-/// - `<workspace_path>/{meta}/allowlist.json` — permanently-remembered
-///   tool-call decisions (daemon-owned sidecar; separate from OpenCode's
-///   SQLite allowlist DB)
+/// on-disk formats OpenCode already uses. The daemon owns reads/writes to
+/// `<workspace_path>/opencode.json` — providers, MCP.
 /// Stateless workspace-control store. The workspace identity is the
 /// **base64url-encoded absolute filesystem path** — no registration step
 /// required. Clients (frontend, desktop Tauri bridge) call
@@ -469,14 +385,6 @@ impl OpenCodeCompatStore {
         // Legacy workspace-root config; brand meta config is resolved separately
         // via teamclu_runtime_env helpers where needed.
         workspace_path.join("teamclu.json")
-    }
-
-    fn allowlist_read_path(workspace_path: &std::path::Path) -> PathBuf {
-        teamclu_runtime_env::resolve_workspace_meta_path_from_env(workspace_path, "allowlist.json")
-    }
-
-    fn allowlist_write_path(workspace_path: &std::path::Path) -> PathBuf {
-        teamclu_runtime_env::workspace_meta_write_path_from_env(workspace_path, "allowlist.json")
     }
 
     /// True when `options.apiKey` is a non-empty literal or `${env_ref}` placeholder.
@@ -582,8 +490,12 @@ impl OpenCodeCompatStore {
         workspace_path: &std::path::Path,
         cfg: &OpencodeJson,
     ) -> Result<(), WorkspaceControlError> {
-        let value =
+        let mut value =
             serde_json::to_value(cfg).map_err(|e| WorkspaceControlError::Parse(e.to_string()))?;
+        // Legacy OpenCode permission defaults — Pi uses TEAMCLU_PI_PERMISSIONS_FILE instead.
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("permission");
+        }
         teamclu_runtime_env::opencode_config::OpencodeConfigStore::write_value(
             workspace_path,
             &value,
@@ -591,48 +503,6 @@ impl OpenCodeCompatStore {
         .map_err(|e| WorkspaceControlError::Io(e.to_string()))
     }
 
-    fn read_allowlist(
-        workspace_path: &std::path::Path,
-    ) -> Result<Vec<AllowlistRule>, WorkspaceControlError> {
-        let path = Self::allowlist_read_path(workspace_path);
-        if !path.exists() {
-            return Ok(vec![]);
-        }
-        let content =
-            std::fs::read_to_string(&path).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-        serde_json::from_str(&content).map_err(|e| WorkspaceControlError::Parse(e.to_string()))
-    }
-
-    fn write_allowlist(
-        workspace_path: &std::path::Path,
-        rules: &[AllowlistRule],
-    ) -> Result<(), WorkspaceControlError> {
-        let path = Self::allowlist_write_path(workspace_path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
-        }
-        let content = serde_json::to_string_pretty(rules)
-            .map_err(|e| WorkspaceControlError::Parse(e.to_string()))?;
-        std::fs::write(&path, content).map_err(|e| WorkspaceControlError::Io(e.to_string()))
-    }
-
-    fn parse_permission_action(value: &str) -> Option<PermissionAction> {
-        match value {
-            "allow" => Some(PermissionAction::Allow),
-            "deny" => Some(PermissionAction::Deny),
-            "ask" => Some(PermissionAction::Ask),
-            _ => None,
-        }
-    }
-
-    fn permission_action_label(action: PermissionAction) -> &'static str {
-        match action {
-            PermissionAction::Allow => "allow",
-            PermissionAction::Deny => "deny",
-            PermissionAction::Ask => "ask",
-        }
-    }
 }
 
 impl Default for OpenCodeCompatStore {
@@ -811,82 +681,6 @@ impl WorkspaceControlStore for OpenCodeCompatStore {
         Ok(ApplyOutcome::RestartRequired)
     }
 
-    fn get_permissions(
-        &self,
-        workspace_id: &str,
-    ) -> Result<PermissionConfig, WorkspaceControlError> {
-        let wpath = self.workspace_path(workspace_id)?;
-        let cfg = Self::read_opencode_json(&wpath)?;
-
-        let skills = cfg
-            .permission
-            .skill
-            .iter()
-            .filter_map(|(k, v)| Self::parse_permission_action(v).map(|action| (k.clone(), action)))
-            .collect();
-
-        let tools = cfg
-            .permission
-            .extra
-            .iter()
-            .filter_map(|(k, v)| {
-                let s = v.as_str()?;
-                Self::parse_permission_action(s).map(|action| (k.clone(), action))
-            })
-            .collect();
-
-        Ok(PermissionConfig { skills, tools })
-    }
-
-    fn put_permissions(
-        &self,
-        workspace_id: &str,
-        config: PermissionConfig,
-    ) -> Result<ApplyOutcome, WorkspaceControlError> {
-        let wpath = self.workspace_path(workspace_id)?;
-        let _lock = self.write_lock.lock().unwrap();
-        let mut cfg = Self::read_opencode_json(&wpath)?;
-
-        if !config.skills.is_empty() {
-            cfg.permission.skill = config
-                .skills
-                .into_iter()
-                .map(|(k, v)| (k, Self::permission_action_label(v).to_owned()))
-                .collect();
-        }
-
-        if !config.tools.is_empty() {
-            for (k, v) in config.tools {
-                cfg.permission.extra.insert(
-                    k,
-                    serde_json::Value::String(Self::permission_action_label(v).to_owned()),
-                );
-            }
-        }
-
-        Self::write_opencode_json(&wpath, &cfg)?;
-        Ok(ApplyOutcome::RestartRequired)
-    }
-
-    fn get_allowlist(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Vec<AllowlistRule>, WorkspaceControlError> {
-        let wpath = self.workspace_path(workspace_id)?;
-        Self::read_allowlist(&wpath)
-    }
-
-    fn put_allowlist(
-        &self,
-        workspace_id: &str,
-        rules: Vec<AllowlistRule>,
-    ) -> Result<ApplyOutcome, WorkspaceControlError> {
-        let wpath = self.workspace_path(workspace_id)?;
-        let _lock = self.write_lock.lock().unwrap();
-        Self::write_allowlist(&wpath, &rules)?;
-        Ok(ApplyOutcome::AppliedLive)
-    }
-
     fn get_runtime_status(
         &self,
         workspace_id: &str,
@@ -1031,26 +825,6 @@ impl WorkspaceControlStore for NullWorkspaceControlStore {
         &self,
         id: &str,
         _: &str,
-    ) -> Result<ApplyOutcome, WorkspaceControlError> {
-        Err(WorkspaceControlError::WorkspaceNotFound(id.to_owned()))
-    }
-    fn get_permissions(&self, id: &str) -> Result<PermissionConfig, WorkspaceControlError> {
-        Err(WorkspaceControlError::WorkspaceNotFound(id.to_owned()))
-    }
-    fn put_permissions(
-        &self,
-        id: &str,
-        _: PermissionConfig,
-    ) -> Result<ApplyOutcome, WorkspaceControlError> {
-        Err(WorkspaceControlError::WorkspaceNotFound(id.to_owned()))
-    }
-    fn get_allowlist(&self, id: &str) -> Result<Vec<AllowlistRule>, WorkspaceControlError> {
-        Err(WorkspaceControlError::WorkspaceNotFound(id.to_owned()))
-    }
-    fn put_allowlist(
-        &self,
-        id: &str,
-        _: Vec<AllowlistRule>,
     ) -> Result<ApplyOutcome, WorkspaceControlError> {
         Err(WorkspaceControlError::WorkspaceNotFound(id.to_owned()))
     }
@@ -1499,152 +1273,40 @@ mod tests {
     }
 
     #[test]
-    fn put_and_get_permissions_round_trips() {
+    fn write_opencode_json_strips_legacy_permission_block() {
         let dir = tempfile::tempdir().unwrap();
-        let store = make_store();
-        let wid = ws_id(dir.path());
-
-        let config = PermissionConfig {
-            skills: HashMap::from([
-                ("*".to_owned(), PermissionAction::Ask),
-                ("bash".to_owned(), PermissionAction::Allow),
-                ("network/*".to_owned(), PermissionAction::Deny),
-            ]),
-            ..Default::default()
-        };
-
-        store.put_permissions(&wid, config.clone()).unwrap();
-        let got = store.get_permissions(&wid).unwrap();
-
-        assert_eq!(got.skills.get("*"), Some(&PermissionAction::Ask));
-        assert_eq!(got.skills.get("bash"), Some(&PermissionAction::Allow));
-        assert_eq!(got.skills.get("network/*"), Some(&PermissionAction::Deny));
-    }
-
-    #[test]
-    fn put_and_get_tool_permissions_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = make_store();
-        let wid = ws_id(dir.path());
-
-        store
-            .put_permissions(
-                &wid,
-                PermissionConfig {
-                    tools: HashMap::from([
-                        ("bash".to_owned(), PermissionAction::Allow),
-                        ("read".to_owned(), PermissionAction::Ask),
-                    ]),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
-        let got = store.get_permissions(&wid).unwrap();
-        assert_eq!(got.tools.get("bash"), Some(&PermissionAction::Allow));
-        assert_eq!(got.tools.get("read"), Some(&PermissionAction::Ask));
-    }
-
-    #[test]
-    fn put_skills_only_does_not_clear_tool_permissions() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = make_store();
-        let wid = ws_id(dir.path());
-
-        store
-            .put_permissions(
-                &wid,
-                PermissionConfig {
-                    tools: HashMap::from([("bash".to_owned(), PermissionAction::Allow)]),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
-        store
-            .put_permissions(
-                &wid,
-                PermissionConfig {
-                    skills: HashMap::from([("*".to_owned(), PermissionAction::Ask)]),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
-        let got = store.get_permissions(&wid).unwrap();
-        assert_eq!(got.skills.get("*"), Some(&PermissionAction::Ask));
-        assert_eq!(got.tools.get("bash"), Some(&PermissionAction::Allow));
-    }
-
-    #[test]
-    fn put_and_get_allowlist_round_trips() {
-        // Hold brand lock so parallel white-label tests cannot divert the write path.
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
-        let dir = tempfile::tempdir().unwrap();
-        let store = make_store();
-        let wid = ws_id(dir.path());
-
-        let rules = vec![
-            AllowlistRule {
-                project_id: "proj-1".to_owned(),
-                permission: "bash".to_owned(),
-                pattern: "rm -rf *".to_owned(),
-                decision: AllowlistDecision::Deny,
-            },
-            AllowlistRule {
-                project_id: "proj-1".to_owned(),
-                permission: "read_file".to_owned(),
-                pattern: "*".to_owned(),
-                decision: AllowlistDecision::Allow,
-            },
-        ];
-
-        store.put_allowlist(&wid, rules.clone()).unwrap();
-        let got = store.get_allowlist(&wid).unwrap();
-
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].project_id, "proj-1");
-        assert_eq!(got[0].permission, "bash");
-        assert_eq!(got[0].pattern, "rm -rf *");
-        assert_eq!(got[1].decision, AllowlistDecision::Allow);
-        assert!(dir.path().join(".teamclu/allowlist.json").is_file());
-    }
-
-    #[test]
-    fn white_label_allowlist_writes_brand_meta_and_reads_legacy() {
-        let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
-
-        let dir = tempfile::tempdir().unwrap();
-        let store = make_store();
-        let wid = ws_id(dir.path());
-
-        // Legacy-only allowlist must still load.
-        let legacy = dir.path().join(".teamclu/allowlist.json");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         std::fs::write(
-            &legacy,
-            r#"[{"project_id":"p","permission":"bash","pattern":"*","decision":"allow"}]"#,
+            dir.path().join("opencode.json"),
+            r#"{"permission":{"skill":{"deploy-check":"allow"},"bash":"ask"},"provider":{}}"#,
         )
         .unwrap();
-        let got = store.get_allowlist(&wid).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].permission, "bash");
+        let store = make_store();
+        let wid = ws_id(dir.path());
 
         store
-            .put_allowlist(
+            .put_mcp(
                 &wid,
-                vec![AllowlistRule {
-                    project_id: "p".to_owned(),
-                    permission: "edit".to_owned(),
-                    pattern: "*".to_owned(),
-                    decision: AllowlistDecision::Deny,
-                }],
+                HashMap::from([(
+                    "demo".to_owned(),
+                    McpServerConfig {
+                        server_type: "local".to_owned(),
+                        enabled: Some(true),
+                        command: vec!["echo".to_owned()],
+                        environment: HashMap::new(),
+                        url: None,
+                        headers: HashMap::new(),
+                        timeout: None,
+                        source: None,
+                        extra: HashMap::new(),
+                    },
+                )]),
             )
             .unwrap();
-        assert!(dir.path().join(".copilot361/allowlist.json").is_file());
-        let got = store.get_allowlist(&wid).unwrap();
-        assert_eq!(got[0].permission, "edit");
-        assert_eq!(got[0].decision, AllowlistDecision::Deny);
+
+        let raw = std::fs::read_to_string(dir.path().join("opencode.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(json.get("permission").is_none());
+        assert!(json["mcp"]["demo"].is_object());
     }
 
     #[test]

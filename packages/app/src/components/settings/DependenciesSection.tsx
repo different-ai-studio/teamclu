@@ -141,8 +141,8 @@ function InstallButton({ dep }: { dep: DependencyInfo }) {
   )
 }
 
-/** Deps that support an in-app update. */
-const UPDATABLE_DEPS = new Set(['opencode', 'pi'])
+/** Deps that support an in-app update: the managed runtime, repaired as one. */
+const UPDATABLE_DEPS = new Set(['pi'])
 
 function UpdateButton({ dep }: { dep: DependencyInfo }) {
   const { t } = useTranslation()
@@ -155,9 +155,6 @@ function UpdateButton({ dep }: { dep: DependencyInfo }) {
   const isUpdatingThis = currentInstalling === dep.name
   const result = installResults[dep.name]
   const isFailed = result?.error !== undefined && !result?.success
-  // This dependency's own versions. It used to read opencode's unconditionally,
-  // which is why pi could not be listed here at all: it would have been offered
-  // an update labelled with opencode's version number.
   const depVersions = versions[dep.name]
   const latest = depVersions?.latest ?? null
   // Only `true` counts as up to date: null means we could not reach the mirror,

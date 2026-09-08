@@ -13,6 +13,7 @@ on:
   push:
     paths:
       - apps/daemon/pi.lock.json
+      - apps/daemon/pi-runtime/**
   schedule:
     - cron: "20 18 * * *"
   workflow_dispatch: {}

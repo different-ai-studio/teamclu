@@ -1,9 +1,12 @@
 # pi Agent 后端：与 opencode 对等的集成设计
 
 > 状态：已实装（2026-07-22 设计；2026-08 多会话 host 落地，见 #991）。
-> `build config` 的 `localAgent` 参数（`"opencode"` | `"pi"`）选 `pi` 时
-> daemon 使用 [pi coding agent](https://github.com/badlogic/pi-mono)
-> （`@earendil-works`）作为本地运行时，能力对等于 opencode serve HTTP 集成。
+> **2026-09-04 起 pi 是唯一的本地运行时**（ADR-0014），没有 `localAgent` /
+> `agents.local_agent` 选择；Node 与 pi 由 amuxd 托管安装（ADR-0015，#1250）：
+> `<amuxd cache>/node/<ver>/` + `<amuxd cache>/pi/`（`npm ci` 树，package root
+> 是常量 `node_modules/@earendil-works/pi-coding-agent`）。下文提到的
+> `~/.pi/bin/pi`、PATH 查找、Bun 单二进制回退都已不适用；host 与 legacy rpc 两种
+> 模式仍如 §1 所述，只是都跑在托管 Node 上。
 
 ## 1. 进程 / 会话模型
 
@@ -40,29 +43,16 @@ first-wins，workspace A 的 env 会粘进 B 的进程）。会话文件仍只�
 | 断线补发 | SSE reconnect reconcile + replay | 子进程崩溃后按 route 记录的 leaf id `get_entries since` 回补未见尾部（`events::backfill_and_close`） |
 | 安装分发 | 官方渠道 + `opencode.lock.json` | npm 包（`pi.lock.json` 最低版本锁 = host 依赖的 SDK 版本）；Bun 单二进制自动降级 LegacyRpc |
 
-## 2. 架构：后端 trait 化
+## 2. 架构：后端 trait 化（现状）
 
-现状 `RuntimeManager` 依赖 `AcpHostPool`（`runtime/opencode_http/`）暴露的
-接口面：`attach_session / AcpCommand{Prompt,Cancel,ResolvePermission,SetModel,
-Shutdown} / AcpEventFrame / AcpStartupMetadata / prewarm / evict / host_count`。
+`RuntimeManager` 通过 [`AgentBackend`](../../apps/daemon/src/runtime/backend.rs)
+trait 与 [`PiRpcBackend`](../../apps/daemon/src/runtime/pi_rpc/mod.rs) 通信。
+`create_backend()` 始终返回 pi 实现；`agents.local_agent` 与 opencode HTTP
+host pool 已移除（ADR-0014）。事件出口统一为 `amux.AcpEvent`——gateway、MQTT、
+前端、iOS 全部零改动。
 
-新增抽象：
-
-```rust
-// apps/daemon/src/runtime/backend.rs
-pub trait AgentBackend: Send {
-    async fn attach_session(...) -> Result<(CmdTx, AcpStartupMetadata)>;
-    async fn prewarm(...);
-    fn evict(...);
-    fn host_count(&self) -> usize;
-}
-// 实现者：OpencodeHttpBackend（现 opencode_http 改名包装）
-//         PiRpcBackend（新增 runtime/pi_rpc/）
-```
-
-`RuntimeManager` 持 `Box<dyn AgentBackend>`，按 daemon 配置
-`agents.local_agent`（默认 `opencode`）实例化。事件出口统一为
-`amux.AcpEvent`——**gateway、MQTT、前端、iOS 全部零改动**。
+~~`OpencodeHttpBackend` / `AcpHostPool`~~ 已删除；下文 §3 起的 opencode 对等
+描述仅作 pi 模块设计的对照参考。
 
 ## 3. `runtime/pi_rpc/` 模块设计（对等 opencode_http 四组件）
 

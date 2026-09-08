@@ -59,6 +59,14 @@ vi.mock('@/lib/backend', () => ({
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
     h.invokeCalls.push(cmd)
+    if (cmd === 'setup_list_requirements') {
+      return [
+        { id: 'amuxd', title: 'amuxd', optional: false, present: true, version: '1.0.0' },
+        { id: 'node', title: 'Node.js', optional: false, present: true, version: '24.20.0' },
+        { id: 'pi', title: 'Pi', optional: false, present: true, version: '0.84.2' },
+        { id: 'git', title: 'git', optional: true, present: true, version: '2.50' },
+      ]
+    }
     if (cmd === 'get_daemon_team_id') return 't1'
     if (cmd === 'daemon_init') {
       // Re-onboard rewrites credentials; managed restart reloads backend.toml.

@@ -1,11 +1,12 @@
 import * as React from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { SessionListColumn } from '../SessionListColumn'
 import { useUIStore } from '@/stores/ui'
 import { useSessionListStore } from '@/stores/session-list-store'
 import { useSessionStore } from '@/stores/session-store'
 import { useCronStore } from '@/stores/cron'
+import { useAppsStore } from '@/stores/apps-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { appShortName } from '@/lib/config/build-config'
 
@@ -41,10 +42,6 @@ vi.mock('@/components/ui/traffic-lights', () => ({
   TrafficLights: () => null,
 }))
 
-vi.mock('@/hooks/use-session-workspace-labels', () => ({
-  useSessionWorkspaceLabels: () => new Map([['s1', 'copilot-ws-v3']]),
-}))
-
 const createQuickSession = vi.fn()
 vi.mock('@/lib/session/create-quick-session', () => ({
   createQuickSession: (...args: unknown[]) => createQuickSession(...args),
@@ -67,6 +64,13 @@ vi.mock('@/stores/current-team', () => ({
   ),
 }))
 
+// Apps is a remote flag, off by default. The session list only names an app
+// when the build actually has the Apps surface to reach.
+const features = { apps: true }
+vi.mock('@/lib/config/remote-features', () => ({
+  useFeatures: () => features,
+}))
+
 const PINNED_STORAGE_KEY = `${appShortName}-pinned-sessions`
 
 const setPinnedStorage = (idsByTeam: Record<string, string[]>) => {
@@ -79,6 +83,7 @@ const mkSessionRow = (over: Partial<{
   idea_id: string | null
   has_unread: boolean
   last_message_at: string | null
+  app_id: string | null
 }>) => ({
   id: 's1',
   title: 't',
@@ -90,6 +95,10 @@ const mkSessionRow = (over: Partial<{
   has_unread: false,
   ...over,
 })
+
+/** Only the fields the app subline reads; the rest of AppRow is irrelevant here. */
+const mkAppRow = (id: string, name: string) =>
+  ({ id, name, type: 'static_web' }) as never
 
 const mkRow = (over: Partial<{ id: string; title: string; ideaId: string | null; lastMessageAt: string | null }> = {}) => ({
   id: over.id ?? 's1',
@@ -130,6 +139,7 @@ describe('SessionListColumn', () => {
       cronSessionIds: new Set<string>(),
       showCronSessions: false,
     })
+    useAppsStore.setState({ items: [], load: vi.fn().mockResolvedValue(undefined) })
     useSessionListStore.setState({
       rows: [
         mkSessionRow({ id: 's1', title: 'Alpha', idea_id: null, has_unread: true }),
@@ -316,9 +326,65 @@ describe('SessionListColumn', () => {
     loadFirstPage.mockRestore()
   })
 
-  it('shows workspace subline under session title in non-workspace filters', () => {
+  it('names the app under a session that belongs to one', () => {
+    // What this slot held before was a workspace label — the workspace
+    // directory's basename — and an app's checkout is `…/apps/<appId>`, so for
+    // an app session it rendered the app's own uuid.
+    useAppsStore.setState({ items: [mkAppRow('app-1', 'teamclu 官网')] })
+    useSessionListStore.setState({
+      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
+    })
     render(<SessionListColumn />)
-    expect(screen.getByTestId('v2-session-row-workspace')).toHaveTextContent('copilot-ws-v3')
+    expect(screen.getByTestId('v2-session-row-app')).toHaveTextContent('teamclu 官网')
+  })
+
+  it('says nothing under an ordinary session', () => {
+    useAppsStore.setState({ items: [mkAppRow('app-1', 'teamclu 官网')] })
+    render(<SessionListColumn />)
+    expect(screen.queryByTestId('v2-session-row-app')).not.toBeInTheDocument()
+  })
+
+  it('asks for the app list itself when a row claims an app', async () => {
+    // Regression: this used to lean on the rail's Apps entry to have loaded it,
+    // and that entry lives inside the 更多 group, which starts collapsed. On a
+    // fresh launch nothing mounted it, so every app session rendered with no
+    // subline until the user happened to open that group.
+    useSessionListStore.setState({
+      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
+    })
+    render(<SessionListColumn />)
+    await waitFor(() =>
+      expect(useAppsStore.getState().load).toHaveBeenCalledWith('team-1'),
+    )
+  })
+
+  it('asks for nothing when no session belongs to an app', () => {
+    render(<SessionListColumn />)
+    expect(useAppsStore.getState().load).not.toHaveBeenCalled()
+  })
+
+  it('asks for nothing when the build has no Apps surface', () => {
+    features.apps = false
+    useSessionListStore.setState({
+      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
+    })
+    try {
+      render(<SessionListColumn />)
+      expect(useAppsStore.getState().load).not.toHaveBeenCalled()
+    } finally {
+      features.apps = true
+    }
+  })
+
+  it('draws nothing when the app list has not arrived', () => {
+    // The rail's Apps entry loads it; with Apps off for the build it never
+    // does, and an id we cannot name is worth less than silence.
+    useAppsStore.setState({ items: [] })
+    useSessionListStore.setState({
+      rows: [mkSessionRow({ id: 's1', title: 'Alpha', app_id: 'app-1' })],
+    })
+    render(<SessionListColumn />)
+    expect(screen.queryByTestId('v2-session-row-app')).not.toBeInTheDocument()
   })
 
   it('windows the list (virtualizes) when there are many sessions', () => {
@@ -344,15 +410,6 @@ describe('SessionListColumn', () => {
     for (const li of container.querySelectorAll('[data-testid="v2-session-list-virtual"] li')) {
       expect(li).toHaveClass('list-none')
     }
-  })
-
-  // The subline used to be suppressed while the list was filtered to one
-  // workspace. That filter kind is gone — the sidebar list that set it was its
-  // only producer — so the label is never redundant now.
-  it('shows the workspace subline under sessions that have one', () => {
-    useUIStore.setState({ sidebarFilter: { kind: 'all' } })
-    render(<SessionListColumn />)
-    expect(screen.queryAllByTestId('v2-session-row-workspace').length).toBeGreaterThan(0)
   })
 
   it('renders an inline close button when onDismiss is provided', () => {

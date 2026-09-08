@@ -85,7 +85,7 @@ pnpm ios:test               # iOS UI tests
 **Monorepo layout:**
 - `packages/app/` — React 19 frontend (TypeScript, Tailwind 4, Zustand, Vite)
 - `apps/desktop/` — Rust/Tauri backend (Tauri IPC commands, amuxd supervisor)
-- `apps/daemon/` — amuxd daemon (opencode HTTP runtime, MQTT/Supabase bridge)
+- `apps/daemon/` — amuxd daemon (pi runtime, MQTT/Supabase bridge)
 - `apps/ios/` — iOS app, Xcode project, and Swift packages
 - `services/supabase/` — Supabase migrations, seed, and database tests
 - `services/fc/` — Cloud API service (Node.js 20). Deploys two ways: as the
@@ -126,11 +126,10 @@ nowhere else; this describes what exists, it decides nothing):
 
 **Editor system:** Markdown (Tiptap) / HTML (Tiptap + sandbox preview) / Code (CodeMirror 6 + Shiki)
 
-**Agent runtime:** the amuxd daemon drives official opencode (sst/opencode)
-over `opencode serve` HTTP — a single global opencode instance per device, one
-opencode session per TeamClu session. The former multi-agent ACP layer
-(claude-code / codex adapters, per-runtime processes) has been removed. See
-`docs/architecture/single-agent-opencode-http.md`.
+**Agent runtime:** the amuxd daemon drives **pi** exclusively (ADR-0014) over
+stdio JSONL host processes — one pi child per (isolation domain, env revision,
+worktree), multiple sessions per host. Legacy opencode / cursor / claude backends
+have been removed. See `docs/architecture/pi-agent-backend.md`.
 
 ## Backend Access Boundary — Cloud API is the only client backend
 
@@ -318,3 +317,18 @@ Give 2-5 short imperative phrases separated by ` | `. seahelm turns that line in
 clickable buttons for the user. Make it the LAST line of your message; do NOT run
 a tool or shell command to produce it.
 <!-- seahelm:suggest:end -->
+
+<!-- seahelm:worktree:start -->
+## Moving into another worktree (seahelm)
+
+seahelm draws one card per git worktree, and your pane is filed under the one it
+started in. If you move into a different worktree and start working there, say so:
+
+    seahelm pane move "$SEAHELM_PANE_ID" <absolute-worktree-path>
+
+Your pane — and everything running in it — moves to that worktree's card, instead
+of a stray empty pane appearing there while you keep reporting under the old one.
+
+Only when you actually work in it. Creating a worktree you do not move into needs
+nothing. seahelm often notices on its own; saying it means it is never missed.
+<!-- seahelm:worktree:end -->

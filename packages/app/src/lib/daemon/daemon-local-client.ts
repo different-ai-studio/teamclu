@@ -12,7 +12,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/diagnostics/env-diagnostics'
 import { useAuthStore } from '@/stores/auth-store'
-import { isTauri } from '@/lib/utils'
+import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
@@ -190,6 +190,56 @@ export async function probeDaemonHttp(): Promise<DaemonHttpProbe> {
 export async function isDaemonHttpAvailable(): Promise<boolean> {
   const probe = await probeDaemonHttp()
   return probe.ok
+}
+
+export interface DaemonHttpEndpoint {
+  /** e.g. `http://127.0.0.1:60243`. */
+  baseUrl: string
+  /** The bound loopback port, or null when `baseUrl` carries none. */
+  port: number | null
+}
+
+/**
+ * Where the local daemon is listening, for display.
+ *
+ * Deliberately without the root token that sits beside it in the same IPC
+ * answer: this feeds a settings row, and a token on screen is a token in a
+ * screenshot. The port is worth showing because it is not knowable otherwise —
+ * amuxd binds `127.0.0.1:0`, so it is different on every restart and only
+ * recorded in `~/.amuxd/run/amuxd.http.port`.
+ */
+export async function getDaemonHttpEndpoint(): Promise<DaemonHttpEndpoint | null> {
+  if (!isTauri()) return null
+  const info = await readDaemonHttpInfo()
+  if (!info?.base_url) return null
+  let port: number | null = null
+  try {
+    const parsed = Number(new URL(info.base_url).port)
+    port = Number.isInteger(parsed) && parsed > 0 ? parsed : null
+  } catch {
+    // A base_url we cannot parse still displays fine; only the port is lost.
+  }
+  return { baseUrl: info.base_url, port }
+}
+
+/**
+ * Open amuxd's web config console (`/v1/setup`) in the system browser.
+ *
+ * The URL `amuxd setup` prints, built here rather than returned so the root
+ * token goes straight from the IPC answer to the browser — never into a React
+ * tree, a clipboard, or a log line. The token rides in the query string, which
+ * is safe on loopback and nowhere else: the page's first act is to trade it
+ * for a scoped session token.
+ *
+ * False means the daemon is not running (no port/token files to read).
+ */
+export async function openDaemonSetupConsole(): Promise<boolean> {
+  if (!isTauri()) return false
+  const info = await readDaemonHttpInfo()
+  if (!info?.base_url || !info.root_token) return false
+  const url = `${info.base_url}/v1/setup?access_token=${encodeURIComponent(info.root_token)}`
+  await openExternalUrl(url)
+  return true
 }
 
 // 'ok'      — daemon's cloud session refreshes normally.
@@ -434,66 +484,11 @@ async function daemonFetchNoContent(
   return { ok: true, status: resp.status }
 }
 
-// ─── Local agent runtime (`agents.local_agent` in daemon.toml) ────────────────
-
-/** The local agent runtimes the daemon can drive. */
-/**
- * Local agent runtimes the daemon can actually run — one arm each in
- * `runtime::backend::create_backend`.
- *
- * `codex` is absent on purpose: it has no backend module, so a daemon
- * configured for it runs opencode.
- */
-export type DaemonLocalAgent = 'opencode' | 'pi' | 'cursor' | 'claude-code'
-
 interface DaemonConfigEntry {
   key: string
   value: unknown
   display: string
   secret: boolean
-}
-
-/**
- * Read the daemon's configured local agent runtime. An unset key (older
- * daemon.toml with no `agents.local_agent`) means the "opencode" default.
- */
-export async function getDaemonLocalAgent(): Promise<DaemonLocalAgent> {
-  const result = await daemonFetch<DaemonConfigEntry>('/v1/config/agents.local_agent')
-  if (!result.ok) {
-    // 404 = key absent → daemon default. Anything else: fall back conservatively.
-    return 'opencode'
-  }
-  switch (result.data.value) {
-    case 'pi':
-      return 'pi'
-    case 'cursor':
-      return 'cursor'
-    // The daemon accepts all three spellings (`config::runtime_resolution`), and
-    // since `backend::agent_type_for_local_agent` maps every one of them to the
-    // claude backend, reporting them as opencode — as this used to — mislabels
-    // the runtime and routes the LLM pane to the wrong settings UI.
-    case 'claude':
-    case 'claude-code':
-    case 'claude_code':
-      return 'claude-code'
-    default:
-      return 'opencode'
-  }
-}
-
-/**
- * Switch the daemon's local agent runtime. Writes `agents.local_agent`; the
- * caller must restart the daemon (this key is restart-required) for the new
- * backend to take effect. Returns whether a restart is required (always true
- * for this key, surfaced for symmetry with the daemon response).
- */
-export async function setDaemonLocalAgent(agent: DaemonLocalAgent): Promise<{ requiresRestart: boolean }> {
-  const result = await daemonFetch<{ requiresRestart: boolean }>('/v1/config/agents.local_agent', {
-    method: 'PUT',
-    body: JSON.stringify({ value: agent }),
-  })
-  if (!result.ok) throw new Error(result.error || 'failed to set local agent')
-  return { requiresRestart: result.data.requiresRestart ?? true }
 }
 
 interface DaemonMutateConfigResponse {
@@ -602,21 +597,6 @@ interface DaemonProviderAuthRequest {
   models?: Array<{ model_id: string; model_name?: string }>
 }
 
-/** Skill-name → 'allow' | 'deny' | 'ask' */
-export type DaemonPermissionMap = Record<string, 'allow' | 'deny' | 'ask'>
-
-interface DaemonPermissionConfig {
-  skills: DaemonPermissionMap
-  tools: DaemonPermissionMap
-}
-
-export interface DaemonAllowlistRule {
-  project_id: string
-  permission: string
-  pattern: string
-  decision: 'allow' | 'deny'
-}
-
 export type DaemonApplyOutcome = 'applied_live' | 'reload_required' | 'restart_required'
 
 // ─── Providers ────────────────────────────────────────────────────────────────
@@ -652,14 +632,6 @@ type DaemonProviderAuthMethod = {
 
 type DaemonProviderAuthMethods = Record<string, DaemonProviderAuthMethod[]>
 
-type DaemonOAuthAuthorizeResult =
-  | { ok: true; url: string; method: 'auto' | 'code'; instructions: string }
-  | { ok: false; status: number; code?: string; message: string }
-
-type DaemonOAuthCallbackResult =
-  | { ok: true; outcome: DaemonApplyOutcome }
-  | { ok: false; status: number; code?: string; message: string }
-
 function problemDetailFromErrorBody(error: string): { code?: string; detail: string } {
   try {
     const parsed = JSON.parse(error) as { code?: string; detail?: string }
@@ -672,72 +644,9 @@ function problemDetailFromErrorBody(error: string): { code?: string; detail: str
   }
 }
 
-/**
- * Device-level provider OAuth (#742's reasoning, extended to OAuth): OAuth
- * state lives under the user's global OpenCode paths, not a workspace, so
- * connect must not require a project directory to already be resolved.
- */
 export async function getDaemonDeviceProviderAuthMethods(): Promise<DaemonProviderAuthMethods | null> {
   const result = await daemonFetch<DaemonProviderAuthMethods>(`/v1/providers/auth-methods`)
   return result.ok ? result.data : null
-}
-
-export async function postDaemonDeviceProviderOAuthAuthorize(
-  providerId: string,
-  methodIndex: number,
-  inputs?: Record<string, string>,
-): Promise<DaemonOAuthAuthorizeResult> {
-  const result = await daemonFetch<{
-    url: string
-    method: string
-    instructions: string
-  }>(`/v1/providers/${encodeURIComponent(providerId)}/oauth/authorize`, {
-    method: 'POST',
-    body: JSON.stringify({ method_index: methodIndex, inputs: inputs ?? {} }),
-  })
-  if (result.ok) {
-    const method =
-      result.data.method === 'auto' || result.data.method === 'code'
-        ? result.data.method
-        : 'code'
-    return {
-      ok: true,
-      url: result.data.url,
-      method,
-      instructions: result.data.instructions,
-    }
-  }
-  const problem = problemDetailFromErrorBody(result.error)
-  return {
-    ok: false,
-    status: result.status,
-    code: problem.code,
-    message: problem.detail,
-  }
-}
-
-export async function postDaemonDeviceProviderOAuthCallback(
-  providerId: string,
-  methodIndex: number,
-  code?: string,
-): Promise<DaemonOAuthCallbackResult> {
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/providers/${encodeURIComponent(providerId)}/oauth/callback`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ method_index: methodIndex, code: code ?? null }),
-    },
-  )
-  if (result.ok) {
-    return { ok: true, outcome: result.data.outcome }
-  }
-  const problem = problemDetailFromErrorBody(result.error)
-  return {
-    ok: false,
-    status: result.status,
-    code: problem.code,
-    message: problem.detail,
-  }
 }
 
 /** Mirrors Rust `workspaces::CatalogModel`. `ref` is `"<providerSegment>/<modelId>"`. */
@@ -844,68 +753,6 @@ export async function deleteDaemonProviderAuth(
   return result.ok ? result.data.outcome : null
 }
 
-// ─── Permissions ──────────────────────────────────────────────────────────────
-
-/**
- * Fetch the full workspace permission config (skill + tool defaults).
- */
-async function getDaemonPermissionConfig(
-  workspaceId: string,
-): Promise<DaemonPermissionConfig | null> {
-  const result = await daemonFetch<DaemonPermissionConfig>(
-    `/v1/workspaces/${workspaceId}/permissions`,
-  )
-  if (!result.ok) return null
-  return {
-    skills: result.data.skills ?? {},
-    tools: result.data.tools ?? {},
-  }
-}
-
-/**
- * Fetch the workspace permission map.
- * Returns a flat `{ bash: 'ask', read: 'allow', ... }` object for skill keys only.
- */
-export async function getDaemonPermissions(
-  workspaceId: string,
-): Promise<DaemonPermissionMap | null> {
-  const config = await getDaemonPermissionConfig(workspaceId)
-  return config?.skills ?? null
-}
-
-/** Tool-level permission defaults (e.g. `bash`, `read`) outside the skill map. */
-export async function getDaemonToolPermissions(
-  workspaceId: string,
-): Promise<DaemonPermissionMap | null> {
-  const config = await getDaemonPermissionConfig(workspaceId)
-  return config?.tools ?? null
-}
-
-/**
- * Replace the workspace skill permission map.
- * Pass `tools` to merge tool-level defaults; omitted/empty tools are left unchanged.
- */
-export async function putDaemonPermissions(
-  workspaceId: string,
-  permissions: DaemonPermissionMap,
-  tools?: DaemonPermissionMap,
-): Promise<DaemonApplyOutcome | null> {
-  const body: DaemonPermissionConfig = { skills: permissions, tools: tools ?? {} }
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/workspaces/${workspaceId}/permissions`,
-    { method: 'PUT', body: JSON.stringify(body) },
-  )
-  return result.ok ? result.data.outcome : null
-}
-
-/** Merge tool-level permission defaults without replacing skill permissions. */
-export async function putDaemonToolPermissions(
-  workspaceId: string,
-  tools: DaemonPermissionMap,
-): Promise<DaemonApplyOutcome | null> {
-  return putDaemonPermissions(workspaceId, {}, tools)
-}
-
 // ─── Roles & skills ───────────────────────────────────────────────────────────
 
 /** Mirrors `RolesSkillsWorkspaceState` from lib/roles/types.ts (camelCase from daemon). */
@@ -980,9 +827,16 @@ export async function putDaemonSkill(
   return result.ok ? result.data : null
 }
 
-/** Register a Skills refresh without rewriting files. Next idle apply disposes the OpenCode instance. */
-export async function notifyDaemonSkillsChanged(workspaceId: string): Promise<void> {
-  await daemonFetchData<{ ok: boolean }>(
+export interface DaemonSkillsRefreshResult {
+  ok: boolean
+  status: 'applied' | 'pending_active_turn' | string
+}
+
+/** Register a Skills refresh without rewriting files. Idle apply disposes the OpenCode instance. */
+export async function notifyDaemonSkillsChanged(
+  workspaceId: string,
+): Promise<DaemonSkillsRefreshResult> {
+  return daemonFetchData<DaemonSkillsRefreshResult>(
     `/v1/workspaces/${workspaceId}/skills/refresh`,
     { method: 'POST' },
   )
@@ -1027,28 +881,6 @@ export async function deleteDaemonRole(
   const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
     `/v1/workspaces/${workspaceId}/roles/${encodeURIComponent(slug)}${query}`,
     { method: 'DELETE' },
-  )
-  return result.ok ? result.data.outcome : null
-}
-
-// ─── Allowlist ────────────────────────────────────────────────────────────────
-
-export async function getDaemonAllowlist(
-  workspaceId: string,
-): Promise<DaemonAllowlistRule[] | null> {
-  const result = await daemonFetch<DaemonAllowlistRule[]>(
-    `/v1/workspaces/${workspaceId}/permission-allowlist`,
-  )
-  return result.ok ? result.data : null
-}
-
-export async function putDaemonAllowlist(
-  workspaceId: string,
-  rules: DaemonAllowlistRule[],
-): Promise<DaemonApplyOutcome | null> {
-  const result = await daemonFetch<{ outcome: DaemonApplyOutcome }>(
-    `/v1/workspaces/${workspaceId}/permission-allowlist`,
-    { method: 'PUT', body: JSON.stringify(rules) },
   )
   return result.ok ? result.data.outcome : null
 }
@@ -1183,6 +1015,15 @@ export interface BuildAppResult {
   outcome: BuildAppOutcome
   /** Why it failed, for the toast. Null unless the outcome is `failed`. */
   error: string | null
+  /**
+   * The commit the daemon actually built, when it differs from the one we
+   * asked for.
+   *
+   * A deploy publishes whatever the agent left uncommitted, which moves HEAD
+   * past the sha we read off Gitea before starting. Finalizing with the old
+   * one would record a commit that is not what is now running.
+   */
+  gitCommitSha: string | null
 }
 
 /**
@@ -1378,7 +1219,7 @@ export async function buildDaemonApp(
   input: BuildDaemonAppInput,
 ): Promise<BuildAppResult> {
   try {
-    const result = await daemonFetch<{ status: string }>('/v1/apps/build', {
+    const result = await daemonFetch<{ status: string; gitCommitSha?: string }>('/v1/apps/build', {
       method: 'POST',
       body: JSON.stringify({
         appId,
@@ -1389,16 +1230,22 @@ export async function buildDaemonApp(
         presignedPut: input.presignedPut.trim(),
       }),
     })
-    if (result.ok) return { outcome: "built", error: null }
+    if (result.ok) {
+      return {
+        outcome: "built",
+        error: null,
+        gitCommitSha: result.data?.gitCommitSha?.trim() || null,
+      }
+    }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return { outcome: "failed", error: result.error ?? null }
+    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null }
   }
 }
 

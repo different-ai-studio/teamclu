@@ -11,6 +11,8 @@
  * `*.<domain>`, so a label containing a dot is rejected rather than served
  * with a certificate that cannot exist.
  */
+import { domainToASCII, domainToUnicode } from "node:url";
+
 type Env = NodeJS.ProcessEnv;
 
 /** Blank disables vanity hostnames entirely — the app keeps its FC trigger URL. */
@@ -18,8 +20,35 @@ export const appsPublicDomain = (env: Env = process.env) => env.APPS_PUBLIC_DOMA
 
 export const ID_PREFIX_LEN = 8;
 
-export function appPublicLabel(slug: string, appId: string): string {
-  return `${slug}-${appId.slice(0, ID_PREFIX_LEN)}`;
+/** RFC 1035: one DNS label is at most 63 bytes, punycode included. */
+const MAX_LABEL_BYTES = 63;
+
+/**
+ * The label, in the ASCII form DNS actually accepts.
+ *
+ * `slugify` keeps CJK on purpose — it is what stops every Chinese-named app in
+ * a team collapsing to the same `app` slug and colliding on
+ * `apps_team_slug_uniq` — so the slug is routinely not ASCII, and the label
+ * built from it is not a legal hostname. Alibaba FC rejects the custom domain
+ * outright, which is how a Chinese app name turned into a failed deploy.
+ *
+ * Punycode rather than stripping the non-ASCII: stripping would collapse those
+ * slugs the same way, and could not fix an app that already has one. The stored
+ * slug is untouched; only the name derived from it changes, so an existing app
+ * starts working on its next deploy with no migration. An ASCII slug encodes to
+ * itself, so nothing changes for the apps that already deploy.
+ *
+ * `null` when the label cannot be expressed — unencodable, or past the 63-byte
+ * limit. Callers then fall back to the app's FC trigger URL, which is the same
+ * thing that happens on a deployment with no apps domain at all. Fail closed:
+ * a hostname no certificate can cover is worse than no vanity hostname.
+ */
+export function appPublicLabel(slug: string, appId: string): string | null {
+  const ascii = domainToASCII(`${slug}-${appId.slice(0, ID_PREFIX_LEN)}`);
+  // WHATWG's answer for "this is not encodable" is the empty string.
+  if (!ascii) return null;
+  if (Buffer.byteLength(ascii) > MAX_LABEL_BYTES) return null;
+  return ascii;
 }
 
 /**
@@ -51,7 +80,8 @@ export function appFcRouteHost(
 ): string | null {
   const domain = appsFcRouteDomain(env);
   if (!domain || !slug || !appId) return null;
-  return `${appPublicLabel(slug, appId)}.${domain}`;
+  const label = appPublicLabel(slug, appId);
+  return label && `${label}.${domain}`;
 }
 
 /** Public URL for an app, or null when this deployment has no apps domain. */
@@ -62,7 +92,8 @@ export function appPublicUrl(
 ): string | null {
   const domain = appsPublicDomain(env);
   if (!domain || !slug || !appId) return null;
-  return `https://${appPublicLabel(slug, appId)}.${domain}`;
+  const label = appPublicLabel(slug, appId);
+  return label && `https://${label}.${domain}`;
 }
 
 /**
@@ -80,9 +111,16 @@ export function parseAppPublicHost(
   const name = host.split(":")[0].trim().toLowerCase();
   const suffix = `.${domain.toLowerCase()}`;
   if (!name.endsWith(suffix)) return null;
-  const label = name.slice(0, -suffix.length);
+  const asciiLabel = name.slice(0, -suffix.length);
   // Exactly one level: `*.<domain>` matches `x.<domain>`, never `x.y.<domain>`.
-  if (!label || label.includes(".")) return null;
+  if (!asciiLabel || asciiLabel.includes(".")) return null;
+  // DNS and the Host header carry the punycode form, and the id prefix is
+  // encoded *inside* it — `xn--teamclu--cb4f314d-nx65apz36b` has no readable
+  // `-cb4f314d` to split on. Decode first, then split, or every non-ASCII app
+  // fails to route no matter how correctly its hostname was created.
+  const label = asciiLabel.startsWith("xn--")
+    ? domainToUnicode(asciiLabel) || asciiLabel
+    : asciiLabel;
   const cut = label.lastIndexOf("-");
   if (cut <= 0) return null;
   const slug = label.slice(0, cut);

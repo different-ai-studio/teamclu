@@ -1,0 +1,140 @@
+name: Mirror Node.js runtime to OSS
+
+# The Node.js the managed pi runtime runs on (apps/daemon/src/node_install).
+# amuxd downloads the official distribution from nodejs.org or npmmirror.com
+# when either is fast enough, and from this OSS copy when neither is. Layout
+# (read by `node_install::Source::SelfHosted`):
+#
+#   node/latest.json          {"version": "24.20.0", "assets": {"<asset>": "<sha256>"}}
+#   node/<version>/<asset>    immutable
+#
+# The version comes from apps/daemon/pi.lock.json (`node`); the six assets are
+# the ones `node_install::asset_for` can name. Checksums are taken from the
+# official SHASUMS256.txt and verified here before anything is uploaded, and
+# the manifest repeats them so the daemon can verify the OSS copy too.
+
+on:
+  workflow_call: {}
+  push:
+    paths:
+      - apps/daemon/pi.lock.json
+      - .github/workflows/mirror-node-oss.yml
+  schedule:
+    - cron: "40 18 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: mirror-node-oss
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      OSS_BASE: https://teamclaw.ucar.cc/node
+      DIST_BASE: https://nodejs.org/dist
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the pinned Node.js version
+        id: node
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c 'import json; print(json.load(open("apps/daemon/pi.lock.json"))["node"].lstrip("v"))')
+          [ -n "$VERSION" ] || { echo '::error::pi.lock.json pins no node version'; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Mirroring Node.js v$VERSION"
+
+      - name: Skip when OSS already serves this version with every asset
+        id: skip
+        env:
+          VERSION: ${{ steps.node.outputs.version }}
+        run: |
+          set -euo pipefail
+          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/latest.json" 2>/dev/null || echo '{}')
+          python3 - "$VERSION" "$SERVED" <<'PY'
+          import json, os, sys
+          version, served = sys.argv[1], json.loads(sys.argv[2] or '{}')
+          expected = {f"node-v{version}-{s}" for s in [
+              "darwin-arm64.tar.gz", "darwin-x64.tar.gz",
+              "linux-x64.tar.gz", "linux-arm64.tar.gz",
+              "win-x64.zip", "win-arm64.zip",
+          ]}
+          have = set((served.get("assets") or {}).keys())
+          skip = served.get("version", "").lstrip("v") == version and expected <= have
+          print(f"served={served.get('version')!r} assets={len(have)} skip={skip}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"skip={'true' if skip else 'false'}\n")
+          PY
+
+      - name: Download the six distributions and verify them against SHASUMS256.txt
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.node.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          RETRY=(--connect-timeout 15 --max-time 600 --retry 3 --retry-delay 5)
+          curl -fsSL "${RETRY[@]}" -o SHASUMS256.txt "$DIST_BASE/v$VERSION/SHASUMS256.txt"
+          for s in darwin-arm64.tar.gz darwin-x64.tar.gz linux-x64.tar.gz linux-arm64.tar.gz win-x64.zip win-arm64.zip; do
+            a="node-v$VERSION-$s"
+            curl -fsSL "${RETRY[@]}" -o "assets/$a" "$DIST_BASE/v$VERSION/$a"
+            echo "✓ got $a"
+          done
+          # Every asset must match upstream's digest; a partial or tampered
+          # download is not mirrored.
+          (cd assets && grep -E "  node-v$VERSION-(darwin-arm64\.tar\.gz|darwin-x64\.tar\.gz|linux-x64\.tar\.gz|linux-arm64\.tar\.gz|win-x64\.zip|win-arm64\.zip)$" ../SHASUMS256.txt | sha256sum -c -)
+          ls -la assets
+
+      - name: Upload immutable assets, then the manifest
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          VERSION: ${{ steps.node.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "${OSS_ACCESS_KEY_ID:-}" || { echo '::error::OSS secrets not configured'; exit 1; }
+          python3 -m pip install oss2 --quiet --break-system-packages 2>/dev/null || pip3 install oss2 --quiet --break-system-packages
+          python3 - <<'PY'
+          import glob, hashlib, json, os
+          import oss2
+          endpoint = os.environ['OSS_ENDPOINT']
+          if not endpoint.startswith('http'):
+              endpoint = 'https://' + endpoint
+          auth = oss2.Auth(os.environ['OSS_ACCESS_KEY_ID'], os.environ['OSS_ACCESS_KEY_SECRET'])
+          bucket = oss2.Bucket(auth, endpoint, os.environ['OSS_BUCKET'])
+          version = os.environ['VERSION']
+          assets = {}
+          for path in sorted(glob.glob('assets/*')):
+              name = os.path.basename(path)
+              with open(path, 'rb') as fh:
+                  assets[name] = hashlib.sha256(fh.read()).hexdigest()
+              key = f'node/{version}/{name}'
+              bucket.put_object_from_file(key, path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+              print(f'✅ {key}')
+          manifest = json.dumps({'version': version, 'assets': assets}, indent=2).encode()
+          bucket.put_object('node/latest.json', manifest, headers={
+              'Cache-Control': 'no-cache, no-store, max-age=0',
+              'Content-Type': 'application/json',
+          })
+          print(f'✅ node/latest.json -> {version} ({len(assets)} assets)')
+          PY
+
+      - name: Verify the public manifest
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.node.outputs.version }}
+        run: |
+          set -euo pipefail
+          MANIFEST=$(curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 "$OSS_BASE/latest.json")
+          python3 - "$VERSION" "$MANIFEST" <<'PY'
+          import json, re, sys
+          version, m = sys.argv[1], json.loads(sys.argv[2])
+          assert m['version'] == version, m
+          assert len(m['assets']) == 6, m
+          assert all(re.fullmatch(r'[a-f0-9]{64}', sha) for sha in m['assets'].values()), m
+          print(version, sorted(m['assets']))
+          PY

@@ -9,8 +9,82 @@ import {
   ONBOARDING_STEPS,
   type OnboardingStep,
 } from '@/stores/daemon-onboarding'
+import { useSetupStore, type InstallRoute } from '@/stores/setup'
 import { useElapsedSeconds } from '@/hooks/use-elapsed-seconds'
 import { useShallow } from 'zustand/react/shallow'
+
+/**
+ * What to call each source amuxd can install the runtime from. The
+ * distinction people ask about on a slow first run is official-vs-ours, not
+ * the hostname. Keys are spelled out because the i18n guardrail finds keys by
+ * literal.
+ */
+const ROUTE_LABEL: Record<InstallRoute, { key: string; fallback: string }> = {
+  official: { key: 'settings.daemonOnboarding.routeOfficial', fallback: 'the official source' },
+  'public-mirror': { key: 'settings.daemonOnboarding.routePublicMirror', fallback: 'a public mirror' },
+  'self-hosted': { key: 'settings.daemonOnboarding.routeSelfHosted', fallback: 'our own mirror' },
+  custom: { key: 'settings.daemonOnboarding.routeCustom', fallback: 'the registry you configured' },
+}
+
+/**
+ * The runtime install narrated under its step: amuxd's current line, a
+ * percentage while a sized download is in flight, and where the bytes are
+ * coming from. Without it the `install-runtime` step is a spinner that can
+ * legitimately sit for minutes on a cold Windows machine — which is what a
+ * hang looks like.
+ */
+function RuntimeInstallProgress() {
+  const { t } = useTranslation()
+  const progress = useSetupStore((s) => s.progress.pi)
+  const installRoute = useSetupStore((s) => s.installRoute)
+  if (!progress && !installRoute) return null
+  const determinate = progress?.percent != null
+  const label =
+    progress?.event === 'probe'
+      ? t('settings.daemonOnboarding.probing', 'Checking which download source is fastest…')
+      : progress?.message
+  return (
+    <div className="flex flex-col gap-1.5 pl-[22px]">
+      {label && (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-faint" title={label}>
+            {label}
+          </span>
+          {determinate && (
+            <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-faint">
+              {progress?.percent}%
+            </span>
+          )}
+        </div>
+      )}
+      {progress && (
+        <div
+          className="h-[3px] w-full overflow-hidden rounded-full bg-selected"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress.percent ?? undefined}
+          aria-valuetext={determinate ? undefined : label}
+        >
+          <div
+            className={cn(
+              'h-full rounded-full bg-coral',
+              determinate ? 'transition-[width] duration-300 ease-out' : 'setup-progress-indeterminate',
+            )}
+            style={determinate ? { width: `${progress.percent}%` } : undefined}
+          />
+        </div>
+      )}
+      {installRoute && (
+        <span className="text-[11px] text-muted-foreground">
+          {t('settings.daemonOnboarding.routeLine', 'Downloading from {{route}}', {
+            route: t(ROUTE_LABEL[installRoute.choice].key, ROUTE_LABEL[installRoute.choice].fallback),
+          })}
+        </span>
+      )}
+    </div>
+  )
+}
 
 /** Show elapsed time and a per-step hint once a run passes this. */
 const SLOW_HINT_MS = 8_000
@@ -88,6 +162,7 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
     step,
     completedSteps,
     failedStep,
+    daemonOutdated,
     runStartedAt,
     completedAgent,
     pendingName,
@@ -96,7 +171,7 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
     forceReset,
     autoHealCloudSession,
   } = useDaemonOnboardingStore(
-    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
+    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, daemonOutdated: s.daemonOutdated, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
   )
   const elapsed = useElapsedSeconds(runStartedAt)
   const [name, setName] = React.useState('')
@@ -194,6 +269,7 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
         )}
       >
         <StepList current={step} completed={completedSteps} failed={failedStep} />
+        {step === 'install-runtime' && <RuntimeInstallProgress />}
         {elapsed * 1000 >= SLOW_HINT_MS && (
           <div className="flex flex-col gap-1 border-t border-border-soft pt-3">
             <span className="text-[11.5px] text-muted-foreground">
@@ -245,12 +321,21 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
             : t('settings.daemonOnboarding.errorTitle', "Can't set up this machine's agent")
         }
         subtitle={
-          failedStep
-            ? t(`settings.daemonOnboarding.recovery.${failedStep}`, '')
-            : t(
-                'settings.daemonOnboarding.errorSubtitle',
-                'Nothing was left half-configured — retrying is safe.',
+          // A stale daemon fails `install-runtime`, but that step's recovery
+          // copy is about downloads and networks — the two things that are not
+          // wrong here. Retrying against the same binary cannot help either, so
+          // say what does.
+          daemonOutdated
+            ? t(
+                'settings.daemonOnboarding.recovery.daemon-outdated',
+                'The daemon on this machine is older than the app and cannot report the runtime. Restarting the app with a matching daemon is the fix — a retry against the same one will not help.',
               )
+            : failedStep
+              ? t(`settings.daemonOnboarding.recovery.${failedStep}`, '')
+              : t(
+                  'settings.daemonOnboarding.errorSubtitle',
+                  'Nothing was left half-configured — retrying is safe.',
+                )
         }
       >
         {failedStep && (

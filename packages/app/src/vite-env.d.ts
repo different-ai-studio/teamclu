@@ -17,6 +17,8 @@ interface ImportMetaEnv {
   readonly VITE_TEAMCLU_E2E?: string;
   /** Extension embed build: force chat-only shell (apps/extension/build.mjs). */
   readonly VITE_FORCE_EMBED?: string;
+  /** '1' opts a dev run back into Sentry reporting, which is off by default. */
+  readonly VITE_SENTRY_DEBUG?: string;
 }
 
 interface ImportMeta {

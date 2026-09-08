@@ -1,10 +1,8 @@
 pub mod channel;
 pub mod clear;
 pub mod config_cmd;
-pub mod cursor_permission_hook;
 pub mod doctor;
 pub mod git_ssh;
-pub mod install_opencode;
 pub mod manage;
 pub mod process;
 pub mod remote_tools_mcp;
@@ -65,14 +63,6 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Test: spawn claude and print parsed events (for development)
-    TestSpawn {
-        /// Prompt to send
-        prompt: String,
-        /// Working directory
-        #[arg(long, default_value = ".")]
-        worktree: String,
-    },
     /// Test: simulate an iOS client — connect to broker, send commands, watch events
     TestClient {
         /// Config file path (uses same daemon.toml)
@@ -87,18 +77,10 @@ pub enum Commands {
     Config(ConfigArgs),
     /// Manage team-share state for this daemon.
     Team(TeamArgs),
-    /// Report install status of opencode / git / amuxd as JSON.
+    /// Report install status of amuxd / the managed Node / pi / git as JSON.
     Doctor,
-    /// Download and install the opencode binary into ~/.amuxd/bin/opencode.
-    InstallOpencode {
-        /// Re-download the latest release even if opencode is already installed.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Report installed vs newest-available opencode as JSON, for the
-    /// Dependencies UI's "up to date / update available" state.
-    OpencodeVersions,
-    /// Install or upgrade the pi coding agent (npm/bun global install).
+    /// Install or repair the managed pi runtime: the pinned Node.js, then pi
+    /// and the MCP SDK on it (`npm ci` in <amuxd cache>/pi).
     InstallPi {
         /// Reinstall even if the locked version is already present.
         #[arg(long)]
@@ -111,9 +93,6 @@ pub enum Commands {
     /// Run the remote-tools MCP server on stdio. Proxies browser/client tools
     /// to the bound TeamClu client over MQTT RPC.
     RemoteToolsMcp(RemoteToolsMcpArgs),
-    /// Cursor `preToolUse` hook. Spawned by `@cursor/sdk` per tool call;
-    /// reads the hook request on stdin and prints an allow/deny decision.
-    CursorPermissionHook(CursorPermissionHookArgs),
     /// The `ssh` git runs inside an app checkout. Set as `core.sshCommand` by
     /// seed/clone; fetches a JIT Gitea deploy key from the daemon per
     /// connection so an agent's plain `git push` works with nothing persisted.
@@ -204,15 +183,6 @@ pub struct RemoteToolsMcpArgs {
     /// Member actor that owns the RPC topic (`amux/{team}/{id}/rpc/req`).
     #[arg(long, alias = "client-actor-id", default_value = "")]
     pub member_actor_id: String,
-    #[arg(long)]
-    pub sock: Option<std::path::PathBuf>,
-}
-
-#[derive(Args, Debug)]
-pub struct CursorPermissionHookArgs {
-    /// Worktree the calling agent runs in; used to resolve the session.
-    #[arg(long, default_value = "")]
-    pub worktree: String,
     #[arg(long)]
     pub sock: Option<std::path::PathBuf>,
 }

@@ -3,6 +3,23 @@
 
 use super::*;
 
+/// True when the workspace's stored path cannot be used on this machine while
+/// the client sent one that can.
+///
+/// A workspace row stores an absolute path on whichever machine created it, so
+/// a teammate's app points at *their* home directory. Feeding that to
+/// `Command::current_dir` fails the spawn with `NotFound`, which the pi runtime
+/// then reports as a missing Node.js. Both sides must be checked: an empty or
+/// non-existent client path is no better than the cloud's, and a cloud path
+/// that does exist here stays authoritative.
+fn prefer_client_worktree(cloud_path: &str, client_worktree: &str) -> bool {
+    let cloud = cloud_path.trim();
+    !cloud.is_empty()
+        && !std::path::Path::new(cloud).is_dir()
+        && !client_worktree.is_empty()
+        && std::path::Path::new(client_worktree).is_dir()
+}
+
 /// The local fast-path starts before cloud workspace resolution and therefore
 /// legitimately has no workspace id. A concurrent focus/ensure request for
 /// the same directory has the canonical id; it must reuse that runtime rather
@@ -172,6 +189,22 @@ impl DaemonServer {
                 // local path. Falling through to the client's worktree beats
                 // handing env setup an empty directory.
                 Ok(ws) if ws.path.trim().is_empty() && !worktree.is_empty() => {
+                    (worktree.to_string(), workspace_id.to_string())
+                }
+                // The stored path is an absolute path on whichever machine
+                // created the workspace. A teammate's app row therefore points
+                // at *their* home directory, which does not exist here — and
+                // handing that to `Command::current_dir` fails the spawn with
+                // `NotFound`, reported as a missing binary. The client sends
+                // the path it actually has, so prefer it when the cloud's is
+                // not a directory on this machine.
+                Ok(ws) if prefer_client_worktree(&ws.path, worktree) => {
+                    warn!(
+                        workspace_id,
+                        cloud_path = %ws.path,
+                        local_path = worktree,
+                        "workspace path does not exist here (likely another member's machine); using the client's path"
+                    );
                     (worktree.to_string(), workspace_id.to_string())
                 }
                 Ok(ws) => (ws.path, workspace_id.to_string()),
@@ -588,12 +621,7 @@ impl DaemonServer {
                     .sessions
                     .lookup(session_id, &ws_id, agent_type as i32)
                     .is_none();
-            if needs_fork
-                && matches!(
-                    agent_type,
-                    amux::AgentType::Pi | amux::AgentType::Opencode
-                )
-            {
+            if needs_fork && matches!(agent_type, amux::AgentType::Pi | amux::AgentType::Opencode) {
                 let forked = {
                     let agents = self.agents.lock().await;
                     let backend_handle = agents.agent_backend_handle();
@@ -868,7 +896,7 @@ impl DaemonServer {
 
         let requested =
             amux::AgentType::try_from(start.agent_type).unwrap_or(amux::AgentType::ClaudeCode);
-        let at = resolve_requested_agent_type(&self.config, requested);
+        let at = resolve_requested_agent_type(requested);
         if at != requested {
             info!(requested = ?requested, resolved = ?at, "runtimeStart agent_type overridden by daemon config");
         }
@@ -1050,7 +1078,7 @@ impl DaemonServer {
 
 #[cfg(test)]
 mod workspace_binding_tests {
-    use super::same_runtime_workspace;
+    use super::{prefer_client_worktree, same_runtime_workspace};
 
     #[test]
     fn local_fast_path_and_canonical_workspace_id_share_one_runtime() {
@@ -1075,6 +1103,51 @@ mod workspace_binding_tests {
             "workspace-1",
             "/Users/test/project",
             "workspace-2",
+        ));
+    }
+
+    /// The bug this guards: a teammate created the app, so the workspace row
+    /// holds *their* absolute path. Running it here used to hand that path to
+    /// `Command::current_dir`, and the resulting spawn `NotFound` surfaced as
+    /// "managed Node.js not found; run `amuxd install-pi`" — against a Node.js
+    /// that was present the whole time.
+    #[test]
+    fn another_machines_workspace_path_yields_to_the_local_one() {
+        let local = tempfile::tempdir().expect("tempdir");
+        let local_path = local.path().to_string_lossy().into_owned();
+        assert!(prefer_client_worktree(
+            "/Users/someone-else/.amuxd/teams/t/apps/a",
+            &local_path
+        ));
+    }
+
+    #[test]
+    fn a_usable_cloud_path_stays_authoritative() {
+        let cloud = tempfile::tempdir().expect("tempdir");
+        let local = tempfile::tempdir().expect("tempdir");
+        // The cloud path exists here: it is the source of truth, not a guess.
+        assert!(!prefer_client_worktree(
+            &cloud.path().to_string_lossy(),
+            &local.path().to_string_lossy()
+        ));
+    }
+
+    #[test]
+    fn a_client_path_that_is_no_better_is_not_preferred() {
+        let local = tempfile::tempdir().expect("tempdir");
+        // Nothing to fall back to.
+        assert!(!prefer_client_worktree("/Users/someone-else/app", ""));
+        // The client's path does not exist here either — swapping one broken
+        // path for another only moves the error.
+        assert!(!prefer_client_worktree(
+            "/Users/someone-else/app",
+            "/also/missing"
+        ));
+        // An empty cloud path is handled by its own arm before this one.
+        assert!(!prefer_client_worktree("", &local.path().to_string_lossy()));
+        assert!(!prefer_client_worktree(
+            "   ",
+            &local.path().to_string_lossy()
         ));
     }
 }

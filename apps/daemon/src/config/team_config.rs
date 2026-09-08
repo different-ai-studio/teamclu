@@ -1,9 +1,10 @@
 //! `teams/<id>/state/team.toml` — the team-scoped half of the daemon's config.
 //!
-//! Holds what changes when the team changes: `[channels]`, `[team_share]` and
-//! `local_agent`. `DaemonConfig` keeps these as in-memory fields (every reader
-//! is untouched) but no longer serializes them; [`hydrate`] fills them from
-//! here at boot and on channel reload.
+//! Holds what changes when the team changes: `[channels]` and `[team_share]`.
+//! `DaemonConfig` keeps these as in-memory fields (every reader is untouched)
+//! but no longer serializes them; [`hydrate`] fills them from here at boot and
+//! on channel reload. (`local_agent` used to live here too; pi is the only
+//! runtime now, so the key is read and ignored — see [`TeamFileConfig`].)
 //!
 //! **Credentials never touch this file.** On save, every leaf whose name
 //! [`super::edit::is_secret_key`] recognises (bot_token, secret, app_secret,
@@ -30,8 +31,9 @@ use super::{ChannelsConfig, TeamShareConfig};
 /// The typed shape of `team.toml` (with credentials injected).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TeamFileConfig {
-    /// Which runtime this team's agents run ("opencode", "pi", …). `None`
-    /// falls back to the built-in default.
+    /// Pre-#1247 runtime selector ("opencode", "pi", …). Ignored: pi is the
+    /// only runtime. Still parsed so an existing team.toml loads, and kept on
+    /// save so a downgrade finds its value where it left it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_agent: Option<String>,
     #[serde(default)]
@@ -72,118 +74,31 @@ pub fn hydrate(config: &mut super::DaemonConfig) -> anyhow::Result<()> {
     let team = load_typed(&super::layout::active_team())?;
     config.channels = team.channels;
     config.team_share = team.team_share;
-    if let Some(agent) = team.local_agent {
-        if !agent.trim().is_empty() {
-            config.agents.local_agent = agent;
+    if let Some(agent) = team.local_agent.as_deref().map(str::trim) {
+        if !agent.is_empty() && agent != "pi" {
+            tracing::warn!(
+                local_agent = agent,
+                "team.toml names a runtime this daemon no longer runs; pi is the only local agent (#1247)"
+            );
         }
     }
     Ok(())
 }
 
-/// Give a team that never named a runtime one this machine can actually run.
-///
-/// `local_agent` is team-scoped, and a team that has never been told otherwise
-/// falls back to [`super::daemon_config::default_local_agent`] — the string
-/// "opencode", chosen with no knowledge of what is installed. On a machine that
-/// runs pi and has never had opencode, that default is a dead end reached by
-/// doing nothing wrong: every spawn fails with `agent_binary_missing(opencode)`
-/// and the model catalog comes back empty, while the setup that installed pi
-/// sits one directory away.
-///
-/// So: when the team document is silent *and* the default cannot be launched
-/// here, adopt the first runtime that can, and write it into the document. A
-/// machine that does have the default is left exactly as it was — this only
-/// rescues the case that was otherwise unusable.
-///
-/// Persisted rather than resolved per boot on purpose. Installing a second
-/// runtime later must not silently move a team onto it; once a team has an
-/// answer, that answer is the user's to change (Settings → Agent).
-///
-/// Returns whether it seeded anything.
-pub fn seed_local_agent_if_unset(config: &mut super::DaemonConfig) -> anyhow::Result<bool> {
-    seed_local_agent_with(config, local_agent_launchable)
-}
-
-/// The decision, with the host probe injected so it can be tested without
-/// depending on what happens to be installed on the machine running the tests.
-fn seed_local_agent_with(
-    config: &mut super::DaemonConfig,
-    launchable: impl Fn(&str) -> bool,
-) -> anyhow::Result<bool> {
-    let team_id = super::layout::active_team();
-    let team = load_typed(&team_id)?;
-    if team
-        .local_agent
-        .as_deref()
-        .map(|a| !a.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return Ok(false);
-    }
-    if launchable(&config.agents.local_agent) {
-        return Ok(false);
-    }
-    let Some(pick) = LOCAL_AGENT_CANDIDATES
-        .iter()
-        .copied()
-        .find(|id| launchable(id))
-    else {
-        // Nothing runnable at all. Leaving the default in place keeps the error
-        // the user sees pointed at a real runtime name rather than at whatever
-        // this function happened to try last.
-        return Ok(false);
-    };
-    config.agents.local_agent = pick.to_string();
-    persist_from(config)?;
-    tracing::info!(
-        team = %team_id,
-        agent = pick,
-        "team named no local agent and the default is not installed; adopted an installed one"
-    );
-    Ok(true)
-}
-
-/// Runtimes worth adopting, most-preferred first. Deliberately short: these are
-/// the two the product installs and drives end to end. Cursor needs a node
-/// bridge and claude maps onto opencode, so neither is a sensible thing to
-/// pick *for* somebody.
-const LOCAL_AGENT_CANDIDATES: [&str; 2] = ["opencode", "pi"];
-
-/// Whether `agents.local_agent = <id>` could actually start on this machine.
-///
-/// Each runtime is asked the way it resolves itself — pi accepts `~/.pi/bin/pi`
-/// which `command -v pi` never sees, and opencode has its own installer path.
-/// An unknown id is reported launchable so this never demotes a runtime it
-/// simply does not know about.
-fn local_agent_launchable(id: &str) -> bool {
-    match id {
-        "opencode" | "claude" => crate::opencode_install::detect_opencode().is_some(),
-        "pi" => binary_on_disk_or_path(&crate::runtime::pi_rpc::process::resolve_binary(None)),
-        _ => true,
-    }
-}
-
-/// PATH lookup without a shell: `command -v` would need quoting rules, and the
-/// only thing being asked is whether a file of this name is reachable.
-fn binary_on_disk_or_path(binary: &str) -> bool {
-    let path = std::path::Path::new(binary);
-    if path.is_absolute() || binary.contains('/') {
-        return path.exists();
-    }
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(binary).exists()))
-        .unwrap_or(false)
-}
-
 /// Persist the team-scoped fields of an in-memory `DaemonConfig` (the
 /// channel-save sock path and the channel CLI both mutate those fields).
 pub fn persist_from(config: &super::DaemonConfig) -> anyhow::Result<()> {
+    // `local_agent` is not a config field any more; `save_value` keeps
+    // whatever the document already holds, since this typed shape only
+    // replaces the sections it carries.
+    let team_id = super::layout::active_team();
+    let previous = load_typed(&team_id).ok().and_then(|t| t.local_agent);
     let team = TeamFileConfig {
-        local_agent: Some(config.agents.local_agent.clone()),
+        local_agent: previous,
         team_share: config.team_share.clone(),
         channels: config.channels.clone(),
     };
-    save_typed(&super::layout::active_team(), &team)
+    save_typed(&team_id, &team)
 }
 
 pub fn save_typed(team_id: &str, team: &TeamFileConfig) -> anyhow::Result<()> {
@@ -290,21 +205,10 @@ pub fn forget_secret(team_id: &str, key: &str) -> anyhow::Result<()> {
 /// Whether a dotted key belongs to the team document rather than daemon.toml.
 /// The routing rule for the shared edit surface (`super::edit`).
 pub fn is_team_key(key: &str) -> bool {
-    key == "agents.local_agent"
-        || key == "local_agent"
-        || key == "channels"
+    key == "channels"
         || key.starts_with("channels.")
         || key == "team_share"
         || key.starts_with("team_share.")
-}
-
-/// `agents.local_agent` kept its public spelling (the desktop PUTs
-/// `/v1/config/agents.local_agent`); inside team.toml it is a root key.
-pub fn rewrite_team_key(key: &str) -> &str {
-    match key {
-        "agents.local_agent" => "local_agent",
-        other => other,
-    }
 }
 
 // ── secret split ────────────────────────────────────────────────────────────
@@ -504,106 +408,27 @@ mod tests {
         text.parse().unwrap()
     }
 
-    fn seed_config() -> super::super::DaemonConfig {
-        super::super::DaemonConfig {
-            actor: crate::config::ActorConfig {
-                id: "dev-1".to_string(),
-                name: "Mac".to_string(),
-            },
-            mqtt: crate::config::MqttConfig {
-                broker_url: "tcp://localhost:1883".to_string(),
-                username: None,
-                password: None,
-            },
-            agents: crate::config::AgentsConfig::default(),
-            transport: None,
-            team_id: None,
-            channels: crate::config::ChannelsConfig::default(),
-            idle_runtime_timeout_secs: None,
-            max_attachments: None,
-            http: None,
-            team_share: crate::config::TeamShareConfig::default(),
-            log: None,
-            locale: None,
-            app_scheme: None,
-        }
-    }
-
-    /// Sets up a home whose active team is `team-1`, with `team.toml` as given.
-    fn seed_home(team_toml: Option<&str>) -> (tempfile::TempDir, BrandEnvGuard) {
+    #[test]
+    fn a_legacy_local_agent_in_team_toml_is_read_and_kept_but_never_applied() {
+        // Most existing teams carry `local_agent = "opencode"`. Loading must
+        // not fail, hydrate must not act on it, and a persist must not erase
+        // it (a downgrade would want it back).
         let home = tempfile::tempdir().unwrap();
-        let guard = BrandEnvGuard::set_amuxd_home(home.path());
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
         std::fs::write(
             home.path().join("daemon.toml"),
             "active_team = \"team-1\"\n",
         )
         .unwrap();
-        if let Some(text) = team_toml {
-            save_value("team-1", doc(text)).unwrap();
-        }
-        (home, guard)
-    }
+        save_value("team-1", doc("local_agent = \"opencode\"\n")).unwrap();
 
-    #[test]
-    fn seeding_leaves_a_team_that_already_named_a_runtime_alone() {
-        // Even an uninstalled one: an explicit choice is the user's, and the
-        // spawn error names it, which is how they find out what to install.
-        let (_home, _guard) = seed_home(Some("local_agent = \"pi\"\n"));
-        let mut config = seed_config();
+        let mut config = super::super::DaemonConfig::bootstrap();
         hydrate(&mut config).unwrap();
-
-        let seeded = seed_local_agent_with(&mut config, |_| false).unwrap();
-
-        assert!(!seeded);
-        assert_eq!(config.agents.local_agent, "pi");
-    }
-
-    #[test]
-    fn seeding_does_nothing_when_the_default_runs_here() {
-        // The common machine. Nothing is written, so nothing changes for anyone
-        // who was already working.
-        let (_home, _guard) = seed_home(None);
-        let mut config = seed_config();
-        let before = config.agents.local_agent.clone();
-
-        let seeded = seed_local_agent_with(&mut config, |id| id == before).unwrap();
-
-        assert!(!seeded);
-        assert_eq!(config.agents.local_agent, before);
-        assert!(load_typed("team-1").unwrap().local_agent.is_none());
-    }
-
-    #[test]
-    fn seeding_adopts_an_installed_runtime_and_writes_it_down() {
-        // The reported case: onboarding installed pi, the team never named a
-        // runtime, and the "opencode" default cannot start on this machine.
-        let (_home, _guard) = seed_home(None);
-        let mut config = seed_config();
-
-        let seeded = seed_local_agent_with(&mut config, |id| id == "pi").unwrap();
-
-        assert!(seeded);
-        assert_eq!(config.agents.local_agent, "pi");
-        // Written down, so installing opencode later cannot move the team.
+        persist_from(&config).unwrap();
         assert_eq!(
             load_typed("team-1").unwrap().local_agent.as_deref(),
-            Some("pi")
+            Some("opencode")
         );
-    }
-
-    #[test]
-    fn seeding_keeps_the_default_when_nothing_is_installed() {
-        // With no runtime at all there is nothing to adopt, and the error the
-        // user gets should keep naming the default rather than whatever this
-        // tried last.
-        let (_home, _guard) = seed_home(None);
-        let mut config = seed_config();
-        let before = config.agents.local_agent.clone();
-
-        let seeded = seed_local_agent_with(&mut config, |_| false).unwrap();
-
-        assert!(!seeded);
-        assert_eq!(config.agents.local_agent, before);
     }
 
     #[test]
@@ -740,7 +565,6 @@ secret = ""
         .unwrap();
 
         let mut config = super::super::DaemonConfig::bootstrap();
-        config.agents.local_agent = "pi".into();
         config.team_share.auto_sync = false;
         config.channels.discord = Some(super::super::DiscordChannel {
             enabled: true,
@@ -751,7 +575,6 @@ secret = ""
 
         let mut fresh = super::super::DaemonConfig::bootstrap();
         hydrate(&mut fresh).unwrap();
-        assert_eq!(fresh.agents.local_agent, "pi");
         assert!(!fresh.team_share.auto_sync);
         assert_eq!(fresh.channels.discord.unwrap().bot_token, "tok");
     }
@@ -845,13 +668,19 @@ secret = ""
             "channels",
             "channels.wecom.bots.0.secret",
             "team_share.auto_sync",
-            "agents.local_agent",
         ] {
             assert!(is_team_key(key), "{key}");
         }
-        for key in ["mqtt.broker_url", "agents.opencode.binary", "actor.name"] {
+        // `agents.local_agent` is no longer a key anywhere: pi is the only
+        // runtime, and `[agents.pi]` overrides are machine config.
+        for key in [
+            "mqtt.broker_url",
+            "agents.pi.node",
+            "agents.local_agent",
+            "local_agent",
+            "actor.name",
+        ] {
             assert!(!is_team_key(key), "{key}");
         }
-        assert_eq!(rewrite_team_key("agents.local_agent"), "local_agent");
     }
 }

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::proto::amux;
 use crate::proto::teamclu::MessageKind;
-use crate::runtime::claude_skills;
+use crate::runtime::skills_bridge;
 use crate::runtime::turn_aggregator::{EmittedMessage, TurnAggregator};
 
 pub const ERROR_CODE: &str = "skill_created_in_unsupported_directory";
@@ -316,7 +316,7 @@ fn is_valid_native_skill_pack(path: &Path, workspace: &Path, root: NativeRootKin
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => match root {
             NativeRootKind::Claude => {
-                !claude_skills::is_claude_team_bridge_symlink(path, workspace)
+                !skills_bridge::is_claude_team_bridge_symlink(path, workspace)
             }
             _ => false,
         },
@@ -331,7 +331,7 @@ mod tests {
     use super::*;
     use crate::config::{create_pack, ClaimedTeamContext, CreatePackRequest};
     use crate::proto::amux;
-    use crate::runtime::claude_skills::reconcile_after_managed_mutation;
+    use crate::runtime::skills_bridge::reconcile_after_managed_mutation;
     use crate::runtime::turn_aggregator::TurnAggregator;
 
     fn write_native_pack(root: &Path, slug: &str, body: &str) {

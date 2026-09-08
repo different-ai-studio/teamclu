@@ -28,11 +28,6 @@ const OWNERS: &[&str] = &[
 ///
 /// **This list may only get shorter.** Sorted; keep it that way.
 const DEBT: &[&str] = &[
-    // Test-only, and the name is the subject of the test: it plants
-    // `.amuxd-copilot361` as a branded `AMUXD_HOME` and checks the reaper stays
-    // inside it. Landed with #1218. Clearable by asking `storage_namespace` to
-    // build the branded name instead of spelling it.
-    "apps/daemon/src/cli/process.rs",
     // Not a home directory: a temp sibling inside an already-resolved skills
     // root (`.teamclu-create-<uuid>`, `-update-`, `-backup-`, `-draft-`). The
     // needle cannot tell that from `~/.teamclu`, and there is nothing here to
@@ -45,7 +40,6 @@ const DEBT: &[&str] = &[
     // `workspace_meta_dir_from_env` for the path instead of spelling it.
     "apps/daemon/src/config/skill_creation_policy.rs",
     "apps/daemon/src/config/team_skill_draft.rs",
-    "apps/daemon/src/config/workspace_control.rs",
     "apps/daemon/src/provider_config.rs",
     "apps/daemon/src/runtime/env_assembly.rs",
     "apps/daemon/src/runtime/prompt_attachments.rs",

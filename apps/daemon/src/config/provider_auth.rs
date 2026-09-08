@@ -1,8 +1,6 @@
 //! Provider authentication catalog — OAuth-capable built-in providers.
 //!
 //! Static OAuth fallbacks and merge helpers for the daemon HTTP control plane.
-//! Live auth methods come from the global in-daemon `opencode serve`
-//! (see `opencode_settings`, shared with chat sessions).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

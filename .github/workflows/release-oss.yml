@@ -239,23 +239,6 @@ jobs:
           ) > /tmp/amuxd.log 2>&1 &
           PID_AMUXD=$!
 
-          # Pass --target so npm installs @cursor/sdk's optional native binary for
-          # the *bundle* arch, not the runner (macos-latest is always arm64; see #778).
-          (
-            set -e
-            echo "Bundling agent bridge sidecars for ${{ matrix.target }}..."
-            case "${{ matrix.target }}" in
-              aarch64-apple-darwin) SDK_NATIVE="@cursor/sdk-darwin-arm64" ;;
-              x86_64-apple-darwin) SDK_NATIVE="@cursor/sdk-darwin-x64" ;;
-              *) echo "unsupported matrix target: ${{ matrix.target }}" >&2; exit 1 ;;
-            esac
-            node scripts/ensure-agent-bridge-bundles.js --target "${{ matrix.target }}"
-            test -f apps/desktop/binaries/cursor-bridge/src/main.mjs
-            test -d "apps/desktop/binaries/cursor-bridge/node_modules/${SDK_NATIVE}"
-            echo "agent bridge bundles ready (${SDK_NATIVE})"
-          ) > /tmp/bridge-bundles.log 2>&1 &
-          PID_BRIDGES=$!
-
           (
             if [ -z "$APPLE_CERTIFICATE" ]; then
               echo "No certificate, using ad-hoc signing."
@@ -283,7 +266,6 @@ jobs:
           wait $PID_FRONTEND   || { echo "::error::Frontend build failed:"; cat /tmp/frontend.log; FAILED=1; }
           wait $PID_INTROSPECT || { echo "::error::introspect build failed:"; cat /tmp/introspect.log; FAILED=1; }
           wait $PID_AMUXD      || { echo "::error::amuxd build failed:"; cat /tmp/amuxd.log; FAILED=1; }
-          wait $PID_BRIDGES    || { echo "::error::agent bridge bundle failed:"; cat /tmp/bridge-bundles.log; FAILED=1; }
           wait $PID_CERT       || { echo "::error::Certificate import failed:"; cat /tmp/cert.log; FAILED=1; }
           if [ "$FAILED" -ne 0 ]; then exit 1; fi
           echo "All parallel tasks completed"
@@ -576,15 +558,6 @@ jobs:
           cargo build --release --locked --manifest-path apps/daemon/Cargo.toml -p amuxd
           cp "$TARGET_DIR/release/amuxd.exe" apps/desktop/binaries/amuxd-x86_64-pc-windows-msvc.exe
           echo "amuxd sidecar ready"
-
-      - name: Bundle agent bridge sidecars
-        shell: bash
-        run: |
-          # Windows runners are already x64; still pass --target and assert the
-          # native package so a wrong optionalDependency cannot slip through (#778).
-          node scripts/ensure-agent-bridge-bundles.js --target x86_64-pc-windows-msvc
-          test -f apps/desktop/binaries/cursor-bridge/src/main.mjs
-          test -d apps/desktop/binaries/cursor-bridge/node_modules/@cursor/sdk-win32-x64
 
       - name: Finalize tauri.conf.json (version from tag + frontend prebuilt + OSS updater endpoint)
         shell: bash

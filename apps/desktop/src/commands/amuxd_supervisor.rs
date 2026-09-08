@@ -26,8 +26,6 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(8);
 /// Cmd+Q: brief grace for SIGTERM before SIGKILL + wait (reap).
 const EXIT_CHILD_GRACE: Duration = Duration::from_millis(500);
 const INTROSPECT_ENV: &str = "TEAMCLU_INTROSPECT_BIN";
-const CURSOR_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CURSOR_BRIDGE_MAIN";
-const CLAUDE_BRIDGE_MAIN_ENV: &str = "TEAMCLU_CLAUDE_BRIDGE_MAIN";
 /// The launchd job the app used to install. Only `legacy_service_active`
 /// reads it, and only on macOS — without the gate this is dead code on
 /// every other platform, which the crate-level `allow(dead_code)` used to
@@ -132,35 +130,6 @@ fn bundled_amuxd() -> Result<PathBuf, String> {
 
 fn bundled_introspect_path() -> Option<PathBuf> {
     locate_bundled_sidecar("teamclu-introspect")
-}
-
-/// Candidate paths for a bridge `src/main.mjs`, most-specific first.
-///
-/// Tauri packs `resources: ["binaries/<bridge>/**/*"]` as
-/// `Contents/Resources/binaries/<bridge>/…`. Omitting that layout left
-/// `TEAMCLU_*_BRIDGE_MAIN` unset in release, and amuxd fell back to the CI
-/// `CARGO_MANIFEST_DIR` path (`/Users/runner/work/…`).
-fn bundled_bridge_main_candidates(
-    bridge_name: &str,
-    exe_dir: &Path,
-    manifest_dir: &Path,
-) -> Vec<PathBuf> {
-    let rel = format!("{bridge_name}/src/main.mjs");
-    vec![
-        manifest_dir.join("binaries").join(&rel),
-        exe_dir.join(&rel),
-        exe_dir.join("../Resources").join(&rel),
-        exe_dir.join("../Resources/binaries").join(&rel),
-    ]
-}
-
-fn locate_bundled_bridge_main(bridge_name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    bundled_bridge_main_candidates(bridge_name, dir, manifest)
-        .into_iter()
-        .find(|p| p.is_file())
 }
 
 /// Inject the same brand env onto std and tokio commands (start/stop/status/…).
@@ -774,7 +743,7 @@ impl AmuxdSupervisor {
         // (`windows_subsystem = "windows"`), so without this Windows allocates a
         // console window for the daemon that stays up for the whole session — and
         // closing it kills amuxd. The hidden console it gets instead is inherited
-        // by amuxd's own children, so opencode/node stay invisible too.
+        // by amuxd's own children, so pi/node stay invisible too.
         cmd.no_window();
         cmd.arg("start").stdin(std::process::Stdio::null());
         if let Some(f) = log_file {
@@ -798,12 +767,6 @@ impl AmuxdSupervisor {
         apply_amuxd_brand_env(&mut cmd);
         if let Some(introspect) = bundled_introspect_path() {
             cmd.env(INTROSPECT_ENV, introspect);
-        }
-        if let Some(main) = locate_bundled_bridge_main("cursor-bridge") {
-            cmd.env(CURSOR_BRIDGE_MAIN_ENV, main);
-        }
-        if let Some(main) = locate_bundled_bridge_main("claude-bridge") {
-            cmd.env(CLAUDE_BRIDGE_MAIN_ENV, main);
         }
         log::info!(
             "[amuxd-supervisor] spawning managed amuxd: {}",
@@ -976,20 +939,6 @@ mod tests {
             .iter()
             .find(|(k, _)| *k == key)
             .map(|(_, v)| v.as_str())
-    }
-
-    #[test]
-    fn bridge_candidates_include_tauri_resources_binaries_layout() {
-        let exe_dir = Path::new("/Applications/Copilot 361.app/Contents/MacOS");
-        let manifest = Path::new("/tmp/does-not-exist-manifest");
-        let cands = bundled_bridge_main_candidates("claude-bridge", exe_dir, manifest);
-        assert!(
-            cands.iter().any(|p| {
-                p.to_string_lossy()
-                    .contains("Resources/binaries/claude-bridge/src/main.mjs")
-            }),
-            "candidates={cands:?}"
-        );
     }
 
     #[test]

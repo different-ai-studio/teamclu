@@ -39,3 +39,55 @@ export function openAppPreview(app: AppRow): void {
     label: app.name,
   })
 }
+
+const APP_LIBRARY_TARGET = 'app-library'
+
+export function isAppLibraryTarget(target: string): boolean {
+  return target === APP_LIBRARY_TARGET
+}
+
+/**
+ * Every app the team has, in the main column.
+ *
+ * A tab rather than a dialog: it is a browsing surface next to the column-two
+ * list of what is already here, and downloading from it changes that list —
+ * both need to be on screen at the same time.
+ *
+ * The label is passed in because this module has no translator; there is one
+ * caller and it has one.
+ */
+export function openAppLibrary(label: string): void {
+  useTabsStore.getState().openTab({
+    type: 'native',
+    target: APP_LIBRARY_TARGET,
+    label,
+  })
+}
+
+const APP_CREATE_TARGET = 'app-create'
+
+export function isAppCreateTarget(target: string): boolean {
+  return target === APP_CREATE_TARGET
+}
+
+/**
+ * The create form, in the main column.
+ *
+ * It was a modal, which is the wrong shape for it: picking a local directory
+ * opens a native file dialog on top of it, and the thing being described — an
+ * app that will appear in column two — is exactly what the modal covered up.
+ */
+export function openCreateApp(label: string): void {
+  useTabsStore.getState().openTab({
+    type: 'native',
+    target: APP_CREATE_TARGET,
+    label,
+  })
+}
+
+/** Closes the create tab from inside it — cancelling, or a finished create. */
+export function closeCreateApp(): void {
+  useTabsStore
+    .getState()
+    .closeWhere((tab) => tab.type === 'native' && tab.target === APP_CREATE_TARGET)
+}

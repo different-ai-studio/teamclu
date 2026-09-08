@@ -66,6 +66,23 @@ describe('DaemonOnboardingWizard', () => {
     expect(screen.getByText('重置并重新初始化')).toBeInTheDocument()
   })
 
+  // The step that fails is still `install-runtime`, but its recovery copy is
+  // about downloads and mirrors — and the network is the one thing that is not
+  // wrong here. Reported as "check your network, then retry" over a daemon that
+  // could not have answered either way.
+  it('does not blame the network when the daemon is the one too old to answer', () => {
+    seed({
+      status: 'error',
+      failedStep: 'install-runtime',
+      daemonOutdated: true,
+      error: '本机 daemon（amuxd 0.4.1-beta.40）比这个应用（0.4.1-beta.44）旧',
+    })
+    render(<DaemonOnboardingWizard onDone={() => {}} />)
+    expect(screen.queryByText(/检查网络/)).not.toBeInTheDocument()
+    expect(screen.getByText(/比应用旧，报不出运行时状态/)).toBeInTheDocument()
+    expect(screen.getByText(/0\.4\.1-beta\.40/)).toBeInTheDocument()
+  })
+
   it('offers reconnect rather than retry when cloud auth is what failed', () => {
     seed({ status: 'error', failedStep: 'cloud-auth', error: 'boom' })
     render(<DaemonOnboardingWizard onDone={() => {}} />)

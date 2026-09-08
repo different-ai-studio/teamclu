@@ -53,9 +53,6 @@ jobs:
       - name: Run agent bridge tests
         run: >-
           node --test
-          apps/daemon/claude-bridge/src/transcript-repair.test.mjs
-          apps/daemon/claude-bridge/src/mcp-schema-sanitize.test.mjs
-          apps/daemon/cursor-bridge/src/auth-retry.test.mjs
           apps/daemon/shared/session-context-client.test.mjs
           apps/daemon/shared/session-context-plugin-install.test.mjs
           apps/daemon/assets/pi-extension/session-context.test.mjs
@@ -128,13 +125,6 @@ jobs:
           mkdir -p apps/desktop/binaries
           touch apps/desktop/binaries/teamclu-introspect-x86_64-unknown-linux-gnu
           touch apps/desktop/binaries/amuxd-x86_64-unknown-linux-gnu
-          # `resources` in tauri.conf.json globs binaries/{cursor,claude}-bridge/**/*.
-          # The whole binaries/ dir is gitignored, so on a fresh checkout those
-          # globs resolve to nothing and tauri-build fails the build script —
-          # before clippy ever runs. A glob needs a file, not just the directory.
-          mkdir -p apps/desktop/binaries/cursor-bridge apps/desktop/binaries/claude-bridge
-          touch apps/desktop/binaries/cursor-bridge/.keep
-          touch apps/desktop/binaries/claude-bridge/.keep
 
       # rust-toolchain.toml is the single source of truth for the compiler
       # version: rustup reads it in every checkout and every job. The
@@ -307,12 +297,12 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      # The single-agent runtime tests spawn a real `opencode serve`
-      # (apply_start_runtime success paths), so the binary must be on PATH.
-      - name: Install opencode (runtime under test)
-        run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+      # The runtime tests spawn the real pi host (apply_start_runtime success
+      # paths), which runs on the amuxd-managed Node.js. `install-pi` puts the
+      # pinned Node and the `npm ci` tree under ~/.amuxd/cache exactly as a
+      # user's first run does (apps/daemon/src/node_install, pi_install).
+      - name: Install the managed pi runtime (runtime under test)
+        run: cargo run -p amuxd --locked -- install-pi
 
       # `cargo test` below already compiles every test target before running
       # any, so on a green run this adds no work. It exists to make the compile
@@ -404,12 +394,6 @@ jobs:
           mkdir -p apps/desktop/binaries
           touch apps/desktop/binaries/teamclu-introspect-x86_64-pc-windows-msvc.exe
           touch apps/desktop/binaries/amuxd-x86_64-pc-windows-msvc.exe
-          # See rust-check: `resources` globs binaries/{cursor,claude}-bridge/**/*
-          # and all of binaries/ is gitignored, so the globs need a real file
-          # or tauri-build fails before any crate compiles.
-          mkdir -p apps/desktop/binaries/cursor-bridge apps/desktop/binaries/claude-bridge
-          touch apps/desktop/binaries/cursor-bridge/.keep
-          touch apps/desktop/binaries/claude-bridge/.keep
 
       # Compile gate only, and the only one this crate's Windows code gets:
       # rust-check runs on ubuntu and daemon-windows covers only amuxd, so

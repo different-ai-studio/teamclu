@@ -10,7 +10,7 @@ use crate::config::{
     create_pack, get_pack, update_pack, ClaimedTeamContext, CreatePackRequest, ManageSkillResponse,
     ManagedSkillErrorCode, UpdatePackRequest,
 };
-use crate::runtime::claude_skills::{
+use crate::runtime::skills_bridge::{
     reconcile_after_managed_mutation, WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED,
 };
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};

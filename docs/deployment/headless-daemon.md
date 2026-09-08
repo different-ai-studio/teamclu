@@ -33,12 +33,14 @@ amuxd init 'teamclu://invite?token=...'
 
 ```bash
 amuxd status          # 读 pidfile，看 daemon 活着没
-amuxd config get agents.local_agent   # 当前团队用哪个运行时
+amuxd install-pi      # 装（或修复）托管运行时：钉版 Node.js + pi + MCP SDK
+amuxd doctor          # 确认 node / pi 两行 satisfied
 ```
 
-> `agents.local_agent` **是按团队存的**（活跃团队的 `team.toml`，不是 `daemon.toml`）。
-> 换团队就换运行时。`amuxd config` 会自动把这个 key 路由到正确的文件，你不需要知道
-> 它落在哪。
+> 运行时只有 pi（ADR-0014），没有 `agents.local_agent` 可配。Node 与 pi 都由 amuxd
+> 装在 `~/.amuxd/cache/` 下（ADR-0015），不读机器上的 Node / npm / PATH；官方源不通
+> 时自动走 npmmirror 或自建 OSS 镜像。要用自己的 Node 或 pi 检出，写
+> `[agents.pi] node = "<path>"` / `package_root = "<dir>"`。
 
 ## 2. 补上无头机器拿不到的密钥
 
@@ -112,7 +114,7 @@ POST /v1/team/skills/reconcile        # 立刻对账一次
 ## 4. 排查
 
 ```bash
-amuxd doctor      # JSON：opencode / pi / cursor / claude 各自装没装
+amuxd doctor      # JSON：amuxd / node（托管）/ pi（托管）/ git 各自装没装
 amuxd status
 amuxd config list # 所有标量配置，按点号 key
 ```

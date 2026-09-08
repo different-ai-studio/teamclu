@@ -25,6 +25,7 @@ const backendListActorDirectoryByIds = vi.fn()
 const backendListDaemonWorkspaces = vi.fn()
 const backendGetSession = vi.fn()
 const backendGetSessionDetail = vi.fn()
+const backendGetSessionParticipants = vi.fn()
 const backendResolveCurrentMemberActor = vi.fn()
 const loadSessionParticipantsMock = vi.fn()
 const loadSessionsForTeamMock = vi.fn()
@@ -55,6 +56,7 @@ vi.mock('@/lib/backend', () => ({
     },
     sessions: {
       getSession: backendGetSessionDetail,
+      getSessionParticipants: backendGetSessionParticipants,
     },
     directory: {
       resolveCurrentMemberActor: backendResolveCurrentMemberActor,
@@ -107,6 +109,7 @@ beforeEach(() => {
   backendListDaemonWorkspaces.mockReset()
   backendGetSession.mockReset()
   backendGetSessionDetail.mockReset()
+  backendGetSessionParticipants.mockReset()
   backendResolveCurrentMemberActor.mockReset()
   backendAddParticipant.mockResolvedValue(undefined)
   backendRemoveParticipant.mockResolvedValue(undefined)
@@ -118,6 +121,7 @@ beforeEach(() => {
   backendListDaemonWorkspaces.mockResolvedValue([])
   backendGetSession.mockResolvedValue({ user: { id: 'user-1' } })
   backendGetSessionDetail.mockResolvedValue({ id: 'sess-1', created_by_actor_id: 'm-1' })
+  backendGetSessionParticipants.mockResolvedValue([])
   backendResolveCurrentMemberActor.mockResolvedValue({ id: 'm-1', team_id: 'team-1' })
   mockRuntimeStart.mockReset()
   loadSessionParticipantsMock.mockReset()
@@ -435,7 +439,7 @@ describe('SessionActorSheet', () => {
     expect(meRow).not.toHaveTextContent('所有者')
   })
 
-  it('starts added agents with opencode runtimeStart requests when runtime history says opencode', async () => {
+  it('starts added agents with pi runtimeStart even when runtime history says opencode', async () => {
     const user = userEvent.setup()
     mockSheetData(
       ['m-1'],
@@ -463,7 +467,7 @@ describe('SessionActorSheet', () => {
             targetActorId: 'a-2',
             workspaceId: 'ws-open',
             worktree: '',
-            agentType: AgentType.OPENCODE,
+            agentType: AgentType.PI,
           }),
         )
       })

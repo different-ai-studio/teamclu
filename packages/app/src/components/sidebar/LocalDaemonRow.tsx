@@ -10,15 +10,9 @@ import {
   Star,
   LifeBuoy,
 } from 'lucide-react'
-import {
-  ClaudeMark,
-  CursorMark,
-  OpencodeMark,
-  PiAgentMark,
-} from '@/components/icons/agent-brand-icons'
+import { PiAgentMark } from '@/components/icons/agent-brand-icons'
 import { toast } from 'sonner'
 import type { ActorRow } from '@/stores/actor-directory-store'
-import { amuxAgentTypeFromBackend } from '@/lib/agent/amux-agent-type'
 import { useUIStore } from '@/stores/ui'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
@@ -26,12 +20,16 @@ import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { recoverMqttConnection } from '@/stores/mqtt-reconnect'
 import { requestDaemonProbe } from '@/lib/daemon/daemon-probe-signal'
 import { type LocalDaemonRuntimeStatus } from '@/hooks/use-local-daemon-http-status'
+import { type LocalDaemonTokenUsage } from '@/hooks/use-local-daemon-token-usage'
+import { formatTokenCount } from '@/lib/ui/format-tokens'
 import { cn } from '@/lib/utils'
 
 interface Props {
   actor: ActorRow | null
   runtimeStatus: LocalDaemonRuntimeStatus
   isDefault?: boolean
+  /** Null whenever there is no real number to show — see the hook. */
+  tokenUsage?: LocalDaemonTokenUsage | null
   onViewDetail: (actor: ActorRow) => void
   onCopyName: (actor: ActorRow) => void
   onCopyId: (actor: ActorRow) => void
@@ -78,32 +76,19 @@ function RuntimeStatusDot({
  * ever populate `agent_types` (what the daemon actually advertises), so that
  * array is the primary signal and `default_agent_type` is just a tie-breaker.
  */
-function resolveActorAgentType(actor: Pick<ActorRow, 'default_agent_type' | 'agent_types'>) {
-  return (
-    amuxAgentTypeFromBackend(actor.default_agent_type) ??
-    actor.agent_types?.map((t) => amuxAgentTypeFromBackend(t)).find((t): t is NonNullable<typeof t> => !!t) ??
-    null
-  )
+function resolveActorAgentType(_actor: Pick<ActorRow, 'default_agent_type' | 'agent_types'>) {
+  return 'pi' as const
 }
 
 /**
- * Distinguishes the local agent's runtime at a glance in the sidebar avatar —
- * each backend gets its own mark instead of a generic bot icon.
+ * Local agent runtime mark — pi is the only backend.
  */
 function AgentTypeIcon({ agentType }: { agentType?: string | null }) {
   const className = 'h-4 w-4'
-  switch (agentType) {
-    case 'claude-code':
-      return <ClaudeMark className={className} />
-    case 'opencode':
-      return <OpencodeMark className={className} />
-    case 'cursor':
-      return <CursorMark className={className} />
-    case 'pi':
-      return <PiAgentMark className={className} />
-    default:
-      return <Bot className={className} strokeWidth={2} />
+  if (agentType === 'pi') {
+    return <PiAgentMark className={className} />
   }
+  return <Bot className={className} strokeWidth={2} />
 }
 
 /**
@@ -174,6 +159,7 @@ function SheetHeader({
   agentType,
   runtimeStatus,
   statusLabel,
+  tokenUsage,
   expanded,
   onHandleClick,
   onAvatarClick,
@@ -183,12 +169,22 @@ function SheetHeader({
   agentType?: string | null
   runtimeStatus: LocalDaemonRuntimeStatus
   statusLabel: string
+  tokenUsage?: LocalDaemonTokenUsage | null
   expanded: boolean
   onHandleClick: () => void
   onAvatarClick: () => void
 }) {
   const { t } = useTranslation()
-  const headTitle = `${displayName} · ${shortenActorId(actorId)}`
+  const usageLine = tokenUsage
+    ? t('sidebar.localDaemonTokensThisMonth', '{{tokens}} tokens this month', {
+        tokens: formatTokenCount(tokenUsage.inputTokens + tokenUsage.outputTokens),
+      })
+    : null
+  // The id stays in the tooltip and in "Copy ID" — the subtitle line is the
+  // only thing usage takes over, and only when there is usage to show.
+  const headTitle = [`${displayName} · ${shortenActorId(actorId)}`, usageLine]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <div>
@@ -242,10 +238,14 @@ function SheetHeader({
             {/* The current workspace used to be printed here. It now lives in
                 the file tree footer, next to the tree it actually describes —
                 two places showing it disagreed as soon as the tree became
-                session-scoped. */}
-            <div className="mt-0.5 truncate text-[11px] leading-snug text-faint">
-              {shortenActorId(actorId)}
-            </div>
+                session-scoped. The actor id that replaced it is now in the
+                tooltip instead: this line shows gateway token usage when the
+                team has any, and collapses when it does not. */}
+            {usageLine && (
+              <div className="mt-0.5 truncate text-[11px] leading-snug text-faint">
+                {usageLine}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -261,6 +261,7 @@ export function LocalDaemonRow({
   actor,
   runtimeStatus,
   isDefault = false,
+  tokenUsage = null,
   onViewDetail,
 }: Props) {
   const { t } = useTranslation()
@@ -344,6 +345,7 @@ export function LocalDaemonRow({
           agentType={resolveActorAgentType(actor)}
           runtimeStatus={runtimeStatus}
           statusLabel={statusLabel}
+          tokenUsage={tokenUsage}
           onHandleClick={toggleSheet}
           onAvatarClick={() => onViewDetail(actor)}
           expanded={sheetOpen}

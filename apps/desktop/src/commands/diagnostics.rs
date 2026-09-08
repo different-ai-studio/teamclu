@@ -256,10 +256,9 @@ pub async fn collect_diagnostic_bundle<R: Runtime>(
     app: AppHandle<R>,
     team_id: Option<String>,
     workspace_path: Option<String>,
-    local_agent: Option<String>,
 ) -> Result<DiagnosticBundleParts, String> {
-    let doctor = read_doctor(&app, local_agent.as_deref()).await;
-    let requirements = setup_list_requirements(app.clone(), local_agent).await?;
+    let doctor = read_doctor(&app).await;
+    let requirements = setup_list_requirements(app.clone()).await?;
 
     let team_env = workspace_path
         .as_deref()

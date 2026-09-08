@@ -45,6 +45,21 @@ void initSentry({
   dsn: 'https://87ad99c36806946fe743be71ed87fffe@o60909.ingest.us.sentry.io/4511110370295808',
   release: `teamclu-web@${import.meta.env.PACKAGE_VERSION ?? '0.0.0'}`,
   environment: import.meta.env.DEV ? 'development' : 'production',
+  // Dev builds report into the same Sentry project as shipped ones, and the
+  // org is on the free tier: 5,000 errors per *month*, no on-demand budget.
+  // Over 2026-08-19..09-18, `environment:development` was 1,507 of 4,930
+  // events (31%) — enough that the quota ran out on 09-02 and every
+  // production report was dropped for the rest of the period. A dev error is
+  // already visible in the console and in Settings → Diagnostics, so it does
+  // not need to cost quota.
+  //
+  // `enabled` is Sentry's own switch: the client is still constructed, so
+  // every capture path behaves exactly as in production, it just never
+  // transmits. `VITE_SENTRY_DEBUG=1` opts a dev run back in to verify the
+  // pipeline end-to-end without cutting a release build — same escape hatch,
+  // same reasoning as `EXPO_PUBLIC_SENTRY_DEBUG` in
+  // `apps/expo/src/lib/telemetry/sentry.ts`.
+  enabled: !import.meta.env.DEV || import.meta.env.VITE_SENTRY_DEBUG === '1',
   // SEC-4: no IP / user identity by default, and every breadcrumb (console
   // arguments, fetch URLs) goes through the same redaction the Diagnostics
   // viewer uses. The Rust process applies the same policy in main.rs.

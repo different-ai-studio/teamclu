@@ -253,21 +253,6 @@ fn main() {
     let target_triple = std::env::var("TARGET").unwrap_or_default();
     let in_ci = std::env::var("CI").is_ok();
 
-    // OpenCode sidecar is optional — agent runtime is owned by amuxd. Keep the
-    // binary around only for legacy local debugging; desktop builds must not
-    // require downloading the >100MB sidecar.
-    let binary_name = format!("binaries/opencode-{}", target_triple);
-    let with_exe = format!("{}.exe", binary_name);
-    let opencode_sidecar_exists = std::path::Path::new(&binary_name).exists()
-        || (target_triple.contains("windows") && std::path::Path::new(&with_exe).exists());
-    if opencode_sidecar_exists {
-        println!("cargo:rerun-if-changed={}", binary_name);
-    } else if !in_ci {
-        println!(
-            "cargo:warning=OpenCode sidecar not found (optional). Agent runtime is provided by amuxd."
-        );
-    }
-
     // Check that the teamclu-introspect sidecar binary exists.
     // Unlike opencode (downloaded), this is built from crates/teamclu-introspect.
     // rust-cli.js auto-builds it before invoking cargo.
@@ -303,11 +288,6 @@ fn main() {
         );
     }
     rerun_if_present(&amuxd_bin);
-    // Both bridge trees are gitignored and staged by
-    // scripts/ensure-agent-bridge-bundles.js; on a checkout that has not staged
-    // them yet an unconditional directive would pin this script to always-stale.
-    rerun_if_present("binaries/cursor-bridge");
-    rerun_if_present("binaries/claude-bridge");
 
     tauri_build::build()
 }

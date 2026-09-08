@@ -20,10 +20,10 @@ pub struct RequirementStatus {
     pub version: Option<String>,
     /// What is missing, when we can say something better than "not installed".
     ///
-    /// Set by cursor and pi, whose doctor `satisfied` is an AND of several
-    /// unrelated conditions — an API key, a Node version, an npm package
-    /// installed beside the extension. `present` deliberately leaves cursor's
-    /// key out (see [`runtime_installed`]), so this is set even on a runtime
+    /// Set by pi, whose doctor `satisfied` is an AND of several unrelated
+    /// conditions — Node version and the MCP SDK installed beside the
+    /// extension. `present` deliberately leaves partial installs visible, so
+    /// this is set even on a runtime
     /// that *is* installed — "here, but not usable yet, and this is why".
     /// `None` means the plain "not installed" reading is correct.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,7 +95,7 @@ fn locate_bundled_sidecar(base_name: &str) -> Option<PathBuf> {
 /// because a cold first launch asks three times inside the same second
 /// (`AuthGate`'s background probe, plus the setup screen's runtime scan and
 /// requirement probe), and every one of those spawns the sidecar, which in turn
-/// spawns `opencode`/`git`/`node`/`pi`/`claude --version`. On Windows each of
+/// spawns `git`/`node`/`pi --version`. On Windows each of
 /// those is a `.cmd` shim through `cmd.exe` under a real-time virus scanner, so
 /// the duplicate runs are most of what "scanning for runtimes" spends.
 const DOCTOR_CACHE_TTL: Duration = Duration::from_secs(3);
@@ -118,23 +118,15 @@ pub(crate) async fn invalidate_doctor_cache() {
     *doctor_cache().lock().await = None;
 }
 
-/// Run the bundled `amuxd doctor` and return its parsed JSON (opencode/git/amuxd
-/// status). amuxd resolves opencode/amuxd by absolute path, so this is accurate
-/// even when the app/daemon PATH excludes those dirs.
+/// Run the bundled `amuxd doctor` and return its parsed JSON: `amuxd`, the
+/// managed `node`, the managed `pi` runtime and `git`. amuxd answers from its
+/// own install paths, so this is accurate even when the app/daemon PATH is
+/// empty.
 ///
 /// Callers that arrive together are coalesced: the lock is held across the
 /// sidecar run, so the second and third caller wait for the first and then read
 /// its result instead of spawning their own.
-pub(crate) async fn read_doctor<R: Runtime>(
-    app: &AppHandle<R>,
-    local_agent: Option<&str>,
-) -> Option<serde_json::Value> {
-    // `local_agent` is no longer passed to the sidecar: `amuxd doctor` reports
-    // every runtime in one pass now, so there is nothing left to select. Callers
-    // still name the runtime they care about and pick its key out of the result.
-    // That is also what makes one shared cache entry correct — the answer does
-    // not depend on who asked.
-    let _ = local_agent;
+pub(crate) async fn read_doctor<R: Runtime>(app: &AppHandle<R>) -> Option<serde_json::Value> {
     let mut cache = doctor_cache().lock().await;
     if let Some((measured_at, value)) = cache.as_ref() {
         if measured_at.elapsed() < DOCTOR_CACHE_TTL {
@@ -163,160 +155,154 @@ async fn run_doctor<R: Runtime>(app: &AppHandle<R>) -> Option<serde_json::Value>
     serde_json::from_str(buf.trim()).ok()
 }
 
+/// `blocker` value meaning "the daemon that answered is older than this app,
+/// so it cannot report this row at all". Not a runtime problem: nothing the
+/// install could do would clear it.
+pub(crate) const BLOCKER_DAEMON_OUTDATED: &str = "daemon_outdated";
+
+/// Is this doctor report from a daemon that predates the managed runtime?
+///
+/// `amuxd doctor` has answered with a top-level `node` row since #1250. A
+/// report without one is not "Node is missing" — it is a daemon that cannot
+/// answer the question, and reading the two the same way is what let the wizard
+/// install a runtime that was already there and then call it "installed but not
+/// ready" forever.
+///
+/// This is a real state in a dev checkout, not a hypothetical: the sidecar is
+/// staged once, when `pnpm tauri:dev` starts (`scripts/ensure-amuxd-sidecar.js`
+/// via `scripts/tauri-cli.js`), while the Rust host is rebuilt by the watcher on
+/// every source change — so a checkout that moves forward under a live session
+/// leaves a new app talking to the daemon it launched with. A shipped bundle
+/// always carries a matching pair.
+fn daemon_predates_managed_runtime(doctor: &serde_json::Value) -> bool {
+    !doctor["node"].is_object()
+}
+
+/// The `(blocker, found, required)` triple for a managed row the daemon is too
+/// old to report. Both managed rows carry the same one: the subject is the
+/// daemon, and naming pi's Node here would be inventing a reading nobody took.
+fn stale_daemon_blocker(
+    daemon_version: Option<String>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        Some(BLOCKER_DAEMON_OUTDATED.to_string()),
+        daemon_version,
+        Some(env!("CARGO_PKG_VERSION").to_string()),
+    )
+}
+
+/// The first-run wizard's rows: the bundled daemon, the amuxd-managed Node,
+/// the managed pi runtime, and git (optional). All from one `amuxd doctor`.
+///
+/// There is no runtime to pick any more (#1250): the wizard installs what is
+/// missing and moves on, so this reports state rather than options.
 #[tauri::command]
 pub async fn setup_list_requirements<R: Runtime>(
     app: AppHandle<R>,
-    local_agent: Option<String>,
 ) -> Result<Vec<RequirementStatus>, String> {
-    let doctor = read_doctor(&app, local_agent.as_deref()).await;
-
-    let installed_in_doctor = |key: &str| {
-        doctor
-            .as_ref()
-            .map(|d| runtime_installed(&d[key], key))
+    let doctor = read_doctor(&app).await;
+    let row = |key: &str| doctor.as_ref().map(|d| d[key].clone());
+    let text = |node: &Option<serde_json::Value>, key: &str| {
+        node.as_ref()
+            .and_then(|n| n[key].as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let flag = |node: &Option<serde_json::Value>, key: &str| {
+        node.as_ref()
+            .and_then(|n| n[key].as_bool())
             .unwrap_or(false)
     };
-    // Which runtime the row reports on. An explicit pick (onboarding's
-    // SetupStep, post-install re-probe) is authoritative — cursor and
-    // claude-code included: the picker offers them, but every pick that was not
-    // "pi" used to fall through to opencode here, so a machine with only Cursor
-    // failed its own requirement check and re-ran the wizard on every launch.
-    // With no pick — the background probe refreshing the setup-ok cache — any
-    // installed runtime satisfies: a machine running pi must not be failed
-    // against the build default.
-    let picked = local_agent
-        .as_deref()
-        .map(str::trim)
-        .filter(|agent| !agent.is_empty());
-    let (runtime_id, runtime_key, runtime_name) = match picked {
-        Some(agent) => RUNTIMES
-            .iter()
-            .find(|(id, _, _)| *id == agent)
-            .copied()
-            .unwrap_or(RUNTIMES[0]),
-        None => RUNTIMES
-            .iter()
-            .find(|(_, key, _)| installed_in_doctor(key))
-            .copied()
-            .unwrap_or(RUNTIMES[0]),
+
+    let amuxd = row("amuxd");
+    let node = row("node");
+    let pi = row("pi");
+    let git = row("git");
+
+    // amuxd: desktop-managed sidecar — satisfied when the bundle includes it.
+    let amuxd_version = text(&amuxd, "installedVersion").or_else(|| {
+        locate_bundled_amuxd().and_then(|p| {
+            std::process::Command::new(&p)
+                .no_window()
+                .arg("--version")
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout);
+                    s.split_whitespace()
+                        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                        .map(|t| t.to_string())
+                })
+        })
+    });
+
+    // Whether the answer came from a daemon too old to give one. `bundledVersion`
+    // is the responding sidecar's own version — every daemon that has ever
+    // shipped reports it, including the ones this catches.
+    let stale_daemon = doctor.as_ref().is_some_and(daemon_predates_managed_runtime);
+    let daemon_version = text(&amuxd, "bundledVersion");
+
+    let (node_blocker, node_found, node_required) = if stale_daemon {
+        stale_daemon_blocker(daemon_version.clone())
+    } else {
+        (None, None, text(&node, "requiredVersion"))
     };
 
-    // `present` = no action needed. For opencode that is simply "installed"
-    // (amuxd pins no version); pi still has a lock AND requires a supported Node
-    // runtime, so there it means "installed, new enough, and runnable".
-    // `version` = the installed version, for the UI to show.
-    // amuxd: desktop-managed sidecar — satisfied when the bundle includes it.
-    let amuxd_version = doctor
-        .as_ref()
-        .and_then(|d| d["amuxd"]["installedVersion"].as_str())
-        .map(|s| s.to_string());
-
-    // The agent-runtime row's status comes from the matching key in the
-    // `amuxd doctor` output (doctor reports every runtime in one pass).
-    let runtime = doctor.as_ref().map(|d| &d[runtime_key]);
-    let runtime_satisfied = runtime
-        .map(|n| runtime_installed(n, runtime_key))
-        .unwrap_or(false);
-    let runtime_version = runtime
-        .and_then(|r| r["version"].as_str())
-        .map(|s| s.to_string());
-    let runtime_title = format!("{runtime_name} runtime");
-    let runtime_blocker = (runtime_id == "pi")
-        .then(|| runtime.and_then(pi_blocker))
-        .flatten();
-    let (runtime_blocker_found, runtime_blocker_required) = runtime
-        .map(|r| pi_blocker_detail(runtime_blocker.as_deref(), r))
-        .unwrap_or((None, None));
+    // pi's `satisfied` folds in Node and the MCP SDK; the blocker names which
+    // half is missing so the wizard's progress copy can be specific.
+    let (pi_blocker, pi_found, pi_required) = if stale_daemon {
+        stale_daemon_blocker(daemon_version)
+    } else {
+        let blocker = pi.as_ref().and_then(pi_blocker);
+        let (found, required) = pi
+            .as_ref()
+            .map(|n| pi_blocker_detail(blocker.as_deref(), n))
+            .unwrap_or((None, None));
+        (blocker, found, required)
+    };
 
     Ok(vec![
         RequirementStatus {
             id: "amuxd".into(),
             title: "Agent daemon (amuxd)".into(),
             optional: false,
-            // Desktop-managed: the bundled sidecar is the binary we run — no
-            // copy into ~/.amuxd/bin is required.
+            present: locate_bundled_amuxd().is_some(),
+            version: amuxd_version,
             blocker: None,
             blocker_found: None,
             blocker_required: None,
-            present: locate_bundled_amuxd().is_some(),
-            version: amuxd_version.or_else(|| {
-                locate_bundled_amuxd().and_then(|p| {
-                    std::process::Command::new(&p)
-                        .no_window()
-                        .arg("--version")
-                        .output()
-                        .ok()
-                        .and_then(|o| {
-                            let s = String::from_utf8_lossy(&o.stdout);
-                            s.split_whitespace()
-                                .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
-                                .map(|t| t.to_string())
-                        })
-                })
-            }),
         },
         RequirementStatus {
-            id: runtime_id.into(),
-            title: runtime_title,
+            id: "node".into(),
+            title: "Node.js (managed)".into(),
             optional: false,
-            present: runtime_satisfied,
-            version: runtime_version,
-            blocker: runtime_blocker,
-            blocker_found: runtime_blocker_found,
-            blocker_required: runtime_blocker_required,
+            present: flag(&node, "satisfied"),
+            version: text(&node, "version"),
+            blocker: node_blocker,
+            blocker_found: node_found,
+            blocker_required: node_required,
+        },
+        RequirementStatus {
+            id: "pi".into(),
+            title: "Pi runtime".into(),
+            optional: false,
+            present: flag(&pi, "satisfied"),
+            version: text(&pi, "version"),
+            blocker: pi_blocker,
+            blocker_found: pi_found,
+            blocker_required: pi_required,
+        },
+        RequirementStatus {
+            id: "git".into(),
+            title: "git".into(),
+            optional: true,
+            present: flag(&git, "present"),
+            version: text(&git, "version"),
+            blocker: None,
+            blocker_found: None,
+            blocker_required: None,
         },
     ])
-}
-
-/// Every agent runtime the picker offers: `(DaemonLocalAgent id, doctor key, title)`.
-///
-/// The id is not always the doctor's key for it (`claude-code` vs `claude`).
-/// Ordered by preference — the first satisfied entry wins when nothing was
-/// explicitly picked.
-const RUNTIMES: [(&str, &str, &str); 4] = [
-    ("opencode", "opencode", "OpenCode"),
-    ("pi", "pi", "Pi"),
-    ("cursor", "cursor", "Cursor"),
-    ("claude-code", "claude", "Claude Code"),
-];
-
-/// Whether the runtime is on this machine, ignoring credentials.
-///
-/// For every runtime but cursor this is the doctor's `satisfied`. Cursor folds
-/// an API key into that flag, and onboarding must not gate on the key: it is
-/// entered in Settings, which the user only reaches *after* onboarding, so a
-/// key-gated card could never appear during first run — the Cursor option was
-/// invisible to everyone, with no explanation. Installed-ness is node + our
-/// bridge script + the SDK; the key is a credential, reported via `blocker`.
-fn runtime_installed(node: &serde_json::Value, doctor_key: &str) -> bool {
-    if doctor_key == "cursor" {
-        let flag = |k: &str| node[k].as_bool().unwrap_or(false);
-        return flag("nodePresent") && flag("bridgeScriptPresent") && flag("sdkInstalled");
-    }
-    node["satisfied"].as_bool().unwrap_or(false)
-}
-
-/// Which of cursor's four preconditions to name in the UI.
-///
-/// `cursor.satisfied` is `node && bridge_script && api_key && sdk` (see
-/// `apps/daemon/src/cursor_install/mod.rs`), and none of them is "the user
-/// installed Cursor" — so reporting a bare "not installed" sent people off to
-/// install a CLI that could not have helped. That reading is now handled by
-/// `present` itself ([`runtime_installed`]), which leaves the key out, so this
-/// names whatever actually stops the runtime from answering — infrastructure
-/// first, since supplying a key changes nothing while node is missing.
-fn cursor_blocker(node: &serde_json::Value) -> Option<String> {
-    let flag = |k: &str| node[k].as_bool().unwrap_or(false);
-    if !flag("nodePresent") {
-        return Some("node".to_string());
-    }
-    if !flag("bridgeScriptPresent") || !flag("sdkInstalled") {
-        return Some("bridge".to_string());
-    }
-    if !flag("apiKeyPresent") {
-        return Some("api_key".to_string());
-    }
-    None
 }
 
 /// Which of pi's three preconditions to name in the UI.
@@ -375,62 +361,6 @@ fn pi_blocker_detail(
     }
 }
 
-/// Install status of every agent runtime the user can pick from (#881).
-///
-/// One `amuxd doctor` call covers all four — the daemon reports every runtime
-/// in a single pass, concurrently. Probing them one at a time would mean paying
-/// for doctor four times (it is slow: it shells out and resolves binaries by
-/// absolute path).
-///
-/// Cursor and Claude Code are reported but not installable — `setup_install`
-/// has no arm for them, because they are the user's own tools rather than
-/// something this app fetches. The UI offers them only when already present;
-/// anything else would be an Install button that cannot install.
-///
-/// `id` is the `DaemonLocalAgent` value the rest of the stack uses, which is
-/// not always the doctor's key for it (`claude-code` vs `claude`).
-#[tauri::command]
-pub async fn setup_list_agent_runtimes<R: Runtime>(
-    app: AppHandle<R>,
-) -> Result<Vec<RequirementStatus>, String> {
-    let doctor = read_doctor(&app, None).await;
-    let status = |id: &str, key: &str, title: &str| {
-        let node = doctor.as_ref().map(|d| &d[key]);
-        let blocker = match id {
-            "cursor" => node.and_then(cursor_blocker),
-            "pi" => node.and_then(pi_blocker),
-            _ => None,
-        };
-        let (found, required) = match (id, node) {
-            ("pi", Some(node)) => pi_blocker_detail(blocker.as_deref(), node),
-            _ => (None, None),
-        };
-        RequirementStatus {
-            id: id.to_owned(),
-            title: title.to_owned(),
-            // `optional: true` marks a runtime the app cannot install, so the
-            // frontend can drop it when absent instead of offering a dead action.
-            optional: id == "cursor" || id == "claude-code",
-            present: node.map(|n| runtime_installed(n, key)).unwrap_or(false),
-            version: node
-                .and_then(|r| r["version"].as_str())
-                .map(|s| s.to_string()),
-            // Reported whether or not the runtime is present: a cursor install
-            // with no API key is here and pickable, and the UI still has to be
-            // able to say what it is waiting on.
-            blocker,
-            // Only pi carries a found/required pair today: cursor's blockers
-            // are all "this is absent", which the label already says.
-            blocker_found: found,
-            blocker_required: required,
-        }
-    };
-    Ok(RUNTIMES
-        .iter()
-        .map(|(id, key, title)| status(id, key, title))
-        .collect())
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetupProgress {
@@ -485,109 +415,12 @@ async fn install_amuxd<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     }
 }
 
-/// Run the bundled `amuxd install-opencode` sidecar, streaming its JSON progress lines.
-/// Always installs from the official opencode source — there is no build-config
-/// mirror any more, so "install" and "update" both mean "whatever upstream ships".
-/// Run `amuxd install-opencode`, streaming progress through `emit`.
-///
-/// `emit(status, line, error)` — status is "started" | "running" | "failed" |
-/// "done". This is the ONE opencode install/update path (official opencode;
-/// direct-download on Windows / mirror), shared by the first-run SetupWizard and
-/// the settings Dependencies page.
-///
-/// `force` selects which of the two jobs this call is doing. amuxd pins no
-/// opencode version, so without it the call is presence-only and leaves any
-/// installed opencode alone (the SetupWizard case); with it the latest release
-/// is fetched unconditionally (the "Update" button).
-pub(crate) async fn run_amuxd_install_opencode<R, F>(
-    app: &AppHandle<R>,
-    force: bool,
-    emit: F,
-) -> Result<(), String>
-where
-    R: Runtime,
-    F: Fn(&str, Option<String>, Option<String>) + Send,
-{
-    use tauri_plugin_shell::process::CommandEvent;
-    use tauri_plugin_shell::ShellExt;
-
-    emit("started", None, None);
-    let args: &[&str] = if force {
-        &["install-opencode", "--force"]
-    } else {
-        &["install-opencode"]
-    };
-    let command = app
-        .shell()
-        .sidecar("amuxd")
-        .map_err(|e| format!("sidecar amuxd: {e}"))?
-        .args(args);
-    // `_child_guard` must stay alive until `rx` is fully drained: dropping the
-    // CommandChild early can terminate the sidecar before install finishes.
-    let (mut rx, _child_guard) = command.spawn().map_err(|e| format!("spawn amuxd: {e}"))?;
-
-    // Note: we record failure in `last_err` and only act on it after the event
-    // loop ends — Terminated is not guaranteed to be the final event, so we keep
-    // draining stdout/stderr after it before deciding success/failure.
-    let mut last_err: Option<String> = None;
-    // Track the most recent stderr line so a non-zero exit surfaces amuxd's real
-    // reason (e.g. an HTTP 404) instead of a bare exit code.
-    let mut last_stderr: Option<String> = None;
-    while let Some(event) = rx.recv().await {
-        match event {
-            CommandEvent::Stdout(bytes) => {
-                let line = String::from_utf8_lossy(&bytes).trim().to_string();
-                if !line.is_empty() {
-                    emit("running", Some(line), None);
-                }
-            }
-            CommandEvent::Stderr(bytes) => {
-                let line = String::from_utf8_lossy(&bytes).trim().to_string();
-                if !line.is_empty() {
-                    last_stderr = Some(line.clone());
-                    emit("running", Some(line), None);
-                }
-            }
-            CommandEvent::Terminated(payload) if payload.code.unwrap_or(-1) != 0 => {
-                last_err = Some(match &last_stderr {
-                    Some(s) => format!("amuxd install-opencode failed: {s}"),
-                    None => format!("amuxd install-opencode exited with code {:?}", payload.code),
-                });
-            }
-            _ => {}
-        }
-    }
-    if let Some(e) = last_err {
-        emit("failed", None, Some(e.clone()));
-        return Err(e);
-    }
-    emit("done", None, None);
-    Ok(())
-}
-
-async fn install_opencode<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    // Setup wizard: install only when absent — never disturb the user's opencode.
-    run_amuxd_install_opencode(app, false, |status, line, error| {
-        emit_progress(
-            app,
-            SetupProgress {
-                id: "opencode".into(),
-                status: status.into(),
-                line,
-                error,
-            },
-        );
-    })
-    .await
-}
-
 /// Run `amuxd install-pi`, streaming progress through `emit`.
 ///
 /// `emit(status, line, error)` — status is "started" | "running" | "failed" |
-/// "done". Idempotent: installs pi or lifts it to the minimum `pi.lock.json`
-/// pins. Shaped like [`run_amuxd_install_opencode`] and shared for the same
-/// reason — the first-run SetupWizard and the settings Dependencies page must
-/// install pi through one code path, not two.
+/// "done". Idempotent: installs the managed Node.js, then pi and the MCP SDK on
+/// it, or repairs whichever piece is missing. Shared by the first-run wizard
+/// and the settings Dependencies page so there is one install path, not two.
 pub(crate) async fn run_amuxd_install_pi<R, F>(app: &AppHandle<R>, emit: F) -> Result<(), String>
 where
     R: Runtime,
@@ -671,8 +504,9 @@ pub async fn restart_local_daemon<R: Runtime>(app: AppHandle<R>) -> Result<(), S
 pub async fn setup_install<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
     let result = match id.as_str() {
         "amuxd" => install_amuxd(&app).await,
-        "opencode" => install_opencode(&app).await,
-        "pi" => install_pi(&app).await,
+        // One managed runtime: Node.js is installed by the same `amuxd
+        // install-pi` that installs pi on it, so both ids repair it.
+        "node" | "pi" => install_pi(&app).await,
         other => Err(format!("unknown requirement: {other}")),
     };
     // Also on failure: a half-finished install still moves the machine, and the
@@ -754,6 +588,43 @@ mod tests {
     #[test]
     fn a_ready_pi_has_no_blocker() {
         assert_eq!(pi_blocker(&pi_doctor(true, true, true)), None);
+    }
+
+    #[test]
+    fn a_doctor_with_no_node_row_reads_as_a_daemon_too_old_to_answer() {
+        // The pre-#1250 report: it knows about opencode and a `pi` it calls
+        // satisfied, and has no top-level `node` row at all. Read as "Node is
+        // missing" this sends the wizard into install → still missing → "the
+        // runtime was installed but does not report as ready", forever.
+        let old = serde_json::json!({
+            "amuxd": { "present": true, "bundledVersion": "0.4.1-beta.40", "satisfied": true },
+            "opencode": { "present": true, "version": "1.18.18", "satisfied": true },
+            "pi": pi_doctor(true, true, true),
+            "git": { "present": true },
+        });
+        assert!(daemon_predates_managed_runtime(&old));
+
+        let (blocker, found, required) = stale_daemon_blocker(Some("0.4.1-beta.40".into()));
+        assert_eq!(blocker.as_deref(), Some("daemon_outdated"));
+        assert_eq!(found.as_deref(), Some("0.4.1-beta.40"));
+        assert_eq!(
+            required.as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "required is the app's version — what the daemon has to match",
+        );
+    }
+
+    #[test]
+    fn a_current_doctor_is_not_read_as_stale() {
+        let current = serde_json::json!({
+            "amuxd": { "present": true, "bundledVersion": env!("CARGO_PKG_VERSION") },
+            "node": { "present": false, "satisfied": false, "requiredVersion": "24.20.0" },
+            "pi": pi_doctor(true, true, true),
+            "git": { "present": true },
+        });
+        // `node` is there and says "not installed" — that is a runtime the
+        // install can actually fix, and it must not be blamed on the daemon.
+        assert!(!daemon_predates_managed_runtime(&current));
     }
 
     #[test]

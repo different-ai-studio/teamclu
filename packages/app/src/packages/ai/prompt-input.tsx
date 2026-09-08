@@ -212,7 +212,7 @@ export function PromptInput({
   // closure each render (ChatPanel does) would otherwise tear down and
   // re-register three Tauri listeners on every parent render — which is what
   // made OS image drops silently stop working, and turned the teardown race
-  // handled by `track` into a Sentry flood.
+  // handled by `track` into the app's largest error group rather than a rarity.
   const hasFilesChangeHandler = Boolean(onFilesChange)
   React.useEffect(() => {
     if (!hasFilesChangeHandler || !isTauri()) return
@@ -221,7 +221,8 @@ export function PromptInput({
 
     /**
      * `unlisten()` is async and nothing awaits it, so a rejection would surface
-     * as an unhandled rejection and be captured as an error.
+     * as an unhandled rejection and be captured as an error — that is how the
+     * double-unlisten TypeError reached Sentry at all instead of being dropped.
      */
     const undo = (unlisten: () => void) => {
       try {

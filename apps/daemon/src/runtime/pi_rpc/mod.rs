@@ -35,7 +35,7 @@ use crate::runtime::acp_event_frame::AcpEventFrame;
 use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::manager::AgentLaunchConfig;
-use crate::runtime::opencode_http::translate::status_change;
+use crate::runtime::acp_translate::status_change;
 use crate::runtime::permission_policy::PermissionPolicy;
 
 pub mod auth;
@@ -455,6 +455,42 @@ struct EstablishedSession {
     leaf_id: Option<String>,
 }
 
+/// Which `auth_*` command responses should fan an `auth_refresh` out to every
+/// *other* live child, and with which provider scope.
+///
+/// `Some(None)` — fan out a **full** refresh. `Some(Some(id))` — scoped to one
+/// provider. `None` — no fan-out.
+///
+/// A successful login already fans out from its `auth_login_end` host event
+/// ([`events::broadcast_auth_refresh`]), so it is deliberately absent here.
+/// What it cannot cover: a `models.json` write (custom provider added, edited
+/// or deleted) and an explicit `auth_refresh` both change the catalog every
+/// live child serves, and pi reports them as a plain command response, never
+/// as a host event. Without this, a provider added from the settings pane is
+/// invisible to new sessions too — `attach` reuses a pooled (often prewarmed)
+/// child, so its `get_available_models` still answers from the pre-add
+/// `ModelRuntime`.
+fn auth_command_refresh_fanout(request: &serde_json::Value) -> Option<Option<String>> {
+    match request.get("type").and_then(|v| v.as_str()) {
+        // Full rebuild, never a provider scope: a brand-new provider id has
+        // nothing to recompose yet, and a deleted one must disappear from
+        // every child — the request carries a `providerId`, but scoping the
+        // fan-out to it would reproduce exactly the staleness being fixed.
+        Some("auth_models_put") | Some("auth_models_delete") => Some(None),
+        // The manual refresh re-reads `models.json` on the auth child; the
+        // rest of the device learns about it the same way a login teaches
+        // them, scoped to the provider when the caller named one.
+        Some("auth_refresh") => Some(
+            request
+                .get("providerId")
+                .and_then(|v| v.as_str())
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string),
+        ),
+        _ => None,
+    }
+}
+
 async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMetadata, String> {
     let worktree = canonical_dir(&args.worktree);
     let key = PoolKey {
@@ -616,11 +652,6 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
         // Fresh per child spawn, so "same worktree, respawned process" is
         // observable — the pi analogue of an opencode host generation.
         host_generation_id: proc.generation_id.clone(),
-        // N/A for pi: `RouteLease` is a counted reservation inside the
-        // opencode host pool's drain-then-stop lifecycle. The pi pool has no
-        // draining — eviction is kill + lazy respawn, and dead children are
-        // dropped by `get()` — so there is no reservation to hold.
-        route_lease: None,
     })
 }
 
@@ -1423,17 +1454,6 @@ impl PiRpcBackend {
             })
             .clone()
     }
-
-    fn apply_binary_hint(&self, launch_configs: &HashMap<amux::AgentType, AgentLaunchConfig>) {
-        // Only the pi launch config may override the pi binary. Reading every
-        // launch config (as before) picked up the claude/codex/opencode full
-        // paths and made pi_rpc spawn the wrong binary. A plain "pi" here is
-        // treated as unconfigured by `set_binary_hint`, so the override only
-        // sticks for a genuine `[agents.pi].binary` path.
-        if let Some(pi) = launch_configs.get(&amux::AgentType::Pi) {
-            self.shared.pool.set_binary_hint(&pi.binary);
-        }
-    }
 }
 
 impl Default for PiRpcBackend {
@@ -1475,7 +1495,7 @@ impl AgentBackend for PiRpcBackend {
         // session), NOT necessarily pi. Its binary is an unrelated full path, so
         // it must NOT drive the pi binary — doing so made pi_rpc spawn
         // claude/codex and fail with "process exited before responding". The pi
-        // binary is resolved independently via `resolve_binary` (PATH / ~/.pi).
+        // runtime is the managed one (`pi_install::package_root`).
         let _ = &launch;
         let cmd_tx = self.command_sender();
         let startup = attach(
@@ -1503,7 +1523,7 @@ impl AgentBackend for PiRpcBackend {
     async fn prewarm(&mut self, launch_configs: &HashMap<amux::AgentType, AgentLaunchConfig>) {
         // Processes are per (domain, env, worktree); nothing to warm without
         // an execution context. The binary hint is still worth capturing.
-        self.apply_binary_hint(launch_configs);
+        let _ = launch_configs;
     }
 
     async fn prewarm_with_env(
@@ -1513,7 +1533,7 @@ impl AgentBackend for PiRpcBackend {
         _force_env_override: bool,
         worktree: Option<&str>,
     ) {
-        self.apply_binary_hint(launch_configs);
+        let _ = launch_configs;
         // Without an isolation domain there is no pool key to warm — spawning
         // under a made-up key would never match the session's real key and the
         // child would be respawned at attach anyway. The workspace prewarm
@@ -1532,7 +1552,7 @@ impl AgentBackend for PiRpcBackend {
         force_env_override: bool,
         worktree: &str,
     ) {
-        self.apply_binary_hint(launch_configs);
+        let _ = launch_configs;
         let worktree = canonical_dir(worktree);
         let key = PoolKey {
             domain: isolation_domain,
@@ -1573,6 +1593,10 @@ impl AgentBackend for PiRpcBackend {
     }
 
     fn invalidate_all_workspace_hosts(&mut self) -> usize {
+        self.shared.pool.kill_all()
+    }
+
+    async fn shutdown_for_exit(&mut self) -> usize {
         self.shared.pool.kill_all()
     }
 
@@ -1663,6 +1687,10 @@ impl AgentBackend for PiRpcBackend {
             .filter(|t| *t == "auth_login_start")
             .and_then(|_| request.get("loginId").and_then(|v| v.as_str()))
             .map(str::to_string);
+        // A successful command that changes the device-wide catalog must also
+        // reach the children already serving sessions — read *before* the
+        // request is moved into `client.request`.
+        let fanout = auth_command_refresh_fanout(&request);
         // The slot was reserved by the HTTP layer (`auth::begin`); this binds
         // the child that will run it, and must happen before the command goes
         // out so an answer can be routed the moment a prompt appears.
@@ -1676,10 +1704,18 @@ impl AgentBackend for PiRpcBackend {
                 auth::unregister(login_id);
             }
         }
-        Ok(result?
+        let data = result?
             .get("data")
             .cloned()
-            .unwrap_or(serde_json::Value::Null))
+            .unwrap_or(serde_json::Value::Null);
+        if let Some(provider_scope) = fanout {
+            let mut event = serde_json::json!({});
+            if let Some(provider_id) = provider_scope {
+                event["providerId"] = serde_json::json!(provider_id);
+            }
+            events::broadcast_auth_refresh(&self.shared, &proc.client, &event);
+        }
+        Ok(data)
     }
 
     async fn model_catalog_for_context(
@@ -1767,6 +1803,53 @@ mod tests {
         let busy = pi_mid_turn_prompt_plan(true);
         assert!(!busy.emit_turn_open);
         assert!(busy.use_steer);
+    }
+
+    #[test]
+    fn models_json_writes_fan_out_a_full_refresh_despite_carrying_a_provider_id() {
+        // The put request names the provider, but the fan-out must NOT scope to
+        // it: a brand-new id has nothing to recompose on a child that has never
+        // seen it, and a deleted one must vanish everywhere.
+        let put = serde_json::json!({
+            "type": "auth_models_put",
+            "providerId": "ollama",
+            "provider": {"baseUrl": "http://localhost:11434/v1"},
+        });
+        assert_eq!(auth_command_refresh_fanout(&put), Some(None));
+
+        let delete = serde_json::json!({"type": "auth_models_delete", "providerId": "ollama"});
+        assert_eq!(auth_command_refresh_fanout(&delete), Some(None));
+    }
+
+    #[test]
+    fn an_explicit_refresh_fans_out_scoped_to_its_provider() {
+        let scoped = serde_json::json!({"type": "auth_refresh", "providerId": "anthropic"});
+        assert_eq!(
+            auth_command_refresh_fanout(&scoped),
+            Some(Some("anthropic".to_string()))
+        );
+
+        // No provider named — a full refresh of every provider the child serves.
+        let bare = serde_json::json!({"type": "auth_refresh"});
+        assert_eq!(auth_command_refresh_fanout(&bare), Some(None));
+        // Whitespace-only is the same as absent.
+        let blank = serde_json::json!({"type": "auth_refresh", "providerId": "  "});
+        assert_eq!(auth_command_refresh_fanout(&blank), Some(None));
+    }
+
+    #[test]
+    fn commands_that_do_not_change_the_catalog_do_not_fan_out() {
+        // A login fans out from its `auth_login_end` host event instead.
+        for ty in [
+            "auth_login_start",
+            "auth_login_cancel",
+            "auth_models_get",
+            "auth_list",
+            "auth_logout",
+        ] {
+            let req = serde_json::json!({"type": ty});
+            assert_eq!(auth_command_refresh_fanout(&req), None, "{ty} must not fan out");
+        }
     }
 
     #[test]
@@ -1916,15 +1999,13 @@ mod tests {
     #[tokio::test]
     async fn model_catalog_spawns_when_no_process_live() {
         // No static fallback: with no live process the catalog request must try
-        // to bring a pi child up. Point the pool at a binary that cannot exist
+        // to bring a pi child up. A hermetic amuxd home holds no managed Node,
         // so the spawn fails deterministically (instead of returning a phantom
         // empty list) — proving the code path attempts to spawn rather than
         // short-circuiting to `Ok(vec![])`.
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
         let mut backend = PiRpcBackend::new();
-        backend
-            .shared
-            .pool
-            .set_binary_hint("/nonexistent/teamclu-pi-does-not-exist");
         let result = backend.model_catalog(Path::new("/tmp")).await;
         assert!(
             result.is_err(),

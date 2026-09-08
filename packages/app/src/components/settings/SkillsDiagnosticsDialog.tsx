@@ -194,7 +194,7 @@ export function SkillsDiagnosticsDialog({
                 <p>{t('settings.skills.diag.tipsTitle', 'Common fixes')}</p>
                 <ul className="mt-1 list-disc space-y-0.5 pl-4">
                   <li>{t('settings.skills.diag.tipRefresh', 'Click Refresh to reload the skills list from disk.')}</li>
-                  <li>{t('settings.skills.diag.tipRestart', 'Restart OpenCode after adding or editing skills.')}</li>
+                  <li>{t('settings.skills.diag.tipRestart', 'Restart the local agent after adding or editing skills.')}</li>
                   <li>{t('settings.skills.diag.tipPaths', 'Verify teamclu.json / opencode.json skills.paths point to existing directories.')}</li>
                   <li>{t('settings.skills.diag.tipDaemon', 'Ensure amuxd is running if daemon inventory is missing.')}</li>
                 </ul>

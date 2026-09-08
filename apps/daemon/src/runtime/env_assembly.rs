@@ -6,14 +6,13 @@ use crate::team_shared_env;
 
 use super::SpawnRuntimeEnv;
 
-/// Assemble personal + team + system env, materialize the active-team
-/// `provider.team`, and resolve workspace `${KEY}` placeholders before attaching
-/// an ACP host.
+/// Assemble personal + team + system env and materialize the active-team
+/// `provider.team` into amuxd's global OpenCode config before attaching a pi
+/// host.
 ///
-/// `managed_llm` is the team's shared LLM as resolved from the cloud API (base
-/// URL + model list). It is written to amuxd's global `opencode.json` inside
-/// [`teamclu_runtime_env::assemble_runtime_env`]; the secret (`tc_api_key`) is
-/// derived locally from `actor_id`, never sourced from the cloud config.
+/// Workspace-root `opencode.json` is not resolved on spawn (pi reads env
+/// bindings, not that file). Team gateway credentials still land in
+/// `TEAMCLU_TEAM_PROVIDER` / `tc_gateway_token` via [`assemble_runtime_env`].
 pub fn assemble_spawn_runtime_env(
     workspace_root: &Path,
     team_id: Option<&str>,
@@ -37,9 +36,9 @@ pub fn assemble_spawn_runtime_env(
     )
 }
 
-/// Assemble environment sources from the registered parent workspace while
-/// materializing provider and placeholder-resolved OpenCode config in the
-/// directory where the runtime will actually execute.
+/// Assemble environment sources from the registered parent workspace. Team LLM
+/// materialization uses the active-team global config; execution-directory
+/// `opencode.json` placeholders are not written on spawn.
 pub fn assemble_spawn_runtime_env_for_execution(
     workspace_root: &Path,
     execution_directory: &Path,
@@ -120,27 +119,11 @@ pub fn assemble_spawn_runtime_env_for_execution(
         );
     }
 
-    // #742: point opencode at the daemon-owned device-level config, which is
-    // where user-configured providers now live. `OPENCODE_CONFIG` loads it as an
-    // *additional* global-scope config after the standard global chain, so these
-    // entries win over the user's hand-edited
-    // `~/.config/opencode/opencode.json` — a file we deliberately never write.
-    //
-    // Only set when the file exists: pointing the variable at a missing path
-    // buys nothing and risks opencode erroring on a config it cannot read.
-    let global_config = teamclu_runtime_env::opencode_config::global_opencode_config_path();
-    if global_config.is_file() {
-        extra_env.insert(
-            "OPENCODE_CONFIG".to_string(),
-            global_config.display().to_string(),
-        );
-    }
     Ok(SpawnRuntimeEnv {
         extra_env,
         resolved_env: Some(bundle.resolved_env),
         env_team_id: team_id.map(str::to_string),
         force_env_override: true,
-        opencode_json_original: bundle.opencode_json_original,
         is_gateway: false,
         permission: None,
     })
@@ -250,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_uses_parent_team_env_and_materializes_its_own_opencode_config() {
+    fn worktree_inherits_parent_team_env_without_materializing_opencode_json() {
         let (_home, _home_guard) = amuxd_home_with_active_team();
         let workspace = tempfile::tempdir().unwrap();
         let worktree = workspace.path().join(".worktrees/cron-j1-r1");
@@ -324,14 +307,11 @@ mod tests {
                 .map(String::as_str),
             Some("from-parent")
         );
-        // The worktree config carries the workspace's own `${KEY}` placeholders,
-        // resolved from the PARENT workspace's team env.
-        let materialized = std::fs::read_to_string(worktree.join("opencode.json")).unwrap();
-        assert!(materialized.contains("from-parent"));
-        assert!(
-            !workspace.path().join("opencode.json").exists(),
-            "placeholder resolution belongs in the execution worktree"
-        );
+        // Pi spawn resolves team secrets into env bindings only — workspace
+        // opencode.json placeholders stay on disk unchanged.
+        let on_disk = std::fs::read_to_string(worktree.join("opencode.json")).unwrap();
+        assert!(on_disk.contains("${CRON_WORKTREE_ENV_SENTINEL}"));
+        assert!(!on_disk.contains("from-parent"));
         // The team provider is NOT part of that file any more: since #941 it is
         // scoped to the active team and written once, globally.
         let global = std::fs::read_to_string(global_team_config()).unwrap();
@@ -347,8 +327,8 @@ mod tests {
             "cloud model list is not used"
         );
         assert!(
-            !materialized.contains("cron-model"),
-            "and must not be duplicated into the worktree config"
+            !on_disk.contains("cron-model"),
+            "cloud model list is not duplicated into the worktree config"
         );
     }
 

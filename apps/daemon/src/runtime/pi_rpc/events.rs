@@ -176,6 +176,15 @@ async fn handle_event(
                     route.last_entry_id = Some(leaf.to_string());
                 }
             }
+            // pi is about to re-run this agent run after a transient failure:
+            // the attempt's error is not the turn's outcome, so drop it before
+            // `close_turn` would flush it. Without this a retried 429 leaves a
+            // durable error banner per attempt even when the retry succeeds.
+            if will_retry(event) {
+                if let Some(route) = shared.routes.lock().get_mut(&session_id) {
+                    route.translate.discard_turn_error();
+                }
+            }
             close_turn(shared, &session_id).await;
         }
         _ => {
@@ -212,6 +221,13 @@ fn completes_agent_run(event_type: &str) -> bool {
     event_type == "agent_end"
 }
 
+/// `agent_end.willRetry` — pi's `AgentSession` will re-run this agent run
+/// after a transient failure (429/503/network; retry is on by default with 3
+/// attempts). Absent or false means this run's failure is final.
+fn will_retry(event: &serde_json::Value) -> bool {
+    event.get("willRetry").and_then(|v| v.as_bool()) == Some(true)
+}
+
 pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
     let closed = {
         let mut routes = shared.routes.lock();
@@ -224,11 +240,24 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
             route.turn_active = false;
             let reply_to = route.turn_reply_to.take();
             route.turn_requester = None;
-            Some((route.event_tx.clone(), reply_to))
+            // Every path that settles a turn funnels through here — `agent_end`,
+            // a user cancel, a child that died mid-turn. Flushing the held
+            // error at this one point is what makes "a failed turn always
+            // reports" hold no matter which path fired.
+            let failure = route.translate.take_turn_error();
+            Some((route.event_tx.clone(), reply_to, failure))
         }
     };
-    if let Some((event_tx, reply_to)) = closed {
-        let ev = crate::runtime::opencode_http::translate::status_change(
+    if let Some((event_tx, reply_to, failure)) = closed {
+        // Failure first: `turn_aggregator` decides the turn's outcome from an
+        // Error seen *before* Active→Idle.
+        if let Some(ev) = failure {
+            crate::runtime::agent_trace::log_acp_event(session_id, &ev);
+            let _ = event_tx
+                .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to.clone()))
+                .await;
+        }
+        let ev = crate::runtime::acp_translate::status_change(
             amux::AgentStatus::Active,
             amux::AgentStatus::Idle,
         );
@@ -335,7 +364,7 @@ async fn try_backfill(
     Ok(())
 }
 
-/// Tell every *other* live child to reload the provider a login just unlocked.
+/// Tell every *other* live child to reload the providers that just changed.
 ///
 /// Logins run on their own child (see `pi_auth_request`), and each child holds
 /// its own `ModelRuntime`. Without this, a provider signed in from the settings
@@ -343,12 +372,22 @@ async fn try_backfill(
 /// respawned — which is exactly the property reusing a session's child used to
 /// buy, and the reason it is safe to stop doing that.
 ///
+/// Also used after a `models.json` write (custom provider added/edited/
+/// deleted) and after an explicit `auth_refresh`: those change the same
+/// device-wide catalog every child serves, and pi reports them as a plain
+/// command response rather than a host event, so `auth_login_end` cannot
+/// cover them.
+///
 /// Detached rather than awaited: this reader task is the only thing draining
 /// that child's stdout, and `auth_refresh` waits on a network catalog fetch.
 /// Awaiting it here would stall every event from the child that just answered.
 /// Best-effort by design — a child that fails to refresh still picks the
 /// credential up from `auth.json` the next time it starts.
-fn broadcast_auth_refresh(shared: &Arc<Shared>, origin: &PiClient, event: &serde_json::Value) {
+pub(crate) fn broadcast_auth_refresh(
+    shared: &Arc<Shared>,
+    origin: &PiClient,
+    event: &serde_json::Value,
+) {
     let provider_id = event
         .get("providerId")
         .and_then(|v| v.as_str())
@@ -505,6 +544,32 @@ async fn handle_ui_request(
                 .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to))
                 .await;
         }
+        "setTitle" => {
+            let title = event
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if title.is_empty() {
+                return;
+            }
+            let Some(session_id) = event_session(shared, key, event) else {
+                debug!(worktree = %key.worktree, "pi setTitle with no session dropped");
+                return;
+            };
+            let (event_tx, reply_to) = {
+                let routes = shared.routes.lock();
+                let Some(route) = routes.get(&session_id) else {
+                    return;
+                };
+                (route.event_tx.clone(), route.turn_reply_to.clone())
+            };
+            let ev = translate::session_title_event(title);
+            crate::runtime::agent_trace::log_acp_event(&session_id, &ev);
+            let _ = event_tx
+                .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to))
+                .await;
+        }
         // Other dialog methods block until answered — cancel them.
         "input" | "editor" => {
             warn!(worktree = %key.worktree, method, "unsupported pi dialog method; cancelling");
@@ -531,6 +596,15 @@ mod tests {
         assert!(!completes_agent_run("turn_end"));
         assert!(!completes_agent_run("turn_start"));
         assert!(!completes_agent_run("agent_start"));
+    }
+
+    #[test]
+    fn only_an_explicit_will_retry_defers_the_failure() {
+        assert!(will_retry(&serde_json::json!({"willRetry": true})));
+        assert!(!will_retry(&serde_json::json!({"willRetry": false})));
+        // Absent (older host, or a run that simply ended) means final.
+        assert!(!will_retry(&serde_json::json!({})));
+        assert!(!will_retry(&serde_json::json!({"willRetry": "true"})));
     }
 
     fn test_shared() -> Arc<Shared> {
@@ -674,5 +748,134 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn set_title_becomes_session_title_event() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (route, mut rx) = test_route(key.clone(), "/s/a.jsonl");
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+        let client = test_client();
+
+        let ev = serde_json::json!({
+            "type": "extension_ui_request", "id": "ui_title", "sessionId": "pi:/s/a.jsonl",
+            "method": "setTitle", "title": "深圳美食推荐"
+        });
+        handle_event(&shared, &key, &client, &ev).await;
+
+        let frame = rx.try_recv().expect("session_title forwarded");
+        match frame.event.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => {
+                assert_eq!(raw.method, "session_title");
+                assert_eq!(String::from_utf8_lossy(&raw.json_payload), "深圳美食推荐");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "setTitle is fire-and-forget");
+    }
+
+    /// Drive a failed `message_end` into a live turn and hand back the route's
+    /// receiver, so each test below starts from "a failure is held".
+    #[cfg(unix)]
+    async fn session_with_held_failure(
+        shared: &Arc<Shared>,
+        key: &PoolKey,
+        client: &PiClient,
+    ) -> tokio::sync::mpsc::Receiver<AcpEventFrame> {
+        let (mut route, rx) = test_route(key.clone(), "/s/a.jsonl");
+        route.turn_active = true;
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+        let failed = serde_json::json!({
+            "type": "message_end",
+            "sessionId": "pi:/s/a.jsonl",
+            "message": {
+                "role": "assistant", "content": [],
+                "stopReason": "error", "errorMessage": "429 rate limit"
+            }
+        });
+        handle_event(shared, key, client, &failed).await;
+        rx
+    }
+
+    fn is_status_change(frame: &AcpEventFrame) -> bool {
+        matches!(
+            frame.event.event.as_ref().unwrap(),
+            amux::acp_event::Event::StatusChange(_)
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_retried_attempt_reports_no_failure() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let client = test_client();
+        let mut rx = session_with_held_failure(&shared, &key, &client).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "the failure is held while a retry is still possible"
+        );
+
+        let retrying = serde_json::json!({
+            "type": "agent_end", "sessionId": "pi:/s/a.jsonl", "willRetry": true
+        });
+        handle_event(&shared, &key, &client, &retrying).await;
+
+        let frame = rx.try_recv().expect("the turn still settles");
+        assert!(
+            is_status_change(&frame),
+            "a retried attempt must not leave a durable error banner"
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_final_failure_reports_before_the_turn_settles() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let client = test_client();
+        let mut rx = session_with_held_failure(&shared, &key, &client).await;
+
+        // No `willRetry`: this run's failure is the turn's outcome.
+        let end = serde_json::json!({
+            "type": "agent_end", "sessionId": "pi:/s/a.jsonl", "leafId": "e-1"
+        });
+        handle_event(&shared, &key, &client, &end).await;
+
+        // Error first: turn_aggregator decides the turn's outcome from an
+        // Error seen *before* Active→Idle.
+        let first = rx.try_recv().expect("the failure is reported");
+        match first.event.event.as_ref().unwrap() {
+            amux::acp_event::Event::Error(err) => {
+                assert_eq!(err.message, translate::PROVIDER_ERROR_MESSAGE);
+                assert_eq!(err.details, "429 rate limit");
+            }
+            other => panic!("expected the failure first, got: {other:?}"),
+        }
+        assert!(is_status_change(&rx.try_recv().expect("then Active→Idle")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_child_that_dies_mid_turn_still_reports_the_failure() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let client = test_client();
+        let mut rx = session_with_held_failure(&shared, &key, &client).await;
+
+        // The child died: no `agent_end` will ever arrive, and the reader's
+        // EOF sweep settles the turn instead. The held failure must not be
+        // lost with it — that would be the silent turn all over again.
+        close_turn(&shared, "pi:/s/a.jsonl").await;
+
+        let first = rx.try_recv().expect("the failure survives the crash path");
+        assert!(matches!(
+            first.event.event.as_ref().unwrap(),
+            amux::acp_event::Event::Error(_)
+        ));
+        assert!(is_status_change(&rx.try_recv().expect("then Active→Idle")));
     }
 }
