@@ -271,6 +271,12 @@ pub struct SeedAppBody {
     /// empty workdir instead of seeding a starter template and pushing.
     #[serde(default)]
     pub clone_only: Option<bool>,
+    /// When true with `gitRemoteUrl` + `deployKeyPem`, publish the directory as
+    /// it already is — no starter template. This is "pick a local folder" for a
+    /// folder that is not already a repo we can point at, so writing a template
+    /// over it is the one thing that must not happen.
+    #[serde(default)]
+    pub adopt_existing: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -397,7 +403,19 @@ pub async fn seed_app(
             app_type,
         };
         let clone_only = body.clone_only.unwrap_or(false);
+        let adopt_existing = body.adopt_existing.unwrap_or(false);
         match (git_remote_url.as_deref(), deploy_key_pem.as_deref()) {
+            (Some(url), Some(key)) if adopt_existing => {
+                let push = crate::sync::app_seed::SeedGitPush {
+                    app_id: &app_id,
+                    remote_url: url,
+                    deploy_key_pem: key,
+                    git_user_name: git_user_name.as_deref(),
+                    git_user_email: git_user_email.as_deref(),
+                };
+                let out = crate::sync::app_seed::adopt_app_repo(&workdir_path, &push)?;
+                Ok(("seeded", out.git_commit_sha))
+            }
             (Some(url), Some(key)) if clone_only => {
                 crate::sync::app_clone::clone_app_repo_with_deploy_key(
                     url,
@@ -494,6 +512,10 @@ pub struct BuildAppBody {
 #[serde(rename_all = "camelCase")]
 pub struct BuildAppResponse {
     pub status: &'static str,
+    /// What the app declared about how it is built and run. Always present —
+    /// an app with no declaration reports the built-in contract, so the control
+    /// plane never has to know whether the file existed.
+    pub manifest: crate::sync::app_build::AppRuntimeManifest,
     /// The commit that was actually built, when the daemon published work the
     /// caller did not know about. Absent when it built the sha it was given —
     /// the caller then finalizes with its own.
@@ -587,6 +609,7 @@ pub async fn build_app(
     Ok(Json(BuildAppResponse {
         status: "built",
         git_commit_sha: built.git_commit_sha,
+        manifest: built.manifest,
     }))
 }
 

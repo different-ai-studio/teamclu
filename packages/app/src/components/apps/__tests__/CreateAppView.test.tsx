@@ -90,10 +90,11 @@ describe('CreateAppView', () => {
       // No repo typed → null, not undefined: "seed from the template" is a
       // decision the create call states, not one the API infers.
       gitRemoteUrl: null,
-      // Stated, not inferred: "the code is already on this machine" is the one
-      // thing that stops the server provisioning a repo and the desktop writing
-      // a template over it.
+      // Stated, not inferred: "the code is on this machine WITH a remote of its
+      // own" is the one thing that stops the server provisioning a repo.
       localOnly: false,
+      // Only set for a picked folder that has no remote to record.
+      adoptLocalDir: null,
     })
     await waitFor(() => expect(closeCreateAppMock).toHaveBeenCalledTimes(1))
   })
@@ -178,21 +179,66 @@ describe('CreateAppView', () => {
     expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled()
   })
 
-  it('a local directory is checked before any app row is created', async () => {
-    // A folder that is not a git checkout must be refused at the picker. Left
-    // to bind time the app row already exists, so the user is left with an app
-    // pointing nowhere and no obvious sign of why.
-    pickDirMock.mockResolvedValue('/not/a/repo')
+  it('a folder that is not a repo is adopted, not refused', async () => {
+    // It used to be a hard stop at the picker. A folder someone points at is as
+    // often the thing they have been working on as it is a checkout, so the app
+    // hosts it instead: a Gitea repo of its own, and the folder published into
+    // it as it stands.
+    pickDirMock.mockResolvedValue('/home/me/just-a-folder')
     inspectDirMock.mockResolvedValue({ isGitRepo: false, gitRemoteUrl: null })
     render(<CreateAppView />)
 
     fireEvent.change(nameField(), { target: { value: 'Mine' } })
     chooseLocalSource()
     fireEvent.click(screen.getByRole('button', { name: /选择一个 git 目录/ }))
+    await waitFor(() => expect(screen.getByText(/还不是 git 仓库/)).toBeInTheDocument())
 
-    // Regex, not the exact string: the banner renders "创建失败" and the reason
-    // as separate text nodes in one element.
-    await waitFor(() => expect(screen.getByText(/不是 git 仓库/)).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1))
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'imported',
+        // NOT localOnly: the server has to provision a repo to publish into.
+        localOnly: false,
+        gitRemoteUrl: null,
+        adoptLocalDir: '/home/me/just-a-folder',
+      }),
+    )
+    // Binding moved inside `create`, because the seed resolves the app's
+    // workdir from it — binding afterwards would publish an empty directory.
+    expect(bindWorkdirMock).not.toHaveBeenCalled()
+  })
+
+  it('a repo with no remote is hosted rather than left on this machine', async () => {
+    pickDirMock.mockResolvedValue('/home/me/unpushed')
+    inspectDirMock.mockResolvedValue({ isGitRepo: true, gitRemoteUrl: null })
+    render(<CreateAppView />)
+
+    fireEvent.change(nameField(), { target: { value: 'Mine' } })
+    chooseLocalSource()
+    fireEvent.click(screen.getByRole('button', { name: /选择一个 git 目录/ }))
+    await waitFor(() => expect(screen.getByText(/还没有远端/)).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1))
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ localOnly: false, adoptLocalDir: '/home/me/unpushed' }),
+    )
+  })
+
+  it('a daemon that cannot check the directory is still a hard stop', async () => {
+    // Without an answer there is no way to tell an existing repo from a folder,
+    // and the two are handled differently — guessing would either refuse to
+    // record a remote that exists or publish over one.
+    pickDirMock.mockResolvedValue('/home/me/whatever')
+    inspectDirMock.mockResolvedValue(null)
+    render(<CreateAppView />)
+
+    fireEvent.change(nameField(), { target: { value: 'Mine' } })
+    chooseLocalSource()
+    fireEvent.click(screen.getByRole('button', { name: /选择一个 git 目录/ }))
+
+    await waitFor(() => expect(screen.getByText(/amuxd 未连接/)).toBeInTheDocument())
     expect(createMock).not.toHaveBeenCalled()
   })
 

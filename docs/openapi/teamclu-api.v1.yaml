@@ -5723,6 +5723,31 @@ paths:
                   type: string
                   format: uuid
                   description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
+                runtime:
+                  type: object
+                  description: >-
+                    How the app says it starts, read by the daemon out of the
+                    app's own `teamclu.app.json` and resolved against the
+                    built-in contract. Omitted by a client that predates the
+                    declaration, and by an app that ships none — both get the
+                    contract every app had before it existed (node,
+                    `server/index.mjs`, port 9000). `runtime` here is the
+                    interpreter family, NOT the `runtime` column on the app
+                    (`node` vs `container`); a value this deployment has no
+                    layer for is a 400, because the function would otherwise be
+                    created unable to boot.
+                  required: [runtime, entry, port]
+                  properties:
+                    runtime:
+                      type: string
+                      enum: [node]
+                    entry:
+                      type: string
+                      description: Path inside the unpacked artifact.
+                    port:
+                      type: integer
+                      minimum: 1
+                      maximum: 65535
       responses:
         "200":
           description: The app, now live.
