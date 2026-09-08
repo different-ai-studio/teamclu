@@ -351,19 +351,33 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_team_skills",
-            "description": "List the team's Skills catalog, install/uninstall a team Skill for this Agent, or edit the local working copy draft of an installed team Skill. Draft edits affect only this machine until published from the team Skills page; new sessions pick up draft changes, the current session keeps its prior content. Use get_draft before update_draft and pass expectedDigest for optimistic concurrency. Cannot target another Actor and cannot manage MCP servers.",
+            "description": "List the team's Skills catalog, install/uninstall a team Skill for this Agent, or edit the local working copy draft of an installed team Skill. Draft edits affect only this machine until published from the team Skills page; new sessions pick up draft changes, the current session keeps its prior content. get_draft returns SKILL.md plus a file listing (no sidecar bodies). Use read_draft_file with a specific path to fetch a chunk. Then update_draft with expectedDigest; content is optional when only files or deleteFiles change. Cannot target another Actor and cannot manage MCP servers.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "install", "uninstall", "get_draft", "update_draft"]
+                        "enum": ["list", "install", "uninstall", "get_draft", "read_draft_file", "update_draft"]
                     },
                     "slug": { "type": "string", "description": "Required except for list." },
                     "version": { "type": "integer", "minimum": 1, "description": "Required for install." },
+                    "path": {
+                        "type": "string",
+                        "description": "Skill-relative file path. Required for read_draft_file (e.g. scripts/run.py or SKILL.md)."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Byte offset for read_draft_file. Defaults to 0."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Max bytes for read_draft_file. Defaults to 16384, capped at 32768."
+                    },
                     "content": {
                         "type": "string",
-                        "description": "Full SKILL.md content with YAML frontmatter. Required for update_draft."
+                        "description": "Full SKILL.md with YAML frontmatter. Optional on update_draft when patching files or deleteFiles only."
                     },
                     "files": {
                         "type": "array",
@@ -392,7 +406,11 @@ fn tool_definitions() -> Value {
                 "allOf": [
                     {
                         "if": { "properties": { "action": { "const": "update_draft" } } },
-                        "then": { "required": ["slug", "content", "expectedDigest"] }
+                        "then": { "required": ["slug", "expectedDigest"] }
+                    },
+                    {
+                        "if": { "properties": { "action": { "const": "read_draft_file" } } },
+                        "then": { "required": ["slug", "path"] }
                     }
                 ]
             }
@@ -511,16 +529,45 @@ fn mcp_error(id: &Value, code: i64, message: &str) -> Value {
 }
 
 fn tool_ok(text: &str) -> Value {
-    json!({
-        "content": [{"type": "text", "text": text}]
-    })
+    enforce_tool_budget(text, false)
 }
 
 fn tool_err(text: &str) -> Value {
-    json!({
-        "content": [{"type": "text", "text": text}],
-        "isError": true
-    })
+    enforce_tool_budget(text, true)
+}
+
+/// Last-resort cap so any introspect tool that inlines too much still cannot
+/// blow the model context. get_draft itself stays under 64 KiB; this fuse is
+/// 128 KiB and returns a structured envelope instead of slicing JSON.
+const MAX_TOOL_RESULT_BYTES: usize = 128 * 1024;
+
+fn tool_payload(text: &str, is_error: bool) -> Value {
+    if is_error {
+        json!({
+            "content": [{"type": "text", "text": text}],
+            "isError": true
+        })
+    } else {
+        json!({
+            "content": [{"type": "text", "text": text}]
+        })
+    }
+}
+
+fn enforce_tool_budget(text: &str, is_error: bool) -> Value {
+    let candidate = tool_payload(text, is_error);
+    let encoded = serde_json::to_vec(&candidate).unwrap_or_default();
+    if encoded.len() <= MAX_TOOL_RESULT_BYTES {
+        return candidate;
+    }
+    let envelope = json!({
+        "truncated": true,
+        "reason": "response_budget_exceeded",
+        "originalBytes": encoded.len(),
+        "hint": "Use a narrower query or read_draft_file with a specific path"
+    });
+    let text = serde_json::to_string(&envelope).unwrap_or_default();
+    tool_payload(&text, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -766,4 +813,43 @@ async fn main() {
     }
 
     eprintln!("[introspect] stdin closed, exiting");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_ok_leaves_small_payloads_alone() {
+        let ok = tool_ok("hello");
+        assert_eq!(ok["content"][0]["text"], "hello");
+        assert!(ok.get("isError").is_none());
+    }
+
+    #[test]
+    fn tool_ok_returns_structured_envelope_when_over_budget() {
+        let big = "x".repeat(MAX_TOOL_RESULT_BYTES + 100);
+        let ok = tool_ok(&big);
+        let text = ok["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["truncated"], true);
+        assert_eq!(parsed["reason"], "response_budget_exceeded");
+        assert!(parsed["originalBytes"].as_u64().unwrap() > MAX_TOOL_RESULT_BYTES as u64);
+        assert!(parsed["hint"].as_str().unwrap().contains("read_draft_file"));
+        assert_eq!(ok["isError"], true);
+        assert!(
+            serde_json::to_vec(&ok).unwrap().len() < MAX_TOOL_RESULT_BYTES,
+            "envelope itself must fit the budget"
+        );
+        assert!(!text.contains(&"x".repeat(64)));
+    }
+
+    #[test]
+    fn tool_err_also_uses_structured_envelope() {
+        let big = "y".repeat(MAX_TOOL_RESULT_BYTES + 8);
+        let err = tool_err(&big);
+        let text = err["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("response_budget_exceeded"));
+        assert_eq!(err["isError"], true);
+    }
 }

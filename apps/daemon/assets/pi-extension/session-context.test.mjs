@@ -919,3 +919,82 @@ test("before_agent_start strips pi docs but keeps project_context", async () => 
   assert.match(result.systemPrompt, /Use TypeScript strict mode/);
   assert.match(result.systemPrompt, /Current working directory: \/tmp/);
 });
+
+/** Mirrors `capToolText` / `toPiContent` in teamclu.ts */
+const MAX_TOOL_RESULT_BYTES = 128 * 1024;
+
+function budgetExceededEnvelope(originalBytes) {
+  return JSON.stringify({
+    truncated: true,
+    reason: "response_budget_exceeded",
+    originalBytes,
+    hint: "Use a narrower query or read_draft_file with a specific path",
+  });
+}
+
+function capToolText(text) {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= MAX_TOOL_RESULT_BYTES) return text;
+  return budgetExceededEnvelope(bytes.length);
+}
+
+function toPiContent(result) {
+  const out = [];
+  for (const part of Array.isArray(result?.content) ? result.content : []) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text" && typeof part.text === "string") {
+      out.push({ type: "text", text: capToolText(part.text) });
+    } else if (part.type === "image" && typeof part.data === "string") {
+      out.push({ type: "image", data: part.data, mimeType: part.mimeType || "image/png" });
+    } else if (part.type === "resource" && typeof part.resource?.text === "string") {
+      out.push({ type: "text", text: capToolText(part.resource.text) });
+    } else {
+      out.push({ type: "text", text: capToolText(JSON.stringify(part)) });
+    }
+  }
+  if (out.length === 0 && result?.structuredContent !== undefined) {
+    out.push({ type: "text", text: capToolText(JSON.stringify(result.structuredContent)) });
+  }
+  if (out.length === 0) {
+    out.push({ type: "text", text: capToolText(JSON.stringify(result ?? null)) });
+  }
+  return out;
+}
+
+test("toPiContent source uses a structured 128KB fuse instead of slicing JSON", () => {
+  const src = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
+  assert.match(src, /MAX_TOOL_RESULT_BYTES\s*=\s*128\s*\*\s*1024/);
+  assert.match(src, /function capToolText/);
+  assert.match(src, /response_budget_exceeded/);
+  assert.doesNotMatch(src, /showing first \$\{end\} bytes/);
+  assert.doesNotMatch(src, /capToolText\(part\.data\)/);
+});
+
+test("toPiContent leaves small text and images alone", () => {
+  assert.deepEqual(toPiContent({ content: [{ type: "text", text: "hello" }] }), [
+    { type: "text", text: "hello" },
+  ]);
+  const image = { type: "image", data: "x".repeat(MAX_TOOL_RESULT_BYTES + 8), mimeType: "image/png" };
+  assert.deepEqual(toPiContent({ content: [image] }), [
+    { type: "image", data: image.data, mimeType: "image/png" },
+  ]);
+});
+
+test("toPiContent replaces oversized text with a structured envelope", () => {
+  const big = "x".repeat(MAX_TOOL_RESULT_BYTES + 40);
+  const textOut = toPiContent({ content: [{ type: "text", text: big }] });
+  assert.equal(textOut.length, 1);
+  const parsed = JSON.parse(textOut[0].text);
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.reason, "response_budget_exceeded");
+  assert.equal(parsed.originalBytes, MAX_TOOL_RESULT_BYTES + 40);
+  assert.ok(!textOut[0].text.includes("xxxx"));
+
+  const resourceOut = toPiContent({
+    content: [{ type: "resource", resource: { text: big } }],
+  });
+  assert.match(resourceOut[0].text, /response_budget_exceeded/);
+
+  const structuredOut = toPiContent({ structuredContent: { blob: big } });
+  assert.match(structuredOut[0].text, /response_budget_exceeded/);
+});

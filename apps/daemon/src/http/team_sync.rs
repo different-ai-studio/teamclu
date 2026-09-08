@@ -434,9 +434,7 @@ fn managed_skill_error(err: crate::config::ManagedSkillError) -> HttpError {
     use crate::config::ManagedSkillErrorCode;
     use crate::http::errors::ErrorCode;
     match err.code {
-        ManagedSkillErrorCode::SkillChanged => {
-            HttpError::new(ErrorCode::Conflict, err.message)
-        }
+        ManagedSkillErrorCode::SkillChanged => HttpError::new(ErrorCode::Conflict, err.message),
         ManagedSkillErrorCode::SkillNotFound => HttpError::not_found(err.message),
         ManagedSkillErrorCode::InvalidSkillSlug
         | ManagedSkillErrorCode::InvalidSkillFrontmatter
@@ -462,8 +460,8 @@ pub async fn get_team_skill_draft_handler(
     let (backend, team_id) = daemon_backend_and_team(&state)?;
     let row = lookup_team_skill_row(backend, &team_id, &slug).await?;
     let home = dirs::home_dir().ok_or_else(|| HttpError::internal("home directory not found"))?;
-    let view = crate::config::get_team_skill_draft(&home, &team_id, &row)
-        .map_err(managed_skill_error)?;
+    let view =
+        crate::config::get_team_skill_draft(&home, &team_id, &row).map_err(managed_skill_error)?;
     Ok(Json(view))
 }
 
@@ -495,6 +493,35 @@ pub async fn update_team_skill_draft_handler(
     )
     .await;
     Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DraftFileQuery {
+    path: String,
+    #[serde(default)]
+    offset: u64,
+    limit: Option<usize>,
+}
+
+/// `GET /v1/team/skills/:slug/draft/file` — read one draft file in a UTF-8 chunk.
+pub async fn read_team_skill_draft_file_handler(
+    principal: Principal,
+    State(state): State<HttpState>,
+    Path(slug): Path<String>,
+    Query(q): Query<DraftFileQuery>,
+) -> Result<Json<crate::config::DraftFileRead>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let path = q.path.trim();
+    if path.is_empty() {
+        return Err(HttpError::validation("path is required"));
+    }
+    let (backend, team_id) = daemon_backend_and_team(&state)?;
+    let row = lookup_team_skill_row(backend, &team_id, &slug).await?;
+    let home = dirs::home_dir().ok_or_else(|| HttpError::internal("home directory not found"))?;
+    let view =
+        crate::config::read_team_skill_draft_file(&home, &team_id, &row, path, q.offset, q.limit)
+            .map_err(managed_skill_error)?;
+    Ok(Json(view))
 }
 
 fn daemon_backend_and_team(
