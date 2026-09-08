@@ -144,7 +144,13 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   belayo: {
     auth: { google: false, wechat: false, phone: true, password: false, webSSO: true },
     channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: true },
-    apps: false,
+    // Entry point only, same as self-host. Creating an app needs GITEA_*, which
+    // this deployment now has (its own Gitea, reached over the VPC). Deploying
+    // one additionally needs ACCESS_KEY_ID + APPS_FC_ENDPOINT, which it does
+    // NOT have yet — so the deploy step answers 503 naming the empty variable
+    // while creating, listing and pushing work. That is the intended rollout
+    // order, not an oversight.
+    apps: true,
     lockLlmConfig: false,
     allowNewOrg: true,
   },
