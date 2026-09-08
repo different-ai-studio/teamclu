@@ -111,6 +111,19 @@ pub struct TeamSkillPackResult {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TeamSkillPublishPreview {
+    pub included_count: usize,
+    pub ignored_count: usize,
+    pub total_bytes: u64,
+    pub digest: String,
+    pub included: Vec<String>,
+    pub ignored: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TeamSkillInstallResult {
     pub slug: String,
     pub version: i64,
@@ -155,8 +168,8 @@ pub struct TeamSkillInspectResult {
     pub modified: Vec<String>,
     pub deleted: Vec<String>,
     /// Files in the pack directory that the install never put there. Dirt in
-    /// its own right: the publish path measures the whole directory, so these
-    /// ship with the next version.
+    /// its own right: the next publish would ship them. Ignored runtime files
+    /// and OS junk are not listed.
     pub added: Vec<String>,
     /// `member` for the working copy at `~/.agents/skills`. `hosted-agent` is
     /// legacy: the cloud cache is no longer inspect's target.

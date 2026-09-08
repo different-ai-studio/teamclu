@@ -14,7 +14,6 @@ import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
 import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
 import { RefreshSkillsHeaderButton } from "@/components/chat/RefreshSkillsHeaderButton";
-import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
 import { useGitReposInit } from "@/hooks/use-git-repos-init";

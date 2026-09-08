@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Loader2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { type TeamSkillItem, type TeamSkillDraftMetadata } from '@/stores/team-share-browser'
+import { type TeamSkillItem, type TeamSkillDraftMetadata, type TeamSkillPublishPreview } from '@/stores/team-share-browser'
 import { TEAM_SKILL_CATEGORIES, type TeamSkillCategory } from '@/lib/backend/cloud-api/team-skills'
 import {
   TEAM_SKILL_SUMMARY_MAX,
@@ -11,6 +11,12 @@ import {
   hydrateTeamSkillPublishFields,
 } from '@/lib/skills/team-skill-summary'
 import { ModalShell } from './ModalShell'
+
+function formatPackBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 102.4) / 10} KB`
+  return `${Math.round(bytes / 1024 / 102.4) / 10} MB`
+}
 
 export function PublishVersionSheet({
   item,
@@ -20,6 +26,7 @@ export function PublishVersionSheet({
   busy,
   changePreview,
   onLoadDraftMetadata,
+  onLoadPublishPreview,
   onClose,
   onSubmit,
 }: {
@@ -31,6 +38,7 @@ export function PublishVersionSheet({
   busy: boolean
   changePreview?: { modified: string[]; deleted: string[]; added: string[] }
   onLoadDraftMetadata: () => Promise<TeamSkillDraftMetadata>
+  onLoadPublishPreview: () => Promise<TeamSkillPublishPreview>
   onClose: () => void
   onSubmit: (input: {
     changelog: string
@@ -39,6 +47,7 @@ export function PublishVersionSheet({
     whenToUse: string
     whenNotToUse: string
     requires: string[]
+    expectedDigest: string
   }) => Promise<void>
 }) {
   const { t } = useTranslation()
@@ -56,6 +65,8 @@ export function PublishVersionSheet({
   const [metadataLoading, setMetadataLoading] = React.useState(false)
   const [metadataReady, setMetadataReady] = React.useState(false)
   const [metadataError, setMetadataError] = React.useState<string | null>(null)
+  const [packPreview, setPackPreview] = React.useState<TeamSkillPublishPreview | null>(null)
+  const [packPreviewError, setPackPreviewError] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     if (!open) return
@@ -79,6 +90,8 @@ export function PublishVersionSheet({
     setMetadataLoading(true)
     setMetadataReady(false)
     setMetadataError(null)
+    setPackPreview(null)
+    setPackPreviewError(null)
     void onLoadDraftMetadata()
       .then((draft) => {
         const hydrated = hydrateTeamSkillPublishFields({
@@ -104,7 +117,14 @@ export function PublishVersionSheet({
         setMetadataError(e instanceof Error ? e.message : String(e))
       })
       .finally(() => setMetadataLoading(false))
-  }, [open, item, onLoadDraftMetadata])
+    void onLoadPublishPreview()
+      .then((preview) => {
+        setPackPreview(preview)
+      })
+      .catch((e) => {
+        setPackPreviewError(e instanceof Error ? e.message : String(e))
+      })
+  }, [open, item, onLoadDraftMetadata, onLoadPublishPreview])
 
   if (!open) return null
 
@@ -143,10 +163,13 @@ export function PublishVersionSheet({
 
   return (
     <ModalShell
-      title={t('teamShare.skillPublishTitle', 'Publish v{{v}}', { v: nextVersion })}
+      title={t('teamShare.skillPublishTitle', 'Publish {{slug}} v{{v}}', {
+        slug: item.slug,
+        v: nextVersion,
+      })}
       hint={t(
         'teamShare.skillPublishHint',
-        'Publishes what is on disk right now. Everyone on the team moves to it automatically.',
+        'Save writes this machine only. Publish creates a new team version from the files below.',
       )}
       onClose={onClose}
       footer={
@@ -163,7 +186,11 @@ export function PublishVersionSheet({
               busy ||
               metadataLoading ||
               !metadataReady ||
-              !!metadataError
+              !!metadataError ||
+              !packPreview ||
+              !!packPreviewError ||
+              !!packPreview.limitError ||
+              !packPreview.digest
             }
             onClick={() =>
               void onSubmit({
@@ -176,6 +203,7 @@ export function PublishVersionSheet({
                   .split(',')
                   .map((part) => part.trim())
                   .filter(Boolean),
+                expectedDigest: packPreview!.digest,
               })
             }
             className="h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90 disabled:opacity-40"
@@ -207,6 +235,32 @@ export function PublishVersionSheet({
           {t('teamShare.skillPublishPreview', 'Publishing {{count}} local file change(s) from disk.', {
             count: previewCount,
           })}
+        </div>
+      )}
+      {packPreviewError && (
+        <div className="rounded-[8px] border border-border border-l-2 border-l-destructive bg-paper px-3 py-2 text-[12px] text-muted-foreground">
+          {t('teamShare.skillPublishPackPreviewFailed', 'Could not inspect the publish pack: {{msg}}', {
+            msg: packPreviewError,
+          })}
+        </div>
+      )}
+      {packPreview && (
+        <div className="rounded-[8px] border border-border-soft bg-paper/60 px-3 py-2 text-[12px] text-muted-foreground">
+          <p>
+            {t(
+              'teamShare.skillPublishPackStats',
+              '{{included}} included · {{ignored}} ignored · {{size}} before compression · based on v{{base}}',
+              {
+                included: packPreview.includedCount,
+                ignored: packPreview.ignoredCount,
+                size: formatPackBytes(packPreview.totalBytes),
+                base: baseVersion ?? '—',
+              },
+            )}
+          </p>
+          {packPreview.limitError && (
+            <p className="mt-1 text-foreground">{packPreview.limitError}</p>
+          )}
         </div>
       )}
       {metadataLoading && (

@@ -1,12 +1,11 @@
 //! Copying and zipping a skill directory.
 
+use std::io::Write;
+use std::path::Path;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
-pub(super) fn copy_dir_recursive(
-    src: &std::path::Path,
-    dst: &std::path::Path,
-) -> Result<(), String> {
+pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dst)
         .map_err(|e| format!("Failed to create {}: {}", dst.display(), e))?;
     for entry in
@@ -27,66 +26,92 @@ pub(super) fn copy_dir_recursive(
     Ok(())
 }
 
-/// Zip a skill directory for upload.
+/// Zip the published file set for upload.
 ///
-/// `.clawhub/` is left out. It is this machine's private record of what was
-/// installed here — including the full file manifest — and shipping it means
-/// every member downloads the publisher's bookkeeping and then overwrites it
-/// with their own on install. A package that carries one machine's install
-/// state is also the kind of thing that makes two installs of the "same"
-/// version differ.
-pub(super) fn zip_skill_dir(dir: &std::path::Path) -> Result<Vec<u8>, String> {
+/// Uses [`teamclu_skillpack::list_managed_paths`] so the archive matches dirty
+/// detection, the diff, and the post-publish baseline. `.clawhub/`, OS junk,
+/// ignored runtime files, and symlinks are not in that list.
+pub(super) fn zip_skill_dir(dir: &Path) -> Result<Vec<u8>, String> {
+    let included = teamclu_skillpack::list_managed_paths(dir)
+        .map_err(|e| format!("Failed to list skill files: {e}"))?;
+    zip_skill_files(dir, &included)
+}
+
+pub(super) fn zip_skill_files(dir: &Path, included: &[String]) -> Result<Vec<u8>, String> {
     let cursor = std::io::Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-    fn add_tree(
-        writer: &mut ZipWriter<std::io::Cursor<Vec<u8>>>,
-        opts: SimpleFileOptions,
-        base: &std::path::Path,
-        rel: &std::path::Path,
-    ) -> Result<(), String> {
-        let full = base.join(rel);
-        if full.is_dir() {
-            for entry in std::fs::read_dir(&full)
-                .map_err(|e| format!("Failed to read {}: {}", full.display(), e))?
-            {
-                let entry = entry.map_err(|e| format!("Failed to read dir entry: {}", e))?;
-                let name = entry.file_name();
-                // Only the top-level bookkeeping dir is ours; one nested deeper
-                // belongs to the package, same rule the manifest walk uses.
-                if rel.as_os_str().is_empty() && name == teamclu_skillpack::ORIGIN_DIR {
+    for rel in included {
+        let full = dir.join(if std::path::MAIN_SEPARATOR == '/' {
+            std::path::PathBuf::from(rel)
+        } else {
+            std::path::PathBuf::from(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+        });
+        let mut file_opts = opts;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::symlink_metadata(&full) {
+                if !meta.is_file() {
                     continue;
                 }
-                let child_rel = rel.join(&name);
-                add_tree(writer, opts, base, &child_rel)?;
+                file_opts = file_opts.unix_permissions(meta.permissions().mode() & 0o777);
             }
-        } else if full.is_file() {
-            let name = rel.to_string_lossy().replace('\\', "/");
-            let mut opts = opts;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(meta) = std::fs::metadata(&full) {
-                    // Carry the exec bit into the archive, or every member
-                    // downloads a script they cannot run.
-                    opts = opts.unix_permissions(meta.permissions().mode() & 0o777);
-                }
-            }
-            writer
-                .start_file(name, opts)
-                .map_err(|e| format!("zip start: {}", e))?;
-            let bytes = std::fs::read(&full)
-                .map_err(|e| format!("Failed to read {}: {}", full.display(), e))?;
-            use std::io::Write;
-            writer
-                .write_all(&bytes)
-                .map_err(|e| format!("zip write: {}", e))?;
         }
-        Ok(())
+        writer
+            .start_file(rel, file_opts)
+            .map_err(|e| format!("zip start: {e}"))?;
+        let bytes =
+            std::fs::read(&full).map_err(|e| format!("Failed to read {}: {e}", full.display()))?;
+        writer
+            .write_all(&bytes)
+            .map_err(|e| format!("zip write: {e}"))?;
     }
 
-    add_tree(&mut writer, opts, dir, std::path::Path::new(""))?;
-    let finished = writer.finish().map_err(|e| format!("zip finish: {}", e))?;
+    let finished = writer.finish().map_err(|e| format!("zip finish: {e}"))?;
     Ok(finished.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zip_skill_dir;
+
+    fn write(dir: &std::path::Path, rel: &str, body: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn zip_names(bytes: &[u8]) -> Vec<String> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut names = Vec::new();
+        for i in 0..archive.len() {
+            names.push(archive.by_index(i).unwrap().name().to_string());
+        }
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn zip_matches_the_package_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pack");
+        write(&dir, "SKILL.md", "---\nname: pack\n---\nbody\n");
+        write(&dir, "scripts/run.sh", "#!/bin/sh\n");
+        write(&dir, ".DS_Store", "finder");
+        write(&dir, ".teamcluignore", "results/\n");
+        write(&dir, "results/out.json", "{}\n");
+        write(&dir, ".clawhub/origin.json", "{}\n");
+
+        let names = zip_names(&zip_skill_dir(&dir).unwrap());
+        assert_eq!(
+            names,
+            vec![
+                ".teamcluignore".to_string(),
+                "SKILL.md".to_string(),
+                "scripts/run.sh".to_string(),
+            ]
+        );
+    }
 }
