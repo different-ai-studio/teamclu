@@ -149,7 +149,15 @@ impl LocalCacheStore {
         Ok(instance)
     }
 
-    /// Get a locked reference to the raw connection (rarely needed externally).
+    /// Get a locked reference to the raw connection.
+    ///
+    /// Test-only since #1301 removed the last production caller. `--all-targets`
+    /// builds the lib WITHOUT `cfg(test)`, so a method reachable only from
+    /// `#[cfg(test)]` code is dead there and `-D warnings` fails the build —
+    /// which is what turned main red. `#[cfg(test)]` rather than
+    /// `#[allow(dead_code)]`: the allow would also hide the next method that
+    /// really does become unused.
+    #[cfg(test)]
     pub async fn conn(&self) -> tokio::sync::MutexGuard<'_, Connection> {
         self.conn.lock().await
     }
