@@ -150,7 +150,9 @@ pub struct ChannelCaps {
     pub threading: Threading,
     /// Hard limit per outbound message; the core splits above it.
     pub max_chars: usize,
-    /// How long one turn may take before the queue gives up on it.
+    /// How long a turn may stay *silent* (no ACP event) before the gateway
+    /// gives up on it. Activity resets the budget — a nine-minute scrape
+    /// followed by a query is still one turn, not a timeout.
     ///
     /// Per-channel because it is a property of the medium, not of the agent: a
     /// mail round trip that takes four minutes is normal, and the IM-shaped

@@ -834,10 +834,11 @@ pub fn wecom_caps() -> driver::ChannelCaps {
         interactive: true,
         threading: driver::Threading::Inline,
         max_chars: 2048,
-        // Ten minutes. A chat bot that searches, reads files and writes an
-        // answer routinely runs past the old two-minute cap — and when it did,
-        // the sender got "timed out, please retry" for a turn that was working
-        // fine, while the runtime kept going and starved the next message.
+        // Ten minutes of *silence* (idle, not wall-clock from the prompt).
+        // A scrape that ran nine minutes then queried used to expire a
+        // start-to-finish 600s cap and close the WeCom stream on the last
+        // progress line, while the runtime wrote the real answer seconds
+        // later — desktop saw it, WeCom did not. Each ACP event resets this.
         turn_timeout_secs: 600,
     }
 }
