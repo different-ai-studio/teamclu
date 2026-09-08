@@ -24,6 +24,37 @@ function sendLegacy(_c: any, r: { statusCode: number; headers?: Record<string, s
   });
 }
 
+/**
+ * The hostname the caller actually asked for.
+ *
+ * `Host` alone is not enough on every deploy target. Behind Caddy (self-host)
+ * the node server sees the real Host, but on Alibaba Function Compute the
+ * request is reconstructed from the trigger event by `hono/aws-lambda`, which
+ * builds the URL from `requestContext.domainName` and carries headers
+ * separately — so an app served through the `*.<APPS_PUBLIC_DOMAIN>` custom
+ * domain arrived with a Host that did not parse, the middleware fell through,
+ * and every vanity URL answered the API's own "Route not found" instead of the
+ * app. `/internal/caddy/ask`, which takes the name as a query parameter, kept
+ * working the whole time — which is what proved the parser and the lookup were
+ * fine and the input was not.
+ *
+ * Order: the forwarding header a proxy sets, then Host, then the request URL
+ * the adapter composed. `requestOrigin` in team-llm-defaults.ts reads the first
+ * two for the same reason; the URL is the one that survives the Lambda-shaped
+ * event.
+ */
+function vanityRequestHost(c: { req: { header: (n: string) => string | undefined; url: string } }): string | undefined {
+  const forwarded = c.req.header("x-forwarded-host")?.split(",")[0]?.trim();
+  if (forwarded) return forwarded;
+  const host = c.req.header("host")?.trim();
+  if (host) return host;
+  try {
+    return new URL(c.req.url).host;
+  } catch {
+    return undefined;
+  }
+}
+
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
@@ -51,7 +82,7 @@ export function createApp(deps: AppDeps): Hono {
     });
 
     app.use("*", async (c, next) => {
-      const host = c.req.header("host");
+      const host = vanityRequestHost(c);
       if (!parseAppPublicHost(host)) return next();
       const target = await lookup(host!);
       // A hostname whose app exists but has never deployed is a real app with
