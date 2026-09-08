@@ -965,6 +965,60 @@ type AppRuntime = "node" | "container";
 
 export type AppAuthMode = "none" | "platform" | "third";
 
+/** Who may pass an app's login wall. Only read when `authMode` is `platform`. */
+export type AppAuthAudience = "any" | "org";
+
+/** Baseline for WHICH paths sit behind the wall, when no rule matches. */
+export type AppAuthScope = "all" | "paths";
+
+/**
+ * One exception to `authScope`. Matching is by case-insensitive path PREFIX
+ * (`/admin` covers `/admin` and `/admin/...`, never `/administrator`), and the
+ * LONGEST matching prefix decides — so the list reads the same in any order.
+ */
+export interface AppAuthRule {
+  path: string;
+  auth: "required" | "public";
+}
+
+/** Everything about an app's login wall that a single PATCH may change. */
+export interface AppAuthPatch {
+  authMode?: AppAuthMode;
+  authAudience?: AppAuthAudience;
+  authScope?: AppAuthScope;
+  /** Sent WITH `authScope` whenever either changes: the server validates the
+   *  pair, and rejects `paths` with nothing marked `required`. */
+  authRules?: AppAuthRule[];
+}
+
+/** A DNS record the domain's owner has to publish. */
+export interface AppDnsRecord {
+  type: "CNAME" | "TXT";
+  name: string;
+  value: string;
+}
+
+export interface AppCustomDomain {
+  domain: string | null;
+  verified: boolean;
+  verifiedAt: string | null;
+  /** Empty when no domain is bound. Returned on every response so the client
+   *  never reconstructs the token embedded in the TXT value. */
+  dns: AppDnsRecord[];
+}
+
+/**
+ * Outcome of asking the server to check the DNS proof.
+ *
+ * `pending` is its own case rather than an error: DNS propagation is the usual
+ * reason a check fails, it is retryable, and showing it as a failure would tell
+ * the user something is broken when nothing is.
+ */
+export type VerifyAppDomainResult =
+  | { status: "verified"; domain: AppCustomDomain }
+  | { status: "pending"; message: string }
+  | { status: "not_found" };
+
 export interface AppRow {
   id: string;
   teamId: string;
@@ -984,11 +1038,19 @@ export interface AppRow {
   gitCommitSha: string | null;
   runtime: AppRuntime;
   authMode: AppAuthMode;
-  /** `authMode` was changed after the live deploy, so the running function still
-   *  enforces the OLD gate (the OAuth env is injected at finalize). Server-derived
-   *  from `fc_status` + `deployed_auth_mode` so it survives a reload and agrees
-   *  across devices — see design §7.4. */
+  authAudience: AppAuthAudience;
+  authScope: AppAuthScope;
+  /** Exceptions to `authScope`; empty on most apps. */
+  authRules: AppAuthRule[];
+  /** The deployed function's env still lags the app's auth settings — the
+   *  Supabase variables an app may use ITSELF are injected at finalize, not on
+   *  the PATCH. This does NOT mean the site is unprotected: the wall lives in
+   *  the proxy gateway and every auth change takes effect immediately. */
   authModePendingRedeploy: boolean;
+  /** Hostname the owner bound, or null. Served only once verified. */
+  customDomain: string | null;
+  /** When DNS ownership was last proven; null = stored but NOT served. */
+  customDomainVerifiedAt: string | null;
   /** Public OAuth client id for `third` or GoTrue client id for `platform`. */
   oauthClientId: string | null;
   provisionStatus: string;
@@ -1164,7 +1226,19 @@ export interface AppsBackend {
   /** Delete an app (admin required). False on 404. */
   deleteApp(appId: string): Promise<boolean>;
   /** Change auth mode (creator only). Returns null on 404. */
-  updateAppAuthMode(appId: string, authMode: AppAuthMode): Promise<AppRow | null>;
+  /**
+   * Change any part of the login wall in ONE request.
+   *
+   * Scope and rules travel together because the server validates them as a
+   * pair — `paths` with nothing `required` is refused — so splitting them
+   * across two PATCHes would be rejected on the intermediate state.
+   */
+  updateAppAuth(appId: string, patch: AppAuthPatch): Promise<AppRow | null>;
+  /** Bind a domain the owner controls. Returns the DNS records to publish. */
+  setAppCustomDomain(appId: string, domain: string): Promise<AppCustomDomain | null>;
+  /** Check the published TXT proof. */
+  verifyAppCustomDomain(appId: string): Promise<VerifyAppDomainResult>;
+  deleteAppCustomDomain(appId: string): Promise<AppCustomDomain | null>;
 
   // --- Data browser (design 2026-08-27-app-data-browser) ---
   // `prompt` may read, `admin` may also edit; `view` gets null, same as a

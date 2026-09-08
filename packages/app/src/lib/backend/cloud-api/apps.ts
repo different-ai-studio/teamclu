@@ -10,6 +10,7 @@ import type {
   AppMembership,
   AppMemberAccessRow,
   AppPermissionLevel,
+  AppCustomDomain,
   DeployAppResult,
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
@@ -145,9 +146,50 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
-    async updateAppAuthMode(appId, authMode) {
+    async updateAppAuth(appId, patch) {
       try {
-        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { authMode });
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, patch);
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async setAppCustomDomain(appId, domain) {
+      try {
+        return await client.put<AppCustomDomain>(
+          `/v1/apps/${encodeURIComponent(appId)}/custom-domain`,
+          { domain },
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async verifyAppCustomDomain(appId) {
+      try {
+        const domain = await client.post<AppCustomDomain>(
+          `/v1/apps/${encodeURIComponent(appId)}/custom-domain/verify`,
+          {},
+        );
+        return { status: "verified", domain };
+      } catch (e) {
+        if (!(e instanceof CloudApiError)) throw e;
+        if (e.status === 404) return { status: "not_found" };
+        // 409 is "the record is not visible yet", which is ordinary while DNS
+        // propagates. Surfacing it as a failure would tell the user something
+        // is broken when the only thing to do is wait and press again.
+        if (e.status === 409) return { status: "pending", message: e.message };
+        throw e;
+      }
+    },
+
+    async deleteAppCustomDomain(appId) {
+      try {
+        return await client.delete<AppCustomDomain>(
+          `/v1/apps/${encodeURIComponent(appId)}/custom-domain`,
+        );
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;

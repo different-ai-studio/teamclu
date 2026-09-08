@@ -3453,17 +3453,26 @@ export function createSupabaseBusinessRepository(options) {
       const gate = await this.authorizeCustomDomainWrite(appId);
       if (!gate) return null;
       const domain = normalizeCustomDomain(rawDomain);
-      const token = makeDomainToken();
 
-      // A new token and a cleared verification on every bind, including a
-      // re-bind of the same name: the proof is for THIS binding, and carrying
-      // an old one over would let a domain that changed hands stay verified.
+      // Binding the SAME name again is idempotent: same token, verification
+      // intact. That makes this the way a client re-reads the DNS records it
+      // has to display — the TXT value embeds the token, which is not in the
+      // app row, so after a reload there is no other way to show them. Minting
+      // a new token there would invalidate a record the owner had already
+      // published, purely because they reopened the page.
+      //
+      // A DIFFERENT name resets both. The proof belongs to one binding, and
+      // carrying it over would let a domain that changed hands stay verified.
+      const sameDomain = gate.cur.custom_domain === domain;
+      const token = (sameDomain && gate.cur.custom_domain_token) || makeDomainToken();
+      const verifiedAt = sameDomain ? (gate.cur.custom_domain_verified_at ?? null) : null;
+
       const { data, error } = await gate.writer
         .from("apps")
         .update({
           custom_domain: domain,
           custom_domain_token: token,
-          custom_domain_verified_at: null,
+          custom_domain_verified_at: verifiedAt,
           updated_at: new Date().toISOString(),
         })
         .eq("id", appId)

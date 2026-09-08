@@ -18,7 +18,12 @@ import {
 } from "@/lib/daemon/daemon-local-client";
 import { isTauri } from "@/lib/utils";
 import i18n from "@/lib/i18n";
-import type { AppRow, AppAuthMode } from "@/lib/backend/types";
+import type {
+  AppRow,
+  AppAuthPatch,
+  AppCustomDomain,
+  VerifyAppDomainResult,
+} from "@/lib/backend/types";
 
 interface AppsState {
   items: AppRow[];
@@ -78,7 +83,12 @@ interface AppsState {
   /** Full FC deploy: startDeploy → daemon build+upload → finalize. */
   deploy: (appId: string) => Promise<void>;
   rename: (appId: string, name: string) => Promise<void>;
-  updateAuthMode: (appId: string, authMode: AppAuthMode) => Promise<void>;
+  /** Change any part of the login wall in one request. True when it stuck. */
+  updateAuthPolicy: (appId: string, patch: AppAuthPatch) => Promise<boolean>;
+  /** Bind a domain and get back the DNS records the owner must publish. */
+  bindCustomDomain: (appId: string, domain: string) => Promise<AppCustomDomain | null>;
+  verifyCustomDomain: (appId: string) => Promise<VerifyAppDomainResult>;
+  unbindCustomDomain: (appId: string) => Promise<AppCustomDomain | null>;
   deleteApp: (appId: string) => Promise<boolean>;
 }
 
@@ -112,6 +122,23 @@ function clearDeployProgress(set: SetState, appId: string): void {
 /** Merge a fresh app row (from create/deploy/rename responses) into the store. */
 function mergeRow(set: SetState, row: AppRow): void {
   set((s) => ({ items: s.items.map((a) => (a.id === row.id ? row : a)) }));
+}
+
+/**
+ * Patch the domain fields of one row from a custom-domain response.
+ *
+ * Those endpoints answer with the domain's own shape, not an app row, so there
+ * is nothing to merge wholesale — and re-fetching the app just to learn two
+ * fields we were already told would be a round trip for nothing.
+ */
+function mergeDomain(set: SetState, appId: string, domain: AppCustomDomain): void {
+  set((s) => ({
+    items: s.items.map((a) =>
+      a.id === appId
+        ? { ...a, customDomain: domain.domain, customDomainVerifiedAt: domain.verifiedAt }
+        : a,
+    ),
+  }));
 }
 
 async function toastError(title: string, description?: string): Promise<void> {
@@ -694,26 +721,79 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       );
     }
   },
-  updateAuthMode: async (appId, authMode) => {
+  updateAuthPolicy: async (appId, patch) => {
     try {
-      const updated = await getBackend().apps.updateAppAuthMode(appId, authMode);
+      const updated = await getBackend().apps.updateAppAuth(appId, patch);
       if (!updated) {
         await toastError(
-          i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in method"),
+          i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in settings"),
           i18n.t("apps.authModeUpdateDenied", "App not found, or you cannot change it"),
         );
-        return;
+        return false;
       }
       // `authModePendingRedeploy` is derived server-side from fc_status and the
       // deployed mode, so the row returned by this PATCH already reports the
       // pending state — and keeps reporting it after a reload, on another
       // device, and for a second admin, which a local id list never did.
       mergeRow(set, updated);
+      return true;
     } catch (e) {
+      // The server validates scope and rules as a pair, so its message names
+      // the actual problem ("paths needs at least one required rule", "* is not
+      // supported"). Passing it through beats a generic failure.
       await toastError(
-        i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in method"),
+        i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in settings"),
         e instanceof Error ? e.message : String(e),
       );
+      return false;
+    }
+  },
+  bindCustomDomain: async (appId, domain) => {
+    try {
+      const out = await getBackend().apps.setAppCustomDomain(appId, domain);
+      if (!out) {
+        await toastError(
+          i18n.t("apps.domainBindFailed", "Could not bind the domain"),
+          i18n.t("apps.domainBindDenied", "App not found, or you cannot change it"),
+        );
+        return null;
+      }
+      mergeDomain(set, appId, out);
+      return out;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.domainBindFailed", "Could not bind the domain"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
+    }
+  },
+  verifyCustomDomain: async (appId) => {
+    try {
+      const result = await getBackend().apps.verifyAppCustomDomain(appId);
+      // Only a success changes the row; `pending` is the caller's to display,
+      // and refreshing on it would just re-read the same unverified state.
+      if (result.status === "verified") mergeDomain(set, appId, result.domain);
+      return result;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.domainVerifyFailed", "Could not check the domain"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return { status: "not_found" };
+    }
+  },
+  unbindCustomDomain: async (appId) => {
+    try {
+      const out = await getBackend().apps.deleteAppCustomDomain(appId);
+      if (out) mergeDomain(set, appId, out);
+      return out;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.domainUnbindFailed", "Could not unbind the domain"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
     }
   },
   deleteApp: async (appId) => {
