@@ -99,6 +99,60 @@ function strip(headers: Headers): Headers {
   return out;
 }
 
+/** The host of a URL-shaped header value, or undefined when it is not one. */
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).host;
+  } catch {
+    // `Origin: null` (a sandboxed iframe's opaque origin) lands here, as does
+    // any malformed Referer. Neither identifies a site, so neither can be
+    // called same-origin.
+    return undefined;
+  }
+}
+
+/**
+ * Answer the `Sec-Fetch-Site` question the browser declined to answer.
+ *
+ * A framework guards its server functions by asking whether the request came
+ * from its own pages. `Sec-Fetch-Site` is the header that says so directly, and
+ * every other answer is a guess built from names: the guard falls back to
+ * comparing `Origin` against the origin it derives from its own `request.url` —
+ * which is the UPSTREAM FC hostname, because FC routes on Host and `fetch`
+ * cannot override it, so the vanity name the browser used never reaches the app.
+ * Every same-origin request from the app's own pages then looks foreign.
+ *
+ * That is not hypothetical: TanStack Start answers a bare `403 Forbidden`, and
+ * the first app deployed on a vanity host had every one of its server functions
+ * refused. Browsers attach `Sec-` metadata only to trustworthy origins and apps
+ * are served over plain HTTP today, so the header that would have settled it is
+ * absent exactly where it is needed.
+ *
+ * This proxy is the one hop that knows both names, so it fills the header in.
+ * Comparing hosts and not full origins is deliberate: whether the client spoke
+ * HTTP or HTTPS is not knowable here once TLS terminates upstream, and the
+ * scheme is not what the question is about.
+ *
+ * `Origin` and `Referer` are passed through untouched — an app's own logs should
+ * keep showing the hostname its visitor actually typed.
+ *
+ * Only filled in when ABSENT. Over HTTPS the browser sends its own value, which
+ * also distinguishes `same-site` from `cross-site` as this cannot. Forging it is
+ * not a way in: `Sec-`-prefixed names are forbidden header names, so page script
+ * cannot set one, and a client speaking HTTP directly is not what a CSRF check
+ * defends against — it can already send whatever it likes.
+ */
+function fillFetchMetadata(headers: Headers, incoming: URL): void {
+  if (headers.has("sec-fetch-site")) return;
+  // Origin first: a same-origin GET carries only a Referer, and a POST carries
+  // both. Either one names the page the request came from.
+  const initiator = headers.get("origin") ?? headers.get("referer");
+  if (!initiator) return;
+  const host = hostOf(initiator);
+  if (host === undefined) return;
+  headers.set("sec-fetch-site", host === incoming.host ? "same-origin" : "cross-site");
+}
+
 /**
  * Function Compute stamps a bare `Content-Disposition: attachment` on every
  * response served through its default `*.fcapp.run` hostname, so that nobody
@@ -141,6 +195,7 @@ export async function proxyToApp(
   headers.delete("host");
   headers.set("x-forwarded-host", incoming.host);
   headers.set("x-forwarded-proto", incoming.protocol.replace(":", ""));
+  fillFetchMetadata(headers, incoming);
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   const res = await fetchImpl(upstream, {
