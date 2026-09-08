@@ -551,7 +551,10 @@ mod tests {
         write(&dir, "results/run-1.json", "{}\n");
         write(&dir, "results/nested/out.md", "noise\n");
         let paths = list_managed_paths(&dir).unwrap();
-        assert!(!paths.iter().any(|p| p.starts_with("results/")), "{paths:?}");
+        assert!(
+            !paths.iter().any(|p| p.starts_with("results/")),
+            "{paths:?}"
+        );
         match inspect(&dir, Some(&m)) {
             DirtyState::Dirty {
                 modified,

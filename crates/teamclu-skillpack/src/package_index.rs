@@ -25,6 +25,9 @@ use crate::origin::ORIGIN_DIR;
 
 /// New-publish caps. Historical versions stay downloadable; these only bind
 /// the pack we are about to upload.
+pub const MAX_PACK_FILES: usize = 500;
+pub const MAX_SINGLE_FILE_BYTES: u64 = 1024 * 1024;
+pub const MAX_PACK_TOTAL_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Declares files that are not part of the published pack.
 pub const IGNORE_FILE: &str = ".teamcluignore";
@@ -32,13 +35,8 @@ pub const IGNORE_FILE: &str = ".teamcluignore";
 pub const SKILL_MD: &str = "SKILL.md";
 
 /// System litter that is never a skill file, on any machine.
-pub const BUILTIN_IGNORE_RULES: &[&str] = &[
-    ".DS_Store",
-    "._*",
-    "Thumbs.db",
-    "desktop.ini",
-    "__MACOSX/",
-];
+pub const BUILTIN_IGNORE_RULES: &[&str] =
+    &[".DS_Store", "._*", "Thumbs.db", "desktop.ini", "__MACOSX/"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackagePathErrorKind {
@@ -177,7 +175,10 @@ impl std::fmt::Display for PackLimitError {
                 "file {path} is {size} bytes (limit {MAX_SINGLE_FILE_BYTES})"
             ),
             Self::PackTooLarge { size } => {
-                write!(f, "skill pack is {size} bytes (limit {MAX_PACK_TOTAL_BYTES})")
+                write!(
+                    f,
+                    "skill pack is {size} bytes (limit {MAX_PACK_TOTAL_BYTES})"
+                )
             }
         }
     }

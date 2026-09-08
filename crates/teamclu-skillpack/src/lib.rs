@@ -43,11 +43,11 @@ pub use manifest::{
     build_manifest, build_manifest_for, inspect, list_managed_paths, package_digest, sha256_hex,
     DirtyState, FileManifest, ManagedFile,
 };
+pub use origin::{read_origin, write_origin, SkillOrigin, ORIGIN_DIR, ORIGIN_VERSION};
 pub use package_index::{
     build_package_index, check_publish_limits, PackIgnore, PackLimitError, PackageIndex,
     PackagePathError, PackagePathErrorKind, IGNORE_FILE, MAX_PACK_FILES, MAX_PACK_TOTAL_BYTES,
     MAX_SINGLE_FILE_BYTES, SKILL_MD,
 };
-pub use origin::{read_origin, write_origin, SkillOrigin, ORIGIN_DIR, ORIGIN_VERSION};
 pub use swap::{remove_managed_files, swap_managed_files};
 pub use zip_path::{apply_zip_mode, sanitize_zip_path};

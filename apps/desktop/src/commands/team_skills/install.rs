@@ -26,7 +26,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use teamclu_skillpack::{
     build_package_index, check_publish_limits, commit_staged_pack, list_managed_paths,
-    package_digest, read_origin, remove_managed_files, swap_managed_files, RegistryFields, SKILL_MD,
+    package_digest, read_origin, remove_managed_files, swap_managed_files, RegistryFields,
+    SKILL_MD,
 };
 
 #[tauri::command]
@@ -260,7 +261,9 @@ fn publish_preview_blocking(dir: &std::path::Path) -> Result<TeamSkillPublishPre
 /// `team_skill_pack_and_upload` re-checks so a script cannot change the pack
 /// between preview and click.
 #[tauri::command]
-pub async fn team_skill_publish_preview(dir_path: String) -> Result<TeamSkillPublishPreview, String> {
+pub async fn team_skill_publish_preview(
+    dir_path: String,
+) -> Result<TeamSkillPublishPreview, String> {
     tokio::task::spawn_blocking(move || {
         let dir = std::path::PathBuf::from(dir_path.trim());
         publish_preview_blocking(&dir)

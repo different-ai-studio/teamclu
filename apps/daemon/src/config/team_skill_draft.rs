@@ -1084,8 +1084,9 @@ mod tests {
         .unwrap();
         stamp_team_origin(&skill, slug, team, 1, true);
 
-        let missing = read_team_skill_draft_file(home, team, &row(slug, 1, true), "nope.md", 0, None)
-            .unwrap_err();
+        let missing =
+            read_team_skill_draft_file(home, team, &row(slug, 1, true), "nope.md", 0, None)
+                .unwrap_err();
         assert_eq!(missing.code, ManagedSkillErrorCode::SkillNotFound);
 
         let origin = read_team_skill_draft_file(
