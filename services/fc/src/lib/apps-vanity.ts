@@ -175,6 +175,78 @@ function stripForcedDownload(headers: Headers): Headers {
 }
 
 /**
+ * Marks a browser as having been sent to HTTPS already, so a wrong guess costs
+ * one redirect instead of an endless loop. Deliberately short-lived and not
+ * `Secure`: it has to be readable on the HTTP request that follows.
+ */
+const REDIRECT_ONCE_COOKIE = "_tc_https";
+
+/** Sec-Fetch metadata, which browsers send to trustworthy origins only. */
+function hasFetchMetadata(headers: Headers): boolean {
+  for (const name of headers.keys()) {
+    if (name.startsWith("sec-fetch-")) return true;
+  }
+  return false;
+}
+
+/**
+ * Send a plain-HTTP page load to the HTTPS address of the same app, or null to
+ * serve the request as it came.
+ *
+ * Apps were reachable over HTTP alone until their domain got a certificate, so
+ * every link handed out until then — bookmarks, QR codes, links pasted into
+ * chats — is an `http://` one. This turns those into the HTTPS page, which
+ * matters beyond tidiness: over HTTPS the browser sends `Sec-Fetch-Site` itself
+ * and the app's own CSRF check works without anything filled in for it.
+ *
+ * Deciding whether the client spoke HTTPS is the hard part, because TLS
+ * terminates at the FC gateway and nothing inside the container can observe it
+ * directly. Rather than trusting one header, this refuses to redirect whenever
+ * ANY of these says otherwise:
+ *
+ *   * `x-forwarded-proto: https` — the direct answer, when the gateway gives one.
+ *   * any `Sec-Fetch-*` header — browsers attach these to trustworthy origins
+ *     only, so their presence means the page was already loaded over HTTPS.
+ *     This is what makes a loop impossible for a current browser even if the
+ *     forwarded header is missing or wrong: after the redirect the request
+ *     carries them, and this returns null.
+ *   * the one-shot cookie — a browser too old for Sec-Fetch metadata (Safari
+ *     before 16.4) would otherwise be sent round forever. It gets exactly one
+ *     redirect, lands on HTTPS, and is served normally from there.
+ *
+ * Only document navigations are touched. A server function POST or an API call
+ * is left alone: redirecting those would change a request the app is in the
+ * middle of, and they work over either scheme anyway.
+ *
+ * 302, not 301: a permanent redirect is cached by the browser and would be
+ * painful to walk back if a deployment ever serves apps over HTTP on purpose.
+ */
+export function httpsRedirect(request: Request, host: string): Response | null {
+  if (request.method !== "GET" && request.method !== "HEAD") return null;
+
+  const headers = request.headers;
+  if (headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase() === "https") return null;
+  if (hasFetchMetadata(headers)) return null;
+  if (headers.get("cookie")?.includes(`${REDIRECT_ONCE_COOKIE}=`)) return null;
+
+  // A page load, not a fetch for data: `Accept` is the only thing that
+  // separates them once the Sec-Fetch headers are gone.
+  if (!headers.get("accept")?.includes("text/html")) return null;
+
+  const incoming = new URL(request.url);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: `https://${host}${incoming.pathname}${incoming.search}`,
+      "set-cookie": `${REDIRECT_ONCE_COOKIE}=1; Path=/; Max-Age=60; SameSite=Lax`,
+      // The address depends on request headers, so a shared cache must not
+      // hand this redirect to the next visitor.
+      "cache-control": "no-store",
+    },
+  });
+}
+
+/**
  * Proxy one request to the app's FC trigger, streaming both ways.
  *
  * Response headers pass through untouched apart from hop-by-hop ones: the app

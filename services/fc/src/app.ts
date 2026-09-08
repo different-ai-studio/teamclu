@@ -6,7 +6,7 @@ import { createHonoRouterAdapter } from "./lib/hono-adapter.js";
 import { isRateLimited, resolveClientIp } from "./lib/rate-limit.js";
 import { handleSyncRequest } from "./lib/legacy-sync.js";
 import * as admin from "./lib/admin-handlers.js";
-import { isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
+import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { parseAppPublicHost } from "./lib/apps-public-host.js";
 
 export type AppDeps = {
@@ -90,6 +90,10 @@ export function createApp(deps: AppDeps): Hono {
       if (!isServable(target)) {
         return c.text(target ? "app is not deployed yet" : "no such app", 404);
       }
+      // After the lookup, so an HTTP link to a hostname that is not an app
+      // still gets its 404 rather than a redirect to an HTTPS 404.
+      const toHttps = httpsRedirect(c.req.raw, host!);
+      if (toHttps) return toHttps;
       return proxyToApp(c.req.raw, target.fcEndpoint);
     });
   }
