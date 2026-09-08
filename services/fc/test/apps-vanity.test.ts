@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { createApp } from "../src/app.js";
 import { appPublicUrl, appPublicLabel, parseAppPublicHost } from "../src/lib/apps-public-host.js";
 import {
-  isServable, proxyToApp, selectByIdPrefix, makeSupabaseVanityLookup, makeVanityLookup,
+  isServable, proxyToApp, httpsRedirect, selectByIdPrefix, makeSupabaseVanityLookup, makeVanityLookup,
 } from "../src/lib/apps-vanity.js";
 
 const DOMAIN = "apps.teamclu-dev.ucar.cc";
@@ -469,4 +469,94 @@ test("an opaque origin is not treated as same-origin", async () => {
     body: "{}",
   }));
   assert.equal(headers.get("sec-fetch-site"), null);
+});
+
+// --- sending old http:// links to https ------------------------------------
+
+const HTML = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+
+/** A page load as a browser sends it over plain HTTP: no Sec-Fetch metadata. */
+function pageLoad(url: string, headers: Record<string, string> = {}): Request {
+  return new Request(url, { headers: { accept: HTML, ...headers } });
+}
+
+test("an http page load is sent to the https address, path and query kept", async () => {
+  // Apps were HTTP-only until their domain got a certificate, so every link
+  // handed out until then — bookmarks, QR codes, links pasted into chats — is
+  // an http:// one.
+  const res = httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/todos?filter=open`), `website-18e4ecad.${DOMAIN}`);
+  assert.equal(res?.status, 302);
+  assert.equal(res?.headers.get("location"), `https://website-18e4ecad.${DOMAIN}/todos?filter=open`);
+  assert.equal(res?.headers.get("cache-control"), "no-store", "the target depends on request headers");
+});
+
+test("a request already carrying Sec-Fetch metadata is served, not redirected", async () => {
+  // This is what makes a loop impossible on a current browser: over HTTPS the
+  // browser attaches these itself, so the request that arrives after the
+  // redirect is recognised as already-secure without trusting any proxy header.
+  assert.equal(
+    httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/`, { "sec-fetch-mode": "navigate" }), `website-18e4ecad.${DOMAIN}`),
+    null,
+  );
+});
+
+test("x-forwarded-proto: https settles it directly when the gateway sends one", async () => {
+  assert.equal(
+    httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/`, { "x-forwarded-proto": "https" }), `website-18e4ecad.${DOMAIN}`),
+    null,
+  );
+  // Some proxies append rather than replace.
+  assert.equal(
+    httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/`, { "x-forwarded-proto": "https, http" }), `website-18e4ecad.${DOMAIN}`),
+    null,
+  );
+});
+
+test("the one-shot cookie stops a browser too old for Sec-Fetch looping forever", async () => {
+  // Safari before 16.4 sends no Sec-Fetch headers even over HTTPS. Without
+  // this it would be redirected to a page that redirects it again. It gets one
+  // redirect, lands on HTTPS, and is served from there.
+  const first = httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/`), `website-18e4ecad.${DOMAIN}`);
+  assert.equal(first?.status, 302);
+  const cookie = first!.headers.get("set-cookie") ?? "";
+  assert.match(cookie, /^_tc_https=1;/);
+  assert.doesNotMatch(cookie, /Secure/, "it has to be readable on the http request that follows");
+
+  const second = httpsRedirect(
+    pageLoad(`http://website-18e4ecad.${DOMAIN}/`, { cookie: "_tc_https=1" }),
+    `website-18e4ecad.${DOMAIN}`,
+  );
+  assert.equal(second, null, "a second redirect would be a loop");
+});
+
+test("a server function call is left alone", async () => {
+  // Redirecting a POST mid-flight would change a request the app is in the
+  // middle of, and it works over either scheme anyway.
+  const post = new Request(`http://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST", headers: { accept: HTML }, body: "{}",
+  });
+  assert.equal(httpsRedirect(post, `website-18e4ecad.${DOMAIN}`), null);
+});
+
+test("an API GET that is not a page load is left alone", async () => {
+  // `Accept` is all that separates a data fetch from a navigation once the
+  // Sec-Fetch headers are gone.
+  const res = httpsRedirect(
+    new Request(`http://website-18e4ecad.${DOMAIN}/api/todos`, { headers: { accept: "application/json" } }),
+    `website-18e4ecad.${DOMAIN}`,
+  );
+  assert.equal(res, null);
+});
+
+test("a hostname that is not an app still 404s instead of redirecting", async () => {
+  // Otherwise a mistyped link would answer 302 and send the visitor to an
+  // https 404, hiding which of the two things went wrong.
+  await withDomain(async () => {
+    const app = createApp(deps(async (host: string) => (host.startsWith("known-18e4ecad.") ? {
+      id: APP_ID, slug: "known", fcEndpoint: "http://up.example", fcStatus: "live",
+    } : null)));
+    const res = await app.request(`http://missing-18e4ecad.${DOMAIN}/`, { headers: { accept: HTML } });
+    assert.equal(res.status, 404);
+    assert.equal(res.headers.get("location"), null);
+  });
 });
