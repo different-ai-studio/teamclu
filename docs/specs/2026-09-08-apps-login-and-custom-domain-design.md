@@ -222,6 +222,9 @@ pending 机制。变的是 `platform` 的**实现**（OAuth 2.1 → 代理层 OT
 ⚠️ 备案问题**没有消失**，只是换了位置：用户把域名指向境内 ECS，未备案域名仍可能被
 运营商拦截。这一层挡不住，只能在 UI 上给出提示文案（§5.5）。
 
+⚠️⚠️ **这条决策只对 self-host 形态成立。** 产品有两种部署形态，而「走我们自己的 Caddy」
+是其中一种独有的能力 —— 另一种形态下自定义域名**不可用**。见 §5.8。
+
 ### D6 · 集中的登录服务，用一次性 code 回跳到 app 域名
 
 登录页集中到一个专用域名（`login.<base domain>`）。它带来两件事：登录页只有一份，以及
@@ -590,6 +593,45 @@ api/supabase/mqtt 共享）。
 说明的是「应用代码还拿不到 Supabase 配置」。`teams.oid` 为空时禁用「本公司员工」并给出原因。
 
 新增 locale key 走文本编辑，**不要 parse-and-dump**（会炸重复 key 守卫）。
+
+### 5.8 两种部署形态，只有一种能做自定义域名
+
+`services/fc` 从同一份源码发到两个目标（CLAUDE.md 的「Deployment」一节），而这两个目标的
+**入口层完全不同**。本方案的自定义域名整套机制建立在入口层可以接受任意 Host 之上，所以它
+只在其中一种形态下成立。
+
+| | **self-host（容器）** | **阿里云 Function Compute** |
+|---|---|---|
+| 入口 | Caddy | FC 网关 |
+| 配置 | `deploy/self-host/caddy/Caddyfile` | FC 自定义域名（手工绑） |
+| vanity 域 `*.<APPS_PUBLIC_DOMAIN>` | Caddy 站点块 + on-demand TLS | **一条 FC wildcard 自定义域名**，证书是**手工上传的 PEM 快照**（`services/fc/bind-apps-domain-cert.mjs`，Let's Encrypt 三个月一换，且 **FC 只收 RSA**） |
+| 任意 Host 能否进来 | 能 —— catch-all `{$CADDY_CATCHALL_SITE}` | **不能** |
+
+**为什么 FC 形态下进不来**：在 FC 上，一个 Host 要被路由到函数，必须先为它创建一条自定义
+域名配置 —— 这不是推断，我们自己的代码就是这么做的（`fc-client.ts:265`
+`ensureCustomDomain` 为**每一个 app 函数**单独 `createCustomDomain`）。用户把
+`shop.example.com` CNAME 过来之后，DNS 确实解析到 FC 的入口，但那个 Host 没有对应的配置，
+请求在到达我们的代码之前就被网关拒绝了。
+
+**要在 FC 形态下支持自定义域名，需要**（本轮不做）：
+
+1. 绑定时为每个用户域名调一次 `createCustomDomain`；
+2. 为它准备证书 —— FC 不签证书，只接受上传的 PEM，所以还要接一套签发与续期
+   （`bind-apps-domain-cert.mjs` 目前是人工跑的脚本）；
+3. 域名完成 **ICP 备案** —— 这是硬门槛，而用户的域名恰恰通常没有。
+
+第 3 条正是 D5 一开始就不走 FC 自定义域名的原因。换句话说：**这个功能不是"FC 形态下还没
+接"，而是"FC 形态下做不了"**，除非把备案这一步转嫁给用户。
+
+**登录服务（`LOGIN_DOMAIN`）也受同一约束**，但它是可解的：那是**一个固定域名**，运维绑一
+次 FC 自定义域名 + 上传一次证书即可，不需要 per-app 的动态绑定，备案也由我们自己完成。也
+就是说 **§4 的登录墙在两种形态下都能用，§5 的自定义域名只有 self-host 能用**。
+
+**代码层面的表现**：FC 形态下 `apps-vanity.ts` 的自定义域名查找路径永远查不到东西（没有
+请求会带着用户域名到达），`/internal/caddy/ask` 也没有调用方（那是 Caddy 才有的闸门）。
+两者都是死代码而非故障，不需要额外的开关。
+
+---
 
 ---
 

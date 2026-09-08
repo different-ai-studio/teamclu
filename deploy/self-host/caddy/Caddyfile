@@ -151,6 +151,12 @@
 #
 # Requests that reach FC on a hostname it does not recognise fall through to
 # the Cloud API, which answers its own 404.
+#
+# This block is also the whole reason custom domains are a self-host feature.
+# The same Cloud API deployed to Alibaba Function Compute has no equivalent:
+# there a hostname reaches a function only if a custom domain was created for
+# it, so a user's domain is refused by the gateway before our code runs. See
+# docs/specs/2026-09-08-apps-login-and-custom-domain-design.md §5.8.
 {$CADDY_CATCHALL_SITE} {
 	tls {
 		on_demand

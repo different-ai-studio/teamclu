@@ -17,6 +17,25 @@ import { appFcRouteHost, appPublicUrl, appsFcRouteDomain, appsPublicDomain } fro
  * A CNAME cannot exist on an apex domain at all, and the owner can add the TXT
  * before cutting live traffic over — verification and cutover become two
  * separate, reversible steps instead of one.
+ *
+ * SELF-HOST ONLY. This works because Caddy will accept a connection for ANY
+ * hostname (the catch-all site block) and ask us whether to get a certificate
+ * for it. The Alibaba Function Compute deployment has no such entry point: on
+ * FC a hostname reaches a function only if a custom domain was created for it
+ * — which is exactly what `fc-client.ts` `ensureCustomDomain` does for each
+ * app's own route host. A visitor's CNAME resolves to FC's gateway, but the
+ * Host it carries matches no configuration there and the request is refused
+ * before any of this code runs.
+ *
+ * Supporting it there would mean creating a custom domain per bound name,
+ * sourcing and renewing a certificate for each (FC signs nothing; it serves an
+ * uploaded PEM — see `bind-apps-domain-cert.mjs`), and an ICP filing for the
+ * user's domain. That last one is a hard requirement the user's domain
+ * typically cannot meet, and is why this design routes through our own proxy
+ * in the first place. Design §5.8.
+ *
+ * The login wall (§4) is NOT limited this way: `LOGIN_DOMAIN` is one fixed
+ * hostname an operator binds once, not a per-app one.
  */
 
 /** Label the TXT proof lives under, so it never collides with the owner's own records. */

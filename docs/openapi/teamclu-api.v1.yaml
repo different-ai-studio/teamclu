@@ -5948,6 +5948,14 @@ paths:
         domain, the login domain and so on), for an IP literal, and for a
         domain already bound to another app.
 
+        SELF-HOST DEPLOYMENTS ONLY. The entry point that makes this work is a
+        catch-all site on our own reverse proxy, which accepts a connection for
+        any hostname. A deployment on Alibaba Function Compute has no
+        equivalent — there a hostname reaches a function only if a custom
+        domain was created for it — so a domain bound on such a deployment will
+        verify but never serve traffic. Clients aimed at that target should not
+        offer this.
+
         Only the app creator or a member with `admin` on the app may call this;
         others receive 404, like every other app mutation.
       tags: [Apps]
