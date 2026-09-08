@@ -82,25 +82,7 @@ impl LocalCacheStore {
         Ok(parts_json)
     }
 
-    /// Every message of a session, oldest first, with opencode tool outputs
-    /// merged in where the runtime is unknown or opencode. Callers that know
-    /// more use [`Self::message_load_session_with`].
-    pub async fn message_load_session(
-        &self,
-        session_id: &str,
-        include_deleted: bool,
-        workspace_path: Option<&str>,
-    ) -> Result<Vec<MessageRow>, String> {
-        self.message_load_session_with(
-            session_id,
-            include_deleted,
-            workspace_path,
-            MessageLoadOptions::default(),
-        )
-        .await
-    }
-
-    /// Like [`Self::message_load_session`], but `limit` caps the result to the
+    /// Load a session's messages, oldest first. `limit` caps the result to the
     /// newest N rows (still returned oldest first) and `runtime` lets the
     /// opencode lookup be skipped for runtimes that never write that database.
     pub async fn message_load_session_with(
@@ -207,7 +189,10 @@ mod tests {
         rows.push(dup);
         store.message_upsert_batch(&rows).await.unwrap();
 
-        let loaded = store.message_load_session("s1", false, None).await.unwrap();
+        let loaded = store
+            .message_load_session_with("s1", false, None, MessageLoadOptions::default())
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 300);
         assert_eq!(loaded.first().unwrap().id, "m001");
         assert_eq!(loaded.last().unwrap().id, "m000", "m000 now sorts last");

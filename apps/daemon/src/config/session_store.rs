@@ -69,7 +69,6 @@ impl SessionBinding {
 }
 
 impl SessionStore {
-    #[allow(dead_code)]
     pub fn default_path() -> PathBuf {
         super::layout::active_state_dir().join("runtimes.toml")
     }
