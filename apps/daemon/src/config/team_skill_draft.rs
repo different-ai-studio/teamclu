@@ -9,9 +9,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use teamclu_skillpack::{inspect, read_origin, DirtyState, SkillOrigin, ORIGIN_DIR, SOURCE_TEAM};
+use teamclu_skillpack::{
+    build_package_index, inspect, read_origin, DirtyState, SkillOrigin, ORIGIN_DIR, SOURCE_TEAM,
+};
 use uuid::Uuid;
-use walkdir::WalkDir;
 
 use crate::backend::TeamSkillRow;
 use crate::runtime::team_skills::team_cloud_skills_dir;
@@ -94,6 +95,7 @@ pub struct TeamSkillDraftView {
     pub files: Vec<DraftPackFile>,
     pub source: String,
     pub file_count: usize,
+    pub ignored_count: usize,
     pub total_bytes: u64,
     /// True when SKILL.md or file listing was dropped to stay under the JSON budget.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -216,6 +218,7 @@ fn empty_draft_view(
         files: Vec::new(),
         source,
         file_count: 0,
+        ignored_count: 0,
         total_bytes: 0,
         truncated: false,
         warnings: Vec::new(),
@@ -249,41 +252,37 @@ struct ListedPackFile {
     size: u64,
 }
 
-fn collect_pack_file_entries(target: &Path) -> Result<Vec<ListedPackFile>, ManagedSkillError> {
+fn collect_pack_file_entries(
+    target: &Path,
+) -> Result<(Vec<ListedPackFile>, usize), ManagedSkillError> {
+    let index = build_package_index(target).map_err(io_err)?;
     let mut files = Vec::new();
-    for entry in WalkDir::new(target).follow_links(false) {
-        let entry = entry.map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
-        if !entry.file_type().is_file() {
+    for rel in index.included {
+        if rel == SKILL_MD {
             continue;
         }
-        let rel = entry
-            .path()
-            .strip_prefix(target)
-            .map_err(|_| io_err(std::io::Error::other("strip pack prefix")))?;
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if rel_str == SKILL_MD {
-            continue;
-        }
-        if rel_str.starts_with(&format!("{ORIGIN_DIR}/")) {
-            continue;
-        }
-        let size = fs::metadata(entry.path()).map_err(io_err)?.len();
-        files.push(ListedPackFile { rel: rel_str, size });
+        let path = target.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let size = fs::metadata(&path).map_err(io_err)?.len();
+        files.push(ListedPackFile { rel, size });
     }
-    files.sort_by(|a, b| a.rel.cmp(&b.rel));
-    Ok(files)
+    Ok((files, index.ignored.len()))
 }
 
 fn list_pack_files(
     target: &Path,
-) -> Result<(Vec<DraftPackFile>, Vec<String>, u64), ManagedSkillError> {
-    let entries = collect_pack_file_entries(target)?;
+) -> Result<(Vec<DraftPackFile>, Vec<String>, u64, usize), ManagedSkillError> {
+    let (entries, ignored_count) = collect_pack_file_entries(target)?;
     let mut warnings = Vec::new();
     let total_sidecar_bytes: u64 = entries.iter().map(|e| e.size).sum();
     if entries.len() + 1 > MAX_PACK_FILES {
         warnings.push(format!(
             "pack has {} files (limit {MAX_PACK_FILES}); publish will be rejected",
             entries.len() + 1
+        ));
+    }
+    if ignored_count > 0 {
+        warnings.push(format!(
+            "{ignored_count} files excluded from the publish pack by ignore rules"
         ));
     }
 
@@ -304,7 +303,7 @@ fn list_pack_files(
             }),
         });
     }
-    Ok((out, warnings, total_sidecar_bytes))
+    Ok((out, warnings, total_sidecar_bytes, ignored_count))
 }
 
 fn serialized_draft_len(view: &TeamSkillDraftView) -> usize {
@@ -474,7 +473,7 @@ pub fn get_team_skill_draft(
     let truncated_skill = skill_warning
         .as_ref()
         .is_some_and(|w| w.contains("response budget"));
-    let (files, mut warnings, sidecar_bytes) = list_pack_files(&target)?;
+    let (files, mut warnings, sidecar_bytes, ignored_count) = list_pack_files(&target)?;
     if let Some(warning) = skill_warning {
         warnings.push(warning);
     }
@@ -497,6 +496,7 @@ pub fn get_team_skill_draft(
         files,
         source: source.as_str().into(),
         file_count,
+        ignored_count,
         total_bytes,
         truncated: truncated_skill,
         warnings,

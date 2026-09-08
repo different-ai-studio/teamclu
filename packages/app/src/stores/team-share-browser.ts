@@ -320,6 +320,8 @@ interface TeamShareBrowserState {
    * only the local path knows that. `SkillDetail` hides the entry otherwise.
    */
   sharePersonalSkill: (slug: string, input: TeamSkillShareInput) => Promise<string | null>
+  /** Snapshot of the published file set + digest, taken when the publish sheet opens. */
+  loadSkillPublishPreview: (slug: string) => Promise<TeamSkillPublishPreview>
   /** Publish the local edits of an already-shared skill as the next version. */
   publishSkillVersion: (slug: string, input: TeamSkillVersionInput) => Promise<void>
   /**
@@ -393,6 +395,17 @@ interface TeamSkillVersionInput {
   whenToUse?: string
   whenNotToUse?: string
   requires?: string[] | null
+  expectedDigest?: string
+}
+
+export interface TeamSkillPublishPreview {
+  includedCount: number
+  ignoredCount: number
+  totalBytes: number
+  digest: string
+  included: string[]
+  ignored: string[]
+  limitError?: string | null
 }
 
 export interface TeamSkillFileDiff {
@@ -913,6 +926,14 @@ export class StaleDirtySkillPublishError extends Error {
   constructor(readonly slug: string) {
     super('stale_dirty_draft')
     this.name = 'StaleDirtySkillPublishError'
+  }
+}
+
+/** Local files changed after the publish preview was taken. */
+export class PreviewDigestMismatchError extends Error {
+  constructor() {
+    super('preview_digest_mismatch')
+    this.name = 'PreviewDigestMismatchError'
   }
 }
 
@@ -1674,6 +1695,12 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       teamId,
       cloudApiUrl,
       accessToken,
+      expectedDigest: input.expectedDigest ?? null,
+    }).catch((e) => {
+      if (String(e instanceof Error ? e.message : e).includes('preview_digest_mismatch')) {
+        throw new PreviewDigestMismatchError()
+      }
+      throw e
     })
 
     const backend = getBackend()
@@ -2105,6 +2132,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     return invoke<TeamSkillDraftMetadata>('team_skill_read_draft_metadata', { slug, teamId })
+  },
+
+  loadSkillPublishPreview: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const dirPath = await invoke<string>('team_skill_installed_dir', { slug, teamId })
+    return invoke<TeamSkillPublishPreview>('team_skill_publish_preview', { dirPath })
   },
 
   listDraftRecoveries: async (slug) => {

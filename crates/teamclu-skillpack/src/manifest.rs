@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::package_index::{build_package_index, PackIgnore};
+
 /// Our own bookkeeping directory. Excluded from every manifest: it holds the
 /// manifest, so including it would make the file describe itself.
 pub const EXCLUDED_DIR: &str = ".clawhub";
@@ -68,6 +70,9 @@ pub enum DirtyState {
         /// the publish path (`build_manifest` measures the whole thing), so an
         /// extra file is not inert: the next publish ships it. Reporting it is
         /// what lets the user see that before it goes out.
+        ///
+        /// Files excluded by `.teamcluignore` or the built-in OS junk list are
+        /// not added: they stay on disk and they do not pause auto-follow.
         ///
         /// The cost is real and was designed against once already: a skill
         /// whose own script writes a log or cache beside itself now shows up as
@@ -125,22 +130,26 @@ pub(crate) fn to_native(rel: &str) -> PathBuf {
     }
 }
 
-/// Every regular file under `dir`, `.clawhub/` aside, as `/`-separated relative
+/// Every regular file the pack owns under `dir`, as `/`-separated relative
 /// paths in sorted order.
 ///
-/// This is the single definition of "a file the pack owns" — the manifest and
-/// the upgrade swap both go through it, so neither can drift into a different
-/// idea of which files are in scope.
-///
-/// Symlinks are skipped rather than followed: packages are extracted as plain
-/// files (see the installer's zip extraction), so a symlink in here is
-/// something a user added, and following one is how a directory walk turns
-/// into an infinite loop.
+/// This is the included set from [`build_package_index`]: OS junk, ignored
+/// runtime files, bookkeeping, and symlinks are not in it. The manifest, the
+/// upgrade swap, zip packing, and dirty detection all go through this list so
+/// none of them can drift into a different idea of which files are in scope.
 pub fn list_managed_paths(dir: &Path) -> std::io::Result<Vec<String>> {
-    let mut out = Vec::new();
-    walk(dir, dir, &mut out)?;
-    out.sort();
-    Ok(out)
+    Ok(build_package_index(dir)?.included)
+}
+
+/// Digest of the published file set: sorted path + content hash, then hashed.
+///
+/// Used as the preview/publish fingerprint so a file that appears between the
+/// two cannot slip into the zip unseen. This is *not* the zip bytes — zip
+/// layout is not a stable fingerprint.
+pub fn package_digest(dir: &Path) -> std::io::Result<String> {
+    let manifest = build_manifest(dir)?;
+    let json = serde_json::to_string(&manifest).map_err(std::io::Error::other)?;
+    Ok(format!("sha256:{}", sha256_hex(json.as_bytes())))
 }
 
 pub fn build_manifest(dir: &Path) -> std::io::Result<FileManifest> {
@@ -184,39 +193,12 @@ pub fn build_manifest_for(dir: &Path, rels: &[String]) -> std::io::Result<FileMa
     Ok(out)
 }
 
-fn walk(root: &Path, current: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(current)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            // Only the top-level `.clawhub` is ours; one nested deeper belongs
-            // to the package and is measured like anything else.
-            if path.parent() == Some(root) && entry.file_name() == EXCLUDED_DIR {
-                continue;
-            }
-            walk(root, &path, out)?;
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-        let Ok(rel) = path.strip_prefix(root) else {
-            continue;
-        };
-        out.push(rel.to_string_lossy().replace('\\', "/"));
-    }
-    Ok(())
-}
-
 /// Compare what is on disk against the baseline.
 ///
-/// Only files named in the baseline are examined. Anything else in the
-/// directory — a script's cache, a note the user dropped in — is deliberately
-/// invisible here and survives upgrades untouched.
+/// Only files in the published set are examined. Runtime files excluded by
+/// `.teamcluignore` or the built-in OS junk list are invisible here: they stay
+/// on disk through upgrades, and they do not pin the pack dirty. Unignored
+/// extras still count as added, because the next publish would ship them.
 pub fn inspect(dir: &Path, baseline: Option<&FileManifest>) -> DirtyState {
     let Some(baseline) = baseline else {
         return DirtyState::Unmanaged;
@@ -225,10 +207,14 @@ pub fn inspect(dir: &Path, baseline: Option<&FileManifest>) -> DirtyState {
         return DirtyState::Unmanaged;
     }
 
+    let ignore = PackIgnore::load(dir);
     let mut modified = Vec::new();
     let mut deleted = Vec::new();
 
     for (rel, want) in baseline {
+        if ignore.is_ignored(rel, false) {
+            continue;
+        }
         let full = dir.join(to_native(rel));
         let Ok(meta) = std::fs::symlink_metadata(&full) else {
             deleted.push(rel.clone());
@@ -260,9 +246,6 @@ pub fn inspect(dir: &Path, baseline: Option<&FileManifest>) -> DirtyState {
         }
     }
 
-    // Anything on disk the baseline never listed. `list_managed_paths` already
-    // drops `.clawhub/` (our own bookkeeping) and symlinks, so this is exactly
-    // "files a person or a script put here".
     let added: Vec<String> = match list_managed_paths(dir) {
         Ok(on_disk) => on_disk
             .into_iter()
@@ -530,5 +513,101 @@ mod tests {
             inspect(&dir, Some(&FileManifest::new())),
             DirtyState::Unmanaged
         );
+    }
+
+    #[test]
+    fn ds_store_is_never_managed_or_dirty() {
+        let (_tmp, dir) = fixture();
+        let m = build_manifest(&dir).unwrap();
+        write(&dir, ".DS_Store", "finder");
+        write(&dir, "scripts/.DS_Store", "finder");
+        let paths = list_managed_paths(&dir).unwrap();
+        assert!(!paths.iter().any(|p| p.ends_with(".DS_Store")), "{paths:?}");
+        assert!(!m.contains_key(".DS_Store"));
+        assert_eq!(inspect(&dir, Some(&m)), DirtyState::Clean);
+    }
+
+    #[test]
+    fn teamcluignore_is_published_and_cannot_ignore_itself() {
+        let (_tmp, dir) = fixture();
+        write(&dir, ".teamcluignore", ".teamcluignore\nresults/\n");
+        let paths = list_managed_paths(&dir).unwrap();
+        assert!(paths.contains(&".teamcluignore".to_string()), "{paths:?}");
+    }
+
+    #[test]
+    fn skill_md_cannot_be_ignored() {
+        let (_tmp, dir) = fixture();
+        write(&dir, ".teamcluignore", "SKILL.md\n*.md\n");
+        let paths = list_managed_paths(&dir).unwrap();
+        assert!(paths.contains(&"SKILL.md".to_string()), "{paths:?}");
+    }
+
+    #[test]
+    fn ignored_runtime_files_are_not_dirty_and_not_managed() {
+        let (_tmp, dir) = fixture();
+        let m = build_manifest(&dir).unwrap();
+        write(&dir, ".teamcluignore", "results/\n");
+        write(&dir, "results/run-1.json", "{}\n");
+        write(&dir, "results/nested/out.md", "noise\n");
+        let paths = list_managed_paths(&dir).unwrap();
+        assert!(!paths.iter().any(|p| p.starts_with("results/")), "{paths:?}");
+        match inspect(&dir, Some(&m)) {
+            DirtyState::Dirty {
+                modified,
+                deleted,
+                added,
+            } => {
+                assert!(modified.is_empty(), "{modified:?}");
+                assert!(deleted.is_empty(), "{deleted:?}");
+                assert_eq!(added, vec![".teamcluignore".to_string()]);
+            }
+            other => panic!("expected only the ignore file as added, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unignored_new_files_are_still_dirty() {
+        let (_tmp, dir) = fixture();
+        let m = build_manifest(&dir).unwrap();
+        write(&dir, ".teamcluignore", "results/\n");
+        write(&dir, "notes.md", "keep me\n");
+        match inspect(&dir, Some(&m)) {
+            DirtyState::Dirty { added, .. } => {
+                assert!(added.contains(&"notes.md".to_string()), "{added:?}");
+            }
+            other => panic!("expected dirty, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn previously_published_then_ignored_files_are_not_dirty() {
+        let (_tmp, dir) = fixture();
+        write(&dir, "results/out.json", "{}\n");
+        let m = build_manifest(&dir).unwrap();
+        assert!(m.contains_key("results/out.json"));
+        write(&dir, ".teamcluignore", "results/\n");
+        match inspect(&dir, Some(&m)) {
+            DirtyState::Dirty {
+                modified,
+                deleted,
+                added,
+            } => {
+                assert!(!modified.contains(&"results/out.json".to_string()));
+                assert!(!deleted.contains(&"results/out.json".to_string()));
+                assert!(!added.contains(&"results/out.json".to_string()));
+                assert_eq!(added, vec![".teamcluignore".to_string()]);
+            }
+            other => panic!("expected only the ignore file as added, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_not_managed() {
+        let (_tmp, dir) = fixture();
+        std::os::unix::fs::symlink("/tmp/outside", dir.join("escape")).unwrap();
+        let paths = list_managed_paths(&dir).unwrap();
+        assert!(!paths.iter().any(|p| p == "escape"), "{paths:?}");
     }
 }

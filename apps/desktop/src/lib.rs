@@ -535,6 +535,7 @@ pub fn run() {
             commands::team_skills::team_skill_uninstall,
             commands::team_skills::team_skill_list_installed,
             commands::team_skills::team_skill_pack_and_upload,
+            commands::team_skills::team_skill_publish_preview,
             commands::team_skills::team_skill_install_from_dir,
             commands::team_skills::team_skill_rebaseline,
             commands::team_skills::team_skill_inspect,

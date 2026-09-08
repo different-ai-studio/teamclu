@@ -9643,6 +9643,7 @@ dependencies = [
 name = "teamclu-skillpack"
 version = "0.1.0"
 dependencies = [
+ "ignore",
  "serde",
  "serde_json",
  "sha2",

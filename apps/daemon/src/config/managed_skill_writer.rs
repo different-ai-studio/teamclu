@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use base64::Engine as _;
-use teamclu_skillpack::manifest::build_manifest;
+use teamclu_skillpack::package_digest;
 use teamclu_types::skill_frontmatter::parse_frontmatter;
 use uuid::Uuid;
 
@@ -161,21 +161,12 @@ impl ClaimedTeamContext {
 }
 
 pub fn pack_digest(dir: &Path) -> Result<String, ManagedSkillError> {
-    let manifest = build_manifest(dir).map_err(|e| {
+    package_digest(dir).map_err(|e| {
         ManagedSkillError::new(
             ManagedSkillErrorCode::SkillWriteFailed,
             format!("manifest: {e}"),
         )
-    })?;
-    let json = serde_json::to_string(&manifest).map_err(|e| {
-        ManagedSkillError::new(
-            ManagedSkillErrorCode::SkillWriteFailed,
-            format!("manifest encode: {e}"),
-        )
-    })?;
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(json.as_bytes());
-    Ok(format!("sha256:{:x}", hash))
+    })
 }
 
 fn io_managed(e: std::io::Error) -> ManagedSkillError {
@@ -340,19 +331,13 @@ fn verify_tree_confined(root: &Path) -> Result<(), ManagedSkillError> {
     Ok(())
 }
 
-/// Validates size and file-count limits on the final on-disk pack tree.
+/// Validates size and file-count limits on the published file set.
 pub(crate) fn validate_pack_tree_limits(root: &Path) -> Result<(), ManagedSkillError> {
     verify_tree_confined(root)?;
+    let index = teamclu_skillpack::build_package_index(root).map_err(io_managed)?;
     let mut file_count = 0usize;
     let mut total_bytes = 0usize;
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-    {
-        let entry = entry.map_err(|e| io_managed(std::io::Error::other(e.to_string())))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
+    for rel in &index.included {
         file_count += 1;
         if file_count > MAX_PACK_FILES {
             return Err(ManagedSkillError::new(
@@ -360,20 +345,16 @@ pub(crate) fn validate_pack_tree_limits(root: &Path) -> Result<(), ManagedSkillE
                 "skill pack exceeds file count limit",
             ));
         }
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .map_err(|_| io_managed(std::io::Error::other("strip pack prefix")))?;
-        let len = entry
-            .metadata()
-            .map_err(|e| io_managed(std::io::Error::other(e.to_string())))?
+        let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let len = fs::metadata(&path)
+            .map_err(io_managed)?
             .len()
             .try_into()
             .unwrap_or(usize::MAX);
         if len > MAX_SINGLE_FILE_BYTES {
             return Err(ManagedSkillError::new(
                 ManagedSkillErrorCode::SkillPackTooLarge,
-                format!("file {} exceeds size limit", rel.display()),
+                format!("file {rel} exceeds size limit"),
             ));
         }
         total_bytes = total_bytes.saturating_add(len);

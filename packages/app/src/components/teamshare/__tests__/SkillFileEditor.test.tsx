@@ -83,7 +83,7 @@ describe('SkillFileEditor save', () => {
     render(<SkillFileEditor slug="say-hello" rel="SKILL.md" />)
     await waitFor(() => expect(screen.getByTestId('code-editor')).toBeTruthy())
     fireEvent.change(screen.getByTestId('code-editor'), { target: { value: 'hello-new' } })
-    fireEvent.click(screen.getByText('Save'))
+    fireEvent.click(screen.getByText('Save to this device'))
     await waitFor(() => expect(mockPut).toHaveBeenCalled())
     expect(mockPut).toHaveBeenCalledWith(
       'ws:/Users/me/project',
@@ -98,7 +98,7 @@ describe('SkillFileEditor save', () => {
     render(<SkillFileEditor slug="say-hello" rel="scripts/hello.js" />)
     await waitFor(() => expect(screen.getByTestId('code-editor')).toBeTruthy())
     fireEvent.change(screen.getByTestId('code-editor'), { target: { value: 'hello-new' } })
-    fireEvent.click(screen.getByText('Save'))
+    fireEvent.click(screen.getByText('Save to this device'))
     await waitFor(() => expect(mockWrite).toHaveBeenCalled())
     expect(mockWrite).toHaveBeenCalledWith(
       '/hosted/skills/say-hello/scripts/hello.js',
@@ -113,7 +113,7 @@ describe('SkillFileEditor save', () => {
     render(<SkillFileEditor slug="say-hello" rel="scripts/hello.js" />)
     await waitFor(() => expect(screen.getByTestId('code-editor')).toBeTruthy())
     fireEvent.change(screen.getByTestId('code-editor'), { target: { value: 'hello-new' } })
-    fireEvent.click(screen.getByText('Save'))
+    fireEvent.click(screen.getByText('Save to this device'))
     await waitFor(() => expect(mockWrite).toHaveBeenCalled())
     expect(mockNotify).not.toHaveBeenCalled()
     expect(toast.error).toHaveBeenCalled()
@@ -124,7 +124,7 @@ describe('SkillFileEditor save', () => {
     render(<SkillFileEditor slug="say-hello" rel="scripts/hello.js" />)
     await waitFor(() => expect(screen.getByTestId('code-editor')).toBeTruthy())
     fireEvent.change(screen.getByTestId('code-editor'), { target: { value: 'hello-new' } })
-    fireEvent.click(screen.getByText('Save'))
+    fireEvent.click(screen.getByText('Save to this device'))
     await waitFor(() => expect(mockNotify).toHaveBeenCalled())
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringContaining('Skill 已保存，但新会话可能暂时仍使用旧缓存'),

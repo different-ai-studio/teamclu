@@ -329,7 +329,18 @@ MQTT 通道是现成的（`crates/teamclu-types/src/mqtt.rs` 的 `actor_notify()
 
 对账前必须判 dirty，脏了就跳过升级、记冲突、交给用户选「发新版 / 丢弃本地」。
 
-**坑：不能用 zip 的 `content_hash` 判 dirty。** frontmatter 回写发生在解压**之后**，落盘状态天生就不等于 zip 内容，直接比会永远判脏。必须在回写完成后再算一次目录 hash（安装态 hash），写进 lockfile，对账时比这一个。
+**文件选择必须只有一个入口。** dirty 检测、diff、zip、content digest、发布后 rebaseline、daemon draft 清单全部走 `teamclu_skillpack::build_package_index`。检测忽略了某文件、打包却上传它，是这一层最贵的 bug。
+
+忽略规则两层：
+
+1. 内置 OS 垃圾：`.DS_Store`、`._*`、`Thumbs.db`、`desktop.ini`、`__MACOSX/`。永远不进包。
+2. Skill 根目录的 `.teamcluignore`（gitignore 语法，路径相对 Skill 根）。只读这一份，不读嵌套副本。
+
+硬规则：`.teamcluignore` 自身和 `SKILL.md` 不能被忽略；顶层 `.clawhub/` 仍是安装记账，不是包内容。忽略文件留在用户磁盘上，自动升级和卸载都不删它们。曾经发布、新版本已 ignore 的文件，其他成员升级时会按「新包不再包含」删除。
+
+运行产物应写在 Skill 目录外，或由该 Skill 自己的 `.teamcluignore` 排除。不要全局忽略 `*.json` / `*.md`。
+
+**坑：不能用 zip 的 `content_hash` 判 dirty。** frontmatter 回写发生在解压**之后**，落盘状态天生就不等于 zip 内容，直接比会永远判脏。必须在回写完成后再算一次目录 hash（安装态 hash），写进 lockfile，对账时比这一个。发布预览用的 `package_digest` 是 included 文件的路径+内容 hash，不是 zip 字节。
 
 连带一个必须处理的场景：**作者自己的机器每次都会走到这条路径。** publish 成功后要立刻把本地登记成新版本 + 新的安装态 hash，否则作者天天被误报「本地有修改」，而他恰恰是最该拿到干净信号的人。
 

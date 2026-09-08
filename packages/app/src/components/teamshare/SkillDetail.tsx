@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { encodeWorkspaceId, putDaemonSkill } from '@/lib/daemon/daemon-local-client'
-import { useTeamShareBrowserStore, isSkillDirtyConflict, SkillDiscardIncompleteError, SkillSlugTakenError, SkillPublishedRefreshError, SkillMutationRefreshError, SkillRuntimeRefreshError, StaleTeamSkillPublishError, StaleDirtySkillPublishError, type TeamSkillFileDiff, type DraftRecoveryRecord } from '@/stores/team-share-browser'
+import { useTeamShareBrowserStore, isSkillDirtyConflict, SkillDiscardIncompleteError, SkillSlugTakenError, SkillPublishedRefreshError, SkillMutationRefreshError, SkillRuntimeRefreshError, StaleTeamSkillPublishError, StaleDirtySkillPublishError, PreviewDigestMismatchError, type TeamSkillFileDiff, type DraftRecoveryRecord } from '@/stores/team-share-browser'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend/provider'
 import { type TeamSkillCategory, type TeamSkillVersion } from '@/lib/backend/cloud-api/team-skills'
@@ -54,6 +54,7 @@ export function SkillDetail({ slug }: { slug: string }) {
   const loadSkillDiff = useTeamShareBrowserStore((s) => s.loadSkillDiff)
   const loadSkillTeamUpdatesDiff = useTeamShareBrowserStore((s) => s.loadSkillTeamUpdatesDiff)
   const loadSkillDraftMetadata = useTeamShareBrowserStore((s) => s.loadSkillDraftMetadata)
+  const loadSkillPublishPreview = useTeamShareBrowserStore((s) => s.loadSkillPublishPreview)
   const listDraftRecoveries = useTeamShareBrowserStore((s) => s.listDraftRecoveries)
   const draftRecoveryRevision = useTeamShareBrowserStore((s) => s.draftRecoveryRevision)
   const rebaseSkillOnLatest = useTeamShareBrowserStore((s) => s.rebaseSkillOnLatest)
@@ -328,6 +329,7 @@ export function SkillDetail({ slug }: { slug: string }) {
       whenToUse: string
       whenNotToUse: string
       requires: string[]
+      expectedDigest: string
     }) => {
       if (!item || busy) return
       if (item.upstreamSubscribed) {
@@ -371,6 +373,15 @@ export function SkillDetail({ slug }: { slug: string }) {
                 },
               },
             },
+          )
+          return
+        }
+        if (e instanceof PreviewDigestMismatchError) {
+          toast.error(
+            t(
+              'teamShare.skillPublishDigestChanged',
+              'The local files changed after the preview. Review the pack and try again.',
+            ),
           )
           return
         }
@@ -637,6 +648,11 @@ export function SkillDetail({ slug }: { slug: string }) {
     [loadSkillDraftMetadata, item?.slug, slug],
   )
 
+  const loadPublishPreview = React.useCallback(
+    () => loadSkillPublishPreview(item?.slug ?? slug),
+    [loadSkillPublishPreview, item?.slug, slug],
+  )
+
   if (!item) return null
 
   const conflicted =
@@ -837,9 +853,13 @@ export function SkillDetail({ slug }: { slug: string }) {
               'h-8 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90',
               !dirty && 'opacity-50',
             )}
+            title={t(
+              'teamShare.saveLocalHint',
+              'Save updates files on this machine. Publish creates a team version.',
+            )}
           >
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-            {t('teamShare.save', 'Save')}
+            {t('teamShare.saveLocal', 'Save to this device')}
           </Button>
         )}
       </div>
@@ -1135,6 +1155,7 @@ export function SkillDetail({ slug }: { slug: string }) {
             : undefined
         }
         onLoadDraftMetadata={loadDraftMetadata}
+        onLoadPublishPreview={loadPublishPreview}
         onClose={() => setPublishOpen(false)}
         onSubmit={runPublishVersion}
       />

@@ -10,18 +10,18 @@
 //!
 //! It lives in `crates/` rather than next to the Tauri commands because the
 //! reconcile loop moves into the daemon (P2) and this is the part that has to
-//! move with it. Keeping it dependency-free from the start is cheaper than
-//! untangling it later.
+//! move with it. The `ignore` crate is the one extra dependency: gitignore
+//! matching for `.teamcluignore` has to be identical on desktop and daemon.
 //!
 //! # Why a per-file manifest and not one directory hash
 //!
 //! A single tree hash is less code and answers the question wrong three ways:
 //!
 //! 1. **Runtime artifacts.** Skills ship scripts, and scripts write caches and
-//!    logs next to themselves. Under a tree hash the first such write pins the
-//!    skill as permanently dirty, auto-follow stops forever, and the user is
-//!    never told why. With a manifest, a file nobody registered is simply not
-//!    ours to care about.
+//!    logs next to themselves. Those files must not pin the pack dirty, and
+//!    they must not ship. `.teamcluignore` plus built-in OS junk is how a file
+//!    stays on disk without entering the published set. Unignored extras still
+//!    count as added, because the next publish would ship them.
 //! 2. **Upgrades destroy bystanders.** Knowing exactly which files we installed
 //!    is what lets an upgrade replace those and leave everything else alone,
 //!    instead of `remove_dir_all` taking the user's own notes with it.
@@ -33,14 +33,20 @@ pub mod commit;
 pub mod frontmatter;
 pub mod manifest;
 pub mod origin;
+pub mod package_index;
 pub mod swap;
 pub mod zip_path;
 
 pub use commit::commit_staged_pack;
 pub use frontmatter::{write_registry_frontmatter, RegistryFields, SOURCE_TEAM};
 pub use manifest::{
-    build_manifest, build_manifest_for, inspect, list_managed_paths, sha256_hex, DirtyState,
-    FileManifest, ManagedFile,
+    build_manifest, build_manifest_for, inspect, list_managed_paths, package_digest, sha256_hex,
+    DirtyState, FileManifest, ManagedFile,
+};
+pub use package_index::{
+    build_package_index, check_publish_limits, PackIgnore, PackLimitError, PackageIndex,
+    PackagePathError, PackagePathErrorKind, IGNORE_FILE, MAX_PACK_FILES, MAX_PACK_TOTAL_BYTES,
+    MAX_SINGLE_FILE_BYTES, SKILL_MD,
 };
 pub use origin::{read_origin, write_origin, SkillOrigin, ORIGIN_DIR, ORIGIN_VERSION};
 pub use swap::{remove_managed_files, swap_managed_files};

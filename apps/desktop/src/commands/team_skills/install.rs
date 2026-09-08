@@ -10,13 +10,13 @@ use super::frontmatter::InstalledStamp;
 use super::frontmatter::DIRTY_CONFLICT_ERROR;
 use super::inspect::belongs_to_another_team;
 use super::inspect::effective_team_skill_dir;
-use super::packfs::zip_skill_dir;
 use super::trash::draft_recovery_context;
 use super::trash::move_to_trash;
 use super::types::TeamSkillInstallFromDirRequest;
 use super::types::TeamSkillInstallRequest;
 use super::types::TeamSkillInstallResult;
 use super::types::TeamSkillPackResult;
+use super::types::TeamSkillPublishPreview;
 use super::types::TeamSkillRebaselineRequest;
 use crate::commands::clawhub::{
     extract_zip_to_dir, global_skills_dir, now_millis, read_lockfile, validate_slug,
@@ -25,8 +25,8 @@ use crate::commands::clawhub::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use teamclu_skillpack::{
-    commit_staged_pack, list_managed_paths, read_origin, remove_managed_files, swap_managed_files,
-    RegistryFields,
+    build_package_index, check_publish_limits, commit_staged_pack, list_managed_paths,
+    package_digest, read_origin, remove_managed_files, swap_managed_files, RegistryFields, SKILL_MD,
 };
 
 #[tauri::command]
@@ -213,6 +213,62 @@ pub(super) fn team_skill_uninstall_blocking(
     Ok(format!("Uninstalled {}", slug))
 }
 
+pub const PREVIEW_DIGEST_MISMATCH: &str = "preview_digest_mismatch";
+
+fn publish_preview_blocking(dir: &std::path::Path) -> Result<TeamSkillPublishPreview, String> {
+    if !dir.is_dir() {
+        return Err(format!("Skill directory not found: {}", dir.display()));
+    }
+    if !dir.join(SKILL_MD).is_file() {
+        return Err("Skill directory must contain SKILL.md".to_string());
+    }
+    let skill_md = std::fs::read_to_string(dir.join(SKILL_MD))
+        .map_err(|e| format!("Failed to read SKILL.md: {e}"))?;
+    let parsed = teamclu_types::skill_frontmatter::parse_frontmatter(&skill_md);
+    if !parsed.has_frontmatter || parsed.string("name").is_none() {
+        return Err("SKILL.md must begin with valid frontmatter including name".to_string());
+    }
+
+    let index =
+        build_package_index(dir).map_err(|e| format!("Failed to index skill files: {e}"))?;
+    if !index.invalid.is_empty() {
+        let paths = index
+            .invalid
+            .iter()
+            .map(|p| p.path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("skill pack contains unpublishable paths: {paths}"));
+    }
+    let digest = package_digest(dir).map_err(|e| format!("Failed to digest skill pack: {e}"))?;
+    let (total_bytes, limit_error) = match check_publish_limits(dir, &index.included) {
+        Ok(bytes) => (bytes, None),
+        Err(err) => (0, Some(err.to_string())),
+    };
+    Ok(TeamSkillPublishPreview {
+        included_count: index.included.len(),
+        ignored_count: index.ignored.len(),
+        total_bytes,
+        digest,
+        included: index.included,
+        ignored: index.ignored,
+        limit_error,
+    })
+}
+
+/// Snapshot of what a publish would upload. The digest is the fingerprint
+/// `team_skill_pack_and_upload` re-checks so a script cannot change the pack
+/// between preview and click.
+#[tauri::command]
+pub async fn team_skill_publish_preview(dir_path: String) -> Result<TeamSkillPublishPreview, String> {
+    tokio::task::spawn_blocking(move || {
+        let dir = std::path::PathBuf::from(dir_path.trim());
+        publish_preview_blocking(&dir)
+    })
+    .await
+    .map_err(|e| format!("team skill publish_preview task failed: {e}"))?
+}
+
 /// Zip a personal skill directory and upload it to the team's amuxc blob store.
 /// Returns sha256 + size for the subsequent `POST /v1/teams/:id/skills` publish.
 #[tauri::command]
@@ -222,6 +278,7 @@ pub async fn team_skill_pack_and_upload(
     team_id: String,
     cloud_api_url: String,
     access_token: String,
+    expected_digest: Option<String>,
 ) -> Result<TeamSkillPackResult, String> {
     tokio::task::spawn_blocking(move || {
         let slug = slug.trim().to_string();
@@ -240,13 +297,20 @@ pub async fn team_skill_pack_and_upload(
         }
 
         let dir = std::path::PathBuf::from(dir_path.trim());
-        if !dir.is_dir() {
-            return Err(format!("Skill directory not found: {}", dir.display()));
+        let preview = publish_preview_blocking(&dir)?;
+        if let Some(err) = preview.limit_error {
+            return Err(err);
         }
-        if !dir.join("SKILL.md").is_file() {
-            return Err("Skill directory must contain SKILL.md".to_string());
+        if let Some(expected) = expected_digest
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if expected != preview.digest {
+                return Err(PREVIEW_DIGEST_MISMATCH.to_string());
+            }
         }
-        let zip_bytes = zip_skill_dir(&dir)?;
+        let zip_bytes = super::packfs::zip_skill_files(&dir, &preview.included)?;
         let mut hasher = Sha256::new();
         hasher.update(&zip_bytes);
         let content_hash = format!("{:x}", hasher.finalize());
