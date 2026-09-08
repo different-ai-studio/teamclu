@@ -149,7 +149,14 @@ impl LocalCacheStore {
         Ok(instance)
     }
 
-    /// Get a locked reference to the raw connection (rarely needed externally).
+    /// Get a locked reference to the raw connection.
+    ///
+    /// Test-only since #1301 removed `session_export`, which was the last
+    /// caller outside `mod tests`. CI checks `--all-targets`, and the lib
+    /// target is compiled without `cfg(test)`, so leaving it ungated is a
+    /// `dead_code` error there while a plain `cargo check` only warns. Drop
+    /// the gate the moment production code needs the raw connection again.
+    #[cfg(test)]
     pub async fn conn(&self) -> tokio::sync::MutexGuard<'_, Connection> {
         self.conn.lock().await
     }
