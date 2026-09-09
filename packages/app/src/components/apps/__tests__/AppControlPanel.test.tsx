@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
-import { AppControlPanel } from '../AppControlPanel'
+import { AppControlPanel, visibilityChangeNeedsConfirm } from '../AppControlPanel'
 import type { AppRow } from '@/lib/backend/types'
 
 const backendMocks = vi.hoisted(() => ({
@@ -36,6 +36,7 @@ const storeMocks = vi.hoisted(() => ({
   deployingIds: [] as string[],
   reseed: vi.fn(),
   rename: vi.fn(),
+  setVisibility: vi.fn(),
   deploy: vi.fn(),
   deleteApp: vi.fn(),
 }))
@@ -133,6 +134,7 @@ describe('AppControlPanel', () => {
       canWrite: true,
     })
     storeMocks.deleteApp.mockResolvedValue(true)
+    storeMocks.setVisibility.mockResolvedValue(true)
   })
 
   it('shows a count on every management row', async () => {
@@ -262,6 +264,22 @@ describe('AppControlPanel', () => {
     expect(screen.getByTestId('app-control-open-auth').textContent).toContain('1 条页面规则')
   })
 
+  it('shows what the app\'s visibility currently means, not just its name', async () => {
+    // "Personal" does not tell anyone that the local daemon cannot see the app.
+    const { rerender } = render(<AppControlPanel app={baseApp} />)
+    expect(screen.getByTestId('app-control-visibility').textContent).toContain('全团队可见')
+    expect(screen.getByText(/团队里每个人都能在应用列表里看到它/)).toBeTruthy()
+
+    rerender(<AppControlPanel app={{ ...baseApp, visibility: 'personal' } as AppRow} />)
+    expect(screen.getByTestId('app-control-visibility').textContent).toContain('仅自己和被授权的人')
+    expect(screen.getByText(/本机 daemon 也看不到它/)).toBeTruthy()
+  })
+
+  it('does not open a confirm before anything is asked for', async () => {
+    render(<AppControlPanel app={baseApp} />)
+    expect(screen.queryByTestId('app-control-visibility-confirm')).toBeNull()
+  })
+
   it('copies the local path', async () => {
     render(<AppControlPanel app={baseApp} />)
     await waitFor(() => expect(screen.getByTestId('app-control-copy-path')).toBeTruthy())
@@ -289,6 +307,20 @@ describe('AppControlPanel', () => {
     await user.click(screen.getAllByRole('button', { name: 'Delete' }).at(-1)!)
     await waitFor(() => {
       expect(storeMocks.deleteApp).toHaveBeenCalledWith('app-1')
+    })
+  })
+
+  describe('visibilityChangeNeedsConfirm', () => {
+    it('confirms only when the change takes the app off other people\'s lists', () => {
+      // Widening adds people and can surprise nobody; narrowing removes the app
+      // from every teammate's list, which "personal" does not say on its own.
+      expect(visibilityChangeNeedsConfirm('team', 'personal')).toBe(true)
+      expect(visibilityChangeNeedsConfirm('personal', 'team')).toBe(false)
+    })
+
+    it('never confirms a change that changes nothing', () => {
+      expect(visibilityChangeNeedsConfirm('team', 'team')).toBe(false)
+      expect(visibilityChangeNeedsConfirm('personal', 'personal')).toBe(false)
     })
   })
 })

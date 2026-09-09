@@ -60,6 +60,7 @@
 应用
   重命名           [____________] [保存]
   本机路径         ~/teams/x/apps/y      [复制] [移动]
+  可见性           仅自己和被授权的人 / 全团队可见
 
 管理
   协作权限         3 位成员                        ›
@@ -242,6 +243,38 @@ finalize 读 env 用的是**调用者自己的 client**，不是 service role：
 是 admin，而升权会让「部署」这件事从此依赖 service-role key 配没配 —— 一个根本没有 env
 的应用会因此部署不了。
 
+## 10. 可见性
+
+`apps.visibility` 一直是**只在新建时能选、之后永远改不了**：`CreateAppView` 默认
+`personal`，而全仓库唯一另一处提到它的是应用库里那个徽章。`updateApp` 其实收
+`visibility`，PATCH 路由也在，只是没有任何界面发过这个字段。
+
+RLS 的真实语义（`apps_select_if_visible`）是：
+
+```
+is_team_member(team_id) AND (
+  visibility = 'team'
+  OR 我是创建者
+  OR actor_has_app_access(app, 我)      -- 显式授权
+)
+```
+
+所以 `personal` **不等于「只有我」**：在「协作权限」里授权过的成员照样看得见。真正看不见
+的是**没被授权的队友**，以及 **daemon** —— `app_member_access` 挂在 `amux.members` 上，
+agent actor 根本拿不到授权（`resolveAppGitCredentialActor` 里那段服务角色重读就是为这个）。
+
+界面上因此有两件事要做对：
+
+1. 选项写的是**它做什么**，不是它叫什么：「仅自己和被授权的人」/「全团队可见」。
+   应用库那个徽章需要一个词，所以单独给了 `visibilityTeamBadge`，不共用。
+2. **只有改窄才确认**。改宽只会多几个人看得见，吓不到谁；改窄会把应用从每个队友的列表里
+   拿走。确认文案必须同时说清两件最容易搞反的事：授权过的人**不受影响**，daemon **会**
+   看不见。规则抽成了 `visibilityChangeNeedsConfirm`（Radix Select 在 jsdom 里打不开，
+   规则本身才是要测的东西）。
+
+改可见性是**创建者专属**（`apps_update_if_creator`），跟重命名一样。服务端说不出「你不是
+创建者」——那会泄漏应用是否存在——所以 404 由客户端翻译成一句人话。
+
 ## 7. 风险
 
 | # | 风险 | 处理 |
@@ -255,6 +288,7 @@ finalize 读 env 用的是**调用者自己的 client**，不是 service role：
 | R7 | 用户变量盖掉 DATABASE_URL 等 | 写入拒绝 + finalize 时平台后盖，两道；§9.2 |
 | R8 | 改完变量以为已生效 | `envPendingRedeploy` 在行上派生 + tab 里带重新部署按钮；§9.3 |
 | R9 | 密钥被搬到另一个 key 名下 | 密文 AAD 绑 `env:<KEY>`；§9.1 |
+| R10 | 把应用改窄后队友莫名找不到 | 只在改窄时确认，且文案点名授权与 daemon 两种后果；§10 |
 
 ## 8. 实现落点
 

@@ -95,6 +95,8 @@ interface AppsState {
   /** Full FC deploy: startDeploy → daemon build+upload → finalize. */
   deploy: (appId: string) => Promise<void>;
   rename: (appId: string, name: string) => Promise<void>;
+  /** Who on the team can see this app. True when the change stuck. */
+  setVisibility: (appId: string, visibility: "personal" | "team") => Promise<boolean>;
   /** Change any part of the login wall in one request. True when it stuck. */
   updateAuthPolicy: (appId: string, patch: AppAuthPatch) => Promise<boolean>;
   /** Bind a domain and get back the DNS records the owner must publish. */
@@ -798,6 +800,29 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         i18n.t("apps.renameFailed", "Rename failed"),
         e instanceof Error ? e.message : String(e),
       );
+    }
+  },
+  setVisibility: async (appId, visibility) => {
+    try {
+      const updated = await getBackend().apps.setAppVisibility(appId, visibility);
+      if (!updated) {
+        // Creator-only, and the server cannot say so without leaking whether
+        // the app exists — so the client names the rule instead of relaying a
+        // bare 404 the user has no way to interpret.
+        await toastError(
+          i18n.t("apps.visibilityFailed", "Could not change who can see this app"),
+          i18n.t("apps.visibilityDenied", "只有创建这个应用的人可以改可见性。"),
+        );
+        return false;
+      }
+      mergeRow(set, updated);
+      return true;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.visibilityFailed", "Could not change who can see this app"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return false;
     }
   },
   updateAuthPolicy: async (appId, patch) => {

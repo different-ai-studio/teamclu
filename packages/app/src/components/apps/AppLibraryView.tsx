@@ -62,7 +62,7 @@ function AppName({ app }: { app: AppRow }) {
           it put a fourth identical word on every row. */}
       {app.visibility === 'team' && (
         <span className="shrink-0 rounded border border-border px-1 py-px text-[10.5px] text-muted-foreground">
-          {t('apps.visibilityTeam', 'Team')}
+          {t('apps.visibilityTeamBadge', '团队')}
         </span>
       )}
     </span>

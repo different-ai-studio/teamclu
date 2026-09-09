@@ -75,6 +75,16 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
+    async setAppVisibility(appId, visibility) {
+      try {
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { visibility });
+      } catch (e) {
+        // 404 is also what a non-creator gets: `apps_update_if_creator` matches
+        // zero rows and the route cannot tell that apart from a missing app.
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
     async deployApp(appId, input) {
       return client.post<DeployAppResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy`, input);
     },

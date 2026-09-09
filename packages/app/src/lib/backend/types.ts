@@ -1337,6 +1337,15 @@ export interface AppsBackend {
   updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
+  /**
+   * Who on the team can see this app at all.
+   *
+   * `personal` does not mean private: the RLS policy admits the creator, anyone
+   * holding an explicit grant, AND nothing else. `team` admits every team
+   * member. Null on 404, which is also what a non-creator gets — the update is
+   * creator-only, like renaming.
+   */
+  setAppVisibility(appId: string, visibility: "personal" | "team"): Promise<AppRow | null>;
   /** Start FC deploy: provisions the function + returns the OSS upload handle.
    *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
   deployApp(

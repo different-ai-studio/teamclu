@@ -13,6 +13,13 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -120,6 +127,24 @@ function SummaryRow({
       <ChevronRight className="h-3.5 w-3.5 shrink-0 text-faint" />
     </button>
   )
+}
+
+/**
+ * Whether changing visibility to `next` needs to be confirmed first.
+ *
+ * Only narrowing does. Widening a personal app to the team can surprise nobody
+ * — it adds people to a list. Narrowing takes the app off every teammate's
+ * list, and the word "personal" does not say that on its own.
+ *
+ * Exported because the rule is the interesting part and a Radix Select cannot
+ * be opened in jsdom to reach it through the UI.
+ */
+export function visibilityChangeNeedsConfirm(
+  current: AppRow['visibility'],
+  next: AppRow['visibility'],
+): boolean {
+  if (current === next) return false
+  return next === 'personal'
 }
 
 /** Bytes for humans. Deliberately not a dependency; three lines. */
@@ -230,6 +255,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const { t } = useTranslation()
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const reseed = useAppsStore((s) => s.reseed)
+  const setVisibility = useAppsStore((s) => s.setVisibility)
   const rename = useAppsStore((s) => s.rename)
   const deleteApp = useAppsStore((s) => s.deleteApp)
 
@@ -245,6 +271,8 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const [moveOpen, setMoveOpen] = React.useState(false)
   const [moveDest, setMoveDest] = React.useState('')
   const [moving, setMoving] = React.useState(false)
+  const [visibilityPending, setVisibilityPending] = React.useState<'personal' | 'team' | null>(null)
+  const [visibilitySaving, setVisibilitySaving] = React.useState(false)
 
   const { summary, loading: summaryLoading } = useAppSummary(app)
 
@@ -357,6 +385,16 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       }
     } finally {
       setMoving(false)
+    }
+  }
+
+  const handleVisibility = async (next: 'personal' | 'team') => {
+    setVisibilitySaving(true)
+    try {
+      const ok = await setVisibility(app.id, next)
+      if (ok) setVisibilityPending(null)
+    } finally {
+      setVisibilitySaving(false)
     }
   }
 
@@ -539,6 +577,45 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
             )}
           </Field>
 
+          <Field label={t('apps.visibilityLabel', '可见性')}>
+            <Select
+              value={app.visibility}
+              onValueChange={(raw) => {
+                const next = raw as AppRow['visibility']
+                if (next === app.visibility) return
+                if (visibilityChangeNeedsConfirm(app.visibility, next)) {
+                  setVisibilityPending(next)
+                  return
+                }
+                void handleVisibility(next)
+              }}
+              disabled={visibilitySaving}
+            >
+              <SelectTrigger
+                className="h-8 rounded-[7px] text-[12.5px]"
+                data-testid="app-control-visibility"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="personal" className="text-[12.5px]">
+                  {t('apps.visibilityPersonal', '仅自己和被授权的人')}
+                </SelectItem>
+                <SelectItem value="team" className="text-[12.5px]">
+                  {t('apps.visibilityTeam', '全团队可见')}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1.5 text-[11.5px] text-faint">
+              {app.visibility === 'team'
+                ? t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')
+                : t(
+                    'apps.visibilityPersonalHint',
+                    '只有你、以及在「协作权限」里被授权的成员看得到。本机 daemon 也看不到它。',
+                  )}
+            </p>
+          </Field>
+
           {showReseed && (
             <Field label={t('apps.reseed', '重新播种')}>
               <p className="mb-2 text-[12px] text-muted-foreground">
@@ -710,6 +787,46 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 t('apps.controlPanel.moveDirectoryConfirm', '移动')
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={visibilityPending !== null}
+        onOpenChange={(open) => {
+          if (!open && !visibilitySaving) setVisibilityPending(null)
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('apps.visibilityNarrowTitle', '改成只有你和被授权的人可见？')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'apps.visibilityNarrowConfirm',
+                '团队里其他人会在应用列表里看不到它。在「协作权限」里授权过的成员不受影响 —— 他们仍然看得到。本机 daemon 拿不到授权，所以它会看不到这个应用。',
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={visibilitySaving}>
+              {t('common.cancel', 'Cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={visibilitySaving}
+              onClick={(e) => {
+                e.preventDefault()
+                void handleVisibility('personal')
+              }}
+              data-testid="app-control-visibility-confirm"
+            >
+              {visibilitySaving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                t('apps.visibilityNarrowAction', '改成仅授权可见')
               )}
             </AlertDialogAction>
           </AlertDialogFooter>
