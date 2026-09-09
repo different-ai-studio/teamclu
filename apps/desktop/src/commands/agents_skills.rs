@@ -76,17 +76,11 @@ fn probe_os_access(dir: &Path) -> (bool, bool, Option<(AgentsSkillsAccessKind, S
         return (
             false,
             false,
-            Some((
-                kind,
-                format!("Failed to create {}: {e}", dir.display()),
-            )),
+            Some((kind, format!("Failed to create {}: {e}", dir.display()))),
         );
     }
 
-    let probe = dir.join(format!(
-        ".teamclu-write-probe-{}",
-        std::process::id()
-    ));
+    let probe = dir.join(format!(".teamclu-write-probe-{}", std::process::id()));
     let payload = b"teamclu-agents-skills-probe\n";
 
     if let Err(e) = std::fs::write(&probe, payload) {
@@ -186,9 +180,8 @@ pub fn check_agents_skills_access(app: AppHandle) -> Result<AgentsSkillsAccess, 
         return Ok(access_result(
             skills,
             AgentsSkillsAccessKind::TauriScope,
-            scope_err.unwrap_or_else(|| {
-                "App filesystem scope does not allow ~/.agents/skills".into()
-            }),
+            scope_err
+                .unwrap_or_else(|| "App filesystem scope does not allow ~/.agents/skills".into()),
             os_readable,
             os_writable,
             false,

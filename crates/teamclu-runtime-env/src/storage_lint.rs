@@ -51,6 +51,13 @@ const DEBT: &[&str] = &[
     "apps/daemon/src/workspace_meta_gate.rs",
     "apps/desktop/crates/teamclu-introspect/src/config.rs",
     "apps/desktop/crates/teamclu-introspect/src/cron.rs",
+    // Not a home directory either: probe files written INSIDE an
+    // already-resolved skills root (`.teamclu-write-probe-<n>`,
+    // `.teamclu-scope-probe`) to find out whether it is writable. Same shape as
+    // the two skill-writer entries above, and the same conclusion — clearing it
+    // means teaching the needle that a dot-name with a suffix is a file, not a
+    // home directory.
+    "apps/desktop/src/commands/agents_skills.rs",
     // Test-only: assertions that the resolver produced `.amuxd-teamclaw` /
     // `.amuxd-copilot361` for a branded build. Spelling the names is the point
     // of those assertions — this is the one entry that wants OWNERS-like
