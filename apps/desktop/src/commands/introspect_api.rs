@@ -1372,11 +1372,43 @@ fn redact_deploy_secrets(reason: &str) -> String {
 /// 20 minutes: the daemon allows a `pnpm install` plus a 10-minute `pnpm build`,
 /// and a client timeout shorter than the work it waits on turns a slow build
 /// into a phantom failure — one that has already uploaded the artifact.
-async fn daemon_build_app(body: &serde_json::Value) -> Result<serde_json::Value, String> {
+/// What the app's checkout declares about how it is built.
+///
+/// Best-effort: a daemon that cannot answer leaves the deploy on the contract
+/// every app had before declarations existed, which is what an older daemon
+/// would have done anyway.
+async fn daemon_app_manifest(app_id: &str, team_id: &str) -> Option<serde_json::Value> {
+    use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
+    let path = format!("/v1/apps/{}/manifest", urlencoding::encode(app_id));
+    let query = format!("?teamId={}", urlencoding::encode(team_id));
+    let out: serde_json::Value = daemon::call_discovered(
+        RequestSpec::get(&path, &["workspace:read"])
+            .query(&query)
+            .timeout(std::time::Duration::from_secs(10)),
+        NO_BODY,
+    )
+    .await
+    .ok()?;
+    out.get("manifest").cloned()
+}
+
+fn manifest_runtime(manifest: Option<&serde_json::Value>) -> String {
+    manifest
+        .and_then(|m| m.get("runtime"))
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("node")
+        .to_string()
+}
+
+async fn daemon_build_app(
+    body: &serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, String> {
     use crate::daemon_client::{self as daemon, RequestSpec};
     daemon::call_discovered::<_, serde_json::Value>(
-        RequestSpec::post("/v1/apps/build", &["workspace:write"])
-            .timeout(std::time::Duration::from_secs(20 * 60)),
+        RequestSpec::post("/v1/apps/build", &["workspace:write"]).timeout(timeout),
         Some(body),
     )
     .await
@@ -1392,6 +1424,14 @@ async fn daemon_build_app(body: &serde_json::Value) -> Result<serde_json::Value,
 /// Everything after `/deploy` has minted the upload handle: credential the
 /// build, run it, hand the credential back, publish.
 #[allow(clippy::too_many_arguments)]
+/// Where this deploy's build output goes, as the control plane minted it.
+enum DeployHandle {
+    /// Presigned OSS PUT for a code archive.
+    Upload(String),
+    /// Registry handle for an image, passed to the daemon verbatim.
+    Push(serde_json::Value),
+}
+
 async fn finish_app_deploy(
     fc: &super::oss_sync::fc_client::FcClient,
     enc_id: &str,
@@ -1400,7 +1440,8 @@ async fn finish_app_deploy(
     via_gitea: bool,
     git_commit_sha: Option<String>,
     deploy_token: &str,
-    presigned_put: &str,
+    handle: &DeployHandle,
+    manifest: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let mut git_remote_url = String::new();
     let mut deploy_key_pem = String::new();
@@ -1429,8 +1470,11 @@ async fn finish_app_deploy(
     let mut build_body = serde_json::json!({
         "appId": app_id,
         "teamId": team_id,
-        "presignedPut": presigned_put,
     });
+    match handle {
+        DeployHandle::Upload(url) => build_body["presignedPut"] = serde_json::json!(url),
+        DeployHandle::Push(image) => build_body["image"] = image.clone(),
+    }
     if via_gitea {
         build_body["gitRemoteUrl"] = serde_json::json!(git_remote_url);
         build_body["deployKeyPem"] = serde_json::json!(deploy_key_pem);
@@ -1439,7 +1483,14 @@ async fn finish_app_deploy(
         }
     }
 
-    let build = daemon_build_app(&build_body).await;
+    // A container build cross-compiles for linux/amd64 through emulation and
+    // then pushes an image; a 20-minute cap that fits `pnpm build` cuts it off
+    // mid-push, and the daemon's own bounds (30 + 15) are what should decide.
+    let build_timeout = match handle {
+        DeployHandle::Upload(_) => std::time::Duration::from_secs(20 * 60),
+        DeployHandle::Push(_) => std::time::Duration::from_secs(50 * 60),
+    };
+    let build = daemon_build_app(&build_body, build_timeout).await;
 
     // The daemon only needs the key for the fetch inside the build; hand it back
     // whether that succeeded or not, exactly as the desktop's `finally` does.
@@ -1464,6 +1515,21 @@ async fn finish_app_deploy(
     let mut finalize_body = serde_json::json!({ "deployToken": deploy_token });
     if let Some(sha) = built_sha {
         finalize_body["gitCommitSha"] = serde_json::json!(sha);
+    }
+    // What the app declared, and — for a container app — the image that build
+    // actually pushed. This path used to send neither, so an agent-driven
+    // deploy of an app with its own declaration silently finalized on the
+    // built-in contract while the same deploy from the UI honoured it.
+    if let Some(manifest) = manifest {
+        finalize_body["runtime"] = manifest.clone();
+    }
+    if let Some(image) = build
+        .get("image")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        finalize_body["image"] = serde_json::json!(image);
     }
     fc.post_json(
         &format!("/v1/apps/{enc_id}/deploy/finalize"),
@@ -1528,7 +1594,11 @@ async fn run_app_deploy(
         git_commit_sha = Some(sha.to_string());
     }
 
-    let mut start_body = serde_json::json!({});
+    // Read before the deploy is minted, not after: a container app is handed a
+    // registry to push to and every other app a presigned URL to upload to, and
+    // only the machine holding the checkout can say which this is.
+    let manifest = daemon_app_manifest(&app_id, &team_id).await;
+    let mut start_body = serde_json::json!({ "runtime": manifest_runtime(manifest.as_ref()) });
     if let Some(sha) = &git_commit_sha {
         start_body["gitCommitSha"] = serde_json::json!(sha);
     }
@@ -1541,13 +1611,22 @@ async fn run_app_deploy(
         .and_then(|x| x.as_str())
         .unwrap_or_default()
         .to_string();
-    let presigned_put = started
-        .get("presignedPut")
-        .and_then(|x| x.as_str())
-        .unwrap_or_default()
-        .to_string();
-    if deploy_token.is_empty() || presigned_put.is_empty() {
-        return Err("deploy start returned no upload handle".to_string());
+    let handle = match started.get("image").filter(|v| v.is_object()) {
+        Some(image) => DeployHandle::Push(image.clone()),
+        None => {
+            let url = started
+                .get("presignedPut")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if url.is_empty() {
+                return Err("deploy start returned no upload handle".to_string());
+            }
+            DeployHandle::Upload(url)
+        }
+    };
+    if deploy_token.is_empty() {
+        return Err("deploy start returned no deploy token".to_string());
     }
 
     // From here the server has written `awaiting_build` and this call owns it.
@@ -1559,7 +1638,8 @@ async fn run_app_deploy(
         via_gitea,
         git_commit_sha,
         &deploy_token,
-        &presigned_put,
+        &handle,
+        manifest.as_ref(),
     )
     .await
     {

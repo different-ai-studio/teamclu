@@ -1038,7 +1038,27 @@ export interface BuildAppResult {
    * the daemon against the built-in contract. Handed to finalize so the
    * function is started the way the app expects.
    */
-  runtime: { runtime: string; entry: string; port: number } | null
+  runtime: AppRuntimeDeclaration | null
+  /**
+   * The image this build pushed, for an app that declares `runtime:
+   * "container"`. Null for every other app — that one uploaded an archive to
+   * the presigned URL instead.
+   */
+  image: string | null
+}
+
+/**
+ * What an app declares about how it is built and run (`teamclu.app.json`),
+ * resolved by the daemon against the built-in contract.
+ *
+ * `entry` is empty for a container app: the image's own ENTRYPOINT is its
+ * entry, and there is nothing for us to name.
+ */
+export interface AppRuntimeDeclaration {
+  runtime: string
+  entry: string
+  port: number
+  healthCheckPath?: string
 }
 
 /**
@@ -1052,7 +1072,18 @@ interface BuildDaemonAppInput {
   gitCommitSha?: string | null
   gitRemoteUrl?: string | null
   deployKeyPem?: string | null
-  presignedPut: string
+  /** Archive deploys. Exactly one of this and `image` is set. */
+  presignedPut?: string | null
+  /** Container deploys: where to push the image, minted by the control plane. */
+  image?: AppImagePushHandle | null
+}
+
+/** Registry handle for one container deploy. Carries a password — never log it. */
+export interface AppImagePushHandle {
+  reference: string
+  registry: string
+  username: string
+  password: string
 }
 
 /**
@@ -1086,6 +1117,34 @@ interface DaemonAppWorkdirInfo {
  * from "no apps are local", because the two mean opposite things for what the
  * sidebar should show.
  */
+/**
+ * What the app's checkout declares about how it is built (`teamclu.app.json`).
+ *
+ * Asked before the deploy is minted, because the answer decides which kind of
+ * handle the control plane hands back: a container app pushes an image, every
+ * other app uploads an archive. Null when the daemon cannot say — the deploy
+ * then takes the contract every app had before declarations existed.
+ */
+export async function daemonAppManifest(
+  appId: string,
+  teamId?: string | null,
+): Promise<AppRuntimeDeclaration | null> {
+  try {
+    const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
+    const result = await daemonFetch<{ manifest?: AppRuntimeDeclaration }>(
+      `/v1/apps/${encodeURIComponent(appId)}/manifest${query}`,
+    )
+    if (!result.ok) {
+      console.warn('[daemon-local-client] app manifest unavailable (non-fatal):', result.error)
+      return null
+    }
+    return result.data?.manifest ?? null
+  } catch (err) {
+    console.warn('[daemon-local-client] app manifest unavailable:', err)
+    return null
+  }
+}
+
 export async function daemonLocalAppIds(teamId?: string | null): Promise<string[] | null> {
   try {
     const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
@@ -1237,7 +1296,13 @@ export async function buildDaemonApp(
     const result = await daemonFetch<{
       status: string
       gitCommitSha?: string
-      manifest?: { runtime?: string; entry?: string; port?: number }
+      image?: string
+      manifest?: {
+        runtime?: string
+        entry?: string
+        port?: number
+        healthCheckPath?: string
+      }
     }>('/v1/apps/build', {
       method: 'POST',
       body: JSON.stringify({
@@ -1246,7 +1311,8 @@ export async function buildDaemonApp(
         ...(input.gitCommitSha?.trim() ? { gitCommitSha: input.gitCommitSha.trim() } : {}),
         ...(input.gitRemoteUrl?.trim() ? { gitRemoteUrl: input.gitRemoteUrl.trim() } : {}),
         ...(input.deployKeyPem?.trim() ? { deployKeyPem: input.deployKeyPem.trim() } : {}),
-        presignedPut: input.presignedPut.trim(),
+        ...(input.image ? { image: input.image } : {}),
+        ...(input.presignedPut?.trim() ? { presignedPut: input.presignedPut.trim() } : {}),
       }),
     })
     if (result.ok) {
@@ -1255,21 +1321,29 @@ export async function buildDaemonApp(
         outcome: "built",
         error: null,
         gitCommitSha: result.data?.gitCommitSha?.trim() || null,
+        // A container app states no entry, so requiring one here would drop the
+        // whole declaration — including the port FC has to send requests to.
         runtime:
-          m?.runtime && m.entry && m.port
-            ? { runtime: m.runtime, entry: m.entry, port: m.port }
+          m?.runtime && m.port
+            ? {
+                runtime: m.runtime,
+                entry: m.entry ?? "",
+                port: m.port,
+                ...(m.healthCheckPath ? { healthCheckPath: m.healthCheckPath } : {}),
+              }
             : null,
+        image: result.data?.image?.trim() || null,
       }
     }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null, image: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null, runtime: null }
+    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null, runtime: null, image: null }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null, image: null }
   }
 }
 

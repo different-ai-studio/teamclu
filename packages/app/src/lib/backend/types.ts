@@ -1068,8 +1068,20 @@ export interface AppRow {
 /** `POST /v1/apps/:id/deploy` response — app row plus the OSS upload handle the
  *  local daemon needs to upload the build artifact. */
 export interface DeployAppResult extends AppRow {
-  ossObjectName: string;
-  presignedPut: string;
+  /**
+   * Archive deploys. Absent for a container app, which pushes an image instead
+   * — exactly one of these and `image` is ever set.
+   */
+  ossObjectName?: string;
+  presignedPut?: string;
+  /** Container deploys: where to push the image, and short-lived credentials. */
+  image?: {
+    reference: string;
+    registry: string;
+    username: string;
+    password: string;
+    expiresAt?: string;
+  };
   /** Short-lived bearer for finalize; not stored on the app row in mapApp. */
   deployToken: string;
   /** Null for an imported app: there is no forge commit to pin the deploy to. */
@@ -1225,7 +1237,10 @@ export interface AppsBackend {
   renameApp(appId: string, name: string): Promise<AppRow | null>;
   /** Start FC deploy: provisions the function + returns the OSS upload handle.
    *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
-  deployApp(appId: string, input: { gitCommitSha?: string }): Promise<DeployAppResult>;
+  deployApp(
+    appId: string,
+    input: { gitCommitSha?: string; runtime?: string },
+  ): Promise<DeployAppResult>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
   finalizeDeploy(
@@ -1233,8 +1248,12 @@ export interface AppsBackend {
     input: {
       gitCommitSha?: string;
       deployToken: string;
-      /** The app's declared start contract, from `teamclu.app.json`. */
-      runtime?: { runtime: string; entry: string; port: number };
+      /** The app's declared start contract, from `teamclu.app.json`. A
+       *  container app declares no entry — its image's ENTRYPOINT is one. */
+      runtime?: { runtime: string; entry: string; port: number; healthCheckPath?: string };
+      /** The image a container build pushed. Required for one, refused for
+       *  anything else — see the control plane's parseDeployedImage. */
+      image?: string;
     },
   ): Promise<AppRow>;
   /** Mint a JIT Gitea deploy key for git push (creator only). Returns null on
