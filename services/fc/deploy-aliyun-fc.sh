@@ -230,6 +230,30 @@ npm install
 echo "==> Building TypeScript (-> dist/)"
 npm run build
 
+# The FC runtime is linux-x64; the machine running this script may not be.
+# Native modules ship their binding as an optionalDependency keyed on os/cpu, so
+# npm installs only the HOST's — and `s deploy` uploads node_modules exactly as
+# it stands. A deploy from macOS therefore ships a bundle whose native modules
+# cannot load, and the failure is not a degraded feature: the runtime exits 128
+# on the first request and EVERY route 502s with "Cannot find native binding".
+# That took the live API down for five minutes on 2026-09-09, and it will happen
+# again on the next deploy from a Mac if this step is removed.
+#
+# @alicloud/sls20201230 (the app-logs client) pulls in lz4-napi, the only such
+# module here today. npm refuses a foreign-platform package on principle, hence
+# --force. Version comes from the installed copy so the two cannot drift.
+echo "==> Adding linux-x64 native bindings (FC runtime is not this machine)"
+_lz4_ver="$(node -p "require('./node_modules/lz4-napi/package.json').version" 2>/dev/null || true)"
+if [ -n "$_lz4_ver" ]; then
+  npm install --no-save --no-audit --no-fund --force \
+    "@antoniomuso/lz4-napi-linux-x64-gnu@$_lz4_ver" >/dev/null
+  if [ ! -f node_modules/@antoniomuso/lz4-napi-linux-x64-gnu/lz4-napi.linux-x64-gnu.node ]; then
+    echo "ERROR: the linux-x64 lz4-napi binding is missing after install." >&2
+    echo "       Deploying now would 502 on every request. Fix the install and retry." >&2
+    exit 1
+  fi
+fi
+
 # NOTE: the GitHub Action additionally runs `npm prune --omit=dev` to shrink the
 # package. Skipped here so your local node_modules stays intact for dev. The
 # extra dev deps in the package are harmless for a test deploy.
