@@ -33,6 +33,7 @@ import { makeAppStorageOps, type AppStorageOps } from "./lib/provisioning/app-st
 import {
   appImageReference,
   appImageTag,
+  imageBelongsToApp,
   resolveAppsRegistry,
 } from "./lib/provisioning/apps-registry.js";
 import { resolveAppsSls, getSlsClient, makeSlsOps, type SlsOps } from "./lib/provisioning/sls-client.js";
@@ -173,6 +174,7 @@ function makeDeployDeps() {
   // with no registry configured keeps working for every other app: only a
   // container deploy is refused, and it is refused naming the variable.
   const registry = resolveAppsRegistry();
+  const registryConfig = registry.config;
   const mintImagePush = registry.config
     ? async (appId: string, gitCommitSha: string | null | undefined) => {
         const cfg = registry.config;
@@ -233,7 +235,17 @@ function makeDeployDeps() {
       platformAuthEnv?: Record<string, string>;
     }) =>
       finalizeDeployImpl(
-        { appsAdminUrl, appsAppUrl, fcOps, ensureLogStore: () => appLogsProvisioner().ensure() },
+        {
+          appsAdminUrl,
+          appsAppUrl,
+          fcOps,
+          ensureLogStore: () => appLogsProvisioner().ensure(),
+          // Bound to this deployment's registry, so finalize can tell an image
+          // this app's build pushed from any other the registry holds.
+          ownsImage: registryConfig
+            ? (appId: string, image: string) => imageBelongsToApp(registryConfig, appId, image)
+            : undefined,
+        },
         a,
       ),
   };

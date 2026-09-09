@@ -373,6 +373,15 @@ export interface FinalizeDeps {
   appsAppUrl?: string;
   /** Optional override of {@link provisionAppPostgres} for tests. */
   provisionDb?: typeof provisionAppPostgres;
+  /**
+   * Whether a finalized image is one this app's own build could have pushed —
+   * `imageBelongsToApp`, bound to this deployment's registry.
+   *
+   * Absent leaves the image unchecked, which is what a deployment with no
+   * registry configured gets. That deployment has no container app to finalize
+   * either: `startDeploy` refuses one before a build ever runs.
+   */
+  ownsImage?: (appId: string, image: string) => boolean;
   fcOps: {
     ensureFunction: (
       name: string,
@@ -448,6 +457,20 @@ export function needsDatabase(appType: string): boolean {
 }
 
 export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): Promise<{ fcEndpoint: string }> {
+  // First, before anything is provisioned. `parseDeployedImage` has already
+  // checked that an image is present iff the runtime is `container`, but not
+  // *which* image — and this value is what the function is pointed at. An
+  // image the app's own build could not have pushed makes this a rejected
+  // deploy, so it must not also be a half-provisioned one: past here a
+  // Postgres schema is created and a log store ensured.
+  if (input.image && deps.ownsImage && !deps.ownsImage(input.appId, input.image)) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      "image must name this app's own repository in this deployment's registry — finalize with the reference the build reported",
+    );
+  }
+
   const env: Record<string, string> = { PORT: "9000", NODE_ENV: "production" };
 
   if (needsDatabase(input.appType)) {

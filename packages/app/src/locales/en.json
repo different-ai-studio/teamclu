@@ -1291,7 +1291,6 @@
     "visibilityHint": "Visibility only controls who in the team can see this app. Once live without login, anyone with the link can access it.",
     "publicBadge": "Public",
     "deployDisabledThird": "Third-party login is not supported for deploy yet",
-    "deployDisabledContainer": "Container runtime is not supported for deploy yet",
     "submit": "Create",
     "cancel": "Cancel",
     "createError": "Failed to create app",

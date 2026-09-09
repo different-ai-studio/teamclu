@@ -87,4 +87,16 @@ describe('AppDeployFooter', () => {
     expect(screen.getByText(/第三方登录尚未支持部署/)).toBeInTheDocument()
     expect(screen.getByTestId('app-deploy-footer-deploy')).toBeDisabled()
   })
+
+  it('lets a live container app deploy again', () => {
+    // The row carries `container` only because a deploy wrote it there, so a
+    // gate on that field disabled the button on every app that had just
+    // deployed successfully — the first deploy passed, no second one could.
+    render(
+      <AppDeployFooter
+        app={app({ runtime: 'container', fcStatus: 'live', fcEndpoint: 'https://fc.example' })}
+      />,
+    )
+    expect(screen.getByTestId('app-deploy-footer-deploy')).toBeEnabled()
+  })
 })

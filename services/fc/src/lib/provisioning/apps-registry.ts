@@ -102,6 +102,43 @@ export function appImageReference(
 }
 
 /**
+ * Whether an image reference names the repository this app pushes to.
+ *
+ * The finalize call carries the image the build says it pushed, and that value
+ * is what the function is pointed at — so unchecked, a client could finalize
+ * one app's deploy onto any image its registry can reach, including another
+ * app's. Nothing about the deploy token prevents it: the token proves who
+ * started *this* app's deploy, not what the image is.
+ *
+ * The tag is deliberately not checked. The build corrects it when it publishes
+ * work the control plane did not know about (the daemon's `image_tagged_with`),
+ * so pinning a tag here would refuse the correct answer; the repository is the
+ * part that must not move. A digest reference is accepted the same way.
+ *
+ * Both hosts count: the daemon reports what it pushed, which is the push host,
+ * but a client that normalised to the pull host has still named the same image.
+ */
+export function imageBelongsToApp(
+  cfg: AppsRegistryConfig,
+  appId: string,
+  image: string,
+): boolean {
+  const repo = imageRepositoryOf(image.trim());
+  const path = `/${cfg.namespace}/${appImageRepository(appId)}`;
+  return repo === `${cfg.host}${path}` || repo === `${cfg.pullHost}${path}`;
+}
+
+/** Everything before the tag or digest, whichever a reference carries. */
+function imageRepositoryOf(image: string): string {
+  const at = image.indexOf("@");
+  const ref = at < 0 ? image : image.slice(0, at);
+  // A registry host may carry a port, so only a `:` after the last `/`
+  // separates a tag — in `localhost:5000/apps/a` that colon is the port.
+  const colon = ref.indexOf(":", ref.lastIndexOf("/") + 1);
+  return colon < 0 ? ref : ref.slice(0, colon);
+}
+
+/**
  * The image tag for one deploy.
  *
  * The commit is the tag when there is one, so an image can be traced back to

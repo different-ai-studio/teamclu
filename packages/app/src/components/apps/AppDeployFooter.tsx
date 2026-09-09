@@ -143,12 +143,7 @@ export function AppDeployFooter({ app }: AppDeployFooterProps) {
 
       {deployBlocked && (
         <p className="mt-1.5 text-[11px] leading-snug text-faint">
-          {t(
-            deployBlocked,
-            deployBlocked === 'apps.deployDisabledThird'
-              ? '第三方登录尚未支持部署'
-              : '容器运行时暂不支持部署',
-          )}
+          {t(deployBlocked, '第三方登录尚未支持部署')}
         </p>
       )}
     </div>

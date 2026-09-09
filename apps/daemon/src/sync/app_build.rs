@@ -388,13 +388,59 @@ fn is_inside_workdir(path: &str) -> bool {
 /// see [`push_image`] for why the password reaches `docker` through a config
 /// file rather than an argument.
 pub struct ImagePushTarget<'a> {
-    /// Full reference to push: `<registry>/<namespace>/<repo>:<tag>`.
+    /// Full reference to push: `<registry>/<namespace>/<repo>:<tag>`. The tag
+    /// is the control plane's best guess at the time it minted this; the build
+    /// corrects it when it turns out to name the wrong commit, which is what
+    /// [`image_tagged_with`] is for.
     pub image: &'a str,
     /// Registry host, as it appears in the reference — the key `docker` looks
     /// its credentials up under.
     pub registry: &'a str,
     pub username: &'a str,
     pub password: &'a str,
+}
+
+/// The same repository, tagged with the commit the build actually used.
+///
+/// The push target is minted before the build runs, from the sha the client
+/// read off the forge. But the build publishes whatever the agent left
+/// uncommitted first (see [`prepare_git_build`]), and after that HEAD is a
+/// commit the minted tag never named. Pushing under it does two wrong things:
+/// the image is labelled with a commit it was not built from, and the tag
+/// stops being immutable — two deploys off the same forge HEAD carrying
+/// different uncommitted work put different bytes on one tag, and Function
+/// Compute pulls by tag, so a function that was never redeployed can come back
+/// from a cold start running someone else's build.
+///
+/// Only the tag is rewritten. The registry, namespace and repository stay
+/// exactly what the control plane authorised, so this cannot push anywhere it
+/// was not given credentials for. `None` leaves the minted reference alone:
+/// when it names a digest there is no tag to correct, and a tag the registry
+/// would reject is not an improvement on a stale one.
+fn image_tagged_with(reference: &str, tag: &str) -> Option<String> {
+    if reference.contains('@') || !is_docker_tag(tag) {
+        return None;
+    }
+    // A registry host may carry a port, so the tag separator is the last `:`
+    // *after* the last `/` — in `localhost:5000/app` that colon is the port and
+    // the reference has no tag at all.
+    let repo = match reference.rfind('/') {
+        Some(slash) => reference[slash + 1..]
+            .rfind(':')
+            .map_or(reference, |colon| &reference[..slash + 1 + colon]),
+        None => reference.rfind(':').map_or(reference, |c| &reference[..c]),
+    };
+    Some(format!("{repo}:{tag}"))
+}
+
+/// The tag grammar a registry accepts: 1–128 of `[A-Za-z0-9_.-]`, not opening
+/// with a separator.
+fn is_docker_tag(tag: &str) -> bool {
+    (1..=128).contains(&tag.len())
+        && tag.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 /// What a build produced, which is not the same kind of thing for every app.
@@ -462,8 +508,20 @@ pub fn build_artifact(
     }
     let manifest = read_runtime_manifest(workdir);
     if manifest.is_container() {
-        let target = push.ok_or_else(|| anyhow::anyhow!("{ERR_NO_PUSH_TARGET}"))?;
-        build_image(workdir, &manifest, target)?;
+        let minted = push.ok_or_else(|| anyhow::anyhow!("{ERR_NO_PUSH_TARGET}"))?;
+        // `git_commit_sha` is set only when the build published work the client
+        // did not know about, which is exactly when the minted tag is stale.
+        // Nothing to correct otherwise — the tag already names this commit.
+        let corrected = git_commit_sha
+            .as_deref()
+            .and_then(|sha| image_tagged_with(minted.image, sha));
+        let target = ImagePushTarget {
+            image: corrected.as_deref().unwrap_or(minted.image),
+            registry: minted.registry,
+            username: minted.username,
+            password: minted.password,
+        };
+        build_image(workdir, &manifest, &target)?;
         return Ok(BuildOutput {
             product: BuildProduct::Image(target.image.to_string()),
             git_commit_sha,
@@ -838,6 +896,44 @@ mod tests {
             Ok(_) => panic!("a container app with no registry must not build"),
         };
         assert_eq!(err, ERR_NO_PUSH_TARGET);
+    }
+
+    #[test]
+    fn an_image_is_retagged_with_the_commit_that_was_built() {
+        assert_eq!(
+            image_tagged_with("registry.example.com/apps/tc-app-1:303adca", "a43b715").as_deref(),
+            Some("registry.example.com/apps/tc-app-1:a43b715"),
+        );
+    }
+
+    #[test]
+    fn retagging_leaves_a_registry_port_alone() {
+        // The last `:` is the port, not a tag — appending must not eat it.
+        assert_eq!(
+            image_tagged_with("localhost:5000/apps/tc-app-1", "a43b715").as_deref(),
+            Some("localhost:5000/apps/tc-app-1:a43b715"),
+        );
+        assert_eq!(
+            image_tagged_with("localhost:5000/apps/tc-app-1:old", "a43b715").as_deref(),
+            Some("localhost:5000/apps/tc-app-1:a43b715"),
+        );
+    }
+
+    #[test]
+    fn a_digest_reference_and_an_unusable_tag_are_left_as_minted() {
+        // Already immutable; there is no tag to correct.
+        assert_eq!(
+            image_tagged_with("registry.example.com/apps/a@sha256:abc", "a43b715"),
+            None,
+        );
+        // A tag the registry would reject is not an improvement on a stale one.
+        for bad in ["", "-leading", "has space", "has/slash"] {
+            assert_eq!(
+                image_tagged_with("registry.example.com/apps/a:old", bad),
+                None,
+                "{bad:?}",
+            );
+        }
     }
 
     #[test]
