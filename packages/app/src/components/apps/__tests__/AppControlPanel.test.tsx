@@ -84,9 +84,8 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
-}))
+const toastMocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }))
+vi.mock('sonner', () => ({ toast: toastMocks }))
 
 const baseApp: AppRow = {
   id: 'app-1',
@@ -228,6 +227,24 @@ describe('AppControlPanel', () => {
 
     expect(tabMocks.openAppDataTable).toHaveBeenCalledWith(baseApp, 'orders')
     expect(backendMocks.listAppDataTables).not.toHaveBeenCalled()
+  })
+
+  it('does not claim the data is unreadable while it is still loading', async () => {
+    // The row shows a spinner during the load; clicking it used to fire the
+    // not-yet-decided reason text as a toast — a statement about a request that
+    // had not come back.
+    let release: (v: unknown) => void = () => {}
+    backendMocks.listAppDataTables.mockReturnValue(new Promise((r) => { release = r }))
+    render(<AppControlPanel app={baseApp} />)
+
+    await userEvent.setup().click(screen.getByTestId('app-control-open-data'))
+    expect(toastMocks.info).not.toHaveBeenCalled()
+    expect(tabMocks.openAppDataTable).not.toHaveBeenCalled()
+
+    release({ status: 'ok', tables: [{ name: 'orders' }] })
+    await waitFor(() =>
+      expect(screen.getByTestId('app-control-open-data').textContent).toContain('1 张表'),
+    )
   })
 
   it('opens the matching tab from each row', async () => {

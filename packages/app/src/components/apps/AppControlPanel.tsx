@@ -529,6 +529,10 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   })()
 
   const openData = () => {
+    // Still loading: the row shows a spinner, and the reason text has not been
+    // decided yet. Saying "cannot read it right now" here would be a lie about
+    // a request that is still in flight.
+    if (summaryLoading) return
     const tables = summary.tables
     // "The first table" is as good a start as any — the browser switches from
     // there. With nothing to open, say why rather than opening an empty tab.
