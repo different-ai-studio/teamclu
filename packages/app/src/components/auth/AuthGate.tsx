@@ -20,6 +20,7 @@ import { markStartup } from "@/lib/telemetry/startup-perf";
 import { TeamPicker } from "./TeamPicker";
 import { PendingInvitesDialog } from "@/components/auth/PendingInvitesDialog";
 import { extensionTeamOnboarding } from "@/lib/config/build-config";
+import { isChromeExtension } from "@/lib/config/platform";
 import { NoTeamScreen } from "./NoTeamScreen";
 import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
 import type { MembershipTeam } from "@/lib/backend";
@@ -108,6 +109,8 @@ export function AuthGate({ children }: AuthGateProps) {
   // before team-bootstrap can overwrite the cache, so the picker can badge it
   // "Last used". Null on a genuinely-first login (no history).
   const [lastUsedTeamId, setLastUsedTeamId] = useState<string | null>(null);
+  const extensionRequiresInvitation =
+    isChromeExtension() && !extensionTeamOnboarding.autoCreateTeam;
   // Team discovery must not race a link invite claim. The claim enters the
   // invited team and clears the token asynchronously; keeping the promise in
   // a ref lets the bootstrap effect await the exact in-flight operation even
@@ -249,11 +252,13 @@ export function AuthGate({ children }: AuthGateProps) {
   useEffect(() => {
     if (!session) return;
     if (pendingInviteToken) return;
-    // A caller with no team blocks on the server's answer first (403 →
-    // "no_team"), and the no-team screen runs this lookup itself. Existing-team
-    // users refresh once bootstrap reaches ready so the in-app dialog works.
+    // Invite-only extension onboarding looks this up as part of the blocking
+    // team resolution below. Existing-team users still refresh once bootstrap
+    // reaches ready so the in-app dialog keeps working. A 403 no-team path
+    // also does the lookup itself.
+    if (extensionRequiresInvitation && bootstrap !== "ready") return;
     void useAuthStore.getState().refreshPendingInvites();
-  }, [session, pendingInviteToken]);
+  }, [session, pendingInviteToken, bootstrap, extensionRequiresInvitation]);
 
   // After auth, resolve the full team chooser before entering a team. Only an
   // empty result may create a team; it uses the dedicated atomic bootstrap RPC.
@@ -295,6 +300,7 @@ export function AuthGate({ children }: AuthGateProps) {
 
     void (async () => {
       let teamSet = false;
+      let teamAssignmentRequired = false;
       let bootErr: unknown = null;
       try {
         const pendingClaim = pendingInviteToken ? inviteClaimPromise.current : null;
@@ -315,7 +321,14 @@ export function AuthGate({ children }: AuthGateProps) {
         }
         const allTeams = await getBackend().teams.listAllMyTeams();
         markStartup("team-list:end");
-        if (allTeams.length > 0) {
+        // Extension bake policy: `autoCreateTeam: false` is invite-only.
+        // Public joinable teams are not memberships and must not skip this
+        // gate or offer a hidden team-creation path.
+        if (extensionRequiresInvitation && memberTeams(allTeams).length === 0) {
+          setMyTeams([]);
+          await useAuthStore.getState().refreshPendingInvites();
+          teamAssignmentRequired = true;
+        } else if (allTeams.length > 0) {
           // Do not auto-select the first row: the chooser makes the org then
           // team decision explicit, including public teams that need joining.
           setMyTeams(allTeams);
@@ -381,6 +394,9 @@ export function AuthGate({ children }: AuthGateProps) {
       if (teamSet) {
         setBootstrapError(null);
         setBootstrap("ready");
+      } else if (teamAssignmentRequired) {
+        setBootstrapError(null);
+        setBootstrap("no_team");
       } else {
         // No current team means the app can't continue — daemon onboarding,
         // sessions and the actor directory are all team-scoped. Surface the
@@ -390,7 +406,7 @@ export function AuthGate({ children }: AuthGateProps) {
         setBootstrap("error");
       }
     })();
-  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, signOut]);
+  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, extensionRequiresInvitation, signOut]);
 
   const retryBootstrap = () => {
     // Re-arm the per-user ref guard and bump the nonce so the bootstrap effect

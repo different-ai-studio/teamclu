@@ -458,8 +458,7 @@ describe("AuthGate", () => {
   });
 
   it("blocks a teamless user when the server refuses to create an org", async () => {
-    // Invite-only is a DEPLOYMENT decision now, not a client build policy: the
-    // gate reacts to 403 registration_disabled rather than deciding for itself.
+    // Server-side invite-only (allowNewOrg off) still lands on the same screen.
     isTauriMock.mockReturnValue(false);
     backendMock.teams.listAllMyTeams.mockResolvedValue([]);
     backendMock.teams.bootstrapTeam.mockRejectedValueOnce(registrationDisabled());
@@ -493,6 +492,123 @@ describe("AuthGate", () => {
     expect(Object.keys(backendMock.teams.bootstrapTeam.mock.calls[0][0])).toEqual([
       "displayName",
     ]);
+  });
+
+  it("extension: blocks a teamless user without auto-creating a team", async () => {
+    isTauriMock.mockReturnValue(false);
+    extensionPolicyMock.isExtension = true;
+    extensionPolicyMock.autoCreateTeam = false;
+    backendMock.teams.listAllMyTeams.mockResolvedValue([]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(screen.getByText("暂未加入团队")).toBeInTheDocument());
+    expect(screen.getByText("请联系管理员邀请你加入团队。")).toBeInTheDocument();
+    expect(authState.refreshPendingInvites).toHaveBeenCalled();
+    expect(backendMock.teams.bootstrapTeam).not.toHaveBeenCalled();
+    expect(screen.queryByText("App shell")).not.toBeInTheDocument();
+  });
+
+  it("extension: shows contact-matched invitations before entering a team", async () => {
+    isTauriMock.mockReturnValue(false);
+    extensionPolicyMock.isExtension = true;
+    extensionPolicyMock.autoCreateTeam = false;
+    authState.pendingInvites = [{
+      inviteId: "invite-1",
+      teamId: "team-invited",
+      teamName: "研发协作组",
+      teamRole: "member",
+      displayName: "New member",
+      invitedByDisplayName: "Alice",
+      inviteEmail: "new@example.com",
+      invitePhone: null,
+      expiresAt: null,
+      matchedVia: "email",
+    }];
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(screen.getByText("你有团队邀请")).toBeInTheDocument());
+    expect(screen.getByText("研发协作组")).toBeInTheDocument();
+    expect(backendMock.teams.bootstrapTeam).not.toHaveBeenCalled();
+  });
+
+  it("extension: enters the invited team after the user accepts", async () => {
+    isTauriMock.mockReturnValue(false);
+    extensionPolicyMock.isExtension = true;
+    extensionPolicyMock.autoCreateTeam = false;
+    authState.pendingInvites = [{
+      inviteId: "invite-1",
+      teamId: "team-invited",
+      teamName: "研发协作组",
+      teamRole: "member",
+      displayName: "New member",
+      invitedByDisplayName: "Alice",
+      inviteEmail: "new@example.com",
+      invitePhone: null,
+      expiresAt: null,
+      matchedVia: "email",
+    }];
+    authState.acceptPendingInvite.mockResolvedValue({
+      actorId: "actor-1",
+      teamId: "team-invited",
+      actorType: "member",
+      displayName: "New member",
+      refreshToken: null,
+    });
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "接受邀请" }));
+
+    await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
+    expect(authState.acceptPendingInvite).toHaveBeenCalledWith("invite-1");
+  });
+
+  it("extension: does not treat public teams as memberships", async () => {
+    isTauriMock.mockReturnValue(false);
+    extensionPolicyMock.isExtension = true;
+    extensionPolicyMock.autoCreateTeam = false;
+    backendMock.teams.listAllMyTeams.mockResolvedValue([
+      { id: "public-team", name: "Public", itemType: "team", isMember: false },
+    ]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(screen.getByText("暂未加入团队")).toBeInTheDocument());
+    expect(screen.queryByText(/Team picker/)).not.toBeInTheDocument();
+    expect(backendMock.teams.bootstrapTeam).not.toHaveBeenCalled();
+  });
+
+  it("plain web: ignores the extension-only policy and keeps automatic creation", async () => {
+    isTauriMock.mockReturnValue(false);
+    extensionPolicyMock.isExtension = false;
+    extensionPolicyMock.autoCreateTeam = false;
+    backendMock.teams.listAllMyTeams.mockResolvedValue([]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(backendMock.teams.bootstrapTeam).toHaveBeenCalled());
   });
 
   it("asks before claiming a stashed invite the user has not confirmed (SEC-3)", async () => {
