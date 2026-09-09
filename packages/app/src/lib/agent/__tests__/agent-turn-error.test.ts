@@ -24,6 +24,12 @@ describe('isAgentTurnAbortError', () => {
     expect(isAgentTurnAbortError(undefined, 'Aborted')).toBe(false)
   })
 
+  it('treats abort-shaped provider error details as interrupt', () => {
+    expect(
+      isAgentTurnAbortError('model provider error', 'This operation was aborted'),
+    ).toBe(true)
+  })
+
   it('does not match unrelated failures', () => {
     expect(isAgentTurnAbortError('model stalled', 'No output')).toBe(false)
   })
@@ -32,6 +38,12 @@ describe('isAgentTurnAbortError', () => {
 describe('classifyAgentTurnErrorName', () => {
   it('maps abort to TurnInterrupted', () => {
     expect(classifyAgentTurnErrorName('MessageAbortedError')).toBe('TurnInterrupted')
+  })
+
+  it('maps abort-shaped provider error to TurnInterrupted', () => {
+    expect(
+      classifyAgentTurnErrorName('model provider error', 'This operation was aborted'),
+    ).toBe('TurnInterrupted')
   })
 
   it('maps model stalled to AgentTimeoutError', () => {

@@ -101,6 +101,35 @@ pub(crate) const PROVIDER_ERROR_MESSAGE: &str = "model provider error";
 pub(crate) const ABORTED_ERROR_MESSAGE: &str = "MessageAbortedError";
 pub(crate) const ABORTED_ERROR_DETAILS: &str = "Aborted";
 
+/// User abort sometimes surfaces as `stopReason: "error"` with an AbortError
+/// message (e.g. tool execution cancelled mid-flight) rather than `"aborted"`.
+/// Treat those as interrupts, not provider failures.
+pub(crate) fn is_abort_like_detail(details: &str) -> bool {
+    let lower = details.trim().to_ascii_lowercase();
+    lower.contains("operation was aborted")
+        || lower.contains("messageaborted")
+        || lower.contains("request was aborted")
+        || lower.contains("aborterror")
+        || lower == "aborted"
+}
+
+/// pi tool layer abort summaries (`bash` → `"aborted"`, agent-loop →
+/// `"Operation aborted"`, harness → `"Command aborted"`).
+pub(crate) fn is_abort_like_tool_result(summary: &str) -> bool {
+    let lower = summary.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    lower == "aborted"
+        || lower == "operation aborted"
+        || lower == "command aborted"
+        || is_abort_like_detail(summary)
+}
+
+pub(crate) fn aborted_turn_error(details: impl Into<String>) -> amux::AcpEvent {
+    error_event(ABORTED_ERROR_MESSAGE, details.into())
+}
+
 fn error_event(message: &str, details: String) -> amux::AcpEvent {
     amux::AcpEvent {
         event: Some(amux::acp_event::Event::Error(amux::AcpError {
@@ -317,8 +346,20 @@ pub fn translate_event(
                 // detail when pi gives none — the frontend renders the
                 // localized message alone.
                 "error" => {
-                    state.stash_turn_error(PROVIDER_ERROR_MESSAGE, details.unwrap_or_default());
-                    vec![]
+                    let details_str = details.unwrap_or_default();
+                    if is_abort_like_detail(&details_str) {
+                        vec![error_event(
+                            ABORTED_ERROR_MESSAGE,
+                            if details_str.is_empty() {
+                                ABORTED_ERROR_DETAILS.to_string()
+                            } else {
+                                details_str
+                            },
+                        )]
+                    } else {
+                        state.stash_turn_error(PROVIDER_ERROR_MESSAGE, details_str);
+                        vec![]
+                    }
                 }
                 // Emitted straight away: an abort is never retried (pi-ai's
                 // `retryAssistantCall` returns it terminally, and
@@ -834,6 +875,31 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn abort_like_tool_result_strings() {
+        assert!(super::is_abort_like_tool_result("aborted"));
+        assert!(super::is_abort_like_tool_result("Operation aborted"));
+        assert!(super::is_abort_like_tool_result("Command aborted"));
+        assert!(!super::is_abort_like_tool_result("permission denied"));
+    }
+
+    #[test]
+    fn abort_like_error_stop_reason_becomes_interrupt_not_provider_failure() {
+        let mut s = TranslateState::default();
+        let e = ev(
+            &mut s,
+            r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"This operation was aborted"}}"#,
+        );
+        match e[0].event.as_ref().unwrap() {
+            amux::acp_event::Event::Error(err) => {
+                assert_eq!(err.message, ABORTED_ERROR_MESSAGE);
+                assert_eq!(err.details, "This operation was aborted");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(s.take_turn_error().is_none());
     }
 
     #[test]

@@ -85,6 +85,8 @@ fn is_turn_abort_error(err: &amux::AcpError) -> bool {
         || details.contains("messageaborted")
         || message.contains("turninterrupted")
         || details.contains("turninterrupted")
+        || crate::runtime::pi_rpc::translate::is_abort_like_detail(&err.details)
+        || crate::runtime::pi_rpc::translate::is_abort_like_detail(&err.message)
 }
 
 fn tool_use_metadata(tu: &amux::AcpToolUse) -> String {
@@ -183,6 +185,9 @@ pub struct TurnAggregator {
     /// carry opposite meanings to the model: one is "the user stopped you",
     /// the other is "the call failed".
     turn_failed: bool,
+    /// pi aborted a tool mid-flight (`tool_execution_end` with an abort-shaped
+    /// summary) without emitting assistant `stopReason: "aborted"`.
+    turn_saw_abort_tool_result: bool,
 }
 
 impl TurnAggregator {
@@ -223,6 +228,11 @@ impl TurnAggregator {
             Some(amux::acp_event::Event::ToolResult(tr)) => {
                 self.ensure_turn_started();
                 self.turn_had_activity = true;
+                if !tr.success
+                    && crate::runtime::pi_rpc::translate::is_abort_like_tool_result(&tr.summary)
+                {
+                    self.turn_saw_abort_tool_result = true;
+                }
                 let metadata = tool_result_metadata(tr);
                 out.push(EmittedMessage {
                     kind: MessageKind::AgentToolResult,
@@ -258,6 +268,7 @@ impl TurnAggregator {
                     self.turn_had_reply = false;
                     self.turn_was_interrupted = false;
                     self.turn_failed = false;
+                    self.turn_saw_abort_tool_result = false;
                     self.ensure_turn_started();
                 }
                 // Active -> Idle is the canonical "turn ended" signal.
@@ -265,6 +276,12 @@ impl TurnAggregator {
                 // turn allocates a fresh id.
                 if sc.old_status == active && sc.new_status == idle {
                     self.flush_thinking_into(&mut out);
+                    if self.turn_saw_abort_tool_result {
+                        // Tool-phase user abort: assistant stopReason stays
+                        // `"toolUse"`; the abort lives only in the tool result.
+                        self.turn_was_interrupted = true;
+                        self.turn_failed = false;
+                    }
                     let ended_badly = self.turn_was_interrupted || self.turn_failed;
                     if ended_badly && self.turn_had_activity {
                         // Single durable AGENT_REPLY: keep any unflushed prose in
@@ -319,6 +336,7 @@ impl TurnAggregator {
                     self.turn_had_reply = false;
                     self.turn_was_interrupted = false;
                     self.turn_failed = false;
+                    self.turn_saw_abort_tool_result = false;
                     self.current_turn_id = None;
                 }
             }
@@ -705,6 +723,28 @@ mod tests {
             .contains("\"turn_status\":\"no_final_reply\""));
         assert!(emitted[0].cloud_persist);
         assert!(!emitted[0].turn_id.is_empty());
+        assert!(TurnAggregator::cloud_persistent(&emitted[0]));
+    }
+
+    #[test]
+    fn abort_shaped_tool_result_marks_turn_interrupted_at_idle() {
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        agg.ingest(&tool_use("t1", "bash", "sleep 30"));
+        agg.ingest(&tool_result("t1", false, "aborted"));
+
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].kind, MessageKind::AgentReply);
+        assert!(emitted[0]
+            .metadata_json
+            .contains("\"turn_status\":\"interrupted\""));
         assert!(TurnAggregator::cloud_persistent(&emitted[0]));
     }
 

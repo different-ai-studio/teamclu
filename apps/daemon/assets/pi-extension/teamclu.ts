@@ -43,7 +43,9 @@
  *
  * ## Permission flow
  *
- * `tool_call` hook: on "ask" the extension calls `ctx.ui.confirm(title, message)`.
+ * `tool_call` hook: on "ask" the extension calls `ctx.ui.confirm(title, message, { signal })`.
+ * The turn abort signal must be wired through so a user interrupt can dismiss the
+ * dialog; otherwise `session.abort()` waits forever on this await (#1331).
  * In `pi --mode rpc` that surfaces as `extension_ui_request{method:"confirm"}`
  * which amuxd translates into an AcpPermissionRequest. The message carries a
  * machine-readable trailer line `teamclu.always-pattern=<pattern>`; when the
@@ -67,18 +69,22 @@ type ToolCallEvent = {
   toolCallId: string;
   input: Record<string, unknown>;
 };
+type ExtensionUIDialogOptions = { timeout?: number; signal?: AbortSignal };
+
 type TeamcluExtensionUIContext = {
   sessionId?: string;
-  confirm(title: string, message?: string, options?: { timeout?: number }): Promise<boolean>;
+  confirm(title: string, message?: string, options?: ExtensionUIDialogOptions): Promise<boolean>;
   select(
     title: string,
     options: string[],
-    opts?: { timeout?: number; signal?: AbortSignal },
+    opts?: ExtensionUIDialogOptions,
   ): Promise<string | undefined>;
   setTitle?(title: string): void;
 };
 type ExtensionContext = {
   ui: TeamcluExtensionUIContext;
+  /** Turn abort signal; undefined when the agent is not streaming. */
+  signal?: AbortSignal;
   /** Current model; pi sets `.provider` (e.g. `"anthropic"`). */
   model?: unknown;
   modelRegistry?: {
@@ -1613,9 +1619,14 @@ export default async function (pi: ExtensionAPI) {
     const argsJson = (JSON.stringify(event.input ?? {}, null, 2) ?? "{}").slice(0, 2000);
     const message = `${argsJson}\n\nteamclu.always-pattern=${pattern}`;
 
-    const confirmed = await ctx.ui.confirm(title, message);
+    const confirmed = await ctx.ui.confirm(title, message, { signal: ctx.signal });
     if (!confirmed) {
-      return { block: true, reason: "Denied by TeamClu permission gate" };
+      return {
+        block: true,
+        reason: ctx.signal?.aborted
+          ? "Permission request cancelled"
+          : "Denied by TeamClu permission gate",
+      };
     }
     return undefined;
   });

@@ -1226,7 +1226,8 @@ export const useV2StreamingStore = create<State>((set, get) => ({
       return;
     }
     const before = summarizeToolCallsForDiag(existing.toolCalls);
-    const toolCalls = finishUnresolvedTools(existing.toolCalls);
+    const interrupted = opts?.reason === "interrupt";
+    const toolCalls = finishUnresolvedTools(existing.toolCalls, { interrupted });
     set({
       byKey: {
         ...state.byKey,
