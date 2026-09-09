@@ -314,7 +314,37 @@ function mapCloudDeployError(e: unknown): string {
  * A clone that fails is the one case worth interrupting the user for: they
  * typed the URL, and the app is empty until they fix it.
  */
-async function runSeed(set: SetState, app: AppRow, adoptExisting = false): Promise<void> {
+/**
+ * Explain a seed failure the raw daemon text does not.
+ *
+ * A clone that ran out of time is the one failure whose cause is invisible:
+ * git was not asked anything and printed nothing, because it is the machine's
+ * credential helper that is waiting — often on a window that has nowhere to
+ * appear. Everything else git says is already the answer.
+ */
+function mapSeedErrorReason(raw: string | null): string | undefined {
+  if (!raw) return undefined;
+  if (raw.includes("git clone timed out")) {
+    return i18n.t(
+      "apps.seedErrorReason.cloneTimeout",
+      "克隆超时。多半是这台机器的 git 凭证助手在等一个弹不出来的登录框；先在终端里 clone 一次这个仓库，再回来重试。",
+    );
+  }
+  return raw;
+}
+
+/**
+ * @param cloneUrl the address to clone from, when it differs from the stored
+ * one. Credentials pasted into a repo URL are stripped before the row is
+ * written, so the create path passes what the user actually typed — that copy
+ * lives for the length of one call and is never persisted.
+ */
+async function runSeed(
+  set: SetState,
+  app: AppRow,
+  adoptExisting = false,
+  cloneUrl?: string | null,
+): Promise<void> {
   let deployKeyPem: string | null = null;
   let deployKeyId: number | null = null;
   // Keyed on how the repo is authenticated, not on the status the row happens
@@ -349,7 +379,7 @@ async function runSeed(set: SetState, app: AppRow, adoptExisting = false): Promi
       app.teamId,
       app.name,
       app.type,
-      app.gitRemoteUrl,
+      cloneUrl?.trim() || app.gitRemoteUrl,
       deployKeyPem,
       adoptExisting,
     );
@@ -369,7 +399,7 @@ async function runSeed(set: SetState, app: AppRow, adoptExisting = false): Promi
   } else if (result.outcome === "failed") {
     await patchStatus(set, app.id, "error");
     if (app.gitRemoteUrl) {
-      await toastError("仓库克隆失败", result.error ?? undefined);
+      await toastError("仓库克隆失败", mapSeedErrorReason(result.error));
     }
   }
   // unreachable → no status change; reseed remains available.
@@ -557,7 +587,10 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // daemon, which writes its own embedded template. Non-fatal — a daemon
       // that is down (unreachable) leaves the row `pending` so the user can
       // reseed.
-      await runSeed(set, row, !!adoptLocalDir?.trim());
+      // The typed address, not the stored one: `POST /v1/apps` strips any
+      // credential out of it before writing the row, and this is the one call
+      // that still needs it.
+      await runSeed(set, row, !!adoptLocalDir?.trim(), input.gitRemoteUrl);
     }
     await get().refreshLocalApps(input.teamId);
     // Return the row as it stands AFTER seeding — the caller decides what to do

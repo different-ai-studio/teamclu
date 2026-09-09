@@ -9,6 +9,7 @@ pub mod app_git;
 pub mod app_seed;
 pub mod app_templates;
 pub mod app_workdir;
+pub mod bounded_proc;
 pub mod dispatch;
 pub mod oss;
 pub mod scheduler;

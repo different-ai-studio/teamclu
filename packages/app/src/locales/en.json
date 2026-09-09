@@ -1427,6 +1427,9 @@
     "deleteFailed": "Delete failed",
     "deleteDenied": "App not found, or you cannot delete it",
     "deleted": "App deleted",
+    "seedErrorReason": {
+      "cloneTimeout": "The clone timed out. Most often this machine's git credential helper is waiting on a sign-in window that has nowhere to appear — clone the repo once in a terminal, then try again."
+    },
     "deployErrorReason": {
       "uncommitted": "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
       "pushRejected": "The repo has commits this machine does not. Pull and resolve them, then deploy again.",

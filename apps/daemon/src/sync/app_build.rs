@@ -8,8 +8,8 @@ use crate::sync::app_git::{self, SshEnv};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 /// OSS object key for an app's built code artifact.
 pub fn oss_object_key(app_id: &str) -> String {
@@ -141,91 +141,22 @@ fn run_with_timeout(
         .no_window()
         .args(args)
         .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .env("GIT_TERMINAL_PROMPT", "0");
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
+    // The spawn, the pipe draining and the kill live in `bounded_proc`: the
+    // clone path needs exactly the same thing, and two copies of a poll loop
+    // that kills process groups is one copy too many.
+    let out = crate::sync::bounded_proc::run_bounded(command, timeout, timeout_msg)?;
+    if !out.status.success() {
+        let msg = map_pnpm_failure(
+            cmd,
+            args,
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+        );
+        anyhow::bail!("{msg}");
     }
-
-    let mut child = command
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("could not run {cmd}: {e}"))?;
-
-    // Drain both pipes on their own threads for the whole life of the child.
-    // Reading them only after it exits deadlocks any build that writes more
-    // than a pipe buffer (`pnpm install` on the tanstack template is well over
-    // 64 KiB): the child blocks on a full pipe, never exits, and the poll loop
-    // below spins until the 10-minute timeout kills it.
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-    let stdout_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut pipe) = stdout_pipe {
-            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
-        }
-        buf
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut pipe) = stderr_pipe {
-            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
-        }
-        buf
-    });
-    let join = |h: std::thread::JoinHandle<Vec<u8>>| h.join().unwrap_or_default();
-
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            // Both pipes are closed now, so the readers finish on their own.
-            let out = Output {
-                status,
-                stdout: join(stdout_reader),
-                stderr: join(stderr_reader),
-            };
-            if !out.status.success() {
-                let msg = map_pnpm_failure(
-                    cmd,
-                    args,
-                    &String::from_utf8_lossy(&out.stdout),
-                    &String::from_utf8_lossy(&out.stderr),
-                );
-                anyhow::bail!("{msg}");
-            }
-            return Ok(out);
-        }
-        if start.elapsed() >= timeout {
-            kill_process_tree(&mut child);
-            let _ = join(stdout_reader);
-            let _ = join(stderr_reader);
-            anyhow::bail!("{timeout_msg}");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-#[cfg(unix)]
-fn kill_process_tree(child: &mut std::process::Child) {
-    let pid = child.id() as i32;
-    unsafe {
-        let pgid = libc::getpgid(pid);
-        if pgid > 1 {
-            let _ = libc::kill(-pgid, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[cfg(not(unix))]
-fn kill_process_tree(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+    Ok(out)
 }
 
 /// Message on the commit a deploy makes for work the agent left uncommitted.
