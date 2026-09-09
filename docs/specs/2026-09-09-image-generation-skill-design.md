@@ -234,14 +234,28 @@ image_models:
 
 **因此不需要 `undici` 依赖、不需要 `proxy_env`、不需要动 compose。** 唯一残留的注意事项是：`ai.mx5.cn` 前置的是订阅账号池，可用性弱于一方 API，所以图片档如果将来要兜底，兜底目标得是另一个真能出图的后端 —— DeepSeek 出不了图，不能像 `pro`/`max` 那样拿它兜。一期不做兜底，失败就如实报错。
 
-> **⚠️ 2026-09-09 实测：这条中继上的图片模型目前一个都调不通 —— 「列在 models 里」不等于「能出图」。**
->
-> | 模型 | 结果 |
-> |---|---|
-> | `gpt-image-2` | `400 The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account.` —— 注意报错里的模型名**不是我们传的那个**：images 路径没有采纳 `model` 字段，而是派到了一个出不了图的 Codex/ChatGPT 账号上 |
-> | `grok-imagine-image` / `-quality` | `403 personal-team-blocked:spending-limit` —— 账号池没额度 / 需要 Grok 订阅 |
->
-> 这不是网关侧的问题，是中继账号池的问题，**必须先在中继上解决，Phase 1 才有可验收的对象**。在此之前 §2.5 里「复用 mx5 出图」只是路线成立、能力未就绪。出网确实不需要代理（那条结论不变），但可用的图片后端还没有。
+**`gpt-image-2` 已于 2026-09-09 在这条中继上跑通**，但踩过一个坑，值得记下来因为它不是账号问题：
+
+中继把 `/v1/images/generations` 翻译成一次 Codex Responses 调用，需要一个**载体聊天模型**来驱动内置的 `image_generation` 工具，而 cli-proxy-api 把载体写死成 `gpt-5.4-mini`（`codexOpenAIImagesMainModel`，v7.2.155 至今未改），这个账号档位没有该模型 → 每个图片请求都在到达图片工具之前就 400。我们传的 `gpt-image-2` 其实是被采纳的，它作为 `tools[0].model` 随行。
+
+修法是中继 `config.yaml` 里一行，**不需要升级**（升级也没用，最新版仍然写死同一个默认值）：
+
+```yaml
+gpt-image-2-base-model: gpt-5.6-terra
+```
+
+实测结果（这几条直接决定下面的设计）：
+
+| 项 | 实测值 |
+|---|---|
+| 端到端 | HTTP 200，783 KB 真 PNG，**30 秒** |
+| 响应字段 | `data[].b64_json` + `revised_prompt`；**没有 `url`** |
+| 顶层还带 | `background` / `output_format` / `quality` / `size` |
+| usage | 返回，见 §2.1（字段名是 `input_tokens` 不是 `prompt_tokens`） |
+
+30 秒这个数字印证了 §2.3 ④ 的显式超时：图片没有流式首字节兜底，180s 上限是合适的，而 chat 那条路径的做法在这里不够。
+
+`grok-imagine-image` / `-quality` 仍然 `403 personal-team-blocked:spending-limit` —— 那是**另一个不相关的问题**（xAI 账号没额度），改配置解决不了，也不影响 `gpt-image-2` 这条路。
 
 ## 3. Skill 设计
 
@@ -391,10 +405,10 @@ description: "生成图片/配图/插图/海报/头像/示意图。触发词：�
 
 网关设计里 DeepSeek 那几条上游行为是拿真实 API 打出来的，图片这边也该同样对待：
 
-1. `gpt-image-2`（经 mx5 中继）的 `usage` 字段到底有没有、字段名叫什么
-2. 是不是**只**返回 `b64_json`、`response_format` 参数还认不认（中继会改写协议，不能照官方文档推断）
+1. ~~`usage` 字段有没有、叫什么~~ —— **已测**：有，`input_tokens` / `output_tokens`（见 §2.1）
+2. ~~是不是只返回 `b64_json`~~ —— **已测**：是，只有 `b64_json` + `revised_prompt`，无 `url`
 3. `n > 1` 时部分失败的实际形状（是少几个元素，还是整个 400）
-4. 计价口径 —— 走中继意味着成本是订阅池而非按张计费，§2.1 那张按张成本表要重新对一次
+4. 计价口径 —— 走中继意味着成本是**订阅池**而非按张付费，§2.1 那张按张成本表整个失去了锚点，要重新对一次（这反而更支持「自主定价、不锚定上游」）
 5. 内容审核被拒时的状态码和 body 形状（决定 §4 那张表最后两行）
 6. pi 的 bash 子进程是否继承 `tc_gateway_token`
 
