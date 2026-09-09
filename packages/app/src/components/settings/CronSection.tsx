@@ -218,8 +218,33 @@ export function CronSection() {
     loadJobs()
     const interval = setInterval(() => {
       loadJobs()
-    }, 30000)
-    return () => clearInterval(interval)
+    }, 5000)
+
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) => {
+        if (cancelled) return undefined
+        return listen('cron:jobs-updated', () => {
+          void loadJobs()
+        })
+      })
+      .then((fn) => {
+        if (cancelled) {
+          fn?.()
+          return
+        }
+        unlisten = fn
+      })
+      .catch(() => {
+        // Browser / tests: no Tauri event bus.
+      })
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      unlisten?.()
+    }
   }, [loadJobs, activeScope])
 
   React.useEffect(() => {

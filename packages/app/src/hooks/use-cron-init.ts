@@ -14,7 +14,7 @@ export function useCronInit() {
   useEffect(() => {
     if (!isTauri() || !daemonHttpReady) return;
 
-    let unlisten: (() => void) | undefined;
+    const unlistens: Array<() => void> = [];
     let cancelled = false;
 
     (async () => {
@@ -23,13 +23,20 @@ export function useCronInit() {
       // Scheduled sessions are now identified by their persisted `source ===
       // 'cron'`, so a cron-session change just needs the session list re-pulled
       // (the fresh rows carry `source`); no separate id scan.
-      unlisten = await listen("cron:cron-sessions-updated", () => {
-        void import("@/stores/session-list-store").then(({ useSessionListStore }) =>
-          useSessionListStore.getState().load(),
-        ).catch((err: unknown) => {
-          console.warn("[App] Session list refresh failed (non-critical):", err);
-        });
-      });
+      unlistens.push(
+        await listen("cron:cron-sessions-updated", () => {
+          void import("@/stores/session-list-store").then(({ useSessionListStore }) =>
+            useSessionListStore.getState().load(),
+          ).catch((err: unknown) => {
+            console.warn("[App] Session list refresh failed (non-critical):", err);
+          });
+        }),
+      );
+      unlistens.push(
+        await listen("cron:jobs-updated", () => {
+          void useCronStore.getState().loadJobs();
+        }),
+      );
 
       try {
         await useCronStore.getState().reinit();
@@ -40,7 +47,7 @@ export function useCronInit() {
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      for (const unlisten of unlistens) unlisten();
     };
   }, [daemonHttpReady]);
 }
