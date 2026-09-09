@@ -47,6 +47,8 @@ import { CloseToTrayHost } from "@/components/CloseToTrayDialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { TelemetryConsentDialog } from "@/components/telemetry/TelemetryConsentDialog";
 import { RuntimeRefreshWorkspaceBanner } from "@/components/workspace/RuntimeRefreshBanner";
+import { AgentsSkillsAccessBanner } from "@/components/skills/AgentsSkillsAccessBanner";
+import { useAgentsSkillsAccessInit } from "@/hooks/use-agents-skills-access-init";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
@@ -277,6 +279,7 @@ function AppContent() {
   useGitReposInit();
   useCronInit();
   useWorkspaceRuntimeRefreshPoll();
+  useAgentsSkillsAccessInit();
   useExternalLinkHandler();
   useFileTabSync();
   useEffect(() => {
@@ -721,6 +724,7 @@ function AppContent() {
           ) : null}
 
           <RuntimeRefreshWorkspaceBanner />
+          <AgentsSkillsAccessBanner />
 
           {/* Main content - Chat or file preview */}
           <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">

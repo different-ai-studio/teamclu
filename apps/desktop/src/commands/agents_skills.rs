@@ -2,8 +2,11 @@
 //! target for TeamClu skill packages, readable by Pi natively and wired into
 //! OpenCode / Claude Code via each runtime's `skills.paths` config.
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use tauri::AppHandle;
+use tauri_plugin_fs::FsExt;
 
 /// Canonical shared install root: `~/.agents/skills`.
 pub fn agents_skills_dir() -> Result<PathBuf, String> {
@@ -13,6 +16,193 @@ pub fn agents_skills_dir() -> Result<PathBuf, String> {
 
 fn ensure_dir(path: &Path) -> Result<(), String> {
     std::fs::create_dir_all(path).map_err(|e| format!("Failed to create {}: {}", path.display(), e))
+}
+
+/// Why `~/.agents/skills` is not ready for the webview / install paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentsSkillsAccessKind {
+    Ok,
+    HomeMissing,
+    CreateFailed,
+    OsPermission,
+    TauriScope,
+}
+
+/// Structured result of probing OS + Tauri fs-scope access to `~/.agents/skills`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentsSkillsAccess {
+    pub path: String,
+    pub ok: bool,
+    pub kind: AgentsSkillsAccessKind,
+    pub message: String,
+    pub os_readable: bool,
+    pub os_writable: bool,
+    pub scope_granted: bool,
+}
+
+fn access_result(
+    path: PathBuf,
+    kind: AgentsSkillsAccessKind,
+    message: impl Into<String>,
+    os_readable: bool,
+    os_writable: bool,
+    scope_granted: bool,
+) -> AgentsSkillsAccess {
+    AgentsSkillsAccess {
+        path: path.to_string_lossy().into_owned(),
+        ok: kind == AgentsSkillsAccessKind::Ok,
+        kind,
+        message: message.into(),
+        os_readable,
+        os_writable,
+        scope_granted,
+    }
+}
+
+/// Create the directory (if needed) and probe a write/read/delete round-trip.
+///
+/// Returns `(readable, writable, create_error)`. A create error that looks like
+/// a permission problem is reported separately from a generic create failure so
+/// the UI can tell the user to fix ownership rather than "disk full".
+fn probe_os_access(dir: &Path) -> (bool, bool, Option<(AgentsSkillsAccessKind, String)>) {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        let kind = if e.kind() == std::io::ErrorKind::PermissionDenied {
+            AgentsSkillsAccessKind::OsPermission
+        } else {
+            AgentsSkillsAccessKind::CreateFailed
+        };
+        return (
+            false,
+            false,
+            Some((
+                kind,
+                format!("Failed to create {}: {e}", dir.display()),
+            )),
+        );
+    }
+
+    let probe = dir.join(format!(
+        ".teamclu-write-probe-{}",
+        std::process::id()
+    ));
+    let payload = b"teamclu-agents-skills-probe\n";
+
+    if let Err(e) = std::fs::write(&probe, payload) {
+        let _ = std::fs::remove_file(&probe);
+        return (
+            true,
+            false,
+            Some((
+                AgentsSkillsAccessKind::OsPermission,
+                format!(
+                    "Cannot write to {}: {e}. Check that your user owns ~/.agents/skills.",
+                    dir.display()
+                ),
+            )),
+        );
+    }
+
+    let readable = match std::fs::read(&probe) {
+        Ok(bytes) => bytes == payload,
+        Err(_) => false,
+    };
+    let _ = std::fs::remove_file(&probe);
+
+    if !readable {
+        return (
+            false,
+            true,
+            Some((
+                AgentsSkillsAccessKind::OsPermission,
+                format!(
+                    "Wrote a probe file under {} but could not read it back.",
+                    dir.display()
+                ),
+            )),
+        );
+    }
+
+    (true, true, None)
+}
+
+fn grant_and_check_scope(app: &AppHandle, skills: &Path) -> (bool, Option<String>) {
+    let agents_parent = skills.parent().unwrap_or(skills);
+    if let Err(e) = crate::fs_scope::allow_directory(app, agents_parent) {
+        return (false, Some(e));
+    }
+    if let Err(e) = crate::fs_scope::allow_directory(app, skills) {
+        return (false, Some(e));
+    }
+
+    let probe_child = skills.join(".teamclu-scope-probe");
+    let allowed = app.fs_scope().is_allowed(skills) || app.fs_scope().is_allowed(&probe_child);
+    if allowed {
+        (true, None)
+    } else {
+        (
+            false,
+            Some(format!(
+                "Tauri fs scope still rejects {} after granting ~/.agents",
+                skills.display()
+            )),
+        )
+    }
+}
+
+/// Probe OS writability of `~/.agents/skills` and (re)grant the webview fs scope.
+#[tauri::command]
+pub fn check_agents_skills_access(app: AppHandle) -> Result<AgentsSkillsAccess, String> {
+    let skills = match agents_skills_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            return Ok(access_result(
+                PathBuf::from("~/.agents/skills"),
+                AgentsSkillsAccessKind::HomeMissing,
+                e,
+                false,
+                false,
+                false,
+            ));
+        }
+    };
+
+    let (os_readable, os_writable, os_err) = probe_os_access(&skills);
+    if let Some((kind, message)) = os_err {
+        let (scope_granted, _) = grant_and_check_scope(&app, &skills);
+        return Ok(access_result(
+            skills,
+            kind,
+            message,
+            os_readable,
+            os_writable,
+            scope_granted,
+        ));
+    }
+
+    let (scope_granted, scope_err) = grant_and_check_scope(&app, &skills);
+    if !scope_granted {
+        return Ok(access_result(
+            skills,
+            AgentsSkillsAccessKind::TauriScope,
+            scope_err.unwrap_or_else(|| {
+                "App filesystem scope does not allow ~/.agents/skills".into()
+            }),
+            os_readable,
+            os_writable,
+            false,
+        ));
+    }
+
+    Ok(access_result(
+        skills,
+        AgentsSkillsAccessKind::Ok,
+        "ok".to_string(),
+        os_readable,
+        os_writable,
+        true,
+    ))
 }
 
 fn read_json_object(path: &Path) -> Result<Value, String> {
@@ -168,5 +358,51 @@ mod tests {
             v.get("skills").is_none(),
             "workspace opencode.json must not gain a member skills.paths entry"
         );
+    }
+
+    #[test]
+    fn probe_os_access_creates_and_writes_in_empty_dir() {
+        let dir = tempdir().unwrap();
+        let skills = dir.path().join(".agents").join("skills");
+        let (readable, writable, err) = probe_os_access(&skills);
+        assert!(readable);
+        assert!(writable);
+        assert!(err.is_none());
+        assert!(skills.is_dir());
+        // Probe file must not linger.
+        let leftovers: Vec<_> = std::fs::read_dir(&skills)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".teamclu-write-probe-")
+            })
+            .collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn probe_os_access_reports_permission_on_readonly_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let skills = dir.path().join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        let mut perms = std::fs::metadata(&skills).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&skills, perms).unwrap();
+
+        let (readable, writable, err) = probe_os_access(&skills);
+        // Restore before asserts so the tempdir can clean up.
+        let mut perms = std::fs::metadata(&skills).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&skills, perms).unwrap();
+
+        assert!(!writable);
+        let (kind, _) = err.expect("expected permission error");
+        assert_eq!(kind, AgentsSkillsAccessKind::OsPermission);
+        let _ = readable;
     }
 }

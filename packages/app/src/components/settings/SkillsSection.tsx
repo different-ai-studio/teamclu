@@ -273,12 +273,12 @@ export const SkillsSection = React.memo(function SkillsSection({
     setIsSaving(true)
     setError(null)
     try {
+      await ensureAgentsSkillsPaths(workspacePath)
       await invoke<string>('import_skill_from_zip', {
         workspacePath: workspacePath ?? null,
         zipPath: importZipPath,
         isGlobal: true,
       })
-      await ensureAgentsSkillsPaths(workspacePath)
       await loadSkills()
       onDataChange?.()
       useWorkspaceRuntimeRefreshStore.getState().noteLocalRefresh(['skills'])
@@ -300,6 +300,7 @@ export const SkillsSection = React.memo(function SkillsSection({
     setError(null)
 
     try {
+      await ensureAgentsSkillsPaths(workspacePath)
       const skillDirName = editingSkill?.filename ||
         skillName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
 
@@ -338,7 +339,6 @@ ${skillContent.trim()}`
       }
 
       await writeTextFile(`${skillDir}/SKILL.md`, finalContent)
-      await ensureAgentsSkillsPaths(workspacePath)
       await loadSkills()
       onDataChange?.()
       useWorkspaceRuntimeRefreshStore.getState().noteLocalRefresh(['skills'])
