@@ -110,14 +110,31 @@ jobs:
             docker service update --update-order stop-first \
               --image "$IMAGE_REPO:${TAG::9}" --detach=true "$SERVICE"
 
-            # Written as explicit ifs on purpose. The compact
-            # \`[ a ] || [ b ] && { exit 1; }\` form is a trap under \`set -e\`:
-            # in the ORDINARY case, where neither test matches, the whole list
-            # exits non-zero and the script dies on the first poll.
+            # Poll on what actually matters — the target image is live and the
+            # service is at full replicas — not on UpdateStatus.
+            #
+            # UpdateStatus is NOT always there. Re-running this with a tag the
+            # service already carries changes nothing, swarm records no update,
+            # and `{{.UpdateStatus.State}}` then fails with "map has no entry for
+            # key UpdateStatus". Under `set -e` that killed the first poll
+            # iteration and failed a deploy that had actually succeeded. It is
+            # kept only as an early abort signal, read through `with` so a
+            # missing key is empty instead of fatal.
+            #
+            # Explicit ifs throughout: the compact `[ a ] || [ b ] && { exit 1; }`
+            # form is its own `set -e` trap, exiting non-zero in the ORDINARY
+            # case where neither test matches.
+            ok=""
             for i in \$(seq 1 45); do
-              state=\$(docker service inspect "$SERVICE" --format '{{.UpdateStatus.State}}')
-              reps=\$(docker service ls --format '{{.Name}} {{.Replicas}}' | awk '/$SERVICE/{print \$2}')
-              if [ "\$state" = "completed" ] && [ "\$reps" = "1/1" ]; then break; fi
+              state=\$(docker service inspect "$SERVICE" --format '{{with .UpdateStatus}}{{.State}}{{end}}' 2>/dev/null || true)
+              reps=\$(docker service ls --format '{{.Name}} {{.Replicas}}' | awk -v s="$SERVICE" '\$1==s{print \$2}')
+              # --filter status=running matters: during the swap a bare
+              # `docker ps` still lists the OLD, dying container, and reading its
+              # image reports the previous release as if it had deployed.
+              C=\$(docker ps --filter status=running --format '{{.Names}}' | grep "$SERVICE" | head -1 || true)
+              live=""
+              [ -n "\$C" ] && live=\$(docker inspect "\$C" --format '{{.Config.Image}}' 2>/dev/null || true)
+              if [ "\$reps" = "1/1" ] && [ "\$live" = "$IMAGE_REPO:${TAG::9}" ]; then ok=1; break; fi
               if [ "\$state" = "paused" ] || [ "\$state" = "rollback_completed" ]; then
                 echo "swarm gave up on the update: \$state"
                 docker service ps "$SERVICE" --no-trunc | head -5
@@ -125,19 +142,12 @@ jobs:
               fi
               sleep 4
             done
-            if [ "\$state" != "completed" ]; then
-              echo "did not converge within the window: \$state"
+            if [ -z "\$ok" ]; then
+              echo "did not converge: replicas=\$reps live=\$live want=$IMAGE_REPO:${TAG::9}"
               docker service ps "$SERVICE" --no-trunc | head -5
               exit 1
             fi
-
-            # --filter status=running matters: during the swap a bare
-            # \`docker ps\` still lists the OLD, dying container, and reading
-            # its image/env reports the previous release as if it had deployed.
-            C=\$(docker ps --filter status=running --format '{{.Names}}' | grep "$SERVICE" | head -1)
-            running=\$(docker inspect "\$C" --format '{{.Config.Image}}')
-            echo "running image: \$running"
-            [ "\$running" = "$IMAGE_REPO:${TAG::9}" ] || { echo "wrong image is live"; exit 1; }
+            echo "running image: \$live"
             docker logs --tail 3 "\$C"
           EOF
 
