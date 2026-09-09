@@ -1135,7 +1135,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
         shared.routes.lock().insert(
             "pi:/s.jsonl".into(),
-            super::Route {
+            crate::runtime::pi_rpc::Route {
                 event_tx: tx,
                 permission: crate::runtime::permission_policy::PermissionPolicy::Ask,
                 pool_key: attached_key.clone(),
@@ -1143,7 +1143,7 @@ mod tests {
                 turn_active: false,
                 turn_reply_to: None,
                 turn_requester: None,
-                translate: super::translate::TranslateState::default(),
+                translate: crate::runtime::pi_rpc::translate::TranslateState::default(),
                 last_entry_id: None,
             },
         );
