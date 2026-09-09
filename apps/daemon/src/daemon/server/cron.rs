@@ -778,15 +778,20 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         //    wall-clock (whole turn) and idle (silence since last ACP event).
         let wall_deadline = std::time::Instant::now() + wall_timeout;
         let mut last_activity = std::time::Instant::now();
+        let mut tool_deadline: Option<std::time::Instant> = None;
         let mut segments: Vec<String> = Vec::new();
         let mut live = String::new();
         let mut timed_out = false;
         let result: anyhow::Result<CronTurnOutcome> = loop {
             let now = std::time::Instant::now();
             let wall_remaining = wall_deadline.saturating_duration_since(now);
-            let idle_remaining =
-                crate::runtime::turn_reply::idle_remaining_at(last_activity, idle_timeout, now);
-            let remaining = wall_remaining.min(idle_remaining);
+            let wait_remaining = crate::runtime::turn_reply::wait_remaining_at(
+                last_activity,
+                idle_timeout,
+                tool_deadline,
+                now,
+            );
+            let remaining = wall_remaining.min(wait_remaining);
             if remaining.is_zero() {
                 timed_out = true;
                 break crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live)
@@ -799,6 +804,11 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             let event = match tokio::time::timeout(remaining, event_rx.recv()).await {
                 Ok(Some(ev)) => {
                     last_activity = std::time::Instant::now();
+                    crate::runtime::turn_reply::apply_tool_deadline_from_event(
+                        &ev.event,
+                        &mut tool_deadline,
+                        last_activity,
+                    );
                     ev
                 }
                 Ok(None) => {
@@ -882,23 +892,13 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             crate::runtime::turn_reply::absorb_emitted(emitted, &mut segments, &mut live);
         };
 
-        // 4. Stop the runtime when the budget expired but the model is still
-        //    going — mirrors `AmuxdAgentHandle::run_turn` so poll_events does
-        //    not keep writing into the session after cron has moved on.
-        if timed_out {
-            let mut mgr = agents.lock().await;
-            if let Err(e) = mgr.cancel_by_acp_session(acp_sid).await {
-                tracing::warn!(
-                    acp_session_id = %acp_sid,
-                    error = %e,
-                    "cron: cancel after turn timeout failed"
-                );
-            }
-        }
-
-        // 5. Always check the receiver back in.
+        // 4. Stop occupying the workspace when the budget expired but the
+        //    model is still going. ACP cancel alone leaves status Active.
         {
             let mut mgr = agents.lock().await;
+            if timed_out {
+                mgr.release_after_abandoned_turn(&agent_id).await;
+            }
             mgr.checkin_turn(crate::runtime::CheckedOutTurn { agent_id, event_rx });
         }
 

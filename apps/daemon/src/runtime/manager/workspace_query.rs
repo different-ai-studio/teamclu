@@ -233,4 +233,26 @@ mod tests {
             WorkspaceOccupancy::Cold
         );
     }
+
+    #[tokio::test]
+    async fn release_after_abandoned_turn_stops_runtime_still_marked_active() {
+        let mut manager = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        manager.add_test_workspace_runtime("rt1", "/tmp/ws", "ws1", amux::AgentStatus::Active);
+        assert!(manager.workspace_has_active_turn("/tmp/ws", "ws1"));
+        manager.release_after_abandoned_turn("rt1").await;
+        assert!(
+            !manager.workspace_has_active_turn("/tmp/ws", "ws1"),
+            "occupancy must clear even when ACP cancel cannot flip Idle"
+        );
+        assert!(manager.get_handle("rt1").is_none());
+    }
+
+    #[tokio::test]
+    async fn release_after_abandoned_turn_leaves_idle_runtime() {
+        let mut manager = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        manager.add_test_workspace_runtime("rt1", "/tmp/ws", "ws1", amux::AgentStatus::Idle);
+        manager.release_after_abandoned_turn("rt1").await;
+        assert!(manager.get_handle("rt1").is_some());
+        assert!(!manager.workspace_has_active_turn("/tmp/ws", "ws1"));
+    }
 }

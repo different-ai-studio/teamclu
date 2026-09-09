@@ -54,6 +54,7 @@ const PRIMARY: Partial<Record<DiagnosticCauseCode, RemediationId[]>> = {
   'model.catalog_unknown': ['retry_diagnose'],
   'send.cloud_insert_failed': ['retry_diagnose'],
   'send.outbox_failed': ['retry_diagnose'],
+  'send.workspace_busy': ['retry_diagnose'],
 }
 
 export function remediationsForFinding(
