@@ -27,6 +27,9 @@ const isTauriMcpE2EBuild = process.env.VITE_TEAMCLU_E2E === 'true'
 // truthiness: a release build sets it to `"false"`, which is truthy.
 const isTauriDevRun =
   process.env.TAURI_ENV_DEBUG === 'true' || process.env.TAURI_DEBUG === 'true'
+// Same rename, same v1 fallback. Values are unchanged between the two
+// (`windows` / `darwin` / `linux`), so only the variable name had to move.
+const tauriTargetPlatform = process.env.TAURI_ENV_PLATFORM || process.env.TAURI_PLATFORM
 const tauriPluginMcpLinked = existsSync(path.join(tauriPluginMcpPath, 'package.json'))
 const tauriPluginMcpInstalled = (() => {
   try {
@@ -283,7 +286,15 @@ export default defineConfig({
   build: {
     // Tauri uses Chromium on Windows and WebKit on macOS and Linux
     // In web mode, target modern browsers (Chrome extension context).
-    target: process.env.VITE_APP_PLATFORM === 'web' ? 'chrome105' : (process.env.TAURI_PLATFORM === 'windows' ? 'chrome105' : 'safari13'),
+    // The Windows arm read the v1 `TAURI_PLATFORM`, which v2 never sets, so it
+    // had been permanently false: every Windows build was transpiled down to
+    // the WebKit `safari13` target even though it runs on evergreen WebView2.
+    target:
+      process.env.VITE_APP_PLATFORM === 'web'
+        ? 'chrome105'
+        : tauriTargetPlatform === 'windows'
+          ? 'chrome105'
+          : 'safari13',
     // Produce sourcemaps for error reporting. Reuses `isTauriDevRun` because
     // the bare `TAURI_DEBUG` this used to read is a Tauri v1 name that v2 never
     // sets — so this had been permanently false and no debug build has shipped
