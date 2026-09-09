@@ -103,10 +103,16 @@ describe('appStatusMeta', () => {
 })
 
 describe('deployDisabledReason', () => {
-  test('blocks third-party auth and container runtime', () => {
-    expect(deployDisabledReason({ authMode: 'third', runtime: 'node' })).toBe('apps.deployDisabledThird')
-    expect(deployDisabledReason({ authMode: 'none', runtime: 'container' })).toBe('apps.deployDisabledContainer')
-    expect(deployDisabledReason({ authMode: 'none', runtime: 'node' })).toBeNull()
+  test('blocks third-party auth', () => {
+    expect(deployDisabledReason({ authMode: 'third' })).toBe('apps.deployDisabledThird')
+    expect(deployDisabledReason({ authMode: 'none' })).toBeNull()
+  })
+
+  test('a container app that already deployed can deploy again', () => {
+    // The row says `container` only because a deploy wrote it, so blocking on
+    // it disabled the button on exactly the apps that had just proved it works.
+    const deployed = { authMode: 'none', runtime: 'container' } as const
+    expect(deployDisabledReason(deployed)).toBeNull()
   })
 })
 
