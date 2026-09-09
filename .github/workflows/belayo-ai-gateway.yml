@@ -1,0 +1,148 @@
+# Build and deploy the AI gateway to BELAYO.
+#
+# Self-host gets the gateway for free: its compose file has `build:`, so
+# self-host-deploy.yml rebuilds it from source on every qualifying merge.
+# Belayo's Dokploy app is `sourceType: docker` — it pulls a pre-built image from
+# Alibaba ACR, so a source change reaches it only when someone builds and pushes
+# that image. Nobody did, for weeks: self-host moved forward on every merge
+# while belayo silently stayed on an image from August, and nothing anywhere
+# reported the drift. This workflow is that missing half.
+#
+# Why it builds over SSH on the Dokploy manager instead of on the runner:
+#   - the target hosts are aarch64, so a GitHub x86 runner would need QEMU
+#     (slow) or an ARM runner (another thing to keep working);
+#   - the manager is already logged in to the ACR, so no registry credential
+#     has to live in GitHub — the only secret here is an SSH key;
+#   - the manager can reach Docker Hub, which the gateway host CANNOT (it is
+#     behind a NAT gateway and registry-1.docker.io times out from it). Build
+#     there and the base image pull simply fails.
+#
+# Database migrations are NOT run here. Belayo's are applied by hand against its
+# RDS and recorded in `_selfhost.schema_migrations`; a migration that the new
+# image needs must land BEFORE this runs.
+name: Belayo AI Gateway
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/ai-gateway/**'
+      - '.github/workflows/belayo-ai-gateway.yml'
+  workflow_dispatch:
+
+# Never two at once: the deploy step is a swarm rolling update against a
+# host-mode port, and two of them interleaving leaves the service wedged.
+concurrency:
+  group: belayo-ai-gateway
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ID: SK9twdPnBrAVqHFHJqiLs
+      SERVICE: teamclu-ai-gateway-v2-ab8ksc
+      IMAGE_REPO: registry-vpc.cn-shenzhen.aliyuncs.com/betlysaas/teamclu-ai-gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start ssh-agent
+        # Agent forwarding, not a copied key: the gateway host has no public IP,
+        # so the manager has to make the second hop, and forwarding lets it do
+        # that without the private key ever landing on a box.
+        run: |
+          eval "$(ssh-agent -s)"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          ssh-add - <<< "${{ secrets.BELAYO_DEPLOY_SSH_KEY }}"
+          mkdir -p ~/.ssh
+          printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' > ~/.ssh/config
+
+      - name: Ship source to the build host
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+        run: |
+          git archive HEAD services/ai-gateway | gzip \
+            | ssh -A "root@$MGR" \
+                'rm -rf /root/build-gw && mkdir -p /root/build-gw && tar xzf - -C /root/build-gw'
+
+      - name: Build and push
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          TAG: ${{ github.sha }}
+        run: |
+          ssh -A "root@$MGR" bash -euo pipefail <<EOF
+            cd /root/build-gw/services/ai-gateway
+            IMG="$IMAGE_REPO:${TAG::9}"
+            docker build -t "\$IMG" .
+            # Prove the image is the code we just shipped, not a cache hit on an
+            # older layer set. Cheap, and it is the failure that would otherwise
+            # deploy silently.
+            docker run --rm --entrypoint sh "\$IMG" -c 'test -s dist/app.js'
+            docker push "\$IMG"
+          EOF
+
+      - name: Point Dokploy at the new image
+        # The running service AND Dokploy's own record. Updating only the
+        # service means the next Dokploy redeploy quietly rolls back to
+        # whatever tag its database still holds.
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          TAG: ${{ github.sha }}
+        run: |
+          ssh -A "root@$MGR" bash -euo pipefail <<EOF
+            PG=\$(docker ps --format '{{.Names}}' | grep dokploy-postgres | head -1)
+            docker exec -i "\$PG" psql -U dokploy -d dokploy -v ON_ERROR_STOP=1 -c \
+              "update application set \"dockerImage\" = '$IMAGE_REPO:${TAG::9}' where \"applicationId\" = '$APP_ID';"
+          EOF
+
+      - name: Roll the service
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          GW: ${{ secrets.BELAYO_GATEWAY_HOST }}
+          TAG: ${{ github.sha }}
+        run: |
+          ssh -A "root@$MGR" ssh -A "root@$GW" bash -euo pipefail <<EOF
+            # stop-first is mandatory: 4001 is published in HOST mode, so
+            # start-first parks the new task in "no suitable node (host-mode
+            # port already in use)" forever and the update never converges.
+            docker service update --update-order stop-first \
+              --image "$IMAGE_REPO:${TAG::9}" --detach=true "$SERVICE"
+
+            # Written as explicit ifs on purpose. The compact
+            # \`[ a ] || [ b ] && { exit 1; }\` form is a trap under \`set -e\`:
+            # in the ORDINARY case, where neither test matches, the whole list
+            # exits non-zero and the script dies on the first poll.
+            for i in \$(seq 1 45); do
+              state=\$(docker service inspect "$SERVICE" --format '{{.UpdateStatus.State}}')
+              reps=\$(docker service ls --format '{{.Name}} {{.Replicas}}' | awk '/$SERVICE/{print \$2}')
+              if [ "\$state" = "completed" ] && [ "\$reps" = "1/1" ]; then break; fi
+              if [ "\$state" = "paused" ] || [ "\$state" = "rollback_completed" ]; then
+                echo "swarm gave up on the update: \$state"
+                docker service ps "$SERVICE" --no-trunc | head -5
+                exit 1
+              fi
+              sleep 4
+            done
+            if [ "\$state" != "completed" ]; then
+              echo "did not converge within the window: \$state"
+              docker service ps "$SERVICE" --no-trunc | head -5
+              exit 1
+            fi
+
+            # --filter status=running matters: during the swap a bare
+            # \`docker ps\` still lists the OLD, dying container, and reading
+            # its image/env reports the previous release as if it had deployed.
+            C=\$(docker ps --filter status=running --format '{{.Names}}' | grep "$SERVICE" | head -1)
+            running=\$(docker inspect "\$C" --format '{{.Config.Image}}')
+            echo "running image: \$running"
+            [ "\$running" = "$IMAGE_REPO:${TAG::9}" ] || { echo "wrong image is live"; exit 1; }
+            docker logs --tail 3 "\$C"
+          EOF
+
+      - name: Smoke — the gateway answers
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://ai-gateway.service.ucar.cc/healthz)
+          echo "healthz: $code"
+          [ "$code" = "200" ]

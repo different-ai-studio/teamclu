@@ -77,7 +77,8 @@ pnpm ios:test:core          # AMUXCore SwiftPM tests
 pnpm ios:test               # iOS UI tests
 
 # Deploy — automatic: push to main touching deploy/self-host/**, services/fc/**,
-# or services/supabase/migrations/** triggers self-host-deploy.yml.
+# services/ai-gateway/** or services/supabase/migrations/** triggers
+# self-host-deploy.yml. That covers SELF-HOST only; belayo is a separate path.
 ```
 
 ## Architecture
@@ -286,11 +287,21 @@ The `-dev` in the hostnames is historical: **this is the only environment**, not
 a dev tier alongside a production one. `build.config.production.json` and
 `build.config.dev.json` both point here, which is correct.
 
-**Deploy is automatic.** Pushing to `main` with changes under
-`deploy/self-host/**`, `services/fc/**`, or `services/supabase/migrations/**`
-triggers `.github/workflows/self-host-deploy.yml`, which SSHes to the box,
-`git pull`s, `docker compose build fc`, `docker compose up -d`, waits for FC
-health, then runs `run-e2e.sh`. Database migrations are applied by the `migrate`
+**Deploy is automatic — for self-host.** Pushing to `main` with changes under
+`deploy/self-host/**`, `services/fc/**`, `services/ai-gateway/**` or
+`services/supabase/migrations/**` triggers
+`.github/workflows/self-host-deploy.yml`, which SSHes to the box, `git pull`s,
+`docker compose build fc ai-gateway`, `docker compose up -d`, waits for both to
+report healthy, then runs `run-e2e.sh`.
+
+**belayo does not ride that workflow**, and the difference has stranded it
+before. Self-host builds the gateway from source in compose; belayo's Dokploy
+app is `sourceType: docker`, so it pulls a pre-built image from Alibaba ACR and
+a source change reaches it only when someone builds and pushes that image.
+`.github/workflows/belayo-ai-gateway.yml` now does that on the same trigger —
+before it existed, self-host moved forward on every merge while belayo silently
+stayed on an image from weeks earlier, with nothing anywhere reporting the
+drift. Database migrations are applied by the `migrate`
 compose service (`deploy/self-host/init/apply-migrations.sh`, tracked in
 `_selfhost.schema_migrations`, idempotent, lexical order).
 
