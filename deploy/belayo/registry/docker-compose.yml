@@ -48,55 +48,63 @@ services:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     networks:
       - dokploy-network
-    # Container labels, not `deploy.labels`: Dokploy runs compose stacks with
-    # plain `docker compose`, and Traefik reads labels off the container there.
-    # Under `deploy:` they become swarm service labels, which nothing on this
-    # box looks at — the router simply never appears and the host 404s.
-    labels:
-    - traefik.enable=true
-    - traefik.docker.network=dokploy-network
-    - traefik.http.services.teamclu-registry.loadbalancer.server.port=5000
-
-    # Two logins, split by method. The deployed function keeps its pull
-    # credential in its own configuration, where anyone who can read the
-    # function can read it — and a credential that can also push there
-    # means replacing the image every instance of that app executes.
-    #
-    # A pull is GET/HEAD; everything that writes a blob, a manifest or a
-    # tag is POST/PUT/PATCH/DELETE. The write router carries the higher
-    # priority so it wins over the catch-all for those methods.
-    - traefik.http.middlewares.teamclu-registry-push.basicauth.users=${REGISTRY_PUSH_AUTH}
-    # BOTH accounts on the read side: `docker login` starts with a GET, so a
-    # read router that only knows the pull account rejects the push account
-    # before it ever gets to push anything.
-    - traefik.http.middlewares.teamclu-registry-pull.basicauth.users=${REGISTRY_PULL_AUTH},${REGISTRY_PUSH_AUTH}
-
-    - traefik.http.routers.teamclu-registry-write.rule=Host(`${REGISTRY_HOST}`) && (Method(`POST`) || Method(`PUT`) || Method(`PATCH`) || Method(`DELETE`))
-    - traefik.http.routers.teamclu-registry-write.priority=100
-    - traefik.http.routers.teamclu-registry-write.entrypoints=websecure
-    - traefik.http.routers.teamclu-registry-write.tls.certresolver=letsencrypt
-    - traefik.http.routers.teamclu-registry-write.middlewares=teamclu-registry-push
-    - traefik.http.routers.teamclu-registry-write.service=teamclu-registry
-
-    - traefik.http.routers.teamclu-registry-read.rule=Host(`${REGISTRY_HOST}`)
-    - traefik.http.routers.teamclu-registry-read.priority=10
-    - traefik.http.routers.teamclu-registry-read.entrypoints=websecure
-    - traefik.http.routers.teamclu-registry-read.tls.certresolver=letsencrypt
-    - traefik.http.routers.teamclu-registry-read.middlewares=teamclu-registry-pull
-    - traefik.http.routers.teamclu-registry-read.service=teamclu-registry
-
-    # Plain HTTP exists only to redirect: `docker push` to an http:// host
-    # would otherwise send the credential in the clear.
-    - traefik.http.routers.teamclu-registry-web.rule=Host(`${REGISTRY_HOST}`)
-    - traefik.http.routers.teamclu-registry-web.priority=5
-    - traefik.http.routers.teamclu-registry-web.entrypoints=web
-    - traefik.http.routers.teamclu-registry-web.middlewares=redirect-to-https@file
-    - traefik.http.routers.teamclu-registry-web.service=teamclu-registry
     deploy:
+      mode: replicated
+      replicas: 1
+      # Pinned to the idle worker: the registry streams every image byte
+      # through itself, so it is the one service here worth keeping off the
+      # manager.
+      placement:
+        constraints:
+          - node.hostname == dokploy-worker-2
       resources:
         limits:
-          # It proxies bytes to OSS and holds no cache of its own.
           memory: 512M
+      # Swarm SERVICE labels — what Traefik's swarm provider reads, and ONLY
+      # the swarm spelling of the network label: a service carrying both
+      # `traefik.docker.*` and `traefik.swarm.*` is skipped entirely, with
+      # `both Docker and Swarm labels are defined` in Traefik's log and a plain
+      # 404 at the door.
+      labels:
+        - traefik.enable=true
+        - traefik.swarm.network=dokploy-network
+        - traefik.http.services.teamclu-registry.loadbalancer.server.port=5000
+    
+        # Two logins, split by method. The deployed function keeps its pull
+        # credential in its own configuration, where anyone who can read the
+        # function can read it — and a credential that can also push there
+        # means replacing the image every instance of that app executes.
+        #
+        # A pull is GET/HEAD; everything that writes a blob, a manifest or a
+        # tag is POST/PUT/PATCH/DELETE. The write router carries the higher
+        # priority so it wins over the catch-all for those methods.
+        - traefik.http.middlewares.teamclu-registry-push.basicauth.users=${REGISTRY_PUSH_AUTH}
+        # BOTH accounts on the read side: `docker login` starts with a GET, so a
+        # read router that only knows the pull account rejects the push account
+        # before it ever gets to push anything.
+        - traefik.http.middlewares.teamclu-registry-pull.basicauth.users=${REGISTRY_PULL_AUTH},${REGISTRY_PUSH_AUTH}
+    
+        - traefik.http.routers.teamclu-registry-write.rule=Host(`${REGISTRY_HOST}`) && (Method(`POST`) || Method(`PUT`) || Method(`PATCH`) || Method(`DELETE`))
+        - traefik.http.routers.teamclu-registry-write.priority=100
+        - traefik.http.routers.teamclu-registry-write.entrypoints=websecure
+        - traefik.http.routers.teamclu-registry-write.tls.certresolver=letsencrypt
+        - traefik.http.routers.teamclu-registry-write.middlewares=teamclu-registry-push
+        - traefik.http.routers.teamclu-registry-write.service=teamclu-registry
+    
+        - traefik.http.routers.teamclu-registry-read.rule=Host(`${REGISTRY_HOST}`)
+        - traefik.http.routers.teamclu-registry-read.priority=10
+        - traefik.http.routers.teamclu-registry-read.entrypoints=websecure
+        - traefik.http.routers.teamclu-registry-read.tls.certresolver=letsencrypt
+        - traefik.http.routers.teamclu-registry-read.middlewares=teamclu-registry-pull
+        - traefik.http.routers.teamclu-registry-read.service=teamclu-registry
+    
+        # Plain HTTP exists only to redirect: `docker push` to an http:// host
+        # would otherwise send the credential in the clear.
+        - traefik.http.routers.teamclu-registry-web.rule=Host(`${REGISTRY_HOST}`)
+        - traefik.http.routers.teamclu-registry-web.priority=5
+        - traefik.http.routers.teamclu-registry-web.entrypoints=web
+        - traefik.http.routers.teamclu-registry-web.middlewares=redirect-to-https@file
+        - traefik.http.routers.teamclu-registry-web.service=teamclu-registry
 
 networks:
   dokploy-network:
