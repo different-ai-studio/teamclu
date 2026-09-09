@@ -29,6 +29,8 @@ pub mod wechat;
 pub mod wechat_config;
 pub mod wecom;
 pub mod wecom_config;
+mod wecom_delivery;
+mod wecom_outbox;
 
 pub use config::*;
 pub use discord::DiscordGateway;

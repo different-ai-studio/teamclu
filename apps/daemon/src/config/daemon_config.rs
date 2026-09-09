@@ -549,6 +549,18 @@ pub struct WeComBot {
     pub bot_name: Option<String>,
 }
 
+fn default_wecom_stream_max_secs() -> u64 {
+    240
+}
+
+fn default_wecom_progress_gap_secs() -> u64 {
+    10
+}
+
+fn default_wecom_final_max_retries() -> u32 {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeComChannel {
     pub enabled: bool,
@@ -562,6 +574,16 @@ pub struct WeComChannel {
     // ----- new multi-bot list -----
     #[serde(default)]
     pub bots: Vec<WeComBot>,
+    /// Seconds a WeCom stream bubble may stay open before the driver closes
+    /// it and later pushes the answer as markdown. `0` disables the early close.
+    #[serde(default = "default_wecom_stream_max_secs")]
+    pub stream_max_secs: u64,
+    /// Minimum gap between two frames of the same stream, in seconds.
+    #[serde(default = "default_wecom_progress_gap_secs")]
+    pub progress_frame_gap_secs: u64,
+    /// How many times a failed proactive send is retried from the outbox.
+    #[serde(default = "default_wecom_final_max_retries")]
+    pub final_max_retries: u32,
 }
 
 impl WeComChannel {
@@ -1005,6 +1027,9 @@ encoding_aes_key = "k"
     fn wecom_empty_yields_no_bots() {
         let wecom: WeComChannel = toml::from_str("enabled = false\n").unwrap();
         assert!(wecom.resolved_bots().is_empty());
+        assert_eq!(wecom.stream_max_secs, 240);
+        assert_eq!(wecom.progress_frame_gap_secs, 10);
+        assert_eq!(wecom.final_max_retries, 3);
     }
 
     #[test]

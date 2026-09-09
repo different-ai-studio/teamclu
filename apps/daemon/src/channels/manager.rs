@@ -517,6 +517,9 @@ impl ChannelManager {
                 encoding_aes_key: bot.encoding_aes_key.clone(),
                 owner_id: None,
                 bot_name: bot.bot_name.clone(),
+                stream_max_secs: c.stream_max_secs,
+                progress_frame_gap_secs: c.progress_frame_gap_secs,
+                final_max_retries: c.final_max_retries,
             };
             gw.set_config(cfg).await;
             // One pipeline for every channel; the gateway is left with the
