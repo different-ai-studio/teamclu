@@ -463,35 +463,28 @@
     "webSsoWaiting": "Finish signing in in the window, then come back.",
     "close": "Close",
     "onboarding": {
-      "setupTitle": "Choose setup",
-      "setupDesc": "Sign in, join a team, or connect a self-hosted server.",
       "rerunSetup": "Run setup again",
-      "customServer": "Enterprise custom server",
-      "customServerDesc": "Point the app at your company's self-hosted Cloud API and sign in there.",
-      "customServerRequiredDesc": "Start here: enter the Cloud API address of your company's own server.",
-      "noServerNotice": "No server address is configured yet. Set your company's Cloud API below — signing in and joining a team both need one.",
+      "noServerNotice": "This build ships no server address, so there is nothing to fall back to — signing in needs one.",
       "serverUnset": "no server configured",
       "serverCustomTag": "custom",
-      "serverTitle": "Enterprise custom server",
-      "serverDesc": "Point the app at a different TeamClu Cloud API. The app reloads and you sign in against that server.",
+      "serverChoiceTitle": "Which server do you sign in to?",
+      "serverChoiceDesc": "Use the official server, or point the app at your company's own deployment.",
+      "serverOfficial": "Official server",
+      "serverCustom": "Custom server",
+      "serverCustomDesc": "Enter the Cloud API address of your company's own deployment.",
+      "serverCustomFormDesc": "Enter the Cloud API address of your company's own deployment. You sign in against that server.",
       "serverUrlLabel": "Cloud API URL",
       "serverUrlInvalid": "Enter a valid http(s) URL, e.g. https://api.example.com",
-      "serverDefaultHint": "Built-in default: {{url}}",
-      "serverSaveAndReload": "Save and reload",
       "serverChecking": "Checking…",
       "serverUnreachable": "Could not reach that address. Check the URL and that the server is running.",
       "serverNotCloudApi": "That address answered, but it is not a TeamClu Cloud API ({{status}}).",
       "serverSaveAnyway": "Save it anyway",
-      "serverReset": "Reset to the built-in default",
-      "signInOrRegister": "Sign in or register",
-      "signInOrRegisterDesc": "Sign in directly with a verification code and bind a valid contact method.",
-      "joinTeam": "Join the team",
-      "joinTeamDesc": "Paste an invite link or token to join an existing team.",
-      "inviteParseError": "Enter a valid invite token or invite link.",
-      "inviteTitle": "Join the team",
-      "inviteDesc": "Paste an invite link or token, then sign in to join. The invite is claimed once you're signed in.",
+      "inviteQuestion": "Do you have an invite link?",
+      "inviteQuestionDesc": "Paste it here and everything else is set up for you — including which server to sign in to. The invite is claimed right after you sign in.",
       "inviteLabel": "Invite link or token",
-      "inviteContinueToSignIn": "Continue to sign in"
+      "inviteParseError": "Enter a valid invite token or invite link.",
+      "inviteContinueAnyway": "Continue anyway",
+      "inviteNone": "I don't have an invite link"
     },
     "upgradeOrg": {
       "title": "Create your own team",
@@ -971,7 +964,8 @@
   },
   "onboarding": {
     "common": {
-      "back": "Back"
+      "back": "Back",
+      "next": "Next"
     }
   },
   "workspace": {

@@ -463,35 +463,28 @@
     "webSsoWaiting": "在窗口里登录完成后回到这里。",
     "close": "关闭",
     "onboarding": {
-      "setupTitle": "选择启动方式",
-      "setupDesc": "登录、加入团队，或连接企业自建服务。",
       "rerunSetup": "重新配置本机",
-      "customServer": "企业自定义服务",
-      "customServerDesc": "连接企业自建的 Cloud API，登录到公司自己的服务。",
-      "customServerRequiredDesc": "从这里开始：填入公司自建服务的 Cloud API 地址。",
-      "noServerNotice": "还没有配置服务器地址。先在下面填入企业自建的 Cloud API 地址——登录和加入团队都需要它。",
+      "noServerNotice": "这个版本没有内置服务器地址，也就没有可回退的默认值——登录必须先填一个。",
       "serverUnset": "未配置服务器",
       "serverCustomTag": "自定义",
-      "serverTitle": "企业自定义服务",
-      "serverDesc": "将应用指向另一个 TeamClu Cloud API。应用会重新加载，你需要在该服务上重新登录。",
+      "serverChoiceTitle": "登录到哪个服务器？",
+      "serverChoiceDesc": "使用官方服务器，或者把应用指向公司自建的服务。",
+      "serverOfficial": "官方服务器",
+      "serverCustom": "自定义服务器",
+      "serverCustomDesc": "填入公司自建服务的 Cloud API 地址。",
+      "serverCustomFormDesc": "填入公司自建服务的 Cloud API 地址，之后你会登录到该服务器。",
       "serverUrlLabel": "Cloud API 地址",
       "serverUrlInvalid": "请输入有效的 http(s) 地址，例如 https://api.example.com",
-      "serverDefaultHint": "内置默认：{{url}}",
-      "serverSaveAndReload": "保存并重新加载",
       "serverChecking": "检查中…",
       "serverUnreachable": "连不上这个地址。请检查 URL 是否正确、服务是否在运行。",
       "serverNotCloudApi": "这个地址有响应，但它不是 TeamClu Cloud API（{{status}}）。",
       "serverSaveAnyway": "仍然保存",
-      "serverReset": "恢复内置默认",
-      "signInOrRegister": "登录或者注册",
-      "signInOrRegisterDesc": "使用验证码直接登录，绑定个人的有效通讯方式。",
-      "joinTeam": "加入团队",
-      "joinTeamDesc": "粘贴邀请链接或邀请码，加入已有团队。",
-      "inviteParseError": "请输入有效的邀请码或邀请链接。",
-      "inviteTitle": "加入团队",
-      "inviteDesc": "粘贴邀请链接或邀请码，然后登录以加入。登录后会自动领取邀请。",
+      "inviteQuestion": "有邀请链接吗？",
+      "inviteQuestionDesc": "粘贴在这里，其余的都会自动配好——包括登录到哪个服务器。登录后会立即领取这份邀请。",
       "inviteLabel": "邀请链接或邀请码",
-      "inviteContinueToSignIn": "继续登录"
+      "inviteParseError": "请输入有效的邀请码或邀请链接。",
+      "inviteContinueAnyway": "仍然继续",
+      "inviteNone": "我没有邀请链接"
     },
     "upgradeOrg": {
       "title": "创建你自己的团队",
@@ -971,7 +964,8 @@
   },
   "onboarding": {
     "common": {
-      "back": "上一步"
+      "back": "上一步",
+      "next": "下一步"
     }
   },
   "workspace": {
