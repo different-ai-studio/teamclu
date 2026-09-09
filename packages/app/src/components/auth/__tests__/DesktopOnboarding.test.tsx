@@ -10,6 +10,8 @@ const {
   effectiveCloudApiUrl,
   defaultCloudApiUrl,
   confirmInviteLinkToken,
+  updaterState,
+  checkForUpdates,
 } = vi.hoisted(() => ({
   authState: {
     loading: false,
@@ -29,13 +31,21 @@ const {
   effectiveCloudApiUrl: { value: "https://teamclu-api.ucar.cc" as string | undefined },
   defaultCloudApiUrl: { value: "https://teamclu-api.ucar.cc" as string | undefined },
   confirmInviteLinkToken: vi.fn(),
+  updaterState: { update: { state: "idle" as string, progress: undefined as number | undefined } },
+  checkForUpdates: vi.fn(),
 }));
 
 vi.mock("@/lib/config/bootstrap", () => ({ probeCloudApi }));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string) => fallback ?? _key,
+    // Interpolates like the real `t`, so a string that reaches the screen with
+    // an unfilled {{placeholder}} fails here rather than shipping.
+    t: (_key: string, fallback?: string, vars?: Record<string, unknown>) =>
+      Object.entries(vars ?? {}).reduce(
+        (out, [name, value]) => out.replaceAll(`{{${name}}}`, String(value)),
+        fallback ?? _key,
+      ),
   }),
 }));
 
@@ -48,6 +58,14 @@ vi.mock("@/stores/auth-store", () => {
 });
 
 vi.mock("@/lib/team/invite-link-confirmation", () => ({ confirmInviteLinkToken }));
+
+vi.mock("@/stores/updater", () => {
+  const state = () => ({ ...updaterState, checkForUpdates });
+  const useUpdaterStore = (selector?: (s: ReturnType<typeof state>) => unknown) =>
+    selector ? selector(state()) : state();
+  useUpdaterStore.getState = state;
+  return { useUpdaterStore };
+});
 
 // Only the resolved values are faked; displayHost / normalizeCloudApiUrl stay
 // real so the screen formats and validates addresses the way production does.
@@ -103,6 +121,8 @@ beforeEach(() => {
   authState.verifyOtp.mockReset();
   authState.resetOtp.mockReset();
   confirmInviteLinkToken.mockReset();
+  checkForUpdates.mockReset();
+  updaterState.update = { state: "idle", progress: undefined };
   hasConfig.value = true;
   cloudApiUrlOverride.value = null;
   effectiveCloudApiUrl.value = "https://teamclu-api.ucar.cc";
@@ -327,6 +347,38 @@ describe("DesktopOnboarding", () => {
 
     expect(screen.getByText(/api\.acme\.test/)).toBeInTheDocument();
     expect(screen.getByText(/custom/)).toBeInTheDocument();
+  });
+
+  // Being able to update from the login screen is the whole point: a release
+  // that strands people here is the one they need to leave.
+  it("looks for an update without waiting for anyone to sign in", () => {
+    render(<DesktopOnboarding />);
+
+    expect(checkForUpdates).toHaveBeenCalledWith(true);
+  });
+
+  it("does not restart a check that already found something", () => {
+    updaterState.update = { state: "ready", progress: undefined };
+    render(<DesktopOnboarding />);
+
+    expect(checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it("offers a manual check on the version line", () => {
+    render(<DesktopOnboarding />);
+    checkForUpdates.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /check for updates/i }));
+
+    // Not silent: a click deserves to be told when the check fails.
+    expect(checkForUpdates).toHaveBeenCalledWith();
+  });
+
+  it("reports update progress on the version line", () => {
+    updaterState.update = { state: "downloading", progress: 42 };
+    render(<DesktopOnboarding />);
+
+    expect(screen.getByRole("button", { name: /downloading 42%/i })).toBeDisabled();
   });
 
   it("says so when the build has no server at all", () => {

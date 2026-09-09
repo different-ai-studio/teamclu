@@ -1149,6 +1149,12 @@
     "loginRequired": "请先登录后再操作。"
   },
   "updater": {
+    "check": "检查更新",
+    "checking": "检查中…",
+    "downloading": "下载中 {{percent}}%",
+    "upToDate": "已是最新版本",
+    "restartToUpdate": "重启以更新",
+    "checkFailed": "检查更新失败",
     "ready": "更新就绪",
     "failed": "更新失败",
     "releaseNotes": "更新说明",

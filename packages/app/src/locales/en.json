@@ -1149,6 +1149,12 @@
     "loginRequired": "Please sign in before continuing."
   },
   "updater": {
+    "check": "Check for updates",
+    "checking": "Checking for updates…",
+    "downloading": "Downloading {{percent}}%",
+    "upToDate": "Up to date",
+    "restartToUpdate": "Restart to update",
+    "checkFailed": "Update check failed",
     "ready": "Update Ready",
     "failed": "Update Failed",
     "releaseNotes": "Release Notes",

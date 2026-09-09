@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, ArrowLeft, Link2, RotateCcw, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -18,6 +18,7 @@ import {
 import { useAppVersion } from "@/lib/config/version";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding";
+import { useUpdaterStore } from "@/stores/updater";
 import { LoginScreen } from "./LoginScreen";
 import { useShallow } from "zustand/react/shallow";
 
@@ -35,9 +36,88 @@ type Step = "invite" | "server" | "login";
 /** Where the server address came from, once the wizard has settled it. */
 type ServerOutcome = "invite" | "official" | "custom";
 
-function Shell({ children }: { children: React.ReactNode }) {
+/**
+ * The version line, which doubles as the way to update from here.
+ *
+ * Being able to update while signed out is the point: the updater used to be
+ * mounted inside `App`, so it only ever ran for someone who had already got
+ * past this screen — and a release that strands people here is exactly the one
+ * they need to leave.
+ */
+function VersionFooter() {
   const { t } = useTranslation();
   const appVersion = useAppVersion();
+  const { state, progress, checkForUpdates } = useUpdaterStore(
+    useShallow((s) => ({
+      state: s.update.state,
+      progress: s.update.progress,
+      checkForUpdates: s.checkForUpdates,
+    })),
+  );
+
+  const status = () => {
+    switch (state) {
+      case "checking":
+        return t("updater.checking", "Checking for updates…");
+      case "downloading":
+        return t("updater.downloading", "Downloading {{percent}}%", {
+          percent: Math.round(progress ?? 0),
+        });
+      case "ready":
+        return t("updater.restartToUpdate", "Restart to update");
+      case "up-to-date":
+        return t("updater.upToDate", "Up to date");
+      // `error` reaches the dialog, which says more than a footer can. A silent
+      // check never lands here — it resets to idle — so this is only ever the
+      // result of a click.
+      case "error":
+        return t("updater.checkFailed", "Update check failed");
+      default:
+        return t("updater.check", "Check for updates");
+    }
+  };
+
+  const busy = state === "checking" || state === "downloading";
+
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={() => void checkForUpdates()}
+      className="mt-6 self-center rounded-[6px] px-2 py-1 font-mono text-[11px] text-faint transition-colors hover:text-foreground disabled:cursor-default disabled:hover:text-faint"
+    >
+      v{appVersion} · {status()}
+    </button>
+  );
+}
+
+/**
+ * Look for an update once per app run, while the user is still signed out.
+ *
+ * Deliberately NOT gated on the Settings → General opt-in the background
+ * checker honours. That preference keeps a working install from downloading
+ * things unasked; this call is for the install that cannot get past this
+ * screen, where updating is the only way out. It costs one request for the
+ * release manifest, and anything it finds still ends at a dismissable
+ * "restart to apply" prompt.
+ *
+ * Runs at most once per mount of the wizard, and never on top of a check that
+ * is already in flight or has already found something — `checkForUpdates`
+ * restarts the download from scratch.
+ */
+function useOnboardingUpdateCheck() {
+  const asked = useRef(false);
+  useEffect(() => {
+    if (asked.current) return;
+    asked.current = true;
+    const updater = useUpdaterStore.getState();
+    if (updater.update.state !== "idle") return;
+    void updater.checkForUpdates(true);
+  }, []);
+}
+
+function Shell({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
   const cloudApiUrl = getEffectiveServerConfigSync().cloudApiUrl;
   const override = getCloudApiUrlOverride();
   return (
@@ -45,7 +125,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <div className="absolute inset-x-0 top-0 h-12" data-tauri-drag-region />
       <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col">
         {children}
-        <p className="mt-6 text-center font-mono text-[11px] text-faint">v{appVersion}</p>
+        <VersionFooter />
         {/* An absent URL used to render nothing at all, so a build with no
             backend baked in looked exactly like a working one. */}
         <p
@@ -503,6 +583,7 @@ function ServerStep({ onBack, onDone }: { onBack: () => void; onDone: () => void
 }
 
 export function DesktopOnboarding() {
+  useOnboardingUpdateCheck();
   const { serverAck, markServerAck } = useOnboardingStore(
     useShallow((s) => ({ serverAck: s.serverAck, markServerAck: s.markServerAck })),
   );
