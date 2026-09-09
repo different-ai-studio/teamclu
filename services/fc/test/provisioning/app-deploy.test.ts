@@ -546,3 +546,75 @@ test("the deploy gate no longer refuses a container app outright", () => {
     /not available on this deployment/,
   );
 });
+
+test("finalizeDeploy refuses an image outside the app's own repository", async () => {
+  // Unchecked, this is how one app's deploy points its function at another
+  // app's image: the deploy token proves who started *this* deploy, not what
+  // the image is. And the refusal has to land before anything is provisioned.
+  const calls: string[] = [];
+  const deps = {
+    appsAdminUrl: "postgres://host:5432/postgres",
+    provisionDb: async () => {
+      calls.push("provisionDb");
+      throw new Error("must not be reached");
+    },
+    ensureLogStore: async () => { calls.push("ensureLogStore"); },
+    fcOps: {
+      ensureFunction: async () => { calls.push("ensureFunction"); },
+      ensureHttpTrigger: async () => { calls.push("trigger"); return "https://fn.example.fcapp.run"; },
+    },
+    ownsImage: (appId: string, image: string) =>
+      image.startsWith(`registry.example.com/apps/tc-app-${appId}:`),
+  };
+  const input = {
+    appId: "app-1",
+    slug: "demo",
+    orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    appType: "data_app",
+    fcFunctionName: "tc-app-app-1",
+    ossObjectName: "apps/app-1/code.zip",
+  };
+
+  await assert.rejects(
+    () => finalizeDeploy(deps as never, { ...input, image: "registry.example.com/apps/tc-app-app-2:sha" }),
+    /this app's own repository/,
+  );
+  assert.deepEqual(calls, [], "nothing was provisioned for a rejected image");
+
+  // The app's own image still finalizes.
+  const out = await finalizeDeploy(
+    { ...deps, provisionDb: async () => ({
+        schema: "app_demo",
+        role: "app_role",
+        database: "tc_org_x",
+        connectionString: "postgres://app_role:pw@host:5432/tc_org_x?options=-c%20search_path%3Dapp_demo",
+      }) } as never,
+    { ...input, image: "registry.example.com/apps/tc-app-app-1:sha" },
+  );
+  assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
+});
+
+test("finalizeDeploy leaves the image unchecked where no registry is configured", async () => {
+  // A deployment with no registry has no container app to finalize —
+  // startDeploy refuses one before a build runs — so an absent `ownsImage`
+  // must not turn into a refusal for the archive apps that do deploy there.
+  let ensured: any;
+  const out = await finalizeDeploy(
+    {
+      fcOps: {
+        ensureFunction: async (_n: string, a: any) => { ensured = a; },
+        ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+      },
+    } as never,
+    {
+      appId: "app-1",
+      slug: "demo",
+      appType: "static_web",
+      fcFunctionName: "tc-app-app-1",
+      ossObjectName: "apps/app-1/code.zip",
+      image: "anything.example.com/whatever:1",
+    },
+  );
+  assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
+  assert.equal(ensured.image, "anything.example.com/whatever:1");
+});

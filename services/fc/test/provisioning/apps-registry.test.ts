@@ -4,6 +4,7 @@ import {
   appImageReference,
   appImageRepository,
   appImageTag,
+  imageBelongsToApp,
   imageForPull,
   resolveAppsRegistry,
 } from "../../src/lib/provisioning/apps-registry.js";
@@ -93,4 +94,33 @@ test("the pull host replaces the push host, and nothing else", () => {
   assert.equal(imageForPull("registry.example.com/apps/x:1", undefined), "registry.example.com/apps/x:1");
   assert.equal(imageForPull("registry.example.com/apps/x:1", "registry.example.com"), "registry.example.com/apps/x:1");
   assert.equal(imageForPull("library/nginx:latest", "registry.internal"), "library/nginx:latest");
+});
+
+test("an image is this app's only when it names this app's repository", () => {
+  const { config } = resolveAppsRegistry({
+    APPS_REGISTRY_HOST: "registry.example.com",
+    APPS_REGISTRY_PULL_HOST: "registry.internal:5000",
+    ...creds,
+  });
+  const cfg = config!;
+  const own = (image: string) => imageBelongsToApp(cfg, "app-1", image);
+
+  // Any tag, because the build corrects the tag the control plane minted.
+  assert.equal(own("registry.example.com/apps/tc-app-app-1:abc1234"), true);
+  assert.equal(own("registry.example.com/apps/tc-app-app-1:whatever"), true);
+  // A digest names the same repository, and is already immutable.
+  assert.equal(own("registry.example.com/apps/tc-app-app-1@sha256:deadbeef"), true);
+  // The daemon reports the push host; a client that normalised to the pull host
+  // has still named the same image.
+  assert.equal(own("registry.internal:5000/apps/tc-app-app-1:abc1234"), true);
+
+  // Another app's image is the whole point of the check.
+  assert.equal(own("registry.example.com/apps/tc-app-app-2:abc1234"), false);
+  // A repository that merely starts the same way is not the same repository.
+  assert.equal(own("registry.example.com/apps/tc-app-app-1-evil:abc1234"), false);
+  // Nor is another namespace, or another registry entirely.
+  assert.equal(own("registry.example.com/other/tc-app-app-1:abc1234"), false);
+  assert.equal(own("evil.example.com/apps/tc-app-app-1:abc1234"), false);
+  // A bare tag with no repository at all cannot be it either.
+  assert.equal(own("tc-app-app-1:abc1234"), false);
 });
