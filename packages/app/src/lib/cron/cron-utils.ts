@@ -4,6 +4,7 @@
  */
 
 import {
+  coerceSchedule,
   type CronSchedule,
   type CronPayload,
   type CronDelivery,
@@ -361,11 +362,13 @@ export const defaultFormState: JobFormState = {
 }
 
 export function jobToFormState(job: CronJob): JobFormState {
+  const schedule = coerceSchedule(job.schedule)
+
   // Parse interval from everyMs
   let everyValue = 30
   let everyUnit: 'minutes' | 'hours' | 'days' = 'minutes'
-  if (job.schedule.everyMs) {
-    const ms = job.schedule.everyMs
+  if (schedule.everyMs) {
+    const ms = schedule.everyMs
     if (ms >= 86400000) {
       everyValue = Math.round(ms / 86400000)
       everyUnit = 'days'
@@ -387,12 +390,12 @@ export function jobToFormState(job: CronJob): JobFormState {
   return {
     name: job.name,
     enabled: job.enabled,
-    scheduleKind: job.schedule.kind,
-    at: job.schedule.at || '',
+    scheduleKind: schedule.kind,
+    at: schedule.at || '',
     everyValue,
     everyUnit,
-    cronExpr: job.schedule.expr || '',
-    cronTz: job.schedule.tz || '',
+    cronExpr: schedule.expr || '',
+    cronTz: schedule.tz || '',
     message: job.payload.message,
     model: job.payload.model || '',
     backend: job.payload.backend || '',

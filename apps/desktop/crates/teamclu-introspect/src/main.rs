@@ -133,7 +133,7 @@ fn tool_definitions() -> Value {
                         "description": "Human-readable description of what the job does."
                     },
                     "schedule": {
-                        "description": "Schedule for the job (required for create). A plain string is treated as a 5-field cron expression, e.g. '0 9 * * 1-5'. For one-time or interval jobs, pass an object such as {\"kind\":\"at\",\"at\":\"2026-05-07T09:00:00Z\"}, {\"kind\":\"every\",\"everyMs\":3600000}, or {\"kind\":\"cron\",\"expr\":\"0 9 * * 1-5\",\"tz\":\"Asia/Shanghai\"}.",
+                        "description": "Schedule for the job (required for create). Pass an object, do not stringify it. One-time: {\"kind\":\"at\",\"at\":\"2026-09-09T20:10:30+08:00\"} (ISO-8601). Interval: {\"kind\":\"every\",\"everyMs\":3600000}. Recurring cron: {\"kind\":\"cron\",\"expr\":\"0 9 * * 1-5\",\"tz\":\"Asia/Shanghai\"}. A plain string is only a 5-field cron expression (e.g. '0 9 * * 1-5') or an ISO-8601 timestamp.",
                         "anyOf": [
                             { "type": "string" },
                             {
