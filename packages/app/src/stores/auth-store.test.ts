@@ -443,6 +443,28 @@ describe("signInWithWebSso", () => {
     expect(useAuthStore.getState().errorMessage).toBeNull();
   });
 
+  // A failing `invoke()` rejects with the command's `Err(String)` payload — a
+  // bare string, not an Error. Surfacing it is the whole point: the generic
+  // fallback is what hid a Windows webview pre-flight rejection behind
+  // "Authentication failed." with no way to tell which host or why.
+  it("surfaces a native string rejection instead of the generic fallback", async () => {
+    (runWebSso as ReturnType<typeof vi.fn>).mockRejectedValue(
+      "Host 'admin.example.com' is not reachable: error trying to connect",
+    );
+    const ok = await useAuthStore.getState().signInWithWebSso();
+    expect(ok).toBe(false);
+    expect(useAuthStore.getState().webSsoPending).toBe(false);
+    expect(useAuthStore.getState().errorMessage).toBe(
+      "Host 'admin.example.com' is not reachable: error trying to connect",
+    );
+  });
+
+  it("still falls back for a rejection that carries no message", async () => {
+    (runWebSso as ReturnType<typeof vi.fn>).mockRejectedValue("   ");
+    await useAuthStore.getState().signInWithWebSso();
+    expect(useAuthStore.getState().errorMessage).toBe("Authentication failed.");
+  });
+
   it("cancelWebSso delegates to the lib", () => {
     useAuthStore.setState({ webSsoPending: true });
     useAuthStore.getState().cancelWebSso();
