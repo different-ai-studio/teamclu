@@ -79,12 +79,22 @@ describe('AppListColumn', () => {
     expect(useAppsStore.getState().selectedAppId).toBe('app-1')
   })
 
-  it('+ opens the create form in column three, not a modal', () => {
+  it('creating opens the form in column three, not a modal', () => {
+    // Reached from the empty state, which is now the only create affordance in
+    // this column: the header's `+` duplicated the library's own 新建 one click
+    // earlier and made the header read as two competing actions.
+    useAppsStore.setState({ items: [], localAppIds: [] })
     render(<AppListColumn />)
     fireEvent.click(screen.getByRole('button', { name: '新建' }))
     const tabs = useTabsStore.getState().tabs
     expect(tabs).toHaveLength(1)
     expect(tabs[0]).toMatchObject({ type: 'native', target: 'app-create' })
+  })
+
+  it('the header offers only the library, never a second create button', () => {
+    render(<AppListColumn />)
+    expect(screen.queryByRole('button', { name: '新建' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '所有应用' })).toBeInTheDocument()
   })
 
   it('gives each app type its own glyph', () => {
@@ -120,7 +130,9 @@ describe('AppListColumn', () => {
     useAppsStore.setState({ items: [], localAppIds: [] })
     render(<AppListColumn />)
     expect(screen.getByText('还没有内容')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: '新建' })).toHaveLength(2)
+    // One create button (the empty state's), two ways to the library (the
+    // header icon and the empty state's own button).
+    expect(screen.getAllByRole('button', { name: '新建' })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: '所有应用' })).toHaveLength(2)
   })
 

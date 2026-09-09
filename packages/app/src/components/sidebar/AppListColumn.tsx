@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, ChevronRight, LayoutGrid, Loader2, Plus } from 'lucide-react'
+import { AppWindow, ChevronRight, LayoutGrid, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
@@ -131,17 +131,13 @@ export function AppListColumn() {
             <span className="font-mono text-[11px] font-normal text-faint"> · {items.length}</span>
           </div>
         </div>
+        {/*
+          One way in, not two. Creating lives in the library dialog, which is
+          also where you go to find an app that is not on this machine — a `+`
+          here duplicated that button one click earlier and made the header
+          read as two competing actions.
+        */}
         <div className="flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => openCreateApp(createLabel)}
-            disabled={!teamId}
-            title={t('apps.create', '新建')}
-            aria-label={t('apps.create', '新建')}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
           <button
             type="button"
             onClick={() => openAppLibrary(libraryLabel)}
