@@ -41,7 +41,9 @@ export type UsageRow = {
   cachedInputTokens: number;
   outputTokens: number;
   credits: number;
-  usageSource: "upstream" | "estimated";
+  usageSource: "upstream" | "estimated" | "fixed";
+  /** How many images this row paid for. 0 for chat. */
+  imageCount?: number;
   statusCode: number | null;
   stream: boolean;
   latencyMs: number | null;
@@ -62,12 +64,12 @@ export async function recordUsage(sql: Sql, u: UsageRow): Promise<string | null>
       insert into amux.ai_usage_logs
         (team_id, actor_id, public_model_id, backend_model_id, provider_id,
          input_tokens, cached_input_tokens, output_tokens, credits,
-         usage_source, status_code, stream, latency_ms, request_id)
+         usage_source, status_code, stream, latency_ms, request_id, image_count)
       values
         (${u.teamId}::uuid, ${u.actorId}::uuid, ${u.publicModelId}, ${u.backendModelId},
          ${u.providerId}, ${u.inputTokens}, ${u.cachedInputTokens}, ${u.outputTokens},
          ${u.credits}, ${u.usageSource}, ${u.statusCode}, ${u.stream},
-         ${u.latencyMs}, ${u.requestId})
+         ${u.latencyMs}, ${u.requestId}, ${u.imageCount ?? 0})
       returning id`;
     return rows[0]?.id ?? null;
   } catch (err) {

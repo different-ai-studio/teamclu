@@ -113,6 +113,17 @@ backend_models:
     upstream_model: gpt-5.6-sol
     default_max_output_tokens: 16000
 
+  # Images. `default_max_output_tokens` is meaningless here — image tiers size
+  # their hold from per_image_credits, not from an output ceiling.
+  #
+  # ⚠️ Requires `gpt-image-2-base-model: gpt-5.6-terra` in the mx5 relay's own
+  # config.yaml. Without it the relay drives the Codex image tool through a
+  # hardcoded `gpt-5.4-mini` carrier that this account tier does not have, and
+  # every request 400s before reaching the image tool.
+  mx5-gpt-image-2:
+    provider: mx5
+    upstream_model: gpt-image-2
+
 public_models:
   # ── THE public contract: exactly three tiers, and their prices ───────
   # The desktop hardcodes these three ids (§4.3.1). They are STABLE NAMES —
@@ -198,3 +209,51 @@ public_models:
       output_per_1m_credits: 16000000
     routes:
       - backend: ds-v4-pro
+
+# ── image tiers ────────────────────────────────────────────────────────────
+# Separate from public_models on purpose: that map is the CLIENT contract (the
+# desktop's model picker reads it, REQUIRED_TIERS validates it, its pricing is
+# per-1M-tokens). An image entry there would appear as a chat model that cannot
+# chat. See §2.2 of the image design.
+#
+# Priced PER IMAGE. The upstream does report tokens — it just reports 515
+# "image tokens" for one whole picture, which is not a quantity the tier's
+# per-token price means anything against (§2.1).
+#
+# ⚠️ PRICES ARE PLACEHOLDERS, like the tiers above. For calibration, measured
+# 2026-09-09 on live traffic: one `default` request ≈ 9,900 credits, one `pro`
+# ≈ 81,600, one `max` ≈ 311,000. 300,000 puts an image at roughly one `max`
+# request, which is the right order for a 30-second generation.
+#
+# ⚠️ A request naming a size absent from this map is REFUSED (400
+# unpriced_image_variant), not charged `default` — an unrecognised size is most
+# likely a new expensive tier the upstream just shipped.
+image_models:
+  image:
+    name: 图片
+    routing: priority
+    pricing:
+      per_image_credits:
+        default: 300000
+        "1024x1024": 300000
+        "1024x1024:low": 120000
+        "1024x1024:high": 900000
+        "1024x1536": 450000
+        "1536x1024": 450000
+    routes:
+      - backend: mx5-gpt-image-2
+
+# Body keys forwarded to the images endpoint. A separate list from
+# default_supported_params, which has no `prompt` — reusing it would strip the
+# prompt and send the upstream an empty request.
+default_image_params:
+  - model
+  - prompt
+  - n
+  - size
+  - quality
+  - background
+  - output_format
+  - output_compression
+  - moderation
+  - user

@@ -1,4 +1,4 @@
-import type { Catalog, Pricing, Provider, BackendModel } from "./catalog.js";
+import type { Catalog, ImagePricing, Pricing, Provider, BackendModel } from "./catalog.js";
 
 export type UpstreamUsage = {
   inputTokens: number;
@@ -164,4 +164,82 @@ function handleEvent(
   const isUsageOnly = usage != null && Array.isArray(obj.choices) && obj.choices.length === 0;
   if (isUsageOnly && opts.dropUsageOnlyFrame) return "";
   return rawEvent;
+}
+
+
+// ── images ──────────────────────────────────────────────────────────────────
+
+/**
+ * What one image costs, most-specific key first.
+ *
+ * A request that NAMES a size we have not priced is refused (`null`) rather
+ * than charged the `default`. `default` exists for a request that asks for no
+ * particular size — a size we do not recognise is most likely a new, expensive
+ * tier the upstream just shipped, and quietly serving it at the cheapest price
+ * we have is how a catalogue gap turns into free images.
+ */
+export function pricePerImage(
+  p: ImagePricing,
+  size?: string,
+  quality?: string,
+): number | null {
+  const per = p.per_image_credits;
+  if (size) {
+    if (quality && Number.isFinite(per[`${size}:${quality}`])) return per[`${size}:${quality}`];
+    if (Number.isFinite(per[size])) return per[size];
+    return null;
+  }
+  return Number.isFinite(per.default) ? per.default : null;
+}
+
+/**
+ * Usage off an images response.
+ *
+ * Separate from `readUsage` because the field names differ: images report
+ * `input_tokens` / `output_tokens`, chat reports `prompt_tokens` /
+ * `completion_tokens`. Feeding an image response to `readUsage` silently
+ * returns zeros, which would look like a working meter recording nothing.
+ * Measured against the live endpoint 2026-09-09.
+ *
+ * These numbers are recorded for margin analysis only — images are billed per
+ * image (see `ImagePricing`).
+ */
+export function readImageUsage(obj: any): UpstreamUsage | null {
+  const u = obj?.usage;
+  if (!u || typeof u !== "object") return null;
+  const input = Number(u.input_tokens ?? 0);
+  const output = Number(u.output_tokens ?? 0);
+  if (!Number.isFinite(input) && !Number.isFinite(output)) return null;
+  return {
+    inputTokens: Number.isFinite(input) ? input : 0,
+    cachedInputTokens: 0,
+    outputTokens: Number.isFinite(output) ? output : 0,
+  };
+}
+
+/** How many images actually came back. Bills the delivery, not the request. */
+export function countImages(obj: any): number {
+  return Array.isArray(obj?.data) ? obj.data.length : 0;
+}
+
+export function prepareImageUpstream(
+  cat: Catalog,
+  provider: Provider,
+  backend: BackendModel,
+  body: Record<string, unknown>,
+  apiKey: string,
+  signal: AbortSignal,
+): PreparedRequest {
+  const out = filterBody(body, cat.default_image_params);
+  out.model = backend.upstream_model;
+  return {
+    url: `${provider.api_base.replace(/\/+$/, "")}/images/generations`,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(out),
+      signal,
+    },
+    injectedUsageOption: false,
+  };
 }

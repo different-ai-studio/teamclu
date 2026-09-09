@@ -21,6 +21,15 @@ export type Config = {
    * See §4.8.1 of the design.
    */
   creditsEnforced: boolean;
+  /**
+   * Hard ceiling on one image generation.
+   *
+   * Chat gets away with only the client's own signal because a stream's first
+   * byte proves the upstream is alive. An image is one shot — measured at 30s
+   * for a 1024² PNG — so a hung upstream would otherwise sit on its credit
+   * reservation until the 10-minute expiry sweep.
+   */
+  imageTimeoutMs: number;
 };
 
 function req(name: string): string {
@@ -44,5 +53,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     authBaseUrl: env.AUTH_BASE_URL?.trim() || "",
     tokenCacheTtlMs: Number(env.TOKEN_CACHE_TTL_MS || 60_000),
     creditsEnforced: env.CREDITS_ENFORCED === "true" || env.CREDITS_ENFORCED === "1",
+    imageTimeoutMs: Number(env.AI_IMAGE_TIMEOUT_MS || 180_000),
   };
 }
