@@ -39,7 +39,7 @@ pub struct SubscribeResult {
 #[tauri::command]
 pub async fn terminal_open(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     window_registry: State<'_, WindowRegistry>,
     registry: State<'_, Arc<Registry>>,
     workspace_id: String,

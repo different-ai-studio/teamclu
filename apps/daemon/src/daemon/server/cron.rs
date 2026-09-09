@@ -26,8 +26,15 @@ use super::DaemonServer;
 /// active run loop for AgentReply persistence + sock reply. `reply_tx` rides
 /// along because the reply is written by the loop (which owns `&self.teamclu`,
 /// a non-`Send` field the persist step needs), not by the task.
+/// Result of driving one cron ACP turn to completion (or budget exhaustion).
+pub(crate) struct CronTurnOutcome {
+    pub(crate) reply: crate::runtime::turn_aggregator::EmittedMessage,
+    /// True when wall-clock or idle silence budget expired (possibly with salvaged text).
+    pub(crate) timed_out: bool,
+}
+
 pub(crate) struct CronTurnDone {
-    pub(crate) turn_result: anyhow::Result<crate::runtime::turn_aggregator::EmittedMessage>,
+    pub(crate) turn_result: anyhow::Result<CronTurnOutcome>,
     /// acp_session_id of the agent that ran the turn (for reply metadata lookup).
     pub(crate) acp_sid: String,
     /// Cloud `sessions.id` the reply is persisted against and returned to the client.
@@ -127,13 +134,14 @@ impl DaemonServer {
     /// the desktop UI's "view session" button resolves to a real chat session.
     /// Set up a cron turn: resolve workspace/team, create-or-reuse the cloud
     /// session + spawn the ACP runtime, and persist the user prompt. Returns
-    /// `(acp_session_id, cloud_session_id, prompt, timeout)` for the caller to
+    /// `(acp_session_id, cloud_session_id, prompt, wall_timeout, idle_timeout)`
+    /// for the caller to
     /// drive. Split out of `handle_prompt_await` so the (fast, `&mut self`) setup
     /// runs on the main loop while the (slow) turn runs on a background task.
     async fn prepare_cron_turn(
         &mut self,
         payload: &serde_json::Value,
-    ) -> anyhow::Result<(String, String, String, Duration)> {
+    ) -> anyhow::Result<(String, String, String, Duration, Duration)> {
         let parsed = parse_prompt_await_payload(payload)?;
 
         let permission = crate::runtime::PermissionPolicy::from_wire(
@@ -260,6 +268,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             remote_session_id,
             prompt,
             Duration::from_secs(parsed.timeout_secs),
+            Duration::from_secs(parsed.idle_timeout_secs),
         ))
     }
 
@@ -316,7 +325,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         payload: &serde_json::Value,
         reply_tx: oneshot::Sender<String>,
     ) {
-        let (acp_sid, remote_session_id, message, timeout) =
+        let (acp_sid, remote_session_id, message, wall_timeout, idle_timeout) =
             match self.prepare_cron_turn(payload).await {
                 Ok(v) => v,
                 Err(e) => {
@@ -335,8 +344,15 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         let done_tx = self.cron_turn_done_tx.clone();
         let event_tx = self.cron_turn_event_tx.clone();
         tokio::spawn(async move {
-            let turn_result =
-                Self::drive_cron_turn(&agents, &acp_sid, &message, timeout, event_tx).await;
+            let turn_result = Self::drive_cron_turn(
+                &agents,
+                &acp_sid,
+                &message,
+                wall_timeout,
+                idle_timeout,
+                event_tx,
+            )
+            .await;
             let _ = done_tx
                 .send(CronTurnDone {
                     turn_result,
@@ -364,7 +380,8 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         } = done;
 
         let result = match turn_result {
-            Ok(reply) => {
+            Ok(outcome) => {
+                let reply = outcome.reply;
                 // `send_prompt_and_await_reply` drains the ACP channel directly,
                 // bypassing `forward_agent_event`, so we must persist the finalized
                 // AgentReply here — same path as collab chat (TOML + live + cloud).
@@ -415,7 +432,11 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                 }
                 serde_json::json!({
                     "ok": true,
-                    "result": { "text": reply.content, "session_id": remote_session_id },
+                    "result": {
+                        "text": reply.content,
+                        "session_id": remote_session_id,
+                        "timed_out": outcome.timed_out,
+                    },
                 })
             }
             Err(e) => serde_json::json!({
@@ -702,9 +723,10 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
     ///   4. Always check the receiver back in (success or error) so
     ///      `poll_events` resumes draining.
     ///
-    /// Reply detection is identical to `send_prompt_and_await_reply`: the turn
-    /// ends on the first finalized `AgentReply`, an ACP `Error` event, a closed
-    /// channel, or the timeout.
+    /// Reply detection matches `AmuxdAgentHandle::run_turn`: accumulate prose
+    /// across tool-call flushes and return once the runtime goes Active→Idle,
+    /// or on ACP `Error`, a closed channel, or either timeout budget (wall or
+    /// idle silence) is exhausted.
     ///
     /// Takes `agents` explicitly (rather than `&self`) so it can run on a
     /// spawned task after the run loop has moved on — see `handle_prompt_await`.
@@ -712,9 +734,10 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         agents: &Arc<AsyncMutex<RuntimeManager>>,
         acp_sid: &str,
         prompt: &str,
-        timeout: Duration,
+        wall_timeout: Duration,
+        idle_timeout: Duration,
         event_tx: tokio::sync::mpsc::Sender<CronTurnEvent>,
-    ) -> anyhow::Result<crate::runtime::turn_aggregator::EmittedMessage> {
+    ) -> anyhow::Result<CronTurnOutcome> {
         // 1. Per-agent turn lock (held for the whole turn) under a brief
         //    manager lock.
         let turn_lock = {
@@ -751,17 +774,54 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         };
 
         // 3. Drive the aggregator off the local receiver without holding the
-        //    manager mutex while awaiting the model.
-        let deadline = std::time::Instant::now() + timeout;
-        let result: anyhow::Result<crate::runtime::turn_aggregator::EmittedMessage> = loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        //    manager mutex while awaiting the model. Budget is the tighter of
+        //    wall-clock (whole turn) and idle (silence since last ACP event).
+        let wall_deadline = std::time::Instant::now() + wall_timeout;
+        let mut last_activity = std::time::Instant::now();
+        let mut segments: Vec<String> = Vec::new();
+        let mut live = String::new();
+        let mut timed_out = false;
+        let result: anyhow::Result<CronTurnOutcome> = loop {
+            let now = std::time::Instant::now();
+            let wall_remaining = wall_deadline.saturating_duration_since(now);
+            let idle_remaining =
+                crate::runtime::turn_reply::idle_remaining_at(last_activity, idle_timeout, now);
+            let remaining = wall_remaining.min(idle_remaining);
             if remaining.is_zero() {
-                break Err(anyhow::anyhow!("ACP turn timed out"));
+                timed_out = true;
+                break crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live).map(
+                    |reply| CronTurnOutcome {
+                        reply,
+                        timed_out: true,
+                    },
+                ).map_err(anyhow::Error::msg);
             }
             let event = match tokio::time::timeout(remaining, event_rx.recv()).await {
-                Ok(Some(ev)) => ev,
-                Ok(None) => break Err(anyhow::anyhow!("ACP event channel closed before reply")),
-                Err(_) => break Err(anyhow::anyhow!("ACP turn timed out")),
+                Ok(Some(ev)) => {
+                    last_activity = std::time::Instant::now();
+                    ev
+                }
+                Ok(None) => {
+                    break match crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live)
+                    {
+                        Ok(reply) => Ok(CronTurnOutcome {
+                            reply,
+                            timed_out: false,
+                        }),
+                        Err(_) => Err(anyhow::anyhow!(
+                            "ACP event channel closed before reply"
+                        )),
+                    };
+                }
+                Err(_) => {
+                    timed_out = true;
+                    break crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live).map(
+                        |reply| CronTurnOutcome {
+                            reply,
+                            timed_out: true,
+                        },
+                    ).map_err(anyhow::Error::msg);
+                }
             };
 
             // Hand the loop a copy for `session/live` before consuming it, so
@@ -790,21 +850,52 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                 break Err(anyhow::anyhow!("agent turn failed: {details}"));
             }
 
+            if let Some(crate::proto::amux::acp_event::Event::Output(o)) = &event.event.event {
+                live.push_str(&o.text);
+            }
+
+            let turn_ended = matches!(
+                &event.event.event,
+                Some(crate::proto::amux::acp_event::Event::StatusChange(sc))
+                    if sc.old_status == crate::proto::amux::AgentStatus::Active as i32
+                        && sc.new_status == crate::proto::amux::AgentStatus::Idle as i32
+            );
+
             let emitted = {
                 let mut mgr = agents.lock().await;
                 mgr.aggregator_mut(&agent_id)
                     .map(|agg| agg.ingest(&event.event))
                     .unwrap_or_default()
             };
-            if let Some(reply) = emitted
-                .into_iter()
-                .find(|m| matches!(m.kind, crate::proto::teamclu::MessageKind::AgentReply))
-            {
-                break Ok(reply);
+            if turn_ended {
+                crate::runtime::turn_reply::absorb_emitted(emitted.clone(), &mut segments, &mut live);
+                break Ok(CronTurnOutcome {
+                    reply: crate::runtime::turn_reply::final_agent_reply_emitted(
+                        &segments,
+                        &live,
+                        &emitted,
+                    ),
+                    timed_out: false,
+                });
             }
+            crate::runtime::turn_reply::absorb_emitted(emitted, &mut segments, &mut live);
         };
 
-        // 4. Always check the receiver back in.
+        // 4. Stop the runtime when the budget expired but the model is still
+        //    going — mirrors `AmuxdAgentHandle::run_turn` so poll_events does
+        //    not keep writing into the session after cron has moved on.
+        if timed_out {
+            let mut mgr = agents.lock().await;
+            if let Err(e) = mgr.cancel_by_acp_session(acp_sid).await {
+                tracing::warn!(
+                    acp_session_id = %acp_sid,
+                    error = %e,
+                    "cron: cancel after turn timeout failed"
+                );
+            }
+        }
+
+        // 5. Always check the receiver back in.
         {
             let mut mgr = agents.lock().await;
             mgr.checkin_turn(crate::runtime::CheckedOutTurn { agent_id, event_rx });

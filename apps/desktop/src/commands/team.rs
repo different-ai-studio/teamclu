@@ -26,7 +26,7 @@ pub struct TeamMeta {
 
 /// Get the workspace path for the calling window.
 pub fn get_workspace_path(
-    window: &tauri::WebviewWindow,
+    window: &tauri::Window,
     registry: &crate::commands::window::WindowRegistry,
 ) -> Result<String, String> {
     crate::commands::window::current_workspace_for_window(window, registry)
@@ -62,7 +62,7 @@ fn daemon_default_workspace_path() -> Option<String> {
 /// data justifies: none of it is per-project to begin with.
 pub fn resolve_workspace_path(
     workspace_path: Option<String>,
-    window: &tauri::WebviewWindow,
+    window: &tauri::Window,
     registry: &crate::commands::window::WindowRegistry,
 ) -> Result<String, String> {
     if let Some(path) = workspace_path.filter(|path| !path.is_empty()) {

@@ -90,7 +90,7 @@ fn global_cron_root() -> Result<String, String> {
 async fn resolve_cron_paths(
     scope: CronScope,
     workspace_path: Option<String>,
-    window: &tauri::WebviewWindow,
+    window: &tauri::Window,
     registry: &State<'_, crate::commands::window::WindowRegistry>,
 ) -> Result<(String, Option<String>), String> {
     match scope {
@@ -109,7 +109,7 @@ async fn resolve_cron_paths(
 async fn require_instance(
     scope: CronScope,
     workspace_path: Option<String>,
-    window: &tauri::WebviewWindow,
+    window: &tauri::Window,
     registry: &State<'_, crate::commands::window::WindowRegistry>,
     cron_state: &State<'_, CronState>,
 ) -> Result<CronInstance, String> {
@@ -130,7 +130,7 @@ async fn require_instance(
 #[tauri::command]
 pub async fn cron_init(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
@@ -168,7 +168,7 @@ pub async fn cron_init(
 /// List all cron jobs for the calling window's workspace.
 #[tauri::command]
 pub async fn cron_list_jobs(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
@@ -189,7 +189,7 @@ pub async fn cron_list_jobs(
 #[tauri::command]
 pub async fn cron_add_job(
     request: CreateCronJobRequest,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
@@ -235,7 +235,7 @@ pub async fn cron_add_job(
 #[tauri::command]
 pub async fn cron_update_job(
     request: UpdateCronJobRequest,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
@@ -291,7 +291,7 @@ pub async fn cron_update_job(
 #[tauri::command]
 pub async fn cron_remove_job(
     job_id: String,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
@@ -315,7 +315,7 @@ pub async fn cron_remove_job(
 pub async fn cron_toggle_enabled(
     job_id: String,
     enabled: bool,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
@@ -350,7 +350,7 @@ pub async fn cron_toggle_enabled(
 #[tauri::command]
 pub async fn cron_run_job(
     job_id: String,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,
@@ -386,7 +386,7 @@ pub async fn cron_run_job(
 pub async fn cron_get_runs(
     job_id: String,
     limit: Option<usize>,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     cron_state: State<'_, CronState>,
     scope: Option<CronScope>,

@@ -37,6 +37,7 @@ pub mod team_skills;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod turn_aggregator;
+pub mod turn_reply;
 pub mod well_known_bin;
 mod workspace_runtime;
 

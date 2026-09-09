@@ -51,8 +51,8 @@ pub struct CronPayload {
     /// `model`: the model ref is selected from this backend's catalog group.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
-    /// Deprecated compatibility field. Old job JSON may contain this value, but
-    /// cron execution ignores it and new saves omit it.
+    /// Wall-clock cap for one agent turn, in seconds. When absent the scheduler
+    /// uses [`DEFAULT_CRON_WALL_TIMEOUT_SECS`] (60 minutes).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
     /// Permission mode for the run: `"full_access"` (default) or `"default"`.
@@ -67,6 +67,31 @@ pub struct CronPayload {
 /// one. Kept as the single definition so the scheduler and the default-job
 /// constructors cannot drift apart.
 pub const DEFAULT_CRON_PERMISSION_MODE: &str = "full_access";
+
+/// Default hard wall-clock budget for one unattended cron turn (60 minutes).
+pub const DEFAULT_CRON_WALL_TIMEOUT_SECS: u64 = 3600;
+
+/// Maximum wall-clock budget a job may request (also 60 minutes today).
+pub const MAX_CRON_WALL_TIMEOUT_SECS: u64 = 3600;
+
+/// Minimum wall-clock budget the scheduler will honor.
+pub const MIN_CRON_WALL_TIMEOUT_SECS: u64 = 60;
+
+/// How long a cron turn may go without ACP progress before timing out. The
+/// daemon resets this on every event (tool start/end, streaming delta, etc.).
+pub const DEFAULT_CRON_IDLE_TIMEOUT_SECS: u64 = 300;
+
+/// Extra seconds the desktop waits beyond the job wall clock when talking to
+/// amuxd, so a slow persist/finalize does not look like a client hang.
+pub const CRON_CLIENT_TIMEOUT_SLACK_SECS: u64 = 60;
+
+/// Resolve the wall-clock timeout for a cron job payload.
+pub fn resolve_cron_wall_timeout_seconds(raw: Option<u64>) -> u64 {
+    raw.unwrap_or(DEFAULT_CRON_WALL_TIMEOUT_SECS).clamp(
+        MIN_CRON_WALL_TIMEOUT_SECS,
+        MAX_CRON_WALL_TIMEOUT_SECS,
+    )
+}
 
 /// Delivery mode for cron job results
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

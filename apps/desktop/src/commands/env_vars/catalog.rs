@@ -13,7 +13,7 @@ use tauri::{AppHandle, State};
 
 pub(crate) fn resolve_workspace_path(
     workspace_path: Option<String>,
-    window: &tauri::WebviewWindow,
+    window: &tauri::Window,
     registry: &State<'_, crate::commands::window::WindowRegistry>,
 ) -> Result<String, String> {
     crate::commands::team::resolve_workspace_path(workspace_path, window, registry)
@@ -79,7 +79,7 @@ async fn read_env_value(workspace_path: String, key: &str) -> Result<String, Str
 /// explicit step: [`env_var_reveal`].
 #[tauri::command]
 pub async fn env_var_get(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     key: String,
     workspace_path: Option<String>,
@@ -94,7 +94,7 @@ pub async fn env_var_get(
 /// presence never receives the secret, and logged so a reveal leaves a trace.
 #[tauri::command]
 pub async fn env_var_reveal(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     key: String,
     workspace_path: Option<String>,
@@ -142,7 +142,7 @@ pub(crate) async fn env_var_delete_for_workspace(
 /// secrets discovered under the same `_secrets/` paths used by the daemon.
 #[tauri::command]
 pub async fn env_catalog_list(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     shared_secrets: State<'_, crate::commands::shared_secrets::SharedSecretsState>,
     team_id: Option<String>,
@@ -285,7 +285,7 @@ pub(crate) async fn env_catalog_delete_for_workspace(
 #[tauri::command]
 pub async fn env_catalog_set(
     app_handle: AppHandle,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     shared_secrets: State<'_, crate::commands::shared_secrets::SharedSecretsState>,
     scope: String,
@@ -321,7 +321,7 @@ pub async fn env_catalog_set(
 #[tauri::command]
 pub async fn env_catalog_delete(
     app_handle: AppHandle,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     shared_secrets: State<'_, crate::commands::shared_secrets::SharedSecretsState>,
     scope: String,

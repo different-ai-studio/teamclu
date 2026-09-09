@@ -44,7 +44,7 @@ pub struct TeamEnvDiagnostics {
 /// Gather team env-var sync diagnostics for the given workspace/team.
 #[tauri::command]
 pub async fn team_env_diagnostics(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     team_id: Option<String>,
     workspace_path: Option<String>,

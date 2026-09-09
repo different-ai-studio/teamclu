@@ -42,7 +42,10 @@ pub struct PromptAwaitRequest<'a> {
     /// `"default"`. amuxd falls back to full access when the field is absent,
     /// so an older daemon paired with a newer desktop behaves the same.
     pub permission_mode: &'a str,
+    /// Hard wall-clock cap for the whole turn, in seconds.
     pub timeout_secs: u64,
+    /// Silence budget: how long the turn may go without ACP progress.
+    pub idle_timeout_secs: u64,
 }
 
 #[derive(Serialize)]
@@ -62,6 +65,9 @@ pub struct PromptAwaitResponse {
     /// (e.g. timeout). The scheduler should still record `session_id` and
     /// surface the error, so the user can navigate to the partial conversation.
     pub agent_error: Option<String>,
+    /// True when the turn hit its wall-clock or idle budget. Partial `text`
+    /// may still be present (salvaged prose).
+    pub timed_out: bool,
 }
 
 /// Convenience entry point: connect to amuxd's control endpoint and run a
@@ -126,6 +132,8 @@ pub async fn prompt_await_at(
         /// partial conversation in the chat panel.
         #[serde(default)]
         agent_error: Option<String>,
+        #[serde(default)]
+        timed_out: bool,
     }
 
     let parsed: Wire = serde_json::from_str(body.trim())
@@ -144,15 +152,16 @@ pub async fn prompt_await_at(
             text: String::new(),
             session_id: r.session_id,
             agent_error: Some(ae.clone()),
+            timed_out: false,
         });
     }
-    if r.text.is_empty() {
-        return Err("amuxd returned empty text".into());
-    }
+    // Tool-only turns finish Active→Idle with no user-visible prose; that is
+    // success, not an error (gateway `tool_only_turn_yields_empty_reply`).
     Ok(PromptAwaitResponse {
         text: r.text,
         session_id: r.session_id,
         agent_error: None,
+        timed_out: r.timed_out,
     })
 }
 
@@ -391,6 +400,7 @@ mod tests {
             assert_eq!(req["session_key"].as_str(), Some("cron/j1/r1"));
             assert_eq!(req["message"].as_str(), Some("hi"));
             assert_eq!(req["timeout_secs"].as_u64(), Some(300));
+            assert_eq!(req["idle_timeout_secs"].as_u64(), Some(300));
             assert!(req.get("job_name").is_none());
             assert!(req.get("working_directory").is_none());
             assert!(req.get("model_override").is_none());
@@ -415,6 +425,7 @@ mod tests {
                 agent_type: None,
                 permission_mode: crate::commands::cron::types::DEFAULT_CRON_PERMISSION_MODE,
                 timeout_secs: 300,
+                idle_timeout_secs: 300,
             },
         )
         .await
@@ -453,6 +464,7 @@ mod tests {
                 agent_type: None,
                 permission_mode: crate::commands::cron::types::DEFAULT_CRON_PERMISSION_MODE,
                 timeout_secs: 300,
+                idle_timeout_secs: 300,
             },
         )
         .await
@@ -499,6 +511,7 @@ mod tests {
                 agent_type: Some("claude"),
                 permission_mode: "default",
                 timeout_secs: 300,
+                idle_timeout_secs: 300,
             },
         )
         .await
@@ -525,6 +538,7 @@ mod tests {
                 agent_type: None,
                 permission_mode: crate::commands::cron::types::DEFAULT_CRON_PERMISSION_MODE,
                 timeout_secs: 300,
+                idle_timeout_secs: 300,
             },
         )
         .await
@@ -533,17 +547,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_empty_text() {
+    async fn accepts_empty_text_for_tool_only_turn() {
         let sock_path = mock_server(|_req| {
             serde_json::json!({
                 "ok": true,
-                "result": { "text": "", "session_id": "sid-3" }
+                "result": { "text": "", "session_id": "sid-3", "timed_out": false }
             })
             .to_string()
         })
         .await;
 
-        let err = prompt_await_at(
+        let resp = prompt_await_at(
             &sock_path,
             PromptAwaitRequest {
                 cmd: "prompt-await",
@@ -556,11 +570,51 @@ mod tests {
                 agent_type: None,
                 permission_mode: crate::commands::cron::types::DEFAULT_CRON_PERMISSION_MODE,
                 timeout_secs: 300,
+                idle_timeout_secs: 300,
             },
         )
         .await
-        .unwrap_err();
-        assert!(err.contains("empty text"), "got: {err}");
+        .unwrap();
+        assert!(resp.text.is_empty());
+        assert_eq!(resp.session_id, "sid-3");
+        assert!(!resp.timed_out);
+    }
+
+    #[tokio::test]
+    async fn parses_timed_out_with_partial_text() {
+        let sock_path = mock_server(|_req| {
+            serde_json::json!({
+                "ok": true,
+                "result": {
+                    "text": "partial answer",
+                    "session_id": "sid-4",
+                    "timed_out": true
+                }
+            })
+            .to_string()
+        })
+        .await;
+
+        let resp = prompt_await_at(
+            &sock_path,
+            PromptAwaitRequest {
+                cmd: "prompt-await",
+                session_key: "cron/j1/r1",
+                message: "hi",
+                job_name: None,
+                working_directory: None,
+                workspace_root: None,
+                model_override: None,
+                agent_type: None,
+                permission_mode: crate::commands::cron::types::DEFAULT_CRON_PERMISSION_MODE,
+                timeout_secs: 300,
+                idle_timeout_secs: 300,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.text, "partial answer");
+        assert!(resp.timed_out);
     }
 
     #[tokio::test]
@@ -579,6 +633,7 @@ mod tests {
                 agent_type: None,
                 permission_mode: crate::commands::cron::types::DEFAULT_CRON_PERMISSION_MODE,
                 timeout_secs: 300,
+                idle_timeout_secs: 300,
             },
         )
         .await
@@ -607,6 +662,7 @@ mod tests {
                 agent_type: None,
                 permission_mode: crate::commands::cron::types::DEFAULT_CRON_PERMISSION_MODE,
                 timeout_secs: 300,
+                idle_timeout_secs: 300,
             },
         )
         .await
