@@ -751,7 +751,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
           <p className="mb-2 text-[12px] text-muted-foreground">
             {t(
               'apps.controlPanel.deleteHint',
-              '删除后线上站点会立刻下线；应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
+              '删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
             )}
           </p>
           <Button

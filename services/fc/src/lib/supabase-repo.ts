@@ -436,6 +436,34 @@ export function createSupabaseBusinessRepository(options) {
   }
 
   /**
+   * The bytes to judge a quota against, re-measuring when the stored number is
+   * too old to trust.
+   *
+   * The design called for a periodic sweep. This is that, minus the scheduler:
+   * measurement happens at the two moments it actually decides something - a
+   * signed upload and an STS mint - and at most once per staleness window per
+   * app. A cron would have had to exist, be wired on both deploy targets, and
+   * still leave the gap between its last run and this request; this closes the
+   * gap and needs no infrastructure. When no quota is in force there is nothing
+   * to decide, so nothing is measured.
+   */
+  const USAGE_STALE_MS = 15 * 60 * 1000;
+  async function usageForQuotaDecision(app, ops, quotaBytes) {
+    if (quotaBytes == null || quotaBytes <= 0) return app.storage_bytes ?? null;
+    const countedAt = app.storage_counted_at ? Date.parse(app.storage_counted_at) : NaN;
+    if (Number.isFinite(countedAt) && Date.now() - countedAt < USAGE_STALE_MS) {
+      return app.storage_bytes ?? null;
+    }
+    const usage = await ops.measure(ops.bucketFor(app), appFilesPrefix(app.id));
+    const admin = await serviceRoleClient("record app storage usage");
+    await admin
+      .from("apps")
+      .update({ storage_bytes: usage.bytes, storage_counted_at: new Date().toISOString() })
+      .eq("id", app.id);
+    return usage.bytes;
+  }
+
+  /**
    * Mint + seal + return the storage env for one finalize.
    *
    * Returns undefined (rather than throwing) when the deployment has no apps
@@ -4078,7 +4106,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!access) return null;
       const ops = this.requireAppStorage();
       const quotaBytes = access.app.storage_quota_bytes ?? ops.defaultQuotaBytes;
-      if (isOverQuota(access.app.storage_bytes, quotaBytes)) {
+      if (isOverQuota(await usageForQuotaDecision(access.app, ops, quotaBytes), quotaBytes)) {
         throw new ApiError(409, "app_storage_quota_exceeded", "this app is over its storage quota");
       }
       let key: string;
@@ -4181,7 +4209,7 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
       if (!app) return null;
       const quotaBytes = app.storage_quota_bytes ?? ops.defaultQuotaBytes;
-      if (isOverQuota(app.storage_bytes, quotaBytes)) {
+      if (isOverQuota(await usageForQuotaDecision(app, ops, quotaBytes), quotaBytes)) {
         // 409 rather than 403: the app is who it says it is, it just has no
         // room. A 403 would send whoever debugs it hunting for a policy bug.
         throw new ApiError(409, "app_storage_quota_exceeded", "this app is over its storage quota");

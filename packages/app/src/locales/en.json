@@ -1289,6 +1289,24 @@
     "submit": "Create",
     "cancel": "Cancel",
     "createError": "Failed to create app",
+    "files": {
+      "section": "Files",
+      "usage": "{{count}} files · {{used}} used{{quota}}",
+      "neverMeasured": "{{count}} files · usage not measured yet",
+      "refreshUsage": "Re-measure",
+      "upload": "Upload",
+      "uploaded": "Uploaded {{name}}",
+      "uploadRefused": "You do not have permission to upload",
+      "download": "Download",
+      "delete": "Delete",
+      "missing": "File not found",
+      "empty": "No files yet. Files the app writes at runtime show up here too.",
+      "unavailable": "This app's files are not reachable right now: {{reason}}",
+      "overQuota": "Over quota — the app cannot write new files. Usage is measured periodically and may lag.",
+      "purge": "Delete all files",
+      "purgeConfirm": "Delete every file this app has stored? This cannot be undone.",
+      "purged": "Deleted {{count}} files"
+    },
     "data": {
       "section": "Live data",
       "tableCount": "{{count}} tables",
@@ -1358,7 +1376,7 @@
       "accessGranted": "Access granted",
       "accessRevoked": "Access revoked",
       "accessError": "Permission update failed",
-      "deleteHint": "The live site goes offline immediately; the app database is kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
+      "deleteHint": "The live site goes offline immediately; the app's database and uploaded files are kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
       "deleteTitle": "Delete this app?",
       "deleteConfirm": "The live site goes offline immediately and the app database is kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
       "permission": {
