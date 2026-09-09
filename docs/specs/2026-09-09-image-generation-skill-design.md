@@ -212,7 +212,7 @@ $$;
 |---|---|
 | 深圳盒子 → `ai.mx5.cn` | HTTP 200，connect 0.25s —— **不需要任何代理** |
 | 网关容器内用自己的 `OPENAI_API_KEY` 调用 | `gpt-5.6-terra` 3.0s / `gpt-5.6-sol` 4.9s，均 200，usage 齐全 |
-| 该中继的模型列表 | 含 **`gpt-image-2`** |
+| 该中继的模型列表 | 含 `gpt-image-2`、`grok-imagine-image` |
 
 所以图片这条路直接复用已经在跑的 `mx5` provider：
 
@@ -234,7 +234,14 @@ image_models:
 
 **因此不需要 `undici` 依赖、不需要 `proxy_env`、不需要动 compose。** 唯一残留的注意事项是：`ai.mx5.cn` 前置的是订阅账号池，可用性弱于一方 API，所以图片档如果将来要兜底，兜底目标得是另一个真能出图的后端 —— DeepSeek 出不了图，不能像 `pro`/`max` 那样拿它兜。一期不做兜底，失败就如实报错。
 
-> 仍需实测：`gpt-image-2` 经这个中继时的响应形状（`b64_json` 还是 url、`usage` 字段有无）。中继会改写协议，不能拿 OpenAI 官方文档当准。
+> **⚠️ 2026-09-09 实测：这条中继上的图片模型目前一个都调不通 —— 「列在 models 里」不等于「能出图」。**
+>
+> | 模型 | 结果 |
+> |---|---|
+> | `gpt-image-2` | `400 The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account.` —— 注意报错里的模型名**不是我们传的那个**：images 路径没有采纳 `model` 字段，而是派到了一个出不了图的 Codex/ChatGPT 账号上 |
+> | `grok-imagine-image` / `-quality` | `403 personal-team-blocked:spending-limit` —— 账号池没额度 / 需要 Grok 订阅 |
+>
+> 这不是网关侧的问题，是中继账号池的问题，**必须先在中继上解决，Phase 1 才有可验收的对象**。在此之前 §2.5 里「复用 mx5 出图」只是路线成立、能力未就绪。出网确实不需要代理（那条结论不变），但可用的图片后端还没有。
 
 ## 3. Skill 设计
 
