@@ -618,10 +618,13 @@ export function createSupabaseBusinessRepository(options) {
     // here is `amux`, so it resolves via a plain `.rpc(...)` like create_team etc.
     async listAllMyTeams() {
       // Cross-org team picker source: member teams plus every public team the
-      // caller may join. `p_default_org_id` survives only in the RPC signature
-      // — the function body has never read it, and FC no longer supplies it.
+      // caller may join. `p_default_org_id` names the shared tenant — the org
+      // phone sign-up stamps every account with, which therefore says nothing
+      // about belonging and must not contribute its public teams. Same value
+      // bootstrapTeam passes as `p_shared_org`; null on a deployment without
+      // phone login, where the picker's own-org arm behaves as it always has.
       const { data, error } = await supabase.rpc("list_teams_for_picker", {
-        p_default_org_id: null,
+        p_default_org_id: process.env.DEFAULT_ORG_ID || null,
         p_include_empty_orgs: false,
       });
       if (error) throw error;
@@ -661,11 +664,12 @@ export function createSupabaseBusinessRepository(options) {
     // plain 'member' actor (idempotent if already joined) and rejects anything
     // that is not public.
     async joinPublicTeam(teamId) {
-      // `p_default_org_id` is vestigial (the function body never read it). The
-      // org check now happens inside the RPC against amux.current_org_id().
+      // `p_default_org_id` names the shared tenant, as in listAllMyTeams: the
+      // RPC's own-org check (CS-4) passes for every phone sign-up there, so the
+      // shared org needs the extra employee test the picker now applies.
       const { data, error } = await supabase.rpc("join_public_team", {
         p_team_id: teamId,
-        p_default_org_id: null,
+        p_default_org_id: process.env.DEFAULT_ORG_ID || null,
       });
       if (error) {
         const code = error?.code || "";
