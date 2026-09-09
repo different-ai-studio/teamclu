@@ -11,8 +11,23 @@
 use crate::process_util::CommandNoWindow;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use crate::sync::app_git;
+use crate::sync::bounded_proc::run_bounded;
+
+/// How long a clone may take before it is killed.
+///
+/// Generous for a real clone over a slow link, short enough that a machine
+/// waiting on something invisible gives an answer while the user is still
+/// looking at the screen. Five minutes of nothing is a failure worth reporting;
+/// a repo that genuinely needs longer is one to clone by hand and import as a
+/// local folder.
+const CLONE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Marker the desktop turns into an explanation. Kept as one string so the
+/// mapping cannot drift from what is thrown.
+pub const ERR_CLONE_TIMEOUT: &str = "git clone timed out after 5 minutes";
 
 /// Whether `dir` has anything in it (a missing directory counts as empty).
 fn is_empty_dir(dir: &Path) -> bool {
@@ -31,7 +46,8 @@ fn is_empty_dir(dir: &Path) -> bool {
 /// Runs non-interactively. A private repo the machine has no credential for
 /// must fail with an error the user can read, not park a `git` process on a
 /// password prompt no one can see — hence `GIT_TERMINAL_PROMPT=0` and ssh's
-/// `BatchMode`.
+/// `BatchMode`, and the time limit in [`run_clone`] for the prompts those two
+/// cannot reach.
 pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<()> {
     let url = app_git::validate_remote_url(url)?;
     if !is_empty_dir(workdir) {
@@ -106,9 +122,7 @@ fn run_clone(remote: &str, workdir: &Path, ssh: Option<&app_git::SshEnv>) -> any
     } else {
         cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
     }
-    let out = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("could not run git ({git}): {e}"))?;
+    let out = run_bounded(cmd, CLONE_TIMEOUT, ERR_CLONE_TIMEOUT)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         // git prints the URL back in most failures; that is the user's own

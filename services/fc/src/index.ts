@@ -22,6 +22,8 @@ import { makeTeardownAppDeps, type TeardownAppDeps } from "./lib/provisioning/ap
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { resolveAppsOss, getAppsS3Client } from "./lib/provisioning/apps-oss.js";
+import { resolveAppsSls, getSlsClient, makeSlsOps, type SlsOps } from "./lib/provisioning/sls-client.js";
+import { makeAppLogsReader } from "./lib/provisioning/app-logs.js";
 import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
@@ -71,6 +73,75 @@ export function syncGetQueryToBody(event: any) {
 // The apps database is a SEPARATE, softer requirement — only `data_app` needs
 // it. Static apps deploy fine without APPS_DB_ADMIN_URL; asking for one is what
 // raises the error, not merely having the module loaded.
+/**
+ * The app-log destination, and whether it is usable yet.
+ *
+ * One object shared by the deploy path (which points functions at it) and the
+ * read path (which queries it), because those two must never disagree about
+ * which logstore an app's logs are in.
+ *
+ * `ensure` is memoized and remembers a failure: an account whose key cannot
+ * create an SLS project would otherwise retry on every deploy and — worse —
+ * keep handing the FC API a `logConfig` naming a project that does not exist,
+ * which fails the whole deploy. After a failed ensure, `config()` reads as
+ * undefined and functions are created with no log config at all.
+ */
+interface AppLogsProvisioner {
+  unavailableReason?: string;
+  ops?: SlsOps;
+  config: () => { project: string; logstore: string } | undefined;
+  ensure: () => Promise<void>;
+}
+
+function buildAppLogsProvisioner(): AppLogsProvisioner {
+  const resolvedOss = resolveAppsOss();
+  const resolvedSls = resolveAppsSls();
+  const reason = resolvedOss.error ?? resolvedSls.error;
+  if (reason || !resolvedOss.profile || !resolvedSls.config) {
+    return {
+      unavailableReason: reason ?? "app logs are not configured",
+      config: () => undefined,
+      ensure: async () => {},
+    };
+  }
+  const cfg = resolvedSls.config;
+  const ops = makeSlsOps(getSlsClient(resolvedOss.profile), cfg);
+  let state: "unknown" | "ready" | "failed" = "unknown";
+  return {
+    ops,
+    config: () =>
+      state === "failed" ? undefined : { project: cfg.project, logstore: cfg.logstore },
+    ensure: async () => {
+      if (state !== "unknown") return;
+      try {
+        await ops.ensureLogStore();
+        state = "ready";
+      } catch (e) {
+        state = "failed";
+        throw e;
+      }
+    },
+  };
+}
+
+// Built on first use, not at import: this module is imported by tooling that
+// has no environment at all, and the memo is only worth anything if the object
+// outlives one request.
+let appLogsProvisionerMemo: AppLogsProvisioner | null = null;
+function appLogsProvisioner(): AppLogsProvisioner {
+  appLogsProvisionerMemo ??= buildAppLogsProvisioner();
+  return appLogsProvisionerMemo;
+}
+
+/** Read side of the same destination — see {@link buildAppLogsProvisioner}. */
+function makeAppLogsDeps() {
+  const provisioner = appLogsProvisioner();
+  if (!provisioner.ops) {
+    return { appLogsUnavailableReason: provisioner.unavailableReason };
+  }
+  return { appLogs: makeAppLogsReader(provisioner.ops) };
+}
+
 function makeDeployDeps() {
   const resolved = resolveAppsOss();
   if (resolved.error) return { deployUnavailableReason: resolved.error };
@@ -92,6 +163,7 @@ function makeDeployDeps() {
     // from — a layer ARN is region-scoped.
     region: profile.region,
     vpc: appsFcVpc,
+    logs: () => appLogsProvisioner().config(),
   });
   const appsAdminUrl = process.env.APPS_DB_ADMIN_URL?.trim() || undefined;
   const appsAppUrl = process.env.APPS_DB_APP_URL?.trim() || undefined;
@@ -114,7 +186,11 @@ function makeDeployDeps() {
       fcFunctionName: string;
       ossObjectName: string;
       platformAuthEnv?: Record<string, string>;
-    }) => finalizeDeployImpl({ appsAdminUrl, appsAppUrl, fcOps }, a),
+    }) =>
+      finalizeDeployImpl(
+        { appsAdminUrl, appsAppUrl, fcOps, ensureLogStore: () => appLogsProvisioner().ensure() },
+        a,
+      ),
   };
 }
 
@@ -311,6 +387,7 @@ export function makeBusinessRepoFactory() {
       ...makeDeployDeps(),
       ...makeTeardownDeps(),
       ...makeAppDataDeps(),
+      ...makeAppLogsDeps(),
       ...makeGiteaDeps(),
       ...makeGotrueOAuthDeps(),
     });

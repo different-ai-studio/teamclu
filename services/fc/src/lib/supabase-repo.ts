@@ -48,6 +48,7 @@ import {
 } from "./validation/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
 import {
+  appFunctionName,
   appOssObjectName,
   assertDeployAllowed,
   checkDeployInProgress,
@@ -57,6 +58,7 @@ import {
   parseDeployToken,
   parseOptionalGitCommitSha,
 } from "./provisioning/app-deploy.js";
+import type { AppLogKind } from "./provisioning/app-logs.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
 import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
@@ -300,6 +302,37 @@ async function runAppData<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Bounds for a log read, applied here rather than trusted from the caller.
+ *
+ * The window is capped at the retention period: asking for more is not an
+ * error, it is a window that is mostly empty, and clamping says so by
+ * returning what exists. The row cap is what keeps one call from returning
+ * more text than its caller can hold.
+ */
+export const APP_LOGS_MAX_MINUTES = 7 * 24 * 60;
+export const APP_LOGS_MAX_ROWS = 200;
+
+function parseLogMinutes(raw: unknown): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return 30;
+  return Math.min(n, APP_LOGS_MAX_MINUTES);
+}
+
+function parseLogLimit(raw: unknown): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return 100;
+  return Math.min(n, APP_LOGS_MAX_ROWS);
+}
+
+function parseLogKind(raw: unknown): AppLogKind {
+  return raw === "request" || raw === "all" ? raw : "app";
+}
+
+function parseLogText(raw: unknown): string | null {
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
 const APP_DATA_FILTER_OPS: readonly FilterOp[] = ["eq", "contains", "isNull", "notNull"];
 
 /** `filterColumn` + `filterOp` (+ `filterValue`), or nothing. */
@@ -338,6 +371,11 @@ export function createSupabaseBusinessRepository(options) {
     // reason names the variable so the 503 is actionable.
     appData,
     appDataUnavailableReason,
+    // Reads the deployed function's own logs out of SLS. Absent when the
+    // deployment has no Alibaba credentials or no SLS project to point at —
+    // the reason names what is missing, as with the two above.
+    appLogs,
+    appLogsUnavailableReason,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
     // Optional push hook — called after every successful message INSERT. Best-effort:
     // errors are logged and swallowed so insert outcome is never affected.
@@ -3832,6 +3870,72 @@ export function createSupabaseBusinessRepository(options) {
       const ops = this.requireAppData();
       await runAppData(() => ops.deleteRow(resolved.target, { table, key: decodeRowKey(rowKey) }));
       return { ok: true };
+    },
+
+    /**
+     * What the deployed function itself printed, plus one row per request.
+     *
+     * Authorized like the data browser and for the same reason: an app's log
+     * lines carry whatever it decided to print, which is its users' data. So
+     * `view` gets the same 404 the feature gives a non-member, and the caller's
+     * own permission on the app row is what decides — never the SLS credential,
+     * which is one service account for every app on the deployment.
+     *
+     * The function name is read off the row rather than derived, so an app
+     * deployed under an older naming scheme still finds its own logs; deriving
+     * it is only the fallback for a row that predates the column.
+     */
+    async getAppLogs(appId: string, query: any = {}) {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, slug, team_id, type, fc_status, fc_function_name, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission || permission.level === "view") return null;
+
+      // Distinguishable from "no logs in that window", which is the answer that
+      // sends someone looking for a bug that is not there.
+      if (!app.fc_status || app.fc_status === "not_deployed") {
+        throw new ApiError(
+          409,
+          "app_not_deployed",
+          "this app has never been deployed, so it has no logs yet",
+        );
+      }
+      if (!appLogs) {
+        throw new ApiError(
+          503,
+          "app_logs_unavailable",
+          appLogsUnavailableReason
+            ? `app logs are not configured: ${appLogsUnavailableReason}`
+            : "app logs are not configured",
+        );
+      }
+
+      try {
+        return await appLogs({
+          functionName: app.fc_function_name || appFunctionName(app.id),
+          sinceMinutes: parseLogMinutes(query.sinceMinutes),
+          limit: parseLogLimit(query.limit),
+          kind: parseLogKind(query.kind),
+          contains: parseLogText(query.contains),
+          requestId: parseLogText(query.requestId),
+        });
+      } catch (e: any) {
+        if (e instanceof ApiError) throw e;
+        // A logstore that exists but has never received a row answers with a
+        // 4xx rather than an empty page. That is "nothing yet", not a failure
+        // the caller can act on.
+        if (/LogStoreNotExist|IndexConfigNotExist|ProjectNotExist/i.test(String(e?.code ?? ""))) {
+          return { items: [], truncated: false, from: null, to: null };
+        }
+        console.warn(`[apps] app log read failed: ${e?.code ?? e}`);
+        throw new ApiError(502, "app_logs_failed", "could not read this app's logs");
+      }
     },
 
     async listAppSessions(appId: string) {

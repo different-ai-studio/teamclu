@@ -467,6 +467,10 @@ fn map_seed_error(err: anyhow::Error) -> HttpError {
     if msg.contains("deployKeyPem requires")
         || msg.contains("git repo URL")
         || msg.starts_with("git clone failed")
+        // A clone that ran out of time is the remote's or the machine's
+        // problem, not a fault in this daemon — an opaque 500 sends the user
+        // looking at logs instead of at their credentials.
+        || msg.starts_with(crate::sync::app_clone::ERR_CLONE_TIMEOUT)
         || msg.contains("refusing to clone")
     {
         HttpError::validation(msg)
@@ -1236,6 +1240,19 @@ mod tests {
     #[test]
     fn map_seed_error_marks_clone_failures_as_validation() {
         let err = map_seed_error(anyhow::anyhow!("git clone failed: repo not found"));
+        assert!(matches!(err.code, ErrorCode::ValidationFailed));
+    }
+
+    #[test]
+    fn map_seed_error_marks_a_clone_timeout_as_the_callers_problem() {
+        // Not an internal fault: the machine is waiting on something — most
+        // often a credential helper with nowhere to draw its window — and the
+        // user is the only one who can do anything about it. A 500 sends them
+        // to the logs instead.
+        let err = map_seed_error(anyhow::anyhow!(
+            "{}",
+            crate::sync::app_clone::ERR_CLONE_TIMEOUT
+        ));
         assert!(matches!(err.code, ErrorCode::ValidationFailed));
     }
 

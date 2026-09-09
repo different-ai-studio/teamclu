@@ -3039,6 +3039,92 @@ test("app data: a non-member gets nothing", async () => {
   assert.equal(await repo.listAppDataTables("app-1"), null);
 });
 
+// --- App logs ---------------------------------------------------------------
+
+function logsRepo(appRow: any, { level, actorId = "actor-app-1", appLogs, appLogsUnavailableReason }: any = {}) {
+  const access = level && actorId !== "actor-app-1"
+    ? [{ app_id: "app-1", member_id: actorId, permission_level: level, granted_by_member_id: "actor-app-1" }]
+    : [];
+  return appsRepo(
+    appsSupabase({
+      seed: { apps: [appRow], app_member_access: access, teams: [{ id: "team-1", oid: "org-derived" }] },
+      actorRow: { id: actorId },
+    }),
+    { appLogs, appLogsUnavailableReason },
+  );
+}
+
+const LIVE_APP = { ...APP_ROW, provision_status: "ready", fc_status: "live", fc_endpoint: "https://x.fcapp.run" };
+
+test("app logs: the function name comes off the row, and the query is clamped", async () => {
+  // Clamped here rather than trusted: `limit` decides how much text lands in
+  // the caller's context, and the window is bounded by what SLS still holds.
+  let seen: any;
+  const repo = logsRepo(
+    { ...LIVE_APP, fc_function_name: "tc-app-legacy-name" },
+    { appLogs: async (input: any) => { seen = input; return { items: [], truncated: false }; } },
+  );
+  await repo.getAppLogs("app-1", { sinceMinutes: "999999", limit: "5000", kind: "nonsense", contains: "  ", requestId: "req-A" });
+  assert.equal(seen.functionName, "tc-app-legacy-name");
+  assert.equal(seen.sinceMinutes, 7 * 24 * 60);
+  assert.equal(seen.limit, 200);
+  assert.equal(seen.kind, "app");
+  assert.equal(seen.contains, null, "a blank filter is no filter, not an empty match");
+  assert.equal(seen.requestId, "req-A");
+});
+
+test("app logs: a row with no recorded function name falls back to the derived one", async () => {
+  let seen: any;
+  const repo = logsRepo(LIVE_APP, {
+    appLogs: async (input: any) => { seen = input; return { items: [], truncated: false }; },
+  });
+  await repo.getAppLogs("app-1", {});
+  assert.equal(seen.functionName, "tc-app-app-1");
+  assert.equal(seen.sinceMinutes, 30, "a caller that asks for nothing gets the last half hour");
+});
+
+test("app logs: prompt can read them, view and non-members cannot", async () => {
+  // Same tier as the data browser and for the same reason: a log line carries
+  // whatever the app printed, which is its users' data.
+  const reader = async () => ({ items: [{ ts: "2026-09-08T00:00:00.000Z", kind: "app", level: "info", message: "hi" }], truncated: false });
+
+  const prompt = logsRepo(LIVE_APP, { level: "prompt", actorId: "member-other", appLogs: reader });
+  assert.equal(((await prompt.getAppLogs("app-1", {})) as any).items.length, 1);
+
+  const view = logsRepo(LIVE_APP, { level: "view", actorId: "member-other", appLogs: reader });
+  assert.equal(await view.getAppLogs("app-1", {}), null);
+
+  const stranger = logsRepo(LIVE_APP, { actorId: "member-other", appLogs: reader });
+  assert.equal(await stranger.getAppLogs("app-1", {}), null);
+});
+
+test("app logs: an app that was never deployed says so, rather than reading as empty", async () => {
+  const repo = logsRepo({ ...APP_ROW, fc_status: null }, {
+    appLogs: async () => { throw new Error("must not be called"); },
+  });
+  await assert.rejects(
+    () => repo.getAppLogs("app-1", {}),
+    (e: any) => e?.statusCode === 409 && e?.code === "app_not_deployed",
+  );
+});
+
+test("app logs: an unconfigured deployment names what is missing", async () => {
+  const repo = logsRepo(LIVE_APP, { appLogsUnavailableReason: "APPS_ACCESS_KEY_ID is not set" });
+  await assert.rejects(
+    () => repo.getAppLogs("app-1", {}),
+    (e: any) => e?.statusCode === 503 && /APPS_ACCESS_KEY_ID/.test(e?.message ?? ""),
+  );
+});
+
+test("app logs: a logstore that has never received a row reads as empty, not as a failure", async () => {
+  // The first deploy creates the destination; nothing writes to it until the
+  // app is next invoked. That window must not look like a broken feature.
+  const repo = logsRepo(LIVE_APP, {
+    appLogs: async () => { throw Object.assign(new Error("nope"), { code: "LogStoreNotExist" }); },
+  });
+  assert.deepEqual(await repo.getAppLogs("app-1", {}), { items: [], truncated: false, from: null, to: null });
+});
+
 test("app data: static and undeployed apps give distinguishable 409s", async () => {
   // The control panel shows a different sentence for each; a shared 404 would
   // make both read as "something is broken".

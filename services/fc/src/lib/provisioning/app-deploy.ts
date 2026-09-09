@@ -256,6 +256,14 @@ export interface FinalizeDeps {
   };
   genPassword?: () => string;
   extraEnv?: (input: FinalizeInput) => Record<string, string>;
+  /**
+   * Create the SLS project and logstore the function's `logConfig` points at.
+   *
+   * Called before the function is created, because Function Compute rejects a
+   * `logConfig` naming a project that does not exist. Best-effort by contract:
+   * see the call site.
+   */
+  ensureLogStore?: () => Promise<void>;
 }
 export interface FinalizeInput {
   appId: string;
@@ -331,6 +339,19 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
 
   if (input.platformAuthEnv) Object.assign(env, input.platformAuthEnv);
   if (deps.extraEnv) Object.assign(env, deps.extraEnv(input));
+
+  // Best-effort, and deliberately not fatal. An app deployed without logs is
+  // worse off than one with them; an app that cannot deploy at all because the
+  // deployment's key lacks an SLS permission is worse off than both. The
+  // provisioner remembers the failure and stops offering the log config, so the
+  // function is created without one rather than with a dangling project.
+  if (deps.ensureLogStore) {
+    try {
+      await deps.ensureLogStore();
+    } catch (e) {
+      console.warn(`[apps] deploying without logs — log store not ready: ${e}`);
+    }
+  }
 
   await deps.fcOps.ensureFunction(input.fcFunctionName, {
     ossObjectName: input.ossObjectName,

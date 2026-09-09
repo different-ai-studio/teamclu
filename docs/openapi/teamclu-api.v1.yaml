@@ -5912,6 +5912,74 @@ paths:
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/logs:
+    get:
+      operationId: readAppLogs
+      summary: Read the deployed app's own logs
+      description: |
+        What the running function printed, and one entry per HTTP request with
+        its status code and duration. Requires `prompt` or `admin` on the app;
+        `view` and non-members receive 404, exactly as the data browser does —
+        a log line carries whatever the app decided to print, which is its
+        users' data.
+
+        Function Compute keeps no logs at all for a function deployed before
+        log delivery was configured; those apps answer with an empty `items`
+        until their next deploy, which is what points them at the logstore.
+
+        `contains` and `requestId` filter the entries read from the window, not
+        all of history: an app's own output carries no request id (the id
+        appears only in Function Compute's framing lines, which this endpoint
+        reads to attach it), and a substring search is done here rather than as
+        a log-service query, whose tokenizer silently drops terms containing
+        punctuation. A window whose scan budget was reached comes back with
+        `truncated: true`.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - name: sinceMinutes
+          in: query
+          required: false
+          description: How far back to read. Clamped to the 14-day retention period.
+          schema: { type: integer, minimum: 1, maximum: 10080, default: 30 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+        - name: kind
+          in: query
+          required: false
+          description: >-
+            `app` is what the application printed; `request` is Function
+            Compute's per-request row (status, duration, cold start); `all` is
+            both, interleaved.
+          schema: { type: string, enum: [app, request, all], default: app }
+        - name: contains
+          in: query
+          required: false
+          description: Case-insensitive substring the entry's message must contain.
+          schema: { type: string }
+        - name: requestId
+          in: query
+          required: false
+          description: Only entries belonging to this request — the way to read one failing request end to end.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Log entries, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppLogsPage" }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/membership:
     get:
       operationId: getAppMembership
@@ -6901,6 +6969,52 @@ components:
           type: string
           format: date-time
           description: Informational TTL (~15m); the key remains until deleted on Gitea.
+    AppLogEntry:
+      type: object
+      required: [ts, kind, level, message]
+      properties:
+        ts: { type: string, format: date-time }
+        kind:
+          type: string
+          enum: [app, request]
+          description: "`app`: printed by the application. `request`: Function Compute's own per-request row."
+        level:
+          type: string
+          enum: [info, warn, error]
+          description: >-
+            For an `app` entry this is inferred from the text — Function Compute
+            adds no level of its own. For a `request` entry it follows the
+            status code.
+        message: { type: string }
+        requestId:
+          type: [string, "null"]
+          description: >-
+            Present on every `request` entry, and on an `app` entry whose
+            invocation could be identified from the surrounding framing lines.
+        instanceId: { type: [string, "null"] }
+        statusCode: { type: [integer, "null"] }
+        durationMs: { type: [number, "null"] }
+        method: { type: [string, "null"] }
+        path: { type: [string, "null"] }
+        coldStart: { type: [boolean, "null"] }
+    AppLogsPage:
+      type: object
+      required: [items, truncated]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppLogEntry"
+        truncated:
+          type: boolean
+          description: More entries matched than `limit`, or the scan budget ended the window early.
+        from:
+          type: [string, "null"]
+          format: date-time
+          description: Start of the window actually read. Null when the app has no logstore yet.
+        to:
+          type: [string, "null"]
+          format: date-time
     AppGitHead:
       type: object
       required: [sha]

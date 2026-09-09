@@ -2,12 +2,56 @@ import { ApiError } from "../http-utils.js";
 import { parseLimit, requireString } from "../routing-utils.js";
 
 /**
+ * Drop credentials out of a repo URL before it is stored.
+ *
+ * `https://x:ghp_…@github.com/owner/repo.git` is a working git address and the
+ * obvious way to import a private repo, so people paste it. What they do not
+ * expect is that it lands in `apps.git_remote_url` — a column `GET /v1/apps/:id`
+ * hands to every member who can see the app, and which nothing ever redacts.
+ * One paste turns a personal access token into team-readable data.
+ *
+ * The credential still reaches the clone: the desktop sends the address the
+ * user typed straight to its local daemon for that one call. What stops here is
+ * the copy that would outlive it.
+ *
+ * Scheme decides how much goes:
+ * - **http(s)** — the whole userinfo. Nothing there is an address; an anonymous
+ *   clone needs none of it, and every form GitHub documents (`token@`,
+ *   `user:token@`) is a secret.
+ * - **ssh / git** — the password half only. `git@` IS the address for those,
+ *   and dropping it produces a URL that cannot connect.
+ * - **scp-like `git@host:path`** — untouched, for the same reason.
+ */
+export function stripUrlCredentials(url: string): string {
+  const schemeEnd = url.indexOf("://");
+  if (schemeEnd < 0) return url;
+  const scheme = url.slice(0, schemeEnd);
+  const rest = url.slice(schemeEnd + 3);
+  const authorityEnd = rest.search(/[/?#]/);
+  const authority = authorityEnd < 0 ? rest : rest.slice(0, authorityEnd);
+  const tail = authorityEnd < 0 ? "" : rest.slice(authorityEnd);
+  // Last `@`, not the first: a password is supposed to percent-encode one, and
+  // a lenient split on the first would cut a host off a sloppy-but-working URL.
+  const at = authority.lastIndexOf("@");
+  if (at < 0) return url;
+  const userinfo = authority.slice(0, at);
+  const host = authority.slice(at + 1);
+  const lower = scheme.toLowerCase();
+  const keep = lower === "ssh" || lower === "git" ? userinfo.split(":")[0] : "";
+  return `${scheme}://${keep ? `${keep}@` : ""}${host}${tail}`;
+}
+
+/**
  * Normalize the optional repo URL an app is imported from.
  *
  * The daemon validates it again before handing it to `git clone` — that check
  * is the security boundary, since it is the one next to the process spawn. This
  * one exists so a typo is a 400 at create time instead of a row that can never
  * be seeded. Same allowlist: http(s) / ssh / git://, or scp-like `git@host:path`.
+ *
+ * Credentials are stripped here rather than rejected: refusing the paste would
+ * be a dead end for a private repo on a machine with no credential helper, and
+ * the address is still perfectly usable without them.
  */
 function normalizeGitRemoteUrl(raw: unknown): string | null {
   if (raw === undefined || raw === null) return null;
@@ -25,7 +69,7 @@ function normalizeGitRemoteUrl(raw: unknown): string | null {
       "gitRemoteUrl must be an http(s), ssh or git:// address",
     );
   }
-  return url;
+  return stripUrlCredentials(url);
 }
 
 export function registerApps(router) {
@@ -111,6 +155,22 @@ export function registerApps(router) {
       throw new ApiError(400, "bad_request", "deployKeyId must be an integer");
     }
     const out = await ctx.repository.revokeAppGitCredential(appId, deployKeyId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // The deployed function's own output. Read-only and scoped to one app by the
+  // repository, which names the function from the app row — the caller never
+  // gets to say which function's logs it wants.
+  router.get("/v1/apps/:appId/logs", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppLogs(appId, {
+      sinceMinutes: ctx.query.get("sinceMinutes"),
+      limit: ctx.query.get("limit"),
+      kind: ctx.query.get("kind"),
+      contains: ctx.query.get("contains"),
+      requestId: ctx.query.get("requestId"),
+    });
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });

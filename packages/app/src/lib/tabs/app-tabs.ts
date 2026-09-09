@@ -29,6 +29,30 @@ export function openAppDataTable(app: AppRow, table: string): void {
   })
 }
 
+const APP_LOGS_PREFIX = 'app-logs:'
+
+export function decodeAppLogsTarget(target: string): { appId: string } | null {
+  if (!target.startsWith(APP_LOGS_PREFIX)) return null
+  const appId = target.slice(APP_LOGS_PREFIX.length)
+  return appId ? { appId } : null
+}
+
+/**
+ * The deployed app's own logs, in the main column.
+ *
+ * A tab and not a panel section: reading logs means scrolling a lot of text and
+ * changing the window while the control panel stays where it is — and the
+ * question it answers ("why is the live site broken") is usually asked next to
+ * the site itself, which is also a tab.
+ */
+export function openAppLogs(app: AppRow, label: string): void {
+  useTabsStore.getState().openTab({
+    type: 'native',
+    target: `${APP_LOGS_PREFIX}${app.id}`,
+    label: `${app.name} · ${label}`,
+  })
+}
+
 /** Open the deployed site in the main content area (webview tab). */
 export function openAppPreview(app: AppRow): void {
   const url = app.publicUrl ?? app.fcEndpoint

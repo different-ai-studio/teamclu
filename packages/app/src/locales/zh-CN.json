@@ -1322,6 +1322,25 @@
       "invalidTarget": "无效的数据表地址",
       "appNotFound": "找不到这个应用"
     },
+    "logs": {
+      "section": "运行日志",
+      "hint": "应用打印的内容与每次请求",
+      "open": "查看日志",
+      "tabLabel": "日志",
+      "title": "运行日志",
+      "subtitle": "{{name}} 线上运行时打印的内容。",
+      "kindApp": "应用输出",
+      "kindRequest": "请求",
+      "kindAll": "全部",
+      "searchPlaceholder": "搜索日志内容，回车确认",
+      "filteredByRequest": "只看这一次请求",
+      "clearRequest": "清除",
+      "notDeployed": "这个应用还没有部署过，部署之后才会有日志。",
+      "notFound": "看不到这个应用的日志。",
+      "unavailable": "暂时读不到日志：{{reason}}",
+      "empty": "这段时间里没有日志。换个时间范围，或者去访问一下应用再看。",
+      "truncated": "结果被截断了，只显示最近的一部分。缩短时间范围可以看得更全。"
+    },
     "controlPanel": {
       "title": "应用设置",
       "reseedHint": "重新写入模板或克隆仓库。仅在初始化失败或目录为空时使用。",
@@ -1408,6 +1427,9 @@
     "deleteFailed": "删除失败",
     "deleteDenied": "应用不存在或无权删除",
     "deleted": "应用已删除",
+    "seedErrorReason": {
+      "cloneTimeout": "克隆超时。多半是这台机器的 git 凭证助手在等一个弹不出来的登录框；先在终端里 clone 一次这个仓库，再回来重试。"
+    },
     "deployErrorReason": {
       "uncommitted": "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。",
       "pushRejected": "仓库里有本机没有的提交。请先拉取并解决冲突，然后重新部署。",

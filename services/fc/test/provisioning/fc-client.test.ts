@@ -239,3 +239,44 @@ test("ensureHttpTrigger swallows 'trigger already exists' then reads the URL", a
   const url = await ops.ensureHttpTrigger("tc-app-1");
   assert.equal(url, "https://fn.example.fcapp.run");
 });
+
+// --- log delivery -----------------------------------------------------------
+
+const LOGS = { project: "teamclu-apps-1", logstore: "app-logs" };
+
+test("a new function is created with its log config", async () => {
+  const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
+  const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
+  const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => LOGS });
+  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  const create = calls.find((c) => c[0] === "createFunction")[1].body;
+  assert.equal(create.logConfig.project, "teamclu-apps-1");
+  assert.equal(create.logConfig.logstore, "app-logs");
+  // Without this there is no per-request row, and "did the request even arrive"
+  // has no answer.
+  assert.equal(create.logConfig.enableRequestMetrics, true);
+});
+
+test("an existing function gets its log config re-sent on every update", async () => {
+  // The nine functions deployed before log delivery existed carry an empty log
+  // config. A code-only update would leave them with no logs forever, however
+  // many times their owner redeployed — the same trap the Node layer and the
+  // VPC config were both fixed for.
+  const { client, calls } = fakeClient();
+  const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => LOGS });
+  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  const update = calls.find((c) => c[0] === "updateFunction")[2].body;
+  assert.equal(update.logConfig.project, "teamclu-apps-1");
+  assert.equal(update.logConfig.logstore, "app-logs");
+});
+
+test("a deployment with no usable log store deploys without a log config", async () => {
+  // Not an empty project/logstore pair: Function Compute rejects a logConfig
+  // naming a project that does not exist, which would turn "logs are not set
+  // up" into "this app cannot deploy at all".
+  const { client, calls } = fakeClient();
+  const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => undefined });
+  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  const update = calls.find((c) => c[0] === "updateFunction")[2].body;
+  assert.equal(update.logConfig, undefined);
+});

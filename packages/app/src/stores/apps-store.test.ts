@@ -355,6 +355,48 @@ describe("apps-store", () => {
     );
   });
 
+  it("create: the clone gets the address the user typed, not the stored one", async () => {
+    // `POST /v1/apps` strips credentials before writing the row, so the row
+    // comes back without them. The clone still has to authenticate, and this
+    // one call is the only place the typed credential exists — losing it here
+    // is how importing a private repo silently stops working.
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(seedResult("seeded"));
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({
+      teamId: "team-1",
+      name: "N",
+      type: "static_web",
+      visibility: "team",
+      gitRemoteUrl: "https://x:ghp_token@github.com/owner/private.git",
+    });
+    const seedArgs = mocks.seedDaemonApp.mock.calls.at(-1);
+    expect(seedArgs?.[4]).toBe("https://x:ghp_token@github.com/owner/private.git");
+  });
+
+  it("create: a clone that timed out explains what the raw error does not", async () => {
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(
+      seedResult("failed", { error: '{"error":{"message":"git clone timed out after 5 minutes"}}' }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({
+      teamId: "team-1",
+      name: "N",
+      type: "static_web",
+      visibility: "team",
+      gitRemoteUrl: "https://github.com/owner/private.git",
+    });
+    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
+    expect(String((opts as any)?.description)).toMatch(/凭证助手/);
+  });
+
   it("create: repo_created fetches deploy key and seeds with push", async () => {
     mocks.createApp.mockResolvedValueOnce(
       appRow({

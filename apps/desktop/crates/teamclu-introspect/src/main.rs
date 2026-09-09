@@ -1,3 +1,4 @@
+mod apps;
 mod capabilities;
 mod channels;
 mod config;
@@ -501,6 +502,67 @@ fn tool_definitions() -> Value {
                     }
                 }
             }
+        },
+        {
+            "name": "manage_app",
+            "description": "Work with a TeamClu app: list this team's apps, read one's status, deploy it, or read the deployed app's logs. `deploy` runs the full publish (build the checkout on the local machine, upload it, put it live) and PUBLISHES TO THE PUBLIC INTERNET — an app whose auth_mode is \"none\" is readable by anyone with the URL. `logs` reads what the running app printed, which is how you find out why it 500s. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (deploying needs admin on the app).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "status", "deploy", "logs"],
+                        "description": "list: this team's apps. status: one app, plus where its checkout is on this machine. deploy: build and publish. logs: the deployed app's own output."
+                    },
+                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name (not both); not needed for list." },
+                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team." },
+                    "since_minutes": { "type": "integer", "description": "logs: how far back to read. Default 30, max 10080 (7 days)." },
+                    "limit": { "type": "integer", "description": "logs: how many entries. Default 100, max 200." },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["app", "request", "all"],
+                        "description": "logs: `app` is what the app printed (default), `request` is one line per HTTP request with status and duration, `all` is both."
+                    },
+                    "contains": { "type": "string", "description": "logs: only entries whose message contains this text." },
+                    "request_id": { "type": "string", "description": "logs: only entries from this request id — the way to see one failing request end to end." }
+                },
+                "required": ["action"]
+            }
+        },
+        {
+            "name": "manage_app_data",
+            "description": "Read and edit the rows in a deployed app's own database — its real production data. Use it to check what the app actually stored, or to fix one bad row. Reads need `prompt` permission on the app and writes need `admin`; only apps with a database (data_app) that have been deployed have one. Writes address exactly one row by primary key; there is no bulk update or delete.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["tables", "rows", "update_row", "delete_row"],
+                        "description": "tables: what tables exist, with their columns and primary key. rows: one page of rows. update_row / delete_row: change exactly one row."
+                    },
+                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name, not both." },
+                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team." },
+                    "table": { "type": "string", "description": "Table name, as reported by action \"tables\". Required for everything but tables." },
+                    "limit": { "type": "integer", "description": "rows: page size. Default 50, max 100." },
+                    "after": { "type": "string", "description": "rows: the previous page's next_cursor. Omit for the first page." },
+                    "direction": { "type": "string", "enum": ["asc", "desc"], "description": "rows: order along the primary key. Default asc." },
+                    "filter_column": { "type": "string", "description": "rows: column to filter on. Give with filter_op." },
+                    "filter_op": { "type": "string", "enum": ["eq", "contains", "isNull", "notNull"], "description": "rows: how to compare." },
+                    "filter_value": { "type": "string", "description": "rows: the value to compare against. Ignored by isNull / notNull." },
+                    "key": {
+                        "type": "object",
+                        "description": "update_row / delete_row: the row's primary-key columns and values, e.g. {\"id\": 42}. Read them off the row you got from action \"rows\".",
+                        "additionalProperties": true
+                    },
+                    "row_key": { "type": "string", "description": "Alternative to `key`: the opaque row key form, if you already have one." },
+                    "patch": {
+                        "type": "object",
+                        "description": "update_row: column → new value. Primary-key columns cannot be changed here.",
+                        "additionalProperties": true
+                    }
+                },
+                "required": ["action"]
+            }
         }
     ])
 }
@@ -737,6 +799,20 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
+                "manage_app" => match apps::handle_manage(api_port, &arguments).await {
+                    Ok(v) => {
+                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        tool_ok(&text)
+                    }
+                    Err(e) => tool_err(&e),
+                },
+                "manage_app_data" => match apps::handle_data(api_port, &arguments).await {
+                    Ok(v) => {
+                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        tool_ok(&text)
+                    }
+                    Err(e) => tool_err(&e),
+                },
                 unknown => tool_err(&format!("Unknown tool: {unknown}")),
             };
 
