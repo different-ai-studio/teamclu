@@ -68,6 +68,13 @@ impl CronScheduler {
         }
     }
 
+    pub(crate) fn emit_jobs_updated(&self) {
+        let app = self.app_handle.lock().ok().and_then(|g| g.clone());
+        if let Some(app) = app {
+            let _ = app.emit("cron:jobs-updated", ());
+        }
+    }
+
     async fn persist_run_and_notify_ui(&self, record: &CronRunRecord) {
         self.storage.update_last_run(record).await;
         self.emit_cron_sessions_updated();

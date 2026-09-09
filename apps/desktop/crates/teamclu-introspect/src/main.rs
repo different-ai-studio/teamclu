@@ -106,14 +106,19 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_cron_job",
-            "description": "Create, pause, resume, delete, or inspect cron jobs.",
+            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). The TeamClu desktop app must be running.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "description": "The action to perform.",
-                        "enum": ["create", "pause", "resume", "delete", "run", "get_runs"]
+                        "enum": ["create", "list", "pause", "resume", "delete", "run", "get_runs"]
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "Where to store the job. Defaults to 'global' (the default settings list). Use 'workspace' only for jobs that must run in a specific project folder.",
+                        "enum": ["global", "workspace"]
                     },
                     "job_id": {
                         "type": "string",
