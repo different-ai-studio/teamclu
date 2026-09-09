@@ -614,10 +614,22 @@ services:
       # plaintext in the fc service above (FC hands them out) — see the
       # Caddyfile for why a pull login is separate from a push one.
       REGISTRY_DOMAIN: "${REGISTRY_DOMAIN:-registry.localhost}"
+      # The hashes need the never-empty rule too, and more urgently than the
+      # names: Caddy's `basic_auth` rejects an empty credential by refusing to
+      # parse the WHOLE Caddyfile, so one unset hash does not disable the
+      # registry route — it stops Caddy from starting at all and takes the API,
+      # the Supabase gateway, Studio and MQTT-over-WSS down with it. That is not
+      # hypothetical: it happened on the live box on 2026-09-09, and it reaches
+      # boxes that never enabled the registry, because COMPOSE_PROFILES gates
+      # the service but not the Caddyfile block.
+      #
+      # The defaults are bcrypt hashes of passwords generated at random and
+      # thrown away, so an unconfigured registry answers "no" to everyone —
+      # which is what an unconfigured registry should do.
       REGISTRY_PUSH_USERNAME: "${APPS_REGISTRY_USERNAME:-registry-push}"
-      REGISTRY_PUSH_PASSWORD_HASH: "${REGISTRY_PUSH_PASSWORD_HASH:-}"
+      REGISTRY_PUSH_PASSWORD_HASH: "${REGISTRY_PUSH_PASSWORD_HASH:-$$2a$$14$$X7V5MuAF9idVwBSgYAJMFeHvkZSivhUHnQbGWnLmIYJigq.Pv5jGq}"
       REGISTRY_PULL_USERNAME: "${APPS_REGISTRY_PULL_USERNAME:-registry-pull}"
-      REGISTRY_PULL_PASSWORD_HASH: "${REGISTRY_PULL_PASSWORD_HASH:-}"
+      REGISTRY_PULL_PASSWORD_HASH: "${REGISTRY_PULL_PASSWORD_HASH:-$$2a$$14$$xppx2dLgnBkUKxmqcHLoCe7OIWgqOR8pupJ069c8xR/lgc/oyTB.2}"
       # Central login service for deployed apps. Same never-empty rule again.
       # Note the asymmetry with the `fc` service above, which treats blank as
       # "feature off": Caddy cannot express that, so it always has a site here.
