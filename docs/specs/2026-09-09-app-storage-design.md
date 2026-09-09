@@ -580,12 +580,42 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
 会在下一次部署被抹掉。值加在 `services/fc/.env.belayo.local`（那台机器上的
 gitignore 文件，已备份为 `.bak-before-app-storage-sts`），下次部署自然带上。
 
-> 顺带记一笔，不属于本设计但值得知道：belayo 的 FC key（RAM 用户 `sre`）挂着
-> `AliyunOSSFullAccess`，也就是能读写该账号**全部 25 个 bucket**。self-host 那边
-> 已经收敛到两个桶了，belayo 还没有。
+#### belayo 的 FC key 也收敛了（同日）
 
-**留在人工手上的两件事**：
+原先 belayo 的 Cloud API 用的是共享 RAM 用户 `sre`，挂着 `AliyunOSSFullAccess`
+——能读写该账号全部 25 个 bucket。
+
+**没有动 `sre` 的任何策略**。它同时被 betly、banana、NAT 网关、PrivateZone 以及本机
+的 CLI profile 使用，摘它的权限会波及一堆不相干的系统。改成和 self-host 同一个形状：
+新建专用用户，只把 teamclu 这一份切过去。
+
+- 用户 `teamclu-belayo` + 策略 `teamclu-belayo-fc-oss`，五条语句：
+  两个桶的对象操作与列举、`fc:*` 限 cn-shenzhen、`ram:PassRole` 限
+  `teamclaw-sync-role`（belayo 设了 `ROLE_ARN`，建 app 函数时要用，self-host 那边
+  为空所以不需要）、`sts:AssumeRole` 限 `teamclu-app-storage`。
+- 新 key 写进 `.env.belayo.local`（备份 `.bak-before-scoped-key`），**没有改线上函数**
+  ——理由同上，`s deploy` 会重写整张表。所以**下次部署才生效**，在那之前 belayo 仍跑在
+  `sre` 的 key 上。
+- `teamclu-app-storage` 的信任策略暂时同时允许 `teamclu-belayo` 和 `sre`，这样切换
+  前后都能 assume。**部署切换完成后要做两件收尾**：把 `teamclu-app-storage-assume`
+  从 `sre` 上摘掉，并把信任策略收回到只剩 `teamclu-belayo`。
+
+用新 key 实测（都走产品自己用的 SDK）：两个桶的 presign 上传 / 列举 / 删除都通、
+FC ListFunctions 与 GetFunction 通、AssumeRole 通；而同区的
+`betly-backup` / `teamclaw-releases` / `banana-image` / `teamclu-self-host` 四个桶
+读和写**全部 AccessDenied**——`sre` 的旧 key 是四个都能读写的。
+
+> 第一次负面对照挑了 `betly-private`，返回的是 `PermanentRedirect`（跨区）而不是
+> 拒绝，证明不了任何事。同区的桶才是有效对照。
+
+⚠️ **`ram:PassRole` 是唯一没能实测的一条**：验证它要真的建一个 FC 函数。它会在下次
+真实的 app 部署时得到验证——如果那次报 `Forbidden.RAM`，就是这一条写错了。
+
+**留在人工手上的三件事**：
 
 1. self-host 的主账号旧 AK 仍未禁用（控制台操作，无 OpenAPI）。
-2. belayo 要等代码合并后手工部署一次，这两个变量才会真正到函数上。
+2. belayo 要等代码合并后手工部署一次，STS 变量和新 key 才会真正到函数上。
+3. 那次部署之后：确认 app 部署仍然正常（顺带验 `ram:PassRole`），再把
+   `teamclu-app-storage-assume` 从 `sre` 上摘掉、信任策略收回到只剩
+   `teamclu-belayo`。
 
