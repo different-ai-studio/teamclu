@@ -991,6 +991,28 @@ export interface AppAuthRule {
   audience?: AppAuthAudience;
 }
 
+/**
+ * One environment variable of a deployed app.
+ *
+ * `value` is `null` for a secret — for everyone, including whoever set it.
+ * That is the whole distinction: a plain value is readable and editable because
+ * the operator said it is not a secret, and a secret is write-only because they
+ * said it is. Null here never means "empty string".
+ */
+export interface AppEnvVar {
+  key: string;
+  isSecret: boolean;
+  value: string | null;
+  updatedAt: string;
+}
+
+/** The env list, with what this caller may do to it. */
+export interface AppEnvList {
+  items: AppEnvVar[];
+  /** `admin` on the app. Carried here so the client needs no second request. */
+  canWrite: boolean;
+}
+
 /** How a scheduled task's last attempt ended. */
 export type AppCronRunStatus = "success" | "failed" | "timeout";
 
@@ -1123,6 +1145,10 @@ export interface AppRow {
    *  the PATCH. This does NOT mean the site is unprotected: the wall lives in
    *  the proxy gateway and every auth change takes effect immediately. */
   authModePendingRedeploy: boolean;
+  /** The app's env has changed since the running function was built. Like the
+   *  auth flag, the environment is baked in at finalize, so an edit does
+   *  nothing until the next deploy. */
+  envPendingRedeploy: boolean;
   /** Hostname the owner bound, or null. Served only once verified. */
   customDomain: string | null;
   /** When DNS ownership was last proven; null = stored but NOT served. */
@@ -1418,6 +1444,21 @@ export interface AppsBackend {
   purgeAppFiles(appId: string): Promise<{ deleted: number } | null>;
   /** Set or clear (null) this app's ceiling. */
   setAppStorageQuota(appId: string, quotaBytes: number | null): Promise<{ quotaBytes: number | null } | null>;
+
+  // --- Environment (design 2026-09-10-app-control-panel §9) ---
+  // `prompt` may read (the tier that writes the app's code), `admin` may write.
+  // A secret's value is never returned, so there is no "reveal".
+
+  /** The app's variables, plus whether this caller may change them. Null on 404. */
+  listAppEnv(appId: string): Promise<AppEnvList | null>;
+  /** Set or replace one variable. `admin` only. Null on 404. */
+  putAppEnv(
+    appId: string,
+    key: string,
+    input: { value: string; isSecret?: boolean },
+  ): Promise<AppEnvVar | null>;
+  /** Remove one variable. `admin` only. False on 404. */
+  deleteAppEnv(appId: string, key: string): Promise<boolean>;
 
   // --- Scheduled tasks (design 2026-09-10-app-control-panel §5) ---
   // Any tier may read the schedule; only `admin` may change it. Null is 404,

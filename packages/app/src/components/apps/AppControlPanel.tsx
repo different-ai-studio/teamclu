@@ -31,6 +31,7 @@ import {
   openAppAuth,
   openAppCron,
   openAppDataTable,
+  openAppEnv,
   openAppFiles,
   openAppLogs,
 } from '@/lib/tabs/app-tabs'
@@ -146,6 +147,7 @@ interface Summary {
     | null
   files: { count: number; bytes: number | null } | null
   cronJobs: number | null
+  env: { count: number; secrets: number } | null
 }
 
 /**
@@ -161,22 +163,24 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
     tables: null,
     files: null,
     cronJobs: null,
+    env: null,
   })
   const [loading, setLoading] = React.useState(true)
 
   React.useEffect(() => {
     let cancelled = false
     setLoading(true)
-    setSummary({ members: null, tables: null, files: null, cronJobs: null })
+    setSummary({ members: null, tables: null, files: null, cronJobs: null, env: null })
 
     void (async () => {
       const backend = getBackend().apps
-      const [access, tables, files, usage, cron] = await Promise.allSettled([
+      const [access, tables, files, usage, cron, env] = await Promise.allSettled([
         backend.listAppAccess(app.id),
         backend.listAppDataTables(app.id),
         backend.listAppFiles(app.id, { limit: 100 }),
         backend.getAppStorageUsage(app.id),
         backend.listAppCronJobs(app.id),
+        backend.listAppEnv(app.id),
       ])
       if (cancelled) return
 
@@ -199,6 +203,13 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
             }
           : null,
         cronJobs: cron.status === 'fulfilled' ? (cron.value?.length ?? null) : null,
+        env:
+          env.status === 'fulfilled' && env.value
+            ? {
+                count: env.value.items.length,
+                secrets: env.value.items.filter((v) => v.isSecret).length,
+              }
+            : null,
       })
       setLoading(false)
     })()
@@ -396,6 +407,21 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       ? t('apps.controlPanel.summaryUnavailable', '暂时读不到')
       : t('apps.controlPanel.summaryCronJobs', '{{count}} 个任务', { count: summary.cronJobs })
 
+  const envValue = (() => {
+    if (!summary.env) return t('apps.controlPanel.summaryRestricted', '仅创建者可见')
+    const count = t('apps.controlPanel.summaryEnvVars', '{{count}} 个变量', {
+      count: summary.env.count,
+    })
+    // The secret count is worth its own clause: it is the part that cannot be
+    // read back, so knowing how much of this app's config is write-only is a
+    // different fact from knowing how much config there is.
+    return summary.env.secrets > 0
+      ? `${count} · ${t('apps.controlPanel.summarySecrets', '{{count}} 个密钥', {
+          count: summary.env.secrets,
+        })}`
+      : count
+  })()
+
   const openData = () => {
     const tables = summary.tables
     // "The first table" is as good a start as any — the browser switches from
@@ -569,6 +595,13 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
               loading={summaryLoading}
               testId="app-control-open-files"
               onOpen={() => openAppFiles(app, t('apps.files.tabTitle', '应用附件'))}
+            />
+            <SummaryRow
+              label={t('apps.env.tabTitle', '变量与密钥')}
+              value={envValue}
+              loading={summaryLoading}
+              testId="app-control-open-env"
+              onOpen={() => openAppEnv(app, t('apps.env.tabTitle', '变量与密钥'))}
             />
             <SummaryRow
               label={t('apps.logs.section', '运行日志')}

@@ -11,6 +11,7 @@ const backendMocks = vi.hoisted(() => ({
   listAppFiles: vi.fn(),
   getAppStorageUsage: vi.fn(),
   listAppCronJobs: vi.fn(),
+  listAppEnv: vi.fn(),
   deleteApp: vi.fn(),
 }))
 
@@ -19,6 +20,7 @@ const tabMocks = vi.hoisted(() => ({
   openAppAuth: vi.fn(),
   openAppCron: vi.fn(),
   openAppDataTable: vi.fn(),
+  openAppEnv: vi.fn(),
   openAppFiles: vi.fn(),
   openAppLogs: vi.fn(),
 }))
@@ -123,6 +125,13 @@ describe('AppControlPanel', () => {
     })
     backendMocks.getAppStorageUsage.mockResolvedValue({ bytes: 2048, quotaBytes: null })
     backendMocks.listAppCronJobs.mockResolvedValue([{ id: 'j1' }, { id: 'j2' }, { id: 'j3' }])
+    backendMocks.listAppEnv.mockResolvedValue({
+      items: [
+        { key: 'LOG_LEVEL', isSecret: false, value: 'debug', updatedAt: 'x' },
+        { key: 'STRIPE_KEY', isSecret: true, value: null, updatedAt: 'x' },
+      ],
+      canWrite: true,
+    })
     storeMocks.deleteApp.mockResolvedValue(true)
   })
 
@@ -133,7 +142,31 @@ describe('AppControlPanel', () => {
       expect(screen.getByTestId('app-control-open-data').textContent).toContain('2 张表')
       expect(screen.getByTestId('app-control-open-files').textContent).toContain('1 个文件')
       expect(screen.getByTestId('app-control-open-cron').textContent).toContain('3 个任务')
+      expect(screen.getByTestId('app-control-open-env').textContent).toContain('2 个变量')
     })
+  })
+
+  it('counts the secrets separately from the variables', async () => {
+    // How much of an app's configuration is write-only is a different fact from
+    // how much configuration there is.
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() =>
+      expect(screen.getByTestId('app-control-open-env').textContent).toContain('1 个密钥'),
+    )
+  })
+
+  it('leaves the secret clause off when there are none', async () => {
+    backendMocks.listAppEnv.mockResolvedValue({
+      items: [{ key: 'LOG_LEVEL', isSecret: false, value: 'debug', updatedAt: 'x' }],
+      canWrite: true,
+    })
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() =>
+      expect(screen.getByTestId('app-control-open-env').textContent).toContain('1 个变量'),
+    )
+    // Not just "密钥" — the row's own label is 变量与密钥, so the assertion has to
+    // be about the count clause rather than the word.
+    expect(screen.getByTestId('app-control-open-env').textContent).not.toContain('个密钥')
   })
 
   it('says why there is nothing rather than showing a zero', async () => {
@@ -163,6 +196,7 @@ describe('AppControlPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('app-control-open-files').textContent).toContain('暂时读不到')
       expect(screen.getByTestId('app-control-open-cron').textContent).toContain('3 个任务')
+      expect(screen.getByTestId('app-control-open-env').textContent).toContain('2 个变量')
     })
   })
 
@@ -196,6 +230,9 @@ describe('AppControlPanel', () => {
 
     await user.click(screen.getByTestId('app-control-open-cron'))
     expect(tabMocks.openAppCron).toHaveBeenCalledWith(baseApp, '定时任务')
+
+    await user.click(screen.getByTestId('app-control-open-env'))
+    expect(tabMocks.openAppEnv).toHaveBeenCalledWith(baseApp, '变量与密钥')
 
     await user.click(screen.getByTestId('app-control-open-logs'))
     expect(tabMocks.openAppLogs).toHaveBeenCalledWith(baseApp, '日志')

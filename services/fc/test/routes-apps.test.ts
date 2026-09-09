@@ -708,3 +708,78 @@ test("the run-history limit is passed through, and defaults without one", async 
   assert.deepEqual(seen, [5, 20]);
 });
 
+// --- environment ------------------------------------------------------------
+
+test("env routes 404 when the repository declines", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const repository = {
+    listAppEnv: async () => null,
+    putAppEnv: async () => null,
+    deleteAppEnv: async () => false,
+  };
+  const params = { appId: "a1", key: "STRIPE_KEY" };
+  await assert.rejects(
+    findRoute(routes, "GET", "/v1/apps/:appId/env")[2]({ params, repository }),
+    (e: any) => e.statusCode === 404,
+  );
+  await assert.rejects(
+    findRoute(routes, "PUT", "/v1/apps/:appId/env/:key")[2]({ params, json: { value: "x" }, repository }),
+    (e: any) => e.statusCode === 404,
+  );
+  await assert.rejects(
+    findRoute(routes, "DELETE", "/v1/apps/:appId/env/:key")[2]({ params, repository }),
+    (e: any) => e.statusCode === 404,
+  );
+});
+
+test("an env value may be empty, but not missing", async () => {
+  // "" is a variable someone deliberately set to nothing; undefined is a
+  // malformed request. A truthiness check would conflate them and reject the
+  // first, which is a legitimate thing to want.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const seen: unknown[] = [];
+  const repository = {
+    putAppEnv: async (_a: string, _k: string, body: any) => {
+      seen.push(body.value);
+      return { key: "K", isSecret: false, value: body.value, updatedAt: "x" };
+    },
+  };
+  const params = { appId: "a1", key: "K" };
+
+  await findRoute(routes, "PUT", "/v1/apps/:appId/env/:key")[2]({ params, json: { value: "" }, repository });
+  assert.deepEqual(seen, [""]);
+
+  for (const json of [{}, { value: null }, { value: 1 }, { isSecret: true }]) {
+    await assert.rejects(
+      findRoute(routes, "PUT", "/v1/apps/:appId/env/:key")[2]({ params, json, repository }),
+      (e: any) => e.statusCode === 400,
+      `accepted ${JSON.stringify(json)}`,
+    );
+  }
+});
+
+test("the env list is passed through with its canWrite flag", async () => {
+  // The client learns what it may do from the same response that tells it what
+  // exists — no second request, and no way for the two to disagree.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const out = { items: [{ key: "K", isSecret: true, value: null, updatedAt: "x" }], canWrite: false };
+  const res = await findRoute(routes, "GET", "/v1/apps/:appId/env")[2]({
+    params: { appId: "a1" },
+    repository: { listAppEnv: async () => out },
+  });
+  assert.deepEqual(res.body, out);
+});
+
+test("an empty env is a 200, not a 404", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const res = await findRoute(routes, "GET", "/v1/apps/:appId/env")[2]({
+    params: { appId: "a1" },
+    repository: { listAppEnv: async () => ({ items: [], canWrite: true }) },
+  });
+  assert.deepEqual(res.body, { items: [], canWrite: true });
+});
+

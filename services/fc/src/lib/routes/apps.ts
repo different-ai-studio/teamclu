@@ -384,6 +384,41 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  // --- App environment (design 2026-09-10-app-control-panel §9) ---
+  //
+  // `:key` is an ordinary path segment: env names are letters, digits and
+  // underscores, so unlike a file path or a table row key there is nothing here
+  // that needs encoding to survive one.
+
+  router.get("/v1/apps/:appId/env", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.listAppEnv(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.put("/v1/apps/:appId/env/:key", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const key = decodeURIComponent(ctx.params.key);
+    const body = ctx.json ?? {};
+    // Present-but-empty is a legitimate value (an env var set to ""), so the
+    // check is for the field's absence, not its truthiness.
+    if (typeof body.value !== "string") {
+      throw new ApiError(400, "validation_failed", "value is required");
+    }
+    const out = await ctx.repository.putAppEnv(appId, key, body);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/env/:key", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const key = decodeURIComponent(ctx.params.key);
+    const ok = await ctx.repository.deleteAppEnv(appId, key);
+    if (!ok) throw new ApiError(404, "not_found", "env variable not found");
+    return { body: { ok: true } };
+  });
+
   // --- App scheduled tasks (design 2026-09-10-app-control-panel §5/§6) ---
   //
   // Reads are open to anyone the app has named; every write is `admin`, and the

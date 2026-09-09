@@ -37,6 +37,7 @@ import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
 import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
+import { MAX_ENV_VARS_PER_APP, mergeAppEnv, parseEnvKey, parseEnvValue } from "./app-env.js";
 import { executeAppCronJob, JOB_COLUMNS as CRON_JOB_COLUMNS } from "./app-cron-runner.js";
 // Backend-neutral request validation — keep free of PostgREST calls.
 import {
@@ -117,8 +118,20 @@ import {
   APP_STORAGE_TOKEN_KIND,
   deleteAppSecretSupabase,
   getAppSecretSupabase,
+  open as openAppSecret,
   putAppSecretSupabase,
+  seal as sealAppSecret,
 } from "./provisioning/app-secrets.js";
+
+/**
+ * AAD for one env secret, so a sealed value cannot be replayed under another
+ * key's name — the same reason `seal` binds `kind` for the platform's own
+ * secrets. Moving a ciphertext from STRIPE_TEST_KEY to STRIPE_LIVE_KEY by
+ * editing the row would otherwise decrypt cleanly.
+ */
+function appEnvSecretKind(key: string): string {
+  return `env:${key}`;
+}
 import { appFileKey, appFilesPrefix } from "./provisioning/apps-oss.js";
 import { isOverQuota, type AppStorageOps } from "./provisioning/app-storage.js";
 import { normalizeAgentTypes } from "./agent-types.js";
@@ -302,6 +315,18 @@ function mapAppCronJobRow(r: any) {
     lastRunAt: appIso(r.last_run_at),
     nextRunAt: appIso(r.next_run_at),
     createdAt: appIso(r.created_at)!,
+    updatedAt: appIso(r.updated_at)!,
+  };
+}
+
+function mapAppEnvRow(r: any) {
+  return {
+    key: r.key,
+    isSecret: Boolean(r.is_secret),
+    // A secret's value never leaves the server, not even to the person who set
+    // it. `null` here is the whole contract: the panel shows "已设置" and the
+    // only way to change it is to type a new one.
+    value: r.is_secret ? null : (r.value ?? ""),
     updatedAt: appIso(r.updated_at)!,
   };
 }
@@ -609,6 +634,54 @@ export function createSupabaseBusinessRepository(options) {
       endpoint: appStorage.endpoint,
       cloudApiUrl,
     });
+  }
+
+  /** Move the app into "env changed since the last deploy". */
+  async function touchAppEnv(admin: any, appId: string, at: string): Promise<void> {
+    const { error } = await admin
+      .from("apps")
+      .update({ env_updated_at: at, updated_at: at })
+      .eq("id", appId);
+    if (error) throw error;
+  }
+
+  /**
+   * The operator's own variables, decrypted, for baking into the function.
+   *
+   * The CALLER's client, not the service role: finalize has already established
+   * that this caller is `admin` on the app, and the RLS select policy admits
+   * them. Escalating would make every deploy depend on a service-role key being
+   * configured, which is how an app with no env vars at all would stop being
+   * deployable on a deployment that never needed one.
+   *
+   * Reading `ciphertext` here is safe for the same reason the table's comment
+   * gives: the sealing key lives in FC's environment, never in the database, so
+   * the ciphertext is not the secret.
+   *
+   * A secret whose ciphertext will not open is SKIPPED rather than fatal. The
+   * encryption key changing (or a row written under an older one) must not make
+   * every deploy of the app fail; the app then runs without that variable,
+   * which the operator can see and fix, instead of not running at all.
+   */
+  async function buildUserEnvForFinalize(appId: string): Promise<Record<string, string>> {
+    const { data, error } = await supabase
+      .from("app_env_vars")
+      .select("key, is_secret, value, ciphertext")
+      .eq("app_id", appId);
+    if (error) throw error;
+    const out: Record<string, string> = {};
+    for (const row of data ?? []) {
+      if (!row.is_secret) {
+        if (typeof row.value === "string") out[row.key] = row.value;
+        continue;
+      }
+      try {
+        out[row.key] = openAppSecret(appEnvSecretKind(row.key), row.ciphertext);
+      } catch (e) {
+        console.warn(`[apps] skipping env secret ${row.key}: ${e}`);
+      }
+    }
+    return out;
   }
 
   /**
@@ -3898,6 +3971,12 @@ export function createSupabaseBusinessRepository(options) {
         // credential that is stored but never handed to the function is one the
         // app cannot use, and the failure only shows up on the second deploy.
         const storageEnv = await buildStorageEnvForFinalize(existing);
+        // Read at finalize, not at deploy start: an env edit made while a build
+        // was running belongs to the function that is about to be written, and
+        // reading it earlier would ship the previous values under a deploy the
+        // operator watched succeed after their change.
+        const userEnv = await buildUserEnvForFinalize(appId);
+        const envDeployedAt = new Date().toISOString();
         const r = await finalizeDeploy({
           appId,
           slug: existing.slug,
@@ -3907,6 +3986,7 @@ export function createSupabaseBusinessRepository(options) {
           ossObjectName: appOssObjectName(appId),
           platformAuthEnv,
           storageEnv,
+          userEnv,
           // What the daemon read out of the app's own declaration. Absent for a
           // client that predates it, which is the contract every app had before.
           runtime: runtimeSpec,
@@ -3929,6 +4009,10 @@ export function createSupabaseBusinessRepository(options) {
             // and what makes the pending state a property of the row rather
             // than of one desktop's memory.
             deployed_auth_mode: existing.auth_mode ?? "none",
+            // Same idea for the environment: what is baked into the function
+            // that just went live. Compared against env_updated_at to tell the
+            // operator their last env change is not live yet.
+            env_deployed_at: envDeployedAt,
             // Pin the org on the first success; a no-op on every later one.
             // Static apps have no schema anywhere, so they get no ledger entry
             // — a non-null org_id on one would claim data exists that does not.
@@ -4631,6 +4715,121 @@ export function createSupabaseBusinessRepository(options) {
       return { credentials };
     },
 
+
+
+    // ─── App environment (design 2026-09-10-app-control-panel §9) ───────────
+    //
+    // Read is the `prompt` tier: the people who write the app's code are the
+    // ones who need to know what its environment contains. Writing is `admin`,
+    // like every other app mutation. A secret's value is never returned to
+    // anyone, including the person who set it.
+
+    /** The app row plus the caller's level, when it reaches `minLevel`. */
+    async resolveAppEnvAccess(appId: string, minLevel: "view" | "prompt" | "admin") {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission) return null;
+      const rank = { view: 0, prompt: 1, admin: 2 } as const;
+      if (rank[permission.level] < rank[minLevel]) return null;
+      return { app, level: permission.level, callerMemberId: permission.callerMemberId };
+    },
+
+    async listAppEnv(appId: string) {
+      const access = await this.resolveAppEnvAccess(appId, "prompt");
+      if (!access) return null;
+      // `ciphertext` is deliberately not selected. RLS is row-level, so this
+      // reader could ask for it; not asking is what keeps a sealed value from
+      // ever being one refactor away from a response body.
+      const { data, error } = await supabase
+        .from("app_env_vars")
+        .select("key, is_secret, value, updated_at")
+        .eq("app_id", appId)
+        .order("key", { ascending: true });
+      if (error) throw error;
+      return {
+        items: (data ?? []).map(mapAppEnvRow),
+        // Carried in the list response the way listAppFiles carries it, so the
+        // client learns what it may do without a second request.
+        canWrite: access.level === "admin",
+      };
+    },
+
+    async putAppEnv(appId: string, key: string, input: any) {
+      const access = await this.resolveAppEnvAccess(appId, "admin");
+      if (!access) return null;
+      const name = parseEnvKey(key);
+      const value = parseEnvValue(input?.value);
+      const isSecret = Boolean(input?.isSecret);
+
+      const admin = await serviceRoleClient("write app env");
+      const { count, error: countErr } = await admin
+        .from("app_env_vars")
+        .select("key", { count: "exact", head: true })
+        .eq("app_id", appId);
+      if (countErr) throw countErr;
+      const { data: existing, error: exErr } = await admin
+        .from("app_env_vars")
+        .select("key")
+        .eq("app_id", appId)
+        .eq("key", name)
+        .maybeSingle();
+      if (exErr) throw exErr;
+      if (!existing && (count ?? 0) >= MAX_ENV_VARS_PER_APP) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          `an app can have at most ${MAX_ENV_VARS_PER_APP} environment variables`,
+        );
+      }
+
+      const now = new Date().toISOString();
+      const { data, error } = await admin
+        .from("app_env_vars")
+        .upsert(
+          {
+            app_id: appId,
+            key: name,
+            is_secret: isSecret,
+            // Exactly one of the two, matching the table's check constraint.
+            value: isSecret ? null : value,
+            ciphertext: isSecret ? sealAppSecret(appEnvSecretKind(name), value) : null,
+            updated_by_member_id: access.callerMemberId,
+            updated_at: now,
+          },
+          { onConflict: "app_id,key" },
+        )
+        .select("key, is_secret, value, updated_at")
+        .single();
+      if (error) throw error;
+      await touchAppEnv(admin, appId, now);
+      return mapAppEnvRow(data);
+    },
+
+    async deleteAppEnv(appId: string, key: string) {
+      const access = await this.resolveAppEnvAccess(appId, "admin");
+      if (!access) return false;
+      const admin = await serviceRoleClient("delete app env");
+      const { data, error } = await admin
+        .from("app_env_vars")
+        .delete()
+        .eq("app_id", appId)
+        // Not parseEnvKey: a reserved or malformed name cannot be WRITTEN, but a
+        // row that already holds one must still be removable.
+        .eq("key", key)
+        .select("key");
+      if (error) throw error;
+      if ((data ?? []).length === 0) return false;
+      // A delete changes the environment as much as a write does, so it moves
+      // the app back into "needs a redeploy" too.
+      await touchAppEnv(admin, appId, new Date().toISOString());
+      return true;
+    },
 
     // ─── App scheduled tasks (design 2026-09-10-app-control-panel §5) ────────
     //

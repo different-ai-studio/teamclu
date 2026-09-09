@@ -14,6 +14,7 @@ import {
   decodeAppAuthTarget,
   decodeAppCronTarget,
   decodeAppDataTarget,
+  decodeAppEnvTarget,
   decodeAppFilesTarget,
   decodeAppLogsTarget,
   isAppCreateTarget,
@@ -66,6 +67,10 @@ const AppFilesTabContent = lazyNamed(
 const AppCronTabContent = lazyNamed(
   () => import("@/components/apps/AppCronTabContent"),
   "AppCronTabContent",
+)
+const AppEnvTabContent = lazyNamed(
+  () => import("@/components/apps/AppEnvTabContent"),
+  "AppEnvTabContent",
 )
 const AppLibraryView = lazyNamed(
   () => import("@/components/apps/AppLibraryView"),
@@ -126,6 +131,9 @@ function resolveNativeBody(target: string) {
 
   const appCron = decodeAppCronTarget(target)
   if (appCron) return <AppCronTabContent appId={appCron.appId} />
+
+  const appEnv = decodeAppEnvTarget(target)
+  if (appEnv) return <AppEnvTabContent appId={appEnv.appId} />
 
   if (isAppLibraryTarget(target)) return <AppLibraryView />
 

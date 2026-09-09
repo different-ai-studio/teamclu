@@ -1674,6 +1674,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
     "authMode", "authAudience", "authScope", "authRules", "authModePendingRedeploy",
+    "envPendingRedeploy",
     "createdAt", "createdByActorId",
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
     "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
@@ -1695,6 +1696,41 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.equal(items[0].provisionStatus, "pending");
   // The apps list names who made each app; without this it can only show ids.
   assert.equal(items[0].createdByActorId, "actor-app-1");
+});
+
+test("apps: envPendingRedeploy compares the two env timestamps", async () => {
+  // The environment is baked into the function at finalize, so an env edit does
+  // nothing to the running app until the next deploy. An operator who just
+  // pasted an API key would otherwise believe it is already in effect.
+  const live = { ...APP_ROW, fc_status: "live" };
+  const older = "2026-09-10T09:00:00.000Z";
+  const newer = "2026-09-10T10:00:00.000Z";
+
+  const pending = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...live, env_updated_at: newer, env_deployed_at: older }] } }),
+  );
+  assert.equal((await pending.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, true);
+
+  const settled = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...live, env_updated_at: older, env_deployed_at: newer }] } }),
+  );
+  assert.equal((await settled.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, false);
+
+  // Env set on an app that has never deployed: pending would be true forever,
+  // and there is nothing live for it to be out of date with.
+  const neverDeployed = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...live, env_updated_at: newer, env_deployed_at: null }] } }),
+  );
+  assert.equal((await neverDeployed.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, true);
+
+  const notLive = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, env_updated_at: newer, env_deployed_at: null }] } }),
+  );
+  assert.equal((await notLive.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, false);
+
+  // No env at all is the ordinary case and must never read as pending.
+  const noEnv = appsRepo(appsSupabase({ seed: { apps: [live] } }));
+  assert.equal((await noEnv.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, false);
 });
 
 test("apps: authModePendingRedeploy is derived from the deployed mode", async () => {

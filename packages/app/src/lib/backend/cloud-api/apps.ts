@@ -17,6 +17,8 @@ import type {
   AppMemberAccessRow,
   AppPermissionLevel,
   AppCustomDomain,
+  AppEnvList,
+  AppEnvVar,
   AppCronJob,
   AppCronJobInput,
   AppCronRun,
@@ -350,6 +352,41 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         );
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    // --- Environment (design 2026-09-10-app-control-panel §9) ---
+
+    async listAppEnv(appId) {
+      try {
+        return await client.get<AppEnvList>(`/v1/apps/${encodeURIComponent(appId)}/env`);
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async putAppEnv(appId, key, input) {
+      try {
+        return await client.put<AppEnvVar>(
+          `/v1/apps/${encodeURIComponent(appId)}/env/${encodeURIComponent(key)}`,
+          { value: input.value, isSecret: input.isSecret ?? false },
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async deleteAppEnv(appId, key) {
+      try {
+        await client.delete<{ ok: true }>(
+          `/v1/apps/${encodeURIComponent(appId)}/env/${encodeURIComponent(key)}`,
+        );
+        return true;
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return false;
         throw e;
       }
     },

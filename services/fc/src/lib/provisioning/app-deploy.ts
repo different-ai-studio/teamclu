@@ -425,10 +425,15 @@ export interface FinalizeInput {
   /**
    * File-storage wiring for the app, built by the repo because minting the
    * token needs the service role (app_secrets). Same division of labour as
+   * userEnv: the operator's own variables, already decrypted. Applied under the
+   * platform's, never over them — see the note at the merge.
+   *
    * platformAuthEnv: this module composes the function's env, it does not own
    * any credential.
    */
   storageEnv?: Record<string, string>;
+  /** The operator's own variables (amux.app_env_vars), secrets already opened. */
+  userEnv?: Record<string, string>;
   /**
    * What the app declared about how it starts, reported by the daemon that
    * built it. Absent → the contract every app had before declarations existed.
@@ -506,9 +511,22 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     );
   }
 
-  if (input.platformAuthEnv) Object.assign(env, input.platformAuthEnv);
-  if (input.storageEnv) Object.assign(env, input.storageEnv);
-  if (deps.extraEnv) Object.assign(env, deps.extraEnv(input));
+  // The operator's own variables go UNDER everything the platform sets, so a
+  // user key can never take DATABASE_URL or the storage token away from the
+  // app. The write endpoint also refuses the reserved names (app-env.ts), but
+  // that only guards rows written through it — this guards the rest.
+  const platform: Record<string, string> = {};
+  if (input.platformAuthEnv) Object.assign(platform, input.platformAuthEnv);
+  if (input.storageEnv) Object.assign(platform, input.storageEnv);
+  if (deps.extraEnv) Object.assign(platform, deps.extraEnv(input));
+
+  if (input.userEnv) {
+    for (const [k, v] of Object.entries(input.userEnv)) {
+      if (k in env || k in platform) continue; // platform wins, silently and always
+      env[k] = v;
+    }
+  }
+  Object.assign(env, platform);
 
   // Best-effort, and deliberately not fatal. An app deployed without logs is
   // worse off than one with them; an app that cannot deploy at all because the

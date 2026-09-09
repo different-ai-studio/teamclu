@@ -6106,6 +6106,119 @@ paths:
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/env:
+    get:
+      operationId: listAppEnv
+      summary: The app's environment variables
+      description: |
+        The operator's own variables, injected into the deployed function at
+        `finalizeDeploy`. Readable by anyone with `prompt` or `admin` on the app
+        — the people who write its code need to know what its environment holds.
+
+        A secret's `value` is always `null`, for everyone, including whoever set
+        it. Changing a secret means writing a new value.
+
+        `canWrite` says whether this caller may change any of it (`admin`), so
+        the client does not need a second request to find out.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: The app's environment, by key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, canWrite]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppEnvVar"
+                  canWrite: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/env/{key}:
+    put:
+      operationId: putAppEnv
+      summary: Set or replace one environment variable
+      description: |
+        Requires `admin`. Creates the key or replaces its value, including
+        flipping it between plain and secret.
+
+        Names the platform sets itself are refused with `env_key_reserved`:
+        `PORT`, `NODE_ENV`, `DATABASE_URL`, `APP_PUBLIC_URL`, `API_BASE`,
+        `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and anything starting `TEAMCLU_`.
+        The deploy also applies user variables UNDERNEATH the platform's, so
+        such a key could not take effect even if it reached the table.
+
+        The change is NOT live until the app is deployed again — the environment
+        is baked into the function. The app row's `envPendingRedeploy` says so.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppEnvKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  type: string
+                  maxLength: 8192
+                  description: >-
+                    May be empty — a variable set to the empty string is a
+                    legitimate thing to want. May not contain newlines or NUL.
+                isSecret:
+                  type: boolean
+                  default: false
+                  description: >-
+                    A secret is sealed with AES-256-GCM and never returned
+                    again. Storing a plain value readable is the point of the
+                    distinction, so this is the operator's call per key.
+      responses:
+        "200":
+          description: The stored variable (a secret's value comes back null).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppEnvVar"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAppEnv
+      summary: Remove one environment variable
+      description: |
+        Requires `admin`. Like a write, this only reaches the running app on the
+        next deploy.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppEnvKey"
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/cron-jobs:
     get:
       operationId: listAppCronJobs
@@ -7007,6 +7120,15 @@ components:
       schema:
         type: string
         format: uuid
+    AppEnvKey:
+      name: key
+      in: path
+      required: true
+      description: Environment variable name (letters, digits, underscores).
+      schema:
+        type: string
+        pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+        maxLength: 128
     AppCronJobId:
       name: jobId
       in: path
@@ -7482,6 +7604,14 @@ components:
             wall lives in the proxy gateway and takes effect immediately.
             Server-derived from `fc_status` and the deployed mode; false for an
             app that has never been live.
+        envPendingRedeploy:
+          type: boolean
+          description: >-
+            The app's environment variables have changed since the running
+            function was built. The environment is baked in at finalize, so an
+            edit does nothing until the next deploy. Server-derived from
+            `fc_status` and the two env timestamps; false for an app that has
+            never been live.
         oauthClientId:
           type: [string, "null"]
           description: >-
@@ -7628,6 +7758,18 @@ components:
             app's own `authAudience`", never a default of its own. Reading it as
             `org` when absent would tighten the wall on every app currently set
             to `any` — every rule stored before this field existed is absent.
+    AppEnvVar:
+      type: object
+      required: [key, isSecret, value, updatedAt]
+      properties:
+        key: { type: string }
+        isSecret: { type: boolean }
+        value:
+          type: [string, "null"]
+          description: >-
+            The stored value, or null when `isSecret`. Null is not "empty" — a
+            secret's value is never returned to anyone.
+        updatedAt: { type: string, format: date-time }
     AppCronJobInput:
       type: object
       description: >-

@@ -65,7 +65,7 @@ export function openAppPreview(app: AppRow): void {
 }
 
 /**
- * The four management surfaces the control panel sends people to.
+ * The five management surfaces the control panel sends people to.
  *
  * One shape for all of them — `<kind>:<appId>` — because they differ only in
  * which panel row opened them. The panel stays a column of counts and these
@@ -79,6 +79,7 @@ const APP_ACCESS_PREFIX = 'app-access:'
 const APP_AUTH_PREFIX = 'app-auth:'
 const APP_FILES_PREFIX = 'app-files:'
 const APP_CRON_PREFIX = 'app-cron:'
+const APP_ENV_PREFIX = 'app-env:'
 
 function decodeAppScopedTarget(prefix: string, target: string): { appId: string } | null {
   if (!target.startsWith(prefix)) return null
@@ -102,6 +103,8 @@ export const decodeAppFilesTarget = (target: string) =>
   decodeAppScopedTarget(APP_FILES_PREFIX, target)
 export const decodeAppCronTarget = (target: string) =>
   decodeAppScopedTarget(APP_CRON_PREFIX, target)
+export const decodeAppEnvTarget = (target: string) =>
+  decodeAppScopedTarget(APP_ENV_PREFIX, target)
 
 /** Who on the team may work on this app, and at which level. */
 export const openAppAccess = (app: AppRow, label: string) =>
@@ -118,6 +121,10 @@ export const openAppFiles = (app: AppRow, label: string) =>
 /** Cloud-scheduled requests against the deployed site. */
 export const openAppCron = (app: AppRow, label: string) =>
   openAppScopedTab(APP_CRON_PREFIX, app, label)
+
+/** The variables and secrets the deployed app runs with. */
+export const openAppEnv = (app: AppRow, label: string) =>
+  openAppScopedTab(APP_ENV_PREFIX, app, label)
 
 const APP_LIBRARY_TARGET = 'app-library'
 
