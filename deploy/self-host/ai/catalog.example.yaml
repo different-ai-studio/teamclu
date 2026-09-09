@@ -141,11 +141,19 @@ public_models:
     routes:
       - backend: ds-v4-flash
 
-  # PRICING IS UNCHANGED from when this tier pointed at DeepSeek, and that is
-  # the whole point of pricing the TIER rather than the backend (§4.4):
-  # re-pointing `pro` at a different vendor moves our cost, not the customer's
-  # price. Do not "adjust" these to match the new upstream.
-  #
+  # PRICING IS UNCHANGED whichever vendor a tier points at, and that is the
+  # whole point of pricing the TIER rather than the backend (§4.4): re-pointing
+  # a tier moves our cost, not the customer's price. Do not "adjust" these to
+  # match whatever upstream is behind them this week.
+  pro:
+    name: 高级
+    routing: priority
+    pricing:
+      input_per_1m_credits: 4000000
+      output_per_1m_credits: 16000000
+    routes:
+      - backend: ds-v4-pro
+
   # Failover, not priority: the mx5 relay fronts subscription accounts and is a
   # weaker availability story than a first-party API, so the tier keeps serving
   # from DeepSeek if it goes down — at the same price either way.
@@ -153,16 +161,6 @@ public_models:
   # ⚠️ Failover only advances on 5xx or a transport error (app.ts). A 401 from a
   # bad OPENAI_API_KEY passes straight through to the caller instead of quietly
   # serving DeepSeek — which is what you want: a wrong key should be loud.
-  pro:
-    name: 高级
-    routing: failover
-    pricing:
-      input_per_1m_credits: 4000000
-      output_per_1m_credits: 16000000
-    routes:
-      - backend: mx5-gpt-5.6-terra
-      - backend: ds-v4-pro
-
   max:
     name: 旗舰
     routing: failover
@@ -170,7 +168,7 @@ public_models:
       input_per_1m_credits: 20000000
       output_per_1m_credits: 80000000
     routes:
-      - backend: mx5-gpt-5.6-sol
+      - backend: mx5-gpt-5.6-terra
       - backend: ds-v4-pro
 
   # ── transition aliases — REMOVE IN PHASE 3 ───────────────────────────

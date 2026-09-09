@@ -76,7 +76,7 @@ test("refuses an unknown usage_mode", () => {
 
 test("failover walks the route list by attempt", () => {
   const cat = parseCatalog(SHIPPED, ENV);
-  assert.equal(pickRoute(cat, "max", 0)!.backendId, "mx5-gpt-5.6-sol");
+  assert.equal(pickRoute(cat, "max", 0)!.backendId, "mx5-gpt-5.6-terra");
   assert.equal(pickRoute(cat, "max", 1)!.backendId, "ds-v4-pro");
   // Past the end it clamps rather than throwing.
   assert.equal(pickRoute(cat, "max", 9)!.backendId, "ds-v4-pro");
@@ -89,14 +89,12 @@ test("failover walks the route list by attempt", () => {
 test("the shipped tiers point where the deployment intends", () => {
   const cat = parseCatalog(SHIPPED, ENV);
   assert.equal(pickRoute(cat, "default", 0)!.backend.upstream_model, "deepseek-v4-flash");
-  assert.equal(pickRoute(cat, "pro", 0)!.backend.upstream_model, "gpt-5.6-terra");
-  assert.equal(pickRoute(cat, "max", 0)!.backend.upstream_model, "gpt-5.6-sol");
-  // Both paid tiers keep a DeepSeek backstop so an mx5 outage degrades rather
-  // than fails — at the same price, which is the point of pricing the tier.
-  for (const tier of ["pro", "max"]) {
-    assert.equal(cat.public_models[tier].routing, "failover", tier);
-    assert.equal(pickRoute(cat, tier, 1)!.provider.api_base, "https://api.deepseek.com", tier);
-  }
+  assert.equal(pickRoute(cat, "pro", 0)!.backend.upstream_model, "deepseek-v4-pro");
+  assert.equal(pickRoute(cat, "max", 0)!.backend.upstream_model, "gpt-5.6-terra");
+  // `max` keeps a DeepSeek backstop so an mx5 outage degrades rather than
+  // fails — at the same price, which is the point of pricing the tier.
+  assert.equal(cat.public_models.max.routing, "failover");
+  assert.equal(pickRoute(cat, "max", 1)!.provider.api_base, "https://api.deepseek.com");
 });
 
 test("unknown public id resolves to nothing (caller turns this into 403)", () => {
