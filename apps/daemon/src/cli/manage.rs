@@ -125,6 +125,7 @@ pub fn run() -> anyhow::Result<()> {
             .items(&[
                 "Status overview",
                 "Agent runtime (pi)",
+                "Workspaces",
                 "LLM provider",
                 "Team share secrets",
                 "Team skills",
@@ -137,10 +138,11 @@ pub fn run() -> anyhow::Result<()> {
         match choice {
             0 => show_status()?,
             1 => agent_runtime_menu(&theme)?,
-            2 => llm_menu(&theme)?,
-            3 => team_secrets_menu(&theme)?,
-            4 => team_skills_menu(&theme)?,
-            5 => sync_menu(&theme)?,
+            2 => workspaces_menu(&theme)?,
+            3 => llm_menu(&theme)?,
+            4 => team_secrets_menu(&theme)?,
+            5 => team_skills_menu(&theme)?,
+            6 => sync_menu(&theme)?,
             _ => break,
         }
     }
@@ -149,7 +151,129 @@ pub fn run() -> anyhow::Result<()> {
 
 fn print_header() {
     println!("amuxd manage — headless daemon configuration");
-    println!("Onboarding stays on `amuxd init`; use this for agent runtime, LLM + team share.");
+    println!(
+        "Onboarding stays on `amuxd init`; use this for workspaces, agent runtime, LLM + team share."
+    );
+}
+
+fn workspaces_menu(theme: &ColorfulTheme) -> anyhow::Result<()> {
+    loop {
+        let choice = Select::with_theme(theme)
+            .with_prompt("Workspaces")
+            .items(&[
+                "List registered on this machine",
+                "Register workspace",
+                "Back",
+            ])
+            .default(0)
+            .interact()?;
+
+        match choice {
+            0 => list_registered_workspaces()?,
+            1 => register_workspace_interactive(theme)?,
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+fn list_registered_workspaces() -> anyhow::Result<()> {
+    let workspaces = fetch_registered_workspaces()?;
+    if workspaces.is_empty() {
+        println!("No workspaces registered on this machine.");
+        println!("Use \"Register workspace\" to add a project directory outside ~/.amuxd.");
+        return Ok(());
+    }
+    println!("Registered workspaces:");
+    for ws in &workspaces {
+        let tag = if ws.is_default { " [default]" } else { "" };
+        println!(
+            "  - {}{}: {}",
+            ws.display_name,
+            tag,
+            ws.path.display()
+        );
+        println!("    id: {}", ws.workspace_id);
+    }
+    Ok(())
+}
+
+fn register_workspace_interactive(theme: &ColorfulTheme) -> anyhow::Result<()> {
+    if daemon_pid().is_none() {
+        anyhow::bail!("daemon is not running — start it first (`amuxd start`)");
+    }
+
+    let raw: String = Input::with_theme(theme)
+        .with_prompt("Workspace path (absolute or ~/...)")
+        .interact_text()?;
+    let path = expand_home_path(raw.trim());
+    if !path.is_dir() {
+        if Confirm::with_theme(theme)
+            .with_prompt(format!("Create directory {}?", path.display()))
+            .default(true)
+            .interact()?
+        {
+            std::fs::create_dir_all(&path)
+                .map_err(|e| anyhow::anyhow!("create {}: {e}", path.display()))?;
+        } else {
+            anyhow::bail!("not a directory: {}", path.display());
+        }
+    }
+    if !crate::config::workspace_path::is_linkable_workspace_path(&path.to_string_lossy()) {
+        anyhow::bail!(
+            "workspace path must not be under ~/.amuxd (daemon config dir): {}",
+            path.display()
+        );
+    }
+
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("canonicalize {}: {e}", path.display()))?;
+    let rt = tokio::runtime::Runtime::new()?;
+    let registered = rt.block_on(register_workspace_async(&canonical))?;
+    println!(
+        "✓ Registered workspace {} ({})",
+        registered.display_name, registered.workspace_id
+    );
+    println!("  path: {}", registered.path.display());
+    if registered.is_default {
+        println!("  default: yes");
+    } else {
+        println!("  default: unchanged (first registration becomes default automatically)");
+    }
+    Ok(())
+}
+
+async fn register_workspace_async(path: &Path) -> anyhow::Result<RegisteredWorkspace> {
+    #[derive(Deserialize)]
+    struct RegisterResponse {
+        workspace_id: String,
+        path: String,
+        display_name: String,
+    }
+
+    let daemon = ManageDaemonClient::connect().await?;
+    let body = daemon
+        .json::<RegisterResponse>(
+            reqwest::Method::POST,
+            "/v1/workspaces",
+            Some(serde_json::json!({ "path": path.to_string_lossy() })),
+        )
+        .await?;
+
+    let workspaces = fetch_registered_workspaces_async().await?;
+    let is_default = workspaces
+        .iter()
+        .find(|ws| ws.workspace_id == body.workspace_id)
+        .map(|ws| ws.is_default)
+        .unwrap_or(false);
+
+    Ok(RegisteredWorkspace {
+        workspace_id: body.workspace_id,
+        path: PathBuf::from(body.path),
+        display_name: body.display_name,
+        is_default,
+    })
 }
 
 fn show_status() -> anyhow::Result<()> {

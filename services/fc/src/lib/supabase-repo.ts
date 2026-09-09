@@ -1280,20 +1280,18 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async upsertWorkspace(input) {
-      // AUTHZ: created_by is ALWAYS resolved server-side from the authenticated
-      // caller scoped to the target team. Any client-supplied
+      // AUTHZ: created_by / agent_id are ALWAYS resolved server-side from the
+      // authenticated caller scoped to the target team. Any client-supplied
       // `input.createdByMemberId` is ignored — a multi-team user's client can
       // send the wrong team's member actor id (stale current-team value), which
       // the workspaces INSERT RLS WITH CHECK then rejects. Deriving it here
       // guarantees the row satisfies the team-scoped policy regardless of what
       // the client sends (mirrors createSession / createApp).
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
-      if (userErr) throw userErr;
-      const userId = userData?.user?.id;
-      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      const resolved = await this.resolveCurrentMemberActor(input.teamId, userId);
-      if (!resolved?.id) throw new ApiError(403, "forbidden", "not a member of this team");
-      const createdByMemberId = resolved.id;
+      //
+      // Headless daemons authenticate as an agent actor. RLS allows INSERT via
+      // `workspaces_agent_write` when `agent_id = current agent`; member-only
+      // resolution used to reject every daemon `POST /v1/workspaces`.
+      const { createdByMemberId, agentId } = await this.resolveWorkspaceUpsertAuth(input);
 
       // Dedup key: explicit `id` always wins. Otherwise reuse by (team, path)
       // or by (team, agent, name) — the table's unique constraint is
@@ -1321,8 +1319,8 @@ export function createSupabaseBusinessRepository(options) {
           .select("id, path, archived")
           .eq("team_id", input.teamId)
           .eq("name", resolvedName);
-        byNameQuery = input.agentId
-          ? byNameQuery.eq("agent_id", input.agentId)
+        byNameQuery = agentId
+          ? byNameQuery.eq("agent_id", agentId)
           : byNameQuery.is("agent_id", null);
         const { data: byNameRows, error: nameErr } = await byNameQuery.limit(1);
         if (nameErr) throw nameErr;
@@ -1337,7 +1335,7 @@ export function createSupabaseBusinessRepository(options) {
             resolvedName = await findUniqueWorkspaceName(
               supabase,
               input.teamId,
-              input.agentId,
+              agentId,
               resolvedName,
             );
           }
@@ -1348,7 +1346,7 @@ export function createSupabaseBusinessRepository(options) {
         team_id: input.teamId,
         name: resolvedName,
         path: normalizedPath,
-        agent_id: input.agentId ?? null,
+        agent_id: agentId,
         created_by_member_id: createdByMemberId,
         archived: input.archived ?? false,
       };
@@ -1978,6 +1976,35 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (error) throw error;
       return data ? { id: data.id } : null;
+    },
+
+    async resolveWorkspaceUpsertAuth(input) {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+
+      const member = await this.resolveCurrentMemberActor(input.teamId, userId);
+      if (member?.id) {
+        return {
+          createdByMemberId: member.id,
+          agentId: input.agentId ?? null,
+        };
+      }
+
+      const caller = await this.resolveCurrentActor(input.teamId, userId);
+      if (!caller?.id) {
+        throw new ApiError(403, "forbidden", "not a member of this team");
+      }
+      const requestedAgentId = input.agentId ?? null;
+      if (!requestedAgentId || requestedAgentId !== caller.id) {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "agent callers may only register workspaces for their own agent id",
+        );
+      }
+      return { createdByMemberId: null, agentId: caller.id };
     },
 
     async resolveFirstMemberActorForUser(userId) {

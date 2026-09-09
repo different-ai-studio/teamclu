@@ -2846,6 +2846,44 @@ test("upsertWorkspace returns 403 when the caller is not a member of the team", 
   );
 });
 
+test("upsertWorkspace lets an agent daemon register its own workspace", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      calls,
+      actorRow: { id: "agent-1", actor_type: "agent" },
+    }),
+  );
+  const out = await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "Headless",
+    path: "/tmp/headless",
+    agentId: "agent-1",
+  });
+  const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+  assert.equal(upsert?.row.created_by_member_id, null);
+  assert.equal(upsert?.row.agent_id, "agent-1");
+  assert.equal(upsert?.row.team_id, "team-b");
+  assert.equal(out.teamId, "team-b");
+  assert.equal(out.name, "Headless");
+});
+
+test("upsertWorkspace rejects agent callers registering another agent's workspace", async () => {
+  const repo = appsRepo(
+    appsSupabase({ actorRow: { id: "agent-1", actor_type: "agent" } }),
+  );
+  await assert.rejects(
+    () =>
+      repo.upsertWorkspace({
+        teamId: "team-b",
+        name: "Nope",
+        path: "/tmp/x",
+        agentId: "agent-other",
+      }),
+    (err: any) => err?.statusCode === 403,
+  );
+});
+
 test("upsertWorkspace without id reuses existing row by (teamId, path)", async () => {
   // Regression: re-adding an already-synced workspace used to hit
   // workspaces_team_id_agent_id_name_key because upsert only deduped on id.
