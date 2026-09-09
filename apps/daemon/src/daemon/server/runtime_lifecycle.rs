@@ -598,8 +598,36 @@ impl DaemonServer {
 
         // Refresh-watch suppression remains inside execution-context assembly,
         // after the managed-LLM lookup has completed.
+        //
+        // Channel / cron sessions are unattended: a permission card nobody can
+        // answer hangs the turn. `get_session_binding` returns the live binding
+        // or the durable `gateway_key`, so RuntimeStart from the desktop keeps
+        // the same full-access policy the gateway spawn path already uses
+        // (`is_gateway` ⇒ `PermissionPolicy::Full`).
+        let is_gateway = if session_id.is_empty() {
+            false
+        } else {
+            match self.backend.get_session_binding(session_id).await {
+                Ok(Some(_)) => true,
+                Ok(None) => false,
+                Err(e) => {
+                    warn!(
+                        session_id,
+                        error = %e,
+                        "apply_start_runtime: session binding lookup failed; defaulting to ask"
+                    );
+                    false
+                }
+            }
+        };
         let context = self
-            .assemble_execution_context(&resolved_worktree, None, Some(&ws_id), false, None)
+            .assemble_execution_context(
+                &resolved_worktree,
+                None,
+                Some(&ws_id),
+                is_gateway,
+                None,
+            )
             .await
             .map_err(|e| StartRuntimeError {
                 error_code: "ENV_ASSEMBLE_FAILED".to_string(),

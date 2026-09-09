@@ -165,6 +165,8 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
     const streamKey = agentStreamKey(sessionId, actorId);
     clearTerminalAwaitTimeout(streamKey);
     // MQTT QoS0 / stalled daemon must not leave the live dock spinning forever.
+    // Gateway WeCom `write_reply` is after the stream finish-ack (up to 15s),
+    // so this has to outlast that wait or the dock closes before the bubble.
     terminalAwaitTimeoutRef.current[streamKey] = setTimeout(() => {
       delete terminalAwaitTimeoutRef.current[streamKey];
       if (!terminalFlushPendingRef.current[streamKey]) return;
@@ -183,16 +185,15 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
         clearTerminalFlushPending(streamKey);
         return;
       }
-      // No daemon reply arrived — release the live dock; stream parts stay in
-      // archive via finishSessionActor so Process cards are not lost.
-      clearTerminalFlushPending(streamKey);
+      // Keep terminalFlushPending: a late write_reply must still flush. Closing
+      // the dock here used to drop that flag and the ChatMessage never landed.
       useV2StreamingStore.getState().finishSessionActor(sessionId, actorId, {
         reason: "statusChange.terminal.timeout",
       });
       useV2StreamingStore
         .getState()
         .clearInterruptedFlushPending(sessionId, actorId);
-    }, 8_000);
+    }, 20_000);
   }
 
   const flushTurnAgentReplyInFlightRef = useRef<Record<string, boolean>>({});
@@ -456,6 +457,12 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
     });
     for (const { sessionId, actorId, reason } of stale) {
       const streamKey = agentStreamKey(sessionId, actorId);
+      if (terminalFlushPendingRef.current[streamKey]) {
+        // ACP Idle already armed the daemon write_reply wait. Gateway turns
+        // persist that row after the channel finish-ack; stealing the dock
+        // here dropped the ChatMessage.
+        continue;
+      }
       const flushed = flushTurnAgentReply(sessionId, actorId, trigger);
       logInterruptMsgDiag(trigger, {
         sessionId,

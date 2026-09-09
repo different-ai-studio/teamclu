@@ -978,6 +978,11 @@ impl RuntimeSupervisor {
         agents.request_all_workspace_host_refreshes().await
     }
 
+    pub async fn request_unattached_workspace_host_refreshes(&self) -> usize {
+        let mut agents = self.agents.lock().await;
+        agents.request_unattached_workspace_host_refreshes().await
+    }
+
     /// Install the channel that receives `(workspace_id, path)` whenever a
     /// reload evicted the pooled provider hosts (see `prewarm_notify`).
     pub fn set_prewarm_notifier(&self, tx: tokio::sync::mpsc::Sender<(String, String)>) {

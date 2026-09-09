@@ -178,6 +178,15 @@ pub trait AgentBackend: Send {
 
     fn invalidate_all_workspace_hosts(&mut self) -> usize;
 
+    /// Evict pooled hosts that have no attached session.
+    ///
+    /// Used by `GET /providers` after `provider.team` is rewritten. A full
+    /// `invalidate_all_workspace_hosts` races the first prompt after daemon
+    /// start. Default keeps every host; pi replaces only unattached children.
+    fn invalidate_unattached_workspace_hosts(&mut self) -> usize {
+        0
+    }
+
     /// Permanently retire backend processes and background tasks during daemon exit.
     async fn shutdown_for_exit(&mut self) -> usize;
 

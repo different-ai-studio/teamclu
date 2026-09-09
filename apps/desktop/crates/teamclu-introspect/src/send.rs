@@ -40,7 +40,7 @@ pub async fn handle(
                 .map(str::to_string),
         )
         .await
-        .map(|_| json!({ "content": [{ "type": "text", "text": "Message sent." }] }));
+        .map(|v| tool_result_from_daemon_send(&v));
     }
 
     let channel = arguments
@@ -571,6 +571,27 @@ async fn send_wecom(
     }))
 }
 
+/// Map amuxd's `{ ok, result }` into the MCP tool payload.
+///
+/// The daemon used to swallow mid-turn text (`message_sent: false`) while this
+/// wrapper still told the model "Message sent." — so scrape wait notices never
+/// reached WeCom and the agent did not retry.
+fn tool_result_from_daemon_send(v: &Value) -> Value {
+    let result = v.get("result").unwrap_or(v);
+    let sent = result.get("message_sent").and_then(|x| x.as_bool());
+    let note = result
+        .get("note")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim();
+    let text = match sent {
+        Some(false) if !note.is_empty() => note.to_string(),
+        Some(false) => "Message was not delivered to the chat.".to_string(),
+        _ => "Message sent.".to_string(),
+    };
+    json!({ "content": [{ "type": "text", "text": text }] })
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Split `text` into chunks of at most `max_len` bytes, preferring newline
@@ -611,4 +632,44 @@ pub fn split_message(text: &str, max_len: usize) -> Vec<String> {
     }
 
     chunks
+}
+
+#[cfg(test)]
+mod daemon_send_result_tests {
+    use super::tool_result_from_daemon_send;
+    use serde_json::json;
+
+    fn text_of(v: &serde_json::Value) -> &str {
+        v["content"][0]["text"].as_str().unwrap()
+    }
+
+    #[test]
+    fn a_delivered_send_still_reads_as_message_sent() {
+        let reply = json!({ "ok": true, "result": { "message_sent": true } });
+        assert_eq!(text_of(&tool_result_from_daemon_send(&reply)), "Message sent.");
+    }
+
+    #[test]
+    fn a_swallowed_send_surfaces_the_daemon_note() {
+        let reply = json!({
+            "ok": true,
+            "result": {
+                "message_sent": false,
+                "note": "text goes back as this turn's reply"
+            }
+        });
+        assert_eq!(
+            text_of(&tool_result_from_daemon_send(&reply)),
+            "text goes back as this turn's reply"
+        );
+    }
+
+    #[test]
+    fn a_failed_delivery_without_a_note_is_not_reported_as_sent() {
+        let reply = json!({ "ok": true, "result": { "message_sent": false } });
+        assert_eq!(
+            text_of(&tool_result_from_daemon_send(&reply)),
+            "Message was not delivered to the chat."
+        );
+    }
 }

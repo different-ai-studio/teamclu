@@ -10,8 +10,7 @@ use futures_util::stream::SplitSink;
 #[allow(unused_imports)]
 use futures_util::StreamExt;
 use serde::Deserialize;
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
@@ -617,6 +616,11 @@ pub struct WeComGateway {
     /// the next successful subscribe. Process crash is not covered — the
     /// session already has the reply.
     outbox: WeComOutbox,
+    /// The core-pipeline driver that owns in-flight stream pacers. MCP
+    /// `send_to_user` has no `reply_context`, so it cannot `deliver()`; it
+    /// upgrades this weak ref to piggyback onto an open stream instead of
+    /// firing `aibot_send_msg` that WeCom drops while the bubble is live.
+    live_driver: Arc<RwLock<Weak<WeComDriver>>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1157,7 +1161,7 @@ impl driver::ChannelDriver for WeComDriver {
         let pacer = StreamPacer::new(req_id, &stream_id, &sink, self.gateway.clone(), min_gap);
         pacer
             .send(
-                &progress_frame_with_notice(Duration::ZERO, None, None),
+                &progress_frame_with_notice(Duration::ZERO, None),
                 false,
             )
             .await
@@ -1180,11 +1184,11 @@ impl driver::ChannelDriver for WeComDriver {
 
     /// Progress while the turn runs; the answer itself at the end.
     ///
-    /// The intermediate text is deliberately NOT streamed. `stream` carries
-    /// plain text, so a markdown answer would arrive with its fences, tables
-    /// and lists as literal characters, and every frame spends one of the 30
-    /// messages a minute this conversation is allowed. A progress line costs
-    /// the same per frame but does not need to be complete or pretty.
+    /// Intermediate agent text is not written into the stream card — only the
+    /// elapsed timer (and an optional queue notice). `stream` is plain text, so
+    /// a markdown draft would show fences and tables as literals, and every
+    /// frame spends one of the 30 messages a minute this conversation is
+    /// allowed. The finish frame / follow-up markdown carries the real answer.
     ///
     /// Past `stream_max_secs` this driver closes the bubble itself and later
     /// `update(..., Some(end))` pushes markdown on a new req_id. Core keeps
@@ -1229,8 +1233,7 @@ impl driver::ChannelDriver for WeComDriver {
             match decide_progress(phase, Instant::now() >= snapshot.deadline) {
                 ProgressDecision::Swallow => return Ok(()),
                 ProgressDecision::SendProgress => {
-                    let line = newest_line(text);
-                    let frame = progress_frame_with_notice(elapsed, line.as_deref(), notice);
+                    let frame = progress_frame_with_notice(elapsed, notice);
                     if let Err(e) = snapshot.pacer.send(&frame, false).await {
                         // A missed progress ack must not abort the turn.
                         eprintln!("[WeCom] progress frame failed: {e}");
@@ -1308,7 +1311,7 @@ impl WeComDriver {
     /// If this chat still has an open stream, rewrite the queue notice into
     /// the progress bubble and remember it for later frames. Returns whether
     /// the notice was piggybacked (so the caller must not also send markdown).
-    async fn piggyback_notice(
+    pub(crate) async fn piggyback_notice(
         &self,
         chatid: &str,
         text: &str,
@@ -1325,7 +1328,7 @@ impl WeComDriver {
         let elapsed = inflight.opened_at.elapsed();
         let notice = inflight.pending_notice.clone();
         drop(pacers);
-        let frame = progress_frame_with_notice(elapsed, None, notice.as_deref());
+        let frame = progress_frame_with_notice(elapsed, notice.as_deref());
         if let Err(e) = pacer.send(&frame, false).await {
             eprintln!("[WeCom] queue notice piggyback failed: {e}");
         }
@@ -1394,35 +1397,6 @@ fn truncate_wecom_content(text: &str) -> String {
         end -= 1;
     }
     text[..end].to_string()
-}
-
-/// How much of the newest line rides along in the progress frame.
-const PROGRESS_LINE_CHARS: usize = 40;
-
-/// The tail of what the agent has written so far, for the progress bubble.
-///
-/// The turn reports **cumulative** text, so "newest" means the last non-empty
-/// line. Fence markers and heading hashes are dropped: `stream` is plain text,
-/// so they would show up as literal characters in the one place we cannot
-/// render them.
-///
-/// Truncation counts characters, not bytes — a byte slice through a Chinese
-/// reply panics, and this runs on every frame of every turn.
-fn newest_line(text: &str) -> Option<String> {
-    let line = text
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("```"))?;
-    let line = line.trim_start_matches(['#', '*', '-', '>', ' ']);
-    if line.is_empty() {
-        return None;
-    }
-    let mut out: String = line.chars().take(PROGRESS_LINE_CHARS).collect();
-    if line.chars().count() > PROGRESS_LINE_CHARS {
-        out.push('…');
-    }
-    Some(out)
 }
 
 /// WeCom's media API takes its own type word, not a mime.
@@ -1529,7 +1503,15 @@ impl WeComGateway {
             inbound_sink: Arc::new(RwLock::new(None)),
             pending_responses: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             outbox: WeComOutbox::new(),
+            live_driver: Arc::new(RwLock::new(Weak::new())),
         }
+    }
+
+    /// Remember the driver the core pipeline is using so proactive MCP sends
+    /// can piggyback on its open stream. Pass a downgrade of the same `Arc`
+    /// handed to `use_core_pipeline`.
+    pub async fn bind_live_driver(&self, driver: Weak<WeComDriver>) {
+        *self.live_driver.write().await = driver;
     }
 
     pub async fn set_config(&self, config: WeComConfig) {
@@ -2210,6 +2192,18 @@ impl WeComGateway {
         chat_type: u32,
         text: &str,
     ) -> Result<(), String> {
+        if !text.trim().is_empty() {
+            let driver = self.live_driver.read().await.upgrade();
+            if let Some(driver) = driver {
+                match driver.piggyback_notice(chatid, text).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(e) => {
+                        eprintln!("[WeCom] mid-turn piggyback failed: {e}");
+                    }
+                }
+            }
+        }
         match self
             .send_chat_message_attempt(chatid, chat_type, text)
             .await
@@ -3071,33 +3065,6 @@ mod progress_line_tests {
     use super::*;
 
     #[test]
-    fn the_progress_line_is_the_newest_line_not_the_first() {
-        // The turn reports cumulative text; the reader wants to see where the
-        // agent is now, not where it started.
-        let text = "第一行\n第二行\n第三行";
-        assert_eq!(newest_line(text).unwrap(), "第三行");
-    }
-
-    #[test]
-    fn a_long_line_is_truncated_by_characters_not_bytes() {
-        // Slicing bytes through a Chinese reply panics, and this runs on every
-        // frame of every turn.
-        let line = "中".repeat(100);
-        let out = newest_line(&line).unwrap();
-        assert_eq!(out.chars().count(), PROGRESS_LINE_CHARS + 1, "40 chars + …");
-        assert!(out.ends_with('…'));
-    }
-
-    #[test]
-    fn fence_and_heading_markers_do_not_leak_into_the_bubble() {
-        // `stream` is plain text, so markdown syntax shows up as characters in
-        // exactly the place it cannot be rendered.
-        assert_eq!(newest_line("答案\n```python").unwrap(), "答案");
-        assert_eq!(newest_line("## 标题").unwrap(), "标题");
-        assert_eq!(newest_line("- 列表项").unwrap(), "列表项");
-    }
-
-    #[test]
     fn a_stopped_turn_and_a_finished_one_close_differently() {
         // WeCom cannot delete this bubble, so whatever it says is what the
         // chat keeps. "Done" above a turn the user cancelled is a lie it keeps
@@ -3150,13 +3117,6 @@ mod progress_line_tests {
         assert!(closing.len() <= WECOM_CONTENT_MAX_BYTES);
         assert!(closing.is_char_boundary(closing.len()));
         assert!(!closing.is_empty());
-    }
-
-    #[test]
-    fn text_with_nothing_showable_falls_back_to_no_line() {
-        assert!(newest_line("").is_none());
-        assert!(newest_line("   \n\n  ").is_none());
-        assert!(newest_line("###").is_none());
     }
 }
 
