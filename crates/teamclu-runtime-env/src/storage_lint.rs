@@ -107,6 +107,11 @@ fn has_hand_written_home_dir(text: &str, backtick_opens_a_string: bool) -> bool 
                 && (matches!(bytes[at - 1], b'"' | b'\'')
                     || (backtick_opens_a_string && bytes[at - 1] == b'`'));
             if quoted {
+                // Skill-pack ignore filename, not a home-directory path.
+                if *needle == ".teamclu" && text[at..].starts_with(".teamcluignore") {
+                    from = at + ".teamcluignore".len();
+                    continue;
+                }
                 return true;
             }
             from = at + needle.len();
@@ -180,6 +185,10 @@ mod tests {
         ));
         assert!(!has_hand_written_home_dir(
             r#"amuxd_home_from_env().join("teams")"#,
+            false
+        ));
+        assert!(!has_hand_written_home_dir(
+            r#"write(&dir, ".teamcluignore", "results/\n");"#,
             false
         ));
     }
