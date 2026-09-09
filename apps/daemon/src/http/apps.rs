@@ -336,6 +336,44 @@ fn daemon_device_name() -> String {
     crate::config::daemon_host_label()
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppManifestResponse {
+    /// What the checkout declares, or the built-in contract when it declares
+    /// nothing — the same value a build would report.
+    pub manifest: crate::sync::app_build::AppRuntimeManifest,
+    /// False when this machine holds no checkout for the app. The manifest is
+    /// then the default, which is a guess, and the caller should not deploy on
+    /// it.
+    pub workdir_exists: bool,
+}
+
+/// `GET /v1/apps/:appId/manifest?teamId=…` — what does this app declare?
+///
+/// The declaration is a file in the checkout, so only this side can read it —
+/// and the control plane has to know before the build starts, not after. A
+/// container app is handed a registry to push to and a node app a presigned
+/// URL to upload to, and that choice is made when the deploy is minted.
+pub async fn app_manifest(
+    principal: Principal,
+    State(_state): State<HttpState>,
+    axum::extract::Path(app_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<AppWorkdirQuery>,
+) -> Result<Json<AppManifestResponse>, HttpError> {
+    require_scope(&principal, "workspace:read")?;
+    let team_id = query.team_id.as_deref().unwrap_or("");
+    let path = resolve_workdir("", &app_id, team_id)?;
+    let workdir_exists = path.is_dir();
+    let manifest =
+        tokio::task::spawn_blocking(move || crate::sync::app_build::read_runtime_manifest(&path))
+            .await
+            .map_err(|e| HttpError::internal(format!("manifest read panicked: {e}")))?;
+    Ok(Json(AppManifestResponse {
+        manifest,
+        workdir_exists,
+    }))
+}
+
 /// `POST /v1/apps/seed` — put the app's files in place.
 ///
 /// See [`SeedAppBody`] for the three seed paths. Requires `workspace:write`.
@@ -508,8 +546,39 @@ pub struct BuildAppBody {
     #[serde(default)]
     pub deploy_key_pem: String,
     /// Presigned OSS PUT URL for the build artifact. Short-lived signed-URL
-    /// secret — REQUIRED, and never logged.
+    /// secret — never logged. Required for an app that builds to an archive,
+    /// which is every app that does not declare `runtime: "container"`.
+    #[serde(default)]
     pub presigned_put: String,
+    /// Where to push the image, for an app that declares `runtime:
+    /// "container"`. Carries a registry password — never logged.
+    #[serde(default)]
+    pub image: Option<ImagePushBody>,
+}
+
+/// The registry handle the control plane mints for one container deploy.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagePushBody {
+    /// Full reference to push: `<registry>/<namespace>/<repo>:<tag>`.
+    pub reference: String,
+    /// Registry host, as it appears in the reference.
+    pub registry: String,
+    pub username: String,
+    pub password: String,
+}
+
+/// Hand-written so a stray `{:?}` on the body cannot print the password. The
+/// derive would, and this struct exists only because one deploy carries one.
+impl std::fmt::Debug for ImagePushBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImagePushBody")
+            .field("reference", &self.reference)
+            .field("registry", &self.registry)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -525,10 +594,46 @@ pub struct BuildAppResponse {
     /// the caller then finalizes with its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_commit_sha: Option<String>,
+    /// The image this build pushed, for a container app. Absent for an app
+    /// that built an archive — that one went to the presigned URL instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
-/// `POST /v1/apps/build` — build the app (`pnpm build` + zip `.output`) and
-/// upload the artifact to the provided presigned OSS URL.
+/// Where a build's result goes. Exactly one, and the control plane picked it
+/// when it read what the app declares — an archive travels through a presigned
+/// OSS upload, an image is pushed straight to the registry.
+enum BuildDestination {
+    Upload(String),
+    Push(ImagePushBody),
+}
+
+/// Refuse a build with no destination, or with two.
+///
+/// `presignedPut` used to be a required field, so an absent one was a
+/// deserialization error. It cannot be required now that a container build has
+/// no upload — the rule is the same, it just lives here.
+fn build_destination(
+    presigned_put: &str,
+    image: Option<ImagePushBody>,
+) -> Result<BuildDestination, HttpError> {
+    let presigned_put = presigned_put.trim();
+    match (presigned_put.is_empty(), image) {
+        (true, None) => Err(HttpError::validation(
+            "one of presignedPut or image is required",
+        )),
+        (false, Some(_)) => Err(HttpError::validation(
+            "pass presignedPut or image, not both",
+        )),
+        (true, Some(image)) => Ok(BuildDestination::Push(image)),
+        (false, None) => Ok(BuildDestination::Upload(presigned_put.to_string())),
+    }
+}
+
+/// `POST /v1/apps/build` — build the app and put the result where the deploy
+/// reads it from: `pnpm build` + zip `.output` to the presigned OSS URL, or —
+/// for an app declaring `runtime: "container"` — a cross-built image pushed to
+/// the registry named in `image`.
 ///
 /// Requires `workspace:write`. The workdir MUST already exist (it's the seeded
 /// checkout). Returns `{ "status": "built" }`. The presigned URL is a
@@ -546,10 +651,12 @@ pub async fn build_app(
 ) -> Result<Json<BuildAppResponse>, HttpError> {
     require_scope(&principal, "workspace:write")?;
 
-    let presigned_put = body.presigned_put.trim().to_string();
-    if presigned_put.is_empty() {
-        return Err(HttpError::validation("presignedPut must not be empty"));
-    }
+    // Split now rather than inside the build closure: the upload URL is needed
+    // after the build, and the registry handle during it.
+    let (presigned_put, push_body) = match build_destination(&body.presigned_put, body.image)? {
+        BuildDestination::Upload(url) => (Some(url), None),
+        BuildDestination::Push(image) => (None, Some(image)),
+    };
 
     let app_id = body.app_id.trim().to_string();
     let git_commit_sha = body.git_commit_sha.trim().to_string();
@@ -586,34 +693,51 @@ pub async fn build_app(
             remote_url: &git_remote_url,
             deploy_key_pem: &deploy_key_pem,
         });
-        crate::sync::app_build::build_artifact(&workdir_path, git_ctx.as_ref())
+        let push = push_body
+            .as_ref()
+            .map(|i| crate::sync::app_build::ImagePushTarget {
+                image: i.reference.trim(),
+                registry: i.registry.trim(),
+                username: i.username.trim(),
+                password: &i.password,
+            });
+        crate::sync::app_build::build_artifact(&workdir_path, git_ctx.as_ref(), push.as_ref())
     })
     .await
     .map_err(|e| HttpError::internal(format!("build task panicked: {e}")))?
     .map_err(map_build_error)?;
 
-    let resp = reqwest::Client::new()
-        .put(&presigned_put)
-        .body(built.bytes)
-        .send()
-        .await
-        .map_err(|e| HttpError::internal(format!("upload PUT failed: {e}")))?;
-    if resp.status() == axum::http::StatusCode::FORBIDDEN {
-        return Err(HttpError::validation(
-            "presigned upload URL expired; retry deploy",
-        ));
-    }
-    if !resp.status().is_success() {
-        return Err(HttpError::internal(format!(
-            "upload PUT failed: HTTP {}",
-            resp.status()
-        )));
+    let pushed = built.product.image().map(str::to_string);
+    let git_commit_sha = built.git_commit_sha;
+    let manifest = built.manifest;
+
+    // A container build has already put its result where the deployment reads
+    // it from; only an archive still has to travel.
+    if let (Some(bytes), Some(presigned_put)) = (built.product.archive(), &presigned_put) {
+        let resp = reqwest::Client::new()
+            .put(presigned_put)
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|e| HttpError::internal(format!("upload PUT failed: {e}")))?;
+        if resp.status() == axum::http::StatusCode::FORBIDDEN {
+            return Err(HttpError::validation(
+                "presigned upload URL expired; retry deploy",
+            ));
+        }
+        if !resp.status().is_success() {
+            return Err(HttpError::internal(format!(
+                "upload PUT failed: HTTP {}",
+                resp.status()
+            )));
+        }
     }
 
     Ok(Json(BuildAppResponse {
         status: "built",
-        git_commit_sha: built.git_commit_sha,
-        manifest: built.manifest,
+        git_commit_sha,
+        manifest,
+        image: pushed,
     }))
 }
 
@@ -986,6 +1110,17 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
         crate::sync::app_build::ERR_NO_PACKAGE_JSON,
         crate::sync::app_build::ERR_INSTALL_TIMEOUT,
         crate::sync::app_build::ERR_BUILD_TIMEOUT,
+        // Container builds: every one of these is a fact about the machine the
+        // build ran on or about the app's own files, so it belongs to the
+        // caller. A 500 would send them to the daemon log for something the
+        // message already tells them.
+        crate::sync::app_build::ERR_NO_DOCKER,
+        crate::sync::app_build::ERR_DOCKER_NOT_RUNNING,
+        crate::sync::app_build::ERR_NO_BUILDX,
+        crate::sync::app_build::ERR_NO_DOCKERFILE,
+        crate::sync::app_build::ERR_IMAGE_BUILD_TIMEOUT,
+        crate::sync::app_build::ERR_IMAGE_PUSH_TIMEOUT,
+        crate::sync::app_build::ERR_IMAGE_PUSH_DENIED,
         "git repo URL",
         "deploy key PEM",
     ];
@@ -1294,12 +1429,45 @@ mod tests {
     }
 
     #[test]
-    fn build_body_requires_presigned_put() {
-        // missing presignedPut → deserialization fails (field is required, not #[serde(default)])
-        let r: Result<BuildAppBody, _> = serde_json::from_value(serde_json::json!({
-            "appId": "app-1"
-        }));
-        assert!(r.is_err());
+    fn a_build_needs_exactly_one_destination() {
+        // The rule `presignedPut`'s required-ness used to carry: a build with
+        // nowhere to put its result is refused before anything is built. It
+        // moved here when a container build, which has no upload, became a
+        // second legitimate shape.
+        let image = || ImagePushBody {
+            reference: "registry.example.com/ns/app:sha".to_string(),
+            registry: "registry.example.com".to_string(),
+            username: "u".to_string(),
+            password: "p".to_string(),
+        };
+        assert!(build_destination("", None).is_err());
+        assert!(build_destination("  ", None).is_err());
+        assert!(build_destination("https://oss/put", Some(image())).is_err());
+        assert!(matches!(
+            build_destination("https://oss/put", None),
+            Ok(BuildDestination::Upload(url)) if url == "https://oss/put"
+        ));
+        assert!(matches!(
+            build_destination("", Some(image())),
+            Ok(BuildDestination::Push(_))
+        ));
+    }
+
+    #[test]
+    fn a_registry_handle_never_prints_its_password() {
+        // It reaches the daemon in a request body and the body is logged on
+        // some paths; the derive would put the password in the log.
+        let rendered = format!(
+            "{:?}",
+            ImagePushBody {
+                reference: "r/ns/app:sha".to_string(),
+                registry: "r".to_string(),
+                username: "u".to_string(),
+                password: "s3cret".to_string(),
+            }
+        );
+        assert!(!rendered.contains("s3cret"), "{rendered}");
+        assert!(rendered.contains("redacted"), "{rendered}");
     }
 
     #[test]
