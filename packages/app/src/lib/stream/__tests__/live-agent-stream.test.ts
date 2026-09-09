@@ -13,6 +13,7 @@ import {
   isTerminalAgentStatus,
   joinDistinctPendingReplyChunks,
   isToolOnlyTurnAnchor,
+  shouldFlushParkedAgentReply,
   mergePendingAgentReplies,
   normalizeToolResultEvent,
   normalizeToolUseEvent,
@@ -220,6 +221,37 @@ describe("live agent stream event helpers", () => {
       content: "",
     });
     expect(isToolOnlyTurnAnchor(pending, streamEntry)).toBe(true);
+  });
+
+  it("keeps mid-turn slices parked, and flushes once Idle or the live stream ends", () => {
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: false,
+        streamActive: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: true,
+        toolOnlyAnchor: false,
+        streamActive: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: true,
+        streamActive: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldFlushParkedAgentReply({
+        terminalPending: false,
+        toolOnlyAnchor: false,
+        streamActive: false,
+      }),
+    ).toBe(true);
   });
 
   it("detects when a stream ended without any visible content", () => {

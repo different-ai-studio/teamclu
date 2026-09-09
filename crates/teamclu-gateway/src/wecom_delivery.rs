@@ -115,6 +115,17 @@ pub fn decide_finish(phase: StreamPhase) -> FinishDecision {
     }
 }
 
+/// Whether a *progress* rewrite should go out, given time since the last
+/// stream frame. Extra progress is dropped, not delayed — sleeping the gap
+/// stalled the finish frame (and `write_reply`) after the turn was already
+/// done. Finish / wait-notice frames always send.
+pub fn progress_rewrite_due(since_last: Option<Duration>, min_gap: Duration) -> bool {
+    match since_last {
+        None => true,
+        Some(elapsed) => elapsed >= min_gap,
+    }
+}
+
 /// Pull errcode/errmsg from either the top level or `body` (WeCom uses both).
 pub fn errcode_and_msg(v: &Value) -> (i64, String) {
     let code = v
@@ -172,23 +183,16 @@ pub fn format_elapsed(d: Duration) -> String {
     }
 }
 
-/// Progress bubble: elapsed time plus the newest agent line.
-pub fn progress_frame(elapsed: Duration, line: Option<&str>) -> String {
-    let head = format!("{PROGRESS_HEAD} · {}", format_elapsed(elapsed));
-    match line {
-        Some(l) if !l.is_empty() => format!("{head}\n{l}"),
-        _ => head,
-    }
+/// Progress bubble: elapsed time only. Intermediate agent text stays off the
+/// stream card; the answer is the finish frame / follow-up markdown.
+pub fn progress_frame(elapsed: Duration) -> String {
+    format!("{PROGRESS_HEAD} · {}", format_elapsed(elapsed))
 }
 
 /// Append a queue notice so it is visible while the stream bubble is the only
 /// thing WeCom will reliably rewrite.
-pub fn progress_frame_with_notice(
-    elapsed: Duration,
-    line: Option<&str>,
-    notice: Option<&str>,
-) -> String {
-    let base = progress_frame(elapsed, line);
+pub fn progress_frame_with_notice(elapsed: Duration, notice: Option<&str>) -> String {
+    let base = progress_frame(elapsed);
     match notice {
         Some(n) if !n.trim().is_empty() => format!("{base}\n\n{n}"),
         _ => base,
@@ -382,22 +386,18 @@ mod tests {
     }
 
     #[test]
-    fn progress_frame_carries_elapsed_and_newest_line() {
-        let frame = progress_frame(Duration::from_secs(192), Some("正在查询订单数据…"));
-        assert!(frame.starts_with("💭 执行中 · 3分12秒"));
-        assert!(frame.contains("正在查询订单数据…"));
+    fn progress_frame_is_elapsed_only() {
+        let frame = progress_frame(Duration::from_secs(192));
+        assert_eq!(frame, "💭 执行中 · 3分12秒");
     }
 
     #[test]
     fn progress_notice_is_appended_not_inline() {
-        let frame = progress_frame_with_notice(
-            Duration::from_secs(5),
-            Some("工具中"),
-            Some("上一条还在处理"),
-        );
-        assert!(frame.contains("工具中"));
+        let frame = progress_frame_with_notice(Duration::from_secs(5), Some("上一条还在处理"));
+        assert!(frame.starts_with("💭 执行中 · 5秒"));
         assert!(frame.contains("上一条还在处理"));
         assert!(frame.contains("\n\n"));
+        assert!(!frame.contains("工具中"));
     }
 
     #[test]
@@ -405,6 +405,14 @@ mod tests {
         let text = still_running_close_text(Duration::from_secs(240));
         assert!(text.contains("4 分钟"));
         assert!(text.contains("完成后将单独推送结果"));
+    }
+
+    #[test]
+    fn extra_progress_is_dropped_when_the_gap_has_not_elapsed() {
+        let gap = Duration::from_secs(10);
+        assert!(progress_rewrite_due(None, gap));
+        assert!(progress_rewrite_due(Some(Duration::from_secs(10)), gap));
+        assert!(!progress_rewrite_due(Some(Duration::from_millis(9999)), gap));
     }
 
     #[test]

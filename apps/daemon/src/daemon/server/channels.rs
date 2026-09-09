@@ -533,7 +533,11 @@ impl DaemonServer {
                     has_file = file_path.is_some(),
                     "mcp-send: routing"
                 );
-                if open {
+                // Files belong on the in-flight reply. Mid-turn *text* is a
+                // progress notice (scrape wait, etc.) and must go out now —
+                // swallowing it left WeCom silent while the tool still said
+                // "Message sent."
+                if mcp_send_parks_file_on_open_turn(open, file_path.is_some()) {
                     return self
                         .attach_to_running_turn(mgr, &session_id, message, file_path, binding)
                         .await;
@@ -581,15 +585,9 @@ impl DaemonServer {
         binding: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let Some(path) = file_path else {
-            // Text-only, to the chat this turn already answers into: the reply
-            // is on its way there, so sending it again would duplicate it.
-            // Reported as handled so the agent does not retry.
-            return Ok(serde_json::json!({
-                "binding": binding,
-                "message_sent": false,
-                "file_sent": false,
-                "note": "text goes back as this turn's reply; `send` is for files, or for a different chat",
-            }));
+            anyhow::bail!(
+                "mcp-send: attach_to_running_turn requires a file — text-only sends go out immediately"
+            );
         };
 
         let bytes = tokio::fs::read(path)
@@ -1082,6 +1080,12 @@ mod gateway_model_tests {
     }
 }
 
+/// Files ride the in-flight reply. Mid-turn text is a progress notice and
+/// must be delivered immediately — see `handle_mcp_send`.
+fn mcp_send_parks_file_on_open_turn(turn_open: bool, has_file: bool) -> bool {
+    turn_open && has_file
+}
+
 /// The chat a `mcp-send` envelope is allowed to reach.
 ///
 /// The token is the whole authorization story, which is why an envelope
@@ -1264,5 +1268,29 @@ mod mcp_send_target_tests {
         // Wrong / missing kind.
         assert!(placeholder_target_reason("room:x").is_some());
         assert!(placeholder_target_reason("bot:botA/").is_some());
+    }
+}
+
+#[cfg(test)]
+mod mcp_send_open_turn_tests {
+    use super::mcp_send_parks_file_on_open_turn;
+
+    #[test]
+    fn text_only_during_an_open_turn_is_not_parked() {
+        assert!(
+            !mcp_send_parks_file_on_open_turn(true, false),
+            "wait notices must dispatch now, not wait for the final reply"
+        );
+    }
+
+    #[test]
+    fn a_file_during_an_open_turn_is_parked_on_the_reply() {
+        assert!(mcp_send_parks_file_on_open_turn(true, true));
+    }
+
+    #[test]
+    fn idle_turn_never_parks() {
+        assert!(!mcp_send_parks_file_on_open_turn(false, true));
+        assert!(!mcp_send_parks_file_on_open_turn(false, false));
     }
 }

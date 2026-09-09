@@ -1139,6 +1139,15 @@ impl RuntimeManager {
             .invalidate_all_workspace_hosts()
     }
 
+    /// Refresh idle/prewarmed hosts after a GET-path `provider.team` rewrite.
+    /// Attached sessions (including the attach→prompt window) stay up.
+    pub async fn request_unattached_workspace_host_refreshes(&mut self) -> usize {
+        self.agent_backend
+            .lock()
+            .await
+            .invalidate_unattached_workspace_hosts()
+    }
+
     /// Full local-runtime teardown for daemon exit (`amuxd stop` / SIGTERM).
     /// Stops every session handle, then kills backend host processes
     /// (`opencode serve` process group including MCP children).

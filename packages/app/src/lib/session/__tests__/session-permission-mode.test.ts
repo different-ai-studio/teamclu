@@ -21,8 +21,21 @@ Object.defineProperty(globalThis, "localStorage", {
   writable: true,
 });
 
+const listRows: { id: string; source?: string | null }[] = [];
+
+vi.mock("@/stores/session-list-store", () => ({
+  useSessionListStore: Object.assign(
+    (selector: (s: { rows: typeof listRows }) => unknown) =>
+      selector({ rows: listRows }),
+    {
+      getState: () => ({ rows: listRows }),
+    },
+  ),
+}));
+
 import {
   getSessionPermissionMode,
+  isUnattendedSessionSource,
   resetSessionPermissionModesForTests,
   setSessionPermissionMode,
   shouldAutoAllowSessionPermissions,
@@ -33,12 +46,27 @@ describe("session-permission-mode", () => {
   beforeEach(() => {
     mockLocalStorage.clear();
     vi.clearAllMocks();
+    listRows.length = 0;
     resetSessionPermissionModesForTests();
   });
 
   it("defaults to default for unknown session", () => {
     expect(getSessionPermissionMode("sess-1")).toBe("default");
     expect(shouldAutoAllowSessionPermissions("sess-1")).toBe(false);
+  });
+
+  it("defaults gateway and cron sessions to fullAccess", () => {
+    expect(isUnattendedSessionSource("gateway")).toBe(true);
+    expect(isUnattendedSessionSource("cron")).toBe(true);
+    expect(isUnattendedSessionSource("user")).toBe(false);
+
+    expect(getSessionPermissionMode("gw-1", "gateway")).toBe("fullAccess");
+    expect(getSessionPermissionMode("cron-1", "cron")).toBe("fullAccess");
+    expect(shouldAutoAllowSessionPermissions("gw-1")).toBe(false);
+
+    listRows.push({ id: "gw-1", source: "gateway" });
+    expect(getSessionPermissionMode("gw-1")).toBe("fullAccess");
+    expect(shouldAutoAllowSessionPermissions("gw-1")).toBe(true);
   });
 
   it("persists fullAccess per session", () => {
@@ -57,6 +85,18 @@ describe("session-permission-mode", () => {
     expect(mockLocalStorage.setItem).toHaveBeenCalled();
     const last = mockLocalStorage.setItem.mock.calls.at(-1)?.[1] as string;
     expect(last).not.toContain("sess-a");
+  });
+
+  it("keeps explicit default on a gateway session", () => {
+    listRows.push({ id: "gw-1", source: "gateway" });
+    expect(getSessionPermissionMode("gw-1")).toBe("fullAccess");
+
+    setSessionPermissionMode("gw-1", "default");
+    expect(getSessionPermissionMode("gw-1")).toBe("default");
+    expect(shouldAutoAllowSessionPermissions("gw-1")).toBe(false);
+
+    setSessionPermissionMode("gw-1", "fullAccess");
+    expect(getSessionPermissionMode("gw-1")).toBe("fullAccess");
   });
 
   it("LRU evicts oldest when exceeding 200 fullAccess sessions", () => {

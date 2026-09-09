@@ -523,9 +523,14 @@ impl ChannelManager {
             };
             gw.set_config(cfg).await;
             // One pipeline for every channel; the gateway is left with the
-            // protocol.
-            gw.use_core_pipeline(self.core_sink_for(Arc::new(gw.as_driver())))
-                .await;
+            // protocol. Keep the same Arc the sink holds so MCP sends can
+            // piggyback on an open stream bubble.
+            let driver = Arc::new(gw.as_driver());
+            gw.bind_live_driver(Arc::downgrade(&driver)).await;
+            gw.use_core_pipeline(
+                self.core_sink_for(driver as Arc<dyn teamclu_gateway::driver::ChannelDriver>),
+            )
+            .await;
             match gw.start().await {
                 Ok(()) => {
                     println!("[ChannelManager] wecom bot {} started", bot.bot_id);

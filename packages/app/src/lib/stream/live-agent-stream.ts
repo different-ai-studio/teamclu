@@ -122,6 +122,22 @@ export function isToolOnlyTurnAnchor(
   return !merged.content.trim() && streamEntryHasVisibleContent(streamEntry);
 }
 
+/**
+ * Mid-turn AgentReply slices stay parked until the turn ends.
+ *
+ * Gateway checkout forwards ACP Idle *during* `run_turn`, then `write_reply`
+ * only after the channel finish frame (WeCom ack can take 15s). Desktop Idle
+ * starts an 8s wait and may `finishSessionActor` before that row arrives —
+ * an inactive live stream is already past terminal, so flush the parked reply.
+ */
+export function shouldFlushParkedAgentReply(args: {
+  terminalPending: boolean;
+  toolOnlyAnchor: boolean;
+  streamActive: boolean;
+}): boolean {
+  return args.terminalPending || args.toolOnlyAnchor || !args.streamActive;
+}
+
 type StreamVisibilityEntry = {
   outputText?: string;
   thinkingText?: string;

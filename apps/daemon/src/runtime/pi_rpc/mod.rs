@@ -1601,6 +1601,24 @@ impl AgentBackend for PiRpcBackend {
         self.shared.pool.kill_all()
     }
 
+    fn invalidate_unattached_workspace_hosts(&mut self) -> usize {
+        let attached: std::collections::HashSet<process::PoolKey> = self
+            .shared
+            .routes
+            .lock()
+            .values()
+            .map(|r| r.pool_key.clone())
+            .collect();
+        let killed = self.shared.pool.kill_except(&attached);
+        if killed > 0 {
+            info!(
+                killed,
+                "evicted unattached pi hosts after provider.team reconcile"
+            );
+        }
+        killed
+    }
+
     async fn shutdown_for_exit(&mut self) -> usize {
         self.shared.pool.kill_all()
     }
