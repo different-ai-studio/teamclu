@@ -1342,12 +1342,27 @@ export function createSupabaseBusinessRepository(options) {
         }
       }
 
+      // Agent callers re-upserting an existing row (path/id dedup) must not
+      // wipe member attribution that Desktop registration wrote first.
+      let createdByMemberIdForRow = createdByMemberId;
+      if (targetId && createdByMemberId === null) {
+        const { data: existing, error: existingErr } = await supabase
+          .from("workspaces")
+          .select("created_by_member_id")
+          .eq("id", targetId)
+          .maybeSingle();
+        if (existingErr) throw existingErr;
+        if (existing?.created_by_member_id) {
+          createdByMemberIdForRow = existing.created_by_member_id;
+        }
+      }
+
       const row: Record<string, unknown> = {
         team_id: input.teamId,
         name: resolvedName,
         path: normalizedPath,
         agent_id: agentId,
-        created_by_member_id: createdByMemberId,
+        created_by_member_id: createdByMemberIdForRow,
         archived: input.archived ?? false,
       };
       if (targetId) row.id = targetId;

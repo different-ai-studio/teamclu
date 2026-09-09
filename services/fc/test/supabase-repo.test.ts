@@ -2884,6 +2884,35 @@ test("upsertWorkspace rejects agent callers registering another agent's workspac
   );
 });
 
+test("upsertWorkspace agent re-register preserves member created_by on existing path", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      calls,
+      actorRow: { id: "agent-1", actor_type: "agent" },
+      seed: {
+        workspaces: [{
+          id: "ws-existing",
+          team_id: "team-b",
+          name: "Alpha",
+          path: "/tmp/alpha",
+          agent_id: "agent-1",
+          created_by_member_id: "member-1",
+          archived: false,
+        }],
+      },
+    }),
+  );
+  await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "Alpha",
+    path: "/tmp/alpha",
+    agentId: "agent-1",
+  });
+  const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+  assert.equal(upsert?.row.created_by_member_id, "member-1");
+});
+
 test("upsertWorkspace without id reuses existing row by (teamId, path)", async () => {
   // Regression: re-adding an already-synced workspace used to hit
   // workspaces_team_id_agent_id_name_key because upsert only deduped on id.
