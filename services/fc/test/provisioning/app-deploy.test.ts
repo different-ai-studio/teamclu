@@ -7,6 +7,9 @@ import {
   checkDeployInProgress,
   isStaleDeploy,
   parseOptionalGitCommitSha,
+  parseAppRuntimeSpec,
+  parseDeployedImage,
+  assertDeployAllowed,
   STALE_DEPLOY_MS,
 } from "../../src/lib/provisioning/app-deploy.js";
 
@@ -453,4 +456,93 @@ test("a failing custom-domain delete never blocks the rest of teardown", async (
     if (prev === undefined) delete process.env.APPS_FC_ROUTE_DOMAIN;
     else process.env.APPS_FC_ROUTE_DOMAIN = prev;
   }
+});
+
+// --- Container apps: a deploy that ships an image instead of a code archive.
+
+test("a container app is minted a registry to push to, not an upload URL", async () => {
+  let minted: { appId: string; sha: string | null | undefined } | null = null;
+  const out = await startDeploy(
+    {
+      mintUploadUrl: async () => {
+        throw new Error("a container deploy must not mint an OSS upload");
+      },
+      mintImagePush: async (appId, gitCommitSha) => {
+        minted = { appId, sha: gitCommitSha };
+        return {
+          reference: `registry.cn-shenzhen.aliyuncs.com/ns/tc-app-${appId}:abc1234`,
+          registry: "registry.cn-shenzhen.aliyuncs.com",
+          username: "temp-user",
+          password: "temp-token",
+        };
+      },
+    },
+    { appId: "app-1", region: "cn-shenzhen", runtime: "container", gitCommitSha: "abc1234" },
+  );
+  assert.deepEqual(minted, { appId: "app-1", sha: "abc1234" });
+  assert.equal(out.presignedPut, undefined);
+  assert.equal(out.ossObjectName, undefined);
+  assert.equal(out.image?.username, "temp-user");
+  assert.match(out.image?.reference ?? "", /tc-app-app-1:abc1234$/);
+});
+
+test("a container deploy on a deployment with no registry names the variable", async () => {
+  // The 503 a node app never sees: everything else about this deployment works,
+  // and "not configured" with nothing named costs an SSH session to diagnose.
+  await assert.rejects(
+    () =>
+      startDeploy(
+        {
+          mintUploadUrl: async () => "https://oss.example/put",
+          imagePushUnavailable: "APPS_REGISTRY_HOST is not set",
+        },
+        { appId: "app-1", region: "cn-shenzhen", runtime: "container" },
+      ),
+    (e: any) => {
+      assert.equal(e.statusCode ?? e.status, 503);
+      assert.match(String(e.message), /APPS_REGISTRY_HOST/);
+      return true;
+    },
+  );
+});
+
+test("an app that declares nothing still gets the upload handle", async () => {
+  // Every client older than container support sends no runtime at all.
+  const out = await startDeploy(
+    { mintUploadUrl: async (k: string) => `https://oss.example/${k}` },
+    { appId: "app-1", region: "cn-shenzhen" },
+  );
+  assert.ok(out.presignedPut);
+  assert.equal(out.image, undefined);
+});
+
+test("a container app declares no entry, and a code app may not send an image", () => {
+  const spec = parseAppRuntimeSpec({ runtime: "container", port: 5000, healthCheckPath: "/api/health" });
+  assert.deepEqual(spec, { runtime: "container", entry: "", port: 5000, healthCheckPath: "/api/health" });
+
+  // The image belongs to the runtime that has one. Accepting it for an archive
+  // deploy would let a client point the function at an unrelated build.
+  assert.equal(parseDeployedImage("registry/ns/app:sha", spec), "registry/ns/app:sha");
+  assert.throws(() => parseDeployedImage("", spec), /must finalize with its image/);
+  const node = parseAppRuntimeSpec({ runtime: "node", entry: "server/index.mjs", port: 9000 });
+  assert.equal(parseDeployedImage(undefined, node), undefined);
+  assert.throws(() => parseDeployedImage("registry/ns/app:sha", node), /only accepted for a container/);
+});
+
+test("a health check path that is not a path is refused", () => {
+  assert.throws(
+    () => parseAppRuntimeSpec({ runtime: "container", port: 5000, healthCheckPath: "api/health" }),
+    /healthCheckPath must start with/,
+  );
+});
+
+test("the deploy gate no longer refuses a container app outright", () => {
+  // It used to 409 every runtime but node, which is what stood between a
+  // Python app and a deploy. Whether THIS deployment can build one is decided
+  // where the registry config is known.
+  assertDeployAllowed({ id: "app-1", slug: "notes", runtime: "container", authMode: "none" });
+  assert.throws(
+    () => assertDeployAllowed({ id: "app-1", slug: "notes", runtime: "python", authMode: "none" }),
+    /not available on this deployment/,
+  );
 });

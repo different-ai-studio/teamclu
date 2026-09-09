@@ -22,6 +22,11 @@ import { makeTeardownAppDeps, type TeardownAppDeps } from "./lib/provisioning/ap
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { resolveAppsOss, getAppsS3Client } from "./lib/provisioning/apps-oss.js";
+import {
+  appImageReference,
+  appImageTag,
+  resolveAppsRegistry,
+} from "./lib/provisioning/apps-registry.js";
 import { resolveAppsSls, getSlsClient, makeSlsOps, type SlsOps } from "./lib/provisioning/sls-client.js";
 import { makeAppLogsReader } from "./lib/provisioning/app-logs.js";
 import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
@@ -156,9 +161,32 @@ function makeDeployDeps() {
   }
   const bucket = profile.bucket;
   const appsFcVpc = readAppsFcVpcConfig();
+  // Container apps push an image instead of uploading an archive. A deployment
+  // with no registry configured keeps working for every other app: only a
+  // container deploy is refused, and it is refused naming the variable.
+  const registry = resolveAppsRegistry();
+  const mintImagePush = registry.config
+    ? async (appId: string, gitCommitSha: string | null | undefined) => {
+        const cfg = registry.config;
+        return {
+          // Pushed to the host the developer's machine can reach, pulled from
+          // whichever host the function can — the same image either way.
+          reference: appImageReference(cfg, appId, appImageTag(gitCommitSha)),
+          registry: cfg.host,
+          ...cfg.push,
+        };
+      }
+    : undefined;
+
   const fcOps = makeFcOps(getFcClient(profile), {
     bucket,
     role: process.env.ROLE_ARN,
+    // What the deployed function logs into the registry with. Deployment-level
+    // rather than per-deploy: it is a property of where images live, and the
+    // function keeps it after the deploy that set it is long over.
+    registryAuth: registry.config
+      ? { ...registry.config.pull, host: registry.config.pullHost }
+      : undefined,
     // Region of the function, which is also where its Node layer must come
     // from — a layer ARN is region-scoped.
     region: profile.region,
@@ -172,12 +200,21 @@ function makeDeployDeps() {
   // URL and using it, and a cold install on a modest laptop outlasts 15.
   const mintUploadUrl = (ossObjectName: string) =>
     getSignedUrl(s3 as any, new PutObjectCommand({ Bucket: bucket, Key: ossObjectName }), { expiresIn: 1800 });
+
   return {
     // The caller's `region` is ignored: `fc_region` must record where the
     // function actually went, which is the apps region, not the deployment's
     // default REGION.
-    startDeploy: (a: { appId: string; region: string }) =>
-      startDeployImpl({ mintUploadUrl }, { ...a, region: profile.region }),
+    startDeploy: (a: {
+      appId: string;
+      region: string;
+      runtime?: string;
+      gitCommitSha?: string | null;
+    }) =>
+      startDeployImpl(
+        { mintUploadUrl, mintImagePush, imagePushUnavailable: registry.error },
+        { ...a, region: profile.region },
+      ),
     finalizeDeploy: (a: {
       appId: string;
       slug: string;

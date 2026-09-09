@@ -55,6 +55,8 @@ import {
   deployUnavailable,
   needsDatabase,
   parseAppRuntimeSpec,
+  parseDeclaredRuntime,
+  parseDeployedImage,
   parseDeployToken,
   parseOptionalGitCommitSha,
 } from "./provisioning/app-deploy.js";
@@ -3632,9 +3634,14 @@ export function createSupabaseBusinessRepository(options) {
       return customDomainView(data);
     },
 
-    async deployApp(appId: string, input: { gitCommitSha?: string }) {
+    async deployApp(appId: string, input: { gitCommitSha?: string; runtime?: string }) {
       // Optional: only a Gitea-managed app pins its deploy to a forge commit.
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
+      // What the checkout declares, read by the daemon before it asked for a
+      // deploy. It decides which handle this deploy carries — an OSS upload or
+      // a registry to push an image to — so it has to arrive here, not at
+      // finalize where the rest of the declaration does.
+      const declaredRuntime = parseDeclaredRuntime(input?.runtime);
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
@@ -3670,7 +3677,12 @@ export function createSupabaseBusinessRepository(options) {
       const deployToken = randomUUID();
       const deployStartedAt = new Date().toISOString();
       try {
-        const r = await startDeploy({ appId, region: process.env.REGION || "cn-hangzhou" });
+        const r = await startDeploy({
+          appId,
+          region: process.env.REGION || "cn-hangzhou",
+          runtime: declaredRuntime,
+          gitCommitSha,
+        });
         const { data: row, error: updErr } = await supabase
           .from("apps")
           .update({
@@ -3681,6 +3693,10 @@ export function createSupabaseBusinessRepository(options) {
             deploy_token: deployToken,
             deploy_started_at: deployStartedAt,
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            // The column records what this deployment is building, which until
+            // now nothing ever wrote — it sat at its default while the guard
+            // beside it refused every value but that default.
+            ...(declaredRuntime ? { runtime: declaredRuntime } : {}),
             updated_at: deployStartedAt,
           })
           .eq("id", appId)
@@ -3690,8 +3706,11 @@ export function createSupabaseBusinessRepository(options) {
         if (!row) return null;
         return {
           ...mapApp(row),
+          // Exactly one of these is set — see startDeploy. The daemon branches
+          // on which one it got.
           ossObjectName: r.ossObjectName,
           presignedPut: r.presignedPut,
+          image: r.image,
           deployToken,
           gitCommitSha,
         };
@@ -3713,9 +3732,10 @@ export function createSupabaseBusinessRepository(options) {
 
     async finalizeDeploy(
       appId: string,
-      input: { gitCommitSha?: string; deployToken: string; runtime?: unknown },
+      input: { gitCommitSha?: string; deployToken: string; runtime?: unknown; image?: unknown },
     ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
+      const runtimeSpec = parseAppRuntimeSpec(input?.runtime);
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
@@ -3765,7 +3785,11 @@ export function createSupabaseBusinessRepository(options) {
           platformAuthEnv,
           // What the daemon read out of the app's own declaration. Absent for a
           // client that predates it, which is the contract every app had before.
-          runtime: parseAppRuntimeSpec(input?.runtime),
+          runtime: runtimeSpec,
+          // The image that build pushed. A container app has no code object,
+          // so without this the function would be pointed at whatever the
+          // previous deploy happened to leave in OSS.
+          image: parseDeployedImage(input?.image, runtimeSpec),
         });
         const { data: row, error: updErr } = await supabase
           .from("apps")
@@ -3773,6 +3797,9 @@ export function createSupabaseBusinessRepository(options) {
             fc_status: "live",
             fc_endpoint: r.fcEndpoint,
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            // What is now running, as opposed to what the deploy set out to
+            // build. They differ when an app's declaration changed mid-deploy.
+            ...(runtimeSpec ? { runtime: runtimeSpec.runtime } : {}),
             // The function that just went live carries this auth_mode's env.
             // Recording it here is what lets `authModePendingRedeploy` clear —
             // and what makes the pending state a property of the row rather

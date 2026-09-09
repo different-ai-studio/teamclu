@@ -70,6 +70,47 @@
 	reverse_proxy minio:9000
 }
 
+# Private image registry for container apps.
+#
+# The registry container has no authentication of its own, so this site is the
+# whole of it. Two logins rather than one: the deployed function keeps its pull
+# credential in its own configuration, where anyone who can read the function
+# can read it — and a credential that can also PUSH there means replacing the
+# image every instance of that app executes.
+#
+# The split is by method, because that is what the registry protocol makes it:
+# a pull is GET/HEAD, and everything that writes a blob, a manifest or a tag is
+# POST/PUT/PATCH/DELETE. Both password hashes are bcrypt, from
+# `docker run --rm caddy:2 caddy hash-password --plaintext '<password>'`.
+#
+# REGISTRY_DOMAIN falls back to registry.localhost on a box that has not
+# enabled it, for the same reason S3_DOMAIN does: Caddy reads a nameless block
+# as global configuration and refuses to start.
+{$CADDY_SITE_SCHEME}{$REGISTRY_DOMAIN} {
+	{$CADDY_SITE_TLS}
+
+	# An image layer is tens of megabytes and the default cap is 10MB.
+	request_body {
+		max_size 2GB
+	}
+
+	@write method POST PUT PATCH DELETE
+	handle @write {
+		basic_auth {
+			{$REGISTRY_PUSH_USERNAME} {$REGISTRY_PUSH_PASSWORD_HASH}
+		}
+		reverse_proxy registry:5000
+	}
+
+	handle {
+		basic_auth {
+			{$REGISTRY_PUSH_USERNAME} {$REGISTRY_PUSH_PASSWORD_HASH}
+			{$REGISTRY_PULL_USERNAME} {$REGISTRY_PULL_PASSWORD_HASH}
+		}
+		reverse_proxy registry:5000
+	}
+}
+
 {$CADDY_SITE_SCHEME}{$STUDIO_DOMAIN} {
 	{$CADDY_SITE_TLS}
 	reverse_proxy studio:3000

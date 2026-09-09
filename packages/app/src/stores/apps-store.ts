@@ -8,6 +8,7 @@ import {
 import {
   seedDaemonApp,
   buildDaemonApp,
+  daemonAppManifest,
   cloneDaemonApp,
   daemonAppWorkdir,
   daemonLocalAppIds,
@@ -664,10 +665,15 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         gitCommitSha = head.sha;
       }
 
-      const started = await getBackend().apps.deployApp(
-        appId,
-        gitCommitSha ? { gitCommitSha } : {},
-      );
+      // What the checkout declares, read before the deploy is minted: a
+      // container app is handed a registry to push to and everything else a
+      // presigned URL to upload to, and only the machine holding the checkout
+      // can say which this is.
+      const declared = await daemonAppManifest(appId, app.teamId);
+      const started = await getBackend().apps.deployApp(appId, {
+        ...(gitCommitSha ? { gitCommitSha } : {}),
+        ...(declared?.runtime ? { runtime: declared.runtime } : {}),
+      });
       mergeRow(set, started);
 
       setDeployProgress(set, appId, "build");
@@ -690,7 +696,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
           gitCommitSha,
           gitRemoteUrl,
           deployKeyPem,
+          // Exactly one of these is set — see the control plane's startDeploy.
           presignedPut: started.presignedPut,
+          image: started.image,
         });
       } finally {
         // The daemon only needs the key for the fetch inside the build; hand it
@@ -724,6 +732,10 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         // answer for every app; this is the app's own, read off its
         // declaration by the daemon that just built it.
         ...(build.runtime ? { runtime: build.runtime } : {}),
+        // The image that build actually pushed. A container app has no code
+        // object, so finalizing without it would point the function at whatever
+        // the previous deploy left in OSS.
+        ...(build.image ? { image: build.image } : {}),
         deployToken: started.deployToken,
       });
       // The merged row carries `authModePendingRedeploy` straight from the

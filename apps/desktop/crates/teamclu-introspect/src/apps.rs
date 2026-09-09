@@ -9,9 +9,12 @@
 //! round trip.
 //!
 //! The app is named by `app_id`, or by `app_name` when that matches exactly one
-//! app in the current team. Deploying publishes to the public internet and
-//! `update_row` writes production data, so an ambiguous name comes back as the
-//! candidate list rather than acting on a guess.
+//! app in the current team, or — with neither — by the workspace the agent is
+//! running in, which the desktop matches against the checkouts this machine
+//! holds. Deploying publishes to the public internet and `update_row` writes
+//! production data, so an ambiguous name comes back as the candidate list
+//! rather than acting on a guess; a directory, by contrast, either is an app's
+//! checkout or is not.
 
 use serde_json::{json, Value};
 
@@ -44,13 +47,15 @@ fn require_action(arguments: &Value, allowed: &[&str]) -> Result<String, String>
 }
 
 /// Copy the app selector onto the outgoing body, refusing both forms at once.
+///
+/// Neither form is not an error here: the desktop then resolves the app from
+/// `workspace_path` — the checkout the agent is actually working in. Only the
+/// desktop can do that (it knows the team and can ask the daemon where each
+/// app lives), and it is the case this tool used to dead-end on.
 fn attach_app_selector(arguments: &Value, body: &mut Value) -> Result<(), String> {
     match (str_arg(arguments, "app_id"), str_arg(arguments, "app_name")) {
         (Some(_), Some(_)) => Err("pass app_id or app_name, not both".to_string()),
-        (None, None) => Err(
-            "app_id or app_name is required — run manage_app with action \"list\" to see this team's apps"
-                .to_string(),
-        ),
+        (None, None) => Ok(()),
         (Some(id), None) => {
             body["app_id"] = json!(id);
             Ok(())
@@ -73,9 +78,11 @@ fn copy_args(arguments: &Value, body: &mut Value, keys: &[&str]) {
     }
 }
 
-pub async fn handle_manage(api_port: u16, arguments: &Value) -> Result<Value, String> {
+/// The body `/app-manage` receives, so the argument rules are testable without
+/// a desktop to post them to.
+fn manage_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
     let action = require_action(arguments, &MANAGE_ACTIONS)?;
-    let mut body = json!({ "action": action });
+    let mut body = json!({ "action": action, "workspace_path": workspace });
 
     if action != "list" {
         attach_app_selector(arguments, &mut body)?;
@@ -87,13 +94,25 @@ pub async fn handle_manage(api_port: u16, arguments: &Value) -> Result<Value, St
             &["since_minutes", "limit", "kind", "contains", "request_id"],
         );
     }
+    Ok(body)
+}
 
+pub async fn handle_manage(
+    workspace: &str,
+    api_port: u16,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let body = manage_body(workspace, arguments)?;
     crate::desktop_api::post(api_port, "/app-manage", &body).await
 }
 
-pub async fn handle_data(api_port: u16, arguments: &Value) -> Result<Value, String> {
+pub async fn handle_data(
+    workspace: &str,
+    api_port: u16,
+    arguments: &Value,
+) -> Result<Value, String> {
     let action = require_action(arguments, &DATA_ACTIONS)?;
-    let mut body = json!({ "action": action });
+    let mut body = json!({ "action": action, "workspace_path": workspace });
     attach_app_selector(arguments, &mut body)?;
 
     if action != "tables" {
@@ -145,39 +164,51 @@ mod tests {
 
     const APP: &str = "0c0a97bf-d615-47f1-b471-45cb717f1629";
 
-    #[tokio::test]
-    async fn unknown_action_is_rejected_before_anything_else() {
+    const WS: &str = "/Users/x/apps/demo";
+
+    #[test]
+    fn unknown_action_is_rejected_before_anything_else() {
         // Checked first on purpose: a typo'd action must not reach the desktop
         // and must not read as "the app is missing".
-        let err = handle_manage(1, &json!({ "action": "publish" }))
-            .await
-            .unwrap_err();
+        let err = manage_body(WS, &json!({ "action": "publish" })).unwrap_err();
         assert!(err.contains("action must be one of"), "{err}");
     }
 
-    #[tokio::test]
-    async fn deploy_without_a_target_names_the_way_out() {
-        let err = handle_manage(1, &json!({ "action": "deploy" }))
-            .await
-            .unwrap_err();
-        assert!(err.contains("app_id or app_name"), "{err}");
-        assert!(err.contains("list"), "{err}");
+    #[test]
+    fn deploy_without_a_target_defers_to_the_workspace() {
+        // The desktop resolves the app from the checkout the agent is in, so an
+        // unnamed deploy must reach it instead of being refused here.
+        let body = manage_body(WS, &json!({ "action": "deploy" })).unwrap();
+        assert_eq!(body["workspace_path"], json!(WS));
+        assert!(body.get("app_id").is_none());
+        assert!(body.get("app_name").is_none());
     }
 
-    #[tokio::test]
-    async fn deploy_refuses_both_target_forms() {
-        let err = handle_manage(
-            1,
+    #[test]
+    fn the_workspace_travels_with_every_action() {
+        let body = manage_body(WS, &json!({ "action": "list" })).unwrap();
+        assert_eq!(body["workspace_path"], json!(WS));
+    }
+
+    #[test]
+    fn an_explicit_target_still_wins() {
+        let body = manage_body(WS, &json!({ "action": "deploy", "app_id": APP })).unwrap();
+        assert_eq!(body["app_id"], json!(APP));
+    }
+
+    #[test]
+    fn deploy_refuses_both_target_forms() {
+        let err = manage_body(
+            WS,
             &json!({ "action": "deploy", "app_id": APP, "app_name": "记账" }),
         )
-        .await
         .unwrap_err();
         assert!(err.contains("not both"), "{err}");
     }
 
     #[tokio::test]
     async fn rows_needs_a_table() {
-        let err = handle_data(1, &json!({ "action": "rows", "app_id": APP }))
+        let err = handle_data(WS, 1, &json!({ "action": "rows", "app_id": APP }))
             .await
             .unwrap_err();
         assert!(err.contains("needs `table`"), "{err}");
@@ -186,6 +217,7 @@ mod tests {
     #[tokio::test]
     async fn update_row_needs_a_key() {
         let err = handle_data(
+            WS,
             1,
             &json!({
                 "action": "update_row", "app_id": APP,
@@ -200,6 +232,7 @@ mod tests {
     #[tokio::test]
     async fn update_row_needs_a_patch_object() {
         let err = handle_data(
+            WS,
             1,
             &json!({
                 "action": "update_row", "app_id": APP,
@@ -216,6 +249,7 @@ mod tests {
         // Reaches the desktop (and fails to connect on port 1) rather than being
         // rejected here: the argument check must not demand a patch to delete.
         let err = handle_data(
+            WS,
             1,
             &json!({
                 "action": "delete_row", "app_id": APP,
