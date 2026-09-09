@@ -7,13 +7,20 @@ import type { AppRow } from '@/lib/backend/types'
 
 const backendMocks = vi.hoisted(() => ({
   listAppAccess: vi.fn(),
-  // The data section lives in this panel now; without a stub it takes its own
-  // error path and buries the panel's own failures in console noise.
-  listAppDataTables: vi.fn(async () => ({ status: 'not_deployed' })),
-  setAppAccess: vi.fn(),
-  removeAppAccess: vi.fn(),
-  updateAppAuthMode: vi.fn(),
+  listAppDataTables: vi.fn(),
+  listAppFiles: vi.fn(),
+  getAppStorageUsage: vi.fn(),
+  listAppCronJobs: vi.fn(),
   deleteApp: vi.fn(),
+}))
+
+const tabMocks = vi.hoisted(() => ({
+  openAppAccess: vi.fn(),
+  openAppAuth: vi.fn(),
+  openAppCron: vi.fn(),
+  openAppDataTable: vi.fn(),
+  openAppFiles: vi.fn(),
+  openAppLogs: vi.fn(),
 }))
 
 const daemonMocks = vi.hoisted(() => ({
@@ -21,34 +28,21 @@ const daemonMocks = vi.hoisted(() => ({
   moveDaemonAppWorkdir: vi.fn(),
 }))
 
+const utilMocks = vi.hoisted(() => ({ copyToClipboard: vi.fn() }))
+
 const storeMocks = vi.hoisted(() => ({
   deployingIds: [] as string[],
   reseed: vi.fn(),
   rename: vi.fn(),
-  updateAuthMode: vi.fn(),
   deploy: vi.fn(),
   deleteApp: vi.fn(),
 }))
 
 vi.mock('@/lib/backend', () => ({
-  getBackend: () => ({
-    apps: {
-      listAppAccess: backendMocks.listAppAccess,
-      listAppDataTables: backendMocks.listAppDataTables,
-      setAppAccess: backendMocks.setAppAccess,
-      removeAppAccess: backendMocks.removeAppAccess,
-      updateAppAuthMode: backendMocks.updateAppAuthMode,
-      deleteApp: backendMocks.deleteApp,
-    },
-  }),
+  getBackend: () => ({ apps: backendMocks }),
 }))
 
-vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
-  listTeamMembersForAccess: vi.fn(async () => [
-    { id: 'member-1', displayName: 'Alice', role: 'member' },
-    { id: 'member-2', displayName: 'Bob', role: 'member' },
-  ]),
-}))
+vi.mock('@/lib/tabs/app-tabs', () => tabMocks)
 
 vi.mock('@/lib/daemon/daemon-local-client', () => ({
   daemonAppWorkdir: (...args: unknown[]) => daemonMocks.daemonAppWorkdir(...args),
@@ -58,11 +52,11 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
 vi.mock('@/lib/utils', () => ({
   isTauri: () => true,
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
+  copyToClipboard: (...args: unknown[]) => utilMocks.copyToClipboard(...args),
 }))
 
 vi.mock('@/stores/apps-store', () => ({
-  useAppsStore: (sel: (s: typeof storeMocks) => unknown) =>
-    sel(storeMocks as typeof storeMocks),
+  useAppsStore: (sel: (s: typeof storeMocks) => unknown) => sel(storeMocks),
 }))
 
 vi.mock('react-i18next', () => ({
@@ -71,7 +65,7 @@ vi.mock('react-i18next', () => ({
       let text = fallback ?? key
       if (opts) {
         for (const [k, v] of Object.entries(opts)) {
-          text = text.replace(`{{${k}}}`, v)
+          text = text.replace(`{{${k}}}`, String(v))
         }
       }
       return text
@@ -80,7 +74,7 @@ vi.mock('react-i18next', () => ({
 }))
 
 vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
 
 const baseApp: AppRow = {
@@ -105,7 +99,7 @@ const baseApp: AppRow = {
   publicUrl: 'https://demo.apps.example.com',
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
-}
+} as AppRow
 
 describe('AppControlPanel', () => {
   beforeEach(() => {
@@ -115,77 +109,115 @@ describe('AppControlPanel', () => {
       workdir: '/Users/me/.amuxd/teams/team-1/apps/app-1',
       deviceName: 'Matt Mac',
     })
-    daemonMocks.moveDaemonAppWorkdir.mockResolvedValue({
-      outcome: 'moved',
-      workdir: '/Users/me/Projects/demo-app',
-      error: null,
-    })
     backendMocks.listAppAccess.mockResolvedValue([
-      {
-        memberId: 'member-1',
-        permissionLevel: 'prompt',
-        grantedByMemberId: 'owner-1',
-        createdAt: '2026-01-01T00:00:00Z',
-      },
+      { memberId: 'member-1', permissionLevel: 'prompt', grantedByMemberId: 'o', createdAt: 'x' },
+      { memberId: 'member-2', permissionLevel: 'view', grantedByMemberId: 'o', createdAt: 'x' },
     ])
-    storeMocks.updateAuthMode.mockResolvedValue(undefined)
+    backendMocks.listAppDataTables.mockResolvedValue({
+      status: 'ok',
+      tables: [{ name: 'orders' }, { name: 'users' }],
+    })
+    backendMocks.listAppFiles.mockResolvedValue({
+      items: [{ path: 'a.csv', size: 10 }],
+      canWrite: true,
+    })
+    backendMocks.getAppStorageUsage.mockResolvedValue({ bytes: 2048, quotaBytes: null })
+    backendMocks.listAppCronJobs.mockResolvedValue([{ id: 'j1' }, { id: 'j2' }, { id: 'j3' }])
     storeMocks.deleteApp.mockResolvedValue(true)
   })
 
-  it('renders status without deploy URL card', async () => {
+  it('shows a count on every management row', async () => {
     render(<AppControlPanel app={baseApp} />)
-    expect(screen.getByText('Demo App')).toBeTruthy()
-    expect(screen.queryByText('https://demo.apps.example.com')).toBeNull()
-  })
-
-  it('grants access to a member', async () => {
-    backendMocks.setAppAccess.mockResolvedValue({
-      memberId: 'member-2',
-      permissionLevel: 'view',
-      grantedByMemberId: 'owner-1',
-      createdAt: '2026-01-02T00:00:00Z',
-    })
-
-    render(<AppControlPanel app={baseApp} />)
-    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy())
-
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: '授权' }))
-
     await waitFor(() => {
-      expect(backendMocks.setAppAccess).toHaveBeenCalledWith('app-1', 'member-2', 'prompt')
+      expect(screen.getByTestId('app-control-open-access').textContent).toContain('2 位成员')
+      expect(screen.getByTestId('app-control-open-data').textContent).toContain('2 张表')
+      expect(screen.getByTestId('app-control-open-files').textContent).toContain('1 个文件')
+      expect(screen.getByTestId('app-control-open-cron').textContent).toContain('3 个任务')
     })
   })
 
-  it('shows read-only permissions when listAppAccess returns null', async () => {
-    backendMocks.listAppAccess.mockReset()
+  it('says why there is nothing rather than showing a zero', async () => {
+    // "0 tables" and "this app has no database" are different answers, and the
+    // panel is the only place a reader sees them side by side.
+    backendMocks.listAppDataTables.mockResolvedValue({ status: 'no_database' })
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() => {
+      expect(screen.getByTestId('app-control-open-data').textContent).toContain('没有数据库')
+    })
+    expect(screen.getByTestId('app-control-open-data').textContent).not.toContain('0')
+  })
+
+  it('reports restricted access instead of zero members', async () => {
+    // Null from listAppAccess is a 404: not visible, or not yours. Rendering
+    // that as "0 members" would read as "nobody has access".
     backendMocks.listAppAccess.mockResolvedValue(null)
     render(<AppControlPanel app={baseApp} />)
     await waitFor(() => {
-      expect(screen.getByTestId('app-control-permissions-readonly')).toBeTruthy()
+      expect(screen.getByTestId('app-control-open-access').textContent).toContain('仅创建者可见')
     })
   })
 
-  it('shows pending redeploy badge from the row, not from local state', async () => {
-    // Server-derived (fc_status live + auth_mode <> deployed_auth_mode), so it
-    // survives a reload and shows for a second admin too — the in-memory list
-    // this replaced did neither, and the app looked protected while the live
-    // site was still public.
-    render(
+  it('one unreachable surface does not blank the others', async () => {
+    backendMocks.listAppFiles.mockRejectedValue(new Error('storage not configured'))
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() => {
+      expect(screen.getByTestId('app-control-open-files').textContent).toContain('暂时读不到')
+      expect(screen.getByTestId('app-control-open-cron').textContent).toContain('3 个任务')
+    })
+  })
+
+  it('opens the matching tab from each row', async () => {
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() => expect(backendMocks.listAppCronJobs).toHaveBeenCalled())
+    const user = userEvent.setup()
+
+    await user.click(screen.getByTestId('app-control-open-access'))
+    expect(tabMocks.openAppAccess).toHaveBeenCalledWith(baseApp, '协作权限')
+
+    await user.click(screen.getByTestId('app-control-open-auth'))
+    expect(tabMocks.openAppAuth).toHaveBeenCalledWith(baseApp, '应用权限')
+
+    await user.click(screen.getByTestId('app-control-open-files'))
+    expect(tabMocks.openAppFiles).toHaveBeenCalledWith(baseApp, '应用附件')
+
+    await user.click(screen.getByTestId('app-control-open-cron'))
+    expect(tabMocks.openAppCron).toHaveBeenCalledWith(baseApp, '定时任务')
+
+    await user.click(screen.getByTestId('app-control-open-logs'))
+    expect(tabMocks.openAppLogs).toHaveBeenCalledWith(baseApp, '日志')
+  })
+
+  it('does not open a logs tab for an app that was never deployed', async () => {
+    render(<AppControlPanel app={{ ...baseApp, fcStatus: null } as AppRow} />)
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('app-control-open-logs'))
+    expect(tabMocks.openAppLogs).not.toHaveBeenCalled()
+    expect(screen.getByTestId('app-control-open-logs').textContent).toContain('未部署')
+  })
+
+  it('names the app permissions row by the wall that is actually up', async () => {
+    const { rerender } = render(<AppControlPanel app={baseApp} />)
+    expect(screen.getByTestId('app-control-open-auth').textContent).toContain('不需要登录')
+
+    rerender(
       <AppControlPanel
-        app={{ ...baseApp, authMode: 'platform', authModePendingRedeploy: true }}
+        app={{
+          ...baseApp,
+          authMode: 'platform',
+          authRules: [{ path: '/admin', auth: 'required' }],
+        } as AppRow}
       />,
     )
-    await waitFor(() => {
-      expect(screen.getByTestId('app-control-auth-pending-redeploy')).toBeTruthy()
-      expect(screen.getByTestId('app-control-auth-live-warning')).toBeTruthy()
-      expect(screen.getByTestId('app-control-redeploy-now')).toBeTruthy()
-    })
+    expect(screen.getByTestId('app-control-open-auth').textContent).toContain('1 条页面规则')
   })
 
-  it('disables save until auth mode changes', async () => {
+  it('copies the local path', async () => {
     render(<AppControlPanel app={baseApp} />)
-    expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', true)
+    await waitFor(() => expect(screen.getByTestId('app-control-copy-path')).toBeTruthy())
+    await userEvent.setup().click(screen.getByTestId('app-control-copy-path'))
+    expect(utilMocks.copyToClipboard).toHaveBeenCalledWith(
+      '/Users/me/.amuxd/teams/team-1/apps/app-1',
+    )
   })
 
   it('shows local workdir and device name', async () => {

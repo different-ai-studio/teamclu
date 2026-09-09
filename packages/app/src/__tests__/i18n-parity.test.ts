@@ -92,9 +92,12 @@ const DYNAMIC_PREFIXES = [
   'settings.billing.kind.',
   'apps.controlPanel.authModeOption.',
   'apps.controlPanel.permission.',
-  // Keyed by AppAuthAudience / AppAuthScope in AppAuthSection.tsx.
-  'apps.controlPanel.authAudienceOption.',
-  'apps.controlPanel.authScopeOption.',
+  // Keyed by the combined login+audience choice in AppAuthTabContent.tsx —
+  // one selector per page rather than a scope dropdown beside an audience one.
+  'apps.auth.access.',
+  // Keyed by the schedule preset and the run status in AppCronTabContent.tsx.
+  'apps.cron.preset.',
+  'apps.cron.status.',
 ]
 // i18next plural/context suffixes resolve from the base key at runtime.
 const PLURAL_SUFFIX = /_(plural|one|two|few|many|other|zero|\d+)$/

@@ -17,6 +17,10 @@ import type {
   AppMemberAccessRow,
   AppPermissionLevel,
   AppCustomDomain,
+  AppCronJob,
+  AppCronJobInput,
+  AppCronRun,
+  AppCronRunOutcome,
   DeployAppResult,
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
@@ -344,6 +348,85 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
           `/v1/apps/${encodeURIComponent(appId)}/storage/quota`,
           { quotaBytes },
         );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    // --- Scheduled tasks (design 2026-09-10-app-control-panel §5) ---
+    //
+    // 404 → null throughout, the same convention the rest of this module uses:
+    // the server answers 404 for "no such app" and for "not yours to see" alike,
+    // so the client cannot tell them apart and must not pretend to.
+
+    async listAppCronJobs(appId) {
+      try {
+        const page = await client.get<Page<AppCronJob>>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs`,
+        );
+        return page.items ?? [];
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async createAppCronJob(appId, input: AppCronJobInput) {
+      try {
+        return await client.post<AppCronJob>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs`,
+          input,
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async updateAppCronJob(appId, jobId, input: AppCronJobInput) {
+      try {
+        return await client.patch<AppCronJob>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs/${encodeURIComponent(jobId)}`,
+          input,
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async deleteAppCronJob(appId, jobId) {
+      try {
+        await client.delete<{ ok: true }>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs/${encodeURIComponent(jobId)}`,
+        );
+        return true;
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return false;
+        throw e;
+      }
+    },
+
+    async runAppCronJobNow(appId, jobId) {
+      try {
+        return await client.post<AppCronRunOutcome>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs/${encodeURIComponent(jobId)}/run`,
+          {},
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async listAppCronRuns(appId, jobId, limit) {
+      const qs = limit ? `?limit=${limit}` : "";
+      try {
+        const page = await client.get<Page<AppCronRun>>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs/${encodeURIComponent(jobId)}/runs${qs}`,
+        );
+        return page.items ?? [];
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;

@@ -979,6 +979,82 @@ export type AppAuthScope = "all" | "paths";
 export interface AppAuthRule {
   path: string;
   auth: "required" | "public";
+  /**
+   * Who satisfies the login on this path. Only meaningful with
+   * `auth: "required"`.
+   *
+   * `undefined` means "use the app's own `authAudience`", and is NOT the same
+   * as `"org"`. Every rule saved before this field existed is undefined, so
+   * treating absence as `org` would tighten a live wall on every app currently
+   * set to "any signed-in user".
+   */
+  audience?: AppAuthAudience;
+}
+
+/** How a scheduled task's last attempt ended. */
+export type AppCronRunStatus = "success" | "failed" | "timeout";
+
+/**
+ * A cloud-side scheduled task: at the scheduled minute, one HTTP request to
+ * this app's own public URL.
+ *
+ * Not the desktop's cron. That one runs agent turns against a workspace
+ * directory and needs the machine awake; this runs in the cloud whether or not
+ * anyone is logged in.
+ */
+export interface AppCronJob {
+  id: string;
+  appId: string;
+  name: string;
+  enabled: boolean;
+  /** Five cron fields: minute hour day-of-month month day-of-week. */
+  schedule: string;
+  /** IANA zone the expression is read in. */
+  timezone: string;
+  method: string;
+  /** Path on the app's own URL. The host is resolved server-side at fire time. */
+  path: string;
+  headers: Record<string, string>;
+  body: string | null;
+  timeoutMs: number;
+  lastRunAt: string | null;
+  /** Null means never again: disabled, or an expression no date satisfies. */
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Fields of a task. On create `name` and `schedule` are required. */
+export interface AppCronJobInput {
+  name?: string;
+  enabled?: boolean;
+  schedule?: string;
+  timezone?: string;
+  method?: string;
+  path?: string;
+  headers?: Record<string, string>;
+  body?: string | null;
+  timeoutMs?: number;
+}
+
+/** One execution, as the history lists it. */
+export interface AppCronRun {
+  id: string;
+  jobId: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: AppCronRunStatus;
+  responseStatus: number | null;
+  durationMs: number | null;
+  error: string | null;
+}
+
+/** What a single run did, as "run now" answers it. */
+export interface AppCronRunOutcome {
+  jobId: string;
+  status: AppCronRunStatus;
+  responseStatus: number | null;
+  error: string | null;
 }
 
 /** Everything about an app's login wall that a single PATCH may change. */
@@ -1342,6 +1418,23 @@ export interface AppsBackend {
   purgeAppFiles(appId: string): Promise<{ deleted: number } | null>;
   /** Set or clear (null) this app's ceiling. */
   setAppStorageQuota(appId: string, quotaBytes: number | null): Promise<{ quotaBytes: number | null } | null>;
+
+  // --- Scheduled tasks (design 2026-09-10-app-control-panel §5) ---
+  // Any tier may read the schedule; only `admin` may change it. Null is 404,
+  // which is also what "not yours" answers.
+
+  /** This app's scheduled tasks, oldest first. Null on 404. */
+  listAppCronJobs(appId: string): Promise<AppCronJob[] | null>;
+  /** Create one. `admin` only; at most 20 per app. Null on 404. */
+  createAppCronJob(appId: string, input: AppCronJobInput): Promise<AppCronJob | null>;
+  /** Patch one; absent fields are left alone. `admin` only. Null on 404. */
+  updateAppCronJob(appId: string, jobId: string, input: AppCronJobInput): Promise<AppCronJob | null>;
+  /** Delete one. `admin` only. False on 404. */
+  deleteAppCronJob(appId: string, jobId: string): Promise<boolean>;
+  /** Send the request now without advancing the schedule. `admin` only. */
+  runAppCronJobNow(appId: string, jobId: string): Promise<AppCronRunOutcome | null>;
+  /** Execution history, newest first. Only the last 20 are kept. */
+  listAppCronRuns(appId: string, jobId: string, limit?: number): Promise<AppCronRun[] | null>;
 
   /**
    * What the deployed function printed, newest first. Null on 404.

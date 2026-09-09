@@ -64,6 +64,61 @@ export function openAppPreview(app: AppRow): void {
   })
 }
 
+/**
+ * The four management surfaces the control panel sends people to.
+ *
+ * One shape for all of them — `<kind>:<appId>` — because they differ only in
+ * which panel row opened them. The panel stays a column of counts and these
+ * tabs get the room the controls actually need: a grant table, a rule list per
+ * page, a file browser, a schedule with its run history.
+ *
+ * The label is passed in rather than looked up: this module has no translator,
+ * and each caller does.
+ */
+const APP_ACCESS_PREFIX = 'app-access:'
+const APP_AUTH_PREFIX = 'app-auth:'
+const APP_FILES_PREFIX = 'app-files:'
+const APP_CRON_PREFIX = 'app-cron:'
+
+function decodeAppScopedTarget(prefix: string, target: string): { appId: string } | null {
+  if (!target.startsWith(prefix)) return null
+  const appId = target.slice(prefix.length)
+  return appId ? { appId } : null
+}
+
+function openAppScopedTab(prefix: string, app: AppRow, label: string): void {
+  useTabsStore.getState().openTab({
+    type: 'native',
+    target: `${prefix}${app.id}`,
+    label: `${app.name} · ${label}`,
+  })
+}
+
+export const decodeAppAccessTarget = (target: string) =>
+  decodeAppScopedTarget(APP_ACCESS_PREFIX, target)
+export const decodeAppAuthTarget = (target: string) =>
+  decodeAppScopedTarget(APP_AUTH_PREFIX, target)
+export const decodeAppFilesTarget = (target: string) =>
+  decodeAppScopedTarget(APP_FILES_PREFIX, target)
+export const decodeAppCronTarget = (target: string) =>
+  decodeAppScopedTarget(APP_CRON_PREFIX, target)
+
+/** Who on the team may work on this app, and at which level. */
+export const openAppAccess = (app: AppRow, label: string) =>
+  openAppScopedTab(APP_ACCESS_PREFIX, app, label)
+
+/** Who on the internet may open the deployed site, page by page. */
+export const openAppAuth = (app: AppRow, label: string) =>
+  openAppScopedTab(APP_AUTH_PREFIX, app, label)
+
+/** The app's uploaded and generated files. */
+export const openAppFiles = (app: AppRow, label: string) =>
+  openAppScopedTab(APP_FILES_PREFIX, app, label)
+
+/** Cloud-scheduled requests against the deployed site. */
+export const openAppCron = (app: AppRow, label: string) =>
+  openAppScopedTab(APP_CRON_PREFIX, app, label)
+
 const APP_LIBRARY_TARGET = 'app-library'
 
 export function isAppLibraryTarget(target: string): boolean {
