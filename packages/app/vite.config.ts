@@ -284,8 +284,11 @@ export default defineConfig({
     // Tauri uses Chromium on Windows and WebKit on macOS and Linux
     // In web mode, target modern browsers (Chrome extension context).
     target: process.env.VITE_APP_PLATFORM === 'web' ? 'chrome105' : (process.env.TAURI_PLATFORM === 'windows' ? 'chrome105' : 'safari13'),
-    // Produce sourcemaps for error reporting
-    sourcemap: !!process.env.TAURI_DEBUG,
+    // Produce sourcemaps for error reporting. Reuses `isTauriDevRun` because
+    // the bare `TAURI_DEBUG` this used to read is a Tauri v1 name that v2 never
+    // sets — so this had been permanently false and no debug build has shipped
+    // a sourcemap since the v2 upgrade.
+    sourcemap: isTauriDevRun,
     // Chunk splitting strategy (Vite 8 / Rolldown requires manualChunks as a function)
     rollupOptions: {
       // tauri-plugin-mcp is dev-only (linked from .tauri-plugin-mcp/, gitignored).
