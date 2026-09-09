@@ -73,13 +73,18 @@ export const useThreadSummariesStore = create<ThreadSummariesStore>((set, get) =
           },
         }));
       } catch {
+        // NOT `loaded: true` with an empty list. That recorded a transient
+        // failure as "this session has no threads" — permanently, because the
+        // guard above then refused to ask again — and the UI had no way to
+        // tell the two apart. Keep whatever was known and stay unloaded so the
+        // next mount retries.
         set((state) => ({
           byParent: {
             ...state.byParent,
             [trimmed]: {
-              summaries: [],
+              summaries: state.byParent[trimmed]?.summaries ?? [],
               loading: false,
-              loaded: true,
+              loaded: state.byParent[trimmed]?.loaded ?? false,
             },
           },
         }));
