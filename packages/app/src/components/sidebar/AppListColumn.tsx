@@ -86,17 +86,21 @@ export function AppListColumn() {
   const localAppIds = useAppsStore((s) => s.localAppIds)
   const loading = useAppsStore((s) => s.loading)
   const refreshLocalApps = useAppsStore((s) => s.refreshLocalApps)
+  const load = useAppsStore((s) => s.load)
   const selectApp = useAppsStore((s) => s.selectApp)
 
   const createLabel = t('apps.createTitle', '新建')
   const libraryLabel = t('apps.libraryTitle', '所有应用')
 
-  // The cloud list is loaded by the nav row (always mounted); only the local
-  // half can have changed on disk while this column was closed.
+  // Both halves. The nav row loads the cloud list too, but it is mounted once
+  // and never asks again — so an empty answer it happened to catch mid
+  // server-switch stayed on screen until the app restarted. `load` no longer
+  // caches an empty result, which makes opening this column the retry.
   React.useEffect(() => {
     if (!teamId) return
+    void load(teamId)
     void refreshLocalApps(teamId)
-  }, [teamId, refreshLocalApps])
+  }, [teamId, load, refreshLocalApps])
 
   /**
    * Only what is actually on this machine. Everything else lives in the library
