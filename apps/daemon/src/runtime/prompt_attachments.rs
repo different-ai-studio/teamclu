@@ -354,8 +354,46 @@ pub fn substitute_in_message(message: &mut String, entries: &[ResolvedEntry]) {
     }
 }
 
+/// Strip the `data:{mime};base64,` prefix from an inline data URL.
+pub fn decode_data_url(data_url: &str) -> Option<(String, String)> {
+    let meta_and_data = data_url.strip_prefix("data:")?;
+    let (meta, data) = meta_and_data.split_once(',')?;
+    if !meta.split(';').any(|part| part == "base64") {
+        return None;
+    }
+    let mime = meta.split(';').next()?.trim();
+    if mime.is_empty() || data.is_empty() {
+        return None;
+    }
+    Some((mime.to_string(), data.to_string()))
+}
+
+/// Build pi RPC `images` entries from resolved image attachments.
+/// pi expects raw base64 in `data`, not a full data URL (see pi rpc `prompt.images`).
+pub fn pi_prompt_images(entries: &[ResolvedEntry]) -> Vec<serde_json::Value> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let ResolvedAttachment::Image {
+                data_url, mime, ..
+            } = &entry.attachment
+            else {
+                return None;
+            };
+            let (decoded_mime, data) = decode_data_url(data_url)
+                .unwrap_or_else(|| (mime.clone(), data_url.clone()));
+            Some(serde_json::json!({
+                "type": "image",
+                "data": data,
+                "mimeType": decoded_mime,
+            }))
+        })
+        .collect()
+}
+
 /// Append resolved attachments not already present in the message body.
-/// When `include_images` is false (opencode), images are delivered via File parts only.
+/// When `include_images` is false, images are omitted here and delivered via
+/// runtime-specific channels (pi `images`, opencode File parts).
 pub fn append_unreferenced(message: &mut String, entries: &[ResolvedEntry], include_images: bool) {
     let mut extras: Vec<&ResolvedAttachment> = Vec::new();
     for entry in entries {
@@ -524,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn append_unreferenced_inlines_image_even_when_url_in_body() {
+    fn append_unreferenced_inlines_image_when_include_images_true() {
         let url = "https://cdn.example.test/a.png";
         let mut message = format!("[Image: a.png] (url: {url})");
         append_unreferenced(
@@ -542,6 +580,52 @@ mod tests {
         );
         assert!(message.contains("Attachments:"));
         assert!(message.contains("data:image/png;base64,abc"));
+    }
+
+    #[test]
+    fn append_unreferenced_skips_images_when_include_images_false() {
+        let url = "https://cdn.example.test/a.png";
+        let mut message = format!("[Image: a.png] (url: {url})");
+        append_unreferenced(
+            &mut message,
+            &[ResolvedEntry {
+                source_url: url.to_string(),
+                attachment: ResolvedAttachment::Image {
+                    source_url: url.to_string(),
+                    data_url: "data:image/png;base64,abc".into(),
+                    mime: "image/png".into(),
+                    filename: Some("a.png".into()),
+                },
+            }],
+            false,
+        );
+        assert!(!message.contains("Attachments:"));
+        assert!(!message.contains("data:image/png;base64,abc"));
+    }
+
+    #[test]
+    fn decode_data_url_strips_prefix() {
+        let (mime, data) =
+            decode_data_url("data:image/png;base64,iVBORw0KGgo=").expect("decode");
+        assert_eq!(mime, "image/png");
+        assert_eq!(data, "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn pi_prompt_images_emits_pi_rpc_shape() {
+        let images = pi_prompt_images(&[ResolvedEntry {
+            source_url: "https://cdn.example.test/a.png".into(),
+            attachment: ResolvedAttachment::Image {
+                source_url: "https://cdn.example.test/a.png".into(),
+                data_url: "data:image/jpeg;base64,abc123".into(),
+                mime: "image/jpeg".into(),
+                filename: Some("a.jpg".into()),
+            },
+        }]);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0]["type"], "image");
+        assert_eq!(images[0]["data"], "abc123");
+        assert_eq!(images[0]["mimeType"], "image/jpeg");
     }
 
     #[test]

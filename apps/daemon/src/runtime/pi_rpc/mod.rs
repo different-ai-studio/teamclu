@@ -1101,12 +1101,16 @@ async fn do_prompt(
 
     let mut message = text;
     crate::runtime::prompt_attachments::substitute_in_message(&mut message, &resolved);
-    crate::runtime::prompt_attachments::append_unreferenced(&mut message, &resolved, true);
+    crate::runtime::prompt_attachments::append_unreferenced(&mut message, &resolved, false);
 
     let mut prompt_body = serde_json::json!({
         "type": "prompt",
         "message": message,
     });
+    let images = crate::runtime::prompt_attachments::pi_prompt_images(&resolved);
+    if !images.is_empty() {
+        prompt_body["images"] = serde_json::Value::Array(images);
+    }
     // pi reads `streamingBehavior` only while a turn is streaming. Mid-turn
     // follow-ups use `steer` (fold into the live run); idle prompts omit it.
     if plan.use_steer {
