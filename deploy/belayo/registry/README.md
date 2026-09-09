@@ -35,8 +35,8 @@ htpasswd -nbB teamclu-push '<push 密码>'
 htpasswd -nbB teamclu-pull '<pull 密码>'
 ```
 
-**在 Dokploy 里粘贴时把每个 `$` 写成 `$$`** —— compose 会做变量插值，单个 `$`
-会把 bcrypt 哈希吃掉一半，症状是所有请求 401 而日志里什么都看不出来。
+**stack 模式原样粘贴，单个 `$`**（上面第 3 点）。哪天改回 compose 类型跑，就要把每个
+`$` 写成 `$$` —— 两种模式的转义规则是反的，错了症状一样：全部 401，日志里什么都看不出来。
 
 读路由上**两个账号都要收**（compose 里已经是 `${REGISTRY_PULL_AUTH},${REGISTRY_PUSH_AUTH}`）：
 `docker login` 第一件事是打 `GET /v2/`，只认 pull 账号的读路由会把 push 账号
