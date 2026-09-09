@@ -71,7 +71,7 @@ test("generates an image and passes the upstream body through untouched", async 
 
   // credits = delivered × unit; tokens are recorded but do NOT set the price.
   const v = (sql as any).usageValues;
-  assert.ok(v.includes(300_000), `credits should be one image at 300000, got ${v}`);
+  assert.ok(v.includes(1_500_000), `credits should be one image at 1500000, got ${v}`);
   assert.ok(v.includes("fixed"), "usage_source must be 'fixed', not the estimated alarm value");
   assert.ok(v.includes(59) && v.includes(515), "image tokens are still recorded for margin");
 });
@@ -81,7 +81,7 @@ test("bills what was delivered, not what was asked for", async () => {
   // the request count would charge for a picture nobody got.
   const { app, sql } = build(okUpstream(2));
   await post(app, { model: "image", prompt: "x", n: 4 });
-  assert.ok((sql as any).usageValues.includes(600_000), "2 delivered × 300000");
+  assert.ok((sql as any).usageValues.includes(3_000_000), "2 delivered × 1500000");
 });
 
 test("an unknown image model is 403, never a silent fallback", async () => {

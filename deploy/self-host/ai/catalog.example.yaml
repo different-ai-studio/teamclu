@@ -220,10 +220,16 @@ public_models:
 # "image tokens" for one whole picture, which is not a quantity the tier's
 # per-token price means anything against (§2.1).
 #
-# ⚠️ PRICES ARE PLACEHOLDERS, like the tiers above. For calibration, measured
-# 2026-09-09 on live traffic: one `default` request ≈ 9,900 credits, one `pro`
-# ≈ 81,600, one `max` ≈ 311,000. 300,000 puts an image at roughly one `max`
-# request, which is the right order for a 30-second generation.
+# Set 2026-09-09: 1,500,000 credits = 150 credits-in-UI for a standard 1024².
+#
+# NOT cost-anchored, and it cannot be — the images upstream is a SUBSCRIPTION
+# pool (the mx5 relay fronts accounts, not a metered API), so the marginal cost
+# of one more picture is roughly zero. This number is a demand decision.
+#
+# For scale, measured on live traffic the same day: one `default` chat request
+# ≈ 9,900 credits, one `pro` ≈ 81,600, one `max` ≈ 311,000. So one image ≈ 5
+# `max` requests ≈ 150 `default` requests, and the 10,000,000-credit signup
+# grant is ~6 standard images.
 #
 # ⚠️ A request naming a size absent from this map is REFUSED (400
 # unpriced_image_variant), not charged `default` — an unrecognised size is most
@@ -234,12 +240,12 @@ image_models:
     routing: priority
     pricing:
       per_image_credits:
-        default: 300000
-        "1024x1024": 300000
-        "1024x1024:low": 120000
-        "1024x1024:high": 900000
-        "1024x1536": 450000
-        "1536x1024": 450000
+        default: 1500000
+        "1024x1024": 1500000
+        "1024x1024:low": 600000
+        "1024x1024:high": 4500000
+        "1024x1536": 2250000
+        "1536x1024": 2250000
     routes:
       - backend: mx5-gpt-image-2
 

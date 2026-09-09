@@ -23,11 +23,11 @@ test("an image tier never leaks into the chat model list", () => {
 });
 
 test("price lookup goes most-specific first", () => {
-  assert.equal(pricePerImage(pricing, "1024x1024", "high"), 900_000);
-  assert.equal(pricePerImage(pricing, "1024x1024", undefined), 300_000);
+  assert.equal(pricePerImage(pricing, "1024x1024", "high"), 4_500_000);
+  assert.equal(pricePerImage(pricing, "1024x1024", undefined), 1_500_000);
   // A quality with no exact key falls back to the size, not to `default`.
-  assert.equal(pricePerImage(pricing, "1024x1536", "medium"), 450_000);
-  assert.equal(pricePerImage(pricing, undefined, undefined), 300_000);
+  assert.equal(pricePerImage(pricing, "1024x1536", "medium"), 2_250_000);
+  assert.equal(pricePerImage(pricing, undefined, undefined), 1_500_000);
 });
 
 test("a size we have not priced is refused, not charged the default", () => {
@@ -82,17 +82,17 @@ test("the image request keeps the prompt and targets the images path", () => {
 test("an image tier with no default price refuses to start", () => {
   // Every lookup can fall through to `default`, so its absence is not a partial
   // catalogue — it is an unpriced product that would serve for free.
-  const broken = SHIPPED.replace("        default: 300000\n", "");
+  const broken = SHIPPED.replace("        default: 1500000\n", "");
   assert.throws(() => parseCatalog(broken, ENV), /needs pricing.per_image_credits.default/);
 });
 
 test("a non-positive or fractional image price refuses to start", () => {
   assert.throws(
-    () => parseCatalog(SHIPPED.replace("default: 300000", "default: 0"), ENV),
+    () => parseCatalog(SHIPPED.replace("default: 1500000", "default: 0"), ENV),
     /must be a positive integer/,
   );
   assert.throws(
-    () => parseCatalog(SHIPPED.replace("default: 300000", "default: 1.5"), ENV),
+    () => parseCatalog(SHIPPED.replace("default: 1500000", "default: 1.5"), ENV),
     /must be a positive integer/,
   );
 });
