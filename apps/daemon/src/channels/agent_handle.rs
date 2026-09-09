@@ -804,6 +804,7 @@ impl AmuxdAgentHandle {
         // runtime kept going and wrote the real answer 15s later — desktop
         // saw it, WeCom did not.
         let mut last_activity = std::time::Instant::now();
+        let mut tool_deadline: Option<std::time::Instant> = None;
         // On a turn-level timeout, salvage any reply text the agent already
         // produced instead of failing the whole turn (issue #555): OpenCode can
         // finish and persist its final assistant text while the ACP adapter
@@ -821,9 +822,10 @@ impl AmuxdAgentHandle {
         };
         let mut timed_out = false;
         let result: Result<String, AgentError> = loop {
-            let remaining = crate::runtime::turn_reply::idle_remaining_at(
+            let remaining = crate::runtime::turn_reply::wait_remaining_at(
                 last_activity,
                 turn_timeout,
+                tool_deadline,
                 std::time::Instant::now(),
             );
             if remaining.is_zero() {
@@ -834,6 +836,11 @@ impl AmuxdAgentHandle {
             let event = match next {
                 Ok(Some(ev)) => {
                     last_activity = std::time::Instant::now();
+                    crate::runtime::turn_reply::apply_tool_deadline_from_event(
+                        &ev.event,
+                        &mut tool_deadline,
+                        last_activity,
+                    );
                     ev
                 }
                 Ok(None) => {
@@ -924,7 +931,10 @@ impl AmuxdAgentHandle {
 
         {
             let mut mgr = self.manager.lock().await;
-            mgr.checkin_turn(crate::runtime::CheckedOutTurn { agent_id, event_rx });
+            mgr.checkin_turn(crate::runtime::CheckedOutTurn {
+                agent_id: agent_id.clone(),
+                event_rx,
+            });
         }
 
         // The gateway has stopped waiting; the runtime has not. A turn left
@@ -933,11 +943,15 @@ impl AmuxdAgentHandle {
         // one slow question used to take the chat down until the daemon was
         // restarted.
         if timed_out {
-            if let Err(e) = self.cancel(session).await {
-                tracing::warn!(session = %session, error = %e, "gateway turn timed out; cancel failed");
-            } else {
-                tracing::warn!(session = %session, "gateway turn timed out; runtime cancelled");
+            {
+                let mut mgr = self.manager.lock().await;
+                mgr.release_after_abandoned_turn(&agent_id).await;
             }
+            self.logical_to_acp.lock().await.remove(session);
+            tracing::warn!(
+                session = %session,
+                "gateway turn timed out; runtime released"
+            );
         }
 
         let reply_text = result?;

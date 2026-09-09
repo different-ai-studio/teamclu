@@ -1425,6 +1425,7 @@ impl DaemonServer {
                 loop {
                     tick.tick().await;
                     let mut guard = mgr.lock().await;
+                    let _stuck = guard.release_stuck_tool_turns().await;
                     let _idle = guard.evict_idle(threshold).await;
                     let _over = guard.evict_over_capacity(max_attachments).await;
                     // No publish here — main loop drains mgr.evicted_pending_publish.

@@ -30,6 +30,28 @@ describe('diagnose send flow', () => {
     )
   })
 
+  it('reports workspace busy instead of a network outbox failure', () => {
+    const findings = diagnose(
+      emptyCtx({
+        outbox: [
+          {
+            messageId: 'm1',
+            sessionId: 's1',
+            state: 'failed',
+            lastError: 'workspace has active turn: 1b4827bf-d1d4-4746-98f1-ae54df3e7e53',
+            attemptCount: 1,
+            updatedAt: '2026-09-09T06:30:00.000Z',
+          },
+        ],
+      }),
+    )
+    const busy = findings.find((f) => f.code === 'send.workspace_busy')
+    expect(busy?.status).toBe('fail')
+    expect(busy?.nextAction).toContain('等当前回复结束后重试')
+    expect(busy?.nextAction).not.toBe('检查网络后重试该消息')
+    expect(findings.find((f) => f.code === 'send.outbox_failed')).toBeUndefined()
+  })
+
   it('treats remote MQTT publish failure as fail and local_fast as warn', () => {
     const remote = diagnose(
       emptyCtx({

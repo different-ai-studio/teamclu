@@ -43,6 +43,36 @@ impl RuntimeManager {
         evicted
     }
 
+    /// Desktop turns are driven by `poll_events`, which has no wait loop.
+    /// A bash that declared `timeout: 60` and then went silent would otherwise
+    /// sit Active until the 30-minute idle sweep. Skip checked-out receivers —
+    /// gateway/cron already enforce the same deadline on their wait loop.
+    pub async fn release_stuck_tool_turns(&mut self) -> Vec<String> {
+        let now = chrono::Utc::now().timestamp();
+        let stuck: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|(_, h)| {
+                h.event_rx.is_some()
+                    && matches!(h.status, crate::proto::amux::AgentStatus::Active)
+                    && h.in_flight_tool_deadline
+                        .is_some_and(|deadline| now >= deadline)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut released = Vec::with_capacity(stuck.len());
+        for id in stuck {
+            info!(agent_id = %id, "stuck-tool sweeper: releasing abandoned turn");
+            self.release_after_abandoned_turn(&id).await;
+            if self.agents.get(&id).is_none() {
+                released.push(id);
+            }
+        }
+        self.evicted_pending_publish
+            .extend(released.iter().cloned());
+        released
+    }
+
     /// Detach least-recently-used attachments until at most `max` remain.
     ///
     /// The idle sweep alone bounds the set only by user behaviour — how many

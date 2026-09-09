@@ -3183,6 +3183,66 @@ mod tests {
     }
 
     #[test]
+    fn poll_events_stamps_declared_tool_deadline() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt1");
+        let tx = mgr.get_handle_mut("rt1").unwrap().event_tx.clone();
+        tx.try_send(AcpEventFrame::new(
+            "acp-test",
+            amux::AcpEvent {
+                model: String::new(),
+                event: Some(amux::acp_event::Event::ToolUse(amux::AcpToolUse {
+                    tool_id: "1".into(),
+                    tool_name: "bash".into(),
+                    description: String::new(),
+                    params: Default::default(),
+                    tool_kind: "execute".into(),
+                    raw_input_json: r#"{"timeout":60}"#.into(),
+                    raw_output_json: String::new(),
+                    content: vec![],
+                    locations: vec![],
+                    status: "in_progress".into(),
+                })),
+            },
+        ))
+        .expect("event channel ready");
+        mgr.poll_events();
+        let deadline = mgr
+            .get_handle("rt1")
+            .unwrap()
+            .in_flight_tool_deadline
+            .expect("tool use with timeout stamps a deadline");
+        let now = chrono::Utc::now().timestamp();
+        assert!(deadline >= now + 60);
+        assert!(deadline <= now + 60 + 15 + 2);
+    }
+
+    #[tokio::test]
+    async fn release_stuck_tool_turns_stops_active_runtime_past_deadline() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-stuck");
+        {
+            let h = mgr.get_handle_mut("rt-stuck").unwrap();
+            h.status = amux::AgentStatus::Active;
+            h.in_flight_tool_deadline = Some(1);
+        }
+        let released = mgr.release_stuck_tool_turns().await;
+        assert_eq!(released, vec!["rt-stuck".to_string()]);
+        assert!(mgr.get_handle("rt-stuck").is_none());
+    }
+
+    #[tokio::test]
+    async fn release_stuck_tool_turns_skips_checked_out_gateway_turns() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-gw");
+        {
+            let h = mgr.get_handle_mut("rt-gw").unwrap();
+            h.status = amux::AgentStatus::Active;
+            h.in_flight_tool_deadline = Some(1);
+            h.event_rx = None;
+        }
+        assert!(mgr.release_stuck_tool_turns().await.is_empty());
+        assert!(mgr.get_handle("rt-gw").is_some());
+    }
+
+    #[test]
     fn poll_events_for_only_drains_allowlisted_runtimes() {
         // Regression: the HTTP/SSE adapter's event pump shares the single
         // RuntimeManager with the MQTT main loop. It used to call the global

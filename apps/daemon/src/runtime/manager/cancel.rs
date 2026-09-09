@@ -41,6 +41,30 @@ impl RuntimeManager {
         handle.cancel().await
     }
 
+    /// ACP cancel does not flip occupancy. A hung bash stays `Active`, so
+    /// `workspace_has_active_turn` keeps refusing reload / the next prompt.
+    /// After a driver has given up, cancel first; if the handle is still a
+    /// mid-turn occupant, stop it so the next message can spawn fresh.
+    pub async fn release_after_abandoned_turn(&mut self, agent_id: &str) {
+        if let Err(e) = self.cancel_agent(agent_id).await {
+            tracing::warn!(
+                agent_id,
+                error = %e,
+                "cancel after abandoned turn failed"
+            );
+        }
+        let still_occupying = self.agents.get(agent_id).is_some_and(|h| {
+            matches!(h.status, crate::proto::amux::AgentStatus::Active) || h.event_rx.is_none()
+        });
+        if still_occupying {
+            tracing::warn!(
+                agent_id,
+                "abandoned turn still occupying workspace; stopping runtime"
+            );
+            let _ = self.stop_runtime(agent_id).await;
+        }
+    }
+
     pub async fn restart_session(&mut self, agent_id: &str) -> crate::error::Result<()> {
         if self.stop_runtime(agent_id).await.is_some() {
             Ok(())

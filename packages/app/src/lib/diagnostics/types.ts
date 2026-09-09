@@ -57,6 +57,7 @@ export type DiagnosticCauseCode =
   | 'model.catalog_unknown'
   | 'model.team_gateway_unconfigured'
   | 'send.outbox_failed'
+  | 'send.workspace_busy'
   | 'send.cloud_insert_failed'
   | 'send.mqtt_publish_failed'
   | 'send.runtime_ensure_failed'

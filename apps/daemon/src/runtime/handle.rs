@@ -55,6 +55,10 @@ pub struct RuntimeHandle {
     /// the runtime. Stored as a plain `i64` because the field lives behind
     /// the manager's `AsyncMutex` — no separate locking needed.
     pub last_active_at: i64,
+    /// Unix epoch when an in-flight tool's declared timeout (+ grace) elapses.
+    /// Set from ToolUse in `poll_events`; cleared on ToolResult. Gateway
+    /// checkout skips poll_events and tracks the same deadline on its wait loop.
+    pub in_flight_tool_deadline: Option<i64>,
     pub sequence: u64,
     /// Receiver half of the per-agent event channel. Wrapped in `Option` so
     /// the gateway turn-await loop can `.take()` it for the duration of a
@@ -146,6 +150,7 @@ impl RuntimeHandle {
             tool_use_count: 0,
             started_at: now,
             last_active_at: now,
+            in_flight_tool_deadline: None,
             sequence: 0,
             event_rx: Some(event_rx),
             event_tx,
@@ -425,6 +430,7 @@ impl RuntimeHandle {
             tool_use_count: 0,
             started_at: 0,
             last_active_at: 0,
+            in_flight_tool_deadline: None,
             sequence: 0,
             event_rx: Some(event_rx),
             event_tx,
