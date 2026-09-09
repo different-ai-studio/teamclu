@@ -138,7 +138,9 @@ mod tests {
         // pipe holds, so a child whose output is read only after it exits would
         // never exit at all.
         let mut chatty = Command::new("sh");
-        chatty.arg("-c").arg("dd if=/dev/zero bs=1024 count=1024 2>/dev/null");
+        chatty
+            .arg("-c")
+            .arg("dd if=/dev/zero bs=1024 count=1024 2>/dev/null");
         let out = run_bounded(chatty, Duration::from_secs(30), "unused").unwrap();
         assert_eq!(out.stdout.len(), 1024 * 1024);
     }
@@ -150,12 +152,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("still-alive");
         let mut parent = Command::new("sh");
-        parent
-            .arg("-c")
-            .arg(format!(
-                "sh -c 'sleep 2; touch {}' & sleep 30",
-                marker.display()
-            ));
+        parent.arg("-c").arg(format!(
+            "sh -c 'sleep 2; touch {}' & sleep 30",
+            marker.display()
+        ));
         let _ = run_bounded(parent, Duration::from_millis(200), "gone").unwrap_err();
         std::thread::sleep(Duration::from_secs(3));
         assert!(

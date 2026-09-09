@@ -1346,9 +1346,12 @@ async fn finish_app_deploy(
     if let Some(sha) = built_sha {
         finalize_body["gitCommitSha"] = serde_json::json!(sha);
     }
-    fc.post_json(&format!("/v1/apps/{enc_id}/deploy/finalize"), &finalize_body)
-        .await
-        .map_err(|e| format!("Cloud API deploy finalize failed: {e}"))
+    fc.post_json(
+        &format!("/v1/apps/{enc_id}/deploy/finalize"),
+        &finalize_body,
+    )
+    .await
+    .map_err(|e| format!("Cloud API deploy finalize failed: {e}"))
 }
 
 /// The whole deploy, the same three legs the desktop UI runs: mint the upload
@@ -1559,7 +1562,9 @@ async fn read_app_logs(
     let since_minutes = u64_body_field(v, "since_minutes", "sinceMinutes")
         .unwrap_or(30)
         .clamp(1, 7 * 24 * 60);
-    let limit = u64_body_field(v, "limit", "limit").unwrap_or(100).clamp(1, 200);
+    let limit = u64_body_field(v, "limit", "limit")
+        .unwrap_or(100)
+        .clamp(1, 200);
     let kind = str_body_field(v, "kind", "kind").unwrap_or_else(|| "app".to_string());
     if !matches!(kind.as_str(), "app" | "request" | "all") {
         return Err(format!(
@@ -1702,7 +1707,9 @@ async fn handle_app_data(app: &AppHandle, body: &[u8]) -> Result<String, String>
 
     match action.as_str() {
         "rows" => {
-            let limit = u64_body_field(&v, "limit", "limit").unwrap_or(50).clamp(1, 100);
+            let limit = u64_body_field(&v, "limit", "limit")
+                .unwrap_or(50)
+                .clamp(1, 100);
             let mut query = format!("?limit={limit}");
             if let Some(after) = str_body_field(&v, "after", "after") {
                 query.push_str(&format!("&after={}", urlencoding::encode(&after)));
@@ -2168,7 +2175,10 @@ mod tests {
             "publicUrl": "https://notes-0c0a97bf.apps.example.com",
             "fcEndpoint": "https://raw-suffix.fcapp.run",
         });
-        assert_eq!(app_brief(&with_vanity)["url"], "https://notes-0c0a97bf.apps.example.com");
+        assert_eq!(
+            app_brief(&with_vanity)["url"],
+            "https://notes-0c0a97bf.apps.example.com"
+        );
 
         let no_vanity = serde_json::json!({
             "id": "app-1", "publicUrl": serde_json::Value::Null,
@@ -2187,7 +2197,10 @@ mod tests {
         assert!(!safe.contains("Signature="), "{safe}");
         assert!(!safe.contains("OSSAccessKeyId="), "{safe}");
         // Still says where it failed, or the message is useless.
-        assert!(safe.contains("bucket.oss-cn-shenzhen.aliyuncs.com/apps/1/code.zip"), "{safe}");
+        assert!(
+            safe.contains("bucket.oss-cn-shenzhen.aliyuncs.com/apps/1/code.zip"),
+            "{safe}"
+        );
         assert!(safe.contains("403"), "{safe}");
     }
 
