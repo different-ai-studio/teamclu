@@ -1,0 +1,103 @@
+# Private image registry for belayo's container apps.
+#
+# Deployed as a Dokploy compose stack in the `infra` project, beside gitea and
+# the AI gateway. Dokploy's Traefik terminates TLS on `*.service.ucar.cc`,
+# which already has a wildcard A record — this needs no DNS change of its own.
+#
+# The registry stores images; it does not run them. So an ARM64 Swarm node
+# serving `linux/amd64` images (the only architecture Function Compute runs) is
+# not a contradiction — nothing here executes what it holds.
+#
+# Blobs go to belayo's own OSS bucket, not to a node volume: this Swarm is
+# resource-tight and image layers are the least bounded thing that could land
+# on it. `registry:3`, not `:2` — the 2.x S3 driver addresses the bucket
+# path-style and OSS answers `SecondLevelDomainForbidden: Please use virtual
+# hosted style` to the very first blob upload.
+#
+# Env comes from the Dokploy stack's own environment tab (never this file):
+#   REGISTRY_HOST                  registry.service.ucar.cc
+#   REGISTRY_OSS_BUCKET            belayo-teamclu-apps
+#   REGISTRY_OSS_REGION            cn-shenzhen
+#   REGISTRY_OSS_ENDPOINT          https://oss-cn-shenzhen.aliyuncs.com
+#   REGISTRY_OSS_ACCESS_KEY        belayo's ACCESS_KEY_ID
+#   REGISTRY_OSS_SECRET_KEY        belayo's ACCESS_KEY_SECRET
+#   REGISTRY_PUSH_AUTH             htpasswd line, bcrypt, `$` doubled (see README)
+#   REGISTRY_PULL_AUTH             htpasswd line for the read-only user, same form
+services:
+  registry:
+    image: registry:3
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
+      REGISTRY_STORAGE: "s3"
+      REGISTRY_STORAGE_S3_REGION: "${REGISTRY_OSS_REGION}"
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: "${REGISTRY_OSS_ENDPOINT}"
+      REGISTRY_STORAGE_S3_BUCKET: "${REGISTRY_OSS_BUCKET}"
+      REGISTRY_STORAGE_S3_ACCESSKEY: "${REGISTRY_OSS_ACCESS_KEY}"
+      REGISTRY_STORAGE_S3_SECRETKEY: "${REGISTRY_OSS_SECRET_KEY}"
+      REGISTRY_STORAGE_S3_ROOTDIRECTORY: "/registry"
+      # OSS answers on the bucket's own hostname, like S3. Path style is what
+      # MinIO needs and what OSS rejects.
+      REGISTRY_STORAGE_S3_FORCEPATHSTYLE: "false"
+      REGISTRY_STORAGE_S3_V4AUTH: "true"
+      # Bytes stream through this container rather than via a redirect: the OSS
+      # URLs the driver composes are not signed for the client, so a pull would
+      # 403 on the blob right after a successful manifest.
+      REGISTRY_STORAGE_REDIRECT_DISABLE: "true"
+      # Deleting a tag is how an app's images are reclaimed on teardown.
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    networks:
+      - dokploy-network
+    # Container labels, not `deploy.labels`: Dokploy runs compose stacks with
+    # plain `docker compose`, and Traefik reads labels off the container there.
+    # Under `deploy:` they become swarm service labels, which nothing on this
+    # box looks at — the router simply never appears and the host 404s.
+    labels:
+    - traefik.enable=true
+    - traefik.docker.network=dokploy-network
+    - traefik.http.services.teamclu-registry.loadbalancer.server.port=5000
+
+    # Two logins, split by method. The deployed function keeps its pull
+    # credential in its own configuration, where anyone who can read the
+    # function can read it — and a credential that can also push there
+    # means replacing the image every instance of that app executes.
+    #
+    # A pull is GET/HEAD; everything that writes a blob, a manifest or a
+    # tag is POST/PUT/PATCH/DELETE. The write router carries the higher
+    # priority so it wins over the catch-all for those methods.
+    - traefik.http.middlewares.teamclu-registry-push.basicauth.users=${REGISTRY_PUSH_AUTH}
+    # BOTH accounts on the read side: `docker login` starts with a GET, so a
+    # read router that only knows the pull account rejects the push account
+    # before it ever gets to push anything.
+    - traefik.http.middlewares.teamclu-registry-pull.basicauth.users=${REGISTRY_PULL_AUTH},${REGISTRY_PUSH_AUTH}
+
+    - traefik.http.routers.teamclu-registry-write.rule=Host(`${REGISTRY_HOST}`) && (Method(`POST`) || Method(`PUT`) || Method(`PATCH`) || Method(`DELETE`))
+    - traefik.http.routers.teamclu-registry-write.priority=100
+    - traefik.http.routers.teamclu-registry-write.entrypoints=websecure
+    - traefik.http.routers.teamclu-registry-write.tls.certresolver=letsencrypt
+    - traefik.http.routers.teamclu-registry-write.middlewares=teamclu-registry-push
+    - traefik.http.routers.teamclu-registry-write.service=teamclu-registry
+
+    - traefik.http.routers.teamclu-registry-read.rule=Host(`${REGISTRY_HOST}`)
+    - traefik.http.routers.teamclu-registry-read.priority=10
+    - traefik.http.routers.teamclu-registry-read.entrypoints=websecure
+    - traefik.http.routers.teamclu-registry-read.tls.certresolver=letsencrypt
+    - traefik.http.routers.teamclu-registry-read.middlewares=teamclu-registry-pull
+    - traefik.http.routers.teamclu-registry-read.service=teamclu-registry
+
+    # Plain HTTP exists only to redirect: `docker push` to an http:// host
+    # would otherwise send the credential in the clear.
+    - traefik.http.routers.teamclu-registry-web.rule=Host(`${REGISTRY_HOST}`)
+    - traefik.http.routers.teamclu-registry-web.priority=5
+    - traefik.http.routers.teamclu-registry-web.entrypoints=web
+    - traefik.http.routers.teamclu-registry-web.middlewares=redirect-to-https@file
+    - traefik.http.routers.teamclu-registry-web.service=teamclu-registry
+    deploy:
+      resources:
+        limits:
+          # It proxies bytes to OSS and holds no cache of its own.
+          memory: 512M
+
+networks:
+  dokploy-network:
+    external: true
