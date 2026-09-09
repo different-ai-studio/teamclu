@@ -239,11 +239,13 @@ pub struct DaemonServer {
     cron_turn_done_tx: mpsc::Sender<cron::CronTurnDone>,
     /// Receiver half, `take()`n by whichever run loop (MQTT or NATS) is active.
     cron_turn_done_rx: Option<mpsc::Receiver<cron::CronTurnDone>>,
-    /// Sender for the ACP events of an in-flight cron turn. The turn task owns
-    /// the agent's event channel, so nothing else can publish them to
-    /// `session/live`; the loop drains this and does it (see
+    /// Sender for ACP events of a checked-out turn (cron and gateway). The
+    /// turn task owns the agent's event channel, so nothing else can publish
+    /// them to `session/live`; the loop drains this and does it (see
     /// `publish_cron_turn_event`). Bounded and `try_send`-only — the UI must
-    /// never be able to stall a model turn.
+    /// never be able to stall a model turn. Gateway sessions share this so
+    /// thinking / tools stream in the desktop thread the same way as a
+    /// regular collab turn.
     cron_turn_event_tx: mpsc::Sender<cron::CronTurnEvent>,
     /// Receiver half, `take()`n by whichever run loop is active.
     cron_turn_event_rx: Option<mpsc::Receiver<cron::CronTurnEvent>>,

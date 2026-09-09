@@ -41,6 +41,7 @@ pub mod turn_reply;
 pub mod well_known_bin;
 mod workspace_runtime;
 
+pub use acp_event_frame::{forward_checked_out_turn_event, CheckedOutTurnEvent};
 pub use backend::{create_backend, AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 pub use context_service::RuntimeContextService;
 pub use handle::{InjectedContextItem, PendingMessage, RuntimeHandle};
