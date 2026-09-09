@@ -12,9 +12,34 @@ const tauriPluginMcpPath = path.resolve(__dirname, '../../.tauri-plugin-mcp')
 // externalized bare specifier does not resolve inside the webview — either way
 // `execute_js` gets no answer and the whole harness times out. The npm
 // dependency provides the same listeners as the linked dev checkout.
+// A dev/debug run is driven through that same socket, and `.tauri-plugin-mcp/`
+// is a gitignored convenience link almost nobody has — so the check above used
+// to hand every `pnpm tauri:dev` the stub even though the npm dependency was
+// installed and provides the same listeners. The symptom is specific and
+// baffling: `execute_js` still answers, because `stores/dev-expose.ts` hand-
+// rolls that one listener, while every other socket command (`get_page_state`,
+// `press_key`, `type_into_focused`, `get_dom`, …) times out with no error
+// anywhere. Additive on purpose — the linked-checkout, E2E, and production
+// paths all resolve exactly as before.
 const isTauriMcpE2EBuild = process.env.VITE_TEAMCLU_E2E === 'true'
+// Tauri v2 renamed `TAURI_DEBUG` to `TAURI_ENV_DEBUG`; v1's name is kept as a
+// fallback. Compared against the literal string rather than tested for
+// truthiness: a release build sets it to `"false"`, which is truthy.
+const isTauriDevRun =
+  process.env.TAURI_ENV_DEBUG === 'true' || process.env.TAURI_DEBUG === 'true'
+const tauriPluginMcpLinked = existsSync(path.join(tauriPluginMcpPath, 'package.json'))
+const tauriPluginMcpInstalled = (() => {
+  try {
+    createRequire(import.meta.url).resolve('tauri-plugin-mcp')
+    return true
+  } catch {
+    return false
+  }
+})()
 const useTauriPluginMcpStub =
-  !isTauriMcpE2EBuild && !existsSync(path.join(tauriPluginMcpPath, 'package.json'))
+  !isTauriMcpE2EBuild &&
+  !tauriPluginMcpLinked &&
+  !(tauriPluginMcpInstalled && isTauriDevRun)
 
 // --- Build config: read build.config.json + optional environment/local overrides ---
 function readJSON(filePath: string): Record<string, unknown> | null {
