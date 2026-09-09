@@ -1295,6 +1295,24 @@
     "submit": "创建",
     "cancel": "取消",
     "createError": "创建失败",
+    "files": {
+      "section": "文件",
+      "usage": "{{count}} 个文件 · 已用 {{used}}{{quota}}",
+      "neverMeasured": "{{count}} 个文件 · 用量未统计",
+      "refreshUsage": "重新统计",
+      "upload": "上传",
+      "uploaded": "已上传 {{name}}",
+      "uploadRefused": "没有上传权限",
+      "download": "下载",
+      "delete": "删除",
+      "missing": "文件不存在",
+      "empty": "还没有文件。应用运行时写入的文件也会出现在这里。",
+      "unavailable": "暂时无法访问这个应用的文件：{{reason}}",
+      "overQuota": "已超出配额，应用暂时无法写入新文件。用量为周期统计，可能滞后。",
+      "purge": "清空全部文件",
+      "purgeConfirm": "删除这个应用的全部文件？无法恢复。",
+      "purged": "已删除 {{count}} 个文件"
+    },
     "data": {
       "section": "线上数据",
       "tableCount": "{{count}} 张表",
@@ -1408,7 +1426,7 @@
       "accessGranted": "已授权",
       "accessRevoked": "已撤销",
       "accessError": "权限操作失败",
-      "deleteHint": "删除后线上站点会立刻下线；应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
+      "deleteHint": "删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
       "deleteTitle": "删除应用？",
       "deleteConfirm": "线上站点会立刻下线，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
       "permission": {

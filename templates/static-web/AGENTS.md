@@ -13,6 +13,45 @@
 `public/` 下的东西按原路径提供服务：`public/about.html` → `/about.html`，
 目录会回落到该目录的 `index.html`，找不到的路径回落到首页。
 
+## 文件存储
+
+平台给每个 app 一块自己的对象存储空间，通过环境变量注入：
+
+| 变量 | 含义 |
+|---|---|
+| `TEAMCLU_STORAGE_STS_URL` | 换取临时凭证的地址 |
+| `TEAMCLU_STORAGE_TOKEN` | 换凭证用的身份令牌，**每次部署都会轮换** |
+| `TEAMCLU_STORAGE_BUCKET` / `TEAMCLU_STORAGE_PREFIX` | 你能写的桶和前缀 |
+| `TEAMCLU_STORAGE_REGION` / `TEAMCLU_STORAGE_ENDPOINT` | 区域与 endpoint |
+
+这几个变量不存在时，说明这个部署没开文件存储 —— 代码要能在没有它们时正常跑，
+不要在启动时断言。
+
+**换凭证**（拿到的凭证只能读写 `TEAMCLU_STORAGE_PREFIX` 下的对象，越界一律
+`AccessDenied`）：
+
+```js
+async function storageCredentials() {
+  const res = await fetch(process.env.TEAMCLU_STORAGE_STS_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.TEAMCLU_STORAGE_TOKEN}` },
+  })
+  if (!res.ok) throw new Error(`storage credentials: ${res.status}`)
+  return res.json() // { accessKeyId, accessKeySecret, securityToken, expiration, bucket, prefix, ... }
+}
+```
+
+三条要点：
+
+1. **按 `expiration` 提前刷新，不要等 403。** 凭证有有效期，过期后所有请求都会失败，
+   而 403 也可能是别的原因，靠它来判断会把两种问题混在一起。
+2. **每个 key 都要带上 `prefix`**：`` `${creds.prefix}avatars/${id}.png` ``。少了前缀
+   不是"存到别处去了"，是直接被拒。
+3. **删 app 不会删这些文件**（和数据库一样），所以不要把它当临时目录用。
+
+用量是**周期统计**的，不是实时计数：超配额时平台会停发新的写凭证，但那之前你可能
+已经写超了一点。不要在应用里依赖它做精确计费。
+
 ## 不要动的东西
 
 - **`server.mjs` 和 `build.mjs`** —— 它们保证 `pnpm build` 产出

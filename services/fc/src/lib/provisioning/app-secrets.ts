@@ -11,6 +11,14 @@ const TAG_LEN = 16;
 export const OAUTH_CLIENT_SECRET_KIND = "oauth_client_secret";
 
 /**
+ * Kind for the token a deployed app presents to mint its own storage
+ * credentials. Regenerated on every finalize and written into the function env
+ * in the same breath, exactly like the app's Postgres password: a token that is
+ * sealed here but never injected is a credential the app has no way to use.
+ */
+export const APP_STORAGE_TOKEN_KIND = "storage_token";
+
+/**
  * 32-byte base64 AES-GCM key from env. Blank means app_secrets encrypt/decrypt
  * is unavailable until the operator configures it.
  */

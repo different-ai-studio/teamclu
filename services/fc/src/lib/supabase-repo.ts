@@ -3,7 +3,7 @@
  *
  * Contract: lib/repository-contract.ts.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
 import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
@@ -51,6 +51,7 @@ import {
   appFunctionName,
   appOssObjectName,
   assertDeployAllowed,
+  buildAppStorageEnv,
   checkDeployInProgress,
   deployUnavailable,
   needsDatabase,
@@ -59,6 +60,7 @@ import {
   parseDeployedImage,
   parseDeployToken,
   parseOptionalGitCommitSha,
+  readAppsCloudApiUrl,
 } from "./provisioning/app-deploy.js";
 import type { AppLogKind } from "./provisioning/app-logs.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
@@ -110,10 +112,13 @@ function customDomainView(row: any) {
   };
 }
 import {
+  APP_STORAGE_TOKEN_KIND,
   deleteAppSecretSupabase,
   getAppSecretSupabase,
   putAppSecretSupabase,
 } from "./provisioning/app-secrets.js";
+import { appFileKey, appFilesPrefix } from "./provisioning/apps-oss.js";
+import { isOverQuota, type AppStorageOps } from "./provisioning/app-storage.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
 import {
@@ -348,6 +353,22 @@ function parseAppDataFilter(query: any): { column: string; op: FilterOp; value?:
   return { column, op, value: query?.filterValue };
 }
 
+/**
+ * Constant-time string compare for secrets that arrive over the wire.
+ *
+ * `timingSafeEqual` throws on a length mismatch, which would itself leak the
+ * expected length, so lengths are folded in as a boolean instead of short
+ * -circuiting: both branches do the same work and the comparison always runs
+ * over equal-length buffers.
+ */
+function constantTimeEquals(expected: string, actual: string): boolean {
+  const a = Buffer.from(String(expected), "utf8");
+  const b = Buffer.from(String(actual ?? ""), "utf8");
+  const padded = Buffer.alloc(a.length);
+  b.copy(padded, 0, 0, Math.min(a.length, b.length));
+  return timingSafeEqual(a, padded) && a.length === b.length;
+}
+
 export function createSupabaseBusinessRepository(options) {
   const {
     supabaseUrl,
@@ -373,6 +394,11 @@ export function createSupabaseBusinessRepository(options) {
     // reason names the variable so the 503 is actionable.
     appData,
     appDataUnavailableReason,
+    // App file storage, with the apps OSS profile bound (see makeAppStorageOps).
+    // Absent when the deployment has no apps profile at all; the reason names
+    // the variable, for the same why as appDataUnavailableReason above.
+    appStorage,
+    appStorageUnavailableReason,
     // Reads the deployed function's own logs out of SLS. Absent when the
     // deployment has no Alibaba credentials or no SLS project to point at —
     // the reason names what is missing, as with the two above.
@@ -492,6 +518,59 @@ export function createSupabaseBusinessRepository(options) {
     }
     const { createServiceRoleClient } = await import("./supabase.js");
     return createServiceRoleClient();
+  }
+
+  /**
+   * The bytes to judge a quota against, re-measuring when the stored number is
+   * too old to trust.
+   *
+   * The design called for a periodic sweep. This is that, minus the scheduler:
+   * measurement happens at the two moments it actually decides something - a
+   * signed upload and an STS mint - and at most once per staleness window per
+   * app. A cron would have had to exist, be wired on both deploy targets, and
+   * still leave the gap between its last run and this request; this closes the
+   * gap and needs no infrastructure. When no quota is in force there is nothing
+   * to decide, so nothing is measured.
+   */
+  const USAGE_STALE_MS = 15 * 60 * 1000;
+  async function usageForQuotaDecision(app, ops, quotaBytes) {
+    if (quotaBytes == null || quotaBytes <= 0) return app.storage_bytes ?? null;
+    const countedAt = app.storage_counted_at ? Date.parse(app.storage_counted_at) : NaN;
+    if (Number.isFinite(countedAt) && Date.now() - countedAt < USAGE_STALE_MS) {
+      return app.storage_bytes ?? null;
+    }
+    const usage = await ops.measure(ops.bucketFor(app), appFilesPrefix(app.id));
+    const admin = await serviceRoleClient("record app storage usage");
+    await admin
+      .from("apps")
+      .update({ storage_bytes: usage.bytes, storage_counted_at: new Date().toISOString() })
+      .eq("id", app.id);
+    return usage.bytes;
+  }
+
+  /**
+   * Mint + seal + return the storage env for one finalize.
+   *
+   * Returns undefined (rather than throwing) when the deployment has no apps
+   * storage profile or no public Cloud API URL: file storage is optional, and a
+   * deployment without it must still be able to deploy apps.
+   */
+  async function buildStorageEnvForFinalize(app) {
+    if (!appStorage) return undefined;
+    const cloudApiUrl = readAppsCloudApiUrl();
+    if (!cloudApiUrl) return undefined;
+    const token = randomBytes(32).toString("base64url");
+    const admin = await serviceRoleClient("seal app storage token");
+    await putAppSecretSupabase(admin, app.id, APP_STORAGE_TOKEN_KIND, token);
+    return buildAppStorageEnv({
+      appId: app.id,
+      token,
+      bucket: appStorage.bucketFor(app),
+      prefix: appFilesPrefix(app.id),
+      region: appStorage.region,
+      endpoint: appStorage.endpoint,
+      cloudApiUrl,
+    });
   }
 
   /**
@@ -3741,7 +3820,7 @@ export function createSupabaseBusinessRepository(options) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token")
+        .select("id, slug, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -3775,6 +3854,12 @@ export function createSupabaseBusinessRepository(options) {
         // in a different database and take the app live with no data. Deploy
         // where the data already is.
         const orgId = existing.org_id ?? (await this.resolveTeamOrgId(existing.team_id));
+        // A FRESH storage token every finalize, sealed and injected in the same
+        // breath. Reusing an existing one looks tempting and is the exact trap
+        // the app's Postgres password documents at app-postgres.ts:28 - a
+        // credential that is stored but never handed to the function is one the
+        // app cannot use, and the failure only shows up on the second deploy.
+        const storageEnv = await buildStorageEnvForFinalize(existing);
         const r = await finalizeDeploy({
           appId,
           slug: existing.slug,
@@ -3783,6 +3868,7 @@ export function createSupabaseBusinessRepository(options) {
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
           platformAuthEnv,
+          storageEnv,
           // What the daemon read out of the app's own declaration. Absent for a
           // client that predates it, which is the contract every app had before.
           runtime: runtimeSpec,
@@ -4290,6 +4376,221 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
       await revokeAppMemberDeployKeysIfGitea(appId, memberId);
       return true;
+    },
+
+    // --- App file storage (design 2026-09-09-app-storage-design) ---
+    //
+    // Every human-facing operation goes through resolveAppStorageAccess, which
+    // is the ONLY place the three tiers are compared. The app's own path
+    // (mintAppStorageCredentials) deliberately does not use it: an app is not a
+    // member and has no permission level, it has a token.
+
+    async resolveAppStorageAccess(appId: string, minLevel: "view" | "prompt" | "admin") {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select(
+          "id, team_id, created_by_actor_id, oss_bucket, storage_bytes, storage_counted_at, storage_quota_bytes",
+        )
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission) return null;
+      const rank = { view: 0, prompt: 1, admin: 2 } as const;
+      if (rank[permission.level] < rank[minLevel]) return null;
+      return { app, level: permission.level };
+    },
+
+    /** 503 that names the missing variable rather than "not configured". */
+    requireAppStorage(): AppStorageOps {
+      if (!appStorage) {
+        throw new ApiError(
+          503,
+          "app_storage_unavailable",
+          appStorageUnavailableReason || "app file storage is not configured",
+        );
+      }
+      return appStorage;
+    },
+
+    async listAppFiles(
+      appId: string,
+      query: { prefix?: string | null; after?: string | null; limit?: number } = {},
+    ) {
+      const access = await this.resolveAppStorageAccess(appId, "view");
+      if (!access) return null;
+      const ops = this.requireAppStorage();
+      const bucket = ops.bucketFor(access.app);
+      // A caller-supplied prefix filters WITHIN the app's own space; it is
+      // appended to the app prefix and can never replace it.
+      const sub = (query.prefix ?? "").replace(/^\/+/, "");
+      const page = await ops.list(bucket, `${appFilesPrefix(appId)}${sub}`, {
+        after: query.after ?? null,
+        limit: query.limit,
+      });
+      // Paths come back relative to the filtered prefix; re-attach the caller's
+      // sub-prefix so what the client sees is always relative to the app root.
+      const items = sub ? page.items.map((e) => ({ ...e, path: `${sub}${e.path}` })) : page.items;
+      return { items, nextCursor: page.nextCursor, canWrite: access.level !== "view" };
+    },
+
+    async getAppStorageUsage(appId: string) {
+      const access = await this.resolveAppStorageAccess(appId, "view");
+      if (!access) return null;
+      const ops = this.requireAppStorage();
+      const quotaBytes = access.app.storage_quota_bytes ?? ops.defaultQuotaBytes;
+      return {
+        bytes: access.app.storage_bytes ?? null,
+        countedAt: access.app.storage_counted_at ?? null,
+        quotaBytes,
+        overQuota: isOverQuota(access.app.storage_bytes, quotaBytes),
+      };
+    },
+
+    /**
+     * Re-measure and persist. Called by the control panel on demand and by the
+     * sweep; both write through the service role because `storage_bytes` is a
+     * platform-owned fact and no RLS policy lets a member set it.
+     */
+    async refreshAppStorageUsage(appId: string) {
+      const access = await this.resolveAppStorageAccess(appId, "view");
+      if (!access) return null;
+      const ops = this.requireAppStorage();
+      const usage = await ops.measure(ops.bucketFor(access.app), appFilesPrefix(appId));
+      const admin = await serviceRoleClient("record app storage usage");
+      const countedAt = new Date().toISOString();
+      const { error } = await admin
+        .from("apps")
+        .update({ storage_bytes: usage.bytes, storage_counted_at: countedAt })
+        .eq("id", appId);
+      if (error) throw error;
+      const quotaBytes = access.app.storage_quota_bytes ?? ops.defaultQuotaBytes;
+      return {
+        bytes: usage.bytes,
+        objects: usage.objects,
+        truncated: usage.truncated,
+        countedAt,
+        quotaBytes,
+        overQuota: isOverQuota(usage.bytes, quotaBytes),
+      };
+    },
+
+    async createAppFileUploadUrl(appId: string, input: { path: string; contentType?: string | null }) {
+      const access = await this.resolveAppStorageAccess(appId, "prompt");
+      if (!access) return null;
+      const ops = this.requireAppStorage();
+      const quotaBytes = access.app.storage_quota_bytes ?? ops.defaultQuotaBytes;
+      if (isOverQuota(await usageForQuotaDecision(access.app, ops, quotaBytes), quotaBytes)) {
+        throw new ApiError(409, "app_storage_quota_exceeded", "this app is over its storage quota");
+      }
+      let key: string;
+      try {
+        key = appFileKey(appId, input.path);
+      } catch (e) {
+        throw new ApiError(400, "validation_failed", (e as Error).message);
+      }
+      const bucket = ops.bucketFor(access.app);
+      return { url: await ops.signUpload(bucket, key, input.contentType ?? null), path: input.path, expiresIn: 900 };
+    },
+
+    async createAppFileDownloadUrl(appId: string, path: string) {
+      const access = await this.resolveAppStorageAccess(appId, "view");
+      if (!access) return null;
+      const ops = this.requireAppStorage();
+      let key: string;
+      try {
+        key = appFileKey(appId, path);
+      } catch (e) {
+        throw new ApiError(400, "validation_failed", (e as Error).message);
+      }
+      const bucket = ops.bucketFor(access.app);
+      const head = await ops.head(bucket, key);
+      if (!head) throw new ApiError(404, "not_found", "no such file");
+      return {
+        url: await ops.signDownload(bucket, key, path.split("/").pop() ?? null),
+        size: head.size,
+        contentType: head.contentType,
+        expiresIn: 900,
+      };
+    },
+
+    async deleteAppFile(appId: string, path: string) {
+      const access = await this.resolveAppStorageAccess(appId, "prompt");
+      if (!access) return null;
+      const ops = this.requireAppStorage();
+      let key: string;
+      try {
+        key = appFileKey(appId, path);
+      } catch (e) {
+        throw new ApiError(400, "validation_failed", (e as Error).message);
+      }
+      await ops.remove(ops.bucketFor(access.app), key);
+      return { ok: true as const };
+    },
+
+    /**
+     * Delete everything the app has stored. `admin` only, and it is the one
+     * storage operation that is not reversible - the design keeps files when an
+     * app is DELETED precisely because we have no backup, so the deliberate
+     * version of that action has to sit behind the highest tier.
+     */
+    async purgeAppFiles(appId: string) {
+      const access = await this.resolveAppStorageAccess(appId, "admin");
+      if (!access) return null;
+      const ops = this.requireAppStorage();
+      const deleted = await ops.removePrefix(ops.bucketFor(access.app), appFilesPrefix(appId));
+      const admin = await serviceRoleClient("reset app storage usage");
+      const { error } = await admin
+        .from("apps")
+        .update({ storage_bytes: 0, storage_counted_at: new Date().toISOString() })
+        .eq("id", appId);
+      if (error) throw error;
+      return { deleted };
+    },
+
+    async setAppStorageQuota(appId: string, quotaBytes: number | null) {
+      const access = await this.resolveAppStorageAccess(appId, "admin");
+      if (!access) return null;
+      if (quotaBytes != null && (!Number.isFinite(quotaBytes) || quotaBytes < 0)) {
+        throw new ApiError(400, "validation_failed", "quotaBytes must be a non-negative number or null");
+      }
+      const admin = await serviceRoleClient("set app storage quota");
+      const { error } = await admin
+        .from("apps")
+        .update({ storage_quota_bytes: quotaBytes == null ? null : Math.floor(quotaBytes) })
+        .eq("id", appId);
+      if (error) throw error;
+      const ops = this.requireAppStorage();
+      return { quotaBytes: quotaBytes == null ? ops.defaultQuotaBytes : Math.floor(quotaBytes) };
+    },
+
+    /**
+     * The app's own path. Runs on a service-role repository behind
+     * `auth: "app-token"`, which authenticates NOTHING - this method is the
+     * whole gate, so it must stay boring: constant-time compare, one failure
+     * shape, no token in any error or log.
+     */
+    async mintAppStorageCredentials(appId: string, token: string) {
+      const ops = this.requireAppStorage();
+      const admin = await serviceRoleClient("mint app storage credentials");
+      const expected = await getAppSecretSupabase(admin, appId, APP_STORAGE_TOKEN_KIND);
+      if (!expected || !constantTimeEquals(expected, token)) return null;
+      const { data: app, error } = await admin
+        .from("apps")
+        .select("id, oss_bucket, storage_bytes, storage_quota_bytes")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+      const quotaBytes = app.storage_quota_bytes ?? ops.defaultQuotaBytes;
+      if (isOverQuota(await usageForQuotaDecision(app, ops, quotaBytes), quotaBytes)) {
+        // 409 rather than 403: the app is who it says it is, it just has no
+        // room. A 403 would send whoever debugs it hunting for a policy bug.
+        throw new ApiError(409, "app_storage_quota_exceeded", "this app is over its storage quota");
+      }
+      const credentials = await ops.assume(app);
+      return { credentials };
     },
 
     async deleteApp(appId: string) {

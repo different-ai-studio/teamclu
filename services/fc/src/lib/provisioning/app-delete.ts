@@ -111,6 +111,15 @@ export function makeTeardownAppDeps(profile: {
           deleteFunction: profile.fcOps.deleteFunction.bind(profile.fcOps),
         }
       : undefined,
+    // ONE object: the build artifact at `apps/<appId>/code.zip`.
+    //
+    // The app's files, under the separate `app-files/<appId>/` prefix, are
+    // deliberately NOT touched - same treatment as its Postgres schema (§7.2 of
+    // the first-class design): that is the user's data, deleting it is
+    // irreversible, and we hold no backup. The two live under different
+    // top-level prefixes precisely so the tidy-looking "delete this app's
+    // prefix" cannot be written by accident. If you are here to add a sweep,
+    // read docs/specs/2026-09-09-app-storage-design.md §6 first.
     deleteOssObject: async (ossObjectName) => {
       await profile.s3.send(
         new DeleteObjectCommand({ Bucket: profile.bucket, Key: ossObjectName }),

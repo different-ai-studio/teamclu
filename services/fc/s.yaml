@@ -104,6 +104,11 @@ resources:
         APPS_REGISTRY_PULL_HOST: ${env('APPS_REGISTRY_PULL_HOST', '')}
         APPS_REGION: ${env('APPS_REGION', '')}
         APPS_OSS_ENDPOINT: ${env('APPS_OSS_ENDPOINT', '')}
+        # App file storage. Same three knobs as the compose target; declared
+        # here too so the two stay in step (deploy-env-parity.test.ts).
+        APPS_STS_ROLE_ARN: ${env('APPS_STS_ROLE_ARN', '')}
+        APPS_CLOUD_API_URL: ${env('APPS_CLOUD_API_URL', '')}
+        APPS_STORAGE_QUOTA_BYTES: ${env('APPS_STORAGE_QUOTA_BYTES', '')}
         # Log destination for deployed apps. Blank → derived from the account
         # id (`teamclu-apps-<accountId>` / `app-logs`) and created on deploy.
         APPS_SLS_PROJECT: ${env('APPS_SLS_PROJECT', '')}

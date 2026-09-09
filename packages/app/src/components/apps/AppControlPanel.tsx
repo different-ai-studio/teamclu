@@ -38,6 +38,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { AppDataSection } from './AppDataSection'
 import { AppAuthSection } from './AppAuthSection'
 import { AppCustomDomainSection } from './AppCustomDomainSection'
+import { AppFilesSection } from './AppFilesSection'
 import { AppLogsSection } from './AppLogsSection'
 import type { AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
 
@@ -655,6 +656,13 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                 is exactly the tier design §6 lets edit data. */}
             <AppDataSection app={app} canEdit={canManageAccess} />
           </Field>
+          <Field label={t('apps.files.section', '文件')}>
+            {/* Unlike the data browser, this is shown for every app type: files
+                are not tied to having a database, and a static site can have
+                assets uploaded to it. Whether the CONTROLS appear is decided by
+                the server's `canWrite`, not by the app's shape. */}
+            <AppFilesSection app={app} canManage={canManageAccess} />
+          </Field>
           <Field label={t('apps.logs.section', '运行日志')}>
             <AppLogsSection app={app} />
           </Field>
@@ -668,7 +676,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
           <p className="mb-2 text-[12px] text-muted-foreground">
             {t(
               'apps.controlPanel.deleteHint',
-              '删除后线上站点会立刻下线；应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
+              '删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
             )}
           </p>
           <Button

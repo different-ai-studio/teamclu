@@ -15,7 +15,10 @@ type Deps = {
   /** Unauthenticated system repo for marketplace admin (shared-secret routes). */
   createSystemRepository?: () => unknown | Promise<unknown>;
 };
-type RouteOptions = { auth?: "bearer" | "none" | "marketplace-admin"; rawBody?: boolean };
+type RouteOptions = {
+  auth?: "bearer" | "none" | "marketplace-admin" | "app-token";
+  rawBody?: boolean;
+};
 type LegacyCtx = Record<string, unknown>;
 type LegacyHandler = (ctx: LegacyCtx) => Promise<any> | any;
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -130,6 +133,17 @@ export function createHonoRouterAdapter(app: Hono, deps: Deps) {
           }
           if (!deps.createSystemRepository) {
             throw new ApiError(503, "unavailable", "marketplace admin repository not configured");
+          }
+          repository = await deps.createSystemRepository();
+        } else if (auth === "app-token") {
+          // The deployed app itself, not a person. It presents the per-app
+          // token that finalizeDeploy sealed into app_secrets and wrote into
+          // its function env, and the ROUTE verifies it - this only hands over
+          // a service-role repository so the route has something that can read
+          // app_secrets at all. Nothing is authorized here, and the route must
+          // not assume otherwise.
+          if (!deps.createSystemRepository) {
+            throw new ApiError(503, "unavailable", "app token repository not configured");
           }
           repository = await deps.createSystemRepository();
         } else if (auth !== "none") {
