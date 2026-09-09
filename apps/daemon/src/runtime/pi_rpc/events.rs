@@ -152,6 +152,7 @@ async fn handle_event(
     match event_type {
         "agent_start" => {
             if let Some(route) = shared.routes.lock().get_mut(&session_id) {
+                route.user_cancel_requested = false;
                 route.translate.reset_turn();
                 // A prompt sent while pi was busy is queued as `followUp`, so
                 // it starts its own run after the current one ends — and that
@@ -244,7 +245,15 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
             // a user cancel, a child that died mid-turn. Flushing the held
             // error at this one point is what makes "a failed turn always
             // reports" hold no matter which path fired.
-            let failure = route.translate.take_turn_error();
+            let failure = if route.user_cancel_requested {
+                route.user_cancel_requested = false;
+                route.translate.discard_turn_error();
+                Some(translate::aborted_turn_error(
+                    translate::ABORTED_ERROR_DETAILS,
+                ))
+            } else {
+                route.translate.take_turn_error()
+            };
             Some((route.event_tx.clone(), reply_to, failure))
         }
     };
@@ -626,6 +635,7 @@ mod tests {
                 pool_key,
                 session_path: session_path.to_string(),
                 turn_active: false,
+                user_cancel_requested: false,
                 turn_reply_to: None,
                 turn_requester: None,
                 translate: translate::TranslateState::default(),

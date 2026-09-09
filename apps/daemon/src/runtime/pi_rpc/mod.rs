@@ -62,6 +62,10 @@ pub(crate) struct Route {
     /// pi session file path (open_session / switch_session target).
     pub(crate) session_path: String,
     pub(crate) turn_active: bool,
+    /// Set when the client sends `AcpCommand::Cancel` for this session. Consumed
+    /// by `close_turn` to emit an interrupt (not a provider failure) even if pi
+    /// reports `stopReason: "error"` or leaves the turn on `"toolUse"`.
+    pub(crate) user_cancel_requested: bool,
     pub(crate) turn_reply_to: Option<String>,
     pub(crate) turn_requester: Option<String>,
     pub(crate) translate: TranslateState,
@@ -596,6 +600,7 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
             pool_key: key,
             session_path: established.session_path,
             turn_active: false,
+            user_cancel_requested: false,
             turn_reply_to: None,
             turn_requester: None,
             translate: TranslateState::default(),
@@ -1275,6 +1280,9 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 .await;
             }
             AcpCommand::Cancel { acp_session_id } => {
+                if let Some(route) = shared.routes.lock().get_mut(&acp_session_id) {
+                    route.user_cancel_requested = true;
+                }
                 let pool_key = shared
                     .routes
                     .lock()

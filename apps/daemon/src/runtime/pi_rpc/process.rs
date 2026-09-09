@@ -1133,6 +1133,7 @@ mod tests {
                 pool_key: attached_key.clone(),
                 session_path: "/s.jsonl".into(),
                 turn_active: false,
+                user_cancel_requested: false,
                 turn_reply_to: None,
                 turn_requester: None,
                 translate: super::translate::TranslateState::default(),

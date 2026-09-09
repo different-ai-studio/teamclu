@@ -16,14 +16,22 @@ export function isAgentTurnAbortError(
   if (name.includes('messageaborted')) return true
   // Display form already joined as "MessageAbortedError: Aborted"
   if (name.includes('messageabortederror')) return true
+  if (name.includes('operation was aborted') || det.includes('operation was aborted')) {
+    return true
+  }
+  if (det === 'request was aborted') return true
+  if (name.includes('aborterror') || det.includes('aborterror')) return true
   return false
 }
 
 /** Classify daemon-emitted AcpError.message into a UI error name. */
-export function classifyAgentTurnErrorName(message: string | undefined): string {
+export function classifyAgentTurnErrorName(
+  message: string | undefined,
+  detail?: string | undefined,
+): string {
   const raw = (message ?? '').trim()
   const lower = raw.toLowerCase()
-  if (isAgentTurnAbortError(raw)) {
+  if (isAgentTurnAbortError(raw, detail)) {
     return TURN_INTERRUPTED_ERROR_NAME
   }
   if (lower === 'model stalled' || lower === 'model provider not responding') {

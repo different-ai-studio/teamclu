@@ -427,7 +427,7 @@ export function handleAcpEvent(
                 // SessionErrorAlert bubble in the thread instead.
                 {
                   const detail = (er.details ?? "").trim();
-                  const errorName = classifyAgentTurnErrorName(er.message);
+                  const errorName = classifyAgentTurnErrorName(er.message, er.details);
                   useSessionStore.getState().setSessionErrorEvent({
                     sessionId: sid,
                     error: {

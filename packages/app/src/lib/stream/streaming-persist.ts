@@ -42,11 +42,22 @@ export function snapshotTranscriptParts(
  * Prevents reload from restoring a permanent "running" spinner when idle
  * arrives before the late toolResult (opencode abort order).
  */
+function turnStatusFromMetadata(metadataJson: string | undefined): string | undefined {
+  if (!metadataJson?.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(metadataJson) as { turn_status?: unknown };
+    return typeof parsed.turn_status === "string" ? parsed.turn_status : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function finalizeStreamEntryForPersist(
   entry: AgentStreamEntry,
+  opts?: { interrupted?: boolean },
 ): AgentStreamEntry {
   const cloned = cloneStreamEntrySnapshot(entry);
-  const toolCalls = finishUnresolvedTools(cloned.toolCalls);
+  const toolCalls = finishUnresolvedTools(cloned.toolCalls, opts);
   return {
     ...cloned,
     toolCalls,
@@ -179,8 +190,9 @@ export async function persistStreamingPartsForReply(
   const rawSnapshot =
     opts?.streamEntrySnapshot ??
     resolveStreamEntryForPersist(sessionId, actorId);
+  const interrupted = turnStatusFromMetadata(reply.metadataJson) === "interrupted";
   const snapshot = rawSnapshot
-    ? finalizeStreamEntryForPersist(rawSnapshot)
+    ? finalizeStreamEntryForPersist(rawSnapshot, { interrupted })
     : undefined;
   const parts = mergeSubagentSnapshotsIntoParts(
     snapshotTranscriptParts(snapshot),

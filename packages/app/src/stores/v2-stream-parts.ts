@@ -295,10 +295,26 @@ export function mergeToolCallFromEnrichedParts(
   return enriched;
 }
 
+export type FinishUnresolvedToolsOptions = {
+  /** User stopped the turn — show a clean abort, not a provider-style failure. */
+  interrupted?: boolean;
+};
+
 /** Mark in-flight tools failed so idle flush / reload never leave a spinner. */
-export function finishUnresolvedTools(toolCalls: ToolCall[]): ToolCall[] {
+export function finishUnresolvedTools(
+  toolCalls: ToolCall[],
+  opts?: FinishUnresolvedToolsOptions,
+): ToolCall[] {
   return toolCalls.map((tc) => {
     if (tc.status !== "calling" && tc.status !== "waiting") return tc;
+    if (opts?.interrupted) {
+      return {
+        ...tc,
+        status: "completed" as const,
+        result: "Command aborted",
+        duration: Date.now() - tc.startTime.getTime(),
+      };
+    }
     return {
       ...tc,
       status: "failed" as const,
