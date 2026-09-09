@@ -165,18 +165,27 @@ Quotas `ListProductQuotas ProductCode=oss` / RAM `ListRoles`），结果如下�
 而刷新逻辑本来就必须写（红线 3）。建角色时按 43200 申请，被拒就退回 3600，不需要
 为此改设计。
 
-> **实测中发现的一个独立问题（不属于本设计，但优先级更高）**
+> **实测中发现的一个独立问题——已于 2026-09-09 当天修掉**
 >
-> `GetCallerIdentity` 返回 `IdentityType: "Account"` / `Arn: acs:ram::…:root`
-> ——**self-host 的 `.env` 里放的是主账号 AccessKey，不是 RAM 用户的**。也就是说
-> FC 容器（以及任何能读到那个 `.env` 或容器 env 的东西）当前持有整个阿里云账号的
-> 完全控制权，远不止 OSS。账号里目前只有 2 个 RAM 用户、0 条自定义策略，说明这套
-> 权限从来没有收敛过。
+> `GetCallerIdentity` 曾返回 `IdentityType: "Account"` / `Arn: acs:ram::…:root`
+> ——**self-host 的 `.env` 里放的是主账号 AccessKey**。FC 容器（以及任何能读到那个
+> `.env` 或容器 env 的东西）因此持有整个阿里云账号的完全控制权，远不止 OSS。
 >
-> 这件事**是 §4.1 的前置条件**：`AssumeRole` 的标准形态是"一个受限 RAM 用户去
-> assume 一个受限角色"，拿主账号 AK 去做这件事既不必要也没意义——它本来就什么都能干。
-> 所以阶段二的第一步不是写代码，是把主账号 AK 换成一个只有 OSS + FC + STS 权限的
-> RAM 用户，见 §11。
+> **现状**：已换成 RAM 用户 `teamclu-selfhost`，附自定义策略
+> `teamclu-selfhost-fc-oss`——OSS 仅限 `teamclu-app` / `teamclu-self-host-storage`
+> 两个桶的对象操作与列举，FC 仅限 `acs:fc:cn-shenzhen:<account>:*`，其余（RAM、
+> ECS、RDS、DNS、账单）一概没有。盒子 `.env` 的四个变量
+> （`ACCESS_KEY_ID` / `ACCESS_KEY_SECRET` / `APPS_ACCESS_KEY_ID` /
+> `APPS_ACCESS_KEY_SECRET`）与 GitHub 环境 `self-host-production` 的
+> `TEAMCLAW_ALIYUN_*` 两处都已换。
+>
+> **两处一起换是必须的**：`self-host-deploy.yml:119-120` 每次部署都会把 GitHub
+> secret 同步回盒子 `.env`（`sync_env ACCESS_KEY_ID`），只改盒子会在下一次部署被
+> 覆盖回去。`APPS_ACCESS_KEY_*` 不在同步列表里，只活在盒子上。
+>
+> **仍待人工完成**：禁用主账号那把旧 AK。主账号 AccessKey 没有 OpenAPI，只能在
+> 控制台「AccessKey 管理」里做。旧值仍留在盒子的
+> `.env.bak.before-ak-rotation-20260909`（已 chmod 600）里以备回滚。
 
 ---
 
@@ -232,9 +241,9 @@ Action:   oss:GetObject, oss:PutObject, oss:DeleteObject, oss:ListObjects(带 pr
 一条自定义策略，实测上限 1500（§2.4）；per-app 角色的上限是 1000；而每个 RAM 用户
 只能有 2 把 AK，轮转时没有腾挪空间。
 
-**前置条件（实测发现，§2.4 末尾）**：现在 `.env` 里那把是**主账号 AK**。
-`AssumeRole` 的前提是有一个受限主体去 assume，所以这一步之前必须先把它换成一个
-只有 OSS + FC + STS 权限的 RAM 用户——否则"收窄权限"这件事从第一行代码起就是假的。
+**前置条件（§2.4 末尾）**：`AssumeRole` 的前提是有一个受限主体去 assume。这一条
+**已经满足**——2026-09-09 已把主账号 AK 换成 RAM 用户 `teamclu-selfhost`。实施时
+要给它的策略补上 `sts:AssumeRole`（当前策略只有 OSS + FC，没有 STS）。
 
 **三条实施红线**：
 
@@ -423,10 +432,10 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
    欠账；真要回收需要一个独立的、有人工确认的运维流程，不在本轮。
 5. **`apps.oss_bucket` 第一版恒为 null**，等于一条没有测试覆盖的分支。要么在单测里
    构造一个非 null 的 app 覆盖 key builder，要么明确接受它是死代码直到被用上。
-6. **当前 self-host 的 `.env` 持有主账号 AccessKey**（§2.4 实测）。这不是本设计
-   引入的，但本设计的阶段二**依赖它先被修掉**，而且在修掉之前，"app 文件的权限
-   边界"这句话对能读到那个 `.env` 的人是不成立的。阶段一（只有控制面）不受影响，
-   因为它不把任何凭证交给 app。
+6. ~~self-host 的 `.env` 持有主账号 AccessKey~~ —— **2026-09-09 已换成受限 RAM
+   用户**（§2.4）。**剩一件人工尾巴**：主账号那把旧 AK 还没禁用，只能在控制台做。
+   在它被禁用之前，这把 key 的历史副本（GitHub secret 的旧版本、容器 env、
+   `.env.bak`）仍然是有效凭证。
 
 ---
 
@@ -447,9 +456,8 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
 
 **阶段二：app 运行时读写（STS）。**
 
-7. **先换掉主账号 AK**（§2.4 / §10.6）：建一个只有 OSS + FC + STS 权限的 RAM 用户，
-   换进 self-host 的 `.env` 与 GitHub Actions secret，确认 app 部署仍然正常，
-   再禁用主账号那把。这一步不做，后面的"收窄权限"全是装饰。
+7. ~~先换掉主账号 AK~~ —— **2026-09-09 已完成**（§2.4）。实施本阶段时只需给
+   `teamclu-selfhost-fc-oss` 策略补 `sts:AssumeRole`。
 8. RAM 角色与策略（人工，一次性）
 9. `app-storage.ts` + policy 断言测试 + 跨 app 越权实测
 10. `storage_token` 的生成、密封、注入（挂在 `finalizeDeploy` 上）
