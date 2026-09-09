@@ -562,13 +562,22 @@ test("quota accepts a number or null, and nothing else", async () => {
   );
 });
 
-test("the STS route is the only one registered outside the user JWT", async () => {
+test("only the two machine routes are registered outside the user JWT", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
-  const nonBearer = routes.filter((r) => r[3] && r[3].auth && r[3].auth !== "bearer");
-  assert.equal(nonBearer.length, 1, "exactly one app route may skip the user JWT");
-  assert.equal(nonBearer[0][1], "/v1/apps/:appId/storage/sts");
-  assert.equal(nonBearer[0][3].auth, "app-token");
+  const nonBearer = routes
+    .filter((r) => r[3] && r[3].auth && r[3].auth !== "bearer")
+    .map((r) => [r[1], r[3].auth])
+    .sort();
+  // An exhaustive list, not a count: every entry here is a route a person's
+  // token does not guard, so adding one has to be a deliberate edit of this
+  // test rather than a number quietly going up.
+  assert.deepEqual(nonBearer, [
+    // The heartbeat that fires scheduled tasks. Shared secret, no user.
+    ["/v1/internal/app-cron/tick", "cron-tick"],
+    // The deployed app fetching its own storage credentials.
+    ["/v1/apps/:appId/storage/sts", "app-token"],
+  ].sort());
 });
 
 test("STS refuses a request with no bearer, and cannot tell a bad token from an unknown app", async () => {
@@ -617,3 +626,85 @@ test("STS returns the credentials and nothing about the token", async () => {
   assert.equal(seenToken, "s3cret", "the bearer is trimmed before comparison");
   assert.deepEqual(res.body, credentials);
 });
+
+// --- scheduled tasks --------------------------------------------------------
+
+test("cron routes 404 when the repository declines", async () => {
+  // Null from the repo means "not visible, or not yours" and must be
+  // indistinguishable from "no such app", like every other app route.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const repository = {
+    listAppCronJobs: async () => null,
+    createAppCronJob: async () => null,
+    updateAppCronJob: async () => null,
+    deleteAppCronJob: async () => false,
+    runAppCronJobNow: async () => null,
+    listAppCronRuns: async () => null,
+  };
+  const params = { appId: "a1", jobId: "j1" };
+  const calls: Array<Promise<unknown>> = [
+    findRoute(routes, "GET", "/v1/apps/:appId/cron-jobs")[2]({ params, repository }),
+    findRoute(routes, "POST", "/v1/apps/:appId/cron-jobs")[2]({
+      params, json: { name: "n", schedule: "0 9 * * *" }, repository,
+    }),
+    findRoute(routes, "PATCH", "/v1/apps/:appId/cron-jobs/:jobId")[2]({ params, json: {}, repository }),
+    findRoute(routes, "DELETE", "/v1/apps/:appId/cron-jobs/:jobId")[2]({ params, repository }),
+    findRoute(routes, "POST", "/v1/apps/:appId/cron-jobs/:jobId/run")[2]({ params, repository }),
+    findRoute(routes, "GET", "/v1/apps/:appId/cron-jobs/:jobId/runs")[2]({
+      params, query: new URLSearchParams(""), repository,
+    }),
+  ];
+  for (const call of calls) {
+    await assert.rejects(call, (e: any) => e.statusCode === 404);
+  }
+});
+
+test("an empty task list is a 200, not a 404", async () => {
+  // `[]` and `null` mean different things here — no tasks vs. no access — and
+  // collapsing them would make an app with nothing scheduled look missing.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const get = findRoute(routes, "GET", "/v1/apps/:appId/cron-jobs")[2];
+  const res = await get({ params: { appId: "a1" }, repository: { listAppCronJobs: async () => [] } });
+  assert.deepEqual(res.body, { items: [] });
+});
+
+test("creating a task needs a name and a schedule, and answers 201", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const post = findRoute(routes, "POST", "/v1/apps/:appId/cron-jobs")[2];
+  const repository = { createAppCronJob: async (_id: string, body: any) => ({ id: "j1", ...body }) };
+
+  const res = await post({
+    params: { appId: "a1" },
+    json: { name: "daily", schedule: "0 9 * * *" },
+    repository,
+  });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.body.id, "j1");
+
+  for (const json of [{ schedule: "0 9 * * *" }, { name: "daily" }, {}]) {
+    await assert.rejects(
+      post({ params: { appId: "a1" }, json, repository }),
+      (e: any) => e.statusCode === 400,
+    );
+  }
+});
+
+test("the run-history limit is passed through, and defaults without one", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const get = findRoute(routes, "GET", "/v1/apps/:appId/cron-jobs/:jobId/runs")[2];
+  const seen: unknown[] = [];
+  const repository = {
+    listAppCronRuns: async (_a: string, _j: string, limit: number) => {
+      seen.push(limit);
+      return [];
+    },
+  };
+  await get({ params: { appId: "a1", jobId: "j1" }, query: new URLSearchParams("limit=5"), repository });
+  await get({ params: { appId: "a1", jobId: "j1" }, query: new URLSearchParams(""), repository });
+  assert.deepEqual(seen, [5, 20]);
+});
+

@@ -1,5 +1,7 @@
 import { ApiError } from "../http-utils.js";
 import { parseLimit, requireString } from "../routing-utils.js";
+import { runDueAppCronJobs } from "../app-cron-runner.js";
+import { createServiceRoleClient } from "../supabase.js";
 
 /**
  * Object paths travel as base64url, the same trick the data browser plays with
@@ -379,6 +381,82 @@ export function registerApps(router) {
     }
     const out = await ctx.repository.setAppStorageQuota(appId, raw);
     if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // --- App scheduled tasks (design 2026-09-10-app-control-panel §5/§6) ---
+  //
+  // Reads are open to anyone the app has named; every write is `admin`, and the
+  // repository is the only place that decides which is which. A null return is
+  // 404 for the same reason every other app route does it: telling "you may
+  // not" apart from "it does not exist" leaks which apps exist.
+
+  router.get("/v1/apps/:appId/cron-jobs", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const items = await ctx.repository.listAppCronJobs(appId);
+    if (items === null) throw new ApiError(404, "not_found", "app not found");
+    return { body: { items } };
+  });
+
+  router.post("/v1/apps/:appId/cron-jobs", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const body = ctx.json ?? {};
+    requireString(body.name, "name");
+    requireString(body.schedule, "schedule");
+    const out = await ctx.repository.createAppCronJob(appId, body);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { statusCode: 201, body: out };
+  });
+
+  router.patch("/v1/apps/:appId/cron-jobs/:jobId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const jobId = decodeURIComponent(ctx.params.jobId);
+    const out = await ctx.repository.updateAppCronJob(appId, jobId, ctx.json ?? {});
+    if (!out) throw new ApiError(404, "not_found", "cron job not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/cron-jobs/:jobId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const jobId = decodeURIComponent(ctx.params.jobId);
+    const ok = await ctx.repository.deleteAppCronJob(appId, jobId);
+    if (!ok) throw new ApiError(404, "not_found", "cron job not found");
+    return { body: { ok: true } };
+  });
+
+  // Runs the job's request immediately and answers with the outcome. The
+  // schedule is untouched — see runAppCronJobNow.
+  router.post("/v1/apps/:appId/cron-jobs/:jobId/run", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const jobId = decodeURIComponent(ctx.params.jobId);
+    const out = await ctx.repository.runAppCronJobNow(appId, jobId);
+    if (!out) throw new ApiError(404, "not_found", "cron job not found");
+    return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/cron-jobs/:jobId/runs", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const jobId = decodeURIComponent(ctx.params.jobId);
+    // parseLimit's own default is the 50-row list default, which is not this
+    // endpoint's: only 20 runs per job are ever kept. It still validates the
+    // value when one is given, so garbage is a 400 rather than a silent clamp.
+    const rawLimit = ctx.query.get("limit");
+    const items = await ctx.repository.listAppCronRuns(
+      appId,
+      jobId,
+      rawLimit ? parseLimit(rawLimit) : 20,
+    );
+    if (items === null) throw new ApiError(404, "not_found", "app not found");
+    return { body: { items } };
+  });
+
+  // The one-minute heartbeat. Both deploy targets drive this same path — a
+  // compose sidecar on self-host, a timer trigger on Alibaba FC — so a job
+  // behaves identically wherever it runs. `auth: "cron-tick"` is the whole
+  // authentication: a constant-time compare against APP_CRON_SECRET, which
+  // fails closed when the variable is unset.
+  router.post("/v1/internal/app-cron/tick", { auth: "cron-tick" }, async () => {
+    const out = await runDueAppCronJobs({ client: createServiceRoleClient() });
     return { body: out };
   });
 

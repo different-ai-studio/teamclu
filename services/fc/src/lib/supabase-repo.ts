@@ -36,6 +36,8 @@ function assertNewOrgAllowed(): void {
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
+import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
+import { executeAppCronJob, JOB_COLUMNS as CRON_JOB_COLUMNS } from "./app-cron-runner.js";
 // Backend-neutral request validation — keep free of PostgREST calls.
 import {
   assertTransportShape as assertTeamMcpTransportShape,
@@ -278,6 +280,42 @@ function mapAppAccessRow(r: any) {
     permissionLevel: r.permission_level,
     grantedByMemberId: r.granted_by_member_id ?? null,
     createdAt: appIso(r.created_at)!,
+  };
+}
+
+function mapAppCronJobRow(r: any) {
+  return {
+    id: r.id,
+    appId: r.app_id,
+    name: r.name,
+    enabled: Boolean(r.enabled),
+    // `schedule` on the wire, `schedule_expr` in the column: the column name
+    // exists to leave room for a second kind of schedule later, and the API
+    // should not have to be renamed if that ever happens.
+    schedule: r.schedule_expr,
+    timezone: r.timezone,
+    method: r.method,
+    path: r.path,
+    headers: r.headers ?? {},
+    body: r.body ?? null,
+    timeoutMs: r.timeout_ms,
+    lastRunAt: appIso(r.last_run_at),
+    nextRunAt: appIso(r.next_run_at),
+    createdAt: appIso(r.created_at)!,
+    updatedAt: appIso(r.updated_at)!,
+  };
+}
+
+function mapAppCronRunRow(r: any) {
+  return {
+    id: r.id,
+    jobId: r.job_id,
+    startedAt: appIso(r.started_at)!,
+    finishedAt: appIso(r.finished_at),
+    status: r.status,
+    responseStatus: r.response_status ?? null,
+    durationMs: r.duration_ms ?? null,
+    error: r.error ?? null,
   };
 }
 
@@ -4591,6 +4629,233 @@ export function createSupabaseBusinessRepository(options) {
       }
       const credentials = await ops.assume(app);
       return { credentials };
+    },
+
+
+    // ─── App scheduled tasks (design 2026-09-10-app-control-panel §5) ────────
+    //
+    // Reads are open to anyone the app has named (RLS lets a `view` grantee
+    // select); writes need `admin` and go through the service role, exactly
+    // like the member-access grants above — the RLS manage policy is
+    // creator-only and an admin grantee is not the creator.
+
+    /** The one place a job's user-supplied fields are validated. */
+    normalizeAppCronInput(input: any, existing: any = null) {
+      const pick = (key: string, fallback: any) =>
+        input[key] === undefined ? fallback : input[key];
+
+      const name = String(pick("name", existing?.name) ?? "").trim();
+      if (!name || name.length > 120) {
+        throw new ApiError(400, "validation_failed", "name must be 1-120 characters");
+      }
+
+      const schedule = String(pick("schedule", existing?.schedule_expr) ?? "").trim();
+      const timezone = String(pick("timezone", existing?.timezone) ?? "UTC").trim() || "UTC";
+      assertTimeZone(timezone);
+      parseCronExpression(schedule); // throws 400 on a bad expression
+
+      const method = String(pick("method", existing?.method) ?? "GET").trim().toUpperCase();
+      if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
+        throw new ApiError(400, "validation_failed", `method ${method} is not supported`);
+      }
+
+      let path = String(pick("path", existing?.path) ?? "/").trim();
+      if (!path.startsWith("/")) {
+        throw new ApiError(400, "validation_failed", 'path must start with "/"');
+      }
+      if (path.length > 512) {
+        throw new ApiError(400, "validation_failed", "path is too long");
+      }
+
+      const rawHeaders = pick("headers", existing?.headers) ?? {};
+      if (typeof rawHeaders !== "object" || rawHeaders === null || Array.isArray(rawHeaders)) {
+        throw new ApiError(400, "validation_failed", "headers must be an object");
+      }
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rawHeaders)) {
+        if (typeof v !== "string") {
+          throw new ApiError(400, "validation_failed", `header ${k} must be a string`);
+        }
+        headers[k] = v;
+      }
+      if (Object.keys(headers).length > 20) {
+        throw new ApiError(400, "validation_failed", "at most 20 headers");
+      }
+
+      const rawBody = pick("body", existing?.body);
+      if (rawBody !== null && rawBody !== undefined && typeof rawBody !== "string") {
+        throw new ApiError(400, "validation_failed", "body must be a string or null");
+      }
+      if (typeof rawBody === "string" && rawBody.length > 64 * 1024) {
+        throw new ApiError(400, "validation_failed", "body is larger than 64 KiB");
+      }
+
+      const timeoutMs = Number(pick("timeoutMs", existing?.timeout_ms) ?? 30000);
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 60000) {
+        throw new ApiError(400, "validation_failed", "timeoutMs must be between 1000 and 60000");
+      }
+
+      const enabledRaw = pick("enabled", existing?.enabled ?? true);
+      const enabled = enabledRaw === undefined ? true : Boolean(enabledRaw);
+
+      return {
+        name,
+        enabled,
+        schedule_expr: schedule,
+        timezone,
+        method,
+        path,
+        headers,
+        body: rawBody ?? null,
+        timeout_ms: timeoutMs,
+        // A disabled job has no next fire. Recomputing it on enable is what
+        // keeps a job that was off for a month from firing the instant it comes
+        // back for every occurrence it missed.
+        next_run_at: enabled ? computeNextRun(schedule, timezone, new Date())?.toISOString() ?? null : null,
+      };
+    },
+
+    async listAppCronJobs(appId: string) {
+      const { data: app, error: appErr } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (appErr) throw appErr;
+      if (!app) return null;
+      if (!(await this.resolveAppCallerPermissionForApp(app))) return null;
+
+      const { data, error } = await supabase
+        .from("app_cron_jobs")
+        .select("*")
+        .eq("app_id", appId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map(mapAppCronJobRow);
+    },
+
+    /** admin on this app, or null. The gate for every cron write. */
+    async resolveAppCronManager(appId: string) {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission || permission.level !== "admin") return null;
+      return { callerMemberId: permission.callerMemberId };
+    },
+
+    async createAppCronJob(appId: string, input: any) {
+      const manager = await this.resolveAppCronManager(appId);
+      if (!manager) return null;
+      const fields = this.normalizeAppCronInput(input ?? {});
+
+      const admin = await serviceRoleClient("create app cron job");
+      const { count, error: countErr } = await admin
+        .from("app_cron_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("app_id", appId);
+      if (countErr) throw countErr;
+      // A ceiling rather than a rate limit: 20 jobs on a one-minute floor is
+      // already 20 requests a minute against one function, and anything past
+      // that is a workload the app should be scheduling internally.
+      if ((count ?? 0) >= 20) {
+        throw new ApiError(400, "validation_failed", "an app can have at most 20 scheduled tasks");
+      }
+
+      const { data, error } = await admin
+        .from("app_cron_jobs")
+        .insert({ ...fields, app_id: appId, created_by_member_id: manager.callerMemberId })
+        .select("*")
+        .single();
+      if (error) throw error;
+      return mapAppCronJobRow(data);
+    },
+
+    async updateAppCronJob(appId: string, jobId: string, patch: any) {
+      const manager = await this.resolveAppCronManager(appId);
+      if (!manager) return null;
+
+      const admin = await serviceRoleClient("update app cron job");
+      const { data: existing, error: selErr } = await admin
+        .from("app_cron_jobs")
+        .select("*")
+        .eq("id", jobId)
+        .eq("app_id", appId)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (!existing) return null;
+
+      const fields = this.normalizeAppCronInput(patch ?? {}, existing);
+      const { data, error } = await admin
+        .from("app_cron_jobs")
+        .update({ ...fields, updated_at: new Date().toISOString() })
+        .eq("id", jobId)
+        .eq("app_id", appId)
+        .select("*")
+        .single();
+      if (error) throw error;
+      return mapAppCronJobRow(data);
+    },
+
+    async deleteAppCronJob(appId: string, jobId: string) {
+      const manager = await this.resolveAppCronManager(appId);
+      if (!manager) return false;
+      const admin = await serviceRoleClient("delete app cron job");
+      const { data, error } = await admin
+        .from("app_cron_jobs")
+        .delete()
+        .eq("id", jobId)
+        .eq("app_id", appId)
+        .select("id");
+      if (error) throw error;
+      return (data ?? []).length > 0;
+    },
+
+    /**
+     * Fire a job right now, without touching its schedule.
+     *
+     * `next_run_at` is deliberately left alone: "run it now" is a test, and
+     * moving the schedule because someone pressed a button would make the next
+     * scheduled run happen at a time nobody chose.
+     */
+    async runAppCronJobNow(appId: string, jobId: string) {
+      const manager = await this.resolveAppCronManager(appId);
+      if (!manager) return null;
+      const admin = await serviceRoleClient("run app cron job");
+      const { data: job, error } = await admin
+        .from("app_cron_jobs")
+        .select(CRON_JOB_COLUMNS)
+        .eq("id", jobId)
+        .eq("app_id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!job) return null;
+      return executeAppCronJob(admin, job, {});
+    },
+
+    async listAppCronRuns(appId: string, jobId: string, limit = 20) {
+      const { data: app, error: appErr } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (appErr) throw appErr;
+      if (!app) return null;
+      if (!(await this.resolveAppCallerPermissionForApp(app))) return null;
+
+      const { data, error } = await supabase
+        .from("app_cron_runs")
+        .select("id, job_id, started_at, finished_at, status, response_status, duration_ms, error")
+        .eq("app_id", appId)
+        .eq("job_id", jobId)
+        .order("started_at", { ascending: false })
+        .limit(Math.min(Math.max(limit, 1), 100));
+      if (error) throw error;
+      return (data ?? []).map(mapAppCronRunRow);
     },
 
     async deleteApp(appId: string) {

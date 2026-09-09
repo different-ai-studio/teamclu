@@ -5,6 +5,7 @@ import {
   parseAuthRules,
   parseAuthScope,
   pathRequiresLogin,
+  resolvePathPolicy,
   validateAuthPathConfig,
 } from "../src/lib/apps-auth-paths.js";
 import { ApiError } from "../src/lib/http-utils.js";
@@ -216,4 +217,71 @@ test("an unusable rule set protects everything", () => {
 test("a missing rule column falls back to the baseline", () => {
   assert.equal(pathRequiresLogin("/x", "paths", null), false);
   assert.equal(pathRequiresLogin("/x", "all", undefined), true);
+});
+
+// --- per-path audience ------------------------------------------------------
+
+test("a rule may name its own audience, and only on a protected path", () => {
+  assert.deepEqual(
+    parseAuthRules([
+      { path: "/admin", auth: "required", audience: "org" },
+      { path: "/", auth: "required", audience: "any" },
+      // Public admits everyone by definition; an audience here would be a
+      // setting the panel shows and the gateway ignores.
+      { path: "/health", auth: "public", audience: "org" },
+    ]),
+    [
+      { path: "/admin", auth: "required", audience: "org" },
+      { path: "/", auth: "required", audience: "any" },
+      { path: "/health", auth: "public" },
+    ],
+  );
+});
+
+test("an audience that is not one of the two is refused", () => {
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", audience: "employees" }]), /audience/);
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", audience: 1 }]), /audience/);
+});
+
+test("a rule with no audience stays without one, so the app's own value applies", () => {
+  // The whole point: every rule stored before this key existed reads as
+  // "inherit", never as a default that could tighten a live wall.
+  assert.deepEqual(parseAuthRules([{ path: "/x", auth: "required" }]), [
+    { path: "/x", auth: "required" },
+  ]);
+  assert.equal(resolvePathPolicy("/x", "all", [{ path: "/x", auth: "required" }]).audience, null);
+});
+
+test("the winning rule decides both the login and the audience", () => {
+  const rules = [
+    { path: "/", auth: "required", audience: "any" },
+    { path: "/admin", auth: "required", audience: "org" },
+  ];
+  assert.deepEqual(resolvePathPolicy("/", "all", rules), { requiresLogin: true, audience: "any" });
+  assert.deepEqual(resolvePathPolicy("/admin/users", "all", rules), {
+    requiresLogin: true,
+    audience: "org",
+  });
+});
+
+test("a public path resolves no audience at all", () => {
+  const policy = resolvePathPolicy("/health", "all", [{ path: "/health", auth: "public" }]);
+  assert.deepEqual(policy, { requiresLogin: false, audience: null });
+});
+
+test("an unreadable audience invalidates the set, like an unreadable verdict", () => {
+  const policy = resolvePathPolicy("/anything", "paths", [
+    { path: "/x", auth: "required", audience: "everyone" },
+  ]);
+  assert.deepEqual(policy, { requiresLogin: true, audience: null });
+});
+
+test("pathRequiresLogin still answers exactly what it used to", () => {
+  // It is now a wrapper; the point is that the wrapper did not change any
+  // verdict, since the login wall's behaviour must not move with this feature.
+  const rules = [{ path: "/health", auth: "public" }, { path: "/admin", auth: "required" }];
+  assert.equal(pathRequiresLogin("/health", "all", rules), false);
+  assert.equal(pathRequiresLogin("/admin", "paths", rules), true);
+  assert.equal(pathRequiresLogin("/other", "paths", rules), false);
+  assert.equal(pathRequiresLogin("/other", "all", rules), true);
 });

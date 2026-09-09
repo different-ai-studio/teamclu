@@ -222,6 +222,85 @@ test("an unset audience is read as org, not as open", async () => {
   });
 });
 
+// --- per-path audience ------------------------------------------------------
+
+test("a path rule's audience narrows an app that admits anyone", async () => {
+  // The app is open to any signed-in user; /admin says employees only. An
+  // outsider gets / and is refused /admin, in one request each.
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const outsider = deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) });
+    const walled = app({
+      authAudience: "any",
+      authScope: "all",
+      authRules: [{ path: "/admin", auth: "required", audience: "org" }],
+    });
+
+    const home = await applyAuthGate(req("/", { cookie }), walled, outsider);
+    assert.equal(home.response, null, "the app-level audience still admits them here");
+
+    const admin = await applyAuthGate(req("/admin", { cookie }), walled, outsider);
+    assert.equal(admin.response?.status, 403);
+    assert.equal(admin.identity, null);
+  });
+});
+
+test("a path rule's audience widens an employees-only app", async () => {
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const outsider = deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) });
+    const walled = app({
+      authAudience: "org",
+      authScope: "all",
+      authRules: [{ path: "/portal", auth: "required", audience: "any" }],
+    });
+
+    const portal = await applyAuthGate(req("/portal/orders", { cookie }), walled, outsider);
+    assert.equal(portal.response, null, "the rule's audience wins on this path");
+
+    const root = await applyAuthGate(req("/", { cookie }), walled, outsider);
+    assert.equal(root.response?.status, 403, "and nowhere else");
+  });
+});
+
+test("a rule that says nothing about audience leaves the app's own value alone", async () => {
+  // The compatibility case: every rule written before this feature existed.
+  // Reading the absent key as `org` would lock out the visitors an app set to
+  // "any signed-in user" is admitting today.
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const out = await applyAuthGate(
+      req("/reports", { cookie }),
+      app({
+        authAudience: "any",
+        authScope: "all",
+        authRules: [{ path: "/reports", auth: "required" }],
+      }),
+      deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) }),
+    );
+    assert.equal(out.response, null);
+  });
+});
+
+test("a public path with a narrower neighbour still serves anonymously", async () => {
+  await withEnv({}, async () => {
+    const out = await applyAuthGate(
+      req("/health"),
+      app({
+        authAudience: "any",
+        authScope: "all",
+        authRules: [
+          { path: "/health", auth: "public" },
+          { path: "/admin", auth: "required", audience: "org" },
+        ],
+      }),
+      deps(),
+    );
+    assert.equal(out.response, null);
+    assert.equal(out.identity, null);
+  });
+});
+
 // --- the callback -----------------------------------------------------------
 
 test("a valid code becomes a cookie on this hostname", async () => {

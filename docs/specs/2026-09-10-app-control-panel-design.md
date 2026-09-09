@@ -1,0 +1,203 @@
+# APP 控制面：一列摘要，管理进中间 tab — 设计
+
+状态：实施中
+日期：2026-09-10
+相关：`docs/specs/2026-09-08-apps-login-and-custom-domain-design.md`（登录墙）、
+`docs/specs/2026-09-09-app-storage-design.md`（文件）、
+`docs/specs/2026-08-27-app-data-browser-design.md`（数据）
+
+## 0. 一句话
+
+右侧控制面从「什么都摊开在 280px 里」改成「一行一件事、带个数、点右箭头去中间 tab 管」，
+并补上两块目前不存在的能力：**每个页面各自的登录与受众**，和**云端定时任务**。
+
+## 1. 现状核实（2026-09-10 读代码）
+
+`AppControlPanel.tsx` 784 行，把七件事全塞进右侧一列：重命名、本机路径、重新播种、
+成员权限（含授权表单）、登录方式（含路径规则表）、线上数据、文件（含上传/删除/清空）、
+运行日志、自定义域名、删除。
+
+已经存在的「中间 tab」通道只有两条，都在 `lib/tabs/app-tabs.ts`：
+
+| 已有 | 入口 | tab 组件 |
+|---|---|---|
+| 线上数据 | `openAppDataTable` | `AppDataTabContent` |
+| 运行日志 | `openAppLogs` | `AppLogsTabContent` |
+
+`NativeContent.tsx` 按 target 字符串前缀分发。这次新增四条走同一套。
+
+**两块能力现在完全没有：**
+
+1. **每页受众。** 登录墙的受众 `auth_audience` 是**应用级**的一个值（`any` = 任何登录
+   用户 / `org` = 本公司员工），路径规则 `auth_rules` 只有 `required | public` 两档。
+   「/admin 只给员工，/ 给任何用户」今天表达不了。
+2. **应用的定时任务。** 桌面端的 cron（`apps/desktop/src/commands/cron/`）是按 workspace
+   路径分实例的 agent 定时任务，跟部署出去的站点无关。云端一侧，`stripe-reconcile.ts`
+   注释里写着「cron 任务」，但仓库里**没有任何调用方** —— 那是手工在阿里云 FC 上建的
+   两个定时函数，不在这个仓库。也就是说云端调度器要从零做。
+
+## 2. 目标 / 非目标
+
+**目标**
+
+- 控制面重排成摘要行，管理动作进中间 tab。
+- 每条路径规则各自带受众。
+- 云端定时任务：到点由云端向这个应用的线上地址发一个 HTTP 请求，本机关机照跑。
+
+**非目标**
+
+- **角色**。终端用户身上没有任何角色概念（网关只透传 user id / email / orgId），
+  做角色要新表 + 授权界面 + 网关比对，本轮明确不做。`员工/用户` 这一档就是受众。
+- 自定义域名、删除：一个字不改。
+- 桌面端 workspace cron：不动，跟这里没关系。
+
+## 3. 控制面的形状
+
+```
+● 我的应用
+  运行中
+
+应用
+  重命名           [____________] [保存]
+  本机路径         ~/teams/x/apps/y      [复制] [移动]
+
+管理
+  协作权限         3 位成员                        ›
+  应用权限         2 条页面规则                    ›
+  线上数据         5 张表                          ›
+  应用附件         12 个文件 · 3.2 MB              ›
+  运行日志         查看日志                        ›
+  定时任务         2 个任务                        ›
+
+线上
+  自定义域名       （原样）
+
+删除
+  （原样）
+```
+
+每一行只做两件事：说清楚**有多少**，以及把人送进 tab。行本身可点，右端一个 `›`。
+计数拿不到时显示的是原因（「未部署」「没有数据库」），不是 0 —— 0 和「不适用」
+在这里是两回事。
+
+四条新 target：`app-access:<id>`、`app-auth:<id>`、`app-files:<id>`、`app-cron:<id>`。
+
+## 4. 设计 A · 每页受众
+
+`auth_rules` 是 jsonb，**不需要迁移**，只是每条多一个可选键：
+
+```json
+[{"path": "/admin", "auth": "required", "audience": "org"},
+ {"path": "/",      "auth": "required", "audience": "any"},
+ {"path": "/health","auth": "public"}]
+```
+
+- `audience` 只在 `auth: "required"` 时有意义，`public` 上出现即忽略（写入时剔除）。
+- **缺省不是 `org`，是「跟随应用级 `auth_audience`」。** 存量规则一条都没有这个键，
+  把缺省读成 `org` 会让今天设成「任何登录用户」的应用在下次部署后突然把路人挡在外面 ——
+  这是最不该发生的方向：**改 UI 不能改变已经生效的墙**。
+- 网关侧 `admit()` 现在拿的是 `app.authAudience`，改成拿**命中规则的受众**（最长前缀
+  同一条规则，跟 `pathRequiresLogin` 用的是同一次匹配，不做第二次），命中不到或规则没写
+  就回落到应用级。
+
+一次匹配返回两样东西（要不要登录、什么受众），而不是匹配两次：两次匹配意味着两套
+最长前缀比较，将来一定会有人只改其中一处。
+
+## 5. 设计 B · 云端定时任务
+
+### 5.1 为什么是「打 URL」而不是「跑 agent」
+
+用户选的就是这个：本机关机照跑。跑 agent 需要 daemon 活着，那是桌面端 cron 已经做了
+的事。云端这条只做一件事：到点向 `https://<app>.<apps域名><path>` 发一个请求。
+
+### 5.2 表
+
+`amux.app_cron_jobs` — 任务本身；`amux.app_cron_runs` — 每次执行的记录（每个任务保留
+最近 20 条，插入时裁剪）。两张表都 `on delete cascade` 挂在 `apps` 上：删应用，任务
+和历史一起走。
+
+`next_run_at` 存在表里，是**调度的唯一依据**，也是并发领取的锁：
+
+```sql
+update amux.app_cron_jobs
+   set next_run_at = <算出来的下一次>, last_run_at = now()
+ where id = $1 and next_run_at = $2   -- 读到的那个值
+```
+
+条件里带上读到的 `next_run_at`，两个 tick 撞上时只有一个 update 影响到行，另一个拿到
+0 行就跳过。不用 `for update skip locked`，因为 PostgREST 给不了显式事务。
+
+### 5.3 cron 表达式：自己算，不加依赖
+
+五段式（分 时 日 月 周），支持 `*`、`,`、`-`、`*/n`、`a-b/n`。不引第三方库：
+`services/fc` 要同时打包进 self-host 容器和阿里云 FC，多一个依赖就是多一处两边不一致的
+可能，而这块逻辑一百来行、纯函数、好测。
+
+时区用 IANA 名。做法是反过来算：把「用户写的当地墙上时间」换算成 UTC 时刻，再回读校验
+——回读对不上就是这个当地时间不存在。DST 的两个边界因此是**已知且接受**的：春季被跳过的
+那一小时回读失败，当天不跑；秋季重复的那一小时只解析出一个时刻，当天**只跑一次**。
+写在表注释和测试里。
+
+搜索是「按天粗筛 + 按分钟细筛」：日/月/周不匹配就直接跳到当地第二天零点，所以最坏情况
+（`0 0 29 2 *`）也只有约 1500 次日跳。上限 4 年，找不到就 `next_run_at = null`（表达式
+永远不会到，比如 2 月 30 日）。
+
+### 5.4 触发
+
+一个 `POST /v1/internal/app-cron/tick`，共享密钥（`APP_CRON_SECRET`）。心跳在外面，
+每分钟打一次，两个部署目标打的是同一个端点：
+
+- **self-host（今天在跑的那个）**：compose 里加一个 `app-cron` 服务，对齐整分钟后
+  `curl` 循环。**不放 profile 里** —— 放 profile 就是默认不跑，而一个默认不跑的定时
+  任务等于没有。
+- **阿里云 FC**：同一个端点，心跳由外部每分钟 `curl` 一次（一行，跟 sidecar 里那条
+  完全一样）。这里**没有**用 FC 的 timer trigger：timer 事件不是 HTTP 请求，落到 web
+  函数上的路径和头都跟普通请求不同，猜错的结果是这一侧静默没有调度器 —— 而这正是本
+  设计要消灭的失败模式。端点是有鉴权的，谁来打都一样。
+
+`APP_CRON_SECRET` 必须**两边都声明**（compose 的 `environment:` 白名单 + `s.yaml`），
+少一边就是那一边静默没有 —— CLAUDE.md 里点名的坑，`deploy-env-parity.test.ts` 守着。
+
+密钥没配时端点 401 且不执行任何任务（`sharedSecretMatches` 对空密钥一律拒绝，所以
+「没配密钥」等于「没有调度器」，不等于「谁都能触发」）。
+
+### 5.5 请求带不带身份 —— 不带
+
+定时任务发出的请求**不带任何会话**，跟路人走同一道墙。目标路径如果需要登录，网关会 302
+到登录页，这一次执行记为失败，错误文案直接指向隔壁那个 tab：
+
+> 这条路径需要登录，而定时任务没有会话。去「应用权限」把它设为公开，
+> 再用下面的自定义 header 自己校验。
+
+这是有意的：给定时任务一把绕过登录墙的钥匙（比如复用应用自己的 token），等于给这道墙
+开一个新口子，而用户没要这个。任务支持自定义 header，用户想校验就自己放一个密钥进去 ——
+安全边界一点没变，而且解法就在旁边一个 tab 里。
+
+### 5.6 权限
+
+- 读任务列表：对这个应用有任何一档权限（`view` 起）。
+- 增删改：`admin`。跟 `app_member_access` 是同一套 `resolveAppCallerPermissionForApp`，
+  不另起一套判定。
+
+## 6. 端点（先进 OpenAPI，按 CLAUDE.md 的顺序）
+
+| 方法 | 路径 | 谁 |
+|---|---|---|
+| GET | `/v1/apps/:appId/cron-jobs` | view+ |
+| POST | `/v1/apps/:appId/cron-jobs` | admin |
+| PATCH | `/v1/apps/:appId/cron-jobs/:jobId` | admin |
+| DELETE | `/v1/apps/:appId/cron-jobs/:jobId` | admin |
+| POST | `/v1/apps/:appId/cron-jobs/:jobId/run` | admin（立即跑一次） |
+| GET | `/v1/apps/:appId/cron-jobs/:jobId/runs` | view+ |
+| POST | `/v1/internal/app-cron/tick` | 共享密钥 |
+
+## 7. 风险
+
+| # | 风险 | 处理 |
+|---|---|---|
+| R1 | 存量规则读出 `audience` 缺省值把墙改严 | 缺省是「跟随应用级」，不是 `org`；§4 |
+| R2 | 两个 tick 并发把一个任务跑两遍 | `next_run_at` 条件更新领取；§5.2 |
+| R3 | `APP_CRON_SECRET` 只声明在一个目标上 | compose 与 s.yaml 同时改，parity 测试守着 |
+| R4 | 定时任务打不进有墙的路径 | 明确的失败文案 + 自定义 header；§5.5 |
+| R5 | 任务把应用打挂（间隔 1 分钟 × N 个任务） | 每应用任务数上限 20，最小间隔 1 分钟，超时 30s |
+| R6 | 运行记录无限增长 | 每任务保留 20 条，插入时裁剪；§5.2 |

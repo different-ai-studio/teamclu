@@ -13,7 +13,7 @@ import {
 } from "./apps-auth-session.js";
 import { esc, page, redirect, safeNext } from "./apps-auth-page.js";
 import { appOrigins } from "./apps-public-host.js";
-import { pathRequiresLogin } from "./apps-auth-paths.js";
+import { resolvePathPolicy, type AuthAudience } from "./apps-auth-paths.js";
 import type { ProxyIdentity } from "./apps-vanity.js";
 
 /**
@@ -262,7 +262,11 @@ export async function applyAuthGate(
   if (!origin) return answered(misconfigured("未配置应用域名"));
   if (!loginDomain(env)) return answered(misconfigured("未配置登录域名"));
 
-  const protectedPath = pathRequiresLogin(url.pathname, app.authScope, app.authRules);
+  // One match, both answers: whether this path is walled, and which audience
+  // its own rule asks for. A public path still resolves an audience of null,
+  // which is what the anonymous branch below wants anyway.
+  const policy = resolvePathPolicy(url.pathname, app.authScope, app.authRules);
+  const protectedPath = policy.requiresLogin;
 
   const session = await verifyAppSession(
     readCookie(req.headers.get("cookie"), APP_COOKIE) ?? "",
@@ -272,7 +276,9 @@ export async function applyAuthGate(
   // Admission is decided before it is acted on, because a public path and a
   // protected one need the SAME answer to "may this person be named to the
   // app" — they only differ in what happens when the answer is no.
-  const admission = session ? await admit(session, app, deps) : { ok: false, denial: "anonymous" as const, orgId: null };
+  const admission = session
+    ? await admit(session, app, deps, policy.audience)
+    : { ok: false, denial: "anonymous" as const, orgId: null };
 
   if (!protectedPath) {
     // Public path. Anyone may read it; the identity headers still ride along
@@ -314,7 +320,8 @@ type Admission = {
 /**
  * Whether a signed-in visitor meets this app's audience.
  *
- * Unset `authAudience` reads as `org`, matching the column default: a row that
+ * `pathAudience` is the winning path rule's audience, or null when the rule
+ * did not name one. Unset `authAudience` reads as `org`, matching the column default: a row that
  * predates the column, or a lookup that failed to select it, must not silently
  * widen the audience to everyone with an account.
  */
@@ -322,8 +329,13 @@ async function admit(
   session: { sub: string; email: string },
   app: GateApp,
   deps: GateDeps,
+  pathAudience: AuthAudience | null = null,
 ): Promise<Admission> {
-  if ((app.authAudience ?? "org") !== "org") {
+  // The path's own audience wins when its rule names one; otherwise the app's.
+  // Null is "the rule said nothing", not "any" — an app set to employees-only
+  // must not be widened by a rule that only spoke about whether a login was
+  // needed at all.
+  if ((pathAudience ?? app.authAudience ?? "org") !== "org") {
     return { ok: true, denial: "none", orgId: null };
   }
   const orgs = await deps.resolveOrgs(session.sub, app.teamId);

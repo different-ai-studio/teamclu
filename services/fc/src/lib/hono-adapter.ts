@@ -16,7 +16,7 @@ type Deps = {
   createSystemRepository?: () => unknown | Promise<unknown>;
 };
 type RouteOptions = {
-  auth?: "bearer" | "none" | "marketplace-admin" | "app-token";
+  auth?: "bearer" | "none" | "marketplace-admin" | "app-token" | "cron-tick";
   rawBody?: boolean;
 };
 type LegacyCtx = Record<string, unknown>;
@@ -133,6 +133,24 @@ export function createHonoRouterAdapter(app: Hono, deps: Deps) {
           }
           if (!deps.createSystemRepository) {
             throw new ApiError(503, "unavailable", "marketplace admin repository not configured");
+          }
+          repository = await deps.createSystemRepository();
+        } else if (auth === "cron-tick") {
+          // The heartbeat that drives scheduled tasks. Not a person and not an
+          // app: a compose sidecar on self-host, a timer trigger on Alibaba FC,
+          // both presenting APP_CRON_SECRET. `sharedSecretMatches` fails closed
+          // on an unset secret, so a deployment that never configured one has
+          // no scheduler rather than an open one.
+          if (
+            !sharedSecretMatches(
+              extractBearerToken(Object.fromEntries(c.req.raw.headers)),
+              process.env.APP_CRON_SECRET,
+            )
+          ) {
+            throw new ApiError(401, "unauthorized", "app cron secret required");
+          }
+          if (!deps.createSystemRepository) {
+            throw new ApiError(503, "unavailable", "app cron repository not configured");
           }
           repository = await deps.createSystemRepository();
         } else if (auth === "app-token") {
