@@ -1199,7 +1199,22 @@ export interface AppGitCredential {
 }
 
 export interface AppGitHead {
+  /** Default-branch HEAD on the app's own Gitea repo. */
   sha: string;
+  /** The default branch's name, so "3 commits behind" says behind what. */
+  branch: string;
+  /** The commit the running function was built from, per the app row. */
+  deployedSha: string | null;
+  /**
+   * Commits on the branch the deployed one does not have.
+   *
+   * Only populated when the caller asked to compare. `0` means the deployed
+   * commit IS the head; `null` means the question could not be answered —
+   * nothing is deployed yet, the comparison was not requested, or the forge
+   * could not compare the two (a force-push away from the deployed commit is
+   * the ordinary way that happens).
+   */
+  undeployedCommits: number | null;
 }
 
 /** `GET /v1/apps/:id/membership` — whether the caller belongs to the app's team. */
@@ -1377,7 +1392,7 @@ export interface AppsBackend {
   revokeGitCredential(appId: string, deployKeyId: number): Promise<void>;
   /** Default-branch HEAD on the app's Gitea repo (same visibility as getApp).
    *  Null for an app that is not Gitea-managed. */
-  getGitHead(appId: string): Promise<AppGitHead | null>;
+  getGitHead(appId: string, opts?: { compare?: boolean }): Promise<AppGitHead | null>;
   /** Whether the caller is a member of the app's team (platform-auth templates). */
   getAppMembership(appId: string): Promise<AppMembership | null>;
   /** List per-member grants (creator or app admin only). Null on 404. */

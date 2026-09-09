@@ -162,8 +162,15 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
       return { sshUrl: data.ssh_url?.trim() || data.clone_url?.trim() || null };
     },
 
-    /** Default-branch HEAD commit on the app repo (bot token). */
-    async getRepoHead(appId: string): Promise<{ sha: string }> {
+    /**
+     * Default-branch HEAD commit on the app repo (bot token).
+     *
+     * The branch NAME comes back too, at no cost: resolving the head already
+     * requires asking the repo which branch is default, and a panel that says
+     * "3 commits behind" is much easier to act on when it also says behind
+     * what.
+     */
+    async getRepoHead(appId: string): Promise<{ sha: string; branch: string }> {
       const repo = appRepoName(appId);
       const repoPath = `/api/v1/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(repo)}`;
       const repoRes = await giteaFetch(repoPath);
@@ -178,7 +185,32 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
       if (!sha) {
         throw new ApiError(502, "gitea_error", "branch returned no commit id");
       }
-      return { sha };
+      return { sha, branch };
+    },
+
+    /**
+     * How many commits `head` has that `base` does not.
+     *
+     * Null rather than an error whenever the question cannot be answered: the
+     * base commit may have been force-pushed away or garbage-collected, the two
+     * may have unrelated histories, or an older Gitea may not serve /compare at
+     * all. All of those mean "we cannot say how far behind this is", and none of
+     * them is a reason to fail the panel row that merely wanted a number next to
+     * two commit ids it already has.
+     */
+    async compareCommits(appId: string, base: string, head: string): Promise<number | null> {
+      const repo = appRepoName(appId);
+      const path =
+        `/api/v1/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(repo)}` +
+        `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+      try {
+        const res = await giteaFetch(path);
+        const data = (await res.json()) as { total_commits?: number };
+        const total = data.total_commits;
+        return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
+      } catch {
+        return null;
+      }
     },
   };
 }

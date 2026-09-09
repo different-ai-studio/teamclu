@@ -110,9 +110,12 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         console.warn("revokeGitCredential failed (non-fatal)", e);
       }
     },
-    async getGitHead(appId) {
+    async getGitHead(appId, opts) {
+      // The compare costs the server an extra forge round trip, so it is asked
+      // for rather than assumed — the deploy path wants only the sha.
+      const qs = opts?.compare ? '?compare=1' : ''
       try {
-        return await client.get<AppGitHead>(`/v1/apps/${encodeURIComponent(appId)}/git-head`);
+        return await client.get<AppGitHead>(`/v1/apps/${encodeURIComponent(appId)}/git-head${qs}`);
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;

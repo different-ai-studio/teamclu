@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
-import { AppControlPanel, visibilityChangeNeedsConfirm } from '../AppControlPanel'
+import {
+  AppControlPanel,
+  describeCodeVersion,
+  visibilityChangeNeedsConfirm,
+} from '../AppControlPanel'
 import type { AppRow } from '@/lib/backend/types'
 
 const backendMocks = vi.hoisted(() => ({
@@ -12,6 +16,7 @@ const backendMocks = vi.hoisted(() => ({
   getAppStorageUsage: vi.fn(),
   listAppCronJobs: vi.fn(),
   listAppEnv: vi.fn(),
+  getGitHead: vi.fn(),
   deleteApp: vi.fn(),
 }))
 
@@ -60,6 +65,9 @@ vi.mock('@/lib/utils', () => ({
 
 vi.mock('@/stores/apps-store', () => ({
   useAppsStore: (sel: (s: typeof storeMocks) => unknown) => sel(storeMocks),
+  // Real behaviour, not a stub: the code-version line branches on it, and a
+  // stub returning true would hide the imported-app case entirely.
+  isGiteaManaged: (a: { gitAuthKind?: string | null }) => a.gitAuthKind === 'gitea_deploy_key',
 }))
 
 vi.mock('react-i18next', () => ({
@@ -135,6 +143,12 @@ describe('AppControlPanel', () => {
     })
     storeMocks.deleteApp.mockResolvedValue(true)
     storeMocks.setVisibility.mockResolvedValue(true)
+    backendMocks.getGitHead.mockResolvedValue({
+      sha: 'a3f91c2ffff',
+      branch: 'main',
+      deployedSha: 'b7e2d10aaaa',
+      undeployedCommits: 3,
+    })
   })
 
   it('shows a count on every management row', async () => {
@@ -280,6 +294,25 @@ describe('AppControlPanel', () => {
     expect(screen.queryByTestId('app-control-visibility-confirm')).toBeNull()
   })
 
+  it('says how far behind the deployed commit is', async () => {
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() => {
+      const line = screen.getByTestId('app-control-code-version').textContent!
+      expect(line).toContain('b7e2d10') // deployed, short
+      expect(line).toContain('main')
+      expect(line).toContain('3')
+    })
+    expect(backendMocks.getGitHead).toHaveBeenCalledWith('app-1', { compare: true })
+  })
+
+  it('does not ask the forge about an app whose repo is not ours', async () => {
+    render(<AppControlPanel app={{ ...baseApp, gitAuthKind: null } as AppRow} />)
+    await waitFor(() =>
+      expect(screen.getByTestId('app-control-code-version').textContent).toContain('外部仓库'),
+    )
+    expect(backendMocks.getGitHead).not.toHaveBeenCalled()
+  })
+
   it('copies the local path', async () => {
     render(<AppControlPanel app={baseApp} />)
     await waitFor(() => expect(screen.getByTestId('app-control-copy-path')).toBeTruthy())
@@ -321,6 +354,60 @@ describe('AppControlPanel', () => {
     it('never confirms a change that changes nothing', () => {
       expect(visibilityChangeNeedsConfirm('team', 'team')).toBe(false)
       expect(visibilityChangeNeedsConfirm('personal', 'personal')).toBe(false)
+    })
+  })
+
+  describe('describeCodeVersion', () => {
+    const gitea = { gitAuthKind: 'gitea_deploy_key', gitCommitSha: null } as any
+    const head = (over: Record<string, unknown> = {}) => ({
+      sha: 'a3f91c2ffff',
+      branch: 'main',
+      deployedSha: 'b7e2d10aaaa',
+      undeployedCommits: 3,
+      ...over,
+    }) as any
+
+    it('counts the commits when the forge could compare them', () => {
+      const out = describeCodeVersion(gitea, head())
+      expect(out.vars).toEqual({ sha: 'b7e2d10', branch: 'main', count: 3 })
+    })
+
+    it('says up to date when the deployed commit is the head', () => {
+      const out = describeCodeVersion(gitea, head({ undeployedCommits: 0 }))
+      expect(out.key).toBe('apps.controlPanel.codeVersionUpToDate')
+    })
+
+    it('treats an identical sha as up to date even without a count', () => {
+      // A server that did not compare still leaves the two shas comparable, and
+      // "we did not count" must not read as "there are changes".
+      const out = describeCodeVersion(
+        gitea,
+        head({ deployedSha: 'a3f91c2ffff', undeployedCommits: null }),
+      )
+      expect(out.key).toBe('apps.controlPanel.codeVersionUpToDate')
+    })
+
+    it('admits it cannot count rather than guessing', () => {
+      // A force-push past the deployed commit makes /compare 404. Saying
+      // "up to date" there would be wrong in the direction that matters.
+      const out = describeCodeVersion(gitea, head({ undeployedCommits: null }))
+      expect(out.key).toBe('apps.controlPanel.codeVersionBehindUnknown')
+    })
+
+    it('distinguishes never-deployed from up-to-date', () => {
+      const out = describeCodeVersion(gitea, head({ deployedSha: null }))
+      expect(out.key).toBe('apps.controlPanel.codeVersionNeverDeployed')
+      expect(out.vars).toEqual({ branch: 'main', head: 'a3f91c2' })
+    })
+
+    it('says the repo is somebody else\'s before it says anything else', () => {
+      const out = describeCodeVersion({ gitAuthKind: null, gitCommitSha: null } as any, head())
+      expect(out.key).toBe('apps.controlPanel.codeVersionExternalRepo')
+    })
+
+    it('says it cannot read the repo when the head never arrived', () => {
+      const out = describeCodeVersion(gitea, null)
+      expect(out.key).toBe('apps.controlPanel.codeVersionUnavailable')
     })
   })
 })

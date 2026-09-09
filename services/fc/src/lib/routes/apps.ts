@@ -194,9 +194,14 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  // `?compare=1` also reports how many commits the branch is ahead of what is
+  // deployed. Opt-in: the deploy path calls this endpoint on every deploy and
+  // reads only `sha`, so the extra forge round trip is not made for it.
   router.get("/v1/apps/:appId/git-head", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.getAppGitHead(appId);
+    const out = await ctx.repository.getAppGitHead(appId, {
+      compare: ctx.query.get("compare") === "1",
+    });
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });

@@ -42,9 +42,9 @@ import {
   openAppFiles,
   openAppLogs,
 } from '@/lib/tabs/app-tabs'
-import { useAppsStore } from '@/stores/apps-store'
+import { isGiteaManaged, useAppsStore } from '@/stores/apps-store'
 import { AppCustomDomainSection } from './AppCustomDomainSection'
-import type { AppRow } from '@/lib/backend/types'
+import type { AppGitHead, AppRow } from '@/lib/backend/types'
 
 function StatusDot({ tone }: { tone: 'live' | 'ready' | 'failed' | 'idle' }) {
   const color =
@@ -147,6 +147,60 @@ export function visibilityChangeNeedsConfirm(
   return next === 'personal'
 }
 
+/** Seven characters is what every git UI shows and what people paste. */
+const shortSha = (sha: string) => sha.slice(0, 7)
+
+/**
+ * What the code-version line says, given the app row and the branch head.
+ *
+ * Split out because there are five states and only one of them is the happy
+ * path — the interesting ones are "never deployed", "we cannot see the branch"
+ * and "we can see it but cannot count the distance". Each needs different
+ * words, and none of them should render as a blank line.
+ */
+export function describeCodeVersion(
+  app: Pick<AppRow, 'gitCommitSha' | 'gitAuthKind'>,
+  head: AppGitHead | null,
+): { key: string; fallback: string; vars?: Record<string, string | number> } {
+  if (!isGiteaManaged(app)) {
+    return {
+      key: 'apps.controlPanel.codeVersionExternalRepo',
+      fallback: '这个应用用的是外部仓库，看不到它的分支。',
+    }
+  }
+  if (!head) {
+    return { key: 'apps.controlPanel.codeVersionUnavailable', fallback: '暂时读不到仓库' }
+  }
+  if (!head.deployedSha) {
+    return {
+      key: 'apps.controlPanel.codeVersionNeverDeployed',
+      fallback: '还没有部署过 · 分支 {{branch}} 在 {{head}}',
+      vars: { branch: head.branch, head: shortSha(head.sha) },
+    }
+  }
+  if (head.undeployedCommits === 0 || head.deployedSha === head.sha) {
+    return {
+      key: 'apps.controlPanel.codeVersionUpToDate',
+      fallback: '线上 {{sha}} · 已是分支 {{branch}} 的最新',
+      vars: { sha: shortSha(head.deployedSha), branch: head.branch },
+    }
+  }
+  if (head.undeployedCommits === null) {
+    // The forge could not compare them. Saying "有更新" without a number is
+    // honest; inventing one, or falling back to "up to date", is not.
+    return {
+      key: 'apps.controlPanel.codeVersionBehindUnknown',
+      fallback: '线上 {{sha}} · 分支 {{branch}} 上有没部署的改动',
+      vars: { sha: shortSha(head.deployedSha), branch: head.branch },
+    }
+  }
+  return {
+    key: 'apps.controlPanel.codeVersionBehind',
+    fallback: '线上 {{sha}} · 分支 {{branch}} 上还有 {{count}} 个提交没部署',
+    vars: { sha: shortSha(head.deployedSha), branch: head.branch, count: head.undeployedCommits },
+  }
+}
+
 /** Bytes for humans. Deliberately not a dependency; three lines. */
 function formatBytes(n: number | null | undefined): string | null {
   if (n == null) return null
@@ -173,6 +227,8 @@ interface Summary {
   files: { count: number; bytes: number | null } | null
   cronJobs: number | null
   env: { count: number; secrets: number } | null
+  /** Null for an app whose repo is not ours to read (see isGiteaManaged). */
+  gitHead: AppGitHead | null
 }
 
 /**
@@ -189,23 +245,34 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
     files: null,
     cronJobs: null,
     env: null,
+    gitHead: null,
   })
   const [loading, setLoading] = React.useState(true)
 
   React.useEffect(() => {
     let cancelled = false
     setLoading(true)
-    setSummary({ members: null, tables: null, files: null, cronJobs: null, env: null })
+    setSummary({
+      members: null,
+      tables: null,
+      files: null,
+      cronJobs: null,
+      env: null,
+      gitHead: null,
+    })
 
     void (async () => {
       const backend = getBackend().apps
-      const [access, tables, files, usage, cron, env] = await Promise.allSettled([
+      const [access, tables, files, usage, cron, env, gitHead] = await Promise.allSettled([
         backend.listAppAccess(app.id),
         backend.listAppDataTables(app.id),
         backend.listAppFiles(app.id, { limit: 100 }),
         backend.getAppStorageUsage(app.id),
         backend.listAppCronJobs(app.id),
         backend.listAppEnv(app.id),
+        // Only for a repo we host: an imported app's branch is on someone
+        // else's forge and this deployment holds no credential for it.
+        isGiteaManaged(app) ? backend.getGitHead(app.id, { compare: true }) : Promise.resolve(null),
       ])
       if (cancelled) return
 
@@ -235,6 +302,7 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
                 secrets: env.value.items.filter((v) => v.isSecret).length,
               }
             : null,
+        gitHead: gitHead.status === 'fulfilled' ? gitHead.value : null,
       })
       setLoading(false)
     })()
@@ -573,6 +641,25 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                   'apps.controlPanel.localPathUnavailable',
                   '本机 daemon 未就绪，或此应用尚未在本机初始化目录。',
                 )}
+              </p>
+            )}
+          </Field>
+
+          <Field label={t('apps.controlPanel.codeVersion', '代码版本')}>
+            {summaryLoading && isGiteaManaged(app) ? (
+              <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {t('common.loading', 'Loading…')}
+              </div>
+            ) : (
+              <p
+                className="text-[12.5px] text-muted-foreground"
+                data-testid="app-control-code-version"
+              >
+                {(() => {
+                  const line = describeCodeVersion(app, summary.gitHead)
+                  return t(line.key, line.fallback, line.vars)
+                })()}
               </p>
             )}
           </Field>

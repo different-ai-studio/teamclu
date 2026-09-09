@@ -237,20 +237,50 @@ test("GET /v1/apps/:id/git-head 404s when repo returns null", async () => {
   registerApps(router);
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-head")[2];
   await assert.rejects(
-    () => handler({ params: { appId: "app-1" }, repository: { getAppGitHead: async () => null } }),
+    () =>
+      handler({
+        params: { appId: "app-1" },
+        query: new URLSearchParams(""),
+        repository: { getAppGitHead: async () => null },
+      }),
     (e) => (e as { statusCode?: number }).statusCode === 404,
   );
 });
 
-test("GET /v1/apps/:id/git-head returns default branch sha", async () => {
+test("GET /v1/apps/:id/git-head returns the head, and compares only when asked", async () => {
+  // The compare costs a round trip to the forge, and the deploy path hits this
+  // endpoint on every deploy while reading only `sha`.
   const { router, routes } = makeRouter();
   registerApps(router);
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-head")[2];
+  const seen: unknown[] = [];
+  const head = {
+    sha: "abc123def456",
+    branch: "main",
+    deployedSha: "999888777666",
+    undeployedCommits: 2,
+  };
+  const repository = {
+    getAppGitHead: async (_id: string, opts: unknown) => {
+      seen.push(opts);
+      return head;
+    },
+  };
+
   const res = await handler({
     params: { appId: "app-1" },
-    repository: { getAppGitHead: async () => ({ sha: "abc123def456" }) },
+    query: new URLSearchParams("compare=1"),
+    repository,
   });
-  assert.deepEqual(res.body, { sha: "abc123def456" });
+  assert.deepEqual(res.body, head);
+
+  await handler({ params: { appId: "app-1" }, query: new URLSearchParams(""), repository });
+  await handler({
+    params: { appId: "app-1" },
+    query: new URLSearchParams("compare=yes"),
+    repository,
+  });
+  assert.deepEqual(seen, [{ compare: true }, { compare: false }, { compare: false }]);
 });
 
 test("GET /v1/apps/:id/membership returns member verdict", async () => {

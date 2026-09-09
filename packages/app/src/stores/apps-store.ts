@@ -300,7 +300,7 @@ export function mapDeployErrorReason(raw: string): string {
  * `tc-app-<id>` repo, so `git-head` and `git-credential` both 404 on it and
  * its deploy has to build the local workdir instead.
  */
-function isGiteaManaged(app: Pick<AppRow, "gitAuthKind">): boolean {
+export function isGiteaManaged(app: Pick<AppRow, "gitAuthKind">): boolean {
   return app.gitAuthKind === "gitea_deploy_key";
 }
 

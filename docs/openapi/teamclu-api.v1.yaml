@@ -5898,10 +5898,23 @@ paths:
       description: |
         Reads the default branch SHA via the server-side Gitea bot token.
         Visible to the same callers as `getApp`. 404 when the app is not
-        Gitea-managed (`gitAuthKind` is null).
+        Gitea-managed (`gitAuthKind` is null) — such an app's repo belongs to
+        someone else and this deployment holds no credential for it.
+
+        `compare=1` additionally reports how many commits the branch is ahead of
+        what is deployed. It is opt-in because it costs an extra request to the
+        forge, and the deploy path calls this endpoint on every deploy while
+        reading only `sha`.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
+        - name: compare
+          in: query
+          required: false
+          description: >-
+            Set to `1` to populate `undeployedCommits`. Anything else omits the
+            comparison and leaves it null.
+          schema: { type: string, enum: ["1"] }
       responses:
         "200":
           description: Default branch HEAD.
@@ -7708,11 +7721,29 @@ components:
           format: date-time
     AppGitHead:
       type: object
-      required: [sha]
+      required: [sha, branch, deployedSha, undeployedCommits]
       properties:
         sha:
           type: string
           description: Default-branch HEAD commit id on the app's Gitea repo.
+        branch:
+          type: string
+          description: >-
+            The default branch's name. Returned because "3 commits behind" is
+            much easier to act on when it also says behind what.
+        deployedSha:
+          type: [string, "null"]
+          description: >-
+            The commit the running function was built from (`apps.git_commit_sha`).
+            Null when the app has never been deployed.
+        undeployedCommits:
+          type: [integer, "null"]
+          description: >-
+            Commits on the branch that the deployed commit does not have. `0`
+            means the deployed commit IS the head. Null means the question was
+            not asked (no `compare=1`), or could not be answered — nothing is
+            deployed yet, or the forge could not compare the two, which is what
+            a force-push away from the deployed commit looks like.
     AppAuthAudience:
       type: string
       enum: [any, org]

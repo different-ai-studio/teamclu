@@ -4380,17 +4380,42 @@ export function createSupabaseBusinessRepository(options) {
       return { revoked };
     },
 
-    async getAppGitHead(appId: string) {
+    /**
+     * Default-branch HEAD on the app's Gitea repo.
+     *
+     * `compare` is opt-in because the deploy path calls this on every deploy
+     * and only wants the sha: doing the extra /compare round trip there would
+     * buy a number nothing reads. The panel asks for it; the deploy does not.
+     */
+    async getAppGitHead(appId: string, opts: { compare?: boolean } = {}) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, git_auth_kind")
+        .select("id, git_auth_kind, git_commit_sha")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
+      // An imported app's repo is somebody else's and we hold no credential for
+      // it, so there is no head to read. Null, not an error: "we cannot see the
+      // branch" is a legitimate state for such an app, permanently.
       if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
       if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-      return gitea.getRepoHead(appId);
+
+      const head = await gitea.getRepoHead(appId);
+      const deployedSha = existing.git_commit_sha ?? null;
+      if (!opts.compare) return { ...head, deployedSha, undeployedCommits: null };
+
+      // Three cases, and only the last one costs a request:
+      //   nothing deployed  → unknown, not zero (there is no baseline)
+      //   already on head   → zero, known without asking
+      //   otherwise         → ask the forge
+      let undeployedCommits: number | null = null;
+      if (deployedSha === head.sha) {
+        undeployedCommits = 0;
+      } else if (deployedSha) {
+        undeployedCommits = await gitea.compareCommits(appId, deployedSha, head.sha);
+      }
+      return { ...head, deployedSha, undeployedCommits };
     },
 
     async getAppMembership(appId: string) {
