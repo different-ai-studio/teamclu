@@ -471,7 +471,7 @@ async fn handle_cron_manage(app: &AppHandle, body: &[u8]) -> Result<String, Stri
     let v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("JSON parse error: {e}"))?;
     let cron_state = app.state::<super::cron::CronState>();
-    let result = super::cron::mcp_manage(app, &*cron_state, &v).await?;
+    let result = super::cron::mcp_manage(app, &cron_state, &v).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }
 
