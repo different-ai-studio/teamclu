@@ -74,10 +74,16 @@ fn job_action_body(workspace: &str, args: &Value, action: &str) -> Result<Value,
 }
 
 fn parse_scope(args: &Value) -> Result<&'static str, String> {
-    match args.get("scope").and_then(|v| v.as_str()).unwrap_or("global") {
+    match args
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("global")
+    {
         "global" => Ok("global"),
         "workspace" => Ok("workspace"),
-        other => Err(format!("scope must be 'global' or 'workspace', got {other}")),
+        other => Err(format!(
+            "scope must be 'global' or 'workspace', got {other}"
+        )),
     }
 }
 
@@ -125,26 +131,101 @@ fn sanitize_manage_response(mut resp: Value) -> Value {
 }
 
 fn normalize_schedule(schedule: &Value) -> Result<Value, String> {
-    if let Some(expr) = schedule.as_str() {
-        let expr = expr.trim();
-        if expr.is_empty() {
-            return Err("schedule cron expression cannot be empty".to_string());
-        }
-        return Ok(json!({ "kind": "cron", "expr": expr }));
+    if let Some(raw) = schedule.as_str() {
+        return normalize_schedule_string(raw);
     }
 
     let Some(schedule_obj) = schedule.as_object() else {
-        return Err("schedule must be a cron expression string or schedule object".to_string());
+        return Err(
+            "schedule must be a cron expression string, ISO-8601 timestamp, or schedule object"
+                .to_string(),
+        );
     };
 
-    if !matches!(
-        schedule_obj.get("kind").and_then(|v| v.as_str()),
-        Some("at" | "every" | "cron")
-    ) {
-        return Err("schedule.kind must be one of: at, every, cron".to_string());
+    normalize_schedule_object(schedule_obj)
+}
+
+fn normalize_schedule_string(raw: &str) -> Result<Value, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("schedule cannot be empty".to_string());
     }
 
-    Ok(Value::Object(schedule_obj.clone()))
+    // Tool schema is string | object, so models often stringify the object.
+    // Parse that JSON instead of stuffing it into `expr` as a cron string.
+    if raw.starts_with('{') {
+        if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
+            if parsed.is_object() {
+                return normalize_schedule(&parsed);
+            }
+        }
+    }
+
+    if chrono::DateTime::parse_from_rfc3339(raw).is_ok() {
+        return Ok(json!({ "kind": "at", "at": raw }));
+    }
+
+    Ok(json!({ "kind": "cron", "expr": raw }))
+}
+
+fn normalize_schedule_object(
+    schedule_obj: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
+    let mut out = schedule_obj.clone();
+    if let Some(every_ms) = out.remove("every_ms") {
+        out.entry("everyMs".to_string()).or_insert(every_ms);
+    }
+
+    let kind = out
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .map(normalize_schedule_kind);
+
+    match kind.as_deref() {
+        Some(k @ ("at" | "every" | "cron")) => {
+            // `{kind:"cron", expr:"{\"kind\":\"at\",...}"}` is the same LLM
+            // mix-up one layer deeper — unwrap instead of storing JSON as expr.
+            if k == "cron" {
+                if let Some(expr) = out.get("expr").and_then(|v| v.as_str()) {
+                    let expr = expr.trim();
+                    if expr.starts_with('{') {
+                        if let Ok(parsed) = serde_json::from_str::<Value>(expr) {
+                            if parsed.is_object() {
+                                return normalize_schedule(&parsed);
+                            }
+                        }
+                    }
+                }
+            }
+            out.insert("kind".into(), json!(k));
+            Ok(Value::Object(out))
+        }
+        Some(other) => Err(format!(
+            "schedule.kind must be one of: at, every, cron, got {other}"
+        )),
+        None => {
+            if out.get("at").and_then(|v| v.as_str()).is_some() {
+                out.insert("kind".into(), json!("at"));
+                return Ok(Value::Object(out));
+            }
+            if out.get("everyMs").is_some() {
+                out.insert("kind".into(), json!("every"));
+                return Ok(Value::Object(out));
+            }
+            if out.get("expr").and_then(|v| v.as_str()).is_some() {
+                out.insert("kind".into(), json!("cron"));
+                return Ok(Value::Object(out));
+            }
+            Err("schedule.kind must be one of: at, every, cron".to_string())
+        }
+    }
+}
+
+fn normalize_schedule_kind(kind: &str) -> String {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "once" | "one-time" | "onetime" | "at" => "at".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn require_job_id<'a>(args: &'a Value) -> Result<&'a str, String> {
@@ -215,6 +296,97 @@ mod tests {
         assert_eq!(body["payload"]["message"], "Summarize yesterday's work");
         assert_eq!(body["enabled"], true);
         assert!(body.get("workspace_path").is_none());
+    }
+
+    /// Models often stringify the schedule object because the tool schema
+    /// allows string | object. That JSON must become a one-time job, not a
+    /// cron expression whose `expr` is the raw JSON (which is what the
+    /// settings dialog then shows as "Cron 表达式").
+    #[test]
+    fn stringified_at_schedule_becomes_one_time_not_cron_expr() {
+        let body = create_request_body(
+            "/tmp/ws",
+            &json!({
+                "name": "One-shot ping",
+                "schedule": "{\"kind\": \"at\", \"at\": \"2026-09-09T20:10:30+08:00\"}",
+                "message": "ping"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(body["schedule"]["kind"], "at");
+        assert_eq!(body["schedule"]["at"], "2026-09-09T20:10:30+08:00");
+        assert!(body["schedule"].get("expr").is_none());
+    }
+
+    #[test]
+    fn iso_timestamp_schedule_becomes_one_time() {
+        let body = create_request_body(
+            "/tmp/ws",
+            &json!({
+                "name": "One-shot ping",
+                "schedule": "2026-09-09T20:10:30+08:00",
+                "message": "ping"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            body["schedule"],
+            json!({ "kind": "at", "at": "2026-09-09T20:10:30+08:00" })
+        );
+    }
+
+    #[test]
+    fn at_object_schedule_is_preserved() {
+        let body = create_request_body(
+            "/tmp/ws",
+            &json!({
+                "name": "One-shot ping",
+                "schedule": { "kind": "at", "at": "2026-09-09T20:10:30+08:00" },
+                "message": "ping"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(body["schedule"]["kind"], "at");
+        assert_eq!(body["schedule"]["at"], "2026-09-09T20:10:30+08:00");
+    }
+
+    #[test]
+    fn once_kind_alias_becomes_at() {
+        let body = create_request_body(
+            "/tmp/ws",
+            &json!({
+                "name": "One-shot ping",
+                "schedule": { "kind": "once", "at": "2026-09-09T20:10:30+08:00" },
+                "message": "ping"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(body["schedule"]["kind"], "at");
+        assert_eq!(body["schedule"]["at"], "2026-09-09T20:10:30+08:00");
+    }
+
+    #[test]
+    fn cron_object_whose_expr_is_stringified_at_becomes_one_time() {
+        let body = create_request_body(
+            "/tmp/ws",
+            &json!({
+                "name": "One-shot ping",
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "{\"kind\": \"at\", \"at\": \"2026-09-09T20:10:30+08:00\"}"
+                },
+                "message": "ping"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(body["schedule"]["kind"], "at");
+        assert_eq!(body["schedule"]["at"], "2026-09-09T20:10:30+08:00");
+        assert!(body["schedule"].get("expr").is_none());
     }
 
     #[test]

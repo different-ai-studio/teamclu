@@ -147,6 +147,15 @@ describe('cron helpers', () => {
     expect(formatSchedule({ kind: 'cron', expr: '0 9 * * *', tz: 'UTC' })).toBe('Cron: 0 9 * * * (UTC)')
   })
 
+  it('formatSchedule unwraps a one-time job stuffed into cron expr', () => {
+    expect(
+      formatSchedule({
+        kind: 'cron',
+        expr: '{"kind":"at","at":"2026-09-09T20:10:30+08:00"}',
+      }),
+    ).toMatch(/^One-time:/)
+  })
+
   it('getRunStatusColor returns correct colors', () => {
     expect(getRunStatusColor('success')).toBe('text-green-500')
     expect(getRunStatusColor('failed')).toBe('text-red-500')

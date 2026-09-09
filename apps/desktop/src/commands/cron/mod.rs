@@ -336,8 +336,36 @@ fn parse_create_request(body: &serde_json::Value) -> Result<CreateCronJobRequest
     obj.remove("scope");
     obj.remove("workspace_path");
     obj.remove("job_id");
+    if let Some(schedule) = obj.get("schedule").cloned() {
+        obj.insert("schedule".into(), unwrap_stringified_schedule(schedule));
+    }
     serde_json::from_value(serde_json::Value::Object(obj))
         .map_err(|e| format!("invalid create request: {e}"))
+}
+
+/// Recover when a sidecar stuffed a one-time/interval object into `expr`
+/// because the model stringified `{kind:"at",...}` as a cron expression.
+fn unwrap_stringified_schedule(schedule: serde_json::Value) -> serde_json::Value {
+    let Some(obj) = schedule.as_object() else {
+        return schedule;
+    };
+    if obj.get("kind").and_then(|v| v.as_str()) != Some("cron") {
+        return schedule;
+    }
+    let Some(expr) = obj.get("expr").and_then(|v| v.as_str()) else {
+        return schedule;
+    };
+    let expr = expr.trim();
+    if !expr.starts_with('{') {
+        return schedule;
+    }
+    let Ok(inner) = serde_json::from_str::<serde_json::Value>(expr) else {
+        return schedule;
+    };
+    match inner.get("kind").and_then(|v| v.as_str()) {
+        Some("at" | "every" | "cron") => inner,
+        _ => schedule,
+    }
 }
 
 pub(crate) async fn ensure_instance(
@@ -621,5 +649,27 @@ mod mcp_create_tests {
         assert_eq!(request.name, "Morning summary");
         assert_eq!(request.payload.message, "hello");
         assert_eq!(request.schedule.expr.as_deref(), Some("0 9 * * *"));
+    }
+
+    #[test]
+    fn parse_create_request_unwraps_stringified_at_schedule_stuffed_in_cron_expr() {
+        let body = serde_json::json!({
+            "action": "create",
+            "scope": "global",
+            "name": "One-shot ping",
+            "enabled": true,
+            "schedule": {
+                "kind": "cron",
+                "expr": "{\"kind\": \"at\", \"at\": \"2026-09-09T20:10:30+08:00\"}"
+            },
+            "payload": { "message": "ping" }
+        });
+        let request = parse_create_request(&body).unwrap();
+        assert_eq!(request.schedule.kind, ScheduleKind::At);
+        assert_eq!(
+            request.schedule.at.as_deref(),
+            Some("2026-09-09T20:10:30+08:00")
+        );
+        assert!(request.schedule.expr.is_none());
     }
 }

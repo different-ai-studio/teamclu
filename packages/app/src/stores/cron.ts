@@ -533,6 +533,29 @@ export function normalizeCronRunRecord(record: CronRunRecord): CronRunRecord {
 
 /** Convert schedule to human-readable string */
 export function formatSchedule(schedule: CronSchedule): string {
+  return formatCoercedSchedule(coerceSchedule(schedule))
+}
+
+/**
+ * Recover when MCP stuffed a stringified `{kind:"at",...}` into `expr`
+ * because the model serialized the schedule object as a cron string.
+ */
+export function coerceSchedule(schedule: CronSchedule): CronSchedule {
+  if (schedule.kind !== 'cron') return schedule
+  const expr = schedule.expr?.trim()
+  if (!expr?.startsWith('{')) return schedule
+  try {
+    const inner = JSON.parse(expr) as Partial<CronSchedule>
+    if (inner && (inner.kind === 'at' || inner.kind === 'every' || inner.kind === 'cron')) {
+      return inner as CronSchedule
+    }
+  } catch {
+    // keep the original cron row
+  }
+  return schedule
+}
+
+function formatCoercedSchedule(schedule: CronSchedule): string {
   switch (schedule.kind) {
     case 'at':
       if (schedule.at) {
