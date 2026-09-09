@@ -685,8 +685,16 @@ pub(crate) fn host_script_path() -> PathBuf {
 /// 4.2s for the slowest one here — and pi cannot start a session until the
 /// extension has registered its tools. With a cached list the tools register
 /// at once and the child is spawned in the background instead.
+///
+/// Scoped by version because the cache key is not: the extension signs an entry
+/// with the server's command and environment, and `teamclu-introspect` ships at
+/// the same path in every build. Without this, an upgrade that changes a tool's
+/// description or arguments keeps registering the previous release's list —
+/// the tool behaves as newly built while the model is still told the old rules.
 fn mcp_tool_cache_dir() -> PathBuf {
-    amuxd_pi_dir().join("mcp-tools")
+    amuxd_pi_dir()
+        .join("mcp-tools")
+        .join(env!("CARGO_PKG_VERSION"))
 }
 
 /// Write embedded content to its on-disk path (only when the content changed,

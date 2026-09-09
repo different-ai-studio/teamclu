@@ -1178,12 +1178,92 @@ async fn list_team_apps(
     Ok(items_of(&listing))
 }
 
+/// Every app this machine holds a checkout for, as `(app_id, workdir)`.
+///
+/// Best-effort, like [`app_workdir_on_this_machine`]: a daemon that is down
+/// means "no local checkouts", which leaves the caller asking for an explicit
+/// app rather than failing on an unrelated error.
+async fn local_app_workdirs(team_id: &str) -> Vec<(String, String)> {
+    use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
+    let query = format!("?teamId={}", urlencoding::encode(team_id));
+    let out: serde_json::Value = match daemon::call_discovered(
+        RequestSpec::get("/v1/apps/local", &["workspace:read"])
+            .query(&query)
+            .timeout(std::time::Duration::from_secs(10)),
+        NO_BODY,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    out.get("apps")
+        .and_then(|x| x.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let id = row.get("appId")?.as_str()?.trim();
+                    let dir = row.get("workdir")?.as_str()?.trim();
+                    (!id.is_empty() && !dir.is_empty()).then(|| (id.to_string(), dir.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Resolve symlinks so two spellings of one directory compare equal.
+///
+/// macOS reaches the same tree as `/tmp/x` and `/private/tmp/x`, and a
+/// workspace under a symlinked mount is routinely handed to the agent by one
+/// spelling while the daemon reports the other. A path that cannot be
+/// canonicalized (it no longer exists) is left as it was, which still matches
+/// an identical string.
+fn canonical_path(path: &str) -> std::path::PathBuf {
+    let raw = std::path::PathBuf::from(path);
+    std::fs::canonicalize(&raw).unwrap_or(raw)
+}
+
+/// The app whose checkout is, or contains, `workspace`.
+///
+/// Component-wise so a sibling directory cannot match on a shared prefix
+/// (`…/apps/foo-2` is not inside `…/apps/foo`), and longest match first so a
+/// checkout nested inside another checkout resolves to the inner one.
+fn app_owning_path(
+    workspace: &std::path::Path,
+    apps: &[(String, std::path::PathBuf)],
+) -> Option<String> {
+    apps.iter()
+        .filter(|(_, dir)| workspace.starts_with(dir))
+        .max_by_key(|(_, dir)| dir.components().count())
+        .map(|(id, _)| id.clone())
+}
+
+/// The workspace the calling agent is running in.
+///
+/// The sidecar passes its own `--workspace`, which is the agent's checkout —
+/// not necessarily the one the desktop window happens to be showing. The
+/// registry is the fallback for a sidecar older than this field.
+fn introspect_caller_workspace(app: &AppHandle, v: &serde_json::Value) -> Option<String> {
+    if let Some(path) = str_body_field(v, "workspace_path", "workspacePath") {
+        return Some(path);
+    }
+    let registry = app.state::<super::window::WindowRegistry>();
+    let path = registry.current_workspace.lock().ok()?.clone()?;
+    (!path.trim().is_empty()).then_some(path)
+}
+
 /// Resolve the `app_id` / `app_name` argument to exactly one app row.
 ///
 /// A name is accepted only when it names one app in the current team. Deploying
 /// publishes to the internet and `update_row` writes production data, so a
 /// fuzzy match is not worth the effect: zero or several matches come back as
 /// the candidate list with nothing done.
+///
+/// With neither given, the app is the one whose checkout the caller is working
+/// in. That is not a guess in the way a fuzzy name is — the directory either is
+/// that app's checkout or it is not — and it is the common case the tool used
+/// to fail on: an agent editing an app has no way to learn its own app id, so
+/// it stopped and asked the user for one it could not see either.
 async fn resolve_app_row(
     app: &AppHandle,
     fc: &super::oss_sync::fc_client::FcClient,
@@ -1195,8 +1275,13 @@ async fn resolve_app_row(
             .await
             .map_err(|e| format!("Cloud API app read failed: {e}"));
     }
-    let name = str_body_field(v, "app_name", "appName")
-        .ok_or("Missing field: app_id or app_name is required")?;
+    let Some(name) = str_body_field(v, "app_name", "appName") else {
+        let id = resolve_app_id_from_workspace(app, v).await?;
+        return fc
+            .get_json(&format!("/v1/apps/{}", urlencoding::encode(&id)))
+            .await
+            .map_err(|e| format!("Cloud API app read failed: {e}"));
+    };
     let team_id = introspect_current_team(app).await?;
     let apps = list_team_apps(fc, &team_id).await?;
     let wanted = name.to_lowercase();
@@ -1225,6 +1310,30 @@ async fn resolve_app_row(
             serde_json::Value::Array(matches.iter().map(|a| app_brief(a)).collect())
         )),
     }
+}
+
+/// The app the caller is inside, for a call that named none.
+///
+/// Both failure modes say what to do next rather than what went wrong: an agent
+/// that lands here has already decided it wants "this app", and the useful
+/// reply is the way to name one.
+async fn resolve_app_id_from_workspace(
+    app: &AppHandle,
+    v: &serde_json::Value,
+) -> Result<String, String> {
+    const ASK: &str =
+        "pass app_id or app_name, or run manage_app with action \"list\" to see this team's apps";
+    let workspace = introspect_caller_workspace(app, v).ok_or_else(|| {
+        format!("No app_id or app_name, and no workspace to resolve one from — {ASK}")
+    })?;
+    let team_id = introspect_current_team(app).await?;
+    let apps: Vec<(String, std::path::PathBuf)> = local_app_workdirs(&team_id)
+        .await
+        .into_iter()
+        .map(|(id, dir)| (id, canonical_path(&dir)))
+        .collect();
+    app_owning_path(&canonical_path(&workspace), &apps)
+        .ok_or_else(|| format!("{workspace} is not the checkout of any app in this team — {ASK}"))
 }
 
 /// Strip presigned-URL query strings out of anything on its way into a stored
@@ -1482,10 +1591,26 @@ async fn handle_app_manage(app: &AppHandle, body: &[u8]) -> Result<String, Strin
         "list" => {
             let team_id = introspect_current_team(app).await?;
             let apps = list_team_apps(&fc, &team_id).await?;
+            // One daemon call for every app's checkout, not one per app: the
+            // path is how an agent tells the app it is working in from the rest
+            // of the team's, and it used to take a `status` round trip each to
+            // find out.
+            let local = local_app_workdirs(&team_id).await;
+            let briefs: Vec<serde_json::Value> = apps
+                .iter()
+                .map(|row| {
+                    let mut brief = app_brief(row);
+                    let id = row.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+                    if let Some((_, dir)) = local.iter().find(|(app_id, _)| app_id == id) {
+                        brief["workdir"] = serde_json::json!(dir);
+                    }
+                    brief
+                })
+                .collect();
             Ok(serde_json::json!({
                 "action": "list",
                 "team_id": team_id,
-                "apps": apps.iter().map(app_brief).collect::<Vec<_>>(),
+                "apps": briefs,
             })
             .to_string())
         }
@@ -2195,6 +2320,46 @@ mod tests {
             "fcEndpoint": "https://raw-suffix.fcapp.run",
         });
         assert_eq!(no_vanity["fcEndpoint"], app_brief(&no_vanity)["url"]);
+    }
+
+    fn checkouts(pairs: &[(&str, &str)]) -> Vec<(String, std::path::PathBuf)> {
+        pairs
+            .iter()
+            .map(|(id, dir)| (id.to_string(), std::path::PathBuf::from(dir)))
+            .collect()
+    }
+
+    #[test]
+    fn the_workspace_resolves_to_the_app_whose_checkout_it_is() {
+        let apps = checkouts(&[("app-1", "/home/u/apps/notes"), ("app-2", "/work/py")]);
+        // The checkout root itself, and a file the agent happens to be editing
+        // deeper inside it, are the same app.
+        assert_eq!(
+            app_owning_path(std::path::Path::new("/work/py"), &apps).as_deref(),
+            Some("app-2")
+        );
+        assert_eq!(
+            app_owning_path(std::path::Path::new("/work/py/backend/src"), &apps).as_deref(),
+            Some("app-2")
+        );
+    }
+
+    #[test]
+    fn a_shared_prefix_is_not_a_match() {
+        // String prefixes would make `/work/py-2` part of `/work/py`, and a
+        // deploy would publish the wrong app. Matching is component-wise.
+        let apps = checkouts(&[("app-2", "/work/py")]);
+        assert!(app_owning_path(std::path::Path::new("/work/py-2"), &apps).is_none());
+        assert!(app_owning_path(std::path::Path::new("/work"), &apps).is_none());
+    }
+
+    #[test]
+    fn a_checkout_inside_a_checkout_resolves_to_the_inner_one() {
+        let apps = checkouts(&[("outer", "/work"), ("inner", "/work/apps/site")]);
+        assert_eq!(
+            app_owning_path(std::path::Path::new("/work/apps/site/public"), &apps).as_deref(),
+            Some("inner")
+        );
     }
 
     #[test]

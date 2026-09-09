@@ -510,17 +510,17 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_app",
-            "description": "Work with a TeamClu app: list this team's apps, read one's status, deploy it, or read the deployed app's logs. `deploy` runs the full publish (build the checkout on the local machine, upload it, put it live) and PUBLISHES TO THE PUBLIC INTERNET — an app whose auth_mode is \"none\" is readable by anyone with the URL. `logs` reads what the running app printed, which is how you find out why it 500s. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (deploying needs admin on the app).",
+            "description": "Work with a TeamClu app: list this team's apps, read one's status, deploy it, or read the deployed app's logs. Omit app_id and app_name to act on the app whose checkout is the workspace you are working in — you do not need to ask the user which app this is, and `list` reports each app's local `workdir` so you can see it for yourself. `deploy` runs the full publish (build the checkout on the local machine, upload it, put it live) and PUBLISHES TO THE PUBLIC INTERNET — an app whose auth_mode is \"none\" is readable by anyone with the URL. `logs` reads what the running app printed, which is how you find out why it 500s. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (deploying needs admin on the app).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "enum": ["list", "status", "deploy", "logs"],
-                        "description": "list: this team's apps. status: one app, plus where its checkout is on this machine. deploy: build and publish. logs: the deployed app's own output."
+                        "description": "list: this team's apps, each with its checkout path on this machine when it has one. status: one app, plus where its checkout is on this machine. deploy: build and publish. logs: the deployed app's own output."
                     },
-                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name (not both); not needed for list." },
-                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team." },
+                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name (not both); omit both to mean the app whose checkout is the current workspace. Not needed for list." },
+                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team. Omit it and app_id to mean the app whose checkout is the current workspace." },
                     "since_minutes": { "type": "integer", "description": "logs: how far back to read. Default 30, max 10080 (7 days)." },
                     "limit": { "type": "integer", "description": "logs: how many entries. Default 100, max 200." },
                     "kind": {
@@ -545,8 +545,8 @@ fn tool_definitions() -> Value {
                         "enum": ["tables", "rows", "update_row", "delete_row"],
                         "description": "tables: what tables exist, with their columns and primary key. rows: one page of rows. update_row / delete_row: change exactly one row."
                     },
-                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name, not both." },
-                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team." },
+                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name, not both; omit both to mean the app whose checkout is the current workspace." },
+                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team. Omit it and app_id to mean the app whose checkout is the current workspace." },
                     "table": { "type": "string", "description": "Table name, as reported by action \"tables\". Required for everything but tables." },
                     "limit": { "type": "integer", "description": "rows: page size. Default 50, max 100." },
                     "after": { "type": "string", "description": "rows: the previous page's next_cursor. Omit for the first page." },
@@ -804,14 +804,15 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
-                "manage_app" => match apps::handle_manage(api_port, &arguments).await {
+                "manage_app" => match apps::handle_manage(workspace, api_port, &arguments).await {
                     Ok(v) => {
                         let text = serde_json::to_string_pretty(&v).unwrap_or_default();
                         tool_ok(&text)
                     }
                     Err(e) => tool_err(&e),
                 },
-                "manage_app_data" => match apps::handle_data(api_port, &arguments).await {
+                "manage_app_data" => match apps::handle_data(workspace, api_port, &arguments).await
+                {
                     Ok(v) => {
                         let text = serde_json::to_string_pretty(&v).unwrap_or_default();
                         tool_ok(&text)

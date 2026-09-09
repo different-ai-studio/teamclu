@@ -769,9 +769,23 @@ pub async fn bind_app_workdir(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalAppEntry {
+    pub app_id: String,
+    /// Absolute path to this machine's checkout of that app.
+    pub workdir: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalAppsResponse {
     /// Ids of the apps this machine holds a non-empty checkout for.
     pub app_ids: Vec<String>,
+    /// The same apps, each with the path its checkout is at. `appIds` is kept
+    /// because the app list column only filters on membership; this is for the
+    /// callers that need to go the other way — from a directory an agent is
+    /// working in back to the app it belongs to — which otherwise costs one
+    /// `/workdir` round trip per app in the team.
+    pub apps: Vec<LocalAppEntry>,
 }
 
 /// `GET /v1/apps/local?teamId=…` — which apps are actually on this machine.
@@ -786,10 +800,13 @@ pub async fn list_local_apps(
 ) -> Result<Json<LocalAppsResponse>, HttpError> {
     require_scope(&principal, "workspace:read")?;
     let team_id = query.team_id.trim().to_string();
-    let app_ids = tokio::task::spawn_blocking(move || local_app_ids(&team_id))
+    let local = tokio::task::spawn_blocking(move || local_apps(&team_id))
         .await
         .map_err(|e| HttpError::internal(format!("scan task panicked: {e}")))?;
-    Ok(Json(LocalAppsResponse { app_ids }))
+    Ok(Json(LocalAppsResponse {
+        app_ids: local.iter().map(|e| e.app_id.clone()).collect(),
+        apps: local,
+    }))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -805,11 +822,19 @@ pub struct LocalAppsQuery {
 /// before it writes anything into it, so a seed that failed leaves one behind —
 /// and counting it as "downloaded" would hide the app from the very list whose
 /// job is to offer the download again.
-fn local_app_ids(team_id: &str) -> Vec<String> {
-    let mut ids: std::collections::BTreeSet<String> = Default::default();
+fn local_apps(team_id: &str) -> Vec<LocalAppEntry> {
+    local_apps_in(
+        &apps_root_for_team(team_id),
+        crate::sync::app_workdir::all_overrides(team_id),
+    )
+}
 
-    let root = apps_root_for_team(team_id);
-    if let Ok(entries) = std::fs::read_dir(&root) {
+/// [`local_apps`]'s rule with the root and the overrides given, so it is
+/// testable without a real daemon home.
+fn local_apps_in(root: &std::path::Path, overrides: Vec<(String, PathBuf)>) -> Vec<LocalAppEntry> {
+    let mut found: std::collections::BTreeMap<String, PathBuf> = Default::default();
+
+    if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
@@ -818,18 +843,27 @@ fn local_app_ids(team_id: &str) -> Vec<String> {
                 continue;
             }
             if dir_has_files(&entry.path()) {
-                ids.insert(name);
+                found.insert(name, entry.path());
             }
         }
     }
 
-    for (app_id, path) in crate::sync::app_workdir::all_overrides(team_id) {
+    // Overrides last, and they win: an app moved off the derived root still has
+    // its old directory sitting there in the cases where the move copied rather
+    // than renamed, and the override is the one `resolve_workdir` will use.
+    for (app_id, path) in overrides {
         if dir_has_files(&path) {
-            ids.insert(app_id);
+            found.insert(app_id, path);
         }
     }
 
-    ids.into_iter().collect()
+    found
+        .into_iter()
+        .map(|(app_id, path)| LocalAppEntry {
+            app_id,
+            workdir: path.to_string_lossy().into_owned(),
+        })
+        .collect()
 }
 
 fn dir_has_files(dir: &std::path::Path) -> bool {
@@ -986,6 +1020,45 @@ mod tests {
         assert_eq!(body.team_id, "team-1");
         assert_eq!(body.workspace_id, "ws-1");
         assert_eq!(body.workdir.as_deref(), Some("/tmp/work"));
+    }
+
+    #[test]
+    fn local_apps_report_where_each_checkout_is() {
+        // The path is the point: it is what lets a caller go from the directory
+        // an agent is working in back to the app, without a round trip per app.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("apps");
+        for id in ["app-1", "app-2"] {
+            std::fs::create_dir_all(root.join(id)).unwrap();
+            std::fs::write(root.join(id).join("index.html"), b"hi").unwrap();
+        }
+        // Seeded then abandoned: an empty directory is not a checkout.
+        std::fs::create_dir_all(root.join("app-empty")).unwrap();
+
+        let out = local_apps_in(&root, Vec::new());
+        assert_eq!(
+            out.iter().map(|e| e.app_id.as_str()).collect::<Vec<_>>(),
+            vec!["app-1", "app-2"]
+        );
+        assert_eq!(out[0].workdir, root.join("app-1").to_string_lossy());
+    }
+
+    #[test]
+    fn an_override_replaces_the_derived_directory() {
+        // A moved app still has its old directory when the move copied rather
+        // than renamed. `resolve_workdir` uses the override, so this must too,
+        // or a caller matching a path would resolve to a stale checkout.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("apps");
+        std::fs::create_dir_all(root.join("app-1")).unwrap();
+        std::fs::write(root.join("app-1").join("index.html"), b"hi").unwrap();
+        let moved = tmp.path().join("elsewhere/app-1");
+        std::fs::create_dir_all(&moved).unwrap();
+        std::fs::write(moved.join("index.html"), b"hi").unwrap();
+
+        let out = local_apps_in(&root, vec![("app-1".to_string(), moved.clone())]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].workdir, moved.to_string_lossy());
     }
 
     #[test]
