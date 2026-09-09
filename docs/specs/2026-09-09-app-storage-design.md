@@ -563,5 +563,29 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
 `code.zip` 在 `apps/` 前缀下，而 session policy 只覆盖 `app-files/`。这是 §3.1
 把两个前缀分开的一个额外好处，当时没想到。
 
-**留在人工手上的一件事**：主账号旧 AK 仍未禁用（控制台操作，无 OpenAPI）。
+### belayo（阿里云 FC，账号 1317424610922997）
+
+同一套东西在 belayo 也建好了（2026-09-09），因为它是独立账号、独立 bucket：
+
+- 角色 `acs:ram::1317424610922997:role/teamclu-app-storage`，同样 43200；信任
+  `user/sre`——belayo 的 FC 函数 `teamclaw-belayo-live-api` 用的就是这把 key。
+- 角色策略 `teamclu-app-storage-oss` 限 `belayo-teamclu-apps/app-files/*`。
+- 另加 `teamclu-app-storage-assume` 附到 `sre` 上：这个用户原本只有
+  `AliyunOSSFullAccess` 等三条系统策略，没有任何 STS 权限。
+- 八条验收全部复现（跨 app 读写、写 `apps/` 下的 code.zip、列整桶都是 403
+  AccessDenied）。
+
+**belayo 的变量写在部署 env 文件里，不是写在函数上**：`s deploy` 会重写整张环境
+变量表（`deploy-aliyun-fc.sh:151-153` 的横幅就是提醒这件事），所以直接改线上函数
+会在下一次部署被抹掉。值加在 `services/fc/.env.belayo.local`（那台机器上的
+gitignore 文件，已备份为 `.bak-before-app-storage-sts`），下次部署自然带上。
+
+> 顺带记一笔，不属于本设计但值得知道：belayo 的 FC key（RAM 用户 `sre`）挂着
+> `AliyunOSSFullAccess`，也就是能读写该账号**全部 25 个 bucket**。self-host 那边
+> 已经收敛到两个桶了，belayo 还没有。
+
+**留在人工手上的两件事**：
+
+1. self-host 的主账号旧 AK 仍未禁用（控制台操作，无 OpenAPI）。
+2. belayo 要等代码合并后手工部署一次，这两个变量才会真正到函数上。
 
