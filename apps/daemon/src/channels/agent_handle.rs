@@ -159,6 +159,10 @@ pub struct AmuxdAgentHandle {
     /// Read-only from a chat's point of view since #933: `/workspace` no longer
     /// rewrites it (or `daemon.toml`) — it scopes to the session instead.
     pub bot_configs: Arc<Mutex<HashMap<String, BotRuntimeConfig>>>,
+    /// Same channel cron uses: ACP frames while `event_rx` is checked out, so
+    /// `poll_events` cannot publish thinking/tools/output to `session/live`.
+    /// `None` in unit tests that never drive a live turn.
+    pub live_event_tx: Option<tokio::sync::mpsc::Sender<crate::runtime::CheckedOutTurnEvent>>,
 }
 
 /// Returned by `resolve_or_spawn`. `spawned` is true iff this call was
@@ -855,6 +859,17 @@ impl AmuxdAgentHandle {
                     break salvage_on_timeout(&segments, &live);
                 }
             };
+            // Mirror cron: the checkout owns `event_rx`, so `poll_events` never
+            // sees these frames. Forward a copy for `session/live` before we
+            // consume it — otherwise a WeCom/Feishu turn is invisible on the
+            // desktop until the final reply, with no thinking or tools.
+            crate::runtime::forward_checked_out_turn_event(
+                self.live_event_tx.as_ref(),
+                &agent_id,
+                &outcome.real_acp_sid,
+                &event,
+            );
+
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
                 let details = if err.details.is_empty() {
                     err.message.clone()
@@ -1501,6 +1516,7 @@ pub(crate) mod tests {
             workspace_resolver: Arc::new(crate::config::WorkspaceResolver::new(backend)),
             workspace_override: Arc::new(Mutex::new(HashMap::new())),
             bot_configs: Arc::new(Mutex::new(HashMap::new())),
+            live_event_tx: None,
         }
     }
 

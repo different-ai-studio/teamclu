@@ -42,20 +42,14 @@ pub(crate) struct CronTurnDone {
     pub(crate) reply_tx: oneshot::Sender<String>,
 }
 
-/// One ACP event of a cron-driven turn, sent from the turn task to the active
-/// run loop so it can reach `session/live`.
+/// One ACP event of a checked-out turn (cron or gateway), sent from the
+/// turn task to the active run loop so it can reach `session/live`.
 ///
 /// The turn task owns the agent's event channel for the whole turn, so
 /// `poll_events` — and with it `forward_agent_event` — never sees these frames.
 /// Publishing is what `forward_agent_event` would have done; it has to happen
 /// on the loop because it needs `&self.teamclu`, which is not `Send`.
-pub(crate) struct CronTurnEvent {
-    /// Runtime key (8-char), not the actor id.
-    pub(crate) agent_id: String,
-    /// Set only for subagent sessions, matching `forward_agent_event`.
-    pub(crate) child_acp_session_id: Option<String>,
-    pub(crate) event: crate::proto::amux::AcpEvent,
-}
+pub(crate) type CronTurnEvent = crate::runtime::CheckedOutTurnEvent;
 
 /// Caches the `(cloud_session_id, acp_session_id)` pair for each cron logical
 /// `session_key`.
@@ -448,13 +442,14 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         let _ = reply_tx.send(result.to_string());
     }
 
-    /// Publish one event of a cron-driven turn to `session/live`.
+    /// Publish one event of a checked-out turn (cron or gateway) to
+    /// `session/live`.
     ///
     /// This is `forward_agent_event`'s publish tail and deliberately nothing
     /// else: the turn task has already fed the event to the aggregator, and
     /// ingesting it a second time here would emit the reply twice. Without it
-    /// a cron session sat frozen — "Run Now" navigates you into the thread and
-    /// nothing moves until the whole answer appears at once.
+    /// a cron or WeCom session sat frozen — the desktop thread received the
+    /// user prompt, then nothing moved until the finished reply.
     pub(super) async fn publish_cron_turn_event(&mut self, ev: CronTurnEvent) {
         use crate::proto::amux;
 
@@ -827,18 +822,12 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             // the desktop renders the turn as it happens. Best-effort: a full
             // channel drops frames rather than stalling the model turn behind
             // the UI, and the finalized reply lands regardless.
-            let forwarded = CronTurnEvent {
-                agent_id: agent_id.clone(),
-                child_acp_session_id: Some(event.acp_session_id.clone())
-                    .filter(|sid| !sid.is_empty() && sid != acp_sid),
-                event: event.event.clone(),
-            };
-            if event_tx.try_send(forwarded).is_err() {
-                tracing::debug!(
-                    agent_id = %agent_id,
-                    "cron: live event channel full; dropping one streaming frame"
-                );
-            }
+            crate::runtime::forward_checked_out_turn_event(
+                Some(&event_tx),
+                &agent_id,
+                acp_sid,
+                &event,
+            );
 
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
                 let details = if err.details.is_empty() {
