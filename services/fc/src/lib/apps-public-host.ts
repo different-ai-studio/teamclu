@@ -97,6 +97,39 @@ export function appPublicUrl(
 }
 
 /**
+ * Every origin this app legitimately answers on.
+ *
+ * ONE definition, deliberately: the central login service validates the return
+ * address against this list, and the app-domain gateway builds the address it
+ * asks to return to out of the same list. Two copies that drift by so much as a
+ * scheme would make every login fail the redirect check with a 400 — and the
+ * two halves live in different files, so drift would be invisible until a real
+ * login was attempted.
+ *
+ * Batch 4 appends the verified custom domain here, and nothing else changes.
+ */
+export function appOrigins(
+  app: {
+    id: string;
+    slug: string;
+    customDomain?: string | null;
+    customDomainVerifiedAt?: string | null;
+  },
+  env: Env = process.env,
+): string[] {
+  const out: string[] = [];
+  const vanity = appPublicUrl(app.slug, app.id, env);
+  if (vanity) out.push(vanity);
+  // An unverified domain is stored but not served, so it is not an origin the
+  // login service may return a visitor to either — the same gate that keeps a
+  // certificate from being issued for it.
+  if (app.customDomain && app.customDomainVerifiedAt) {
+    out.push(`https://${app.customDomain.toLowerCase()}`);
+  }
+  return out;
+}
+
+/**
  * Split a request's Host back into the parts that identify an app, or null
  * when the host is not a vanity app host at all (the Cloud API's own domain,
  * an IP, the container name — all of which must fall through to the API).

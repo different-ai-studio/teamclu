@@ -36,9 +36,10 @@ import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-loca
 import { isTauri } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
 import { AppDataSection } from './AppDataSection'
-import type { AppAuthMode, AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
+import { AppAuthSection } from './AppAuthSection'
+import { AppCustomDomainSection } from './AppCustomDomainSection'
+import type { AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
 
-const AUTH_MODES: AppAuthMode[] = ['none', 'platform', 'third']
 const PERMISSION_LEVELS: AppPermissionLevel[] = ['view', 'prompt', 'admin']
 
 function StatusDot({ tone }: { tone: 'live' | 'ready' | 'failed' | 'idle' }) {
@@ -112,15 +113,12 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const pendingRedeploy = app.authModePendingRedeploy
   const reseed = useAppsStore((s) => s.reseed)
   const rename = useAppsStore((s) => s.rename)
-  const updateAuthMode = useAppsStore((s) => s.updateAuthMode)
   const deploy = useAppsStore((s) => s.deploy)
   const deleteApp = useAppsStore((s) => s.deleteApp)
 
   const [nameDraft, setNameDraft] = React.useState(app.name)
   const [renaming, setRenaming] = React.useState(false)
   const [reseeding, setReseeding] = React.useState(false)
-  const [authModeDraft, setAuthModeDraft] = React.useState<AppAuthMode>(app.authMode)
-  const [authModeSaving, setAuthModeSaving] = React.useState(false)
   const [deleteOpen, setDeleteOpen] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
 
@@ -143,13 +141,8 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
     setNameDraft(app.name)
   }, [app.id, app.name])
 
-  React.useEffect(() => {
-    setAuthModeDraft(app.authMode)
-  }, [app.id, app.authMode])
-
   const status = appStatusMeta(app, deploying)
   const showReseed = canReseed(app.provisionStatus)
-  const authModeDirty = authModeDraft !== app.authMode
   const showAuthModePending = pendingRedeploy
 
   const loadAccess = React.useCallback(async () => {
@@ -237,16 +230,6 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       await reseed(app.id)
     } finally {
       setReseeding(false)
-    }
-  }
-
-  const handleSaveAuthMode = async () => {
-    if (!authModeDirty) return
-    setAuthModeSaving(true)
-    try {
-      await updateAuthMode(app.id, authModeDraft)
-    } finally {
-      setAuthModeSaving(false)
     }
   }
 
@@ -621,92 +604,48 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
             data, and the address it answers on. */}
         <Group title={t('apps.controlPanel.liveGroup', '线上')}>
           <Field label={t('apps.controlPanel.authMode', '登录方式')}>
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              {/* The select stretches and the button sits beside it: `w-full`
-                  on the trigger used to take the whole row and wrap Save onto
-                  a line of its own. */}
-              <Select
-                value={authModeDraft}
-                onValueChange={(v) => setAuthModeDraft(v as AppAuthMode)}
-                disabled={authModeSaving}
-              >
-                <SelectTrigger
-                  className="h-8 min-w-0 flex-1 rounded-[7px] text-[12px]"
-                  data-testid="app-control-auth-mode"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {AUTH_MODES.map((mode) => (
-                    <SelectItem
-                      key={mode}
-                      value={mode}
-                      disabled={mode === 'third'}
-                      className="text-[12px]"
-                    >
-                      {t(`apps.controlPanel.authModeOption.${mode}`, mode)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 shrink-0 rounded-[7px] text-[12px]"
-                disabled={authModeSaving || !authModeDirty || authModeDraft === 'third'}
-                onClick={() => void handleSaveAuthMode()}
-              >
-                {authModeSaving ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  t('common.save', 'Save')
-                )}
-              </Button>
-              {showAuthModePending && (
-                <span
-                  className="rounded-[7px] border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                  data-testid="app-control-auth-pending-redeploy"
-                >
-                  {t('apps.controlPanel.pendingRedeploy', '待重新部署')}
-                </span>
-              )}
-            </div>
+            <AppAuthSection app={app} />
             {showAuthModePending && (
-              <p
-                className="mb-2 text-[12px] text-destructive"
-                data-testid="app-control-auth-live-warning"
+              <span
+                className="mt-2 inline-block rounded-[7px] border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                data-testid="app-control-auth-pending-redeploy"
               >
-                {t(
-                  'apps.controlPanel.authModeLiveWarning',
-                  '登录方式已保存，但线上站点仍运行旧配置。在重新部署之前，站点访问方式不会变（无登录的应用仍然对持有链接的人公开）。',
-                )}
-              </p>
-            )}
-            {authModeDraft === 'third' && (
-              <p className="text-[12px] text-muted-foreground">
-                {t(
-                  'apps.controlPanel.authModeThirdDisabled',
-                  '第三方登录暂不支持部署，请选择其他方式。',
-                )}
-              </p>
+                {t('apps.controlPanel.pendingRedeploy', '待重新部署')}
+              </span>
             )}
             {showAuthModePending && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-2 h-8 gap-1.5 rounded-[7px] text-[12px]"
-                disabled={deploying || app.provisionStatus !== 'ready'}
-                onClick={() => void deploy(app.id)}
-                data-testid="app-control-redeploy-now"
-              >
-                {deploying ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5" />
-                )}
-                {t('apps.controlPanel.redeployNow', '立即重新部署')}
-              </Button>
+              <div className="mt-2.5 border-t border-border-soft/60 pt-2.5">
+                {/* The wall itself lives in the proxy and every change here is
+                    live immediately. What lags is the function's env — the
+                    Supabase variables an app may use ITSELF. Saying "the site
+                    is still public" (as this warning used to) would now be
+                    false, and false in the direction that matters. */}
+                <p
+                  className="mb-2 text-[12px] text-muted-foreground"
+                  data-testid="app-control-auth-live-warning"
+                >
+                  {t(
+                    'apps.controlPanel.authEnvPending',
+                    '登录设置已生效。但应用代码要读取登录用户信息，还需要重新部署一次 —— 相关配置是在部署时写进应用的。',
+                  )}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 rounded-[7px] text-[12px]"
+                  disabled={deploying || app.provisionStatus !== 'ready'}
+                  onClick={() => void deploy(app.id)}
+                  data-testid="app-control-redeploy-now"
+                >
+                  {deploying ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  )}
+                  {t('apps.controlPanel.redeployNow', '立即重新部署')}
+                </Button>
+              </div>
             )}
           </Field>
           <Field label={t('apps.data.section', '线上数据')}>
@@ -716,25 +655,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
             <AppDataSection app={app} canEdit={canManageAccess} />
           </Field>
           <Field label={t('apps.controlPanel.customDomain', '自定义域名')}>
-            {/* Placeholder. The plumbing exists — every deploy already binds
-                <slug>-<id8>.$APPS_FC_ROUTE_DOMAIN on Function Compute — but a
-                user-chosen domain also needs DNS proof and a certificate, so
-                the field is shown disabled rather than implying it works. */}
-            <div className="flex gap-1.5">
-              <Input
-                value=""
-                readOnly
-                disabled
-                placeholder={t('apps.controlPanel.customDomainPlaceholder', 'app.example.com')}
-                className="h-8 flex-1 rounded-[7px] text-[12.5px]"
-              />
-              <Button type="button" size="sm" variant="outline" disabled className="h-8 rounded-[7px]">
-                {t('apps.controlPanel.customDomainBind', '绑定')}
-              </Button>
-            </div>
-            <p className="mt-1.5 text-[11.5px] text-faint">
-              {t('apps.controlPanel.customDomainSoon', '即将支持。上线后可用自己的域名访问这个应用。')}
-            </p>
+            <AppCustomDomainSection app={app} />
           </Field>
         </Group>
 

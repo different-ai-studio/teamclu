@@ -75,7 +75,10 @@ test("a non-app host still falls through to the API router", async () => {
   await withDomain(async () => {
     const seen: string[] = [];
     const res = await appWithLookup(seen).request("https://teamclaw-api.ucar.cc/definitely-not-a-route");
-    assert.deepEqual(seen, [], "lookup must not be consulted for a non-app host");
-    assert.equal(res.status, 404);
+    // The lookup IS consulted now — a custom domain cannot be recognised by
+    // parsing — but answering null still hands the request to the API router,
+    // which is the part that matters here.
+    assert.deepEqual(seen, ["teamclaw-api.ucar.cc"]);
+    assert.equal(res.status, 404, "the API answers its own 404, not the app proxy");
   });
 });

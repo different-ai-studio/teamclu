@@ -23,7 +23,34 @@ export interface VanityApp {
   slug: string;
   fcEndpoint: string | null;
   fcStatus: string | null;
+  /** `apps.team_id`. The org gate resolves the app's org through it. */
+  teamId: string | null;
+  /** `apps.auth_mode`. `platform` is the only value with a login wall. */
+  authMode: string | null;
+  /** `apps.auth_audience`: `any` | `org`. Only read when authMode is platform. */
+  authAudience: string | null;
+  /** `apps.auth_scope`: `all` | `paths`. Baseline for the path rules below. */
+  authScope: string | null;
+  /** `apps.auth_rules` — raw jsonb. The gate reads it leniently, on purpose. */
+  authRules: unknown;
+  /** `apps.custom_domain` — ASCII hostname the owner bound, or null. */
+  customDomain: string | null;
+  /** `apps.custom_domain_verified_at` — null means stored but NOT served. */
+  customDomainVerifiedAt: string | null;
 }
+
+/**
+ * Who the gateway decided is making this request.
+ *
+ * Passed to {@link proxyToApp} rather than assembled there: the proxy has no
+ * business knowing how a visitor was authenticated, and the gate has no
+ * business writing headers.
+ */
+export type ProxyIdentity = {
+  userId: string;
+  email: string;
+  orgId: string | null;
+};
 
 export type LookupVanityApp = (host: string) => Promise<VanityApp | null>;
 
@@ -48,21 +75,87 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
  * `uuid ~~ text` operator — that filter fails as a query error, not as an empty
  * result. At most one row per team shares a slug, so the list is tiny.
  */
+const LOOKUP_COLUMNS =
+  "id, slug, fc_endpoint, fc_status, team_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
+
+function mapVanityRow(r: any): VanityApp {
+  return {
+    id: r.id,
+    slug: r.slug,
+    fcEndpoint: r.fc_endpoint ?? null,
+    fcStatus: r.fc_status ?? null,
+    teamId: r.team_id ?? null,
+    authMode: r.auth_mode ?? null,
+    authAudience: r.auth_audience ?? null,
+    authScope: r.auth_scope ?? null,
+    authRules: r.auth_rules ?? null,
+    customDomain: r.custom_domain ?? null,
+    customDomainVerifiedAt: r.custom_domain_verified_at ?? null,
+  };
+}
+
 export function makeSupabaseVanityLookup(getClient: () => any): LookupVanityApp {
   return async (host: string) => {
+    const name = host.split(":")[0].trim().toLowerCase();
     const parsed = parseAppPublicHost(host);
-    if (!parsed) return null;
+    if (parsed) {
+      const { data, error } = await getClient()
+        .from("apps")
+        .select(LOOKUP_COLUMNS)
+        .eq("slug", parsed.slug)
+        .limit(50);
+      if (error) throw new Error(`vanity app lookup failed: ${error.message}`);
+      return selectByIdPrefix((data ?? []).map(mapVanityRow), parsed.idPrefix);
+    }
+
+    // A domain the app's owner bound. `custom_domain` is stored lowercase and
+    // in its ASCII form, which is exactly what a Host header carries, so this
+    // is an equality match rather than anything pattern-shaped.
+    //
+    // `custom_domain_verified_at is not null` is not an optimisation: an
+    // unverified domain must resolve to nothing, or the certificate gate would
+    // mint a certificate for a name whose ownership was never proven.
     const { data, error } = await getClient()
       .from("apps")
-      .select("id, slug, fc_endpoint, fc_status")
-      .eq("slug", parsed.slug)
-      .limit(50);
-    if (error) throw new Error(`vanity app lookup failed: ${error.message}`);
-    const rows: VanityApp[] = (data ?? []).map((r: any) => ({
-      id: r.id, slug: r.slug, fcEndpoint: r.fc_endpoint ?? null, fcStatus: r.fc_status ?? null,
-    }));
-    return selectByIdPrefix(rows, parsed.idPrefix);
+      .select(LOOKUP_COLUMNS)
+      .eq("custom_domain", name)
+      .not("custom_domain_verified_at", "is", null)
+      .limit(2);
+    if (error) throw new Error(`custom domain lookup failed: ${error.message}`);
+    const rows = (data ?? []).map(mapVanityRow);
+    // The unique index makes two rows impossible; serving either would be a
+    // coin flip between owners, so serve neither if it ever happens.
+    return rows.length === 1 ? rows[0] : null;
   };
+}
+
+// A hostname's app, remembered briefly.
+//
+// The cache exists because custom domains removed the cheap way to say "this
+// is not an app host". Vanity names could be rejected by parsing alone, but an
+// arbitrary domain can only be ruled out by asking the database — which would
+// otherwise put one query in front of EVERY Cloud API request, since those
+// arrive on a hostname that parses as nothing.
+//
+// Misses are cached too, and are the common case (the API's own hostname). The
+// TTL is short because a newly verified domain must start working promptly;
+// `invalidateVanityHost` makes that immediate on the instance that verified it,
+// and the TTL covers the others on a multi-instance deployment.
+const HIT_TTL_MS = 30_000;
+const MISS_TTL_MS = 10_000;
+const CACHE_MAX = 2_000;
+const hostCache = new Map<string, { app: VanityApp | null; expiresAt: number }>();
+
+const cacheKey = (host: string) => host.split(":")[0].trim().toLowerCase();
+
+/** Drop a hostname's cached answer after its binding changed. */
+export function invalidateVanityHost(host: string | null | undefined): void {
+  if (host) hostCache.delete(cacheKey(host));
+}
+
+/** Test seam — the cache is process-local and would leak between tests. */
+export function __resetVanityCache(): void {
+  hostCache.clear();
 }
 
 /**
@@ -73,9 +166,21 @@ export function makeVanityLookup(deps: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getServiceRoleClient: () => any;
 }): LookupVanityApp {
+  const lookup = makeSupabaseVanityLookup(deps.getServiceRoleClient);
   return async (host: string) => {
-    if (!parseAppPublicHost(host)) return null;
-    return makeSupabaseVanityLookup(deps.getServiceRoleClient)(host);
+    const key = cacheKey(host);
+    if (!key) return null;
+    const now = Date.now();
+    const hit = hostCache.get(key);
+    if (hit && hit.expiresAt > now) return hit.app;
+
+    const app = await lookup(host);
+    if (hostCache.size >= CACHE_MAX) {
+      for (const [k, v] of hostCache) if (v.expiresAt <= now) hostCache.delete(k);
+      if (hostCache.size >= CACHE_MAX) hostCache.clear();
+    }
+    hostCache.set(key, { app, expiresAt: now + (app ? HIT_TTL_MS : MISS_TTL_MS) });
+    return app;
   };
 }
 
@@ -257,6 +362,7 @@ export async function proxyToApp(
   request: Request,
   endpoint: string,
   fetchImpl: typeof fetch = fetch,
+  identity: ProxyIdentity | null = null,
 ): Promise<Response> {
   const incoming = new URL(request.url);
   const upstream = new URL(endpoint);
@@ -265,6 +371,19 @@ export async function proxyToApp(
 
   const headers = strip(request.headers);
   headers.delete("host");
+  // Drop any client-supplied identity BEFORE writing our own, and drop it
+  // unconditionally — including on apps with no login wall, where `identity`
+  // is null and nothing is written back. Skipping the delete in that branch
+  // would let anyone hand an app a forged X-Teamclu-User-Id simply by setting
+  // the header themselves.
+  headers.delete("x-teamclu-user-id");
+  headers.delete("x-teamclu-user-email");
+  headers.delete("x-teamclu-org-id");
+  if (identity) {
+    headers.set("x-teamclu-user-id", identity.userId);
+    headers.set("x-teamclu-user-email", identity.email);
+    if (identity.orgId) headers.set("x-teamclu-org-id", identity.orgId);
+  }
   headers.set("x-forwarded-host", incoming.host);
   headers.set("x-forwarded-proto", incoming.protocol.replace(":", ""));
   fillFetchMetadata(headers, incoming);

@@ -267,8 +267,11 @@ export interface FinalizeInput {
   appType: string;
   fcFunctionName: string;
   ossObjectName: string;
-  /** Injected by the repo when auth_mode=platform (§6.5). No service role. */
-  platformOAuthEnv?: Record<string, string>;
+  /**
+   * Injected by the repo when auth_mode=platform. Convenience for the app's own
+   * code only — the login wall itself lives in the proxy. Never a service role.
+   */
+  platformAuthEnv?: Record<string, string>;
   /**
    * What the app declared about how it starts, reported by the daemon that
    * built it. Absent → the contract every app had before declarations existed.
@@ -326,7 +329,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     );
   }
 
-  if (input.platformOAuthEnv) Object.assign(env, input.platformOAuthEnv);
+  if (input.platformAuthEnv) Object.assign(env, input.platformAuthEnv);
   if (deps.extraEnv) Object.assign(env, deps.extraEnv(input));
 
   await deps.fcOps.ensureFunction(input.fcFunctionName, {

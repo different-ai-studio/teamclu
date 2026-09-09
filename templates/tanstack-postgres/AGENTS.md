@@ -6,7 +6,7 @@
 ## 内容放哪
 
 - `src/routes/` — 页面与路由（TanStack Router 的文件式路由）
-- `src/lib/platform-auth.ts` — `auth_mode=platform` 时的 OAuth / membership 契约 stub
+- `src/lib/platform-auth.ts` — 读平台转发过来的访客身份（登录本身由代理完成）
 - `src/db.ts` — 数据库连接
 - `db/schema.sql` — 建表语句；首次部署冷启动时对本 app 自己的 schema 执行
 
@@ -43,52 +43,41 @@ DB，属正常）。
 
 ## 登录（`auth_mode`）
 
-`auth_mode` 在 TeamClu 控制面设置。与 TeamClu 桌面/Web 自己的登录无关 —— 这里说的是
-**部署后的 app 页面**要不要登录墙。
+**模板不实现登录。** app 没有登录页、没有回调路由、没有自己的会话 cookie，也没有任何
+可写错的地方。平台的代理挡在每个请求前面：它在自己的域名上跑完整个邮箱验证码流程，判断
+谁可以进来，然后才把请求转发过来，并把访客身份放在请求头里。
 
-| 值 | 含义 | Phase 1 |
-|----|------|---------|
-| `none` | 无登录墙；**任何拿到链接的人都能访问**（部署前用户需确认） | 默认 |
-| `platform` | 本 app 独立 GoTrue OAuth 客户端；部署 finalize 注入 env | 见下 |
-| `third` | 第三方 IdP | UI 可保存，**部署被拒绝** |
+这么放是有意的 —— 这些代码会被 agent 反复重写，写在 app 里的登录墙活不过下一次重写，而
+控制面还会一直显示「已启用登录」。放在代理层，它改不掉。
 
-### `auth_mode=platform` 时平台注入的 env
+三档设置都在 TeamClu 控制面，与 TeamClu 桌面端自己的登录无关：
 
-部署 finalize 写入 FC 环境（**不要**写进代码或 Gitea）：
+| 设置 | 含义 |
+|---|---|
+| 登录方式 | 有没有墙（`none` / `platform`；`third` 暂不可部署） |
+| 谁可以进入 | 任何登录用户 / 只有同组织的员工 |
+| 拦哪些页面 | 整站 / 只拦列出的路径（按前缀，最长匹配优先） |
 
-| 变量 | 用途 |
-|------|------|
-| `OAUTH_CLIENT_ID` | 本 app 的 OAuth client id（可给前端授权跳转） |
-| `OAUTH_CLIENT_SECRET` | **仅服务端** token 交换 |
-| `APP_PUBLIC_URL` | 对外 vanity URL（`https://<slug>-<id8>.<domain>`） |
-| `API_BASE` | TeamClu 控制面 API / GoTrue 根（无尾斜杠） |
+**改动立即生效，不需要重新部署** —— 墙在代理层，不在函数里。
 
-`auth_mode=none` 时不注入 OAuth env。`third` 不可部署。
+### 平台转发过来的身份
 
-### redirect_uri 与反代
+```
+X-Teamclu-User-Id     访客在平台 Supabase 里的 id
+X-Teamclu-User-Email  邮箱
+X-Teamclu-Org-Id      所属组织（有的话）
+```
 
-App 跑在 FC 反代后面，请求的 `Host` 是内部地址。**禁止**用 `Host` 自拼
-`redirect_uri`。IdP 登记与运行时一致的做法：
+只有当访客**满足进入这个 app 的全部条件**时才会带上，所以在任何地方看到它们都只有一个
+含义：这个人被允许进来。代理在写入前会先删掉客户端自带的同名请求头，伪造不了。
 
-- **优先**用 `APP_PUBLIC_URL`：`${APP_PUBLIC_URL}/auth/callback`
-- 或读 `X-Forwarded-Host` / `X-Forwarded-Proto` 等 forwarded header 还原
-  对外 URL —— 仍应与 `APP_PUBLIC_URL` 一致
+### 一个必须知道的边界
 
-本地对照可设 `APP_PUBLIC_URL=http://localhost:9000`。
+路径规则挡的是「谁能取到这个地址的响应」，不是「谁能看到这个界面」。应用内部的客户端
+跳转不经过代理。**要保护的是数据**：把取数据的接口一并列进受保护路径。代理是外层，
+app 自己的查询层才是真正的边界。
 
-### 平台登录实现契约（Phase 1 stub）
+读身份用 `src/lib/platform-auth.ts` 的 `visitorFrom(headers)`，返回 `null` 就当作没人。
+`auth_mode=platform` 时平台还会注入 `SUPABASE_URL` / `SUPABASE_ANON_KEY`（浏览器可达的
+公开值，绝不是 service role），app 想自己用 supabase-js 可以取用 —— 但登录墙不依赖它们。
 
-`src/lib/platform-auth.ts` 是 Phase 1 的**契约 stub**，不是完整 UI：
-
-1. **PKCE 授权码流** — 用 `OAUTH_CLIENT_ID` 跳 GoTrue `/authorize`（带
-   `code_challenge`）；`/auth/callback` 用 `OAUTH_CLIENT_SECRET` 服务端换 token。
-2. **成员校验** — 拿到用户 access token 后调 Cloud API（**不要用 service role**）：
-
-   `GET ${API_BASE}/v1/apps/{{APP_ID}}/membership`  
-   `Authorization: Bearer <user access token>`  
-   → `{ "member": true | false }` — 仅该 app 所属 **team 成员**应通过。
-
-3. 受保护路由：无会话 → 跳转登录；有会话但 `member: false` → 403。
-
-Phase 1 **不要**搭完整 IdP UI 框架；按 stub 注释接路由即可。无
-`OAUTH_CLIENT_ID`（`auth_mode=none`）时 stub 函数应 no-op / 跳过门禁。

@@ -67,10 +67,44 @@ import {
 } from "./provisioning/deploy-key.js";
 import {
   applyAuthModeChange,
-  buildPlatformOAuthEnv,
+  buildPlatformAuthEnv,
+  parseAuthAudience,
   parseAuthMode,
   type AuthMode,
 } from "./provisioning/app-auth-mode.js";
+import {
+  parseAuthRules,
+  parseAuthScope,
+  validateAuthPathConfig,
+  type AuthScope,
+} from "./apps-auth-paths.js";
+import {
+  customDomainRecords,
+  makeDomainToken,
+  normalizeCustomDomain,
+  verificationTxtName,
+  verifyDomainOwnership,
+} from "./apps-custom-domain.js";
+import { invalidateVanityHost } from "./apps-vanity.js";
+
+/**
+ * The client-facing shape of an app's custom domain.
+ *
+ * The DNS records ride along on every response so a client never reconstructs
+ * them — the TXT value embeds a token it would otherwise have to remember
+ * across requests.
+ */
+function customDomainView(row: any) {
+  const domain = (row.custom_domain ?? null) as string | null;
+  return {
+    domain,
+    verified: Boolean(row.custom_domain_verified_at),
+    verifiedAt: row.custom_domain_verified_at ?? null,
+    dns: domain
+      ? customDomainRecords({ id: row.id, slug: row.slug }, domain, row.custom_domain_token ?? "")
+      : [],
+  };
+}
 import {
   deleteAppSecretSupabase,
   getAppSecretSupabase,
@@ -3250,6 +3284,10 @@ export function createSupabaseBusinessRepository(options) {
         fcStatus?: string;
         deployError?: string;
         authMode?: string;
+        authAudience?: string;
+        authScope?: string;
+        /** Raw from the client; parsed and validated before it is stored. */
+        authRules?: unknown;
       },
     ) {
       // RLS apps_update_if_creator blocks non-creators: the UPDATE matches zero
@@ -3257,7 +3295,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, auth_mode, oauth_client_id, oauth_app_id, team_id, created_by_actor_id",
+          "provision_status, fc_status, name, slug, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -3322,6 +3360,22 @@ export function createSupabaseBusinessRepository(options) {
         }
       }
 
+      const nextAudience = parseAuthAudience(patch.authAudience);
+      if (nextAudience !== undefined) set.auth_audience = nextAudience;
+
+      // Scope and rules are validated as a PAIR, because "paths with nothing
+      // required" is only visible when both are known — and the two halves can
+      // arrive in separate PATCHes, so whichever is absent is read from the row.
+      const nextScope = parseAuthScope(patch.authScope);
+      const nextRules = patch.authRules === undefined ? undefined : parseAuthRules(patch.authRules);
+      if (nextScope !== undefined || nextRules !== undefined) {
+        const scope = nextScope ?? ((cur?.auth_scope ?? "all") as AuthScope);
+        const rules = nextRules ?? parseAuthRules(cur?.auth_rules ?? []);
+        validateAuthPathConfig(scope, rules);
+        if (nextScope !== undefined) set.auth_scope = scope;
+        if (nextRules !== undefined) set.auth_rules = rules;
+      }
+
       if (typeof patch.provisionStatus === "string") {
         const from = cur?.provision_status ?? "";
         if (isLegalStatusTransition(from, patch.provisionStatus)) {
@@ -3361,6 +3415,137 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (error) throw error;
       return data ? mapApp(data) : null;
+    },
+
+    /**
+     * Authorize a custom-domain write, and hand back the client that can do it.
+     *
+     * Same shape as updateApp's gate, and for the same two reasons: the caller
+     * must hold `admin` on an app they can already SEE (a row we cannot read is
+     * not one we may write with a service role), and `apps_update_if_creator`
+     * is creator-only — so an authorized admin grantee needs the service-role
+     * client or their UPDATE matches zero rows and 404s despite being allowed.
+     * That mismatch is the P0 the apps audit found on the deploy methods.
+     */
+    async authorizeCustomDomainWrite(appId: string): Promise<{ cur: any; writer: any } | null> {
+      const { data: cur } = await supabase
+        .from("apps")
+        .select(
+          "id, slug, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
+        )
+        .eq("id", appId)
+        .maybeSingle();
+      if (!cur) return null;
+      const permission = await this.resolveAppCallerPermissionForApp({
+        id: appId,
+        team_id: cur.team_id,
+        created_by_actor_id: cur.created_by_actor_id,
+      });
+      if (permission?.level !== "admin") return null;
+      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+      const writer = callerIsCreator
+        ? supabase
+        : await serviceRoleClient("bind an app custom domain authorized by an admin grant");
+      return { cur, writer };
+    },
+
+    async setAppCustomDomain(appId: string, rawDomain: unknown) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const domain = normalizeCustomDomain(rawDomain);
+
+      // Binding the SAME name again is idempotent: same token, verification
+      // intact. That makes this the way a client re-reads the DNS records it
+      // has to display — the TXT value embeds the token, which is not in the
+      // app row, so after a reload there is no other way to show them. Minting
+      // a new token there would invalidate a record the owner had already
+      // published, purely because they reopened the page.
+      //
+      // A DIFFERENT name resets both. The proof belongs to one binding, and
+      // carrying it over would let a domain that changed hands stay verified.
+      const sameDomain = gate.cur.custom_domain === domain;
+      const token = (sameDomain && gate.cur.custom_domain_token) || makeDomainToken();
+      const verifiedAt = sameDomain ? (gate.cur.custom_domain_verified_at ?? null) : null;
+
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({
+          custom_domain: domain,
+          custom_domain_token: token,
+          custom_domain_verified_at: verifiedAt,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) {
+        // 23505 is the unique index on lower(custom_domain): another app has
+        // it. Say which case it is rather than surfacing a constraint name.
+        if ((error as any).code === "23505") {
+          throw new ApiError(409, "domain_taken", `${domain} is already bound to another app`);
+        }
+        throw error;
+      }
+      if (!data) return null;
+      // The old name must stop resolving here immediately, and the new one must
+      // not be remembered as a miss from before it existed.
+      invalidateVanityHost(gate.cur.custom_domain);
+      invalidateVanityHost(domain);
+      return customDomainView(data);
+    },
+
+    async verifyAppCustomDomain(appId: string) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const domain = gate.cur.custom_domain as string | null;
+      const token = gate.cur.custom_domain_token as string | null;
+      if (!domain || !token) {
+        throw new ApiError(409, "no_custom_domain", "this app has no custom domain to verify");
+      }
+
+      const proven = await verifyDomainOwnership(domain, token);
+      if (!proven) {
+        // Retryable, and usually just propagation — so 409 with the record to
+        // add, not a 400 that reads like the request was malformed.
+        throw new ApiError(
+          409,
+          "dns_verification_failed",
+          `no matching TXT record at ${verificationTxtName(domain)} yet; DNS may still be propagating`,
+        );
+      }
+
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({ custom_domain_verified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      // Until this drops, the hostname is cached as "not an app" from the
+      // requests made while it was still unverified.
+      invalidateVanityHost(domain);
+      return customDomainView(data);
+    },
+
+    async deleteAppCustomDomain(appId: string) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({
+          custom_domain: null,
+          custom_domain_token: null,
+          custom_domain_verified_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      invalidateVanityHost(gate.cur.custom_domain);
+      return customDomainView(data);
     },
 
     async deployApp(appId: string, input: { gitCommitSha?: string }) {
@@ -3471,17 +3656,13 @@ export function createSupabaseBusinessRepository(options) {
       // Mark deploying (RLS-gated UPDATE).
       await supabase.from("apps").update({ fc_status: "deploying", updated_at: new Date().toISOString() }).eq("id", appId);
       try {
-        let platformOAuthEnv: Record<string, string> | undefined;
+        // Convenience env for the app's own code. The login wall does not
+        // depend on it: the proxy gateway enforces the wall before a request
+        // reaches the function at all, so an app that has never been redeployed
+        // is still protected the moment auth_mode flips.
+        let platformAuthEnv: Record<string, string> | undefined;
         if ((existing.auth_mode ?? "none") === "platform") {
-          const admin = await serviceRoleClient("read app secrets");
-          platformOAuthEnv = await buildPlatformOAuthEnv(
-            {
-              gotrue,
-              gotrueUnavailableReason,
-              getSecret: (kind) => getAppSecretSupabase(admin, appId, kind),
-            },
-            { appId, slug: existing.slug, oauthClientId: existing.oauth_client_id ?? null },
-          );
+          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug });
         }
         // Which database this app's data lives in is a fact decided once, at
         // the first successful finalize — not a property re-derived from the
@@ -3497,7 +3678,7 @@ export function createSupabaseBusinessRepository(options) {
           appType: existing.type,
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
-          platformOAuthEnv,
+          platformAuthEnv,
           // What the daemon read out of the app's own declaration. Absent for a
           // client that predates it, which is the contract every app had before.
           runtime: parseAppRuntimeSpec(input?.runtime),

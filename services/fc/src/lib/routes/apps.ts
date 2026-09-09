@@ -177,6 +177,30 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  router.put("/v1/apps/:appId/custom-domain", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const body = ctx.json ?? {};
+    const out = await ctx.repository.setAppCustomDomain(appId, body.domain);
+    // Null means "not visible, or not yours to change". 404 either way, like
+    // every other app mutation — telling the two apart leaks app existence.
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.post("/v1/apps/:appId/custom-domain/verify", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.verifyAppCustomDomain(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/custom-domain", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.deleteAppCustomDomain(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
   router.get("/v1/apps/:appId/access", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const items = await ctx.repository.listAppAccess(appId);

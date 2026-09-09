@@ -57,14 +57,22 @@ fi
 set_kv AI_GATEWAY_SERVICE_TOKEN "$AI_GATEWAY_SERVICE_TOKEN"
 
 CADDY_TLS_MODE="$(grep '^CADDY_TLS_MODE=' "$ENV_FILE" | cut -d= -f2- || true)"
+# CADDY_CATCHALL_SITE is the address of the block that serves apps' own custom
+# domains. With TLS it must be a bare `:443` so it matches any Host; with TLS
+# off that would ALSO bind :443, which is what breaks a Podman port map of
+# 8080->80 (same trap CADDY_SITE_SCHEME exists for). An explicit http:// site
+# on a name nothing resolves to keeps the block syntactically present and off
+# port 443 — custom domains need on-demand TLS anyway, so they are meaningless
+# in this mode.
 case "${CADDY_TLS_MODE:-acme}" in
-  internal) CADDY_GLOBAL_TLS=""; CADDY_SITE_TLS="tls internal"; CADDY_SITE_SCHEME="" ;;
-  off)      CADDY_GLOBAL_TLS="auto_https off"; CADDY_SITE_TLS=""; CADDY_SITE_SCHEME="http://" ;;
-  *)        CADDY_GLOBAL_TLS=""; CADDY_SITE_TLS=""; CADDY_SITE_SCHEME="" ;;   # acme default
+  internal) CADDY_GLOBAL_TLS=""; CADDY_SITE_TLS="tls internal"; CADDY_SITE_SCHEME=""; CADDY_CATCHALL_SITE=":443" ;;
+  off)      CADDY_GLOBAL_TLS="auto_https off"; CADDY_SITE_TLS=""; CADDY_SITE_SCHEME="http://"; CADDY_CATCHALL_SITE="http://catchall.localhost" ;;
+  *)        CADDY_GLOBAL_TLS=""; CADDY_SITE_TLS=""; CADDY_SITE_SCHEME=""; CADDY_CATCHALL_SITE=":443" ;;   # acme default
 esac
 set_kv CADDY_GLOBAL_TLS "$CADDY_GLOBAL_TLS"
 set_kv CADDY_SITE_TLS "$CADDY_SITE_TLS"
 set_kv CADDY_SITE_SCHEME "$CADDY_SITE_SCHEME"
+set_kv CADDY_CATCHALL_SITE "$CADDY_CATCHALL_SITE"
 
 # Derive URL vars from domain settings so Supabase compose gets resolved values.
 SUPABASE_DOMAIN="$(grep '^SUPABASE_DOMAIN=' "$ENV_FILE" | cut -d= -f2-)"
@@ -77,4 +85,4 @@ set_kv SUPABASE_PUBLIC_URL "${URL_SCHEME}://${SUPABASE_DOMAIN}"
 set_kv API_EXTERNAL_URL "${URL_SCHEME}://${SUPABASE_DOMAIN}"
 set_kv SITE_URL "${URL_SCHEME}://${FC_DOMAIN}"
 
-echo "gen-secrets: wrote ANON_KEY, SERVICE_ROLE_KEY, MQTT_SERVICE_TOKEN, EMQX_JWT_SECRET, CADDY_GLOBAL_TLS, CADDY_SITE_TLS, CADDY_SITE_SCHEME, SUPABASE_PUBLIC_URL, API_EXTERNAL_URL, SITE_URL to $ENV_FILE"
+echo "gen-secrets: wrote ANON_KEY, SERVICE_ROLE_KEY, MQTT_SERVICE_TOKEN, EMQX_JWT_SECRET, CADDY_GLOBAL_TLS, CADDY_SITE_TLS, CADDY_SITE_SCHEME, CADDY_CATCHALL_SITE, SUPABASE_PUBLIC_URL, API_EXTERNAL_URL, SITE_URL to $ENV_FILE"

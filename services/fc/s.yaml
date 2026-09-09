@@ -101,6 +101,8 @@ resources:
         # reverse proxy that terminates them, so this is normally blank here —
         # declared so the two targets stay in step (deploy-env-parity.test.ts).
         APPS_PUBLIC_DOMAIN: ${env('APPS_PUBLIC_DOMAIN', '')}
+        LOGIN_DOMAIN: ${env('LOGIN_DOMAIN', '')}
+        APPS_AUTH_SESSION_SECRET: ${env('APPS_AUTH_SESSION_SECRET', '')}
         # Per-app git repos on Gitea. Blank disables repo provisioning (503
         # gitea_unavailable naming the empty variable).
         GITEA_URL: ${env('GITEA_URL', '')}

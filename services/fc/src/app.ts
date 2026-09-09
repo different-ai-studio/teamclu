@@ -8,6 +8,8 @@ import { handleSyncRequest } from "./lib/legacy-sync.js";
 import * as admin from "./lib/admin-handlers.js";
 import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { parseAppPublicHost } from "./lib/apps-public-host.js";
+import { handleLoginRequest, isLoginHost, type LookupLoginApp } from "./lib/apps-login-service.js";
+import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 
 export type AppDeps = {
   createRepository: (args: { accessToken: string }) => unknown;
@@ -15,7 +17,32 @@ export type AppDeps = {
   createSystemRepository?: () => unknown | Promise<unknown>;
   /** Resolves a vanity app host to its row; injected so tests need no database. */
   lookupVanityApp?: LookupVanityApp;
+  /** Resolves an app id for the central login service; same injection reason. */
+  lookupLoginApp?: LookupLoginApp;
+  /**
+   * Reads the visitor's and the app's org for the `org` audience.
+   *
+   * Absent, every `org`-gated app answers "team has no org" rather than opening
+   * — fail closed, because the alternative is serving a page that was marked as
+   * staff-only to whoever asks.
+   */
+  resolveAppOrgs?: GateDeps["resolveOrgs"];
 };
+
+/**
+ * The scheme the BROWSER used, which is not the scheme of the connection to
+ * this process: behind Caddy that hop is plain http, so trusting the request
+ * URL would mark every cookie non-Secure.
+ */
+function forwardedProto(c: { req: { header: (n: string) => string | undefined; url: string } }): string {
+  const forwarded = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim();
+  if (forwarded) return forwarded;
+  try {
+    return new URL(c.req.url).protocol.replace(":", "");
+  } catch {
+    return "http";
+  }
+}
 
 function sendLegacy(_c: any, r: { statusCode: number; headers?: Record<string, string>; body: string }) {
   return new Response(r.body, {
@@ -60,11 +87,26 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Deployed apps on their own hostnames -------------------------------
   //
-  // Registered FIRST, ahead of CORS and the rate limiter, because these
-  // requests are not Cloud API traffic at all: the response belongs to the
-  // user's app, and adding our CORS headers or counting a page load against an
-  // API budget would both be wrong.
-  //
+  // Both blocks below are registered FIRST, ahead of CORS and the rate limiter,
+  // because these requests are not Cloud API traffic at all: the response
+  // belongs to a visitor's browser, and adding our CORS headers or counting a
+  // page load against an API budget would both be wrong.
+
+  // The central login service owns one hostname outright: it renders the login
+  // page and holds the SSO cookie. Returning null from the handler lets the
+  // request fall through, so /healthz still answers on this hostname too.
+  if (deps.lookupLoginApp) {
+    const lookupApp = deps.lookupLoginApp;
+    app.use("*", async (c, next) => {
+      if (!isLoginHost(vanityRequestHost(c))) return next();
+      const res = await handleLoginRequest(c.req.raw, {
+        lookupApp,
+        secureCookies: forwardedProto(c) === "https",
+      });
+      return res ?? next();
+    });
+  }
+
   // Caddy sends every `*.<APPS_PUBLIC_DOMAIN>` request here (it cannot know an
   // app's Function Compute URL — the trigger hostname carries a random suffix),
   // and asks this same service whether a hostname deserves a certificate.
@@ -76,25 +118,69 @@ export function createApp(deps: AppDeps): Hono {
     // instead of requesting a certificate for it.
     app.get("/internal/caddy/ask", async (c) => {
       const domain = c.req.query("domain") ?? "";
-      if (!parseAppPublicHost(domain)) return c.text("not an app host", 404);
+      if (!domain) return c.text("no domain", 404);
+      // The lookup answers for both shapes now — a vanity hostname, and a
+      // custom domain whose ownership has been VERIFIED. An unverified one
+      // resolves to nothing here, which is what keeps this from becoming an
+      // open certificate-minting endpoint for any name pointed at the box.
       const found = await lookup(domain);
       return found ? c.text("ok", 200) : c.text("no such app", 404);
     });
 
     app.use("*", async (c, next) => {
       const host = vanityRequestHost(c);
-      if (!parseAppPublicHost(host)) return next();
-      const target = await lookup(host!);
-      // A hostname whose app exists but has never deployed is a real app with
-      // nothing to serve yet — say so, rather than proxying to null.
+      if (!host) return next();
+      // Every request reaches this, including the Cloud API's own — a custom
+      // domain cannot be recognised by parsing, only by asking. The lookup
+      // caches misses for exactly that reason; see apps-vanity.ts.
+      let target;
+      try {
+        target = await lookup(host);
+      } catch (err) {
+        // A vanity-shaped host's failure is real and must surface: answering
+        // "no such app" would make a database blip look exactly like a deleted
+        // app. Any OTHER host is probably not an app at all — most are the
+        // API's own — and a lookup failure there must not take the API down
+        // with it, which is what would happen on a deployment with no Supabase
+        // configured now that this runs for every request.
+        if (parseAppPublicHost(host)) throw err;
+        return next();
+      }
+      if (!target) {
+        // A vanity-shaped hostname with no app behind it is a real 404 for
+        // that name. Anything else is simply not an app host, and belongs to
+        // the API below.
+        return parseAppPublicHost(host) ? c.text("no such app", 404) : next();
+      }
+      // An app that exists but has never deployed is a real app with nothing
+      // to serve yet — say so, rather than proxying to null.
       if (!isServable(target)) {
-        return c.text(target ? "app is not deployed yet" : "no such app", 404);
+        return c.text("app is not deployed yet", 404);
       }
       // After the lookup, so an HTTP link to a hostname that is not an app
       // still gets its 404 rather than a redirect to an HTTPS 404.
       const toHttps = httpsRedirect(c.req.raw, host!);
       if (toHttps) return toHttps;
-      return proxyToApp(c.req.raw, target.fcEndpoint);
+
+      // The login wall. It runs before the proxy so an app that requires a
+      // login cannot be reached by any request the gate has not seen — which is
+      // the whole reason the wall lives here and not in the app's own code.
+      //
+      // And AFTER the HTTPS redirect above: a session cookie must never be set
+      // on a plain-HTTP response, and the redirect is what guarantees the
+      // login round trip happens over TLS.
+      const gate = await applyAuthGate(c.req.raw, target, {
+        resolveOrgs:
+          deps.resolveAppOrgs ??
+          (async () => ({ visitorOrgId: null, appOrgId: null })),
+        secureCookies: forwardedProto(c) === "https",
+      });
+      if (gate.response) return gate.response;
+
+      const res = await proxyToApp(c.req.raw, target.fcEndpoint, fetch, gate.identity);
+      // Sliding renewal rides along on whatever the app answered.
+      if (gate.setCookie) res.headers.append("Set-Cookie", gate.setCookie);
+      return res;
     });
   }
 
