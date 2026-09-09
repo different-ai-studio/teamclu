@@ -38,7 +38,10 @@ pub struct SessionPromptService {
 }
 
 impl SessionPromptService {
-    pub fn new(manager: Arc<tokio::sync::Mutex<RuntimeManager>>, backend: Arc<dyn Backend>) -> Self {
+    pub fn new(
+        manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        backend: Arc<dyn Backend>,
+    ) -> Self {
         Self { manager, backend }
     }
 
@@ -90,8 +93,7 @@ impl SessionPromptService {
             return base;
         };
 
-        let participants =
-            roster_to_participants(&roster, owner_trimmed, &agent_display_name);
+        let participants = roster_to_participants(&roster, owner_trimmed, &agent_display_name);
         if participants.is_empty() {
             warn!(
                 event = "runtime_context_session_prompt",
@@ -153,8 +155,8 @@ fn roster_to_participants(
         .items
         .iter()
         .map(|item| {
-            let is_self = (!owner_actor_id.is_empty() && item.actor_id == owner_actor_id)
-                || item.is_self;
+            let is_self =
+                (!owner_actor_id.is_empty() && item.actor_id == owner_actor_id) || item.is_self;
             SessionPromptParticipant {
                 actor_id: item.actor_id.clone(),
                 display_name: if is_self {
@@ -257,7 +259,11 @@ pub fn build_session_prompt(
     let brand = brand_name.trim();
     let brand = if brand.is_empty() { "this app" } else { brand };
     let host = host_label.trim();
-    let host = if host.is_empty() { "this machine" } else { host };
+    let host = if host.is_empty() {
+        "this machine"
+    } else {
+        host
+    };
 
     let mut out = String::from("[");
     out.push_str(brand);

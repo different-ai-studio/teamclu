@@ -14,9 +14,9 @@
 
 use async_nats::{Client, ConnectOptions};
 use std::sync::Arc;
-use teamclu_types::mqtt::MQTT_FALLBACK_TEAM_ID;
 use teamclu_transport::nats::NatsClient;
 use teamclu_transport::{DeliveryGuarantee, IncomingFrame, MessagePublisher};
+use teamclu_types::mqtt::MQTT_FALLBACK_TEAM_ID;
 use tokio::sync::mpsc;
 use tracing::info;
 

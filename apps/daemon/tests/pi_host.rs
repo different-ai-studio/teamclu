@@ -431,9 +431,7 @@ async fn fork_session_branches_jsonl() {
         return;
     }
     let mut host = Host::spawn().await;
-    let new_id = host
-        .send(serde_json::json!({"type": "new_session"}))
-        .await;
+    let new_id = host.send(serde_json::json!({"type": "new_session"})).await;
     let (new_resp, _) = host.response(&new_id).await;
     let parent_path = new_resp["data"]["sessionFile"].as_str().unwrap();
     let prompt_id = host
@@ -444,9 +442,7 @@ async fn fork_session_branches_jsonl() {
         }))
         .await;
     let _ = host.response(&prompt_id).await;
-    let (agent_end, _) = host
-        .wait_for(|l| l["type"] == "agent_end")
-        .await;
+    let (agent_end, _) = host.wait_for(|l| l["type"] == "agent_end").await;
     let leaf_id = agent_end["leafId"].as_str().unwrap().to_string();
     let fork_cmd = host
         .send(serde_json::json!({
@@ -693,17 +689,24 @@ async fn custom_provider_writes_preserve_the_rest_of_models_json() {
     assert_eq!(doc["someTopLevelKey"], 42, "top-level key kept: {doc}");
     assert_eq!(doc["providers"]["hand-written"]["baseUrl"], "http://kept");
     assert_eq!(
-        doc["providers"]["hand-written"]["modelOverrides"]["a"]["cost"],
-        1,
+        doc["providers"]["hand-written"]["modelOverrides"]["a"]["cost"], 1,
         "unmodelled provider keys kept: {doc}"
     );
     assert_eq!(doc["providers"]["ollama"]["apiKey"], "ollama");
 
     // The read path is the same document, so the UI sees what is on disk.
-    let get = host.send(serde_json::json!({"type": "auth_models_get"})).await;
+    let get = host
+        .send(serde_json::json!({"type": "auth_models_get"}))
+        .await;
     let (resp, _) = host.response(&get).await;
-    assert_eq!(resp["data"]["providers"]["ollama"]["api"], "openai-completions");
-    assert!(resp["data"]["path"].as_str().unwrap().ends_with("models.json"));
+    assert_eq!(
+        resp["data"]["providers"]["ollama"]["api"],
+        "openai-completions"
+    );
+    assert!(resp["data"]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("models.json"));
 
     // Deleting removes only that provider.
     let del = host

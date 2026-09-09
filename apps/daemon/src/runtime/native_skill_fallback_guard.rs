@@ -219,12 +219,7 @@ pub fn prepare_guard_for_acp_event(
     let implicit_turn_event =
         event_may_open_implicit_turn(&event.event) && current_turn_id.is_none();
     if turn_opened || implicit_turn_event {
-        ensure_turn_guard(
-            guard,
-            workspace,
-            parent_acp_session_id,
-            current_turn_id,
-        );
+        ensure_turn_guard(guard, workspace, parent_acp_session_id, current_turn_id);
     }
     let clear_reply_to = matches!(
         event.event.as_ref(),
@@ -342,10 +337,12 @@ mod tests {
 
     fn status_change(old: amux::AgentStatus, new: amux::AgentStatus) -> amux::AcpEvent {
         amux::AcpEvent {
-            event: Some(amux::acp_event::Event::StatusChange(amux::AcpStatusChange {
-                old_status: old as i32,
-                new_status: new as i32,
-            })),
+            event: Some(amux::acp_event::Event::StatusChange(
+                amux::AcpStatusChange {
+                    old_status: old as i32,
+                    new_status: new as i32,
+                },
+            )),
             model: String::new(),
         }
     }
@@ -643,7 +640,11 @@ mod tests {
             false,
         );
         let finals = cloud_persistent_replies(&emitted);
-        assert_eq!(finals.len(), 1, "expected one cloud-final reply: {emitted:?}");
+        assert_eq!(
+            finals.len(),
+            1,
+            "expected one cloud-final reply: {emitted:?}"
+        );
         assert!(is_failure_emitted_message(finals[0]));
         assert!(finals[0].metadata_json.contains("bypass-demo"));
         assert!(finals[0].metadata_json.contains(".opencode/skills"));
@@ -667,7 +668,10 @@ mod tests {
             false,
         )
         .is_empty());
-        assert!(turn_guard.is_some(), "implicit turn should open guard baseline");
+        assert!(
+            turn_guard.is_some(),
+            "implicit turn should open guard baseline"
+        );
 
         write_native_pack(
             &ws.path().join(".pi/skills"),

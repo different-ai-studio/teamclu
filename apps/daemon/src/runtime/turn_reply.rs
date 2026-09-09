@@ -41,9 +41,7 @@ pub fn absorb_emitted(
         if matches!(m.kind, MessageKind::AgentReply) {
             // Empty anchors and English status notices (no_final_reply /
             // interrupt instruction) must not become WeCom/channel reply text.
-            if !m.content.is_empty()
-                && !TurnAggregator::is_agent_facing_status_notice(&m.content)
-            {
+            if !m.content.is_empty() && !TurnAggregator::is_agent_facing_status_notice(&m.content) {
                 segments.push(m.content);
             }
             live.clear();

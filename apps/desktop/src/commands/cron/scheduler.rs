@@ -406,10 +406,7 @@ impl CronScheduler {
             Err(_) => {
                 record.status = RunStatus::Failed;
                 record.finished_at = Some(Utc::now());
-                record.error = Some(format!(
-                    "amuxd response exceeded {}s",
-                    client_deadline_secs
-                ));
+                record.error = Some(format!("amuxd response exceeded {}s", client_deadline_secs));
                 self.persist_run_and_notify_ui(&record).await;
                 self.update_job_after_run(&job, started_at, &my_workspace)
                     .await;

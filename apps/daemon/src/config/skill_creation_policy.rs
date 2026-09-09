@@ -31,17 +31,15 @@ pub fn append_policy_to_prompt(base: &str) -> String {
 pub fn materialize_policy_file(workspace_path: &Path) -> Result<(), WorkspaceControlError> {
     let path = teamclu_runtime_env::workspace_meta_write_path_from_env(workspace_path, POLICY_REL);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            WorkspaceControlError::Io(format!("create instructions dir: {e}"))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| WorkspaceControlError::Io(format!("create instructions dir: {e}")))?;
     }
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     if existing == SKILL_CREATION_POLICY {
         return Ok(());
     }
-    std::fs::write(&path, SKILL_CREATION_POLICY.as_bytes()).map_err(|e| {
-        WorkspaceControlError::Io(format!("write skill creation policy: {e}"))
-    })
+    std::fs::write(&path, SKILL_CREATION_POLICY.as_bytes())
+        .map_err(|e| WorkspaceControlError::Io(format!("write skill creation policy: {e}")))
 }
 
 #[cfg(test)]
@@ -60,8 +58,13 @@ mod tests {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("copilot361");
         let ws = tempfile::tempdir().unwrap();
         materialize_policy_file(ws.path()).unwrap();
-        let path = ws.path().join(".copilot361/instructions/skill-creation-policy.txt");
+        let path = ws
+            .path()
+            .join(".copilot361/instructions/skill-creation-policy.txt");
         assert!(path.is_file(), "expected {}", path.display());
-        assert!(!ws.path().join(".teamclu/instructions/skill-creation-policy.txt").exists());
+        assert!(!ws
+            .path()
+            .join(".teamclu/instructions/skill-creation-policy.txt")
+            .exists());
     }
 }

@@ -2079,10 +2079,7 @@ impl MqttWorker {
                 reply,
             } => {
                 let qos: QoS = delivery.clone().into();
-                subscriptions.insert(
-                    topic.clone(),
-                    TrackedSubscription { qos, optional },
-                );
+                subscriptions.insert(topic.clone(), TrackedSubscription { qos, optional });
                 let result = if connected {
                     let result = mqtt_client
                         .expect("connected MQTT command must have a client")
@@ -2803,10 +2800,7 @@ mod tests {
 
     #[test]
     fn optional_suback_failure_does_not_force_rebuild() {
-        assert_eq!(
-            suback_failure_action(true),
-            SubackFailureAction::Tolerate
-        );
+        assert_eq!(suback_failure_action(true), SubackFailureAction::Tolerate);
         assert_eq!(
             suback_failure_action(false),
             SubackFailureAction::ForceRebuild

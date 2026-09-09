@@ -789,12 +789,12 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             let remaining = wall_remaining.min(idle_remaining);
             if remaining.is_zero() {
                 timed_out = true;
-                break crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live).map(
-                    |reply| CronTurnOutcome {
+                break crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live)
+                    .map(|reply| CronTurnOutcome {
                         reply,
                         timed_out: true,
-                    },
-                ).map_err(anyhow::Error::msg);
+                    })
+                    .map_err(anyhow::Error::msg);
             }
             let event = match tokio::time::timeout(remaining, event_rx.recv()).await {
                 Ok(Some(ev)) => {
@@ -802,25 +802,24 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                     ev
                 }
                 Ok(None) => {
-                    break match crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live)
-                    {
+                    break match crate::runtime::turn_reply::salvage_timeout_emitted(
+                        &segments, &live,
+                    ) {
                         Ok(reply) => Ok(CronTurnOutcome {
                             reply,
                             timed_out: false,
                         }),
-                        Err(_) => Err(anyhow::anyhow!(
-                            "ACP event channel closed before reply"
-                        )),
+                        Err(_) => Err(anyhow::anyhow!("ACP event channel closed before reply")),
                     };
                 }
                 Err(_) => {
                     timed_out = true;
-                    break crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live).map(
-                        |reply| CronTurnOutcome {
+                    break crate::runtime::turn_reply::salvage_timeout_emitted(&segments, &live)
+                        .map(|reply| CronTurnOutcome {
                             reply,
                             timed_out: true,
-                        },
-                    ).map_err(anyhow::Error::msg);
+                        })
+                        .map_err(anyhow::Error::msg);
                 }
             };
 
@@ -868,12 +867,14 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                     .unwrap_or_default()
             };
             if turn_ended {
-                crate::runtime::turn_reply::absorb_emitted(emitted.clone(), &mut segments, &mut live);
+                crate::runtime::turn_reply::absorb_emitted(
+                    emitted.clone(),
+                    &mut segments,
+                    &mut live,
+                );
                 break Ok(CronTurnOutcome {
                     reply: crate::runtime::turn_reply::final_agent_reply_emitted(
-                        &segments,
-                        &live,
-                        &emitted,
+                        &segments, &live, &emitted,
                     ),
                     timed_out: false,
                 });

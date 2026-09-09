@@ -32,9 +32,9 @@ use crate::proto::amux;
 // Only the `#[cfg(test)]` startup-prompt branch below constructs one, so the
 // import carries the same gate — ungated it warns in the bin build, and removed
 // it breaks every test target that compiles this file.
+use crate::runtime::acp_envelope::{runtime_envelopes_from_acp_event, RuntimeEnvelope};
 #[cfg(test)]
 use crate::runtime::acp_event_frame::AcpEventFrame;
-use crate::runtime::acp_envelope::{runtime_envelopes_from_acp_event, RuntimeEnvelope};
 use crate::runtime::supervisor::prepare_workspace;
 use crate::runtime::RuntimeManager;
 
@@ -1101,7 +1101,9 @@ fn parse_agent_type(agent_type: &str) -> Result<amux::AgentType, HttpError> {
 
 /// Parse the wire name, then coerce to the runtime this daemon actually runs.
 fn parse_and_normalize_agent_type(agent_type: &str) -> Result<amux::AgentType, HttpError> {
-    Ok(crate::runtime::resolve_local_agent_type(parse_agent_type(agent_type)?))
+    Ok(crate::runtime::resolve_local_agent_type(parse_agent_type(
+        agent_type,
+    )?))
 }
 
 fn translate_runtime_event(seq: u64, session_id: Uuid, event: RuntimeEnvelope) -> SessionEvent {

@@ -178,7 +178,7 @@ mod tests {
             Some("sonnet")
         );
         assert_eq!(parsed.timeout_secs, 120);
-        assert_eq!(parsed.idle_timeout_secs, DEFAULT_CRON_IDLE_TIMEOUT_SECS);
+        assert_eq!(parsed.idle_timeout_secs, 120);
     }
 
     #[test]

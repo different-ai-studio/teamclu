@@ -342,11 +342,7 @@ impl SyncDispatcher {
     /// Lives here rather than in the HTTP layer because it needs the same
     /// assembly `sync_team` does — the team secret and an authenticated FC
     /// client — and duplicating that in a handler is how the two drift.
-    pub async fn fetch_documents(
-        &self,
-        team_id: &str,
-        paths: &[String],
-    ) -> Result<u32, String> {
+    pub async fn fetch_documents(&self, team_id: &str, paths: &[String]) -> Result<u32, String> {
         use crate::sync::oss;
         let secret = self.secrets.resolve_team_secret(team_id, None).ok();
         let jwt = self.oss_jwt().await?;

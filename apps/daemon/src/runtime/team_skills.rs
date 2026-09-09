@@ -546,7 +546,11 @@ fn remove_working_copy_if_ours(team_id: &str, slug: &str) {
     let Some(origin) = read_origin(&work) else {
         return;
     };
-    if origin.registry != SOURCE_TEAM || origin.team_id.as_deref().is_some_and(|have| have != team_id)
+    if origin.registry != SOURCE_TEAM
+        || origin
+            .team_id
+            .as_deref()
+            .is_some_and(|have| have != team_id)
     {
         return;
     }

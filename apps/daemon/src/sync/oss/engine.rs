@@ -1114,9 +1114,7 @@ async fn push_phase(
         // Stage 1: prepare-batch (session + presigned PUT per item).
         let items: Vec<PrepareBatchItem> = prepared
             .iter()
-            .map(|pu| {
-                prepare_batch_item_for(&pu.path, pu.parent_version, &pu.cipher_hash, pu.size)
-            })
+            .map(|pu| prepare_batch_item_for(&pu.path, pu.parent_version, &pu.cipher_hash, pu.size))
             .collect();
 
         let prep_outcomes = match with_batch_retry(|| fc.upload_prepare_batch(team_id, &items))
@@ -1488,8 +1486,7 @@ async fn delete_phase(
         let node_id = knowledge_created_by_node_id();
 
         let outcomes =
-            match with_batch_retry(|| fc.delete_batch(team_id, &items, node_id.as_deref())).await
-            {
+            match with_batch_retry(|| fc.delete_batch(team_id, &items, node_id.as_deref())).await {
                 Ok(o) => o,
                 Err(SyncError::BatchUnsupported) => {
                     for (p, v) in chunk {

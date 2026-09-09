@@ -393,7 +393,11 @@ mod tests {
         let (_home, _guard) = temp_home();
         // Seed the team's global dir with real content.
         let global = global_team_store::ensure_initialized("team-self").unwrap();
-        std::fs::write(global_team_store::sync_content_root("team-self").join("knowledge/keep.md"), b"keep me").unwrap();
+        std::fs::write(
+            global_team_store::sync_content_root("team-self").join("knowledge/keep.md"),
+            b"keep me",
+        )
+        .unwrap();
 
         // A bogus "workspace" whose path is the team store dir itself makes
         // link == target. We must NOT migrate/delete the global dir or create a
@@ -406,7 +410,10 @@ mod tests {
         let meta = std::fs::symlink_metadata(&global).unwrap();
         assert!(meta.is_dir() && !meta.file_type().is_symlink());
         assert_eq!(
-            std::fs::read(global_team_store::sync_content_root("team-self").join("knowledge/keep.md")).unwrap(),
+            std::fs::read(
+                global_team_store::sync_content_root("team-self").join("knowledge/keep.md")
+            )
+            .unwrap(),
             b"keep me"
         );
 
@@ -476,7 +483,10 @@ mod tests {
         let (_home, _guard) = temp_home();
         let ws = tempfile::tempdir().unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
-        let bogus = elsewhere.path().join("some-other-home").join(TEAM_LINK_NAME);
+        let bogus = elsewhere
+            .path()
+            .join("some-other-home")
+            .join(TEAM_LINK_NAME);
         std::fs::create_dir_all(&bogus).unwrap();
         std::os::unix::fs::symlink(&bogus, ws.path().join(TEAM_LINK_NAME)).unwrap();
 

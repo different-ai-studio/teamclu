@@ -233,7 +233,10 @@ mod tests {
 
         clock.set_elapsed(Duration::from_millis(1500));
         drain_instant(&mut sched, &clock, &mut fires);
-        assert!(fires.is_empty(), "must not fire inside the 2s window: {fires:?}");
+        assert!(
+            fires.is_empty(),
+            "must not fire inside the 2s window: {fires:?}"
+        );
 
         clock.set_elapsed(COALESCE_WINDOW);
         drain_instant(&mut sched, &clock, &mut fires);

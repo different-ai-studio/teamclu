@@ -63,10 +63,10 @@ pub fn reconcile_after_managed_mutation(
     slug: &str,
     canonical_pack: &Path,
 ) -> Result<Vec<String>, WorkspaceControlError> {
-    let blocked_before =
-        claude_bridge_blocked_by_local_entry(workspace_path, slug, canonical_pack);
+    let blocked_before = claude_bridge_blocked_by_local_entry(workspace_path, slug, canonical_pack);
     ensure_claude_team_skills(workspace_path)?;
-    if blocked_before || claude_bridge_blocked_by_local_entry(workspace_path, slug, canonical_pack) {
+    if blocked_before || claude_bridge_blocked_by_local_entry(workspace_path, slug, canonical_pack)
+    {
         return Ok(vec![WARNING_CLAUDE_LOCAL_OVERRIDE.into()]);
     }
     if !claude_bridge_points_to_canonical(workspace_path, slug, canonical_pack) {
@@ -295,7 +295,9 @@ fn is_team_managed_symlink(link: &Path, team_roots: &[PathBuf]) -> bool {
     let Some(raw_target) = resolve_symlink_target_raw(link) else {
         return false;
     };
-    team_roots.iter().any(|root| path_is_under_root(&raw_target, root))
+    team_roots
+        .iter()
+        .any(|root| path_is_under_root(&raw_target, root))
 }
 
 fn create_dir_symlink(target: &Path, link: &Path) -> Result<(), WorkspaceControlError> {
@@ -571,8 +573,7 @@ mod tests {
                 "fixture should collide on string prefix but not path containment"
             );
 
-            let warnings =
-                reconcile_after_managed_mutation(ws.path(), "demo", &canonical).unwrap();
+            let warnings = reconcile_after_managed_mutation(ws.path(), "demo", &canonical).unwrap();
             assert_eq!(warnings, vec![WARNING_CLAUDE_LOCAL_OVERRIDE.to_string()]);
             assert!(is_symlink(&local));
             assert_eq!(std::fs::read_link(&local).unwrap(), link_target_before);
@@ -596,8 +597,7 @@ mod tests {
             assert!(!local.exists());
             let link_target_before = std::fs::read_link(&local).unwrap();
 
-            let warnings =
-                reconcile_after_managed_mutation(ws.path(), "demo", &canonical).unwrap();
+            let warnings = reconcile_after_managed_mutation(ws.path(), "demo", &canonical).unwrap();
             assert_eq!(warnings, vec![WARNING_CLAUDE_LOCAL_OVERRIDE.to_string()]);
             assert!(is_symlink(&local));
             assert_eq!(std::fs::read_link(&local).unwrap(), link_target_before);
@@ -621,8 +621,7 @@ mod tests {
             assert!(!local.exists());
             let link_target_before = std::fs::read_link(&local).unwrap();
 
-            let warnings =
-                reconcile_after_managed_mutation(ws.path(), "demo", &canonical).unwrap();
+            let warnings = reconcile_after_managed_mutation(ws.path(), "demo", &canonical).unwrap();
             assert_eq!(warnings, vec![WARNING_CLAUDE_LOCAL_OVERRIDE.to_string()]);
             assert!(is_symlink(&local));
             assert_eq!(std::fs::read_link(&local).unwrap(), link_target_before);

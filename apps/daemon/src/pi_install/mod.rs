@@ -38,8 +38,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use teamclu_runtime_env::version::version_ge;
 use crate::process_util::CommandNoWindow;
+use teamclu_runtime_env::version::version_ge;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -817,12 +817,11 @@ impl AmuxdAgentHandle {
         };
         let mut timed_out = false;
         let result: Result<String, AgentError> = loop {
-            let remaining =
-                crate::runtime::turn_reply::idle_remaining_at(
-                    last_activity,
-                    turn_timeout,
-                    std::time::Instant::now(),
-                );
+            let remaining = crate::runtime::turn_reply::idle_remaining_at(
+                last_activity,
+                turn_timeout,
+                std::time::Instant::now(),
+            );
             if remaining.is_zero() {
                 timed_out = true;
                 break salvage_on_timeout(&segments, &live);

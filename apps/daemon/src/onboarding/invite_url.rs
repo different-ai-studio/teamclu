@@ -170,10 +170,7 @@ mod tests {
     fn rejects_wrong_scheme() {
         match parse("http://invite?token=x") {
             Ok(_) => panic!("expected wrong scheme to be rejected"),
-            Err(err) => assert!(
-                err.to_string().contains("TeamClu app scheme"),
-                "got: {err}"
-            ),
+            Err(err) => assert!(err.to_string().contains("TeamClu app scheme"), "got: {err}"),
         }
     }
 

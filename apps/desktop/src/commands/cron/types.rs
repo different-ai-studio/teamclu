@@ -87,10 +87,8 @@ pub const CRON_CLIENT_TIMEOUT_SLACK_SECS: u64 = 60;
 
 /// Resolve the wall-clock timeout for a cron job payload.
 pub fn resolve_cron_wall_timeout_seconds(raw: Option<u64>) -> u64 {
-    raw.unwrap_or(DEFAULT_CRON_WALL_TIMEOUT_SECS).clamp(
-        MIN_CRON_WALL_TIMEOUT_SECS,
-        MAX_CRON_WALL_TIMEOUT_SECS,
-    )
+    raw.unwrap_or(DEFAULT_CRON_WALL_TIMEOUT_SECS)
+        .clamp(MIN_CRON_WALL_TIMEOUT_SECS, MAX_CRON_WALL_TIMEOUT_SECS)
 }
 
 /// Delivery mode for cron job results

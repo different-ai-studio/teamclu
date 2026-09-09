@@ -9,8 +9,8 @@
 
 use serde::Serialize;
 
-use teamclu_runtime_env::version::{parse_semver, version_ge};
 use crate::process_util::CommandNoWindow;
+use teamclu_runtime_env::version::{parse_semver, version_ge};
 
 #[derive(Debug, Serialize)]
 pub struct ComponentStatus {

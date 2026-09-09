@@ -32,10 +32,10 @@ use tracing::{debug, info, warn};
 
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
+use crate::runtime::acp_translate::status_change;
 use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::manager::AgentLaunchConfig;
-use crate::runtime::acp_translate::status_change;
 use crate::runtime::permission_policy::PermissionPolicy;
 
 pub mod auth;
@@ -1849,7 +1849,11 @@ mod tests {
             "auth_logout",
         ] {
             let req = serde_json::json!({"type": ty});
-            assert_eq!(auth_command_refresh_fanout(&req), None, "{ty} must not fan out");
+            assert_eq!(
+                auth_command_refresh_fanout(&req),
+                None,
+                "{ty} must not fan out"
+            );
         }
     }
 
