@@ -4,7 +4,11 @@ import type { Catalog } from "./catalog.js";
 import { pickRoute } from "./catalog.js";
 import { TokenCache, bearer } from "./auth.js";
 import { resolveActor, recordUsage, getBalance, type Sql } from "./db.js";
-import { computeCredits, prepareUpstream, readUsage, teeSseUsage } from "./proxy.js";
+import {
+  computeCredits, countImages, prepareImageUpstream, pricePerImage,
+  prepareUpstream, readImageUsage, readUsage, teeSseUsage,
+} from "./proxy.js";
+import { pickImageRoute } from "./catalog.js";
 import { creditLedger, usageReport, type UsageRange } from "./report.js";
 import {
   backfillSignupGrants,
@@ -28,6 +32,9 @@ export type Deps = {
 
 const err = (code: string, message: string, status: number) =>
   ({ error: { code, message } }) as const;
+
+/** Upper bound on one images request. The upstream's own cap is 10. */
+const MAX_IMAGES = 10;
 
 const RANGES = new Set(["day", "week", "month", "year"]);
 const parseRange = (v: string | undefined): UsageRange =>
@@ -268,6 +275,147 @@ export function createApp(deps: Deps) {
 
     await release(sql, reservationId).catch(() => {});
     return c.json(err("upstream_error", lastText.slice(0, 500), lastStatus), lastStatus as any);
+  });
+
+
+  // ── images ───────────────────────────────────────────────────────────────
+  // A SEPARATE route, and not a stylistic choice: the upstream refuses an image
+  // model on chat/completions ("gpt-image-2 is only supported on
+  // /v1/images/generations and /v1/images/edits"), the bodies share no shape,
+  // and `prepareUpstream` hardcodes the chat path.
+  //
+  // Everything downstream of the price is reused verbatim — `authed`, reserve /
+  // settle / release, `recordUsage` — so images ride the same ledger as chat
+  // rather than growing a second one.
+  app.post("/v1/teams/:teamId/images/generations", async (c) => {
+    const a = await authed(c);
+    if ("error" in a) return a.error;
+    const started = Date.now();
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json(err("invalid_request", "body must be JSON", 400), 400);
+    }
+
+    const publicId = String(body.model ?? "");
+    const tier = catalog.image_models[publicId];
+    // Same stance as chat: never fall back to a default tier. A client on the
+    // wrong id should hear about it rather than silently bill somewhere else.
+    if (!tier) {
+      return c.json(err("model_not_allowed", `unknown image model "${publicId}"`, 403), 403);
+    }
+
+    const size = body.size === undefined ? undefined : String(body.size);
+    const quality = body.quality === undefined ? undefined : String(body.quality);
+    const unit = pricePerImage(tier.pricing, size, quality);
+    if (unit === null) {
+      return c.json(
+        err(
+          "unpriced_image_variant",
+          `no price for size "${size}"${quality ? ` at quality "${quality}"` : ""}`,
+          400,
+        ),
+        400,
+      );
+    }
+
+    const requested = Number(body.n ?? 1);
+    const n = Number.isInteger(requested) && requested >= 1 ? Math.min(requested, MAX_IMAGES) : 1;
+    body.n = n;
+
+    // Deterministic, unlike chat: the hold is exactly n × unit, so there is no
+    // estimate to over- or under-shoot. Settlement only ever adjusts it DOWN,
+    // when the upstream returns fewer images than asked for.
+    let reservationId: string | null = null;
+    if (cfg.creditsEnforced) {
+      const held = await reserve(sql, {
+        teamId: a.teamId,
+        actorId: a.actor.id,
+        actorType: a.actor.actorType,
+        holdCredits: n * unit,
+      });
+      if (!held.ok) return c.json(err(held.code, held.message, 402), 402);
+      reservationId = held.reservationId;
+    }
+
+    const picked = pickImageRoute(catalog, publicId, 0);
+    if (!picked) {
+      await release(sql, reservationId).catch(() => {});
+      return c.json(err("upstream_error", "image tier has no usable route", 502), 502);
+    }
+    const apiKey = env[picked.provider.api_key_env] ?? "";
+
+    // An image has no streaming first byte to prove the upstream is alive, and
+    // a hung one would otherwise hold credits until the 10-minute sweep.
+    const timeout = AbortSignal.timeout(cfg.imageTimeoutMs);
+    const prepared = prepareImageUpstream(
+      catalog, picked.provider, picked.backend, body, apiKey,
+      AbortSignal.any([c.req.raw.signal, timeout]),
+    );
+
+    let res: Response;
+    try {
+      res = await doFetch(prepared.url, prepared.init);
+    } catch (e) {
+      await release(sql, reservationId).catch(() => {});
+      const aborted = (e as Error)?.name === "TimeoutError" || timeout.aborted;
+      return c.json(
+        err("upstream_error", aborted ? "image generation timed out" : `upstream request failed: ${(e as Error).message}`, 504),
+        aborted ? 504 : 502,
+      );
+    }
+
+    if (!res.ok) {
+      // Verbatim, like chat: the caller branches on the provider's own errors
+      // (content moderation especially). Nothing is charged for an image that
+      // was never produced.
+      const text = await res.text();
+      await release(sql, reservationId).catch(() => {});
+      return new Response(text, {
+        status: res.status,
+        headers: { "Content-Type": res.headers.get("content-type") ?? "application/json" },
+      });
+    }
+
+    const json = await res.json().catch(() => null);
+    // Bill what was DELIVERED. A partial result (moderation dropped one of n)
+    // settles lower and the reservation absorbs the difference — no refund path
+    // needed. Zero images with a 200 is charged as zero.
+    const delivered = countImages(json);
+    const credits = delivered * unit;
+    const usage = readImageUsage(json);
+
+    const usageLogId = await recordUsage(sql, {
+      teamId: a.teamId,
+      actorId: a.actor.id,
+      publicModelId: publicId,
+      backendModelId: picked.backendId,
+      providerId: picked.backend.provider,
+      // Recorded for margin analysis only; the bill is `credits` above.
+      inputTokens: usage?.inputTokens ?? 0,
+      cachedInputTokens: 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      credits,
+      usageSource: "fixed",
+      imageCount: delivered,
+      statusCode: res.status,
+      stream: false,
+      latencyMs: Date.now() - started,
+      requestId: c.req.header("x-request-id") ?? null,
+    });
+
+    if (cfg.creditsEnforced) {
+      if (usageLogId && credits > 0) {
+        await settle(sql, {
+          reservationId, teamId: a.teamId, actorId: a.actor.id, credits, usageLogId,
+        }).catch((e) => console.error("[credits] image settle failed", e));
+      } else {
+        await release(sql, reservationId).catch(() => {});
+      }
+    }
+    return c.json(json as any, res.status as any);
   });
 
   // ── internal (FC service token) ──────────────────────────────────────────

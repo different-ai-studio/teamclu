@@ -1,0 +1,10 @@
+# Marketplace metadata. Parsed by packages/cli/src/_shared/fs-pack.mjs, which is
+# a FLAT line reader: keys must start at column 0, values are single-line, and
+# arrays are inline [a, b]. Nested YAML is silently ignored, not an error.
+displayName: 图片生成
+publisher: TeamClu
+summary: 用团队 AI 网关生成图片，按张计入团队积分。图片直接落到会话目录并在对话里显示。
+category: general
+tags: [image, 图片, 生成, 配图, ai-gateway]
+whenToUse: 用户要一张图 —— 配图、插图、海报、头像、示意图、Logo 草稿、封面。
+whenNotToUse: 需要编辑或修改已有图片时不要用（本技能只做从零生成）；需要真实照片、图表或数据可视化时也不要用。

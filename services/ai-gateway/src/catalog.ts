@@ -16,6 +16,31 @@ export type BackendModel = {
 };
 export type Route = { backend: string; weight?: number };
 export type Pricing = { input_per_1m_credits: number; output_per_1m_credits: number };
+
+/**
+ * Image tiers are priced PER IMAGE, not per token.
+ *
+ * The upstream does report tokens (measured 2026-09-09: `input_tokens` 59 /
+ * `output_tokens` 515 with `output_tokens_details.image_tokens`), so this is
+ * not a workaround for missing data. It is that 515 "image tokens" is one whole
+ * picture, a quantity not comparable to text tokens: priced at the `max` tier's
+ * 80 credits/output-token it comes to ~4 credits-in-UI per image, an order of
+ * magnitude off. Any token scheme would need image-specific rates anyway, so
+ * pricing the image directly just removes a conversion — and makes the hold
+ * exactly equal the settlement, which removes estimation entirely.
+ *
+ * Keys are looked up most-specific first: `<size>:<quality>`, then `<size>`,
+ * then `default`. See `pricePerImage` for why a request that NAMES an unpriced
+ * size is refused rather than falling back.
+ */
+export type ImagePricing = { per_image_credits: Record<string, number> };
+export type ImageModel = {
+  name: string;
+  description?: string;
+  routing: "priority" | "weighted" | "failover";
+  pricing: ImagePricing;
+  routes: Route[];
+};
 export type PublicModel = {
   name: string;
   description?: string;
@@ -28,7 +53,15 @@ export type Catalog = {
   providers: Record<string, Provider>;
   backend_models: Record<string, BackendModel>;
   public_models: Record<string, PublicModel>;
+  /**
+   * Image tiers, deliberately NOT in `public_models`. That map is the client
+   * contract: `GET /models` serves it verbatim, `REQUIRED_TIERS` validates it,
+   * and its `pricing` is per-1M-tokens. An image entry there would show up in
+   * the desktop's model picker as a chat model that cannot chat.
+   */
+  image_models: Record<string, ImageModel>;
   default_supported_params: string[];
+  default_image_params: string[];
 };
 
 /**
@@ -49,6 +82,16 @@ const DEFAULT_PARAMS = [
  * half-usable catalog produces requests that fail deep in the proxy with a
  * confusing upstream error, hours after deploy.
  */
+/**
+ * Body keys forwarded to an images endpoint. A SEPARATE list from the chat one,
+ * which does not contain `prompt` — reusing it would drop the prompt entirely
+ * and send the upstream an empty request.
+ */
+const DEFAULT_IMAGE_PARAMS = [
+  "model", "prompt", "n", "size", "quality", "background",
+  "output_format", "output_compression", "moderation", "user",
+];
+
 export function parseCatalog(text: string, env: NodeJS.ProcessEnv = process.env): Catalog {
   const raw = parse(text) as Partial<Catalog> | null;
   if (!raw || typeof raw !== "object") throw new Error("catalog: not a YAML mapping");
@@ -96,6 +139,33 @@ export function parseCatalog(text: string, env: NodeJS.ProcessEnv = process.env)
     }
   }
 
+  const images = raw.image_models ?? {};
+  for (const [id, m] of Object.entries(images)) {
+    if (!m?.routes?.length) throw new Error(`catalog: image model ${id} has no routes`);
+    for (const r of m.routes) {
+      if (!backends[r?.backend]) {
+        throw new Error(`catalog: image model ${id} routes to unknown backend ${r?.backend}`);
+      }
+    }
+    const per = m.pricing?.per_image_credits;
+    if (!per || typeof per !== "object") {
+      throw new Error(`catalog: image model ${id} needs pricing.per_image_credits`);
+    }
+    // A missing `default` is how an image tier ends up serving for free: every
+    // lookup falls through to it, so its absence is not a partial catalog, it
+    // is an unpriced product.
+    if (!Number.isFinite(per.default)) {
+      throw new Error(`catalog: image model ${id} needs pricing.per_image_credits.default`);
+    }
+    for (const [k, v] of Object.entries(per)) {
+      if (!Number.isInteger(v) || v <= 0) {
+        throw new Error(
+          `catalog: image model ${id} price "${k}" must be a positive integer (got ${v})`,
+        );
+      }
+    }
+  }
+
   for (const tier of REQUIRED_TIERS) {
     if (!publics[tier]) {
       throw new Error(
@@ -109,7 +179,9 @@ export function parseCatalog(text: string, env: NodeJS.ProcessEnv = process.env)
     providers,
     backend_models: backends,
     public_models: publics,
+    image_models: images,
     default_supported_params: raw.default_supported_params ?? DEFAULT_PARAMS,
+    default_image_params: raw.default_image_params ?? DEFAULT_IMAGE_PARAMS,
   };
 }
 
@@ -118,8 +190,20 @@ export function loadCatalog(path: string, env: NodeJS.ProcessEnv = process.env):
 }
 
 /** Pick one route for this request. Unknown ids are the caller's problem. */
-export function pickRoute(cat: Catalog, publicId: string, attempt = 0): { backendId: string; backend: BackendModel; provider: Provider } | null {
-  const m = cat.public_models[publicId];
+export function pickRoute(cat: Catalog, publicId: string, attempt = 0) {
+  return pickFrom(cat, cat.public_models[publicId], attempt);
+}
+
+/** Same, for an image tier. Image and chat tiers share routing semantics. */
+export function pickImageRoute(cat: Catalog, imageId: string, attempt = 0) {
+  return pickFrom(cat, cat.image_models[imageId], attempt);
+}
+
+function pickFrom(
+  cat: Catalog,
+  m: { routing: PublicModel["routing"]; routes: Route[] } | undefined,
+  attempt: number,
+): { backendId: string; backend: BackendModel; provider: Provider } | null {
   if (!m) return null;
   let route: Route | undefined;
   if (m.routing === "weighted" && m.routes.length > 1) {

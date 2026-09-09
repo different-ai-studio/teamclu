@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { parseCatalog, pickRoute, REQUIRED_TIERS } from "../src/catalog.js";
 import { readFileSync } from "node:fs";
 
-const ENV = { DEEPSEEK_API_KEY: "k1" } as NodeJS.ProcessEnv;
+const ENV = { DEEPSEEK_API_KEY: "k1", OPENAI_API_KEY: "k2" } as NodeJS.ProcessEnv;
 const SHIPPED = readFileSync(
   new URL("../../../deploy/self-host/ai/catalog.example.yaml", import.meta.url),
   "utf8",
@@ -46,13 +46,27 @@ test("refuses to start when a provider key is absent from the environment", () =
   assert.throws(() => parseCatalog(SHIPPED, {} as NodeJS.ProcessEnv), /needs DEEPSEEK_API_KEY/);
 });
 
-// The shipped example must boot on a deployment that has configured exactly
-// one upstream. It listed a second provider once, and startup validation —
-// correctly — refused to boot for the missing key, which is how the gateway
+// The shipped example must boot on a deployment that has supplied exactly the
+// keys it names — no more, no less. It listed a provider without one once, and
+// startup validation — correctly — refused to boot, which is how the gateway
 // failed on its first real deploy.
-test("the shipped example needs only the keys it actually lists", () => {
-  const cat = parseCatalog(SHIPPED, { DEEPSEEK_API_KEY: "k" } as NodeJS.ProcessEnv);
-  assert.deepEqual(Object.keys(cat.providers), ["deepseek"]);
+//
+// Derived from the catalog rather than pinned to a provider list: the point is
+// the INVARIANT (every listed provider's key is required, and nothing beyond
+// them is), which stays true as providers come and go. Pinning the names meant
+// this test failed for the ordinary act of adding one, and a test that fails
+// on correct changes gets edited until it says nothing.
+test("the shipped example needs exactly the keys it lists, and each one is load-bearing", () => {
+  const names = Object.values(parseCatalog(SHIPPED, ENV).providers).map((p) => p.api_key_env);
+  assert.ok(names.length > 0);
+  const full = Object.fromEntries(names.map((n) => [n, "k"])) as NodeJS.ProcessEnv;
+  assert.deepEqual(Object.keys(parseCatalog(SHIPPED, full).providers).sort(), ["deepseek", "mx5"]);
+  // Drop any single one and the gateway must refuse to start.
+  for (const missing of names) {
+    const partial = { ...full };
+    delete partial[missing];
+    assert.throws(() => parseCatalog(SHIPPED, partial), new RegExp(`needs ${missing}`), missing);
+  }
 });
 
 test("refuses an unknown usage_mode", () => {
@@ -62,10 +76,25 @@ test("refuses an unknown usage_mode", () => {
 
 test("failover walks the route list by attempt", () => {
   const cat = parseCatalog(SHIPPED, ENV);
-  assert.equal(pickRoute(cat, "max", 0)!.backendId, "ds-v4-pro");
-  assert.equal(pickRoute(cat, "max", 1)!.backendId, "ds-v4-flash");
+  assert.equal(pickRoute(cat, "max", 0)!.backendId, "mx5-gpt-5.6-terra");
+  assert.equal(pickRoute(cat, "max", 1)!.backendId, "ds-v4-pro");
   // Past the end it clamps rather than throwing.
-  assert.equal(pickRoute(cat, "max", 9)!.backendId, "ds-v4-flash");
+  assert.equal(pickRoute(cat, "max", 9)!.backendId, "ds-v4-pro");
+});
+
+// The tiers are a PRODUCT contract; which vendor serves them is config. This
+// pins the current wiring so a stray edit to the example cannot silently move
+// paying traffic to a different model — the tier ids and prices stay put while
+// the backend behind them is free to change deliberately.
+test("the shipped tiers point where the deployment intends", () => {
+  const cat = parseCatalog(SHIPPED, ENV);
+  assert.equal(pickRoute(cat, "default", 0)!.backend.upstream_model, "deepseek-v4-flash");
+  assert.equal(pickRoute(cat, "pro", 0)!.backend.upstream_model, "deepseek-v4-pro");
+  assert.equal(pickRoute(cat, "max", 0)!.backend.upstream_model, "gpt-5.6-terra");
+  // `max` keeps a DeepSeek backstop so an mx5 outage degrades rather than
+  // fails — at the same price, which is the point of pricing the tier.
+  assert.equal(cat.public_models.max.routing, "failover");
+  assert.equal(pickRoute(cat, "max", 1)!.provider.api_base, "https://api.deepseek.com");
 });
 
 test("unknown public id resolves to nothing (caller turns this into 403)", () => {
