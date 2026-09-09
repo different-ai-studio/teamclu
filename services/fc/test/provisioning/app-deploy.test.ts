@@ -494,13 +494,13 @@ test("a container deploy on a deployment with no registry names the variable", a
       startDeploy(
         {
           mintUploadUrl: async () => "https://oss.example/put",
-          imagePushUnavailable: "APPS_ACR_NAMESPACE is not set",
+          imagePushUnavailable: "APPS_REGISTRY_HOST is not set",
         },
         { appId: "app-1", region: "cn-shenzhen", runtime: "container" },
       ),
     (e: any) => {
       assert.equal(e.statusCode ?? e.status, 503);
-      assert.match(String(e.message), /APPS_ACR_NAMESPACE/);
+      assert.match(String(e.message), /APPS_REGISTRY_HOST/);
       return true;
     },
   );

@@ -1,6 +1,7 @@
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
+import { imageForPull } from "./apps-registry.js";
 import { ApiError } from "../http-utils.js";
 
 type FcClientInstance = InstanceType<typeof FcClient.default>;
@@ -98,6 +99,12 @@ export interface FcOpsConfig {
   bucket: string;
   role: string | undefined;
   region: string;
+  /**
+   * How a deployed container function logs into the image registry, and the
+   * host it reaches it on. Absent on a deployment with no registry — which is
+   * every deployment that has no container apps.
+   */
+  registryAuth?: { username: string; password: string; host?: string };
   /** When set, every app function create/update joins this VPC. */
   vpc?: AppsFcVpcConfig;
   /**
@@ -246,12 +253,31 @@ function startCommand(spec: AppRuntimeSpec | undefined) {
  * know where to send a request and `EXPOSE` is documentation that nothing
  * reads.
  */
-function containerConfig(image: string, spec: AppRuntimeSpec | undefined) {
+function containerConfig(
+  image: string,
+  spec: AppRuntimeSpec | undefined,
+  auth: FcOpsConfig["registryAuth"],
+) {
   const port = spec?.port ?? 9000;
   const healthCheckPath = spec?.healthCheckPath?.trim();
   return new $fc.CustomContainerConfig({
-    image,
+    image: imageForPull(image, auth?.host),
     port,
+    // A private registry that is not ACR is reached with a plain login, which
+    // is what `registryConfig` exists for. Read-only where the deployment
+    // configured a separate pull user: this credential lives in the function's
+    // config, and a writable one there means anyone who can read that config
+    // can replace what the app runs.
+    ...(auth
+      ? {
+          registryConfig: new $fc.RegistryConfig({
+            authConfig: new $fc.RegistryAuthConfig({
+              userName: auth.username,
+              password: auth.password,
+            }),
+          }),
+        }
+      : {}),
     ...(healthCheckPath
       ? {
           healthCheckConfig: new $fc.CustomHealthCheckConfig({
@@ -293,7 +319,7 @@ function runtimeInput(cfg: FcOpsConfig, args: EnsureFunctionArgs, codeLocation: 
     // mounted into someone's Python image.
     return {
       runtime: "custom-container",
-      customContainerConfig: containerConfig(args.image, args.runtime),
+      customContainerConfig: containerConfig(args.image, args.runtime, cfg.registryAuth),
     };
   }
   return {

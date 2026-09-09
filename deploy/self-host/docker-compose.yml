@@ -375,21 +375,28 @@ services:
       # Defaults to https://oss-<APPS_REGION>.aliyuncs.com; override only for a
       # VPC/internal OSS endpoint.
       APPS_OSS_ENDPOINT: "${APPS_OSS_ENDPOINT:-}"
-      # Container Registry namespace for apps that ship an image instead of a
-      # code archive (`teamclu.app.json` → `runtime: "container"`). Blank means
-      # that kind of app is refused naming this variable; every other app
-      # deploys exactly as before. The registry must be in APPS_REGION and the
-      # namespace must auto-create repositories — the deploy pushes to
-      # <registry>/<namespace>/tc-app-<appId> and never creates it.
-      APPS_ACR_NAMESPACE: "${APPS_ACR_NAMESPACE:-}"
-      # Defaults to registry.<APPS_REGION>.aliyuncs.com. The host a developer's
-      # machine pushes to.
-      APPS_ACR_REGISTRY: "${APPS_ACR_REGISTRY:-}"
-      # The host the deployed function PULLS from; defaults to the push host.
-      # Set it to registry-vpc.<region>.aliyuncs.com only when the app
-      # functions join a VPC that can reach it — otherwise the image is
-      # unreachable at instance start rather than at deploy.
-      APPS_ACR_PULL_REGISTRY: "${APPS_ACR_PULL_REGISTRY:-}"
+      # Image registry for apps that ship a container instead of a code archive
+      # (`teamclu.app.json` → `runtime: "container"`). Blank means that kind of
+      # app is refused naming this variable; every other app deploys exactly as
+      # before. The `registry` service below serves this when REGISTRY_DOMAIN is
+      # set — Function Compute pulls over the public name, so it must resolve
+      # from outside this box.
+      APPS_REGISTRY_HOST: "${APPS_REGISTRY_HOST:-${REGISTRY_DOMAIN:-}}"
+      # Path prefix every app's repository sits under (default `apps`), so the
+      # registry can hold other things without them colliding.
+      APPS_REGISTRY_NAMESPACE: "${APPS_REGISTRY_NAMESPACE:-}"
+      # The login handed to the machine that builds the image. It can write.
+      APPS_REGISTRY_USERNAME: "${APPS_REGISTRY_USERNAME:-}"
+      APPS_REGISTRY_PASSWORD: "${APPS_REGISTRY_PASSWORD:-}"
+      # A read-only login for the deployed function. Optional, and worth
+      # setting: without it the function carries the push credential, and
+      # anyone who can read a function's config could replace the image it runs.
+      APPS_REGISTRY_PULL_USERNAME: "${APPS_REGISTRY_PULL_USERNAME:-}"
+      APPS_REGISTRY_PULL_PASSWORD: "${APPS_REGISTRY_PULL_PASSWORD:-}"
+      # Host the function pulls from, when it reaches the registry by a
+      # different name than the developer's machine does. Defaults to the push
+      # host.
+      APPS_REGISTRY_PULL_HOST: "${APPS_REGISTRY_PULL_HOST:-}"
       # Where deployed apps send their logs (Alibaba SLS, same account as the
       # profile above). Both optional: the project defaults to
       # `teamclu-apps-<accountId>` and the logstore to `app-logs`, and the
@@ -602,6 +609,15 @@ services:
       # Gitea web UI + REST API. Same never-empty rule as S3_DOMAIN — a nameless
       # block is read as global configuration and Caddy refuses to start.
       GITEA_DOMAIN: "${GITEA_DOMAIN:-gitea.localhost}"
+      # Private image registry for container apps. Same never-empty rule as
+      # S3_DOMAIN. The two logins are bcrypt hashes here (Caddy checks them) and
+      # plaintext in the fc service above (FC hands them out) — see the
+      # Caddyfile for why a pull login is separate from a push one.
+      REGISTRY_DOMAIN: "${REGISTRY_DOMAIN:-registry.localhost}"
+      REGISTRY_PUSH_USERNAME: "${APPS_REGISTRY_USERNAME:-registry-push}"
+      REGISTRY_PUSH_PASSWORD_HASH: "${REGISTRY_PUSH_PASSWORD_HASH:-}"
+      REGISTRY_PULL_USERNAME: "${APPS_REGISTRY_PULL_USERNAME:-registry-pull}"
+      REGISTRY_PULL_PASSWORD_HASH: "${REGISTRY_PULL_PASSWORD_HASH:-}"
       # Central login service for deployed apps. Same never-empty rule again.
       # Note the asymmetry with the `fc` service above, which treats blank as
       # "feature off": Caddy cannot express that, so it always has a site here.
@@ -661,6 +677,48 @@ services:
     volumes:
       - amuxd_state:/state
       - ./amuxd/entrypoint.sh:/entrypoint.sh:ro
+
+  # Private image registry for container apps.
+  #
+  # ACR is not an option any more: its personal edition can no longer be
+  # created, and its enterprise edition bills per instance. This box already
+  # has the two parts a registry needs — a proxy with certificates, and an
+  # object store — so it serves its own.
+  #
+  # Blobs go to the SAME Alibaba OSS bucket the app code archives use, under
+  # `registry/`. Not a local volume: this disk is the scarcest thing on the box
+  # and image layers are the least bounded thing on it.
+  #
+  # No auth of its own: the credentials live in Caddy, which is the only way in
+  # and the only place that can tell a pull from a push (see the Caddyfile).
+  registry:
+    # 3, not 2: the 2.x S3 driver addresses the bucket path-style and OSS
+    # answers `SecondLevelDomainForbidden: Please use virtual hosted style` to
+    # the very first blob upload. 3.x is on the AWS SDK v2 and gets it right —
+    # verified end to end against this deployment's own bucket (build → push →
+    # pull → run).
+    image: registry:3
+    profiles: ["registry"]
+    restart: unless-stopped
+    environment:
+      REGISTRY_STORAGE: "s3"
+      REGISTRY_STORAGE_S3_REGION: "${APPS_REGION:-}"
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: "${APPS_OSS_ENDPOINT:-https://oss-${APPS_REGION:-}.aliyuncs.com}"
+      REGISTRY_STORAGE_S3_BUCKET: "${APPS_OSS_BUCKET:-}"
+      REGISTRY_STORAGE_S3_ACCESSKEY: "${APPS_ACCESS_KEY_ID:-}"
+      REGISTRY_STORAGE_S3_SECRETKEY: "${APPS_ACCESS_KEY_SECRET:-}"
+      REGISTRY_STORAGE_S3_ROOTDIRECTORY: "/registry"
+      # OSS answers on the bucket's own hostname, like S3 — path style is what
+      # MinIO needs and what OSS rejects.
+      REGISTRY_STORAGE_S3_FORCEPATHSTYLE: "false"
+      REGISTRY_STORAGE_S3_V4AUTH: "true"
+      # The registry hands out redirects to storage by default. OSS URLs it
+      # composes are not signed for the client, so a pull would 403 on the blob
+      # after a successful manifest — serve the bytes through the registry.
+      REGISTRY_STORAGE_REDIRECT_DISABLE: "true"
+      REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
+      # Deleting a tag is how an app's images are reclaimed on teardown.
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
 
 volumes:
   emqx_data:

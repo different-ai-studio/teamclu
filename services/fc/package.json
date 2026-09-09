@@ -15,7 +15,6 @@
     "@alicloud/fc20230330": "^4.7.6",
     "@alicloud/openapi-client": "^0.4.12",
     "@alicloud/sls20201230": "^5.11.0",
-    "@alicloud/tea-util": "^1.4.11",
     "@aws-sdk/client-s3": "^3.600.0",
     "@aws-sdk/s3-request-presigner": "^3.600.0",
     "@hono/node-server": "^1.19.14",
