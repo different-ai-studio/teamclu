@@ -143,6 +143,7 @@ describe("apps-store", () => {
     useAppsStore.setState({
       items: [],
       loaded: false,
+      loadedKey: null,
       loading: false,
       error: null,
       teamId: null,
@@ -160,6 +161,34 @@ describe("apps-store", () => {
 
     await useAppsStore.getState().load("team-1"); // cached → no second call
     expect(mocks.listApps).toHaveBeenCalledTimes(1);
+  });
+
+  it("an empty answer is never cached", async () => {
+    // The failure this exists for: a list fetched a moment before the server
+    // or session finished switching comes back `[]` with a 200 — RLS filters,
+    // it does not fail — and caching that told the user their apps were gone
+    // until they restarted the app.
+    mocks.listApps.mockResolvedValueOnce([]);
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().load("team-1");
+    expect(useAppsStore.getState().loadedKey).toBeNull();
+
+    mocks.listApps.mockResolvedValueOnce([appRow({ name: "Alpha" })]);
+    await useAppsStore.getState().load("team-1");
+    expect(mocks.listApps).toHaveBeenCalledTimes(2);
+    expect(useAppsStore.getState().items).toHaveLength(1);
+  });
+
+  it("a failed load is not cached either", async () => {
+    mocks.listApps.mockRejectedValueOnce(new Error("offline"));
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().load("team-1");
+    expect(useAppsStore.getState().error).toBe("offline");
+    expect(useAppsStore.getState().loadedKey).toBeNull();
+
+    mocks.listApps.mockResolvedValueOnce([appRow()]);
+    await useAppsStore.getState().load("team-1");
+    expect(mocks.listApps).toHaveBeenCalledTimes(2);
   });
 
   it("force reload calls the backend again", async () => {

@@ -15,6 +15,9 @@ import { getBackend } from "@/lib/backend";
 interface MemberPreferencesState {
   /** Team the cached `defaultAgentId` belongs to. */
   teamId: string | null;
+  /** The team whose preferences actually loaded. Null after a failure, which
+   *  is what lets `ensureLoaded` try again. */
+  loadedTeamId: string | null;
   defaultAgentId: string | null;
   loading: boolean;
   /** Load (once per team) the caller's default agent. Cheap no-op if already loaded. */
@@ -45,12 +48,17 @@ interface MemberPreferencesState {
 
 export const useMemberPreferencesStore = create<MemberPreferencesState>((set, get) => ({
   teamId: null,
+  loadedTeamId: null,
   defaultAgentId: null,
   loading: false,
 
   ensureLoaded: async (teamId) => {
     const state = get();
-    if (state.teamId === teamId && !state.loading) return;
+    // `loadedTeamId`, not `teamId`: `reload` sets `teamId` before the request
+    // so an in-flight team switch can be detected, which meant a FAILED load
+    // left it set and this guard returned for that team forever — the default
+    // agent silently stayed empty until a restart.
+    if (state.loadedTeamId === teamId && !state.loading) return;
     await get().reload(teamId);
   },
 
@@ -60,7 +68,7 @@ export const useMemberPreferencesStore = create<MemberPreferencesState>((set, ge
       const defaultAgentId = await getBackend().actors.getMemberDefaultAgent(teamId);
       // Guard against a team switch racing an in-flight fetch.
       if (get().teamId !== teamId) return;
-      set({ defaultAgentId: defaultAgentId ?? null, loading: false });
+      set({ defaultAgentId: defaultAgentId ?? null, loading: false, loadedTeamId: teamId });
     } catch (error) {
       console.warn("[MemberPreferences] failed to load default agent", error);
       if (get().teamId === teamId) set({ loading: false });

@@ -18,6 +18,8 @@ import {
   type SeedAppResult,
 } from "@/lib/daemon/daemon-local-client";
 import { isTauri } from "@/lib/utils";
+import { getEffectiveServerConfigSync } from "@/lib/config/server-config";
+import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
 import type {
   AppRow,
@@ -51,6 +53,15 @@ interface AppsState {
    * empty and send the user off to download apps they already have.
    */
   localAppIds: string[] | null;
+  /**
+   * Which (server, user, team) the loaded list actually belongs to, or null
+   * when nothing authoritative is cached.
+   *
+   * Not just `teamId`: the same team id means a different set of apps on a
+   * different deployment or under a different account, and switching either
+   * one is exactly when a stale "no apps" answer used to stick.
+   */
+  loadedKey: string | null;
   recordAppSession: (appId: string, sessionId: string) => void;
   selectApp: (appId: string | null) => void;
   load: (teamId: string, opts?: { force?: boolean }) => Promise<void>;
@@ -514,6 +525,16 @@ export async function ensureAppCheckout(
   }
 }
 
+/**
+ * What a cached app list is valid for: this deployment, this account, this
+ * team. Any of the three changing makes the cached answer someone else's.
+ */
+function appsCacheKey(teamId: string): string {
+  const server = getEffectiveServerConfigSync().cloudApiUrl;
+  const user = useAuthStore.getState().session?.user?.id ?? "";
+  return `${server}|${user}|${teamId}`;
+}
+
 export const useAppsStore = create<AppsState>((set, get) => ({
   items: [],
   loaded: false,
@@ -526,6 +547,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   appIdBySessionId: {},
   selectedAppId: null,
   localAppIds: null,
+  loadedKey: null,
   recordAppSession: (appId, sessionId) => {
     set((s) => {
       const sessionChanged = s.sessionIdByAppId[appId] !== sessionId;
@@ -545,12 +567,24 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     set((s) => (s.selectedAppId === appId ? s : { selectedAppId: appId }));
   },
   load: async (teamId, opts) => {
+    const key = appsCacheKey(teamId);
     const s = get();
-    if (s.loaded && s.teamId === teamId && !opts?.force) return;
+    if (s.loadedKey === key && !opts?.force) return;
     set({ loading: true, error: null, teamId });
     try {
       const items = await getBackend().apps.listApps(teamId);
-      set({ items, loaded: true, loading: false });
+      set({
+        items,
+        loaded: true,
+        loading: false,
+        // An empty answer is never cached. RLS does not fail a request it
+        // cannot satisfy — it filters it to nothing — so a list fetched a
+        // moment before the session or the server finished switching comes
+        // back as `[]` with a 200, and caching that told the user their apps
+        // were gone until they restarted the app. Re-asking costs one request
+        // on a team that genuinely has none.
+        loadedKey: items.length > 0 ? key : null,
+      });
     } catch (e) {
       set({
         loading: false,

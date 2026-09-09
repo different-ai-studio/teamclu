@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, ChevronRight, LayoutGrid, Loader2, Plus } from 'lucide-react'
+import { AppWindow, ChevronRight, LayoutGrid, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
@@ -86,17 +86,21 @@ export function AppListColumn() {
   const localAppIds = useAppsStore((s) => s.localAppIds)
   const loading = useAppsStore((s) => s.loading)
   const refreshLocalApps = useAppsStore((s) => s.refreshLocalApps)
+  const load = useAppsStore((s) => s.load)
   const selectApp = useAppsStore((s) => s.selectApp)
 
   const createLabel = t('apps.createTitle', '新建')
   const libraryLabel = t('apps.libraryTitle', '所有应用')
 
-  // The cloud list is loaded by the nav row (always mounted); only the local
-  // half can have changed on disk while this column was closed.
+  // Both halves. The nav row loads the cloud list too, but it is mounted once
+  // and never asks again — so an empty answer it happened to catch mid
+  // server-switch stayed on screen until the app restarted. `load` no longer
+  // caches an empty result, which makes opening this column the retry.
   React.useEffect(() => {
     if (!teamId) return
+    void load(teamId)
     void refreshLocalApps(teamId)
-  }, [teamId, refreshLocalApps])
+  }, [teamId, load, refreshLocalApps])
 
   /**
    * Only what is actually on this machine. Everything else lives in the library
@@ -131,17 +135,13 @@ export function AppListColumn() {
             <span className="font-mono text-[11px] font-normal text-faint"> · {items.length}</span>
           </div>
         </div>
+        {/*
+          One way in, not two. Creating lives in the library dialog, which is
+          also where you go to find an app that is not on this machine — a `+`
+          here duplicated that button one click earlier and made the header
+          read as two competing actions.
+        */}
         <div className="flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => openCreateApp(createLabel)}
-            disabled={!teamId}
-            title={t('apps.create', '新建')}
-            aria-label={t('apps.create', '新建')}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
           <button
             type="button"
             onClick={() => openAppLibrary(libraryLabel)}

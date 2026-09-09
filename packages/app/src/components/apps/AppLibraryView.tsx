@@ -34,13 +34,12 @@ function AppMeta({ app, creator }: { app: AppRow; creator: string | null }) {
   const gitMeta = appGitKind(app)
 
   return (
-    // Right-aligned, opposite the name. Left-aligned under it, the row was a
-    // short label on the far left and an action on the far right with 500px of
-    // nothing between them.
+    // A line under the name now that these are cards: the old right-aligned
+    // column existed to fill 500px of empty row, and a card has no such gap.
     //
     // Where the code lives is the load-bearing part: it is what says whether a
-    // row can be downloaded at all.
-    <span className="hidden shrink-0 items-center gap-1.5 text-[11.5px] text-faint @lg:flex">
+    // card can be downloaded at all.
+    <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
       {creator && (
         <>
           <span className="max-w-[10ch] truncate">{creator}</span>
@@ -70,15 +69,21 @@ function AppName({ app }: { app: AppRow }) {
   )
 }
 
-const ROW = 'flex w-full items-center gap-3 rounded-[9px] px-3 py-2 text-left'
 /**
- * Fixed, so the meta column lands on one line across both groups.
- *
- * Sized to the download button, which is the widest thing that goes in it; a
- * row whose trailing slot is a 16px chevron would otherwise pull its meta 50px
- * further right than the row above it.
+ * One card. Bordered rather than shadowed, on paper — the palette's rule is
+ * that depth comes from a hairline and a background change, never from a drop
+ * shadow.
  */
-const TRAILING = 'flex w-[68px] shrink-0 items-center justify-end'
+const CARD =
+  'group relative flex w-full flex-col gap-2 rounded-[12px] border border-border-soft bg-paper p-3 text-left transition-colors'
+
+/** The grid the cards sit in. Container queries, not viewport ones: the width
+ *  that decides how many fit is this column's, and it changes with the right
+ *  panel while the window does not. */
+const GRID = 'grid gap-2.5 @[520px]:grid-cols-2 @[880px]:grid-cols-3'
+
+/** Top-right of the card: the download button, or the chevron on hover. */
+const TRAILING = 'flex shrink-0 items-center justify-end'
 
 /** A row for an app that is already here — clicking it opens it in column two. */
 function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
@@ -88,13 +93,15 @@ function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
   }, [app.id])
 
   return (
-    <button type="button" onClick={open} className={cn(ROW, 'group transition-colors hover:bg-selected/40')}>
-      <TypeMark app={app} />
-      <AppName app={app} />
-      <AppMeta app={app} creator={creator} />
-      <span className={TRAILING}>
-        <ChevronRight className="h-4 w-4 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+    <button type="button" onClick={open} className={cn(CARD, 'hover:bg-selected/30')}>
+      <span className="flex w-full items-center gap-2.5">
+        <TypeMark app={app} />
+        <AppName app={app} />
+        <span className={TRAILING}>
+          <ChevronRight className="h-4 w-4 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+        </span>
       </span>
+      <AppMeta app={app} creator={creator} />
     </button>
   )
 }
@@ -106,11 +113,12 @@ function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
  */
 function PendingRow({ app, creator }: { app: AppRow; creator: string | null }) {
   return (
-    <div className={ROW}>
-      <TypeMark app={app} />
-      <AppName app={app} />
+    <div className={cn(CARD, 'opacity-70')}>
+      <span className="flex w-full items-center gap-2.5">
+        <TypeMark app={app} />
+        <AppName app={app} />
+      </span>
       <AppMeta app={app} creator={creator} />
-      <span className={TRAILING} />
     </div>
   )
 }
@@ -129,32 +137,34 @@ function RemoteRow({
 }) {
   const { t } = useTranslation()
   return (
-    <div className={ROW}>
-      <TypeMark app={app} />
-      <AppName app={app} />
-      <AppMeta app={app} creator={creator} />
-      <span className={TRAILING}>
-        <Button
-          variant="ghost"
-          onClick={onDownload}
-          disabled={busy}
-          className="h-7 gap-1.5 rounded-[7px] px-2 text-[12px]"
-        >
-          {busy ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Download className="h-3.5 w-3.5" />
-          )}
-          {t('apps.libraryDownload', '下载')}
-        </Button>
+    <div className={CARD}>
+      <span className="flex w-full items-center gap-2.5">
+        <TypeMark app={app} />
+        <AppName app={app} />
+        <span className={TRAILING}>
+          <Button
+            variant="ghost"
+            onClick={onDownload}
+            disabled={busy}
+            className="h-7 gap-1.5 rounded-[7px] px-2 text-[12px]"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
+            {t('apps.libraryDownload', '下载')}
+          </Button>
+        </span>
       </span>
+      <AppMeta app={app} creator={creator} />
     </div>
   )
 }
 
 function GroupHeading({ label, count }: { label: string; count: number }) {
   return (
-    <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-background px-3 pb-1.5 pt-4 text-[10.5px] font-semibold tracking-[0.08em] text-faint">
+    <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-background pb-2 pt-4 text-[10.5px] font-semibold tracking-[0.08em] text-faint">
       <span>{label}</span>
       <span className="font-mono tabular-nums">· {count}</span>
     </div>
@@ -316,7 +326,7 @@ export function AppLibraryView() {
             groups.map((group) => (
               <section key={group.key}>
                 {group.label && <GroupHeading label={group.label} count={group.apps.length} />}
-                <div className={cn(!group.label && 'pt-4')}>
+                <div className={cn(GRID, !group.label && 'pt-4')}>
                   {group.apps.map((app) => {
                     if (group.key === 'here') {
                       return <LocalRow key={app.id} app={app} creator={creatorFor(app)} />
