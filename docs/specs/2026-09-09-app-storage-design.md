@@ -1,7 +1,7 @@
 # App 文件存储 — 一个 bucket、每 app 一个前缀，与它的权限模型
 
 - **Date**: 2026-09-09
-- **Status**: Draft，待评审。决策逐条落定见 §9。§2.4 的云配额已实测（2026-09-09），并因此修正了两处初稿结论、带出一条独立的安全问题。
+- **Status**: **已实施**（2026-09-09，三个阶段一次做完）。决策逐条落定见 §9；§2.4 的云配额已实测并修正了两处初稿结论；§12 的验收标准已在真实账号上跑过。实施中偏离本稿的两处写在 §13。
 - **Path**: `docs/specs/2026-09-09-app-storage-design.md`
 - **Scope**: 给每个 app 一块可存放文件的 OSS 空间：控制面里能浏览/上传/下载/删除，部署后的 app 运行时能读写自己那块。含 bucket 划分、key 布局、凭证形态、权限档位、配额计量、删除语义。
 - **Builds on**: `docs/specs/2026-08-27-apps-first-class-design.md`（控制面、`view`/`prompt`/`admin` 三档、§7.2 删除语义）、`docs/specs/2026-08-27-app-data-browser-design.md`（控制面里操作线上资源的既有形状）
@@ -149,7 +149,7 @@ Quotas `ListProductQuotas ProductCode=oss` / RAM `ListRoles`），结果如下�
 | **自定义策略上限** | **1500** | **0** | per-app 方案真正的天花板，见下 |
 | 每用户 AK 数 | 2 | — | 决定 AK 轮转的操作空间 |
 | 每用户可附加策略数 | 10 | — | |
-| STS token 最长有效期 | **未验证** | — | 现有 22 个角色 `MaxSessionDuration` 全是默认 3600；账号里没有自建角色可查，建角色是写操作，本次没做 |
+| STS token 最长有效期 | **43200（12h），已验证** | — | 建 `teamclu-app-storage` 时按 43200 申请，被接受；实测 `AssumeRole` 拿到 12 小时后过期的凭证 |
 
 **两处修正了本文初稿：**
 
@@ -161,9 +161,8 @@ Quotas `ListProductQuotas ProductCode=oss` / RAM `ListRoles`），结果如下�
    而且每个用户最多只能附加 10 条策略、每个用户最多 2 把 AK（轮转时要腾挪）。
    per-app RAM 角色同理，天花板 1000。
 
-**STS 有效期这一条不影响设计**：即使最长只有 1 小时，§4.1 的方案也只是刷新更频繁，
-而刷新逻辑本来就必须写（红线 3）。建角色时按 43200 申请，被拒就退回 3600，不需要
-为此改设计。
+**STS 有效期已确认为 12 小时**：建角色时按 43200 申请被直接接受。这一条本来也不影响
+设计——即使只有 1 小时，方案只是刷新更频繁，而刷新逻辑无论如何都要写（红线 3）。
 
 > **实测中发现的一个独立问题——已于 2026-09-09 当天修掉**
 >
@@ -486,3 +485,67 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
       `DATABASE_URL` 那个坑）
 - [ ] `s.yaml` 与 compose 的新 env 双边齐全，`deploy-env-parity.test.ts` 绿
 - [ ] key 校验拒绝 `..`、绝对路径、超长 key，且拒绝发生在 builder 而非调用点
+
+---
+
+## 13. 实施与本稿的两处偏离（2026-09-09）
+
+写在这里而不是改正文，因为两处都是实施时才拿到的信息，改掉正文会让"为什么这么定"
+的推理链断掉。
+
+### 13.1 STS 调用没有用 `@alicloud/sts20150401`
+
+§8 原本要求加这个依赖。实际用的是手写的 RPC v1 签名（`app-storage.ts` 的
+`signRpcV1`）。理由不是"少一个依赖"本身：
+
+- 这段签名器在 9 月 9 日的配额审计里已经打过真实账号（RAM / STS / Quotas 三个
+  产品），是**验过的**代码；
+- 而 @alicloud SDK 的请求形状在同一天已经坑了一次——`listFunctions` 传字面量报
+  `tmpReq.validate is not a function`，因为它要的是 `ListFunctionsRequest` 实例。
+
+二十行跑通过的代码，胜过一个还要再学一遍形状的依赖。取舍写在
+`app-storage.ts` 的模块注释里。
+
+### 13.2 多了一个 `auth: "app-token"` 路由模式
+
+§4.1 只说"要引入 app 自己作为调用方"，没说怎么接。实现是在
+`hono-adapter.ts` 的 `RouteOptions.auth` 上加第四个取值：它拿到 service-role
+仓库，**但不认证任何东西**——真正的门是
+`mintAppStorageCredentials` 里的常量时间比较。适配器里那段注释明确写了这一点，
+因为"有个 auth 模式"很容易被下一个人读成"这条路由已经被鉴权了"。
+
+---
+
+## 14. 实施记录（2026-09-09）
+
+**云侧**（一次性，人工）：
+
+- RAM 角色 `teamclu-app-storage`，`MaxSessionDuration=43200`，信任策略只允许
+  `acs:ram::1457752404144823:user/teamclu-selfhost` assume。
+- 角色策略 `teamclu-app-storage-oss`：OSS 对象操作限 `<apps bucket>/app-files/*`，
+  ListObjects 限该桶且带 `oss:Prefix` 条件。这是**上限**，每次请求的 session
+  policy 在此之上再收窄到单个 app。
+- 用户策略 `teamclu-selfhost-fc-oss` 加了一条 `sts:AssumeRole`（新版本并设为默认，
+  没有新加一条策略——每用户可附加策略上限是 10）。
+- 盒子 `.env` 写入 `APPS_STS_ROLE_ARN` 与 `APPS_CLOUD_API_URL`。**代码尚未部署**，
+  这两个值要到下次 self-host 部署才会真正生效。
+
+**§12 验收标准的实测结果**（用 app A 的 session policy 打真实 OSS）：
+
+| 动作 | 期望 | 实测 |
+|---|---|---|
+| A 写自己前缀 | 200 | 200 |
+| A 读自己对象 | 200 | 200 |
+| A 写 B 的前缀 | 403 | 403 AccessDenied |
+| A 读 B 的前缀 | 403 | 403 AccessDenied |
+| A 写 `apps/<id>/code.zip` | 403 | 403 AccessDenied |
+| A 列整个 bucket | 403 | 403 AccessDenied |
+| A 删自己对象 | 204 | 204 |
+| 12 小时会话 | 接受 | 接受 |
+
+倒数第三条值得单独说：它证明拿到存储凭证的 app **改不了自己的构建产物**——
+`code.zip` 在 `apps/` 前缀下，而 session policy 只覆盖 `app-files/`。这是 §3.1
+把两个前缀分开的一个额外好处，当时没想到。
+
+**留在人工手上的一件事**：主账号旧 AK 仍未禁用（控制台操作，无 OpenAPI）。
+

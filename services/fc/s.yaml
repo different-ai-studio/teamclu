@@ -97,6 +97,11 @@ resources:
         APPS_OSS_BUCKET: ${env('APPS_OSS_BUCKET', '')}
         APPS_REGION: ${env('APPS_REGION', '')}
         APPS_OSS_ENDPOINT: ${env('APPS_OSS_ENDPOINT', '')}
+        # App file storage. Same three knobs as the compose target; declared
+        # here too so the two stay in step (deploy-env-parity.test.ts).
+        APPS_STS_ROLE_ARN: ${env('APPS_STS_ROLE_ARN', '')}
+        APPS_CLOUD_API_URL: ${env('APPS_CLOUD_API_URL', '')}
+        APPS_STORAGE_QUOTA_BYTES: ${env('APPS_STORAGE_QUOTA_BYTES', '')}
         # Parent domain for per-app vanity hostnames. Only self-host has the
         # reverse proxy that terminates them, so this is normally blank here —
         # declared so the two targets stay in step (deploy-env-parity.test.ts).

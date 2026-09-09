@@ -4,14 +4,35 @@ import { registerApps } from "../src/lib/routes/apps.js";
 
 function makeRouter() {
   const routes = [];
+  // Mirrors the real adapter's (path, options?, handler) overload: the storage
+  // STS route registers with `{ auth: "app-token" }`, and a two-argument fake
+  // would silently hand back the options object as the handler.
+  const add = (method) => (p, optionsOrHandler, maybeHandler) => {
+    const [options, handler] =
+      typeof optionsOrHandler === "function"
+        ? [{}, optionsOrHandler]
+        : [optionsOrHandler, maybeHandler];
+    routes.push([method, p, handler, options]);
+  };
   const router = {
-    get: (p, h) => routes.push(["GET", p, h]),
-    post: (p, h) => routes.push(["POST", p, h]),
-    patch: (p, h) => routes.push(["PATCH", p, h]),
-    put: (p, h) => routes.push(["PUT", p, h]),
-    delete: (p, h) => routes.push(["DELETE", p, h]),
+    get: add("GET"),
+    post: add("POST"),
+    patch: add("PATCH"),
+    put: add("PUT"),
+    delete: add("DELETE"),
   };
   return { router, routes };
+}
+
+/** base64url, the way the client encodes a file path into one URL segment. */
+function b64url(s) {
+  return Buffer.from(s, "utf8").toString("base64url");
+}
+
+function findRoute(routes, method, path) {
+  const hit = routes.find((r) => r[0] === method && r[1] === path);
+  assert.ok(hit, `route not registered: ${method} ${path}`);
+  return hit;
 }
 
 test("POST /v1/apps creates and returns 201", async () => {
@@ -359,4 +380,133 @@ test("DELETE .../rows/:rowKey 404s when the repo says the app is invisible", asy
     }),
     (e: any) => e?.statusCode === 404,
   );
+});
+
+// --- File storage routes (design 2026-09-09-app-storage-design) ---
+
+test("storage routes answer 404 when the repository declines", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const repository = {
+    listAppFiles: async () => null,
+    getAppStorageUsage: async () => null,
+    purgeAppFiles: async () => null,
+  };
+  for (const [method, path] of [
+    ["GET", "/v1/apps/:appId/storage/objects"],
+    ["GET", "/v1/apps/:appId/storage/usage"],
+    ["POST", "/v1/apps/:appId/storage/purge"],
+  ]) {
+    const handler = findRoute(routes, method, path)[2];
+    await assert.rejects(
+      handler({ params: { appId: "a1" }, query: new URLSearchParams(), json: {}, repository }),
+      /not found/,
+      `${method} ${path} must 404, not leak a tier`,
+    );
+  }
+});
+
+test("a file path is decoded from base64url before it reaches the repository", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  let seen;
+  const repository = {
+    deleteAppFile: async (_appId, path) => {
+      seen = path;
+      return { ok: true };
+    },
+  };
+  const del = findRoute(routes, "DELETE", "/v1/apps/:appId/storage/objects/:key")[2];
+  // A path with a slash and a non-ASCII name: the two things a raw segment
+  // cannot carry.
+  const path = "reports/2026/季度.csv";
+  await del({ params: { appId: "a1", key: b64url(path) }, repository });
+  assert.equal(seen, path);
+});
+
+test("sign-upload requires a path", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const post = findRoute(routes, "POST", "/v1/apps/:appId/storage/sign-upload")[2];
+  await assert.rejects(
+    post({ params: { appId: "a1" }, json: {}, repository: {} }),
+    /path/,
+  );
+});
+
+test("quota accepts a number or null, and nothing else", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const put = findRoute(routes, "PUT", "/v1/apps/:appId/storage/quota")[2];
+  const seen = [];
+  const repository = {
+    setAppStorageQuota: async (_id, q) => {
+      seen.push(q);
+      return { quotaBytes: q };
+    },
+  };
+  await put({ params: { appId: "a1" }, json: { quotaBytes: 1024 }, repository });
+  await put({ params: { appId: "a1" }, json: { quotaBytes: null }, repository });
+  assert.deepEqual(seen, [1024, null]);
+  await assert.rejects(
+    put({ params: { appId: "a1" }, json: { quotaBytes: "1024" }, repository }),
+    /quotaBytes/,
+    "a string would silently become NaN downstream",
+  );
+});
+
+test("the STS route is the only one registered outside the user JWT", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const nonBearer = routes.filter((r) => r[3] && r[3].auth && r[3].auth !== "bearer");
+  assert.equal(nonBearer.length, 1, "exactly one app route may skip the user JWT");
+  assert.equal(nonBearer[0][1], "/v1/apps/:appId/storage/sts");
+  assert.equal(nonBearer[0][3].auth, "app-token");
+});
+
+test("STS refuses a request with no bearer, and cannot tell a bad token from an unknown app", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const sts = findRoute(routes, "POST", "/v1/apps/:appId/storage/sts")[2];
+  const repository = { mintAppStorageCredentials: async () => null };
+
+  await assert.rejects(
+    sts({ params: { appId: "a1" }, getHeader: () => undefined, repository }),
+    /token required/,
+  );
+  await assert.rejects(
+    sts({ params: { appId: "a1" }, getHeader: () => "Bearer wrong", repository }),
+    /not valid/,
+    "a wrong token and an unknown app must produce the same answer",
+  );
+});
+
+test("STS returns the credentials and nothing about the token", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const sts = findRoute(routes, "POST", "/v1/apps/:appId/storage/sts")[2];
+  let seenToken;
+  const credentials = {
+    accessKeyId: "STS.ak",
+    accessKeySecret: "STS.sk",
+    securityToken: "tok",
+    expiration: "2026-09-09T01:00:00Z",
+    bucket: "teamclu-app",
+    prefix: "app-files/a1/",
+    region: "cn-shenzhen",
+    endpoint: "https://oss-cn-shenzhen.aliyuncs.com",
+  };
+  const repository = {
+    mintAppStorageCredentials: async (_id, token) => {
+      seenToken = token;
+      return { credentials };
+    },
+  };
+  const res = await sts({
+    params: { appId: "a1" },
+    getHeader: (h) => (h === "authorization" ? "Bearer  s3cret " : undefined),
+    repository,
+  });
+  assert.equal(seenToken, "s3cret", "the bearer is trimmed before comparison");
+  assert.deepEqual(res.body, credentials);
 });

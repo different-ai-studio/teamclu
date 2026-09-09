@@ -6180,16 +6180,357 @@ paths:
         "409":
           $ref: "#/components/responses/Error"
 
+  /v1/apps/{appId}/storage/usage:
+    get:
+      operationId: getAppStorageUsage
+      summary: How much of its quota this app's files use
+      description: |
+        Requires `view`. `bytes` is EVENTUALLY CONSISTENT and `countedAt` says
+        how stale it is: an app holding STS credentials writes straight to OSS
+        without passing through this API, so the number comes from a periodic
+        sweep rather than a running total. `bytes: null` means never measured,
+        which is not the same as zero.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Usage and the quota in force.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppStorageUsage"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/usage/refresh:
+    post:
+      operationId: refreshAppStorageUsage
+      summary: Re-measure this app's files now
+      description: |
+        Requires `view`. Lists the app's prefix and writes the result back, so
+        the panel can show a fresh number instead of waiting for the sweep.
+        `truncated: true` means the listing hit its page cap and the count is a
+        floor, not a total.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Freshly measured usage.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/AppStorageUsage"
+                  - type: object
+                    properties:
+                      objects:
+                        type: integer
+                      truncated:
+                        type: boolean
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/objects:
+    get:
+      operationId: listAppFiles
+      summary: List this app's files
+      description: |
+        Requires `view`. `prefix` filters within the app's own space and can
+        never address another app's; `after` is the opaque cursor from a
+        previous page. `canWrite` tells the panel whether to render upload and
+        delete, so a `view` member is not shown controls that would 404.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - name: prefix
+          in: query
+          schema:
+            type: string
+        - name: after
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: One page of files.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, canWrite]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppFile"
+                  nextCursor:
+                    type: [string, "null"]
+                  canWrite:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/objects/{fileKey}/url:
+    get:
+      operationId: createAppFileDownloadUrl
+      summary: Signed URL for one file
+      description: |
+        Requires `view`. The URL forces `Content-Disposition: attachment`, so an
+        HTML file one member uploads cannot execute on the storage origin when
+        another opens it.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppFileKey"
+      responses:
+        "200":
+          description: A short-lived download URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, expiresIn]
+                properties:
+                  url:
+                    type: string
+                  size:
+                    type: integer
+                  contentType:
+                    type: [string, "null"]
+                  expiresIn:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/sign-upload:
+    post:
+      operationId: createAppFileUploadUrl
+      summary: Signed URL to upload one file
+      description: |
+        Requires `prompt`. The bytes go from the browser straight to OSS; this
+        API only signs. 409 `app_storage_quota_exceeded` when the app is already
+        over quota - the check happens here, where we are still in the path, and
+        not per write.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                  description: |
+                    Relative to the app's own root. A leading slash, an empty
+                    segment, a `..` segment or a control character is rejected:
+                    those are how a key escapes the app's prefix.
+                contentType:
+                  type: [string, "null"]
+      responses:
+        "200":
+          description: A short-lived upload URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, path, expiresIn]
+                properties:
+                  url:
+                    type: string
+                  path:
+                    type: string
+                  expiresIn:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/objects/{fileKey}:
+    delete:
+      operationId: deleteAppFile
+      summary: Delete one file
+      description: Requires `prompt`.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppFileKey"
+      responses:
+        "200":
+          description: File deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/purge:
+    post:
+      operationId: purgeAppFiles
+      summary: Delete every file this app has stored
+      description: |
+        Requires `admin`, and it is irreversible. Deleting the app itself KEEPS
+        its files, precisely because there is no backup; this is the deliberate
+        version of that action and therefore sits behind the highest tier.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Number of objects removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/quota:
+    put:
+      operationId: setAppStorageQuota
+      summary: Set this app's storage ceiling
+      description: |
+        Requires `admin`. `null` clears the per-app value and falls back to the
+        deployment default, so raising that default does not need a backfill.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quotaBytes]
+              properties:
+                quotaBytes:
+                  type: [integer, "null"]
+      responses:
+        "200":
+          description: The quota now in force.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quotaBytes:
+                    type: [integer, "null"]
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/sts:
+    post:
+      operationId: mintAppStorageCredentials
+      summary: Temporary OSS credentials for the app itself
+      description: |
+        THE ONLY ROUTE IN THIS API WHOSE CALLER IS NOT A PERSON. The deployed
+        app presents the per-app token that finalize sealed and injected into
+        its function env (`TEAMCLU_STORAGE_TOKEN`), and receives STS credentials
+        whose session policy confines them to `app-files/<appId>/`.
+
+        A wrong token and an unknown app are the same 401 on purpose. 409
+        `app_storage_quota_exceeded` rather than 403 when the app is over quota:
+        it is who it says it is, it just has no room, and a 403 would send
+        whoever debugs it hunting for a policy bug.
+
+        Refresh on `expiration`, never on a 403.
+      tags: [Apps]
+      security:
+        - appStorageToken: []
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Credentials scoped to this app's prefix.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppStorageCredentials"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
+    appStorageToken:
+      type: http
+      scheme: bearer
+      description: |
+        The per-app storage token, NOT a user access token. Deliberately a
+        separate scheme: this is the one credential in the API that identifies
+        a deployed app rather than a person, and collapsing it into bearerAuth
+        would hide that from anyone reading the contract.
   headers:
     RequestId:
       schema:
         type: string
   parameters:
+    AppFileKey:
+      name: fileKey
+      in: path
+      required: true
+      description: |
+        The file's path, base64url-encoded. Encoded because a path contains
+        slashes and a slash cannot survive one path segment - the same trick
+        `rowKey` plays for composite primary keys.
+      schema:
+        type: string
     TeamId:
       name: teamId
       in: path
@@ -6776,9 +7117,8 @@ components:
         permissionLevel:
           $ref: "#/components/schemas/AppPermissionLevel"
         grantedByMemberId:
-          type: string
+          type: [string, "null"]
           format: uuid
-          nullable: true
           description: Member who last wrote this grant.
         createdAt:
           type: string
@@ -6794,6 +7134,63 @@ components:
           description: Postgres `information_schema.columns.data_type`.
         nullable:
           type: boolean
+    AppFile:
+      type: object
+      required: [path, size]
+      properties:
+        path:
+          type: string
+          description: Relative to the app's own root, never the full object key.
+        size:
+          type: integer
+        lastModified:
+          type: [string, "null"]
+          format: date-time
+        etag:
+          type: [string, "null"]
+    AppStorageUsage:
+      type: object
+      required: [bytes, quotaBytes, overQuota]
+      properties:
+        bytes:
+          type: [integer, "null"]
+          description: |
+            Bytes measured at `countedAt`. Null means never measured. Stale by
+            design - see the endpoint description.
+        countedAt:
+          type: [string, "null"]
+          format: date-time
+        quotaBytes:
+          type: [integer, "null"]
+          description: The app's own ceiling, else the deployment default. Null is unlimited.
+        overQuota:
+          type: boolean
+    AppStorageCredentials:
+      type: object
+      required: [accessKeyId, accessKeySecret, securityToken, expiration, bucket, prefix, region, endpoint]
+      properties:
+        accessKeyId:
+          type: string
+        accessKeySecret:
+          type: string
+        securityToken:
+          type: string
+        expiration:
+          type: string
+          format: date-time
+          description: Refresh before this. Do not wait for a 403.
+        bucket:
+          type: string
+        prefix:
+          type: string
+          description: |
+            Every key the app writes must start with this. The credentials
+            cannot address anything outside it, so a key that omits it fails
+            with AccessDenied rather than landing somewhere unexpected.
+        region:
+          type: string
+        endpoint:
+          type: string
     AppDataTable:
       type: object
       required: [name, columns, primaryKey, editable]

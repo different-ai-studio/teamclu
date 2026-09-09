@@ -19,9 +19,17 @@ import { startDeploy as startDeployImpl, finalizeDeploy as finalizeDeployImpl } 
 import { readAppsAdminUrl } from "./lib/provisioning/app-postgres.js";
 import { makeAppDataOps, type AppDataOps } from "./lib/provisioning/app-data-db.js";
 import { makeTeardownAppDeps, type TeardownAppDeps } from "./lib/provisioning/app-delete.js";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { resolveAppsOss, getAppsS3Client } from "./lib/provisioning/apps-oss.js";
+import { makeAppStorageOps, type AppStorageOps } from "./lib/provisioning/app-storage.js";
 import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
@@ -143,6 +151,33 @@ function makeAppDataDeps(): { appData?: AppDataOps; appDataUnavailableReason?: s
   return { appData: makeAppDataOps(adminUrl) };
 }
 
+/**
+ * Deps for the app file store.
+ *
+ * Needs only the OSS profile, deliberately not FC: browsing and uploading an
+ * app's files has nothing to do with whether the function can be deployed, and
+ * folding this into makeDeployDeps would make a missing FC endpoint hide the
+ * file browser - the same mistake makeAppDataDeps exists to avoid.
+ */
+function makeAppStorageDeps(): { appStorage?: AppStorageOps; appStorageUnavailableReason?: string } {
+  const resolved = resolveAppsOss();
+  if (resolved.error) return { appStorageUnavailableReason: resolved.error };
+  const profile = resolved.profile;
+  return {
+    appStorage: makeAppStorageOps(profile, getAppsS3Client(profile), {
+      getSignedUrl: (client, command, opts) => getSignedUrl(client as any, command, opts),
+      commands: {
+        GetObjectCommand,
+        PutObjectCommand,
+        HeadObjectCommand,
+        DeleteObjectCommand,
+        DeleteObjectsCommand,
+        ListObjectsV2Command,
+      },
+    }),
+  };
+}
+
 function makeTeardownDeps(): { teardownDeps?: TeardownAppDeps } {
   const resolved = resolveAppsOss();
   if (resolved.error) return {};
@@ -221,6 +256,7 @@ export function makeBusinessRepoFactory() {
       ...makeDeployDeps(),
       ...makeTeardownDeps(),
       ...makeAppDataDeps(),
+      ...makeAppStorageDeps(),
       ...makeGiteaDeps(),
       ...makeGotrueOAuthDeps(),
     });
@@ -245,6 +281,7 @@ export function makeSystemRepoFactory() {
       publishableKey: serviceKey,
       accessToken: serviceKey,
       ...makeDeployDeps(),
+      ...makeAppStorageDeps(),
       ...makeGiteaDeps(),
       ...makeGotrueOAuthDeps(),
     });

@@ -220,6 +220,13 @@ export interface FinalizeInput {
   ossObjectName: string;
   /** Injected by the repo when auth_mode=platform (§6.5). No service role. */
   platformOAuthEnv?: Record<string, string>;
+  /**
+   * File-storage wiring for the app, built by the repo because minting the
+   * token needs the service role (app_secrets). Same division of labour as
+   * platformOAuthEnv: this module composes the function's env, it does not own
+   * any credential.
+   */
+  storageEnv?: Record<string, string>;
 }
 
 /**
@@ -273,6 +280,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
   }
 
   if (input.platformOAuthEnv) Object.assign(env, input.platformOAuthEnv);
+  if (input.storageEnv) Object.assign(env, input.storageEnv);
   if (deps.extraEnv) Object.assign(env, deps.extraEnv(input));
 
   await deps.fcOps.ensureFunction(input.fcFunctionName, {
@@ -292,4 +300,39 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     return { fcEndpoint: await deps.fcOps.ensureCustomDomain(input.fcFunctionName, routeHost) };
   }
   return { fcEndpoint: triggerUrl };
+}
+
+/**
+ * Where a deployed app calls back to mint its storage credentials.
+ *
+ * A dedicated variable rather than a reuse of AUTH_BASE_URL (GoTrue's) or of
+ * the request origin (finalize has no request): the app dials this from
+ * Function Compute, outside our network, so it has to be the public Cloud API
+ * host and nothing internal. Unset means the app simply gets no storage env -
+ * the control panel's file browser keeps working, the app just cannot write
+ * files of its own.
+ */
+export function readAppsCloudApiUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return (env.APPS_CLOUD_API_URL ?? "").trim().replace(/\/+$/, "");
+}
+
+/** The env an app needs to fetch and use its own STS credentials. */
+export function buildAppStorageEnv(input: {
+  appId: string;
+  token: string;
+  bucket: string;
+  prefix: string;
+  region: string;
+  endpoint: string;
+  cloudApiUrl: string;
+}): Record<string, string> {
+  return {
+    TEAMCLU_APP_ID: input.appId,
+    TEAMCLU_STORAGE_TOKEN: input.token,
+    TEAMCLU_STORAGE_STS_URL: `${input.cloudApiUrl}/v1/apps/${input.appId}/storage/sts`,
+    TEAMCLU_STORAGE_BUCKET: input.bucket,
+    TEAMCLU_STORAGE_PREFIX: input.prefix,
+    TEAMCLU_STORAGE_REGION: input.region,
+    TEAMCLU_STORAGE_ENDPOINT: input.endpoint,
+  };
 }

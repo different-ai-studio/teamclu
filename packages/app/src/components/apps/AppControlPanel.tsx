@@ -36,6 +36,7 @@ import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-loca
 import { isTauri } from '@/lib/utils'
 import { useAppsStore } from '@/stores/apps-store'
 import { AppDataSection } from './AppDataSection'
+import { AppFilesSection } from './AppFilesSection'
 import type { AppAuthMode, AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
 
 const AUTH_MODES: AppAuthMode[] = ['none', 'platform', 'third']
@@ -714,6 +715,13 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                 access list is readable only by the creator or an app admin, which
                 is exactly the tier design §6 lets edit data. */}
             <AppDataSection app={app} canEdit={canManageAccess} />
+          </Field>
+          <Field label={t('apps.files.section', '文件')}>
+            {/* Unlike the data browser, this is shown for every app type: files
+                are not tied to having a database, and a static site can have
+                assets uploaded to it. Whether the CONTROLS appear is decided by
+                the server's `canWrite`, not by the app's shape. */}
+            <AppFilesSection app={app} canManage={canManageAccess} />
           </Field>
           <Field label={t('apps.controlPanel.customDomain', '自定义域名')}>
             {/* Placeholder. The plumbing exists — every deploy already binds

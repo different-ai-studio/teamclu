@@ -375,6 +375,21 @@ services:
       # Defaults to https://oss-<APPS_REGION>.aliyuncs.com; override only for a
       # VPC/internal OSS endpoint.
       APPS_OSS_ENDPOINT: "${APPS_OSS_ENDPOINT:-}"
+      # --- App file storage (design 2026-09-09-app-storage-design) ---
+      # RAM role a deployed app's STS credentials are assumed into. The session
+      # policy narrows them to that one app's `app-files/<appId>/` prefix, so
+      # this single role serves every app. Blank = apps cannot write files of
+      # their own; the control panel's file browser still works, because it
+      # signs URLs with the deployment's own profile.
+      APPS_STS_ROLE_ARN: "${APPS_STS_ROLE_ARN:-}"
+      # Public Cloud API base the deployed app calls back on to mint those
+      # credentials. It dials this from Function Compute, outside this network,
+      # so an internal address is useless here.
+      APPS_CLOUD_API_URL: "${APPS_CLOUD_API_URL:-https://${API_DOMAIN}}"
+      # Per-app storage ceiling in bytes; the app row's storage_quota_bytes
+      # overrides it. Blank = unlimited. Enforced when credentials are minted,
+      # not per write, because an app with a token writes without passing us.
+      APPS_STORAGE_QUOTA_BYTES: "${APPS_STORAGE_QUOTA_BYTES:-}"
       # Parent domain for per-app vanity hostnames
       # (<slug>-<id8>.<this>). Blank = feature off: apps keep their raw
       # Function Compute trigger URL and Caddy never asks about a certificate.

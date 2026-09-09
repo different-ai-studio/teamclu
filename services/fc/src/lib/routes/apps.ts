@@ -2,6 +2,23 @@ import { ApiError } from "../http-utils.js";
 import { parseLimit, requireString } from "../routing-utils.js";
 
 /**
+ * Object paths travel as base64url, the same trick the data browser plays with
+ * `:rowKey` (see the note above those routes): a file path contains slashes,
+ * and a slash cannot survive a single path segment. Encoding it keeps one
+ * route shape for `a.txt` and for `reports/2026/q3.csv`.
+ */
+function decodeFilePath(raw: string): string {
+  let decoded: string;
+  try {
+    decoded = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+  } catch {
+    throw new ApiError(400, "validation_failed", "file path is not valid base64url");
+  }
+  if (!decoded) throw new ApiError(400, "validation_failed", "file path is empty");
+  return decoded;
+}
+
+/**
  * Normalize the optional repo URL an app is imported from.
  *
  * The daemon validates it again before handing it to `git clone` — that check
@@ -200,6 +217,99 @@ export function registerApps(router) {
     const ok = await ctx.repository.removeAppAccess(appId, memberId);
     if (!ok) throw new ApiError(404, "not_found", "app not found");
     return { body: { ok: true } };
+  });
+
+
+  // --- App file storage (design 2026-09-09-app-storage-design §7) ---
+  //
+  // Seven routes for people, gated on app_member_access exactly as the data
+  // browser is, and one for the app itself. That last one is the only route in
+  // this file that does not run under a user JWT; it is marked `app-token` and
+  // the repository method it calls is the entire authorization check.
+
+  router.get("/v1/apps/:appId/storage/usage", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.getAppStorageUsage(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.post("/v1/apps/:appId/storage/usage/refresh", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.refreshAppStorageUsage(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/storage/objects", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.listAppFiles(appId, {
+      prefix: ctx.query.get("prefix"),
+      after: ctx.query.get("after"),
+      limit: parseLimit(ctx.query.get("limit")),
+    });
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/storage/objects/:key/url", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const path = decodeFilePath(decodeURIComponent(ctx.params.key));
+    const out = await ctx.repository.createAppFileDownloadUrl(appId, path);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.post("/v1/apps/:appId/storage/sign-upload", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const body = ctx.json ?? {};
+    requireString(body.path, "path");
+    const out = await ctx.repository.createAppFileUploadUrl(appId, {
+      path: body.path,
+      contentType: typeof body.contentType === "string" ? body.contentType : null,
+    });
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/storage/objects/:key", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const path = decodeFilePath(decodeURIComponent(ctx.params.key));
+    const out = await ctx.repository.deleteAppFile(appId, path);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.post("/v1/apps/:appId/storage/purge", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.purgeAppFiles(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.put("/v1/apps/:appId/storage/quota", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const raw = (ctx.json ?? {}).quotaBytes;
+    if (raw !== null && typeof raw !== "number") {
+      throw new ApiError(400, "validation_failed", "quotaBytes must be a number or null");
+    }
+    const out = await ctx.repository.setAppStorageQuota(appId, raw);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // The deployed app asking for its own credentials. `auth: "app-token"` gets a
+  // service-role repository and authenticates NOTHING - mintAppStorageCredentials
+  // does the constant-time token compare, and a mismatch is indistinguishable
+  // from an unknown app on purpose.
+  router.post("/v1/apps/:appId/storage/sts", { auth: "app-token" }, async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const header = ctx.getHeader("authorization") ?? "";
+    const token = /^Bearer\s+(.+)$/i.exec(header)?.[1]?.trim() ?? "";
+    if (!token) throw new ApiError(401, "unauthorized", "app storage token required");
+    const out = await ctx.repository.mintAppStorageCredentials(appId, token);
+    if (!out) throw new ApiError(401, "unauthorized", "app storage token is not valid");
+    return { body: out.credentials };
   });
 
 }

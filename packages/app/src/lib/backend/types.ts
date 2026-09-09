@@ -1176,6 +1176,70 @@ export interface AppsBackend {
   ): Promise<Record<string, unknown>>;
   /** Delete one row by key. */
   deleteAppDataRow(appId: string, table: string, rowKey: string): Promise<void>;
+
+  // --- File storage (design 2026-09-09-app-storage-design) ---
+  // `view` may browse and download, `prompt` may also upload and delete,
+  // `admin` may set the quota and purge. Every app's files live under one
+  // prefix of a shared bucket; there is no bucket per app.
+
+  /** One page of the app's files. Null on 404. */
+  listAppFiles(appId: string, query?: AppFilesQuery): Promise<AppFilesPage | null>;
+  /** Bytes used and the quota in force. `bytes` is deliberately stale. */
+  getAppStorageUsage(appId: string): Promise<AppStorageUsage | null>;
+  /** Re-measure now, rather than waiting for the periodic sweep. */
+  refreshAppStorageUsage(appId: string): Promise<AppStorageUsage | null>;
+  /** Signed PUT; the browser sends the bytes straight to storage. */
+  createAppFileUploadUrl(
+    appId: string,
+    input: { path: string; contentType?: string | null },
+  ): Promise<{ url: string; path: string; expiresIn: number } | null>;
+  /** Signed GET, forced to download rather than render. */
+  createAppFileDownloadUrl(
+    appId: string,
+    path: string,
+  ): Promise<{ url: string; size?: number; contentType?: string | null } | null>;
+  /** Delete one file. */
+  deleteAppFile(appId: string, path: string): Promise<void>;
+  /** Delete every file. Irreversible, `admin` only. */
+  purgeAppFiles(appId: string): Promise<{ deleted: number } | null>;
+  /** Set or clear (null) this app's ceiling. */
+  setAppStorageQuota(appId: string, quotaBytes: number | null): Promise<{ quotaBytes: number | null } | null>;
+}
+
+export interface AppFile {
+  /** Relative to the app's own root, never the full object key. */
+  path: string
+  size: number
+  lastModified: string | null
+  etag: string | null
+}
+
+export interface AppFilesPage {
+  items: AppFile[]
+  nextCursor: string | null
+  /** False for `view`, so the panel does not offer controls that would 404. */
+  canWrite: boolean
+}
+
+export interface AppFilesQuery {
+  prefix?: string | null
+  after?: string | null
+  limit?: number
+}
+
+export interface AppStorageUsage {
+  /**
+   * Null means never measured, which is NOT zero. The number is a periodic
+   * sweep, not a running total: an app writes to storage with its own
+   * credentials and never passes through the API, so anything derived from
+   * this must tolerate being out of date.
+   */
+  bytes: number | null
+  countedAt: string | null
+  quotaBytes: number | null
+  overQuota: boolean
+  objects?: number
+  truncated?: boolean
 }
 
 export interface ActorDirectorySyncRow {
