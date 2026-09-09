@@ -40,10 +40,12 @@ impl WeComOutbox {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.lock().expect("wecom outbox mutex").len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

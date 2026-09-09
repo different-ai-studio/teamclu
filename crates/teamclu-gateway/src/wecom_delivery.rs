@@ -78,7 +78,10 @@ pub enum StreamPhase {
     /// Early `finish=true` already sent; later progress is swallowed and the
     /// answer goes out as markdown.
     ClosedForFollowup,
-    /// Terminal finish (answer or cancelled) already sent.
+    /// Terminal finish (answer or cancelled) already sent. Not assigned in the
+    /// driver today — the in-flight entry is removed instead — but kept so
+    /// `decide_*` can swallow duplicate finish calls defensively.
+    #[allow(dead_code)]
     Finished,
 }
 
