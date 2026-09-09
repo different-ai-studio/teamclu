@@ -215,14 +215,14 @@ fn enforce_live_body_limit(envelope: &mut AmuxEnvelope) {
     if let Some(amux::envelope::Payload::AcpEvent(ev)) = &mut envelope.payload {
         match &mut ev.event {
             Some(amux::acp_event::Event::ToolResult(tr)) => {
-                tr.raw_output_json =
-                    truncate_chars(&tr.raw_output_json, RAW_JSON_FIELD_LIMIT / 4);
+                tr.raw_output_json = truncate_chars(&tr.raw_output_json, RAW_JSON_FIELD_LIMIT / 4);
             }
             Some(amux::acp_event::Event::ToolUse(tu)) => {
                 tu.raw_input_json = truncate_chars(&tu.raw_input_json, RAW_JSON_FIELD_LIMIT / 4);
                 tu.raw_output_json = truncate_chars(&tu.raw_output_json, RAW_JSON_FIELD_LIMIT / 4);
-                tu.params
-                    .retain(|k, _| k == "filePath" || k == "command" || k == "name" || k == "subagent_type");
+                tu.params.retain(|k, _| {
+                    k == "filePath" || k == "command" || k == "name" || k == "subagent_type"
+                });
             }
             _ => {}
         }
@@ -275,7 +275,10 @@ mod tests {
         }
     }
 
-    fn tool_use_envelope(raw_input_json: String, params: std::collections::HashMap<String, String>) -> AmuxEnvelope {
+    fn tool_use_envelope(
+        raw_input_json: String,
+        params: std::collections::HashMap<String, String>,
+    ) -> AmuxEnvelope {
         AmuxEnvelope {
             payload: Some(amux::envelope::Payload::AcpEvent(amux::AcpEvent {
                 event: Some(amux::acp_event::Event::ToolUse(amux::AcpToolUse {
@@ -348,7 +351,10 @@ mod tests {
         let parsed: Value = serde_json::from_str(&tr.raw_output_json).unwrap();
         assert_eq!(parsed["metadata"]["sessionId"], "child-ses-1");
         assert_eq!(parsed["metadata"]["parentSessionId"], "parent-ses-1");
-        assert!(parsed["output"].as_str().unwrap_or("").len() <= OUTPUT_PREVIEW_LIMIT + TRUNCATED_SUFFIX.len());
+        assert!(
+            parsed["output"].as_str().unwrap_or("").len()
+                <= OUTPUT_PREVIEW_LIMIT + TRUNCATED_SUFFIX.len()
+        );
     }
 
     #[test]
@@ -376,7 +382,10 @@ mod tests {
 
         let parsed: Value = serde_json::from_str(&tu.raw_input_json).unwrap();
         assert_eq!(parsed["filePath"], "src/foo.ts");
-        assert!(parsed["content"].as_str().unwrap_or("").contains(TRUNCATED_SUFFIX));
+        assert!(parsed["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains(TRUNCATED_SUFFIX));
         assert!(tu.params.get("content").unwrap().contains(TRUNCATED_SUFFIX));
         assert!(tu.raw_input_json.len() <= RAW_JSON_FIELD_LIMIT + 64);
     }

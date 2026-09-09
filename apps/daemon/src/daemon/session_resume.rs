@@ -38,21 +38,16 @@ pub(crate) fn resolve_parent_binding_for_fork(
     agent_type: amux::AgentType,
 ) -> Option<SessionBinding> {
     if !preferred_workspace_id.is_empty() {
-        if let Some(binding) = binding_for(
-            store,
-            parent_session_id,
-            agent_type,
-            preferred_workspace_id,
-        ) {
+        if let Some(binding) =
+            binding_for(store, parent_session_id, agent_type, preferred_workspace_id)
+        {
             return Some(binding);
         }
     }
     store
         .all_for_session(parent_session_id)
         .into_iter()
-        .filter(|b| {
-            b.agent_type == agent_type as i32 && !b.acp_session_id.trim().is_empty()
-        })
+        .filter(|b| b.agent_type == agent_type as i32 && !b.acp_session_id.trim().is_empty())
         .next_back()
         .cloned()
 }
@@ -78,13 +73,8 @@ mod tests {
             "acp-b",
         ));
         assert_eq!(
-            resolve_backend_session_id(
-                &store,
-                "cloud-1",
-                amux::AgentType::Opencode,
-                "ws-a"
-            )
-            .as_deref(),
+            resolve_backend_session_id(&store, "cloud-1", amux::AgentType::Opencode, "ws-a")
+                .as_deref(),
             Some("acp-a")
         );
     }

@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager, UserAttentionType};
+use tauri::{AppHandle, UserAttentionType};
 
 const INBOX_TOPIC_PREFIX: &str = "inbox/";
 const DOCK_ATTENTION_THROTTLE: Duration = Duration::from_secs(5);
@@ -30,7 +30,7 @@ pub fn maybe_request_dock_attention(app: &AppHandle, topic: &str, payload: &[u8]
         return;
     }
 
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = crate::commands::window_chrome::get_main_window(app) else {
         return;
     };
 

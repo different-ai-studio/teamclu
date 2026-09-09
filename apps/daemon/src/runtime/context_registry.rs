@@ -169,7 +169,10 @@ impl RuntimeContextRegistry {
         });
     }
 
-    pub fn resolve(&self, req: &ResolveRuntimeContextRequest) -> Result<ResolveRuntimeContextResponse, ResolveError> {
+    pub fn resolve(
+        &self,
+        req: &ResolveRuntimeContextRequest,
+    ) -> Result<ResolveRuntimeContextResponse, ResolveError> {
         let backend_session_id = req.backend_session_id.trim();
         if backend_session_id.is_empty() {
             return Err(ResolveError::InvalidBackendSessionId);
@@ -289,7 +292,9 @@ pub fn backend_kind_for_agent_type(agent_type: crate::proto::amux::AgentType) ->
         crate::proto::amux::AgentType::Pi => "pi",
         crate::proto::amux::AgentType::ClaudeCode => "claude",
         crate::proto::amux::AgentType::Cursor => "cursor",
-        crate::proto::amux::AgentType::Opencode | crate::proto::amux::AgentType::Codex => "opencode",
+        crate::proto::amux::AgentType::Opencode | crate::proto::amux::AgentType::Codex => {
+            "opencode"
+        }
         _ => "opencode",
     }
 }
@@ -305,7 +310,10 @@ pub fn generation_env(
         TEAMCLU_RUNTIME_CONTEXT_URL_ENV.to_string(),
         base_url.trim_end_matches('/').to_string(),
     );
-    env.insert(TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV.to_string(), token.to_string());
+    env.insert(
+        TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV.to_string(),
+        token.to_string(),
+    );
     env.insert(
         TEAMCLU_HOST_GENERATION_ID_ENV.to_string(),
         generation_id.to_string(),
@@ -342,11 +350,17 @@ mod tests {
         registry.register_parent("opencode", "gen1", "ses_a", SESSION_A, SESSION_A);
         registry.register_parent("opencode", "gen1", "ses_b", SESSION_B, SESSION_B);
         assert_eq!(
-            registry.resolve(&req("ses_a", "gen1")).unwrap().teamclu_session_id,
+            registry
+                .resolve(&req("ses_a", "gen1"))
+                .unwrap()
+                .teamclu_session_id,
             SESSION_A
         );
         assert_eq!(
-            registry.resolve(&req("ses_b", "gen1")).unwrap().teamclu_session_id,
+            registry
+                .resolve(&req("ses_b", "gen1"))
+                .unwrap()
+                .teamclu_session_id,
             SESSION_B
         );
     }
@@ -357,11 +371,17 @@ mod tests {
         registry.register_parent("opencode", "gen1", "ses_same", SESSION_A, SESSION_A);
         registry.register_parent("opencode", "gen2", "ses_same", SESSION_B, SESSION_B);
         assert_eq!(
-            registry.resolve(&req("ses_same", "gen1")).unwrap().teamclu_session_id,
+            registry
+                .resolve(&req("ses_same", "gen1"))
+                .unwrap()
+                .teamclu_session_id,
             SESSION_A
         );
         assert_eq!(
-            registry.resolve(&req("ses_same", "gen2")).unwrap().teamclu_session_id,
+            registry
+                .resolve(&req("ses_same", "gen2"))
+                .unwrap()
+                .teamclu_session_id,
             SESSION_B
         );
     }
@@ -374,7 +394,10 @@ mod tests {
         registry.unregister_backend_session("opencode", "gen1", "ses_a");
         assert!(registry.resolve(&req("ses_a", "gen1")).is_err());
         assert_eq!(
-            registry.resolve(&req("ses_b", "gen1")).unwrap().teamclu_session_id,
+            registry
+                .resolve(&req("ses_b", "gen1"))
+                .unwrap()
+                .teamclu_session_id,
             SESSION_B
         );
     }

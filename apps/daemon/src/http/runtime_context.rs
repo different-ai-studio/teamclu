@@ -68,7 +68,8 @@ pub async fn resolve_runtime_context(
                 "runtime context resolve failed"
             );
             problem(
-                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                StatusCode::from_u16(err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 err.code(),
                 session_context_error_message(&err),
             )
@@ -132,7 +133,8 @@ pub async fn session_prompt(
                 "session prompt resolve failed"
             );
             return problem(
-                StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                StatusCode::from_u16(err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 err.code(),
                 session_context_error_message(&err),
             );
@@ -219,23 +221,15 @@ mod tests {
         )
         .with_runtime_context(service);
         let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer rtctx_test".parse().unwrap(),
-        );
+        headers.insert(header::AUTHORIZATION, "Bearer rtctx_test".parse().unwrap());
         let body = ResolveRuntimeContextRequest {
             backend_session_id: "backend-a".into(),
             host_generation_id: "gen-test".into(),
             backend_kind: "opencode".into(),
         };
         let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 4242);
-        let response = resolve_runtime_context(
-            State(state),
-            ConnectInfo(peer),
-            headers,
-            Json(body),
-        )
-        .await;
+        let response =
+            resolve_runtime_context(State(state), ConnectInfo(peer), headers, Json(body)).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

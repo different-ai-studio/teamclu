@@ -1339,7 +1339,10 @@ mod default_title_tests {
             "Cron: nightly-sync",
             "Launch Plan"
         ));
-        assert!(!should_adopt_generated_session_title("Cron job", "Launch Plan"));
+        assert!(!should_adopt_generated_session_title(
+            "Cron job",
+            "Launch Plan"
+        ));
         assert!(!should_adopt_generated_session_title(
             "帮我查一下深圳美食",
             "[TeamClu Instructions — follow for all replies in this session. Do not acknowled"

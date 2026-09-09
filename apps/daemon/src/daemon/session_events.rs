@@ -168,13 +168,11 @@ mod tests {
     #[test]
     fn format_idea_prompt_formats_submitted_event() {
         let event = teamclu::IdeaEvent {
-            event: Some(teamclu::idea_event::Event::Submitted(
-                teamclu::Submission {
-                    idea_id: "idea-1".to_string(),
-                    content: "Done".to_string(),
-                    ..Default::default()
-                },
-            )),
+            event: Some(teamclu::idea_event::Event::Submitted(teamclu::Submission {
+                idea_id: "idea-1".to_string(),
+                content: "Done".to_string(),
+                ..Default::default()
+            })),
         };
 
         assert_eq!(

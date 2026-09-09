@@ -29,7 +29,7 @@ pub struct ShareAnchor {
 /// only needs to know that the sheet opened.
 #[tauri::command]
 pub async fn system_share_text(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     text: String,
     anchor: Option<ShareAnchor>,
 ) -> Result<(), String> {
@@ -41,7 +41,7 @@ pub async fn system_share_text(
 
 #[cfg(target_os = "macos")]
 async fn share_text_inner(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     text: String,
     anchor: Option<ShareAnchor>,
 ) -> Result<(), String> {
@@ -61,7 +61,7 @@ async fn share_text_inner(
 
 #[cfg(target_os = "macos")]
 unsafe fn present_share_picker(
-    window: &tauri::WebviewWindow,
+    window: &tauri::Window,
     text: &str,
     anchor: Option<ShareAnchor>,
 ) -> Result<(), String> {
@@ -116,7 +116,7 @@ unsafe fn present_share_picker(
 
 #[cfg(not(target_os = "macos"))]
 async fn share_text_inner(
-    _window: tauri::WebviewWindow,
+    _window: tauri::Window,
     _text: String,
     _anchor: Option<ShareAnchor>,
 ) -> Result<(), String> {

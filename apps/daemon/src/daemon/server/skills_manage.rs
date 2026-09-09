@@ -10,10 +10,10 @@ use crate::config::{
     create_pack, get_pack, update_pack, ClaimedTeamContext, CreatePackRequest, ManageSkillResponse,
     ManagedSkillErrorCode, UpdatePackRequest,
 };
+use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
 use crate::runtime::skills_bridge::{
     reconcile_after_managed_mutation, WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED,
 };
-use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
 
 use super::DaemonServer;
 
@@ -183,10 +183,7 @@ impl DaemonServer {
             );
         }
 
-        let action = payload
-            .get("action")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let action = payload.get("action").and_then(Value::as_str).unwrap_or("");
         let home = match dirs::home_dir() {
             Some(home) => home,
             None => {
@@ -230,10 +227,7 @@ impl DaemonServer {
                 }
             }
             "get" => {
-                let slug = payload
-                    .get("slug")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
+                let slug = payload.get("slug").and_then(Value::as_str).unwrap_or("");
                 match get_pack(&home, slug) {
                     Ok(resp) => sock_managed_ok(resp, &[]),
                     Err(err) => sock_error(err.code, err.message),
@@ -250,7 +244,7 @@ impl DaemonServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{create_pack, CreatePackRequest, ClaimedTeamContext};
+    use crate::config::{create_pack, ClaimedTeamContext, CreatePackRequest};
     use serde_json::{json, Value};
     use std::fs;
 
@@ -268,13 +262,7 @@ mod tests {
             content: test_skill_md("demo-bridge"),
             files: vec![],
         };
-        let resp = create_pack(
-            ws.path(),
-            home.path(),
-            &req,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        let resp = create_pack(ws.path(), home.path(), &req, &ClaimedTeamContext::NoTeam).unwrap();
         let canonical = PathBuf::from(&resp.path);
         assert!(canonical.join("SKILL.md").is_file());
 
@@ -282,26 +270,23 @@ mod tests {
         fs::write(ws.path().join(".claude/skills"), "not-a-directory").unwrap();
 
         let mut warnings = Vec::new();
-        let failure = apply_claude_bridge_after_mutation(
-            ws.path(),
-            "demo-bridge",
-            &canonical,
-            &mut warnings,
-        );
+        let failure =
+            apply_claude_bridge_after_mutation(ws.path(), "demo-bridge", &canonical, &mut warnings);
         assert!(failure.is_some(), "expected bridge failure to surface");
         assert_eq!(
             failure.unwrap().error_code,
             WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED
         );
-        assert!(warnings.iter().any(|w| w == WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED));
+        assert!(warnings
+            .iter()
+            .any(|w| w == WARNING_CLAUDE_BRIDGE_RECONCILE_FAILED));
         assert!(canonical.join("SKILL.md").is_file());
     }
 
     #[tokio::test]
     async fn skills_manage_create_crosses_control_socket_pipeline() {
         let home = tempfile::tempdir().unwrap();
-        let _guard =
-            crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
         let ws = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".agents/skills")).unwrap();
 

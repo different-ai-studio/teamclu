@@ -99,7 +99,10 @@ pub struct BackendSessionRow {
 impl BackendSessionRow {
     /// Lazy thread fork anchor when both parent and root message ids are set.
     pub fn thread_fork_from(&self) -> Option<(String, String)> {
-        let parent = self.parent_session_id.as_deref().filter(|s| !s.is_empty())?;
+        let parent = self
+            .parent_session_id
+            .as_deref()
+            .filter(|s| !s.is_empty())?;
         let root = self
             .thread_root_message_id
             .as_deref()

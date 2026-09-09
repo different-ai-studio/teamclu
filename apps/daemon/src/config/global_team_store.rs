@@ -511,8 +511,8 @@ mod tests {
         std::env::set_var("HOME", tmp.path());
         let dir = ensure_initialized("team-x").unwrap();
         assert!(dir.is_dir()); // shared/teamclu-team (team repo)
-        // The prefixes live under the sync content root — `shared/team-sync/` —
-        // not under the repo dir and not directly under `shared/`.
+                               // The prefixes live under the sync content root — `shared/team-sync/` —
+                               // not under the repo dir and not directly under `shared/`.
         let shared = sync_content_root("team-x");
         for prefix in SHARED_PREFIXES {
             assert!(

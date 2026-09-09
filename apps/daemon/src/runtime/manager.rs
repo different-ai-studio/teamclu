@@ -101,7 +101,6 @@ pub struct CheckedOutTurn {
     pub event_rx: mpsc::Receiver<AcpEventFrame>,
 }
 
-
 /// Resolve the initial pi model id for a gateway/cron session from the
 /// caller's `(provider, model)` override.
 ///

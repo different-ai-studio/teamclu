@@ -351,6 +351,12 @@ impl CronScheduler {
             .filter(|s| !s.is_empty())
             .unwrap_or(crate::commands::cron::types::DEFAULT_CRON_PERMISSION_MODE);
 
+        let wall_timeout_secs = crate::commands::cron::types::resolve_cron_wall_timeout_seconds(
+            job.payload.timeout_seconds,
+        );
+        let client_deadline_secs =
+            wall_timeout_secs + crate::commands::cron::types::CRON_CLIENT_TIMEOUT_SLACK_SECS;
+
         let prompt_future = crate::commands::cron::amuxd_client::prompt_await(
             crate::commands::cron::amuxd_client::PromptAwaitRequest {
                 cmd: "prompt-await",
@@ -367,7 +373,8 @@ impl CronScheduler {
                 }),
                 agent_type,
                 permission_mode,
-                timeout_secs: 300,
+                timeout_secs: wall_timeout_secs,
+                idle_timeout_secs: crate::commands::cron::types::DEFAULT_CRON_IDLE_TIMEOUT_SECS,
             },
         );
 
@@ -379,63 +386,67 @@ impl CronScheduler {
             heartbeat_every,
         );
 
-        let inner_result = loop {
-            tokio::select! {
-                result = &mut prompt_future => break result,
-                _ = heartbeat_interval.tick() => {
-                    record.last_heartbeat_at = Some(Utc::now());
-                    self.persist_run_and_notify_ui(&record).await;
+        let inner_result = match tokio::time::timeout(
+            std::time::Duration::from_secs(client_deadline_secs),
+            async {
+                loop {
+                    tokio::select! {
+                        result = &mut prompt_future => break result,
+                        _ = heartbeat_interval.tick() => {
+                            record.last_heartbeat_at = Some(Utc::now());
+                            self.persist_run_and_notify_ui(&record).await;
+                        }
+                    }
                 }
+            },
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                record.status = RunStatus::Failed;
+                record.finished_at = Some(Utc::now());
+                record.error = Some(format!("amuxd response exceeded {}s", client_deadline_secs));
+                self.persist_run_and_notify_ui(&record).await;
+                self.update_job_after_run(&job, started_at, &my_workspace)
+                    .await;
+                return;
             }
         };
 
-        // Outer client-side timeout (330s = amuxd cap 300 + 30s slack)
-        let response_text =
-            match tokio::time::timeout(std::time::Duration::from_secs(330), async { inner_result })
-                .await
-            {
-                Ok(Ok(r)) => {
-                    // Always stamp session_id first — even if the turn itself
-                    // failed the cloud session was already created, so the UI
-                    // "view session" button can navigate to the partial chat.
-                    record.session_id = Some(r.session_id.clone());
-                    self.persist_run_and_notify_ui(&record).await;
+        let turn = match inner_result {
+            Ok(r) => r,
+            Err(e) => {
+                record.status = RunStatus::Failed;
+                record.finished_at = Some(Utc::now());
+                record.error = Some(e);
+                self.persist_run_and_notify_ui(&record).await;
+                self.update_job_after_run(&job, started_at, &my_workspace)
+                    .await;
+                return;
+            }
+        };
 
-                    if let Some(agent_err) = r.agent_error {
-                        // Session created but ACP turn failed (e.g. timeout).
-                        // agent_err already carries any "agent error: " prefix from
-                        // the daemon's AmuxError::Agent formatter — don't double it.
-                        record.status = RunStatus::Failed;
-                        record.finished_at = Some(Utc::now());
-                        record.error = Some(agent_err);
-                        self.persist_run_and_notify_ui(&record).await;
-                        self.update_job_after_run(&job, started_at, &my_workspace)
-                            .await;
-                        return;
-                    }
-                    r.text
-                }
-                Ok(Err(e)) => {
-                    record.status = RunStatus::Failed;
-                    record.finished_at = Some(Utc::now());
-                    record.error = Some(e);
-                    self.persist_run_and_notify_ui(&record).await;
-                    self.update_job_after_run(&job, started_at, &my_workspace)
-                        .await;
-                    return;
-                }
-                Err(_) => {
-                    record.status = RunStatus::Failed;
-                    record.finished_at = Some(Utc::now());
-                    record.error = Some("amuxd response exceeded 330s".into());
-                    self.persist_run_and_notify_ui(&record).await;
-                    self.update_job_after_run(&job, started_at, &my_workspace)
-                        .await;
-                    return;
-                }
-            };
+        // Always stamp session_id first — even if the turn itself failed the
+        // cloud session was already created, so the UI "view session" button
+        // can navigate to the partial chat.
+        record.session_id = Some(turn.session_id.clone());
+        self.persist_run_and_notify_ui(&record).await;
 
-        record.response_summary = Some(Self::truncate_response_summary(&response_text));
+        if let Some(agent_err) = turn.agent_error {
+            record.status = RunStatus::Failed;
+            record.finished_at = Some(Utc::now());
+            record.error = Some(agent_err);
+            self.persist_run_and_notify_ui(&record).await;
+            self.update_job_after_run(&job, started_at, &my_workspace)
+                .await;
+            return;
+        }
+
+        let response_text = turn.text;
+        if !response_text.is_empty() {
+            record.response_summary = Some(Self::truncate_response_summary(&response_text));
+        }
 
         // Check before delivery (workspace may have changed)
         check_generation!();
@@ -443,7 +454,7 @@ impl CronScheduler {
         // Step 3: Deliver results if configured
         let mut delivery_failed = false;
         if let Some(delivery) = &job.delivery {
-            if delivery.mode == DeliveryMode::Announce {
+            if delivery.mode == DeliveryMode::Announce && !response_text.is_empty() {
                 let delivery_mgr = self.delivery.read().await;
                 if let Some(mgr) = delivery_mgr.as_ref() {
                     // Format the delivery message with job context
@@ -485,8 +496,11 @@ impl CronScheduler {
             }
         }
 
-        // Mark as success
-        record.status = RunStatus::Success;
+        record.status = if turn.timed_out {
+            RunStatus::Timeout
+        } else {
+            RunStatus::Success
+        };
         record.finished_at = Some(Utc::now());
         self.persist_run_and_notify_ui(&record).await;
 
@@ -755,6 +769,22 @@ mod tests {
         assert_eq!(reconciled.finished_at, Some(now));
         assert_eq!(reconciled.session_id.as_deref(), Some("session-1"));
         assert!(reconciled.error.unwrap().contains("interrupted"));
+    }
+
+    #[test]
+    fn resolve_cron_wall_timeout_defaults_to_sixty_minutes() {
+        assert_eq!(
+            crate::commands::cron::types::resolve_cron_wall_timeout_seconds(None),
+            crate::commands::cron::types::DEFAULT_CRON_WALL_TIMEOUT_SECS,
+        );
+        assert_eq!(
+            crate::commands::cron::types::resolve_cron_wall_timeout_seconds(Some(120)),
+            120,
+        );
+        assert_eq!(
+            crate::commands::cron::types::resolve_cron_wall_timeout_seconds(Some(7200)),
+            crate::commands::cron::types::MAX_CRON_WALL_TIMEOUT_SECS,
+        );
     }
 
     #[test]

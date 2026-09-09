@@ -548,10 +548,11 @@ mod tests {
                 "knowledge/.conflicts/foo.conflict.1000.aabbccdd.md".into()
             )
         );
-        assert!(!root.join("knowledge/foo.conflict.1000.aabbccdd.md").exists());
+        assert!(!root
+            .join("knowledge/foo.conflict.1000.aabbccdd.md")
+            .exists());
         assert_eq!(
-            std::fs::read(root.join("knowledge/.conflicts/foo.conflict.1000.aabbccdd.md"))
-                .unwrap(),
+            std::fs::read(root.join("knowledge/.conflicts/foo.conflict.1000.aabbccdd.md")).unwrap(),
             b"already there"
         );
     }

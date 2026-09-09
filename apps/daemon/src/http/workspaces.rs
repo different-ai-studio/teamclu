@@ -20,9 +20,9 @@ use std::sync::Arc;
 use crate::config::provider_auth::{builtin_provider_auth_methods, ProviderAuthMethodsResponse};
 use crate::config::workspace_control::{
     decode_workspace_path, ApplyOutcome, EnvActivationDiagnostics, ManagedSkillDto,
-    McpServerConfig, ProviderAuthRequest, ProviderInfo, RoleRecordDto,
-    RolesSkillsStateDto, RuntimeStatus, UpsertRoleRequest, UpsertSkillRequest,
-    WorkspaceControlError, WorkspaceControlStore,
+    McpServerConfig, ProviderAuthRequest, ProviderInfo, RoleRecordDto, RolesSkillsStateDto,
+    RuntimeStatus, UpsertRoleRequest, UpsertSkillRequest, WorkspaceControlError,
+    WorkspaceControlStore,
 };
 use crate::proto::amux;
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};

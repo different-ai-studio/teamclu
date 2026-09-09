@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TeamClu Dev",
+  "productName": "TeamClu",
   "version": "0.4.1-beta.47",
   "identifier": "com.teamclu.app",
   "build": {

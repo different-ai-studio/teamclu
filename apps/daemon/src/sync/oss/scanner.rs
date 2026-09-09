@@ -178,9 +178,7 @@ pub fn scan_conflict_files(workspace_path: &str) -> Vec<String> {
     let mut results = migrate_legacy_sidecars_under(root);
 
     for prefix in ALLOWED_PREFIXES {
-        let conflicts_dir = root
-            .join(prefix.trim_end_matches('/'))
-            .join(CONFLICTS_DIR);
+        let conflicts_dir = root.join(prefix.trim_end_matches('/')).join(CONFLICTS_DIR);
         if !conflicts_dir.exists() {
             continue;
         }
@@ -426,7 +424,9 @@ mod tests {
             "sidecars must not appear in the sync scan, got {files:?}"
         );
         // Legacy was moved under .conflicts/
-        assert!(!knowledge.join("legacy.conflict.1234567890.abc12345.md").exists());
+        assert!(!knowledge
+            .join("legacy.conflict.1234567890.abc12345.md")
+            .exists());
         assert!(knowledge
             .join(".conflicts/legacy.conflict.1234567890.abc12345.md")
             .exists());
@@ -453,10 +453,14 @@ mod tests {
 
         let conflicts = scan_conflict_files(ws);
         assert_eq!(conflicts.len(), 2, "{conflicts:?}");
-        assert!(conflicts.contains(&"knowledge/.conflicts/a/foo.conflict.1234567890.abc12345.md".to_string()));
-        assert!(conflicts.contains(&"knowledge/.conflicts/bar.conflict.1234567890.def67890.md".to_string()));
+        assert!(conflicts
+            .contains(&"knowledge/.conflicts/a/foo.conflict.1234567890.abc12345.md".to_string()));
+        assert!(conflicts
+            .contains(&"knowledge/.conflicts/bar.conflict.1234567890.def67890.md".to_string()));
         assert!(!conflicts.iter().any(|c| c == "knowledge/real.md"));
-        assert!(!knowledge.join("bar.conflict.1234567890.def67890.md").exists());
+        assert!(!knowledge
+            .join("bar.conflict.1234567890.def67890.md")
+            .exists());
     }
 
     /// If relocate cannot create `.conflicts/`, the legacy path must still show

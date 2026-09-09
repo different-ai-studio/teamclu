@@ -232,7 +232,7 @@ use tauri::State;
 /// Load personal shortcuts from the workspace config file (teamclu.json).
 #[tauri::command]
 pub async fn load_shortcuts(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     workspace_path: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
@@ -257,7 +257,7 @@ fn load_shortcuts_blocking(workspace_path: &str) -> Result<Vec<serde_json::Value
 /// Save personal shortcuts to the workspace config file (teamclu.json).
 #[tauri::command]
 pub async fn save_shortcuts(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     nodes: Vec<serde_json::Value>,
     workspace_path: Option<String>,
@@ -274,7 +274,7 @@ pub async fn save_shortcuts(
 /// Load the per-workspace system prompt from teamclu.json. Returns "" if unset.
 #[tauri::command]
 pub async fn load_system_prompt(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     workspace_path: Option<String>,
 ) -> Result<String, String> {
@@ -298,7 +298,7 @@ fn load_system_prompt_blocking(workspace_path: &str) -> Result<String, String> {
 /// Save the per-workspace system prompt to teamclu.json.
 #[tauri::command]
 pub async fn save_system_prompt(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     registry: State<'_, crate::commands::window::WindowRegistry>,
     prompt: String,
     workspace_path: Option<String>,

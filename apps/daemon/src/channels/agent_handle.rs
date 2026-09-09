@@ -662,71 +662,17 @@ const STREAM_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_mi
 
 /// How much of the idle budget is left.
 ///
-/// Silence is measured from the last ACP event, not from the prompt. A WeCom
-/// scrape that ran nine minutes and then queried would expire a wall-clock
-/// 10-minute cap while still working; an idle budget resets on every event
-/// and only fires after the channel's patience of actual quiet.
-fn idle_remaining_at(
-    last_activity: std::time::Instant,
-    idle: std::time::Duration,
-    now: std::time::Instant,
-) -> std::time::Duration {
-    idle.saturating_sub(now.saturating_duration_since(last_activity))
-}
-
 /// Decide what a timed-out gateway turn should return (issue #555). If the
 /// agent already produced reply text, hand it back as the turn result rather
 /// than failing — OpenCode may have finished while the ACP adapter never sent
 /// the Active→Idle completion. Empty accumulation stays a `Timeout` error.
 fn salvage_timeout_reply(segments: &[String], live: &str) -> Result<String, AgentError> {
-    let acc = compose_reply(segments, live);
+    let acc = crate::runtime::turn_reply::compose_reply(segments, live);
     if acc.trim().is_empty() {
         Err(AgentError::Timeout)
     } else {
         Ok(acc)
     }
-}
-
-/// Join the reply segments a turn has produced so far into the text a
-/// channel should display. `live` is the not-yet-flushed tail (output that
-/// has arrived but hasn't hit a tool-call or turn-end boundary).
-///
-/// Segments are the runs of prose between tool calls, so blank-line joining
-/// matches how Tauri renders them as separate messages.
-fn compose_reply(segments: &[String], live: &str) -> String {
-    let mut parts: Vec<&str> = segments.iter().map(String::as_str).collect();
-    if !live.trim().is_empty() {
-        parts.push(live);
-    }
-    parts.join("\n\n")
-}
-
-/// Fold one event's aggregator output into the reply being accumulated.
-/// Returns true if a segment was flushed (i.e. the visible text jumped),
-/// which the streaming path uses to push an update immediately rather than
-/// waiting out the throttle interval.
-fn absorb_emitted(
-    emitted: Vec<crate::runtime::turn_aggregator::EmittedMessage>,
-    segments: &mut Vec<String>,
-    live: &mut String,
-) -> bool {
-    let mut flushed = false;
-    for m in emitted {
-        if matches!(m.kind, crate::proto::teamclu::MessageKind::AgentReply) {
-            // Empty anchors and English status notices (no_final_reply /
-            // interrupt instruction) must not become WeCom/channel reply text.
-            if !m.content.is_empty()
-                && !crate::runtime::turn_aggregator::TurnAggregator::is_agent_facing_status_notice(
-                    &m.content,
-                )
-            {
-                segments.push(m.content);
-            }
-            live.clear();
-            flushed = true;
-        }
-    }
-    flushed
 }
 
 impl AmuxdAgentHandle {
@@ -871,8 +817,11 @@ impl AmuxdAgentHandle {
         };
         let mut timed_out = false;
         let result: Result<String, AgentError> = loop {
-            let remaining =
-                idle_remaining_at(last_activity, turn_timeout, std::time::Instant::now());
+            let remaining = crate::runtime::turn_reply::idle_remaining_at(
+                last_activity,
+                turn_timeout,
+                std::time::Instant::now(),
+            );
             if remaining.is_zero() {
                 timed_out = true;
                 break salvage_on_timeout(&segments, &live);
@@ -935,10 +884,11 @@ impl AmuxdAgentHandle {
                     .map(|agg| agg.ingest(&event.event))
                     .unwrap_or_default()
             };
-            let flushed = absorb_emitted(emitted, &mut segments, &mut live);
+            let flushed =
+                crate::runtime::turn_reply::absorb_emitted(emitted, &mut segments, &mut live);
 
             if turn_ended {
-                break Ok(compose_reply(&segments, &live));
+                break Ok(crate::runtime::turn_reply::compose_reply(&segments, &live));
             }
 
             // Best-effort progress updates: coalesced by interval, skipped
@@ -946,7 +896,7 @@ impl AmuxdAgentHandle {
             if let Some(tx) = &on_update {
                 let due = flushed || last_update.elapsed() >= STREAM_UPDATE_INTERVAL;
                 if due {
-                    let text = compose_reply(&segments, &live);
+                    let text = crate::runtime::turn_reply::compose_reply(&segments, &live);
                     if !text.trim().is_empty() && text != sent_update {
                         if tx.try_send(text.clone()).is_ok() {
                             sent_update = text;
@@ -1827,7 +1777,7 @@ pub(crate) mod tests {
         let mut segments = Vec::new();
         let mut live = String::new();
         for ev in events {
-            absorb_emitted(agg.ingest(ev), &mut segments, &mut live);
+            crate::runtime::turn_reply::absorb_emitted(agg.ingest(ev), &mut segments, &mut live);
         }
         segments
     }
@@ -1892,7 +1842,7 @@ pub(crate) mod tests {
             "the aggregator must surface the pre-tool preamble and the post-tool answer separately"
         );
         assert_eq!(
-            compose_reply(&segments, ""),
+            crate::runtime::turn_reply::compose_reply(&segments, ""),
             "让我再找一下 token 的来源：\n\nToken 还没过期！"
         );
     }
@@ -1908,7 +1858,10 @@ pub(crate) mod tests {
             output("third"),
             turn_end(),
         ]);
-        assert_eq!(compose_reply(&segments, ""), "first\n\nsecond\n\nthird");
+        assert_eq!(
+            crate::runtime::turn_reply::compose_reply(&segments, ""),
+            "first\n\nsecond\n\nthird"
+        );
     }
 
     /// Tool-only turns emit a `no_final_reply` AgentReply at Idle for cloud /
@@ -1917,7 +1870,7 @@ pub(crate) mod tests {
     fn tool_only_turn_yields_empty_reply() {
         let segments = segments_from(&[tool_use("Bash"), turn_end()]);
         assert!(segments.is_empty());
-        assert_eq!(compose_reply(&segments, ""), "");
+        assert_eq!(crate::runtime::turn_reply::compose_reply(&segments, ""), "");
     }
 
     #[test]
@@ -1930,17 +1883,17 @@ pub(crate) mod tests {
         let idle = std::time::Duration::from_secs(600);
         let nine_min = t0 + std::time::Duration::from_secs(9 * 60);
         assert_eq!(
-            idle_remaining_at(nine_min, idle, nine_min),
+            crate::runtime::turn_reply::idle_remaining_at(nine_min, idle, nine_min),
             idle,
             "a just-received event restores the full silence budget"
         );
         assert_eq!(
-            idle_remaining_at(t0, idle, nine_min),
+            crate::runtime::turn_reply::idle_remaining_at(t0, idle, nine_min),
             std::time::Duration::from_secs(60),
             "silence from the prompt would have only a minute left — that is the old bug"
         );
         assert_eq!(
-            idle_remaining_at(nine_min, idle, nine_min + idle),
+            crate::runtime::turn_reply::idle_remaining_at(nine_min, idle, nine_min + idle),
             std::time::Duration::ZERO
         );
     }
@@ -1967,9 +1920,18 @@ pub(crate) mod tests {
     #[test]
     fn compose_reply_appends_unflushed_tail() {
         let segments = vec!["done".to_string()];
-        assert_eq!(compose_reply(&segments, "typing"), "done\n\ntyping");
-        assert_eq!(compose_reply(&segments, "   "), "done");
-        assert_eq!(compose_reply(&[], "typing"), "typing");
+        assert_eq!(
+            crate::runtime::turn_reply::compose_reply(&segments, "typing"),
+            "done\n\ntyping"
+        );
+        assert_eq!(
+            crate::runtime::turn_reply::compose_reply(&segments, "   "),
+            "done"
+        );
+        assert_eq!(
+            crate::runtime::turn_reply::compose_reply(&[], "typing"),
+            "typing"
+        );
     }
 
     #[test]
