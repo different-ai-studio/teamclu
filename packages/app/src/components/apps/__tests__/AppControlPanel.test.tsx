@@ -166,6 +166,20 @@ describe('AppControlPanel', () => {
     })
   })
 
+  it('opens the data browser without asking the server twice', async () => {
+    // The summary already knows which tables exist; re-fetching on click would
+    // put a round-trip between the press and the tab.
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() =>
+      expect(screen.getByTestId('app-control-open-data').textContent).toContain('2 张表'),
+    )
+    backendMocks.listAppDataTables.mockClear()
+    await userEvent.setup().click(screen.getByTestId('app-control-open-data'))
+
+    expect(tabMocks.openAppDataTable).toHaveBeenCalledWith(baseApp, 'orders')
+    expect(backendMocks.listAppDataTables).not.toHaveBeenCalled()
+  })
+
   it('opens the matching tab from each row', async () => {
     render(<AppControlPanel app={baseApp} />)
     await waitFor(() => expect(backendMocks.listAppCronJobs).toHaveBeenCalled())

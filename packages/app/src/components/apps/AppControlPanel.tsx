@@ -137,7 +137,13 @@ function formatBytes(n: number | null | undefined): string | null {
 
 interface Summary {
   members: number | null
-  tables: { count: number } | { reason: 'no_database' | 'not_deployed' | 'unavailable' } | null
+  // `first` rides along so opening the browser does not re-ask the server which
+  // tables exist; the browser has its own switcher and only needs a starting
+  // point.
+  tables:
+    | { count: number; first: string | null }
+    | { reason: 'no_database' | 'not_deployed' | 'unavailable' }
+    | null
   files: { count: number; bytes: number | null } | null
   cronJobs: number | null
 }
@@ -180,7 +186,10 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
         tables:
           tables.status === 'fulfilled' && tables.value
             ? tables.value.status === 'ok'
-              ? { count: tables.value.tables.length }
+              ? {
+                  count: tables.value.tables.length,
+                  first: tables.value.tables[0]?.name ?? null,
+                }
               : { reason: tables.value.status }
             : null,
         files: filesPage
@@ -389,15 +398,10 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
 
   const openData = () => {
     const tables = summary.tables
-    // The browser has its own table switcher; the panel only has to name a
-    // starting table, and "the first one" is as good a start as any.
-    if (tables && !('reason' in tables) && tables.count > 0) {
-      void (async () => {
-        const listed = await getBackend().apps.listAppDataTables(app.id)
-        if (listed?.status === 'ok' && listed.tables[0]) {
-          openAppDataTable(app, listed.tables[0].name)
-        }
-      })()
+    // "The first table" is as good a start as any — the browser switches from
+    // there. With nothing to open, say why rather than opening an empty tab.
+    if (tables && !('reason' in tables) && tables.first) {
+      openAppDataTable(app, tables.first)
       return
     }
     toast.info(tablesValue)

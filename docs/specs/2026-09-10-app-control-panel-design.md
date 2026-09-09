@@ -1,6 +1,6 @@
 # APP 控制面：一列摘要，管理进中间 tab — 设计
 
-状态：实施中
+状态：已实现（2026-09-10）
 日期：2026-09-10
 相关：`docs/specs/2026-09-08-apps-login-and-custom-domain-design.md`（登录墙）、
 `docs/specs/2026-09-09-app-storage-design.md`（文件）、
@@ -201,3 +201,28 @@ update amux.app_cron_jobs
 | R4 | 定时任务打不进有墙的路径 | 明确的失败文案 + 自定义 header；§5.5 |
 | R5 | 任务把应用打挂（间隔 1 分钟 × N 个任务） | 每应用任务数上限 20，最小间隔 1 分钟，超时 30s |
 | R6 | 运行记录无限增长 | 每任务保留 20 条，插入时裁剪；§5.2 |
+
+## 8. 实现落点
+
+**后端**
+
+- `services/supabase/migrations/20260910000000_app_cron.sql` — 两张表、RLS、
+  以及 `auth_rules` 的新注释（每页受众不需要迁移）。
+- `services/fc/src/lib/app-cron-schedule.ts` — 五段式解析 + 时区推算，纯函数。
+- `services/fc/src/lib/app-cron-runner.ts` — tick：领取、发请求、记录、裁剪。
+- `services/fc/src/lib/apps-auth-paths.ts` — `resolvePathPolicy` 一次匹配两个
+  答案；`apps-auth-gate.ts` 的 `admit()` 收下命中规则的受众。
+- `services/fc/src/lib/routes/apps.ts` — 6 个 CRUD + 1 个 tick 端点。
+- `deploy/self-host/docker-compose.yml` 的 `app-cron` 服务 + 两个目标的
+  `APP_CRON_SECRET`。
+
+**前端**
+
+- `AppControlPanel.tsx` — 摘要行；`AppTabShell.tsx` — 四个 tab 共用的外壳。
+- `AppAccessTabContent` / `AppAuthTabContent` / `AppFilesTabContent` /
+  `AppCronTabContent`，target 统一是 `<kind>:<appId>`。
+- 删掉 `AppAuthSection` / `AppDataSection` / `AppLogsSection`（都被 tab 取代；
+  数据为什么是空的那几句话搬进了数据 tab）。
+
+**没做的**：角色（§2 非目标）。`员工/用户` 这一档就是受众，网关透传的身份里
+仍然只有 user id / email / orgId。
