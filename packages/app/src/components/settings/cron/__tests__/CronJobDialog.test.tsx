@@ -4,7 +4,13 @@ import { render } from '@testing-library/react'
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string, d?: string) => d ?? k, i18n: { language: 'en', changeLanguage: vi.fn() } }),
 }))
-vi.mock('@/stores/cron', () => ({
+// Partial, not a replacement: this module also exports `coerceSchedule`, which
+// `jobToFormState` calls on every render of the dialog. A factory that returns
+// only the store hook makes that export vanish, and the dialog throws before it
+// renders anything — which is what happened when coerceSchedule was added in
+// #1339. Only the hook needs stubbing; the schedule normaliser is pure.
+vi.mock('@/stores/cron', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/stores/cron')>()),
   useCronStore: vi.fn(() => ({
     addJob: vi.fn(),
     updateJob: vi.fn(),
