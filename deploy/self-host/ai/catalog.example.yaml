@@ -27,16 +27,30 @@ providers:
     #                          when the client did not ask for it.
     # Verified against the live API on 2026-08-28 (§4.4.0.1).
     usage_mode: always
-  # A second provider is opt-in, NOT shipped enabled. Startup validation
-  # requires a key for every provider listed here, so shipping one the
-  # deployment has no key for means the gateway refuses to boot — which is what
-  # happened the first time this file reached production. Uncomment together
-  # with a gpt-4o backend and set OPENAI_API_KEY.
+  # An OpenAI-COMPATIBLE relay (cli-proxy-api) on our own Singapore box, which
+  # is how `pro` and `max` reach the gpt-5.6 family. NOT api.openai.com: the
+  # Shenzhen deploy box cannot reach that, but it reaches this in ~250ms, so
+  # this provider needs no egress proxy.
   #
-  # openai:
-  #   api_base: https://api.openai.com/v1
-  #   api_key_env: OPENAI_API_KEY
-  #   usage_mode: needs_stream_options
+  # ⚠️ Startup validation requires a key for EVERY provider listed here. Listing
+  # this one without OPENAI_API_KEY in the environment makes the gateway refuse
+  # to boot — which is what happened the first time this file reached
+  # production. Set the key BEFORE installing a catalog that names this.
+  #
+  # `api_key_env` reuses OPENAI_API_KEY rather than introducing MX5_API_KEY
+  # because the compose `environment:` map is an ALLOWLIST that already carries
+  # it — a new name has to be declared on both deploy targets before it reaches
+  # the container at all. The commented-out api.openai.com block that used to
+  # sit here was removed so nothing else claims this variable.
+  mx5:
+    api_base: https://ai.mx5.cn/v1
+    api_key_env: OPENAI_API_KEY
+    # MEASURED 2026-09-09 against the live endpoint, not assumed: usage arrives
+    # unprompted, riding the last normal chunk (the one carrying finish_reason)
+    # — the DeepSeek shape, NOT OpenAI's separate usage-only frame. Declaring
+    # `needs_stream_options` here would inject a stream_options this upstream
+    # never asked for.
+    usage_mode: always
 
 # Body keys forwarded upstream. Everything else is dropped with a debug log.
 # The equivalent of the old gateway's `drop_params: true`.
@@ -80,10 +94,24 @@ backend_models:
     upstream_model: deepseek-v4-flash
     default_max_output_tokens: 16000
 
-  # gpt-4o:
-  #   provider: openai
-  #   upstream_model: gpt-4o
-  #   default_max_output_tokens: 16000
+  # The gpt-5.6 family, behind the mx5 relay. Backend ids carry the provider
+  # prefix so `ai_usage_logs.backend_model_id` says where a request actually
+  # landed without a join — that column is the margin/cost basis (§4.4.0).
+  #
+  # 16000 matches the DeepSeek backends deliberately. This sizes the pre-flight
+  # HOLD only (it never caps the upstream), and CREDITS_ENFORCED is ON: raising
+  # it raises every hold, which on `max` (80 credits/output token) is what
+  # starts 402-ing teams that were fine yesterday. Under-reserving instead just
+  # risks a small overshoot, which the ledger already tolerates by design.
+  mx5-gpt-5.6-terra:
+    provider: mx5
+    upstream_model: gpt-5.6-terra
+    default_max_output_tokens: 16000
+
+  mx5-gpt-5.6-sol:
+    provider: mx5
+    upstream_model: gpt-5.6-sol
+    default_max_output_tokens: 16000
 
 public_models:
   # ── THE public contract: exactly three tiers, and their prices ───────
@@ -113,19 +141,28 @@ public_models:
     routes:
       - backend: ds-v4-flash
 
+  # PRICING IS UNCHANGED from when this tier pointed at DeepSeek, and that is
+  # the whole point of pricing the TIER rather than the backend (§4.4):
+  # re-pointing `pro` at a different vendor moves our cost, not the customer's
+  # price. Do not "adjust" these to match the new upstream.
+  #
+  # Failover, not priority: the mx5 relay fronts subscription accounts and is a
+  # weaker availability story than a first-party API, so the tier keeps serving
+  # from DeepSeek if it goes down — at the same price either way.
+  #
+  # ⚠️ Failover only advances on 5xx or a transport error (app.ts). A 401 from a
+  # bad OPENAI_API_KEY passes straight through to the caller instead of quietly
+  # serving DeepSeek — which is what you want: a wrong key should be loud.
   pro:
     name: 高级
-    routing: priority
+    routing: failover
     pricing:
       input_per_1m_credits: 4000000
       output_per_1m_credits: 16000000
     routes:
+      - backend: mx5-gpt-5.6-terra
       - backend: ds-v4-pro
 
-  # Failover: if the first backend is unavailable the tier still serves, and
-  # the customer pays the same either way — the whole point of pricing the tier
-  # rather than the backend. Point the first route at a second provider once
-  # one is configured above.
   max:
     name: 旗舰
     routing: failover
@@ -133,8 +170,8 @@ public_models:
       input_per_1m_credits: 20000000
       output_per_1m_credits: 80000000
     routes:
+      - backend: mx5-gpt-5.6-sol
       - backend: ds-v4-pro
-      - backend: ds-v4-flash
 
   # ── transition aliases — REMOVE IN PHASE 3 ───────────────────────────
   # Old clients still send these vendor ids, and they are still sitting in
