@@ -112,6 +112,17 @@ pub fn decide_finish(phase: StreamPhase) -> FinishDecision {
     }
 }
 
+/// Whether a *progress* rewrite should go out, given time since the last
+/// stream frame. Extra progress is dropped, not delayed — sleeping the gap
+/// stalled the finish frame (and `write_reply`) after the turn was already
+/// done. Finish / wait-notice frames always send.
+pub fn progress_rewrite_due(since_last: Option<Duration>, min_gap: Duration) -> bool {
+    match since_last {
+        None => true,
+        Some(elapsed) => elapsed >= min_gap,
+    }
+}
+
 /// Pull errcode/errmsg from either the top level or `body` (WeCom uses both).
 pub fn errcode_and_msg(v: &Value) -> (i64, String) {
     let code = v
@@ -391,6 +402,14 @@ mod tests {
         let text = still_running_close_text(Duration::from_secs(240));
         assert!(text.contains("4 分钟"));
         assert!(text.contains("完成后将单独推送结果"));
+    }
+
+    #[test]
+    fn extra_progress_is_dropped_when_the_gap_has_not_elapsed() {
+        let gap = Duration::from_secs(10);
+        assert!(progress_rewrite_due(None, gap));
+        assert!(progress_rewrite_due(Some(Duration::from_secs(10)), gap));
+        assert!(!progress_rewrite_due(Some(Duration::from_millis(9999)), gap));
     }
 
     #[test]

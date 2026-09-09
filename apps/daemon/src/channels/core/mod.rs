@@ -499,6 +499,15 @@ impl Core {
             TurnEnd::Answered
         };
 
+        // Persist the session row as soon as the turn is done. WeCom's finish
+        // frame still waits on the stream ack; parking write_reply behind that
+        // left desktop without a ChatMessage until the bubble caught up.
+        if !produced_nothing {
+            self.writer
+                .write_reply(&session.session_id, &reply, attachments.clone())
+                .await?;
+        }
+
         // The streaming bubble carries the text; files cannot be edited into
         // it, so they go out as their own delivery right after — still one
         // logical reply, and one row in the session.
@@ -506,16 +515,6 @@ impl Core {
             .update(&handle, &outbound.text, Some(end))
             .await
             .map_err(|e| CoreError::Render(e.to_string()))?;
-
-        // Record before the file send. WeCom media goes out on a separate
-        // API that can fail after the text already landed in the chat
-        // (a reload clearing the process-global gateway holder); skipping
-        // write_reply then left the desktop session with no answer.
-        if !produced_nothing {
-            self.writer
-                .write_reply(&session.session_id, &reply, attachments)
-                .await?;
-        }
 
         let file_deliveries = if outbound.attachments.is_empty() {
             0

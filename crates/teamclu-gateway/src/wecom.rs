@@ -1,8 +1,9 @@
 use crate::i18n;
 use crate::wecom_config::{WeComConfig, WeComGatewayStatus, WeComGatewayStatusResponse};
 use crate::wecom_delivery::{
-    self, decide_finish, decide_progress, progress_frame_with_notice, should_requeue,
-    still_running_close_with_notice, FinishDecision, ProgressDecision, SendError, StreamPhase,
+    self, decide_finish, decide_progress, progress_frame_with_notice, progress_rewrite_due,
+    should_requeue, still_running_close_with_notice, FinishDecision, ProgressDecision, SendError,
+    StreamPhase,
 };
 use crate::wecom_outbox::{PendingSend, WeComOutbox};
 use base64::Engine as _;
@@ -521,13 +522,11 @@ const STREAM_FRAME_MIN_GAP: Duration =
 ///
 /// Every frame of a turn rewrites the *same* bubble, and WeCom applies those
 /// rewrites under optimistic concurrency: two landing close together come back
-/// as errcode 6000 (数据版本冲突, "possible simultaneous modification by
-/// multiple callers, retry later") and the losing rewrite is dropped. The agent
-/// side sends an update the moment a segment flushes — deliberately, so text
-/// appears promptly — which on a long answer means several frames within
-/// milliseconds. Spacing them here keeps that behaviour for every other channel
-/// while staying inside what WeCom will accept. Each frame waits for the WS
-/// ack so a 6000 is retried instead of silently dropped.
+/// as errcode 6000 (数据版本冲突) and the losing rewrite is dropped. Progress
+/// frames that arrive inside `min_gap` are **dropped**, not slept — sleeping
+/// serialized leftover progress after the turn had already finished, so WeCom
+/// kept ticking and desktop `write_reply` waited on it. Finish and wait-notice
+/// frames send immediately; a 6000 is retried in `send_stream_chunk_acked`.
 #[derive(Clone)]
 struct StreamPacer {
     req_id: String,
@@ -556,15 +555,28 @@ impl StreamPacer {
         }
     }
 
-    /// Send one frame, waiting out the remainder of the gap since the previous
-    /// one. The lock is deliberately held across the wait: it is what serializes
-    /// the progressive-update task against the terminal frame.
+    /// Send one frame. Progress inside `min_gap` is skipped; finish always
+    /// sends. The lock serializes progress against the terminal frame.
     async fn send(&self, content: &str, finish: bool) -> Result<(), SendError> {
+        self.send_impl(content, finish, finish).await
+    }
+
+    /// Wait-notice / queue rewrite: send now even inside the progress gap.
+    async fn send_now(&self, content: &str) -> Result<(), SendError> {
+        self.send_impl(content, false, true).await
+    }
+
+    async fn send_impl(
+        &self,
+        content: &str,
+        finish: bool,
+        must_send: bool,
+    ) -> Result<(), SendError> {
         let mut last = self.last_frame_at.lock().await;
-        if let Some(prev) = *last {
-            let since = prev.elapsed();
-            if since < self.min_gap {
-                tokio::time::sleep(self.min_gap - since).await;
+        if !must_send {
+            let since = (*last).map(|prev| prev.elapsed());
+            if !progress_rewrite_due(since, self.min_gap) {
+                return Ok(());
             }
         }
         let timeout = if finish {
@@ -1329,7 +1341,7 @@ impl WeComDriver {
         let notice = inflight.pending_notice.clone();
         drop(pacers);
         let frame = progress_frame_with_notice(elapsed, notice.as_deref());
-        if let Err(e) = pacer.send(&frame, false).await {
+        if let Err(e) = pacer.send_now(&frame).await {
             eprintln!("[WeCom] queue notice piggyback failed: {e}");
         }
         Ok(true)
