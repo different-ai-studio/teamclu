@@ -224,10 +224,6 @@ function readRule(entry: unknown): AuthRule | null {
  * scope must not either. Writes are validated strictly, so reaching these
  * branches means something wrote to the column directly.
  */
-export function pathRequiresLogin(pathname: string, scope: unknown, rawRules: unknown): boolean {
-  return resolvePathPolicy(pathname, scope, rawRules).requiresLogin;
-}
-
 /**
  * Both halves of a path's verdict, from ONE longest-prefix match: whether it
  * needs a login, and — when it does — which audience satisfies it.

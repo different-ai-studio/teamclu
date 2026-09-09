@@ -84,6 +84,30 @@ describe('AppAuthTabContent', () => {
     expect(ruleSelects()[0].textContent).toContain('需要登录 · 任何用户')
   })
 
+  it('moves an inheriting rule on screen when the baseline moves', async () => {
+    // An audience-less rule FOLLOWS the baseline. Rendering it against the saved
+    // value showed 仅员工 on a row the pending save was about to open to anyone
+    // — the boundary widening while the UI said it had not.
+    renderWith({
+      authScope: 'all',
+      authAudience: 'org',
+      authRules: [{ path: '/reports', auth: 'required' }],
+    })
+    expect(ruleSelects()[0].textContent).toContain('需要登录 · 仅员工')
+
+    // Re-render as the store would after the baseline is saved as `any`; the
+    // rule text has to follow, because the wall does.
+    storeMocks.items = [
+      {
+        ...baseApp,
+        authAudience: 'any',
+        authRules: [{ path: '/reports', auth: 'required' }],
+      } as AppRow,
+    ]
+    render(<AppAuthTabContent appId="app-1" />)
+    expect(ruleSelects().at(-1)!.textContent).toContain('需要登录 · 任何用户')
+  })
+
   it('saves scope, audience and rules in one request', async () => {
     // The server validates them as a pair — `paths` with nothing required is
     // refused — so two PATCHes would be rejected on the intermediate state.

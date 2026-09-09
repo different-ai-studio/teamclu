@@ -34,7 +34,16 @@ import type { AppEnvVar, AppRow } from '@/lib/backend/types'
  * believe it is already in effect.
  */
 
-/** Names the platform sets itself; the server refuses these too (app-env.ts). */
+/**
+ * Names the platform sets itself.
+ *
+ * A deliberate copy of `RESERVED_ENV_KEYS` / `RESERVED_ENV_PREFIX` in
+ * `services/fc/src/lib/app-env.ts`, which is the ENFORCEMENT — this list only
+ * buys a specific message before the round trip. If the two drift, the server
+ * still refuses the name; the user just gets the generic 保存失败 toast instead
+ * of "这个名字是平台自己在用的". A stale copy cannot open a hole, only degrade a
+ * sentence, which is why it is duplicated rather than served.
+ */
 const RESERVED = new Set([
   'PORT',
   'NODE_ENV',
@@ -73,6 +82,8 @@ function EnvBody({ app }: { app: AppRow }) {
   const { t } = useTranslation()
   const deploy = useAppsStore((s) => s.deploy)
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
+  const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
+  const refreshApp = useAppsStore((s) => s.refreshApp)
 
   const [items, setItems] = React.useState<AppEnvVar[] | null>(null)
   const [canWrite, setCanWrite] = React.useState(false)
@@ -117,14 +128,29 @@ function EnvBody({ app }: { app: AppRow }) {
       return next
     })
     setEditing(null)
+    // The write moved `env_updated_at` server-side, which is what turns
+    // `envPendingRedeploy` on — and that banner is the entire point of the two
+    // timestamp columns. Without re-reading the row it would not appear until
+    // the app list happened to reload, i.e. never, during the one session where
+    // it matters.
+    await refreshApp(app.id)
+    invalidateAppSummary()
   }
 
   const remove = async (item: AppEnvVar) => {
     setBusyKey(item.key)
     try {
       const ok = await getBackend().apps.deleteAppEnv(app.id, item.key)
-      if (ok) setItems((prev) => (prev ?? []).filter((v) => v.key !== item.key))
+      if (!ok) {
+        // 404 covers both "already gone" and "you no longer hold admin".
+        // Closing the dialog on it left the row on screen with no explanation.
+        failed(new Error(t('apps.env.deleteFailed', '删不掉 —— 它可能已经被删了，或者你已经没有权限。')))
+        return
+      }
+      setItems((prev) => (prev ?? []).filter((v) => v.key !== item.key))
       setConfirmDelete(null)
+      await refreshApp(app.id)
+      invalidateAppSummary()
     } catch (e) {
       failed(e)
     } finally {

@@ -39,8 +39,10 @@ create table if not exists amux.app_env_vars (
     check (coalesce(char_length(value), 0) <= 8192)
 );
 
-create index if not exists app_env_vars_app_idx
-  on amux.app_env_vars (app_id, key);
+-- No secondary index: `primary key (app_id, key)` already builds a unique btree
+-- on exactly those columns in that order, which serves both the per-app listing
+-- and the single-key lookup. A second one would never be chosen and would cost a
+-- write on every insert, update and delete.
 
 comment on table amux.app_env_vars is
   'Operator-defined environment for a deployed app, injected at finalizeDeploy. Applied BEFORE the platform''s own variables so a user key can never shadow DATABASE_URL or the storage token; the write path also refuses the reserved names outright.';

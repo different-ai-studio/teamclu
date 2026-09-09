@@ -159,7 +159,7 @@ const shortSha = (sha: string) => sha.slice(0, 7)
  * words, and none of them should render as a blank line.
  */
 export function describeCodeVersion(
-  app: Pick<AppRow, 'gitCommitSha' | 'gitAuthKind'>,
+  app: Pick<AppRow, 'gitCommitSha' | 'gitAuthKind' | 'fcStatus'>,
   head: AppGitHead | null,
 ): { key: string; fallback: string; vars?: Record<string, string | number> } {
   if (!isGiteaManaged(app)) {
@@ -176,6 +176,22 @@ export function describeCodeVersion(
       key: 'apps.controlPanel.codeVersionNeverDeployed',
       fallback: '还没有部署过 · 分支 {{branch}} 在 {{head}}',
       vars: { branch: head.branch, head: shortSha(head.sha) },
+    }
+  }
+  // `apps.git_commit_sha` is stamped when a deploy STARTS, not when it
+  // finishes, so on anything but a live app it names the commit the last deploy
+  // ATTEMPTED — not what is serving. A failed build would otherwise have the
+  // panel print "线上 abc123 · 已是最新" while the function still ran the commit
+  // before it, and the operator would read "nothing to deploy" and stop looking.
+  if (app.fcStatus !== 'live') {
+    return {
+      key: 'apps.controlPanel.codeVersionNotLive',
+      fallback: '上次部署的是 {{sha}}，但没有成功上线 · 分支 {{branch}} 在 {{head}}',
+      vars: {
+        sha: shortSha(head.deployedSha),
+        branch: head.branch,
+        head: shortSha(head.sha),
+      },
     }
   }
   if (head.undeployedCommits === 0 || head.deployedSha === head.sha) {
@@ -224,7 +240,7 @@ interface Summary {
     | { count: number; first: string | null }
     | { reason: 'no_database' | 'not_deployed' | 'unavailable' }
     | null
-  files: { count: number; bytes: number | null } | null
+  files: { count: number; more: boolean; bytes: number | null } | null
   cronJobs: number | null
   env: { count: number; secrets: number } | null
   /** Null for an app whose repo is not ours to read (see isGiteaManaged). */
@@ -239,6 +255,8 @@ interface Summary {
  * configured) must not blank the other three.
  */
 function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
+  // Re-run when a tab reports it changed something these counts describe.
+  const revision = useAppsStore((s) => s.summaryRevision)
   const [summary, setSummary] = React.useState<Summary>({
     members: null,
     tables: null,
@@ -291,6 +309,10 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
         files: filesPage
           ? {
               count: filesPage.items.length,
+              // One page was fetched; a further page means the count is a
+              // floor, not a total. Rendering "100 个文件" for an app with 500
+              // is wrong in the direction that looks entirely plausible.
+              more: Boolean(filesPage.nextCursor),
               bytes: usage.status === 'fulfilled' ? (usage.value?.bytes ?? null) : null,
             }
           : null,
@@ -310,7 +332,7 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
     return () => {
       cancelled = true
     }
-  }, [app.id])
+  }, [app.id, revision])
 
   return { summary, loading }
 }
@@ -497,9 +519,13 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const filesValue = (() => {
     if (!summary.files) return t('apps.controlPanel.summaryUnavailable', '暂时读不到')
     const used = formatBytes(summary.files.bytes)
-    const count = t('apps.controlPanel.summaryFiles', '{{count}} 个文件', {
-      count: summary.files.count,
-    })
+    const count = summary.files.more
+      ? t('apps.controlPanel.summaryFilesMore', '{{count}}+ 个文件', {
+          count: summary.files.count,
+        })
+      : t('apps.controlPanel.summaryFiles', '{{count}} 个文件', {
+          count: summary.files.count,
+        })
     return used ? `${count} · ${used}` : count
   })()
 

@@ -95,6 +95,27 @@ interface AppsState {
   /** Full FC deploy: startDeploy → daemon build+upload → finalize. */
   deploy: (appId: string) => Promise<void>;
   rename: (appId: string, name: string) => Promise<void>;
+  /**
+   * Bumped whenever a management tab changes something the control panel
+   * counts.
+   *
+   * The panel is now nothing but those counts, and they are loaded once per app
+   * selection — so creating three cron jobs in the tab the panel opened left the
+   * panel still saying "0 个任务" until the user selected another app and came
+   * back. The tabs already hold the fresh data; this is the cheapest signal that
+   * says "ask again" without wiring each count into the store.
+   */
+  summaryRevision: number;
+  invalidateAppSummary: () => void;
+  /**
+   * Re-read one app row from the server and merge it.
+   *
+   * For the server-DERIVED fields a mutation cannot return: `envPendingRedeploy`
+   * is computed from two timestamps the env write moved, and the PUT answers
+   * with the variable, not the app. Best-effort — a failed refresh must not turn
+   * a successful write into an error.
+   */
+  refreshApp: (appId: string) => Promise<void>;
   /** Who on the team can see this app. True when the change stuck. */
   setVisibility: (appId: string, visibility: "personal" | "team") => Promise<boolean>;
   /** Change any part of the login wall in one request. True when it stuck. */
@@ -800,6 +821,16 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         i18n.t("apps.renameFailed", "Rename failed"),
         e instanceof Error ? e.message : String(e),
       );
+    }
+  },
+  summaryRevision: 0,
+  invalidateAppSummary: () => set((s) => ({ summaryRevision: s.summaryRevision + 1 })),
+  refreshApp: async (appId) => {
+    try {
+      const row = await getBackend().apps.getApp(appId);
+      if (row) mergeRow(set, row);
+    } catch (e) {
+      console.warn("app row refresh failed (non-fatal)", e);
     }
   },
   setVisibility: async (appId, visibility) => {

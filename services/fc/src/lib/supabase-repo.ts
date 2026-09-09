@@ -37,7 +37,7 @@ import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
 import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
-import { MAX_ENV_VARS_PER_APP, mergeAppEnv, parseEnvKey, parseEnvValue } from "./app-env.js";
+import { MAX_ENV_VARS_PER_APP, parseEnvKey, parseEnvValue } from "./app-env.js";
 import { executeAppCronJob, JOB_COLUMNS as CRON_JOB_COLUMNS } from "./app-cron-runner.js";
 // Backend-neutral request validation — keep free of PostgREST calls.
 import {

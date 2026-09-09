@@ -424,3 +424,54 @@ test("a POST job sends its body and a GET job does not", async () => {
   assert.equal(seen[0].body, '{"a":1}');
   assert.equal(seen[1].body, undefined, "undici will not send a body on GET");
 });
+
+// --- the tick's own bounds ---------------------------------------------------
+
+test("a slow job occupies one lane, not the whole tick", async () => {
+  // Sequentially this was 12 x 100ms; the pool has to overlap them.
+  const rows = Array.from({ length: 12 }, (_, i) =>
+    job({ id: `job-${i}`, next_run_at: "2026-09-10T09:00:00.000Z" }),
+  );
+  const db = makeDb({ app_cron_jobs: rows, apps: apps(), app_cron_runs: [] });
+  let inFlight = 0;
+  let peak = 0;
+  const out = await runDueAppCronJobs({
+    client: db,
+    env: ENV as any,
+    now: new Date("2026-09-10T09:00:30.000Z"),
+    fetchImpl: (async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight -= 1;
+      return new Response("", { status: 200 });
+    }) as any,
+  });
+  assert.equal(out.ran, 12);
+  assert.ok(peak > 1, `expected overlapping requests, peak was ${peak}`);
+});
+
+test("the tick stops claiming when its own clock runs out", async () => {
+  // What is left keeps its next_run_at, so the following tick takes it. The
+  // alternative is ticks piling up on each other, which the compare-and-set
+  // cannot fix — it prevents double execution, not overlap.
+  const rows = Array.from({ length: 20 }, (_, i) =>
+    job({ id: `job-${i}`, next_run_at: "2026-09-10T09:00:00.000Z" }),
+  );
+  const db = makeDb({ app_cron_jobs: rows, apps: apps(), app_cron_runs: [] });
+  const out = await runDueAppCronJobs({
+    client: db,
+    env: ENV as any,
+    now: new Date("2026-09-10T09:00:30.000Z"),
+    maxTickMs: 40,
+    fetchImpl: (async () => {
+      await new Promise((r) => setTimeout(r, 25));
+      return new Response("", { status: 200 });
+    }) as any,
+  });
+  assert.equal(out.due, 20);
+  assert.ok(out.ran < 20, `expected the deadline to cut it short, ran ${out.ran}`);
+  const untouched = rows.filter((r) => r.next_run_at === "2026-09-10T09:00:00.000Z");
+  assert.ok(untouched.length > 0, "unclaimed jobs must keep their schedule");
+});
+

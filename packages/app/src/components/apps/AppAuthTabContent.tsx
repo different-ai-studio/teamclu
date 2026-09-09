@@ -51,6 +51,13 @@ function accessOf(rule: AppAuthRule, appAudience: AppAuthAudience): Access {
   // the row shows — the reader is asking "who gets this page", and the answer
   // is not "it depends on a field further up".
   //
+  // `appAudience` MUST be the pending baseline, not the saved one. An
+  // inheriting rule follows the baseline, so moving the baseline moves that
+  // rule too — and rendering it against the saved value showed 仅员工 on a row
+  // the pending save was about to open to anyone with an email address. A live
+  // access boundary widening while the UI says it did not is the one outcome
+  // this whole tab exists to prevent.
+  //
   // Inheritance is only broken when the row is CHANGED (ruleOf writes the
   // audience explicitly). An untouched rule is saved exactly as it was read, so
   // opening this tab and pressing Save cannot quietly pin an audience nobody
@@ -243,7 +250,7 @@ function AuthBody({ app }: { app: AppRow }) {
                       className="h-9 min-w-0 flex-1 rounded-[7px] font-mono text-[12.5px]"
                     />
                     <AccessSelect
-                      value={accessOf(rule, rowAudience)}
+                      value={accessOf(rule, audience)}
                       onChange={(next) => setRules((rs) =>
                         rs.map((r, j) => (j === i ? ruleOf(r.path, next) : r)),
                       )}

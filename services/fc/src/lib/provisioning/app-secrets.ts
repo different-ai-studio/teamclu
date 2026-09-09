@@ -64,7 +64,13 @@ export function seal(kind: string, plaintext: string, env: Env = process.env): s
 export function open(kind: string, ciphertext: string, env: Env = process.env): string {
   const key = requireAppSecretsEncryptionKey(env);
   const buf = Buffer.from(ciphertext, "base64");
-  if (buf.length < IV_LEN + TAG_LEN + 1) {
+  // `+ 1` here demanded at least one byte of payload, which made an EMPTY
+  // plaintext unreadable: seal("") is a perfectly valid 28-byte message (iv +
+  // tag + nothing), and open() rejected it as corrupt. The only caller that can
+  // produce one is an env var deliberately set to the empty string, and the
+  // symptom was that the variable vanished from every deploy while the panel
+  // still listed it as set.
+  if (buf.length < IV_LEN + TAG_LEN) {
     throw new ApiError(500, "app_secret_corrupt", "ciphertext is too short");
   }
   const iv = buf.subarray(0, IV_LEN);

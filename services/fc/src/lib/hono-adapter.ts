@@ -149,10 +149,13 @@ export function createHonoRouterAdapter(app: Hono, deps: Deps) {
           ) {
             throw new ApiError(401, "unauthorized", "app cron secret required");
           }
-          if (!deps.createSystemRepository) {
-            throw new ApiError(503, "unavailable", "app cron repository not configured");
-          }
-          repository = await deps.createSystemRepository();
+          // No repository. The tick works on a raw service-role client, not on
+          // the business repository, and building one here meant two clients per
+          // minute plus a 503 guard on a dependency the handler never touched —
+          // which passed on a deployment that had `createSystemRepository` wired
+          // but no service-role key, then failed further in with an unrelated
+          // error.
+          repository = undefined;
         } else if (auth === "app-token") {
           // The deployed app itself, not a person. It presents the per-app
           // token that finalizeDeploy sealed into app_secrets and wrote into

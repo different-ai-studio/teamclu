@@ -564,16 +564,27 @@ services:
       - /bin/sh
       - -c
       - |
-        # Line up with the wall clock before the first tick. A job scheduled for
+        # Line up with the wall clock before each tick. A job scheduled for
         # 09:00 should not fire at 09:00:37 just because the container happened
         # to start then.
-        sleep $$(( 60 - $$(date +%S) ))
+        #
+        # `date +%S` is ZERO-PADDED, and POSIX arithmetic reads a leading zero as
+        # octal — so `60 - 08` and `60 - 09` are parse errors that kill the
+        # script outright (busybox ash, dash, everything but bash's $((10#..))).
+        # Stripping the pad is the portable fix; without it the heartbeat died
+        # for two seconds out of every minute and the container restart-looped
+        # if it happened to start on one of them.
+        align_sleep() {
+          s=$$(date +%S)
+          sleep $$(( 60 - $${s#0} ))
+        }
+        align_sleep
         while true; do
           curl -fsS -m 55 -X POST \
             -H "Authorization: Bearer $$APP_CRON_SECRET" \
             http://fc:9000/v1/internal/app-cron/tick >/dev/null \
             || echo "app-cron: tick failed at $$(date -u +%FT%TZ)"
-          sleep $$(( 60 - $$(date +%S) ))
+          align_sleep
         done
 
   # ── Blob storage for team files (knowledge, skill packages) ──

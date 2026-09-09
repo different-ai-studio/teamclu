@@ -129,6 +129,7 @@ describe('AppControlPanel', () => {
     })
     backendMocks.listAppFiles.mockResolvedValue({
       items: [{ path: 'a.csv', size: 10 }],
+      nextCursor: null,
       canWrite: true,
     })
     backendMocks.getAppStorageUsage.mockResolvedValue({ bytes: 2048, quotaBytes: null })
@@ -330,6 +331,18 @@ describe('AppControlPanel', () => {
     expect(backendMocks.getGitHead).not.toHaveBeenCalled()
   })
 
+  it('marks the file count as a floor when there is another page', async () => {
+    backendMocks.listAppFiles.mockResolvedValue({
+      items: Array.from({ length: 100 }, (_, i) => ({ path: `f${i}`, size: 1 })),
+      nextCursor: 'more',
+      canWrite: true,
+    })
+    render(<AppControlPanel app={baseApp} />)
+    await waitFor(() =>
+      expect(screen.getByTestId('app-control-open-files').textContent).toContain('100+'),
+    )
+  })
+
   it('copies the local path', async () => {
     render(<AppControlPanel app={baseApp} />)
     await waitFor(() => expect(screen.getByTestId('app-control-copy-path')).toBeTruthy())
@@ -375,7 +388,7 @@ describe('AppControlPanel', () => {
   })
 
   describe('describeCodeVersion', () => {
-    const gitea = { gitAuthKind: 'gitea_deploy_key', gitCommitSha: null } as any
+    const gitea = { gitAuthKind: 'gitea_deploy_key', gitCommitSha: null, fcStatus: 'live' } as any
     const head = (over: Record<string, unknown> = {}) => ({
       sha: 'a3f91c2ffff',
       branch: 'main',
@@ -418,8 +431,19 @@ describe('AppControlPanel', () => {
     })
 
     it('says the repo is somebody else\'s before it says anything else', () => {
-      const out = describeCodeVersion({ gitAuthKind: null, gitCommitSha: null } as any, head())
+      const out = describeCodeVersion(
+        { gitAuthKind: null, gitCommitSha: null, fcStatus: 'live' } as any,
+        head(),
+      )
       expect(out.key).toBe('apps.controlPanel.codeVersionExternalRepo')
+    })
+
+    it('will not call an attempted commit "live" when the deploy did not land', () => {
+      // apps.git_commit_sha is stamped when a deploy STARTS. On a failed build
+      // the row names the commit that was attempted, not the one serving.
+      const out = describeCodeVersion({ ...gitea, fcStatus: 'deploy_error' }, head())
+      expect(out.key).toBe('apps.controlPanel.codeVersionNotLive')
+      expect(out.vars).toEqual({ sha: 'b7e2d10', branch: 'main', head: 'a3f91c2' })
     })
 
     it('says it cannot read the repo when the head never arrived', () => {

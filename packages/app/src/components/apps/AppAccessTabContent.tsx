@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { getBackend } from '@/lib/backend'
+import { useAppsStore } from '@/stores/apps-store'
 import { listTeamMembersForAccess, type TeamMemberOption } from '@/lib/daemon/daemon-agent-admin'
 import { AppTabShell } from './AppTabShell'
 import type { AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
@@ -52,6 +53,7 @@ function AccessBody({ app }: { app: AppRow }) {
   const [canManage, setCanManage] = React.useState(false)
   const [grantMemberId, setGrantMemberId] = React.useState('')
   const [grantLevel, setGrantLevel] = React.useState<AppPermissionLevel>('prompt')
+  const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
 
   const load = React.useCallback(async () => {
     setLoading(true)
@@ -119,6 +121,7 @@ function AccessBody({ app }: { app: AppRow }) {
           return next
         })
         toast.success(t('apps.controlPanel.accessGranted', '已授权'))
+        invalidateAppSummary()
       }
     } catch (e) {
       failed(e)
@@ -146,6 +149,7 @@ function AccessBody({ app }: { app: AppRow }) {
       if (ok) {
         setRows((prev) => (prev ?? []).filter((r) => r.memberId !== memberId))
         toast.success(t('apps.controlPanel.accessRevoked', '已撤销'))
+        invalidateAppSummary()
       }
     } catch (e) {
       failed(e)

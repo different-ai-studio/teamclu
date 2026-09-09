@@ -425,14 +425,15 @@ export interface FinalizeInput {
   /**
    * File-storage wiring for the app, built by the repo because minting the
    * token needs the service role (app_secrets). Same division of labour as
-   * userEnv: the operator's own variables, already decrypted. Applied under the
-   * platform's, never over them — see the note at the merge.
-   *
    * platformAuthEnv: this module composes the function's env, it does not own
    * any credential.
    */
   storageEnv?: Record<string, string>;
-  /** The operator's own variables (amux.app_env_vars), secrets already opened. */
+  /**
+   * The operator's own variables (amux.app_env_vars), secrets already opened.
+   * Applied UNDER everything the platform sets, never over it — see the merge
+   * in finalizeDeploy.
+   */
   userEnv?: Record<string, string>;
   /**
    * What the app declared about how it starts, reported by the daemon that

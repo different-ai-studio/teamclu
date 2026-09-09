@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
+import { useAppsStore } from '@/stores/apps-store'
 import { AppTabShell } from './AppTabShell'
 import type {
   AppCronJob,
@@ -113,6 +114,7 @@ function CronBody({ app }: { app: AppRow }) {
   const [historyFor, setHistoryFor] = React.useState<AppCronJob | null>(null)
   const [busyId, setBusyId] = React.useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = React.useState<AppCronJob | null>(null)
+  const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
 
   const load = React.useCallback(async () => {
     setLoading(true)
@@ -159,6 +161,8 @@ function CronBody({ app }: { app: AppRow }) {
         return next
       })
       setEditing(null)
+      // The panel counts these; it loads them once per app selection.
+      invalidateAppSummary()
     } catch (e) {
       failed(e)
     }
@@ -168,7 +172,13 @@ function CronBody({ app }: { app: AppRow }) {
     setBusyId(job.id)
     try {
       const saved = await getBackend().apps.updateAppCronJob(app.id, job.id, { enabled })
-      if (saved) setJobs((prev) => (prev ?? []).map((j) => (j.id === saved.id ? saved : j)))
+      if (!saved) {
+        // 404 is "gone, or no longer yours". Dropping it left the switch
+        // snapped back with nothing said.
+        failed(new Error(t('apps.cron.notAllowed', '没有权限修改这个应用的定时任务')))
+        return
+      }
+      setJobs((prev) => (prev ?? []).map((j) => (j.id === saved.id ? saved : j)))
     } catch (e) {
       failed(e)
     } finally {
@@ -203,8 +213,13 @@ function CronBody({ app }: { app: AppRow }) {
     setBusyId(job.id)
     try {
       const ok = await getBackend().apps.deleteAppCronJob(app.id, job.id)
-      if (ok) setJobs((prev) => (prev ?? []).filter((j) => j.id !== job.id))
+      if (!ok) {
+        failed(new Error(t('apps.cron.deleteFailed', '删不掉 —— 它可能已经被删了，或者你已经没有权限。')))
+        return
+      }
+      setJobs((prev) => (prev ?? []).filter((j) => j.id !== job.id))
       setConfirmDelete(null)
+      invalidateAppSummary()
     } catch (e) {
       failed(e)
     } finally {

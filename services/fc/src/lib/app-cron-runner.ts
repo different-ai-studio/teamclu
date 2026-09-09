@@ -16,8 +16,27 @@ import { appPublicUrl } from "./apps-public-host.js";
  * and a log row, and both are safe to lose.
  */
 
-/** Never hold a tick open longer than the heartbeat that drives it. */
+/** How many due jobs one tick will claim. */
 const MAX_JOBS_PER_TICK = 50;
+/**
+ * How many of them it sends at once.
+ *
+ * Sequential execution made the bound above meaningless: 50 jobs against a hung
+ * app, each with a 60s timeout, is fifty minutes in one request — while the
+ * heartbeat that started it gave up after 55 seconds and the NEXT tick was
+ * already running. Worse, one slow job at the head of `next_run_at asc` delayed
+ * every other app's job on the box behind it.
+ */
+const TICK_CONCURRENCY = 8;
+/**
+ * The tick's own wall clock.
+ *
+ * Whatever is left when this runs out is simply not claimed this minute; its
+ * `next_run_at` is untouched, so the following tick picks it up. Overrunning
+ * would stack ticks on top of each other, which is the one thing the
+ * compare-and-set cannot make safe — it stops double EXECUTION, not pile-up.
+ */
+const MAX_TICK_MS = 45_000;
 /** Execution rows kept per job. Trimmed on write; there is no sweeper. */
 const RUNS_KEPT_PER_JOB = 20;
 
@@ -60,6 +79,8 @@ export interface AppCronDeps {
   env?: NodeJS.ProcessEnv;
   now?: Date;
   limit?: number;
+  /** Wall-clock budget for the whole tick. Tests use it to hit the deadline. */
+  maxTickMs?: number;
 }
 
 /**
@@ -135,12 +156,24 @@ export async function runDueAppCronJobs(deps: AppCronDeps): Promise<AppCronTickR
 
   const jobs: JobRow[] = data ?? [];
   const outcomes: AppCronTickOutcome[] = [];
+  const deadline = Date.now() + (deps.maxTickMs ?? MAX_TICK_MS);
 
-  for (const job of jobs) {
-    const claimed = await claimJob(db, job, now);
-    if (!claimed) continue; // Another tick took it. Not an error, not a run.
-    outcomes.push(await executeJob(db, job, { env, doFetch }));
-  }
+  // A fixed-size pool over a shared cursor: each worker takes the next job and
+  // runs it, so a slow one occupies one lane instead of the whole tick.
+  let cursor = 0;
+  const worker = async () => {
+    for (;;) {
+      if (Date.now() >= deadline) return;
+      const job = jobs[cursor++];
+      if (!job) return;
+      const claimed = await claimJob(db, job, now);
+      if (!claimed) continue; // Another tick took it. Not an error, not a run.
+      outcomes.push(await executeJob(db, job, { env, doFetch }));
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(TICK_CONCURRENCY, jobs.length) }, () => worker()),
+  );
 
   return { due: jobs.length, ran: outcomes.length, outcomes };
 }

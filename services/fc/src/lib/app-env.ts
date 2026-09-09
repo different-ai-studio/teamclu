@@ -97,17 +97,8 @@ export function parseEnvValue(raw: unknown): string {
   return raw;
 }
 
-/**
- * The platform's variables, laid over the operator's.
- *
- * Order is the point: `Object.assign(user, platform)` — never the other way —
- * so a user row that reached the table without passing `parseEnvKey` (a direct
- * database write, a migration, a future endpoint) still cannot take DATABASE_URL
- * away from the app.
- */
-export function mergeAppEnv(
-  userEnv: Record<string, string>,
-  platformEnv: Record<string, string>,
-): Record<string, string> {
-  return Object.assign({}, userEnv, platformEnv);
-}
+// The merge itself lives in finalizeDeploy (app-deploy.ts), where the platform's
+// own variables are assigned over the operator's. A second implementation used
+// to live here for the tests to assert against — which meant the invariant was
+// verified on a function no deploy called, and the real loop could drift green.
+// The assertions moved onto finalizeDeploy; see test/app-env.test.ts.

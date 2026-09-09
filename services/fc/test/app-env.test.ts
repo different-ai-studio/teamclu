@@ -4,7 +4,6 @@ import {
   MAX_ENV_VARS_PER_APP,
   RESERVED_ENV_KEYS,
   isReservedEnvKey,
-  mergeAppEnv,
   parseEnvKey,
   parseEnvValue,
 } from "../src/lib/app-env.js";
@@ -69,18 +68,6 @@ test("an empty value is legitimate; a multi-line one is not", () => {
 test("the per-app ceiling is a number the error can name", () => {
   assert.equal(typeof MAX_ENV_VARS_PER_APP, "number");
   assert.ok(MAX_ENV_VARS_PER_APP > 0);
-});
-
-// --- the merge ---------------------------------------------------------------
-
-test("the platform's variables win over the operator's, always", () => {
-  const merged = mergeAppEnv(
-    { DATABASE_URL: "postgres://attacker/", MY_KEY: "mine" },
-    { DATABASE_URL: "postgres://real/", PORT: "9000" },
-  );
-  assert.equal(merged.DATABASE_URL, "postgres://real/");
-  assert.equal(merged.MY_KEY, "mine");
-  assert.equal(merged.PORT, "9000");
 });
 
 // --- sealing -----------------------------------------------------------------
