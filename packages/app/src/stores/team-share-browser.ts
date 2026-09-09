@@ -1305,7 +1305,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     set({ subjectActorId: actorId, detailTarget: null })
     await Promise.all([
       get().loadSection('skills', { force: true }),
-      get().loadSection('mcp', { force: true }),
+      // Probe after the actor is known. Opening MCP fires withTools while
+      // subjectActorId is still null, so loadMcpTools no-ops; this reload is
+      // what actually fills tool counts. Without it the list stays at "Idle · 0".
+      get().loadSection('mcp', { force: true, withTools: true }),
     ])
   },
 
