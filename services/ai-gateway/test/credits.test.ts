@@ -378,10 +378,13 @@ test("concurrent deliveries of the same purchase credit once", { skip: !DB }, as
 test("backfill grants every team that has never been credited", { skip: !DB }, async () => {
   await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
   await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
-  await backfillSignupGrants(sql, 777);
+  await backfillSignupGrants(sql, 777, [teamId]);
 
   // Asserts THIS team, not a global count: the backfill sweeps every team on
   // the deployment, and other suites create and delete their own concurrently.
+  // Scoping the sweep is the other half of that — asserting only our own team
+  // kept the assertion honest, but an unscoped sweep still landed 777 in the
+  // other suites' teams mid-arithmetic.
   const [bal] = await sql<{ balance_credits: string }[]>`
     select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
   assert.equal(Number(bal.balance_credits), 777, "the un-credited team was granted");
@@ -394,15 +397,43 @@ test("a team deleted mid-backfill is skipped, not fatal", { skip: !DB }, async (
   // the one outcome that must not happen quietly.
   const [{ id: doomed }] = await admin<{ id: string }[]>`
     insert into amux.teams (slug, name) values (${`doomed-${Date.now()}`}, 'doomed') returning id`;
-  await admin`delete from amux.teams where id = ${doomed}::uuid`;
 
   await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
   await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
-  // Does not throw, and our team is still granted.
-  await backfillSignupGrants(sql, 555);
+
+  // The deletion has to land BETWEEN the scan and the grant. Deleting up front
+  // proves nothing: the scan selects `from amux.teams`, so an already-deleted
+  // team never comes back in the list and the 23503 branch is never reached —
+  // the test passes because there is no second team, not because the skip
+  // works. Hooking the scan reproduces the real ordering deterministically.
+  let scanned = false;
+  const vanishAfterScan = new Proxy(sql as unknown as (...a: unknown[]) => unknown, {
+    apply(target, thisArg, args) {
+      const pending = Reflect.apply(target, thisArg, args) as Promise<unknown>;
+      if (scanned) return pending;
+      scanned = true;
+      return (async () => {
+        const rows = await pending;
+        await admin`delete from amux.teams where id = ${doomed}::uuid`;
+        return rows;
+      })();
+    },
+    get(target, prop) {
+      const v = Reflect.get(target, prop) as unknown;
+      // Methods (notably `sql.begin`, which topUp uses) must stay bound to the
+      // real client, or postgres.js loses its internal state.
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  }) as unknown as typeof sql;
+
+  const result = await backfillSignupGrants(vanishAfterScan, 555, [teamId, doomed]);
+
+  // This is the assertion the test was named for: the grant for `doomed` hit
+  // the foreign key, was caught, and the sweep carried on.
+  assert.equal(result.vanished, 1, "the deleted team was counted as vanished, not fatal");
   const [bal] = await sql<{ balance_credits: string }[]>`
     select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
-  assert.equal(Number(bal.balance_credits), 555);
+  assert.equal(Number(bal.balance_credits), 555, "the surviving team is still granted");
 });
 
 test("backfill is safe to re-run", { skip: !DB }, async () => {
@@ -410,11 +441,11 @@ test("backfill is safe to re-run", { skip: !DB }, async () => {
   // ahead of time, again after new teams appear, again if it half-failed.
   await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
   await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
-  await backfillSignupGrants(sql, 777);
+  await backfillSignupGrants(sql, 777, [teamId]);
   const [before] = await sql<{ balance_credits: string }[]>`
     select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
 
-  const second = await backfillSignupGrants(sql, 777);
+  const second = await backfillSignupGrants(sql, 777, [teamId]);
   const [after] = await sql<{ balance_credits: string }[]>`
     select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
 
@@ -431,10 +462,45 @@ test("backfill does not top up a team that already has credit", { skip: !DB }, a
   await topUp(sql, {
     teamId, amountCredits: 50, kind: "grant", idempotencyKey: `signup_grant:${teamId}`,
   });
-  await backfillSignupGrants(sql, 777);
+  await backfillSignupGrants(sql, 777, [teamId]);
   const [bal] = await sql<{ balance_credits: string }[]>`
     select balance_credits from amux.team_credit_balance where team_id = ${teamId}::uuid`;
   assert.equal(Number(bal.balance_credits), 50, "an existing signup grant is left alone");
+});
+
+test("a scoped backfill leaves teams outside the scope alone", { skip: !DB }, async () => {
+  // The six suites run as parallel processes against one database, so an
+  // unscoped sweep credits whatever teams the *others* have uncredited at that
+  // instant — landing 777 in the middle of their arithmetic. That is what made
+  // e2e.test.ts's "1000, refund 5000, expect -4000" come out at -3223 and turn
+  // main red. The sweep must touch only what it was asked about.
+  const [{ id: bystander }] = await admin<{ id: string }[]>`
+    insert into amux.teams (slug, name)
+    values (${`bystander-${Date.now()}`}, 'bystander') returning id`;
+  try {
+    // A team that genuinely qualifies for the grant: no ledger row at all.
+    await admin`delete from amux.credit_ledger where team_id = ${bystander}::uuid`;
+    await admin`
+      insert into amux.team_credit_balance (team_id, balance_credits)
+      values (${bystander}::uuid, 1000)
+      on conflict (team_id) do update set balance_credits = 1000`;
+
+    await admin`delete from amux.credit_ledger where team_id = ${teamId}::uuid`;
+    await admin`delete from amux.team_credit_balance where team_id = ${teamId}::uuid`;
+    await backfillSignupGrants(sql, 777, [teamId]);
+
+    const [bal] = await sql<{ balance_credits: string }[]>`
+      select balance_credits from amux.team_credit_balance where team_id = ${bystander}::uuid`;
+    assert.equal(
+      Number(bal.balance_credits),
+      1000,
+      "a scoped sweep credited a team it was not asked about",
+    );
+  } finally {
+    await admin`delete from amux.credit_ledger where team_id = ${bystander}::uuid`;
+    await admin`delete from amux.team_credit_balance where team_id = ${bystander}::uuid`;
+    await admin`delete from amux.teams where id = ${bystander}::uuid`;
+  }
 });
 
 test("reconcile is silent when balance and ledger agree", { skip: !DB }, async () => {

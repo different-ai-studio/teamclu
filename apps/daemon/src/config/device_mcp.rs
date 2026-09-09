@@ -129,7 +129,8 @@ fn resolve_app_scheme() -> Option<String> {
 fn is_valid_scheme(s: &str) -> bool {
     let mut chars = s.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'))
+        && chars
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'))
 }
 
 /// `teamclu-introspect`, the bundled sidecar.
@@ -151,8 +152,7 @@ fn is_valid_scheme(s: &str) -> bool {
 fn introspect_mcp_config() -> Option<serde_json::Value> {
     let binary = crate::runtime::supervisor::resolve_introspect_binary()?;
     let sock = super::DaemonConfig::sock_path();
-    let scheme = resolve_app_scheme()
-        .filter(|s| is_valid_scheme(s));
+    let scheme = resolve_app_scheme().filter(|s| is_valid_scheme(s));
     let entry = match scheme {
         Some(s) => serde_json::json!({
             "type": "local",

@@ -360,6 +360,47 @@ async fn ensure_http_url_reachable_async(url: &tauri::Url) -> Result<(), String>
     }
 }
 
+/// Run the pre-flight probe with the policy the platform actually needs.
+///
+/// **macOS: blocking.** The hang this gate exists to prevent is a
+/// WKWebView/AppKit behaviour (#617) — handing the platform webview an
+/// External URL it cannot open wedges the main thread, and the only fix is to
+/// never hand it one.
+///
+/// **Everywhere else: advisory.** WebView2 has no such failure mode; a URL it
+/// cannot load becomes its own error page and the process stays responsive. So
+/// off macOS a failed probe is logged and the webview opens anyway.
+///
+/// The distinction matters because the probe is not the client that will load
+/// the page, and on Windows the two disagree in ways that have nothing to do
+/// with whether the origin works:
+///
+/// - `reqwest` resolves proxies from environment variables only. It reads
+///   neither the Windows system proxy nor a PAC script, both of which WebView2
+///   honours through WinINET — so behind a corporate proxy the probe connects
+///   directly, and fails, against origins the webview loads fine.
+/// - It validates against the OS root store as `rustls` reads it, while
+///   Schannel fetches missing roots on demand and accepts chains rustls
+///   rejects.
+/// - Its budget is a flat 3s for DNS, connect, TLS and response.
+///
+/// Letting it veto there traded a macOS-only hang for a Windows-only "the
+/// button does nothing": `webview_create` returned `Err` before `add_child`,
+/// so Web SSO never opened a window at all.
+async fn preflight_url(url: &tauri::Url) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        ensure_http_url_reachable_async(url).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Err(err) = ensure_http_url_reachable_async(url).await {
+            log::warn!("[Webview] Pre-flight probe failed, opening anyway: {err}");
+        }
+        Ok(())
+    }
+}
+
 /// Build a documentStart script that seeds a supabase-js session into the
 /// page's localStorage so it is already authenticated when its bundle runs.
 /// `session_json` is the already-serialized supabase session object; it is
@@ -564,10 +605,11 @@ pub async fn webview_create(
         .parse::<tauri::Url>()
         .map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
 
-    // Fail closed before add_child: an External URL the platform webview cannot
-    // open freezes the AppKit main thread (issue #617). Resolvable is not
-    // enough — a certificate that does not match the name wedges it too.
-    ensure_http_url_reachable_async(&parsed_url).await?;
+    // Fail closed before add_child on macOS: an External URL the platform
+    // webview cannot open freezes the AppKit main thread (issue #617), and
+    // resolvable is not enough — a certificate that does not match the name
+    // wedges it too. Advisory elsewhere; see `preflight_url`.
+    preflight_url(&parsed_url).await?;
 
     log::info!(
         "[Webview] Creating '{}' in parent '{}' url={} pos=({},{}) size={}x{}",
@@ -885,7 +927,7 @@ pub async fn webview_navigate(
             .parse::<tauri::Url>()
             .map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
         // Same guard as webview_create — navigate to a bad host can freeze too.
-        ensure_http_url_reachable_async(&parsed).await?;
+        preflight_url(&parsed).await?;
         log::info!("[Webview] Navigating '{}' to {}", label, url);
         webview
             .navigate(parsed)
@@ -1259,6 +1301,30 @@ mod tests {
     async fn ensure_http_url_reachable_skips_non_http_schemes() {
         let url: tauri::Url = "about:blank".parse().expect("url");
         assert!(ensure_http_url_reachable_async(&url).await.is_ok());
+    }
+
+    /// The probe is a gate on macOS and advice everywhere else. Both arms are
+    /// pinned here because the split is the fix: letting a failed probe veto on
+    /// Windows made `webview_create` return `Err` before `add_child`, so Web
+    /// SSO never opened a window — for an origin WebView2 loads fine.
+    #[tokio::test]
+    async fn preflight_blocks_only_on_macos() {
+        // `.invalid` is reserved by RFC 2606 and must not resolve, so the probe
+        // fails at the DNS step — no network round trip, no flake.
+        let url: tauri::Url = "https://no-such-host-teamclu-617.invalid/path"
+            .parse()
+            .expect("url");
+        assert!(ensure_http_url_reachable_async(&url).await.is_err());
+
+        let gated = preflight_url(&url).await;
+        if cfg!(target_os = "macos") {
+            assert!(gated.is_err(), "macOS must fail closed (#617)");
+        } else {
+            assert!(
+                gated.is_ok(),
+                "off macOS a failed probe must not veto the webview: {gated:?}"
+            );
+        }
     }
 
     #[test]

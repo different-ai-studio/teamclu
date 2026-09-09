@@ -239,3 +239,115 @@ test("ensureHttpTrigger swallows 'trigger already exists' then reads the URL", a
   const url = await ops.ensureHttpTrigger("tc-app-1");
   assert.equal(url, "https://fn.example.fcapp.run");
 });
+
+// --- log delivery -----------------------------------------------------------
+
+const LOGS = { project: "teamclu-apps-1", logstore: "app-logs" };
+
+test("a new function is created with its log config", async () => {
+  const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
+  const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
+  const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => LOGS });
+  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  const create = calls.find((c) => c[0] === "createFunction")[1].body;
+  assert.equal(create.logConfig.project, "teamclu-apps-1");
+  assert.equal(create.logConfig.logstore, "app-logs");
+  // Without this there is no per-request row, and "did the request even arrive"
+  // has no answer.
+  assert.equal(create.logConfig.enableRequestMetrics, true);
+});
+
+test("an existing function gets its log config re-sent on every update", async () => {
+  // The nine functions deployed before log delivery existed carry an empty log
+  // config. A code-only update would leave them with no logs forever, however
+  // many times their owner redeployed — the same trap the Node layer and the
+  // VPC config were both fixed for.
+  const { client, calls } = fakeClient();
+  const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => LOGS });
+  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  const update = calls.find((c) => c[0] === "updateFunction")[2].body;
+  assert.equal(update.logConfig.project, "teamclu-apps-1");
+  assert.equal(update.logConfig.logstore, "app-logs");
+});
+
+test("a deployment with no usable log store deploys without a log config", async () => {
+  // Not an empty project/logstore pair: Function Compute rejects a logConfig
+  // naming a project that does not exist, which would turn "logs are not set
+  // up" into "this app cannot deploy at all".
+  const { client, calls } = fakeClient();
+  const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => undefined });
+  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  const update = calls.find((c) => c[0] === "updateFunction")[2].body;
+  assert.equal(update.logConfig, undefined);
+});
+
+// --- Container apps
+
+const CONTAINER = { runtime: "container", entry: "", port: 5000 };
+
+test("a container app runs its own image, with no layer and no code object", async () => {
+  // Sending either alongside customContainerConfig is how a Node layer ends up
+  // mounted into someone's Python image, and how a function keeps pointing at
+  // a code.zip that this deploy never wrote.
+  const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
+  const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  await ops.ensureFunction("tc-app-1", {
+    ossObjectName: "apps/1/code.zip",
+    env: { PORT: "5000" },
+    runtime: CONTAINER,
+    image: "registry.cn-shenzhen.aliyuncs.com/ns/tc-app-1:abc1234",
+  });
+  const create = calls.find((c) => c[0] === "createFunction")[1].body;
+  assert.equal(create.runtime, "custom-container");
+  assert.equal(create.customContainerConfig.image, "registry.cn-shenzhen.aliyuncs.com/ns/tc-app-1:abc1234");
+  assert.equal(create.customContainerConfig.port, 5000);
+  assert.equal(create.layers, undefined);
+  assert.equal(create.code, undefined);
+  assert.equal(create.customRuntimeConfig, undefined);
+});
+
+test("a redeploy re-sends the image, not just the environment", async () => {
+  // Same reason the layer and the start command are re-sent: a function that
+  // only got its image at create would keep running the first one forever, and
+  // the redeploy a user reaches for would report success and change nothing.
+  const { client, calls } = fakeClient();
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  await ops.ensureFunction("tc-app-1", {
+    ossObjectName: "apps/1/code.zip",
+    env: {},
+    runtime: CONTAINER,
+    image: "registry/ns/tc-app-1:second",
+  });
+  const update = calls.find((c) => c[0] === "updateFunction")[2].body;
+  assert.equal(update.runtime, "custom-container");
+  assert.equal(update.customContainerConfig.image, "registry/ns/tc-app-1:second");
+  assert.equal(update.layers, undefined);
+});
+
+test("a container app with a declared health path gets a check that survives a cold pull", async () => {
+  const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
+  const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  await ops.ensureFunction("tc-app-1", {
+    ossObjectName: "apps/1/code.zip",
+    env: {},
+    runtime: { ...CONTAINER, healthCheckPath: "/api/health" },
+    image: "registry/ns/tc-app-1:abc",
+  });
+  const cfg = calls.find((c) => c[0] === "createFunction")[1].body.customContainerConfig;
+  assert.equal(cfg.healthCheckConfig.httpGetUrl, "/api/health");
+  assert.ok(
+    cfg.healthCheckConfig.initialDelaySeconds >= 10,
+    "a first pull of an emulated-build image is slow",
+  );
+});
+
+test("a container app cannot be finalized without the image the build pushed", async () => {
+  const { client } = fakeClient();
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  await assert.rejects(
+    () => ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {}, runtime: CONTAINER }),
+    /must be finalized with the image/,
+  );
+});

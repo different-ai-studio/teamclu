@@ -2,6 +2,8 @@ import { useTranslation } from 'react-i18next'
 import { Loader2, Trash2, Copy, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
+const PREVIEW_LIMIT = 5
+
 /**
  * Shown when auto-follow has stopped because the pack was edited locally.
  *
@@ -11,10 +13,9 @@ import { Button } from '@/components/ui/button'
  * treating a self-healing state as an alert is how alerts stop meaning
  * anything.
  *
- * Naming the changed files is load-bearing rather than decorative. The user's
- * first question is "did I change this?", and a list of paths answers it
- * outright; "this skill has local modifications" leaves them opening a diff to
- * find out whether they care.
+ * The changed-file list is a preview, not a dump. Hundreds of runtime files
+ * used to push the publish button off the screen; the full set lives in the
+ * diff sheet.
  */
 export function ConflictBar({
   modified,
@@ -48,19 +49,9 @@ export function ConflictBar({
   onRebaseOnLatest: () => void
 }) {
   const { t } = useTranslation()
-  const changed = [
-    modified.length
-      ? t('teamShare.skillConflictModified', '{{files}} changed', { files: modified.join('、') })
-      : null,
-    deleted.length
-      ? t('teamShare.skillConflictDeleted', '{{files}} deleted', { files: deleted.join('、') })
-      : null,
-    added.length
-      ? t('teamShare.skillConflictAdded', '{{files}} added', { files: added.join('、') })
-      : null,
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const preview = [...modified, ...deleted, ...added]
+  const extra = Math.max(0, preview.length - PREVIEW_LIMIT)
+  const shown = preview.slice(0, PREVIEW_LIMIT)
 
   return (
     <div className="border-b border-border px-5 py-3">
@@ -80,33 +71,7 @@ export function ConflictBar({
             </span>
           )}
         </div>
-        {isStaleDirty && (
-          <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
-            {t(
-              'teamShare.skillStaleConflictBody',
-              'Your edits are based on v{{base}}. The team is on v{{latest}} — someone else may have published while you were editing. Drafts stay on this device until you publish.',
-              { base: installedVersion, latest: latestVersion },
-            )}
-          </p>
-        )}
-        {changed && (
-          <p className="mt-1 break-words text-[12px] leading-relaxed text-muted-foreground">{changed}</p>
-        )}
-        <p className="mt-1 text-[11.5px] text-faint">
-          {source === 'hosted-agent'
-            ? t('teamShare.skillConflictSourceHosted', '修改来源：本机 Hosted Agent')
-            : t('teamShare.skillConflictSourceMember', '修改来源：本机成员目录')}
-        </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={onViewDiff}
-            disabled={busy}
-            className="text-[12px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-40"
-          >
-            {t('teamShare.skillConflictViewDiff', 'View changes')}
-          </button>
-          <span className="flex-1" />
           {canPublish && !isStaleDirty && (
             <Button
               type="button"
@@ -128,7 +93,9 @@ export function ConflictBar({
               disabled={busy}
               className="h-8 gap-1.5 text-[13px] text-muted-foreground hover:text-foreground"
             >
-              {t('teamShare.skillRebaseOnLatest', 'Apply team v{{v}}', { v: latestVersion })}
+              {t('teamShare.skillRebaseOnLatest', 'Discard local changes and use v{{v}}', {
+                v: latestVersion,
+              })}
             </Button>
           )}
           <Button
@@ -154,6 +121,49 @@ export function ConflictBar({
               : t('teamShare.skillConflictDiscard', 'Discard local changes')}
           </Button>
         </div>
+        {isStaleDirty && (
+          <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
+            {t(
+              'teamShare.skillStaleConflictBody',
+              'Your edits are based on v{{base}}. The team is on v{{latest}} — someone else may have published while you were editing. Drafts stay on this device until you publish.',
+              { base: installedVersion, latest: latestVersion },
+            )}
+          </p>
+        )}
+        <p className="mt-2 text-[12px] text-muted-foreground">
+          {t('teamShare.skillConflictSummary', '{{modified}} modified · {{added}} added · {{deleted}} deleted', {
+            modified: modified.length,
+            added: added.length,
+            deleted: deleted.length,
+          })}
+        </p>
+        {shown.length > 0 && (
+          <ul className="mt-1 max-h-[7.5rem] overflow-hidden font-mono text-[11.5px] leading-relaxed text-muted-foreground">
+            {shown.map((path) => (
+              <li key={path} className="truncate">
+                {path}
+              </li>
+            ))}
+          </ul>
+        )}
+        {extra > 0 && (
+          <p className="mt-0.5 text-[11.5px] text-faint">
+            {t('teamShare.skillConflictMoreFiles', 'and {{count}} more files', { count: extra })}
+          </p>
+        )}
+        <p className="mt-1 text-[11.5px] text-faint">
+          {source === 'hosted-agent'
+            ? t('teamShare.skillConflictSourceHosted', '修改来源：本机 Hosted Agent')
+            : t('teamShare.skillConflictSourceMember', '修改来源：本机成员目录')}
+        </p>
+        <button
+          type="button"
+          onClick={onViewDiff}
+          disabled={busy}
+          className="mt-2 text-[12px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-40"
+        >
+          {t('teamShare.skillConflictViewDiff', 'View all changes')}
+        </button>
       </div>
     </div>
   )

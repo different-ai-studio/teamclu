@@ -30,6 +30,13 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { resolveAppsOss, getAppsS3Client } from "./lib/provisioning/apps-oss.js";
 import { makeAppStorageOps, type AppStorageOps } from "./lib/provisioning/app-storage.js";
+import {
+  appImageReference,
+  appImageTag,
+  resolveAppsRegistry,
+} from "./lib/provisioning/apps-registry.js";
+import { resolveAppsSls, getSlsClient, makeSlsOps, type SlsOps } from "./lib/provisioning/sls-client.js";
+import { makeAppLogsReader } from "./lib/provisioning/app-logs.js";
 import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
@@ -79,6 +86,75 @@ export function syncGetQueryToBody(event: any) {
 // The apps database is a SEPARATE, softer requirement — only `data_app` needs
 // it. Static apps deploy fine without APPS_DB_ADMIN_URL; asking for one is what
 // raises the error, not merely having the module loaded.
+/**
+ * The app-log destination, and whether it is usable yet.
+ *
+ * One object shared by the deploy path (which points functions at it) and the
+ * read path (which queries it), because those two must never disagree about
+ * which logstore an app's logs are in.
+ *
+ * `ensure` is memoized and remembers a failure: an account whose key cannot
+ * create an SLS project would otherwise retry on every deploy and — worse —
+ * keep handing the FC API a `logConfig` naming a project that does not exist,
+ * which fails the whole deploy. After a failed ensure, `config()` reads as
+ * undefined and functions are created with no log config at all.
+ */
+interface AppLogsProvisioner {
+  unavailableReason?: string;
+  ops?: SlsOps;
+  config: () => { project: string; logstore: string } | undefined;
+  ensure: () => Promise<void>;
+}
+
+function buildAppLogsProvisioner(): AppLogsProvisioner {
+  const resolvedOss = resolveAppsOss();
+  const resolvedSls = resolveAppsSls();
+  const reason = resolvedOss.error ?? resolvedSls.error;
+  if (reason || !resolvedOss.profile || !resolvedSls.config) {
+    return {
+      unavailableReason: reason ?? "app logs are not configured",
+      config: () => undefined,
+      ensure: async () => {},
+    };
+  }
+  const cfg = resolvedSls.config;
+  const ops = makeSlsOps(getSlsClient(resolvedOss.profile), cfg);
+  let state: "unknown" | "ready" | "failed" = "unknown";
+  return {
+    ops,
+    config: () =>
+      state === "failed" ? undefined : { project: cfg.project, logstore: cfg.logstore },
+    ensure: async () => {
+      if (state !== "unknown") return;
+      try {
+        await ops.ensureLogStore();
+        state = "ready";
+      } catch (e) {
+        state = "failed";
+        throw e;
+      }
+    },
+  };
+}
+
+// Built on first use, not at import: this module is imported by tooling that
+// has no environment at all, and the memo is only worth anything if the object
+// outlives one request.
+let appLogsProvisionerMemo: AppLogsProvisioner | null = null;
+function appLogsProvisioner(): AppLogsProvisioner {
+  appLogsProvisionerMemo ??= buildAppLogsProvisioner();
+  return appLogsProvisionerMemo;
+}
+
+/** Read side of the same destination — see {@link buildAppLogsProvisioner}. */
+function makeAppLogsDeps() {
+  const provisioner = appLogsProvisioner();
+  if (!provisioner.ops) {
+    return { appLogsUnavailableReason: provisioner.unavailableReason };
+  }
+  return { appLogs: makeAppLogsReader(provisioner.ops) };
+}
+
 function makeDeployDeps() {
   const resolved = resolveAppsOss();
   if (resolved.error) return { deployUnavailableReason: resolved.error };
@@ -93,13 +169,37 @@ function makeDeployDeps() {
   }
   const bucket = profile.bucket;
   const appsFcVpc = readAppsFcVpcConfig();
+  // Container apps push an image instead of uploading an archive. A deployment
+  // with no registry configured keeps working for every other app: only a
+  // container deploy is refused, and it is refused naming the variable.
+  const registry = resolveAppsRegistry();
+  const mintImagePush = registry.config
+    ? async (appId: string, gitCommitSha: string | null | undefined) => {
+        const cfg = registry.config;
+        return {
+          // Pushed to the host the developer's machine can reach, pulled from
+          // whichever host the function can — the same image either way.
+          reference: appImageReference(cfg, appId, appImageTag(gitCommitSha)),
+          registry: cfg.host,
+          ...cfg.push,
+        };
+      }
+    : undefined;
+
   const fcOps = makeFcOps(getFcClient(profile), {
     bucket,
     role: process.env.ROLE_ARN,
+    // What the deployed function logs into the registry with. Deployment-level
+    // rather than per-deploy: it is a property of where images live, and the
+    // function keeps it after the deploy that set it is long over.
+    registryAuth: registry.config
+      ? { ...registry.config.pull, host: registry.config.pullHost }
+      : undefined,
     // Region of the function, which is also where its Node layer must come
     // from — a layer ARN is region-scoped.
     region: profile.region,
     vpc: appsFcVpc,
+    logs: () => appLogsProvisioner().config(),
   });
   const appsAdminUrl = process.env.APPS_DB_ADMIN_URL?.trim() || undefined;
   const appsAppUrl = process.env.APPS_DB_APP_URL?.trim() || undefined;
@@ -108,12 +208,21 @@ function makeDeployDeps() {
   // URL and using it, and a cold install on a modest laptop outlasts 15.
   const mintUploadUrl = (ossObjectName: string) =>
     getSignedUrl(s3 as any, new PutObjectCommand({ Bucket: bucket, Key: ossObjectName }), { expiresIn: 1800 });
+
   return {
     // The caller's `region` is ignored: `fc_region` must record where the
     // function actually went, which is the apps region, not the deployment's
     // default REGION.
-    startDeploy: (a: { appId: string; region: string }) =>
-      startDeployImpl({ mintUploadUrl }, { ...a, region: profile.region }),
+    startDeploy: (a: {
+      appId: string;
+      region: string;
+      runtime?: string;
+      gitCommitSha?: string | null;
+    }) =>
+      startDeployImpl(
+        { mintUploadUrl, mintImagePush, imagePushUnavailable: registry.error },
+        { ...a, region: profile.region },
+      ),
     finalizeDeploy: (a: {
       appId: string;
       slug: string;
@@ -121,8 +230,12 @@ function makeDeployDeps() {
       appType: string;
       fcFunctionName: string;
       ossObjectName: string;
-      platformOAuthEnv?: Record<string, string>;
-    }) => finalizeDeployImpl({ appsAdminUrl, appsAppUrl, fcOps }, a),
+      platformAuthEnv?: Record<string, string>;
+    }) =>
+      finalizeDeployImpl(
+        { appsAdminUrl, appsAppUrl, fcOps, ensureLogStore: () => appLogsProvisioner().ensure() },
+        a,
+      ),
   };
 }
 
@@ -223,6 +336,96 @@ export function vanityLookup() {
   return makeVanityLookup({ getServiceRoleClient: createServiceRoleClient });
 }
 
+/** uuid columns: a non-uuid `.eq()` is a query ERROR, not an empty result. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * App lookup for the central login service, wired the same way and for the same
+ * reason as {@link vanityLookup}: the login hostname is unauthenticated by
+ * nature — there is no bearer token to scope RLS with — so it reads the
+ * control-plane database with the service role, like the vanity, cron and push
+ * paths do.
+ *
+ * The uuid guard is not defensive coding. `apps.id` is a uuid column and the id
+ * here comes straight off a query string, so a malformed one makes PostgREST
+ * fail the whole query rather than return no rows — the login page would answer
+ * 500 instead of "no such app". Same shape of trap as the `id like '…%'` filter
+ * that `apps-vanity.ts` documents.
+ */
+export function loginAppLookup() {
+  return async (appId: string) => {
+    if (!UUID_RE.test(appId)) return null;
+    const { data, error } = await createServiceRoleClient()
+      .from("apps")
+      .select("id, slug, auth_mode")
+      .eq("id", appId)
+      .maybeSingle();
+    if (error) throw new Error(`login app lookup failed: ${error.message}`);
+    if (!data) return null;
+    return { id: data.id, slug: data.slug, authMode: data.auth_mode ?? "none" };
+  };
+}
+
+/**
+ * Org ids for the `org` audience: the visitor's and the app's.
+ *
+ * Two reads, both with the service role for the same tokenless reason as
+ * {@link vanityLookup}. They live in one function so the gateway makes one call
+ * per request rather than two, and so the cache below covers both.
+ *
+ * `public.users.id`, NOT `auth_user_id` — that is the column `amux.current_org_id()`
+ * matches `auth.uid()` against, and two different answers to "which org is this
+ * user in" is exactly the kind of split that shows up as an access bug nobody
+ * can reproduce. `users` also lives in `public` while everything else here is
+ * in `amux`, hence the explicit schema.
+ *
+ * A visitor who signed up through an app's login page has no `public.users` row
+ * at all (that table mirrors saas-mono), so they resolve to a null org and are
+ * refused by the org audience. That is the intended meaning of "staff only".
+ *
+ * Errors are thrown, not swallowed into a null pair: a database fault must not
+ * masquerade as "this team has no organisation", which is what the gateway
+ * would then tell the operator to go and fix.
+ */
+type OrgPair = { visitorOrgId: string | null; appOrgId: string | null };
+
+const ORG_CACHE_TTL_MS = 60_000;
+const ORG_CACHE_MAX = 5_000;
+const orgPairCache = new Map<string, { value: OrgPair; expiresAt: number }>();
+
+export function appOrgsLookup() {
+  return async (userId: string, teamId: string | null): Promise<OrgPair> => {
+    const empty: OrgPair = { visitorOrgId: null, appOrgId: null };
+    if (!UUID_RE.test(userId)) return empty;
+
+    const key = `${userId}|${teamId ?? ""}`;
+    const now = Date.now();
+    const hit = orgPairCache.get(key);
+    if (hit && hit.expiresAt > now) return hit.value;
+
+    const admin = createServiceRoleClient();
+    const [visitor, team] = await Promise.all([
+      admin.schema("public").from("users").select("org_id").eq("id", userId).maybeSingle(),
+      teamId && UUID_RE.test(teamId)
+        ? admin.from("teams").select("oid").eq("id", teamId).maybeSingle()
+        : Promise.resolve({ data: null, error: null } as any),
+    ]);
+    if (visitor.error) throw new Error(`visitor org lookup failed: ${visitor.error.message}`);
+    if (team.error) throw new Error(`app org lookup failed: ${team.error.message}`);
+
+    const value: OrgPair = {
+      visitorOrgId: visitor.data?.org_id ?? null,
+      appOrgId: team.data?.oid ?? null,
+    };
+    if (orgPairCache.size >= ORG_CACHE_MAX) {
+      for (const [k, v] of orgPairCache) if (v.expiresAt <= now) orgPairCache.delete(k);
+      if (orgPairCache.size >= ORG_CACHE_MAX) orgPairCache.clear();
+    }
+    orgPairCache.set(key, { value, expiresAt: now + ORG_CACHE_TTL_MS });
+    return value;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Repository factories. Built lazily per request so importing this module
 // needs no environment.
@@ -257,6 +460,7 @@ export function makeBusinessRepoFactory() {
       ...makeTeardownDeps(),
       ...makeAppDataDeps(),
       ...makeAppStorageDeps(),
+      ...makeAppLogsDeps(),
       ...makeGiteaDeps(),
       ...makeGotrueOAuthDeps(),
     });
@@ -295,6 +499,8 @@ const app = createApp({
   createAuthRepository: makeAuthRepoFactory(),
   createSystemRepository: makeSystemRepoFactory(),
   lookupVanityApp: vanityLookup(),
+  lookupLoginApp: loginAppLookup(),
+  resolveAppOrgs: appOrgsLookup(),
 });
 
 const honoHandler = handle(app);

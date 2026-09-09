@@ -70,6 +70,47 @@
 	reverse_proxy minio:9000
 }
 
+# Private image registry for container apps.
+#
+# The registry container has no authentication of its own, so this site is the
+# whole of it. Two logins rather than one: the deployed function keeps its pull
+# credential in its own configuration, where anyone who can read the function
+# can read it — and a credential that can also PUSH there means replacing the
+# image every instance of that app executes.
+#
+# The split is by method, because that is what the registry protocol makes it:
+# a pull is GET/HEAD, and everything that writes a blob, a manifest or a tag is
+# POST/PUT/PATCH/DELETE. Both password hashes are bcrypt, from
+# `docker run --rm caddy:2 caddy hash-password --plaintext '<password>'`.
+#
+# REGISTRY_DOMAIN falls back to registry.localhost on a box that has not
+# enabled it, for the same reason S3_DOMAIN does: Caddy reads a nameless block
+# as global configuration and refuses to start.
+{$CADDY_SITE_SCHEME}{$REGISTRY_DOMAIN} {
+	{$CADDY_SITE_TLS}
+
+	# An image layer is tens of megabytes and the default cap is 10MB.
+	request_body {
+		max_size 2GB
+	}
+
+	@write method POST PUT PATCH DELETE
+	handle @write {
+		basic_auth {
+			{$REGISTRY_PUSH_USERNAME} {$REGISTRY_PUSH_PASSWORD_HASH}
+		}
+		reverse_proxy registry:5000
+	}
+
+	handle {
+		basic_auth {
+			{$REGISTRY_PUSH_USERNAME} {$REGISTRY_PUSH_PASSWORD_HASH}
+			{$REGISTRY_PULL_USERNAME} {$REGISTRY_PULL_PASSWORD_HASH}
+		}
+		reverse_proxy registry:5000
+	}
+}
+
 {$CADDY_SITE_SCHEME}{$STUDIO_DOMAIN} {
 	{$CADDY_SITE_TLS}
 	reverse_proxy studio:3000
@@ -91,6 +132,23 @@
 	reverse_proxy gitea:3000
 }
 
+# Central login service for deployed apps.
+#
+# One hostname, owned outright by FC: it renders the login page, does the email
+# round trip, and holds the SSO cookie that lets a visitor open a second app
+# without logging in again. Apps themselves never serve any of this — what
+# crosses back to an app is a one-shot code, because a cookie set here cannot
+# be read on an app's own hostname (and once custom domains exist, that is the
+# normal case rather than the exception).
+#
+# LOGIN_DOMAIN falls back to login.localhost on a box that has not set one, for
+# the same reason S3_DOMAIN does: a nameless block is read as global
+# configuration and Caddy refuses to start.
+{$CADDY_SITE_SCHEME}{$LOGIN_DOMAIN} {
+	{$CADDY_SITE_TLS}
+	reverse_proxy fc:9000
+}
+
 # Deployed apps: <slug>-<id8>.{$APPS_DOMAIN}
 #
 # The wildcard sits one level DOWN, on its own `apps.` label, and never on the
@@ -107,6 +165,40 @@
 # has not set one, for the same reason S3_DOMAIN does: a nameless block is read
 # as global configuration and Caddy refuses to start.
 {$CADDY_SITE_SCHEME}*.{$APPS_DOMAIN} {
+	tls {
+		on_demand
+	}
+	reverse_proxy fc:9000
+}
+
+# Domains an app's owner bound themselves.
+#
+# MUST BE THE LAST SITE BLOCK IN THIS FILE: a bare `:443` matches every Host
+# no other block claimed, so anything after it would never be reached.
+#
+# The address is a variable, not a literal `:443`, because with CADDY_TLS_MODE=off
+# that literal binds :443 anyway — the same trap CADDY_SITE_SCHEME exists for,
+# and the one that breaks a Podman port map of 8080->80. gen-secrets.sh points
+# it at an http:// placeholder in that mode; custom domains need on-demand TLS,
+# so they mean nothing there.
+#
+# The certificate is still gated by the global `on_demand_tls { ask }` above.
+# FC answers 200 only for a hostname that resolves to an app — a vanity name,
+# or a custom domain whose ownership has been VERIFIED — and 404 for everything
+# else, at which point Caddy declines the handshake rather than asking Let's
+# Encrypt for a certificate. Without that gate this block would be an open
+# certificate-minting endpoint for any name pointed at this box, and the rate
+# limit it would burn is per REGISTERED domain, shared with api/supabase/mqtt.
+#
+# Requests that reach FC on a hostname it does not recognise fall through to
+# the Cloud API, which answers its own 404.
+#
+# This block is also the whole reason custom domains are a self-host feature.
+# The same Cloud API deployed to Alibaba Function Compute has no equivalent:
+# there a hostname reaches a function only if a custom domain was created for
+# it, so a user's domain is refused by the gateway before our code runs. See
+# docs/specs/2026-09-08-apps-login-and-custom-domain-design.md §5.8.
+{$CADDY_CATCHALL_SITE} {
 	tls {
 		on_demand
 	}

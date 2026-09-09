@@ -1,3 +1,4 @@
+import { isActiveTurnRefusal } from '@/lib/telemetry/runtime-error-report'
 import type {
   DiagnosticCauseCode,
   DiagnosticContext,
@@ -190,29 +191,57 @@ function diagnoseSend(ctx: DiagnosticContext): DiagnosticFinding[] {
     .slice(0, 20)
   const failed = recentOutbox.find((entry) => entry.state === 'failed')
   if (failed) {
-    out.push(
-      finding({
-        code: 'send.outbox_failed',
-        symptom: 'send',
-        status: 'fail',
-        confidence: 'high',
-        title: '消息发送',
-        message: failed.lastError ? `outbox 发送失败：${failed.lastError}` : 'outbox 发送失败',
-        nextAction: '检查网络后重试该消息',
-        evidence: [
-          {
-            source: 'outbox',
-            summary: `${failed.messageId} failed`,
-            at: failed.updatedAt,
-            data: {
-              lastError: failed.lastError,
-              attemptCount: failed.attemptCount,
-              sessionId: failed.sessionId,
+    if (isActiveTurnRefusal(failed.lastError ?? undefined)) {
+      out.push(
+        finding({
+          code: 'send.workspace_busy',
+          symptom: 'send',
+          status: 'fail',
+          confidence: 'high',
+          title: '工作区正忙',
+          message: failed.lastError
+            ? `工作区有进行中的 turn：${failed.lastError}`
+            : '工作区有进行中的 turn',
+          nextAction: '等当前回复结束后重试，不要当成网络故障',
+          evidence: [
+            {
+              source: 'outbox',
+              summary: `${failed.messageId} failed`,
+              at: failed.updatedAt,
+              data: {
+                lastError: failed.lastError,
+                attemptCount: failed.attemptCount,
+                sessionId: failed.sessionId,
+              },
             },
-          },
-        ],
-      }),
-    )
+          ],
+        }),
+      )
+    } else {
+      out.push(
+        finding({
+          code: 'send.outbox_failed',
+          symptom: 'send',
+          status: 'fail',
+          confidence: 'high',
+          title: '消息发送',
+          message: failed.lastError ? `outbox 发送失败：${failed.lastError}` : 'outbox 发送失败',
+          nextAction: '检查网络后重试该消息',
+          evidence: [
+            {
+              source: 'outbox',
+              summary: `${failed.messageId} failed`,
+              at: failed.updatedAt,
+              data: {
+                lastError: failed.lastError,
+                attemptCount: failed.attemptCount,
+                sessionId: failed.sessionId,
+              },
+            },
+          ],
+        }),
+      )
+    }
   }
 
   const cloudFail = lastErrorOf(sendTraces, 'cloud.insert')

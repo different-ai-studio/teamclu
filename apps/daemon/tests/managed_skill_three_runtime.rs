@@ -60,8 +60,12 @@ fn create_managed_skill_pack(
         files: vec![],
     };
     let resp = create_pack(workspace, home, &req, &ClaimedTeamContext::NoTeam).unwrap();
-    runtime::skills_bridge::reconcile_after_managed_mutation(workspace, slug, Path::new(&resp.path))
-        .unwrap();
+    runtime::skills_bridge::reconcile_after_managed_mutation(
+        workspace,
+        slug,
+        Path::new(&resp.path),
+    )
+    .unwrap();
     runtime::supervisor::prepare_workspace(workspace).unwrap();
     resp
 }
@@ -182,8 +186,7 @@ async fn managed_skill_discovered_by_pi_adapters() {
 
     let slug = "cross-runtime";
     let body = "---\nname: cross-runtime\ndescription: Shared.\n---\n\n# Shared body\n";
-    let created =
-        create_managed_skill_pack(workspace.path(), home.path(), slug, body);
+    let created = create_managed_skill_pack(workspace.path(), home.path(), slug, body);
 
     // Session inventory boundary (production `list_skills` scan).
     let inventory = find_managed_skill_in_session_inventory(workspace.path(), slug)

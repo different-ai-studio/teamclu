@@ -20,7 +20,7 @@
 //! survives env changes and daemon restarts. Crash recovery is lazy: a dead
 //! child is respawned on the next `ensure()` (attach / prompt).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -240,6 +240,37 @@ impl PiProcessPool {
             .filter(|p| p.is_alive())
             .map(Arc::clone)
             .collect()
+    }
+
+    /// Kill children that have no attached session.
+    ///
+    /// `GET /v1/workspaces/:id/providers` rewrites `provider.team` and used to
+    /// call [`Self::kill_all`]. The desktop fetches that list on the first send
+    /// after daemon start, so the prompt's host died mid-request and the UI
+    /// showed "pi prompt: process exited before responding". Prewarmed hosts
+    /// with no session are idle and can be replaced; anything already in
+    /// `keep` (a live attach, even before `turn_active`) must survive.
+    pub(crate) fn kill_except(&self, keep: &HashSet<PoolKey>) -> usize {
+        let victims: Vec<Arc<PiProcess>> = {
+            let mut procs = self.procs.lock();
+            let keys: Vec<PoolKey> = procs
+                .keys()
+                .filter(|k| !keep.contains(*k))
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|k| procs.remove(&k))
+                .collect()
+        };
+        let mut killed = 0;
+        for p in victims {
+            self.clear_generation_for_process(&p);
+            if p.is_alive() {
+                p.kill();
+                killed += 1;
+            }
+        }
+        killed
     }
 
     /// Kill and drop all children. Returns the number that were alive.
@@ -654,8 +685,16 @@ pub(crate) fn host_script_path() -> PathBuf {
 /// 4.2s for the slowest one here — and pi cannot start a session until the
 /// extension has registered its tools. With a cached list the tools register
 /// at once and the child is spawned in the background instead.
+///
+/// Scoped by version because the cache key is not: the extension signs an entry
+/// with the server's command and environment, and `teamclu-introspect` ships at
+/// the same path in every build. Without this, an upgrade that changes a tool's
+/// description or arguments keeps registering the previous release's list —
+/// the tool behaves as newly built while the model is still told the old rules.
 fn mcp_tool_cache_dir() -> PathBuf {
-    amuxd_pi_dir().join("mcp-tools")
+    amuxd_pi_dir()
+        .join("mcp-tools")
+        .join(env!("CARGO_PKG_VERSION"))
 }
 
 /// Write embedded content to its on-disk path (only when the content changed,
@@ -1016,6 +1055,123 @@ mod tests {
         assert!(
             !in_flight.is_finished(),
             "the session's in-flight command was not killed"
+        );
+
+        in_flight.abort();
+        shared.pool.kill_all();
+    }
+
+    /// GET /providers used to `kill_all()` when `provider.team` bytes changed.
+    /// After daemon start the desktop fetches that list on the first send,
+    /// while a prompt is already on the attached host — and a prewarmed
+    /// neighbour worktree was killed with it. Keep the attached child.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_reconcile_does_not_kill_an_attached_session_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fake_pi = bin_dir.path().join("fake-pi");
+        std::fs::write(
+            &fake_pi,
+            "#!/bin/sh\necho 'fake-pi startup noise' >&2\ncat > /dev/null\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let pkg = bin_dir.path().join("pkg");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(pkg.join("dist/cli.js"), "").unwrap();
+        let config_path = crate::config::DaemonConfig::default_path();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                "[actor]\nid = \"d\"\nname = \"m\"\n[mqtt]\nbroker_url = \"tcp://x:1883\"\n\
+                 [agents.pi]\nnode = {:?}\npackage_root = {:?}\nsession_host = \"rpc\"\n",
+                fake_pi.to_string_lossy(),
+                pkg.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let attached_dir = tempfile::tempdir().unwrap();
+        let prewarm_dir = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let attached_key = PoolKey {
+            domain: IsolationDomainKey::Workspace("ws-attached".into()),
+            env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
+            worktree: attached_dir.path().to_string_lossy().into_owned(),
+        };
+        let prewarm_key = PoolKey {
+            domain: IsolationDomainKey::Workspace("ws-prewarm".into()),
+            env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
+            worktree: prewarm_dir.path().to_string_lossy().into_owned(),
+        };
+
+        let attached = shared
+            .pool
+            .ensure_with_env(&shared, &attached_key, SpawnEnv::default())
+            .expect("attached spawn");
+        let prewarmed = shared
+            .pool
+            .ensure_with_env(&shared, &prewarm_key, SpawnEnv::default())
+            .expect("prewarm spawn");
+        assert!(attached.is_alive());
+        assert!(prewarmed.is_alive());
+
+        let client = attached.client.clone();
+        let in_flight = tokio::spawn(async move {
+            client.request(serde_json::json!({"type": "prompt"})).await
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while attached.stderr_tail().is_empty() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        shared.routes.lock().insert(
+            "pi:/s.jsonl".into(),
+            crate::runtime::pi_rpc::Route {
+                event_tx: tx,
+                permission: crate::runtime::permission_policy::PermissionPolicy::Ask,
+                pool_key: attached_key.clone(),
+                session_path: "/s.jsonl".into(),
+                turn_active: false,
+                turn_reply_to: None,
+                turn_requester: None,
+                translate: crate::runtime::pi_rpc::translate::TranslateState::default(),
+                last_entry_id: None,
+            },
+        );
+
+        let keep: HashSet<PoolKey> = shared
+            .routes
+            .lock()
+            .values()
+            .map(|r| r.pool_key.clone())
+            .collect();
+        let killed = shared.pool.kill_except(&keep);
+        assert_eq!(killed, 1, "only the unattached prewarm host is replaced");
+        assert!(
+            attached.is_alive(),
+            "the session's child must survive a provider-list reconcile"
+        );
+        let dead_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while prewarmed.is_alive() && std::time::Instant::now() < dead_by {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            !prewarmed.is_alive(),
+            "a host with no session is idle and can be replaced"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !in_flight.is_finished(),
+            "the in-flight prompt must not see process-exited"
         );
 
         in_flight.abort();

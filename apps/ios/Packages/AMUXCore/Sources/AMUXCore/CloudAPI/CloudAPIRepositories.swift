@@ -480,7 +480,8 @@ public actor CloudAPIActorRepository: ActorRepository {
         guard let expiresAt = parseCloudDate(row.expiresAt) else {
             throw ActorRepositoryError.emptyResponse("create_team_invite")
         }
-        return InviteCreated(token: row.token, expiresAt: expiresAt, deeplink: row.deeplink ?? "")
+        return InviteCreated(token: row.token, expiresAt: expiresAt, deeplink: row.deeplink ?? "",
+                             cloudAPIURL: client.baseURL)
     }
 
     public func upgradeAccount(teamID: String, orgName: String, contact: String?) async throws -> OrgUpgradeResult {

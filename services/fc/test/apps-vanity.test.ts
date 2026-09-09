@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 import { createApp } from "../src/app.js";
 import { appPublicUrl, appPublicLabel, parseAppPublicHost } from "../src/lib/apps-public-host.js";
 import {
-  isServable, proxyToApp, selectByIdPrefix, makeSupabaseVanityLookup, makeVanityLookup,
+  isServable, proxyToApp, httpsRedirect, selectByIdPrefix, makeSupabaseVanityLookup, makeVanityLookup,
+  invalidateVanityHost, __resetVanityCache,
 } from "../src/lib/apps-vanity.js";
 
 const DOMAIN = "apps.teamclu-dev.ucar.cc";
@@ -125,14 +126,19 @@ test("refuses everything that is not exactly one label under the apps domain", (
 
 // --- Caddy's on-demand TLS gate -------------------------------------------
 
-test("ask says no for hosts that are not apps, without touching the database", async () => {
+test("ask says no for a host that resolves to no app", async () => {
+  // This used to assert the lookup was never consulted — a hostname could be
+  // refused on SHAPE alone. Custom domains ended that: an arbitrary domain can
+  // only be ruled out by asking, so the gate now asks and the answer is what
+  // decides. Refusing on shape would refuse every custom domain, and no
+  // certificate would ever be issued for one.
   let called = 0;
   const app = createApp(deps(async () => { called++; return null; }));
   await withDomain(async () => {
     const res = await app.request("/internal/caddy/ask?domain=evil.example.com");
-    assert.equal(res.status, 404);
+    assert.equal(res.status, 404, "an unknown name must still get no certificate");
   });
-  assert.equal(called, 0, "a non-app hostname must be rejected on shape alone");
+  assert.equal(called, 1, "the answer comes from the lookup, not from the shape");
 });
 
 test("ask says no for a well-formed host with no app behind it", async () => {
@@ -181,10 +187,16 @@ test("requests on the API's own host still reach the API", async () => {
   });
 });
 
+/** Auth columns are irrelevant to routing; spelled out so the row shape is whole. */
+const unauthed = {
+  teamId: null, authMode: null, authAudience: null, authScope: null, authRules: null,
+  customDomain: null, customDomainVerifiedAt: null,
+};
+
 test("an ambiguous id prefix serves neither app", () => {
   const rows = [
-    { id: "18e4ecad-1111", slug: "website", fcEndpoint: "https://a", fcStatus: "live" },
-    { id: "18e4ecad-2222", slug: "website", fcEndpoint: "https://b", fcStatus: "live" },
+    { id: "18e4ecad-1111", slug: "website", fcEndpoint: "https://a", fcStatus: "live", ...unauthed },
+    { id: "18e4ecad-2222", slug: "website", fcEndpoint: "https://b", fcStatus: "live", ...unauthed },
   ];
   assert.equal(selectByIdPrefix(rows, "18e4ecad"), null, "a coin flip between teams is not an answer");
   assert.equal(selectByIdPrefix(rows, "18e4ecad-1"), rows[0]);
@@ -193,9 +205,9 @@ test("an ambiguous id prefix serves neither app", () => {
 
 test("isServable requires a live status AND an endpoint", () => {
   assert.equal(isServable(null), false);
-  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: null }), false);
-  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "deploy_error", fcEndpoint: "https://x" }), false);
-  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: "https://x" }), true);
+  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: null, ...unauthed }), false);
+  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "deploy_error", fcEndpoint: "https://x", ...unauthed }), false);
+  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: "https://x", ...unauthed }), true);
 });
 
 // --- both entry points ------------------------------------------------------
@@ -276,23 +288,69 @@ test("the supabase lookup surfaces a query error instead of reporting 'no such a
   );
 });
 
-test("the client is not built for a non-app host", async () => {
-  // Building eagerly would make every request that merely passes through pay
-  // for — and potentially fail on — a client that host will never use.
+test("a non-app host is asked about once, then remembered", async () => {
+  // The old contract — "a non-app host builds no client at all" — could not
+  // survive custom domains: an arbitrary hostname is indistinguishable from
+  // the API's own without a query. The cache is what keeps that from putting
+  // a database round trip in front of EVERY Cloud API request; misses are
+  // cached precisely because they are the common case.
   let srBuilt = 0;
   const lookup = makeVanityLookup({
     getServiceRoleClient: () => {
       srBuilt++;
-      return { from: () => ({ select: () => ({ eq: () => ({ limit: async () => ({ data: [], error: null }) }) }) }) };
+      return {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              limit: async () => ({ data: [], error: null }),
+              not: () => ({ limit: async () => ({ data: [], error: null }) }),
+            }),
+          }),
+        }),
+      };
     },
   });
 
   await withDomain(async () => {
+    __resetVanityCache();
     assert.equal(await lookup("api.teamclu-dev.ucar.cc"), null);
-    assert.equal(srBuilt, 0, "a non-app host must not build any client");
+    assert.equal(srBuilt, 1, "an unknown host has to be asked about once");
+
+    assert.equal(await lookup("api.teamclu-dev.ucar.cc"), null);
+    assert.equal(srBuilt, 1, "and not again while the miss is cached");
 
     assert.equal(await lookup(`ghost-18e4ecad.${DOMAIN}`), null);
-    assert.equal(srBuilt, 1, "an app host builds the service-role client");
+    assert.equal(srBuilt, 2, "a different host is its own question");
+  });
+});
+
+test("a binding change drops the cached answer immediately", async () => {
+  // Without this a newly verified domain would 404 until the miss expired,
+  // which reads as "verification did not work".
+  let calls = 0;
+  const lookup = makeVanityLookup({
+    getServiceRoleClient: () => {
+      calls++;
+      return {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              limit: async () => ({ data: [], error: null }),
+              not: () => ({ limit: async () => ({ data: [], error: null }) }),
+            }),
+          }),
+        }),
+      };
+    },
+  });
+  await withDomain(async () => {
+    __resetVanityCache();
+    await lookup("shop.example.com");
+    await lookup("shop.example.com");
+    assert.equal(calls, 1);
+    invalidateVanityHost("shop.example.com");
+    await lookup("shop.example.com");
+    assert.equal(calls, 2, "the next request must re-ask");
   });
 });
 
@@ -365,4 +423,279 @@ test("proxy does not follow the app's redirects on its behalf", async () => {
   assert.equal(init.redirect, "manual");
   assert.equal(res.status, 302);
   assert.equal(res.headers.get("location"), "/login");
+});
+
+// --- Sec-Fetch-Site, the header the browser withholds over plain HTTP -------
+
+/** Proxies one request and returns the headers the upstream would have seen. */
+async function forwardedHeaders(req: Request, endpoint = "http://website-18e4ecad.fc-apps.example"): Promise<Headers> {
+  let seen = new Headers();
+  const fake = (async (_u: any, init: any) => {
+    seen = new Headers(init.headers);
+    return new Response("ok", { status: 200 });
+  }) as unknown as typeof fetch;
+  await proxyToApp(req, endpoint, fake);
+  return seen;
+}
+
+test("a same-origin request is marked as one, because the app cannot tell", async () => {
+  // The whole reason this exists: the app derives its own origin from the Host
+  // it receives, which is the upstream FC name — never the vanity name in
+  // Origin. TanStack Start's CSRF guard compares the two and answers a bare
+  // `403 Forbidden`, which is what the first app on a vanity host hit on every
+  // server function it has.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: `https://website-18e4ecad.${DOMAIN}` },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "same-origin");
+  assert.equal(headers.get("origin"), `https://website-18e4ecad.${DOMAIN}`, "Origin passes through untouched");
+});
+
+test("a same-origin GET is recognised from its Referer alone", async () => {
+  // A same-origin GET carries no Origin at all, so Referer is the only thing
+  // naming the page it came from. Reading only Origin would leave every GET
+  // server function refused.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    headers: { referer: `https://website-18e4ecad.${DOMAIN}/todos?filter=open` },
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "same-origin");
+});
+
+test("the scheme does not decide it, because TLS terminates before this hop", async () => {
+  // The client spoke HTTPS; this proxy sees HTTP. Comparing full origins would
+  // call the app's own page cross-site the moment apps get a certificate.
+  const headers = await forwardedHeaders(new Request(`http://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: `https://website-18e4ecad.${DOMAIN}` },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "same-origin");
+});
+
+test("a request from another site is marked cross-site, so the app still refuses it", async () => {
+  // The CSRF guarantee has to survive this: filling the header in must not
+  // become a way to hand any origin a same-origin label.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: "https://evil.example" },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "cross-site");
+});
+
+test("another app on the same apps domain is cross-site too", async () => {
+  // Sibling vanity hosts share a registered domain, so a `same-site` answer
+  // would be defensible and wrong: each host is a different team's app.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: `https://other-99999999.${DOMAIN}` },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "cross-site");
+});
+
+test("a browser that sent its own Sec-Fetch-Site keeps it", async () => {
+  // Over HTTPS the browser answers for itself, and it can tell same-site from
+  // cross-site. Overwriting that would replace a precise answer with a coarser
+  // one — and would let a request relabel itself if it ever could set the header.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { "sec-fetch-site": "same-site", origin: `https://website-18e4ecad.${DOMAIN}` },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), "same-site");
+});
+
+test("a request naming no page at all is left alone", async () => {
+  // curl, a health check, a webhook. Nothing here says where it came from, and
+  // inventing `same-origin` for it would disable the app's CSRF check outright.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), null);
+});
+
+test("an opaque origin is not treated as same-origin", async () => {
+  // A sandboxed iframe posts `Origin: null`. It parses as no host, and a
+  // header that names no site cannot be answered with `same-origin`.
+  const headers = await forwardedHeaders(new Request(`https://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST",
+    headers: { origin: "null" },
+    body: "{}",
+  }));
+  assert.equal(headers.get("sec-fetch-site"), null);
+});
+
+// --- sending old http:// links to https ------------------------------------
+
+const HTML = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+
+/** A page load as a browser sends it over plain HTTP: no Sec-Fetch metadata. */
+function pageLoad(url: string, headers: Record<string, string> = {}): Request {
+  return new Request(url, { headers: { accept: HTML, ...headers } });
+}
+
+test("an http page load is sent to the https address, path and query kept", async () => {
+  // Apps were HTTP-only until their domain got a certificate, so every link
+  // handed out until then — bookmarks, QR codes, links pasted into chats — is
+  // an http:// one.
+  const res = httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/todos?filter=open`), `website-18e4ecad.${DOMAIN}`);
+  assert.equal(res?.status, 302);
+  assert.equal(res?.headers.get("location"), `https://website-18e4ecad.${DOMAIN}/todos?filter=open`);
+  assert.equal(res?.headers.get("cache-control"), "no-store", "the target depends on request headers");
+});
+
+test("a request already carrying Sec-Fetch metadata is served, not redirected", async () => {
+  // This is what makes a loop impossible on a current browser: over HTTPS the
+  // browser attaches these itself, so the request that arrives after the
+  // redirect is recognised as already-secure without trusting any proxy header.
+  assert.equal(
+    httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/`, { "sec-fetch-mode": "navigate" }), `website-18e4ecad.${DOMAIN}`),
+    null,
+  );
+});
+
+test("x-forwarded-proto: https settles it directly when the gateway sends one", async () => {
+  assert.equal(
+    httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/`, { "x-forwarded-proto": "https" }), `website-18e4ecad.${DOMAIN}`),
+    null,
+  );
+  // Some proxies append rather than replace.
+  assert.equal(
+    httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/`, { "x-forwarded-proto": "https, http" }), `website-18e4ecad.${DOMAIN}`),
+    null,
+  );
+});
+
+test("the one-shot cookie stops a browser too old for Sec-Fetch looping forever", async () => {
+  // Safari before 16.4 sends no Sec-Fetch headers even over HTTPS. Without
+  // this it would be redirected to a page that redirects it again. It gets one
+  // redirect, lands on HTTPS, and is served from there.
+  const first = httpsRedirect(pageLoad(`http://website-18e4ecad.${DOMAIN}/`), `website-18e4ecad.${DOMAIN}`);
+  assert.equal(first?.status, 302);
+  const cookie = first!.headers.get("set-cookie") ?? "";
+  assert.match(cookie, /^_tc_https=1;/);
+  assert.doesNotMatch(cookie, /Secure/, "it has to be readable on the http request that follows");
+
+  const second = httpsRedirect(
+    pageLoad(`http://website-18e4ecad.${DOMAIN}/`, { cookie: "_tc_https=1" }),
+    `website-18e4ecad.${DOMAIN}`,
+  );
+  assert.equal(second, null, "a second redirect would be a loop");
+});
+
+test("a server function call is left alone", async () => {
+  // Redirecting a POST mid-flight would change a request the app is in the
+  // middle of, and it works over either scheme anyway.
+  const post = new Request(`http://website-18e4ecad.${DOMAIN}/_serverFn/abc`, {
+    method: "POST", headers: { accept: HTML }, body: "{}",
+  });
+  assert.equal(httpsRedirect(post, `website-18e4ecad.${DOMAIN}`), null);
+});
+
+test("an API GET that is not a page load is left alone", async () => {
+  // `Accept` is all that separates a data fetch from a navigation once the
+  // Sec-Fetch headers are gone.
+  const res = httpsRedirect(
+    new Request(`http://website-18e4ecad.${DOMAIN}/api/todos`, { headers: { accept: "application/json" } }),
+    `website-18e4ecad.${DOMAIN}`,
+  );
+  assert.equal(res, null);
+});
+
+test("a hostname that is not an app still 404s instead of redirecting", async () => {
+  // Otherwise a mistyped link would answer 302 and send the visitor to an
+  // https 404, hiding which of the two things went wrong.
+  await withDomain(async () => {
+    const app = createApp(deps(async (host: string) => (host.startsWith("known-18e4ecad.") ? {
+      id: APP_ID, slug: "known", fcEndpoint: "http://up.example", fcStatus: "live",
+    } : null)));
+    const res = await app.request(`http://missing-18e4ecad.${DOMAIN}/`, { headers: { accept: HTML } });
+    assert.equal(res.status, 404);
+    assert.equal(res.headers.get("location"), null);
+  });
+});
+
+// --- custom domains (批次 4) -------------------------------------------------
+
+/**
+ * Records the filters a query applied, so a test can assert that the
+ * verification filter was actually part of the query rather than assumed.
+ */
+function customDomainClient(rows: any[]) {
+  const filters: string[] = [];
+  return {
+    filters,
+    client: {
+      from: () => ({
+        select: () => ({
+          eq: (col: string, val: string) => {
+            filters.push(`eq:${col}=${val}`);
+            return {
+              limit: async () => ({ data: rows, error: null }),
+              not: (col2: string, op: string, val2: any) => {
+                filters.push(`not:${col2} ${op} ${val2}`);
+                return { limit: async () => ({ data: rows, error: null }) };
+              },
+            };
+          },
+        }),
+      }),
+    },
+  };
+}
+
+const CUSTOM_ROW = {
+  id: "18e4ecad-1111-2222-3333-444444444444",
+  slug: "shop",
+  fc_endpoint: "https://up.example",
+  fc_status: "live",
+  team_id: "team-1",
+  auth_mode: "platform",
+  auth_audience: "any",
+  auth_scope: "all",
+  auth_rules: [],
+  custom_domain: "shop.example.com",
+  custom_domain_verified_at: "2026-09-08T00:00:00Z",
+};
+
+test("a verified custom domain resolves to its app", async () => {
+  const { client, filters } = customDomainClient([CUSTOM_ROW]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  const found = await withDomain(() => lookup("shop.example.com"));
+  assert.equal(found?.id, CUSTOM_ROW.id);
+  assert.equal(found?.customDomain, "shop.example.com");
+  assert.ok(filters.includes("eq:custom_domain=shop.example.com"));
+});
+
+test("the query refuses to consider an unverified domain", async () => {
+  // Not an optimisation. Without this filter the certificate gate would answer
+  // 200 for a name whose ownership was never proven, and Caddy would go and
+  // get a certificate for it — an open minting endpoint for anything pointed
+  // at this box, burning a rate limit shared with api/supabase/mqtt.
+  const { client, filters } = customDomainClient([CUSTOM_ROW]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  await withDomain(() => lookup("shop.example.com"));
+  assert.ok(
+    filters.some((f) => f.startsWith("not:custom_domain_verified_at")),
+    `verification filter missing; applied: ${filters.join(", ")}`,
+  );
+});
+
+test("a host carrying a port still matches the stored domain", async () => {
+  const { client, filters } = customDomainClient([CUSTOM_ROW]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  await withDomain(() => lookup("SHOP.example.com:443"));
+  assert.ok(filters.includes("eq:custom_domain=shop.example.com"));
+});
+
+test("two apps claiming one domain serve neither", async () => {
+  // The unique index makes this impossible; serving either would be a coin
+  // flip between owners, so it fails closed if it ever happens.
+  const { client } = customDomainClient([CUSTOM_ROW, { ...CUSTOM_ROW, id: "other" }]);
+  const lookup = makeSupabaseVanityLookup(() => client);
+  assert.equal(await withDomain(() => lookup("shop.example.com")), null);
 });

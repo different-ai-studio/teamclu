@@ -8,6 +8,7 @@ import {
 import {
   seedDaemonApp,
   buildDaemonApp,
+  daemonAppManifest,
   cloneDaemonApp,
   daemonAppWorkdir,
   daemonLocalAppIds,
@@ -18,7 +19,12 @@ import {
 } from "@/lib/daemon/daemon-local-client";
 import { isTauri } from "@/lib/utils";
 import i18n from "@/lib/i18n";
-import type { AppRow, AppAuthMode } from "@/lib/backend/types";
+import type {
+  AppRow,
+  AppAuthPatch,
+  AppCustomDomain,
+  VerifyAppDomainResult,
+} from "@/lib/backend/types";
 
 interface AppsState {
   items: AppRow[];
@@ -56,9 +62,19 @@ interface AppsState {
     /** Optional repo to import — the app is cloned from it instead of seeded
      *  with a starter template. */
     gitRemoteUrl?: string | null;
-    /** The code is a checkout already on this machine: no repo is provisioned
-     *  and no template is written. Set by the "browse a local directory" path. */
+    /** The code is a checkout already on this machine WITH a remote of its own:
+     *  no repo is provisioned and no template is written. */
     localOnly?: boolean;
+    /**
+     * Absolute path to a folder the user picked that has no remote to record —
+     * not a repo at all, or a repo nobody ever pushed.
+     *
+     * The app gets a Gitea repo like any other (so it can deploy a commit), but
+     * the daemon publishes this directory as it stands instead of writing a
+     * starter template over it. Bound before the seed runs, because the seed
+     * resolves the app's workdir from that binding.
+     */
+    adoptLocalDir?: string | null;
   }) => Promise<AppRow>;
   /** Re-ask the daemon which apps are on this machine. */
   refreshLocalApps: (teamId?: string | null) => Promise<void>;
@@ -68,7 +84,12 @@ interface AppsState {
   /** Full FC deploy: startDeploy → daemon build+upload → finalize. */
   deploy: (appId: string) => Promise<void>;
   rename: (appId: string, name: string) => Promise<void>;
-  updateAuthMode: (appId: string, authMode: AppAuthMode) => Promise<void>;
+  /** Change any part of the login wall in one request. True when it stuck. */
+  updateAuthPolicy: (appId: string, patch: AppAuthPatch) => Promise<boolean>;
+  /** Bind a domain and get back the DNS records the owner must publish. */
+  bindCustomDomain: (appId: string, domain: string) => Promise<AppCustomDomain | null>;
+  verifyCustomDomain: (appId: string) => Promise<VerifyAppDomainResult>;
+  unbindCustomDomain: (appId: string) => Promise<AppCustomDomain | null>;
   deleteApp: (appId: string) => Promise<boolean>;
 }
 
@@ -102,6 +123,23 @@ function clearDeployProgress(set: SetState, appId: string): void {
 /** Merge a fresh app row (from create/deploy/rename responses) into the store. */
 function mergeRow(set: SetState, row: AppRow): void {
   set((s) => ({ items: s.items.map((a) => (a.id === row.id ? row : a)) }));
+}
+
+/**
+ * Patch the domain fields of one row from a custom-domain response.
+ *
+ * Those endpoints answer with the domain's own shape, not an app row, so there
+ * is nothing to merge wholesale — and re-fetching the app just to learn two
+ * fields we were already told would be a round trip for nothing.
+ */
+function mergeDomain(set: SetState, appId: string, domain: AppCustomDomain): void {
+  set((s) => ({
+    items: s.items.map((a) =>
+      a.id === appId
+        ? { ...a, customDomain: domain.domain, customDomainVerifiedAt: domain.verifiedAt }
+        : a,
+    ),
+  }));
 }
 
 async function toastError(title: string, description?: string): Promise<void> {
@@ -277,7 +315,37 @@ function mapCloudDeployError(e: unknown): string {
  * A clone that fails is the one case worth interrupting the user for: they
  * typed the URL, and the app is empty until they fix it.
  */
-async function runSeed(set: SetState, app: AppRow): Promise<void> {
+/**
+ * Explain a seed failure the raw daemon text does not.
+ *
+ * A clone that ran out of time is the one failure whose cause is invisible:
+ * git was not asked anything and printed nothing, because it is the machine's
+ * credential helper that is waiting — often on a window that has nowhere to
+ * appear. Everything else git says is already the answer.
+ */
+function mapSeedErrorReason(raw: string | null): string | undefined {
+  if (!raw) return undefined;
+  if (raw.includes("git clone timed out")) {
+    return i18n.t(
+      "apps.seedErrorReason.cloneTimeout",
+      "克隆超时。多半是这台机器的 git 凭证助手在等一个弹不出来的登录框；先在终端里 clone 一次这个仓库，再回来重试。",
+    );
+  }
+  return raw;
+}
+
+/**
+ * @param cloneUrl the address to clone from, when it differs from the stored
+ * one. Credentials pasted into a repo URL are stripped before the row is
+ * written, so the create path passes what the user actually typed — that copy
+ * lives for the length of one call and is never persisted.
+ */
+async function runSeed(
+  set: SetState,
+  app: AppRow,
+  adoptExisting = false,
+  cloneUrl?: string | null,
+): Promise<void> {
   let deployKeyPem: string | null = null;
   let deployKeyId: number | null = null;
   // Keyed on how the repo is authenticated, not on the status the row happens
@@ -312,8 +380,9 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
       app.teamId,
       app.name,
       app.type,
-      app.gitRemoteUrl,
+      cloneUrl?.trim() || app.gitRemoteUrl,
       deployKeyPem,
+      adoptExisting,
     );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
@@ -331,7 +400,7 @@ async function runSeed(set: SetState, app: AppRow): Promise<void> {
   } else if (result.outcome === "failed") {
     await patchStatus(set, app.id, "error");
     if (app.gitRemoteUrl) {
-      await toastError("仓库克隆失败", result.error ?? undefined);
+      await toastError("仓库克隆失败", mapSeedErrorReason(result.error));
     }
   }
   // unreachable → no status change; reseed remains available.
@@ -490,8 +559,26 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     }
   },
   create: async (input) => {
-    const row = await getBackend().apps.createApp(input);
+    const { adoptLocalDir, ...createInput } = input;
+    const row = await getBackend().apps.createApp(createInput);
     set((s) => ({ items: [row, ...s.items] }));
+    // Point the daemon at the user's folder BEFORE seeding. The seed resolves
+    // the app's workdir from this override, so binding afterwards would have
+    // it publish an empty default directory and leave the folder the user
+    // actually picked unattached.
+    if (adoptLocalDir?.trim()) {
+      try {
+        const { bindDaemonAppWorkdir } = await import("@/lib/daemon/daemon-local-client");
+        await bindDaemonAppWorkdir(row.id, input.teamId, adoptLocalDir.trim());
+      } catch (e) {
+        await patchStatus(set, row.id, "error");
+        await toastError(
+          "无法使用这个目录",
+          e instanceof Error ? e.message : String(e),
+        );
+        return get().items.find((a) => a.id === row.id) ?? row;
+      }
+    }
     // A local checkout is already on disk and comes back `ready`; seeding it
     // would write the starter template over the user's own files. The guard is
     // the status rather than the flag so an app that somehow arrives `ready` by
@@ -501,7 +588,10 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // daemon, which writes its own embedded template. Non-fatal — a daemon
       // that is down (unreachable) leaves the row `pending` so the user can
       // reseed.
-      await runSeed(set, row);
+      // The typed address, not the stored one: `POST /v1/apps` strips any
+      // credential out of it before writing the row, and this is the one call
+      // that still needs it.
+      await runSeed(set, row, !!adoptLocalDir?.trim(), input.gitRemoteUrl);
     }
     await get().refreshLocalApps(input.teamId);
     // Return the row as it stands AFTER seeding — the caller decides what to do
@@ -575,10 +665,15 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         gitCommitSha = head.sha;
       }
 
-      const started = await getBackend().apps.deployApp(
-        appId,
-        gitCommitSha ? { gitCommitSha } : {},
-      );
+      // What the checkout declares, read before the deploy is minted: a
+      // container app is handed a registry to push to and everything else a
+      // presigned URL to upload to, and only the machine holding the checkout
+      // can say which this is.
+      const declared = await daemonAppManifest(appId, app.teamId);
+      const started = await getBackend().apps.deployApp(appId, {
+        ...(gitCommitSha ? { gitCommitSha } : {}),
+        ...(declared?.runtime ? { runtime: declared.runtime } : {}),
+      });
       mergeRow(set, started);
 
       setDeployProgress(set, appId, "build");
@@ -601,7 +696,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
           gitCommitSha,
           gitRemoteUrl,
           deployKeyPem,
+          // Exactly one of these is set — see the control plane's startDeploy.
           presignedPut: started.presignedPut,
+          image: started.image,
         });
       } finally {
         // The daemon only needs the key for the fetch inside the build; hand it
@@ -631,6 +728,14 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       const builtSha = build.gitCommitSha ?? gitCommitSha;
       const finalized = await getBackend().apps.finalizeDeploy(appId, {
         ...(builtSha ? { gitCommitSha: builtSha } : {}),
+        // How the app says it starts. The control plane used to assume one
+        // answer for every app; this is the app's own, read off its
+        // declaration by the daemon that just built it.
+        ...(build.runtime ? { runtime: build.runtime } : {}),
+        // The image that build actually pushed. A container app has no code
+        // object, so finalizing without it would point the function at whatever
+        // the previous deploy left in OSS.
+        ...(build.image ? { image: build.image } : {}),
         deployToken: started.deployToken,
       });
       // The merged row carries `authModePendingRedeploy` straight from the
@@ -661,26 +766,79 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       );
     }
   },
-  updateAuthMode: async (appId, authMode) => {
+  updateAuthPolicy: async (appId, patch) => {
     try {
-      const updated = await getBackend().apps.updateAppAuthMode(appId, authMode);
+      const updated = await getBackend().apps.updateAppAuth(appId, patch);
       if (!updated) {
         await toastError(
-          i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in method"),
+          i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in settings"),
           i18n.t("apps.authModeUpdateDenied", "App not found, or you cannot change it"),
         );
-        return;
+        return false;
       }
       // `authModePendingRedeploy` is derived server-side from fc_status and the
       // deployed mode, so the row returned by this PATCH already reports the
       // pending state — and keeps reporting it after a reload, on another
       // device, and for a second admin, which a local id list never did.
       mergeRow(set, updated);
+      return true;
     } catch (e) {
+      // The server validates scope and rules as a pair, so its message names
+      // the actual problem ("paths needs at least one required rule", "* is not
+      // supported"). Passing it through beats a generic failure.
       await toastError(
-        i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in method"),
+        i18n.t("apps.authModeUpdateFailed", "Could not change the sign-in settings"),
         e instanceof Error ? e.message : String(e),
       );
+      return false;
+    }
+  },
+  bindCustomDomain: async (appId, domain) => {
+    try {
+      const out = await getBackend().apps.setAppCustomDomain(appId, domain);
+      if (!out) {
+        await toastError(
+          i18n.t("apps.domainBindFailed", "Could not bind the domain"),
+          i18n.t("apps.domainBindDenied", "App not found, or you cannot change it"),
+        );
+        return null;
+      }
+      mergeDomain(set, appId, out);
+      return out;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.domainBindFailed", "Could not bind the domain"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
+    }
+  },
+  verifyCustomDomain: async (appId) => {
+    try {
+      const result = await getBackend().apps.verifyAppCustomDomain(appId);
+      // Only a success changes the row; `pending` is the caller's to display,
+      // and refreshing on it would just re-read the same unverified state.
+      if (result.status === "verified") mergeDomain(set, appId, result.domain);
+      return result;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.domainVerifyFailed", "Could not check the domain"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return { status: "not_found" };
+    }
+  },
+  unbindCustomDomain: async (appId) => {
+    try {
+      const out = await getBackend().apps.deleteAppCustomDomain(appId);
+      if (out) mergeDomain(set, appId, out);
+      return out;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.domainUnbindFailed", "Could not unbind the domain"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
     }
   },
   deleteApp: async (appId) => {

@@ -79,8 +79,25 @@ fn persist_close_preference(
     std::fs::write(&path, json).map_err(|e| format!("write close pref: {e}"))
 }
 
+/// Look up the main window even after native URL tabs attach child webviews.
+///
+/// Tauri's `get_webview_window("main")` returns `None` once any child webview
+/// (label ≠ `"main"`) is attached. `get_window("main")` does not.
+pub fn get_main_window(app: &tauri::AppHandle) -> Option<tauri::Window> {
+    app.get_window("main")
+}
+
+fn window_of(win: &tauri::WebviewWindow) -> tauri::Window {
+    win.as_ref().window()
+}
+
 #[cfg(target_os = "macos")]
 pub fn reposition_traffic_lights(win: &tauri::WebviewWindow) {
+    reposition_traffic_lights_on_window(&window_of(win));
+}
+
+#[cfg(target_os = "macos")]
+fn reposition_traffic_lights_on_window(win: &tauri::Window) {
     use cocoa::appkit::{NSWindow, NSWindowButton};
     use cocoa::base::id;
     use cocoa::foundation::NSPoint;
@@ -119,7 +136,7 @@ pub fn reposition_traffic_lights(win: &tauri::WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
-fn show_traffic_lights(win: &tauri::WebviewWindow) {
+fn show_traffic_lights(win: &tauri::Window) {
     use cocoa::appkit::{NSWindow, NSWindowButton};
     use cocoa::base::id;
     use objc::{msg_send, sel, sel_impl};
@@ -136,10 +153,10 @@ fn show_traffic_lights(win: &tauri::WebviewWindow) {
             let _: () = msg_send![zoom, setHidden: false];
         }
     }
-    reposition_traffic_lights(win);
+    reposition_traffic_lights_on_window(win);
 }
 
-fn rect_visible_on_any_monitor(win: &tauri::WebviewWindow, x: f64, y: f64, w: f64, h: f64) -> bool {
+fn rect_visible_on_any_monitor(win: &tauri::Window, x: f64, y: f64, w: f64, h: f64) -> bool {
     let Ok(monitors) = win.available_monitors() else {
         return false;
     };
@@ -160,7 +177,7 @@ fn rect_visible_on_any_monitor(win: &tauri::WebviewWindow, x: f64, y: f64, w: f6
     false
 }
 
-pub fn save_main_geometry(win: &tauri::WebviewWindow, state: &MainWindowState) {
+pub fn save_main_geometry(win: &tauri::Window, state: &MainWindowState) {
     let scale = win
         .current_monitor()
         .ok()
@@ -184,7 +201,7 @@ pub fn save_main_geometry(win: &tauri::WebviewWindow, state: &MainWindowState) {
 
 /// Persist window mode before hide. Fullscreen geometry is not saved — macOS
 /// reports screen-sized frames that restore incorrectly as a small window.
-pub fn save_main_window_state(win: &tauri::WebviewWindow, state: &MainWindowState) {
+pub fn save_main_window_state(win: &tauri::Window, state: &MainWindowState) {
     let is_fullscreen = win.is_fullscreen().unwrap_or(false);
     *state
         .was_fullscreen
@@ -195,7 +212,7 @@ pub fn save_main_window_state(win: &tauri::WebviewWindow, state: &MainWindowStat
     }
 }
 
-fn restore_main_geometry(win: &tauri::WebviewWindow, state: &MainWindowState) {
+fn restore_main_geometry(win: &tauri::Window, state: &MainWindowState) {
     let geom = *state
         .main_geometry
         .lock()
@@ -214,7 +231,7 @@ fn restore_main_geometry(win: &tauri::WebviewWindow, state: &MainWindowState) {
     }
 }
 
-fn show_and_activate(win: &tauri::WebviewWindow) {
+fn show_and_activate(win: &tauri::Window) {
     let _ = win.unminimize();
     let _ = win.show();
     let _ = win.set_focus();
@@ -237,7 +254,7 @@ fn show_and_activate(win: &tauri::WebviewWindow) {
 
 #[tauri::command]
 pub fn show_main_window(app: tauri::AppHandle, state: tauri::State<'_, MainWindowState>) {
-    let Some(win) = app.get_webview_window("main") else {
+    let Some(win) = get_main_window(&app) else {
         return;
     };
 
@@ -270,7 +287,7 @@ pub fn show_main_window(app: tauri::AppHandle, state: tauri::State<'_, MainWindo
 
 /// Hide main window to the system tray without stopping amuxd.
 pub fn hide_main_to_tray_inner(app: &tauri::AppHandle, state: &MainWindowState) {
-    let Some(win) = app.get_webview_window("main") else {
+    let Some(win) = get_main_window(app) else {
         return;
     };
     save_main_window_state(&win, state);
@@ -366,7 +383,7 @@ pub fn handle_close_requested(app: &tauri::AppHandle, win: &tauri::WebviewWindow
         }
         None => {
             // Keep window visible until the user answers the dialog.
-            save_main_window_state(win, &state);
+            save_main_window_state(&window_of(win), &state);
             let _ = app.emit("window-close-requested", ());
         }
     }

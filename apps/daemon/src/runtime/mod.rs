@@ -2,25 +2,25 @@ pub mod acp_envelope;
 pub mod acp_event_frame;
 pub mod acp_live_transport;
 pub mod acp_translate;
-pub mod backend;
-pub mod backend_session_metadata;
-pub mod execution_context;
-pub mod host_pool_stats;
-pub mod pi_rpc;
-pub mod spawn_path;
 mod agent_runtime_state;
 mod agent_trace;
+pub mod backend;
+pub mod backend_session_metadata;
 pub mod context_registry;
 pub mod context_service;
 pub mod env_assembly;
+pub mod execution_context;
 pub mod gateway_token;
 mod handle;
+pub mod host_pool_stats;
 mod instruction_delivery;
 pub mod local_agent;
 pub mod managed_llm;
 mod manager;
 mod native_skill_fallback_guard;
+pub mod pi_rpc;
 pub(crate) mod skills_bridge;
+pub mod spawn_path;
 pub(crate) use native_skill_fallback_guard::{
     apply_violations_to_emitted, ensure_turn_guard, event_may_open_implicit_turn, guard_enabled,
     prepare_guard_for_acp_event, snapshot_baseline, take_violations_for_turn_end,
@@ -37,18 +37,20 @@ pub mod team_skills;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod turn_aggregator;
+pub mod turn_reply;
 pub mod well_known_bin;
 mod workspace_runtime;
 
-pub use backend::{
-    create_backend, AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec,
-};
+pub use acp_event_frame::{forward_checked_out_turn_event, CheckedOutTurnEvent};
+pub use backend::{create_backend, AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 pub use context_service::RuntimeContextService;
 pub use handle::{InjectedContextItem, PendingMessage, RuntimeHandle};
 pub use instruction_delivery::{
     resolve_instruction_delivery, skips_buffered_inject, InstructionDelivery,
 };
-pub use local_agent::{local_agent_type_name, resolve_local_agent_type, LOCAL_AGENT, LOCAL_AGENT_NAME};
+pub use local_agent::{
+    local_agent_type_name, resolve_local_agent_type, LOCAL_AGENT, LOCAL_AGENT_NAME,
+};
 pub use manager::{
     is_gateway_workspace_id, restore_gateway_shape_for_resume, AgentLaunchConfig, CheckedOutTurn,
     RuntimeManager, SpawnRuntimeEnv, WorkspaceOccupancy,

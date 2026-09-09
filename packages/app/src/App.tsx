@@ -7,10 +7,11 @@ import { capabilities } from "@/lib/config/platform";
 import { isSoloBuild } from "@/lib/config/solo-build";
 import { scheduleReleaseStuckModalLayers } from "@/lib/ui/modal-layer-cleanup";
 import { appDisplayName } from "@/lib/config/build-config";
-import { buildSessionDeeplink, parseSessionDeeplink } from "@/lib/session/session-deeplink";
+import { parseSessionDeeplink } from "@/lib/session/session-deeplink";
 import { markStartup } from "@/lib/telemetry/startup-perf";
-import { BookOpen, ChevronLeft, X, PanelRightClose, Link2, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
+import { BookOpen, ChevronLeft, X, PanelRightClose, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
+import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
 import { RefreshSkillsHeaderButton } from "@/components/chat/RefreshSkillsHeaderButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
@@ -36,7 +37,6 @@ import { MqttLiveWiring } from "@/components/MqttLiveWiring";
 import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { ThreadHistoryLoader } from "@/components/ThreadHistoryLoader";
-import { UpdateDialogContainer } from "@/components/updater/UpdateDialog";
 import { AppDeployConfirmDialog } from "@/components/apps/AppDeployConfirmDialog";
 import { resolveControlPanelAppId } from "@/lib/apps/app-control-panel";
 import { lazyNamed } from "@/lib/lazy-component";
@@ -46,6 +46,8 @@ import { CloseToTrayHost } from "@/components/CloseToTrayDialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { TelemetryConsentDialog } from "@/components/telemetry/TelemetryConsentDialog";
 import { RuntimeRefreshWorkspaceBanner } from "@/components/workspace/RuntimeRefreshBanner";
+import { AgentsSkillsAccessBanner } from "@/components/skills/AgentsSkillsAccessBanner";
+import { useAgentsSkillsAccessInit } from "@/hooks/use-agents-skills-access-init";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
@@ -276,6 +278,7 @@ function AppContent() {
   useGitReposInit();
   useCronInit();
   useWorkspaceRuntimeRefreshPoll();
+  useAgentsSkillsAccessInit();
   useExternalLinkHandler();
   useFileTabSync();
   useEffect(() => {
@@ -631,22 +634,7 @@ function AppContent() {
                 />
               </button>
             )}
-            {activeSession && (
-              <button
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(buildSessionDeeplink(activeSession.id));
-                    toast.success(t("chat.shareLinkCopied", "会话链接已复制"));
-                  } catch {
-                    toast.error(t("chat.shareLinkCopyFailed", "复制失败"));
-                  }
-                }}
-                className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                title={t("chat.copyShareLink", "复制会话分享链接")}
-              >
-                <Link2 className="h-3.5 w-3.5" />
-              </button>
-            )}
+            {activeSession && <SessionShareButton sessionId={activeSession.id} />}
             {activeSession && <ExportPiTranscriptButton sessionId={activeSession.id} />}
             {activeSession && <DiagnoseSessionButton sessionId={activeSession.id} />}
 
@@ -735,6 +723,7 @@ function AppContent() {
           ) : null}
 
           <RuntimeRefreshWorkspaceBanner />
+          <AgentsSkillsAccessBanner />
 
           {/* Main content - Chat or file preview */}
           <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -919,7 +908,6 @@ function App() {
           descriptionClassName: '!text-muted-foreground !text-[11px]',
         }}
       />
-      <UpdateDialogContainer />
       <CloseToTrayHost />
       <AppDeployConfirmDialog />
       <NewSessionDialog />

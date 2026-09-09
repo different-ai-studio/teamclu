@@ -627,7 +627,9 @@ fn health(root: &Path) -> String {
     let mut total = 0usize;
     for (rel, abs) in &files {
         total += 1;
-        let Ok(raw) = std::fs::read_to_string(abs) else { continue };
+        let Ok(raw) = std::fs::read_to_string(abs) else {
+            continue;
+        };
         let (kind, _owner, verified, updated) = parse_frontmatter(&raw);
         // Asked once. `FRESH_KINDS.contains(&kind)` and `kind == "runbook"`
         // were two spellings of the same question, three lines apart, free to
@@ -1099,8 +1101,15 @@ mod tests {
             &ForbiddenPaths::default(),
         );
         let raw = std::fs::read_to_string(root.join("20-domains/y.md")).unwrap();
-        assert!(raw.starts_with("---"), "frontmatter must lead the file: {raw}");
-        assert_eq!(raw.matches("---").count(), 2, "no second frontmatter: {raw}");
+        assert!(
+            raw.starts_with("---"),
+            "frontmatter must lead the file: {raw}"
+        );
+        assert_eq!(
+            raw.matches("---").count(),
+            2,
+            "no second frontmatter: {raw}"
+        );
         let (kind, _, verified, _) = parse_frontmatter(&raw);
         assert_eq!(kind, "runbook");
         assert_eq!(verified.as_deref(), Some("2026-01-01"));

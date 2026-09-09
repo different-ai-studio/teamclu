@@ -129,7 +129,7 @@ where
 #[tauri::command]
 pub async fn watch_directory(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     state: tauri::State<'_, FileWatcherState>,
     path: String,
 ) -> Result<bool, String> {
@@ -218,7 +218,7 @@ pub async fn watch_directory(
 /// was being watched (regardless of whether the watcher was actually stopped).
 #[tauri::command]
 pub async fn unwatch_directory(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     state: tauri::State<'_, FileWatcherState>,
     path: String,
 ) -> Result<bool, String> {

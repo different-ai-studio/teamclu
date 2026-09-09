@@ -51,6 +51,13 @@ const DEBT: &[&str] = &[
     "apps/daemon/src/workspace_meta_gate.rs",
     "apps/desktop/crates/teamclu-introspect/src/config.rs",
     "apps/desktop/crates/teamclu-introspect/src/cron.rs",
+    // Not a home directory either: probe files written INSIDE an
+    // already-resolved skills root (`.teamclu-write-probe-<n>`,
+    // `.teamclu-scope-probe`) to find out whether it is writable. Same shape as
+    // the two skill-writer entries above, and the same conclusion — clearing it
+    // means teaching the needle that a dot-name with a suffix is a file, not a
+    // home directory.
+    "apps/desktop/src/commands/agents_skills.rs",
     // Test-only: assertions that the resolver produced `.amuxd-teamclaw` /
     // `.amuxd-copilot361` for a branded build. Spelling the names is the point
     // of those assertions — this is the one entry that wants OWNERS-like
@@ -107,6 +114,11 @@ fn has_hand_written_home_dir(text: &str, backtick_opens_a_string: bool) -> bool 
                 && (matches!(bytes[at - 1], b'"' | b'\'')
                     || (backtick_opens_a_string && bytes[at - 1] == b'`'));
             if quoted {
+                // Skill-pack ignore filename, not a home-directory path.
+                if *needle == ".teamclu" && text[at..].starts_with(".teamcluignore") {
+                    from = at + ".teamcluignore".len();
+                    continue;
+                }
                 return true;
             }
             from = at + needle.len();
@@ -180,6 +192,10 @@ mod tests {
         ));
         assert!(!has_hand_written_home_dir(
             r#"amuxd_home_from_env().join("teams")"#,
+            false
+        ));
+        assert!(!has_hand_written_home_dir(
+            r#"write(&dir, ".teamcluignore", "results/\n");"#,
             false
         ));
     }

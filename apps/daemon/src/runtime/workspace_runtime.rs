@@ -2,7 +2,9 @@ use std::path::Path;
 
 use super::instruction_delivery::{resolve_instruction_delivery, skips_buffered_inject};
 use super::RuntimeManager;
-use crate::config::{append_policy_to_prompt, claude_md_block_present_at, load_system_prompt, sync_teamclu_claude_md};
+use crate::config::{
+    append_policy_to_prompt, claude_md_block_present_at, load_system_prompt, sync_teamclu_claude_md,
+};
 use crate::proto::amux;
 
 /// OpenCode plugins are gone (pi-only). System instructions always use buffered inject.
@@ -24,7 +26,10 @@ pub fn apply_workspace_system_instructions(
         claude_md_block_present_at(worktree),
     );
 
-    if matches!(delivery, super::instruction_delivery::InstructionDelivery::NativeClaudeMd) {
+    if matches!(
+        delivery,
+        super::instruction_delivery::InstructionDelivery::NativeClaudeMd
+    ) {
         let _ = sync_teamclu_claude_md(worktree, &prompt_with_policy);
     }
 

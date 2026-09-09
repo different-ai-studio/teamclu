@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "amuxd"
-version = "0.4.1-beta.46"
+version = "0.4.1-beta.48"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -9461,7 +9461,7 @@ dependencies = [
 
 [[package]]
 name = "teamclu"
-version = "0.4.1-beta.46"
+version = "0.4.1-beta.48"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -9643,6 +9643,7 @@ dependencies = [
 name = "teamclu-skillpack"
 version = "0.1.0"
 dependencies = [
+ "ignore",
  "serde",
  "serde_json",
  "sha2",

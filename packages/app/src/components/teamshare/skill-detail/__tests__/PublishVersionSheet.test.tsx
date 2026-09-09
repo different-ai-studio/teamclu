@@ -40,6 +40,15 @@ const item: TeamSkillItem = {
   updatedAt: null,
 }
 
+const loadPackPreview = async () => ({
+  includedCount: 2,
+  ignoredCount: 0,
+  totalBytes: 1200,
+  digest: 'sha256:abc',
+  included: ['SKILL.md', 'scripts/run.sh'],
+  ignored: [] as string[],
+})
+
 describe('PublishVersionSheet draft summary', () => {
   it('does not dump a long SKILL.md description into the summary field', async () => {
     render(
@@ -55,6 +64,7 @@ describe('PublishVersionSheet draft summary', () => {
           whenNotToUse: '',
           requires: [],
         })}
+        onLoadPublishPreview={loadPackPreview}
         onClose={() => {}}
         onSubmit={async () => {}}
       />,
@@ -84,6 +94,7 @@ describe('PublishVersionSheet draft summary', () => {
           whenNotToUse: '',
           requires: [],
         })}
+        onLoadPublishPreview={loadPackPreview}
         onClose={() => {}}
         onSubmit={async () => {}}
       />,

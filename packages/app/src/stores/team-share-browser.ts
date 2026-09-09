@@ -320,6 +320,8 @@ interface TeamShareBrowserState {
    * only the local path knows that. `SkillDetail` hides the entry otherwise.
    */
   sharePersonalSkill: (slug: string, input: TeamSkillShareInput) => Promise<string | null>
+  /** Snapshot of the published file set + digest, taken when the publish sheet opens. */
+  loadSkillPublishPreview: (slug: string) => Promise<TeamSkillPublishPreview>
   /** Publish the local edits of an already-shared skill as the next version. */
   publishSkillVersion: (slug: string, input: TeamSkillVersionInput) => Promise<void>
   /**
@@ -393,6 +395,17 @@ interface TeamSkillVersionInput {
   whenToUse?: string
   whenNotToUse?: string
   requires?: string[] | null
+  expectedDigest?: string
+}
+
+export interface TeamSkillPublishPreview {
+  includedCount: number
+  ignoredCount: number
+  totalBytes: number
+  digest: string
+  included: string[]
+  ignored: string[]
+  limitError?: string | null
 }
 
 export interface TeamSkillFileDiff {
@@ -916,6 +929,14 @@ export class StaleDirtySkillPublishError extends Error {
   }
 }
 
+/** Local files changed after the publish preview was taken. */
+export class PreviewDigestMismatchError extends Error {
+  constructor() {
+    super('preview_digest_mismatch')
+    this.name = 'PreviewDigestMismatchError'
+  }
+}
+
 function isStaleTeamSkillPublish(e: unknown): boolean {
   if (e instanceof StaleTeamSkillPublishError) return true
   if (e && typeof e === 'object' && 'code' in e) {
@@ -1028,6 +1049,7 @@ async function materializeSkill(
   // Download URLs are storage-presigned (S3/MinIO/Supabase). Passing a Bearer
   // JWT makes MinIO answer 400 "multiple authentication types" and is what
   // made marketplace auto-follow stuck on "Update failed — retry".
+  await ensureAgentsSkillsPaths(wsPath)
   const result = await invoke<{ archivedPath?: string }>('team_skill_install', {
     request: {
       workspacePath: wsPath,
@@ -1047,7 +1069,6 @@ async function materializeSkill(
       archiveUnmanaged: opts.archiveUnmanaged ?? false,
     },
   })
-  await ensureAgentsSkillsPaths(wsPath)
   return result ?? {}
 }
 
@@ -1284,7 +1305,10 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     set({ subjectActorId: actorId, detailTarget: null })
     await Promise.all([
       get().loadSection('skills', { force: true }),
-      get().loadSection('mcp', { force: true }),
+      // Probe after the actor is known. Opening MCP fires withTools while
+      // subjectActorId is still null, so loadMcpTools no-ops; this reload is
+      // what actually fills tool counts. Without it the list stays at "Idle · 0".
+      get().loadSection('mcp', { force: true, withTools: true }),
     ])
   },
 
@@ -1590,6 +1614,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // other member's copy gets. The pack would then differ from itself
     // depending on who installed it, and the publisher's conflict diff would
     // show a phantom deleted line they never touched.
+    await ensureAgentsSkillsPaths(wsPath)
     await invoke('team_skill_install_from_dir', {
       request: {
         workspacePath: wsPath,
@@ -1606,7 +1631,6 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         isGlobal: true,
       },
     })
-    await ensureAgentsSkillsPaths(wsPath)
 
     // Against the Agent, not the member. `team_skill_install_from_dir` above put
     // the pack in this machine's skills root, and the machine is an Agent — the
@@ -1674,6 +1698,12 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
       teamId,
       cloudApiUrl,
       accessToken,
+      expectedDigest: input.expectedDigest ?? null,
+    }).catch((e) => {
+      if (String(e instanceof Error ? e.message : e).includes('preview_digest_mismatch')) {
+        throw new PreviewDigestMismatchError()
+      }
+      throw e
     })
 
     const backend = getBackend()
@@ -2105,6 +2135,13 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     const teamId = currentTeamId()
     if (!teamId) throw new Error('no current team')
     return invoke<TeamSkillDraftMetadata>('team_skill_read_draft_metadata', { slug, teamId })
+  },
+
+  loadSkillPublishPreview: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const dirPath = await invoke<string>('team_skill_installed_dir', { slug, teamId })
+    return invoke<TeamSkillPublishPreview>('team_skill_publish_preview', { dirPath })
   },
 
   listDraftRecoveries: async (slug) => {

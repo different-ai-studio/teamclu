@@ -92,6 +92,9 @@ const DYNAMIC_PREFIXES = [
   'settings.billing.kind.',
   'apps.controlPanel.authModeOption.',
   'apps.controlPanel.permission.',
+  // Keyed by AppAuthAudience / AppAuthScope in AppAuthSection.tsx.
+  'apps.controlPanel.authAudienceOption.',
+  'apps.controlPanel.authScopeOption.',
 ]
 // i18next plural/context suffixes resolve from the base key at runtime.
 const PLURAL_SUFFIX = /_(plural|one|two|few|many|other|zero|\d+)$/

@@ -205,7 +205,7 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
           )}
         >
           {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-          {t('teamShare.save', 'Save')}
+          {t('teamShare.saveLocal', 'Save to this device')}
         </Button>
       </div>
 

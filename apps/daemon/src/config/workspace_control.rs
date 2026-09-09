@@ -502,7 +502,6 @@ impl OpenCodeCompatStore {
         )
         .map_err(|e| WorkspaceControlError::Io(e.to_string()))
     }
-
 }
 
 impl Default for OpenCodeCompatStore {

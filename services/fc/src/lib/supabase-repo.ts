@@ -47,7 +47,22 @@ import {
   readEnvelope as readTeamEnvEnvelope,
 } from "./validation/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
-import { appOssObjectName, buildAppStorageEnv, deployUnavailable, parseOptionalGitCommitSha, parseDeployToken, readAppsCloudApiUrl, assertDeployAllowed, checkDeployInProgress, needsDatabase } from "./provisioning/app-deploy.js";
+import {
+  appFunctionName,
+  appOssObjectName,
+  assertDeployAllowed,
+  buildAppStorageEnv,
+  checkDeployInProgress,
+  deployUnavailable,
+  needsDatabase,
+  parseAppRuntimeSpec,
+  parseDeclaredRuntime,
+  parseDeployedImage,
+  parseDeployToken,
+  parseOptionalGitCommitSha,
+  readAppsCloudApiUrl,
+} from "./provisioning/app-deploy.js";
+import type { AppLogKind } from "./provisioning/app-logs.js";
 import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type FilterOp } from "./provisioning/app-data-db.js";
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
 import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
@@ -58,10 +73,44 @@ import {
 } from "./provisioning/deploy-key.js";
 import {
   applyAuthModeChange,
-  buildPlatformOAuthEnv,
+  buildPlatformAuthEnv,
+  parseAuthAudience,
   parseAuthMode,
   type AuthMode,
 } from "./provisioning/app-auth-mode.js";
+import {
+  parseAuthRules,
+  parseAuthScope,
+  validateAuthPathConfig,
+  type AuthScope,
+} from "./apps-auth-paths.js";
+import {
+  customDomainRecords,
+  makeDomainToken,
+  normalizeCustomDomain,
+  verificationTxtName,
+  verifyDomainOwnership,
+} from "./apps-custom-domain.js";
+import { invalidateVanityHost } from "./apps-vanity.js";
+
+/**
+ * The client-facing shape of an app's custom domain.
+ *
+ * The DNS records ride along on every response so a client never reconstructs
+ * them — the TXT value embeds a token it would otherwise have to remember
+ * across requests.
+ */
+function customDomainView(row: any) {
+  const domain = (row.custom_domain ?? null) as string | null;
+  return {
+    domain,
+    verified: Boolean(row.custom_domain_verified_at),
+    verifiedAt: row.custom_domain_verified_at ?? null,
+    dns: domain
+      ? customDomainRecords({ id: row.id, slug: row.slug }, domain, row.custom_domain_token ?? "")
+      : [],
+  };
+}
 import {
   APP_STORAGE_TOKEN_KIND,
   deleteAppSecretSupabase,
@@ -260,6 +309,37 @@ async function runAppData<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Bounds for a log read, applied here rather than trusted from the caller.
+ *
+ * The window is capped at the retention period: asking for more is not an
+ * error, it is a window that is mostly empty, and clamping says so by
+ * returning what exists. The row cap is what keeps one call from returning
+ * more text than its caller can hold.
+ */
+export const APP_LOGS_MAX_MINUTES = 7 * 24 * 60;
+export const APP_LOGS_MAX_ROWS = 200;
+
+function parseLogMinutes(raw: unknown): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return 30;
+  return Math.min(n, APP_LOGS_MAX_MINUTES);
+}
+
+function parseLogLimit(raw: unknown): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return 100;
+  return Math.min(n, APP_LOGS_MAX_ROWS);
+}
+
+function parseLogKind(raw: unknown): AppLogKind {
+  return raw === "request" || raw === "all" ? raw : "app";
+}
+
+function parseLogText(raw: unknown): string | null {
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
 const APP_DATA_FILTER_OPS: readonly FilterOp[] = ["eq", "contains", "isNull", "notNull"];
 
 /** `filterColumn` + `filterOp` (+ `filterValue`), or nothing. */
@@ -319,6 +399,11 @@ export function createSupabaseBusinessRepository(options) {
     // the variable, for the same why as appDataUnavailableReason above.
     appStorage,
     appStorageUnavailableReason,
+    // Reads the deployed function's own logs out of SLS. Absent when the
+    // deployment has no Alibaba credentials or no SLS project to point at —
+    // the reason names what is missing, as with the two above.
+    appLogs,
+    appLogsUnavailableReason,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
     // Optional push hook — called after every successful message INSERT. Best-effort:
     // errors are logged and swallowed so insert outcome is never affected.
@@ -614,10 +699,13 @@ export function createSupabaseBusinessRepository(options) {
     // here is `amux`, so it resolves via a plain `.rpc(...)` like create_team etc.
     async listAllMyTeams() {
       // Cross-org team picker source: member teams plus every public team the
-      // caller may join. `p_default_org_id` survives only in the RPC signature
-      // — the function body has never read it, and FC no longer supplies it.
+      // caller may join. `p_default_org_id` names the shared tenant — the org
+      // phone sign-up stamps every account with, which therefore says nothing
+      // about belonging and must not contribute its public teams. Same value
+      // bootstrapTeam passes as `p_shared_org`; null on a deployment without
+      // phone login, where the picker's own-org arm behaves as it always has.
       const { data, error } = await supabase.rpc("list_teams_for_picker", {
-        p_default_org_id: null,
+        p_default_org_id: process.env.DEFAULT_ORG_ID || null,
         p_include_empty_orgs: false,
       });
       if (error) throw error;
@@ -657,11 +745,12 @@ export function createSupabaseBusinessRepository(options) {
     // plain 'member' actor (idempotent if already joined) and rejects anything
     // that is not public.
     async joinPublicTeam(teamId) {
-      // `p_default_org_id` is vestigial (the function body never read it). The
-      // org check now happens inside the RPC against amux.current_org_id().
+      // `p_default_org_id` names the shared tenant, as in listAllMyTeams: the
+      // RPC's own-org check (CS-4) passes for every phone sign-up there, so the
+      // shared org needs the extra employee test the picker now applies.
       const { data, error } = await supabase.rpc("join_public_team", {
         p_team_id: teamId,
-        p_default_org_id: null,
+        p_default_org_id: process.env.DEFAULT_ORG_ID || null,
       });
       if (error) {
         const code = error?.code || "";
@@ -1276,20 +1365,18 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async upsertWorkspace(input) {
-      // AUTHZ: created_by is ALWAYS resolved server-side from the authenticated
-      // caller scoped to the target team. Any client-supplied
+      // AUTHZ: created_by / agent_id are ALWAYS resolved server-side from the
+      // authenticated caller scoped to the target team. Any client-supplied
       // `input.createdByMemberId` is ignored — a multi-team user's client can
       // send the wrong team's member actor id (stale current-team value), which
       // the workspaces INSERT RLS WITH CHECK then rejects. Deriving it here
       // guarantees the row satisfies the team-scoped policy regardless of what
       // the client sends (mirrors createSession / createApp).
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
-      if (userErr) throw userErr;
-      const userId = userData?.user?.id;
-      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
-      const resolved = await this.resolveCurrentMemberActor(input.teamId, userId);
-      if (!resolved?.id) throw new ApiError(403, "forbidden", "not a member of this team");
-      const createdByMemberId = resolved.id;
+      //
+      // Headless daemons authenticate as an agent actor. RLS allows INSERT via
+      // `workspaces_agent_write` when `agent_id = current agent`; member-only
+      // resolution used to reject every daemon `POST /v1/workspaces`.
+      const { createdByMemberId, agentId } = await this.resolveWorkspaceUpsertAuth(input);
 
       // Dedup key: explicit `id` always wins. Otherwise reuse by (team, path)
       // or by (team, agent, name) — the table's unique constraint is
@@ -1317,8 +1404,8 @@ export function createSupabaseBusinessRepository(options) {
           .select("id, path, archived")
           .eq("team_id", input.teamId)
           .eq("name", resolvedName);
-        byNameQuery = input.agentId
-          ? byNameQuery.eq("agent_id", input.agentId)
+        byNameQuery = agentId
+          ? byNameQuery.eq("agent_id", agentId)
           : byNameQuery.is("agent_id", null);
         const { data: byNameRows, error: nameErr } = await byNameQuery.limit(1);
         if (nameErr) throw nameErr;
@@ -1333,10 +1420,25 @@ export function createSupabaseBusinessRepository(options) {
             resolvedName = await findUniqueWorkspaceName(
               supabase,
               input.teamId,
-              input.agentId,
+              agentId,
               resolvedName,
             );
           }
+        }
+      }
+
+      // Agent callers re-upserting an existing row (path/id dedup) must not
+      // wipe member attribution that Desktop registration wrote first.
+      let createdByMemberIdForRow = createdByMemberId;
+      if (targetId && createdByMemberId === null) {
+        const { data: existing, error: existingErr } = await supabase
+          .from("workspaces")
+          .select("created_by_member_id")
+          .eq("id", targetId)
+          .maybeSingle();
+        if (existingErr) throw existingErr;
+        if (existing?.created_by_member_id) {
+          createdByMemberIdForRow = existing.created_by_member_id;
         }
       }
 
@@ -1344,8 +1446,8 @@ export function createSupabaseBusinessRepository(options) {
         team_id: input.teamId,
         name: resolvedName,
         path: normalizedPath,
-        agent_id: input.agentId ?? null,
-        created_by_member_id: createdByMemberId,
+        agent_id: agentId,
+        created_by_member_id: createdByMemberIdForRow,
         archived: input.archived ?? false,
       };
       if (targetId) row.id = targetId;
@@ -1974,6 +2076,35 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (error) throw error;
       return data ? { id: data.id } : null;
+    },
+
+    async resolveWorkspaceUpsertAuth(input) {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+
+      const member = await this.resolveCurrentMemberActor(input.teamId, userId);
+      if (member?.id) {
+        return {
+          createdByMemberId: member.id,
+          agentId: input.agentId ?? null,
+        };
+      }
+
+      const caller = await this.resolveCurrentActor(input.teamId, userId);
+      if (!caller?.id) {
+        throw new ApiError(403, "forbidden", "not a member of this team");
+      }
+      const requestedAgentId = input.agentId ?? null;
+      if (!requestedAgentId || requestedAgentId !== caller.id) {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "agent callers may only register workspaces for their own agent id",
+        );
+      }
+      return { createdByMemberId: null, agentId: caller.id };
     },
 
     async resolveFirstMemberActorForUser(userId) {
@@ -3318,6 +3449,10 @@ export function createSupabaseBusinessRepository(options) {
         fcStatus?: string;
         deployError?: string;
         authMode?: string;
+        authAudience?: string;
+        authScope?: string;
+        /** Raw from the client; parsed and validated before it is stored. */
+        authRules?: unknown;
       },
     ) {
       // RLS apps_update_if_creator blocks non-creators: the UPDATE matches zero
@@ -3325,7 +3460,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: cur } = await supabase
         .from("apps")
         .select(
-          "provision_status, fc_status, name, slug, auth_mode, oauth_client_id, oauth_app_id, team_id, created_by_actor_id",
+          "provision_status, fc_status, name, slug, auth_mode, auth_audience, auth_scope, auth_rules, oauth_client_id, oauth_app_id, team_id, created_by_actor_id",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -3390,6 +3525,22 @@ export function createSupabaseBusinessRepository(options) {
         }
       }
 
+      const nextAudience = parseAuthAudience(patch.authAudience);
+      if (nextAudience !== undefined) set.auth_audience = nextAudience;
+
+      // Scope and rules are validated as a PAIR, because "paths with nothing
+      // required" is only visible when both are known — and the two halves can
+      // arrive in separate PATCHes, so whichever is absent is read from the row.
+      const nextScope = parseAuthScope(patch.authScope);
+      const nextRules = patch.authRules === undefined ? undefined : parseAuthRules(patch.authRules);
+      if (nextScope !== undefined || nextRules !== undefined) {
+        const scope = nextScope ?? ((cur?.auth_scope ?? "all") as AuthScope);
+        const rules = nextRules ?? parseAuthRules(cur?.auth_rules ?? []);
+        validateAuthPathConfig(scope, rules);
+        if (nextScope !== undefined) set.auth_scope = scope;
+        if (nextRules !== undefined) set.auth_rules = rules;
+      }
+
       if (typeof patch.provisionStatus === "string") {
         const from = cur?.provision_status ?? "";
         if (isLegalStatusTransition(from, patch.provisionStatus)) {
@@ -3431,9 +3582,145 @@ export function createSupabaseBusinessRepository(options) {
       return data ? mapApp(data) : null;
     },
 
-    async deployApp(appId: string, input: { gitCommitSha?: string }) {
+    /**
+     * Authorize a custom-domain write, and hand back the client that can do it.
+     *
+     * Same shape as updateApp's gate, and for the same two reasons: the caller
+     * must hold `admin` on an app they can already SEE (a row we cannot read is
+     * not one we may write with a service role), and `apps_update_if_creator`
+     * is creator-only — so an authorized admin grantee needs the service-role
+     * client or their UPDATE matches zero rows and 404s despite being allowed.
+     * That mismatch is the P0 the apps audit found on the deploy methods.
+     */
+    async authorizeCustomDomainWrite(appId: string): Promise<{ cur: any; writer: any } | null> {
+      const { data: cur } = await supabase
+        .from("apps")
+        .select(
+          "id, slug, team_id, created_by_actor_id, custom_domain, custom_domain_token, custom_domain_verified_at",
+        )
+        .eq("id", appId)
+        .maybeSingle();
+      if (!cur) return null;
+      const permission = await this.resolveAppCallerPermissionForApp({
+        id: appId,
+        team_id: cur.team_id,
+        created_by_actor_id: cur.created_by_actor_id,
+      });
+      if (permission?.level !== "admin") return null;
+      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+      const writer = callerIsCreator
+        ? supabase
+        : await serviceRoleClient("bind an app custom domain authorized by an admin grant");
+      return { cur, writer };
+    },
+
+    async setAppCustomDomain(appId: string, rawDomain: unknown) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const domain = normalizeCustomDomain(rawDomain);
+
+      // Binding the SAME name again is idempotent: same token, verification
+      // intact. That makes this the way a client re-reads the DNS records it
+      // has to display — the TXT value embeds the token, which is not in the
+      // app row, so after a reload there is no other way to show them. Minting
+      // a new token there would invalidate a record the owner had already
+      // published, purely because they reopened the page.
+      //
+      // A DIFFERENT name resets both. The proof belongs to one binding, and
+      // carrying it over would let a domain that changed hands stay verified.
+      const sameDomain = gate.cur.custom_domain === domain;
+      const token = (sameDomain && gate.cur.custom_domain_token) || makeDomainToken();
+      const verifiedAt = sameDomain ? (gate.cur.custom_domain_verified_at ?? null) : null;
+
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({
+          custom_domain: domain,
+          custom_domain_token: token,
+          custom_domain_verified_at: verifiedAt,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) {
+        // 23505 is the unique index on lower(custom_domain): another app has
+        // it. Say which case it is rather than surfacing a constraint name.
+        if ((error as any).code === "23505") {
+          throw new ApiError(409, "domain_taken", `${domain} is already bound to another app`);
+        }
+        throw error;
+      }
+      if (!data) return null;
+      // The old name must stop resolving here immediately, and the new one must
+      // not be remembered as a miss from before it existed.
+      invalidateVanityHost(gate.cur.custom_domain);
+      invalidateVanityHost(domain);
+      return customDomainView(data);
+    },
+
+    async verifyAppCustomDomain(appId: string) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const domain = gate.cur.custom_domain as string | null;
+      const token = gate.cur.custom_domain_token as string | null;
+      if (!domain || !token) {
+        throw new ApiError(409, "no_custom_domain", "this app has no custom domain to verify");
+      }
+
+      const proven = await verifyDomainOwnership(domain, token);
+      if (!proven) {
+        // Retryable, and usually just propagation — so 409 with the record to
+        // add, not a 400 that reads like the request was malformed.
+        throw new ApiError(
+          409,
+          "dns_verification_failed",
+          `no matching TXT record at ${verificationTxtName(domain)} yet; DNS may still be propagating`,
+        );
+      }
+
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({ custom_domain_verified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      // Until this drops, the hostname is cached as "not an app" from the
+      // requests made while it was still unverified.
+      invalidateVanityHost(domain);
+      return customDomainView(data);
+    },
+
+    async deleteAppCustomDomain(appId: string) {
+      const gate = await this.authorizeCustomDomainWrite(appId);
+      if (!gate) return null;
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({
+          custom_domain: null,
+          custom_domain_token: null,
+          custom_domain_verified_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", appId)
+        .select("id, slug, custom_domain, custom_domain_token, custom_domain_verified_at")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      invalidateVanityHost(gate.cur.custom_domain);
+      return customDomainView(data);
+    },
+
+    async deployApp(appId: string, input: { gitCommitSha?: string; runtime?: string }) {
       // Optional: only a Gitea-managed app pins its deploy to a forge commit.
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
+      // What the checkout declares, read by the daemon before it asked for a
+      // deploy. It decides which handle this deploy carries — an OSS upload or
+      // a registry to push an image to — so it has to arrive here, not at
+      // finalize where the rest of the declaration does.
+      const declaredRuntime = parseDeclaredRuntime(input?.runtime);
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
@@ -3469,7 +3756,12 @@ export function createSupabaseBusinessRepository(options) {
       const deployToken = randomUUID();
       const deployStartedAt = new Date().toISOString();
       try {
-        const r = await startDeploy({ appId, region: process.env.REGION || "cn-hangzhou" });
+        const r = await startDeploy({
+          appId,
+          region: process.env.REGION || "cn-hangzhou",
+          runtime: declaredRuntime,
+          gitCommitSha,
+        });
         const { data: row, error: updErr } = await supabase
           .from("apps")
           .update({
@@ -3480,6 +3772,10 @@ export function createSupabaseBusinessRepository(options) {
             deploy_token: deployToken,
             deploy_started_at: deployStartedAt,
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            // The column records what this deployment is building, which until
+            // now nothing ever wrote — it sat at its default while the guard
+            // beside it refused every value but that default.
+            ...(declaredRuntime ? { runtime: declaredRuntime } : {}),
             updated_at: deployStartedAt,
           })
           .eq("id", appId)
@@ -3489,8 +3785,11 @@ export function createSupabaseBusinessRepository(options) {
         if (!row) return null;
         return {
           ...mapApp(row),
+          // Exactly one of these is set — see startDeploy. The daemon branches
+          // on which one it got.
           ossObjectName: r.ossObjectName,
           presignedPut: r.presignedPut,
+          image: r.image,
           deployToken,
           gitCommitSha,
         };
@@ -3510,8 +3809,12 @@ export function createSupabaseBusinessRepository(options) {
       }
     },
 
-    async finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }) {
+    async finalizeDeploy(
+      appId: string,
+      input: { gitCommitSha?: string; deployToken: string; runtime?: unknown; image?: unknown },
+    ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
+      const runtimeSpec = parseAppRuntimeSpec(input?.runtime);
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
@@ -3536,17 +3839,13 @@ export function createSupabaseBusinessRepository(options) {
       // Mark deploying (RLS-gated UPDATE).
       await supabase.from("apps").update({ fc_status: "deploying", updated_at: new Date().toISOString() }).eq("id", appId);
       try {
-        let platformOAuthEnv: Record<string, string> | undefined;
+        // Convenience env for the app's own code. The login wall does not
+        // depend on it: the proxy gateway enforces the wall before a request
+        // reaches the function at all, so an app that has never been redeployed
+        // is still protected the moment auth_mode flips.
+        let platformAuthEnv: Record<string, string> | undefined;
         if ((existing.auth_mode ?? "none") === "platform") {
-          const admin = await serviceRoleClient("read app secrets");
-          platformOAuthEnv = await buildPlatformOAuthEnv(
-            {
-              gotrue,
-              gotrueUnavailableReason,
-              getSecret: (kind) => getAppSecretSupabase(admin, appId, kind),
-            },
-            { appId, slug: existing.slug, oauthClientId: existing.oauth_client_id ?? null },
-          );
+          platformAuthEnv = buildPlatformAuthEnv({ appId, slug: existing.slug });
         }
         // Which database this app's data lives in is a fact decided once, at
         // the first successful finalize — not a property re-derived from the
@@ -3568,8 +3867,15 @@ export function createSupabaseBusinessRepository(options) {
           appType: existing.type,
           fcFunctionName: existing.fc_function_name,
           ossObjectName: appOssObjectName(appId),
-          platformOAuthEnv,
+          platformAuthEnv,
           storageEnv,
+          // What the daemon read out of the app's own declaration. Absent for a
+          // client that predates it, which is the contract every app had before.
+          runtime: runtimeSpec,
+          // The image that build pushed. A container app has no code object,
+          // so without this the function would be pointed at whatever the
+          // previous deploy happened to leave in OSS.
+          image: parseDeployedImage(input?.image, runtimeSpec),
         });
         const { data: row, error: updErr } = await supabase
           .from("apps")
@@ -3577,6 +3883,9 @@ export function createSupabaseBusinessRepository(options) {
             fc_status: "live",
             fc_endpoint: r.fcEndpoint,
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
+            // What is now running, as opposed to what the deploy set out to
+            // build. They differ when an app's declaration changed mid-deploy.
+            ...(runtimeSpec ? { runtime: runtimeSpec.runtime } : {}),
             // The function that just went live carries this auth_mode's env.
             // Recording it here is what lets `authModePendingRedeploy` clear —
             // and what makes the pending state a property of the row rather
@@ -3720,6 +4029,72 @@ export function createSupabaseBusinessRepository(options) {
       const ops = this.requireAppData();
       await runAppData(() => ops.deleteRow(resolved.target, { table, key: decodeRowKey(rowKey) }));
       return { ok: true };
+    },
+
+    /**
+     * What the deployed function itself printed, plus one row per request.
+     *
+     * Authorized like the data browser and for the same reason: an app's log
+     * lines carry whatever it decided to print, which is its users' data. So
+     * `view` gets the same 404 the feature gives a non-member, and the caller's
+     * own permission on the app row is what decides — never the SLS credential,
+     * which is one service account for every app on the deployment.
+     *
+     * The function name is read off the row rather than derived, so an app
+     * deployed under an older naming scheme still finds its own logs; deriving
+     * it is only the fallback for a row that predates the column.
+     */
+    async getAppLogs(appId: string, query: any = {}) {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, slug, team_id, type, fc_status, fc_function_name, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission || permission.level === "view") return null;
+
+      // Distinguishable from "no logs in that window", which is the answer that
+      // sends someone looking for a bug that is not there.
+      if (!app.fc_status || app.fc_status === "not_deployed") {
+        throw new ApiError(
+          409,
+          "app_not_deployed",
+          "this app has never been deployed, so it has no logs yet",
+        );
+      }
+      if (!appLogs) {
+        throw new ApiError(
+          503,
+          "app_logs_unavailable",
+          appLogsUnavailableReason
+            ? `app logs are not configured: ${appLogsUnavailableReason}`
+            : "app logs are not configured",
+        );
+      }
+
+      try {
+        return await appLogs({
+          functionName: app.fc_function_name || appFunctionName(app.id),
+          sinceMinutes: parseLogMinutes(query.sinceMinutes),
+          limit: parseLogLimit(query.limit),
+          kind: parseLogKind(query.kind),
+          contains: parseLogText(query.contains),
+          requestId: parseLogText(query.requestId),
+        });
+      } catch (e: any) {
+        if (e instanceof ApiError) throw e;
+        // A logstore that exists but has never received a row answers with a
+        // 4xx rather than an empty page. That is "nothing yet", not a failure
+        // the caller can act on.
+        if (/LogStoreNotExist|IndexConfigNotExist|ProjectNotExist/i.test(String(e?.code ?? ""))) {
+          return { items: [], truncated: false, from: null, to: null };
+        }
+        console.warn(`[apps] app log read failed: ${e?.code ?? e}`);
+        throw new ApiError(502, "app_logs_failed", "could not read this app's logs");
+      }
     },
 
     async listAppSessions(appId: string) {

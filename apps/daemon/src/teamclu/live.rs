@@ -6,10 +6,10 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::mqtt::Topics;
-use crate::runtime::acp_live_transport::prepare_acp_event_body_for_live;
 use crate::proto::amux;
 use crate::proto::amux::Envelope as AmuxEnvelope;
 use crate::proto::teamclu::{IdeaEvent, LiveEventEnvelope, Participant, SessionMessageEnvelope};
+use crate::runtime::acp_live_transport::prepare_acp_event_body_for_live;
 
 const RUMQTTC_DEFAULT_PACKET_LIMIT_BYTES: usize = 10 * 1024;
 const LIVE_EVENT_WARN_BYTES: usize = 512 * 1024;

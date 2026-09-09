@@ -86,7 +86,15 @@ interface AuthState {
 }
 
 function errorMessageFor(error: unknown): string {
-  return error instanceof Error ? error.message : "Authentication failed.";
+  if (error instanceof Error) return error.message;
+  // A rejected `invoke()` carries whatever the command's `Err(E)` serialized
+  // to, and every native command this store calls is `Result<_, String>` — so
+  // the rejection is a bare string, never an Error. Dropping it collapsed
+  // every native failure into the same "Authentication failed.", which is how
+  // a Web SSO webview that refused to open reached users with its reason
+  // ("Host '…' is not reachable: …") discarded on the way.
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "Authentication failed.";
 }
 
 function storeSession(session: AuthSession | null): StoreAuthSession | null {

@@ -20,9 +20,9 @@ use std::sync::Arc;
 use crate::config::provider_auth::{builtin_provider_auth_methods, ProviderAuthMethodsResponse};
 use crate::config::workspace_control::{
     decode_workspace_path, ApplyOutcome, EnvActivationDiagnostics, ManagedSkillDto,
-    McpServerConfig, ProviderAuthRequest, ProviderInfo, RoleRecordDto,
-    RolesSkillsStateDto, RuntimeStatus, UpsertRoleRequest, UpsertSkillRequest,
-    WorkspaceControlError, WorkspaceControlStore,
+    McpServerConfig, ProviderAuthRequest, ProviderInfo, RoleRecordDto, RolesSkillsStateDto,
+    RuntimeStatus, UpsertRoleRequest, UpsertSkillRequest, WorkspaceControlError,
+    WorkspaceControlStore,
 };
 use crate::proto::amux;
 use crate::runtime::refresh::{RefreshChangeKind, RefreshSource};
@@ -288,7 +288,14 @@ async fn reconcile_team_provider(state: &HttpState) {
     let after = std::fs::read(config_path).ok();
     if before != after {
         if let Some(supervisor) = state.runtime_supervisor.as_ref() {
-            supervisor.request_all_workspace_host_refreshes().await;
+            // A GET must not `kill_all()`. The desktop fetches this list on the
+            // first send after daemon start, racing the in-flight prompt — that
+            // was "pi prompt: process exited before responding". Unattached
+            // (prewarmed) hosts can still be replaced so the next spawn sees
+            // the rewritten `provider.team`.
+            supervisor
+                .request_unattached_workspace_host_refreshes()
+                .await;
         }
     }
 }

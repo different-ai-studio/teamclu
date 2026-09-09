@@ -12,9 +12,37 @@ const tauriPluginMcpPath = path.resolve(__dirname, '../../.tauri-plugin-mcp')
 // externalized bare specifier does not resolve inside the webview — either way
 // `execute_js` gets no answer and the whole harness times out. The npm
 // dependency provides the same listeners as the linked dev checkout.
+// A dev/debug run is driven through that same socket, and `.tauri-plugin-mcp/`
+// is a gitignored convenience link almost nobody has — so the check above used
+// to hand every `pnpm tauri:dev` the stub even though the npm dependency was
+// installed and provides the same listeners. The symptom is specific and
+// baffling: `execute_js` still answers, because `stores/dev-expose.ts` hand-
+// rolls that one listener, while every other socket command (`get_page_state`,
+// `press_key`, `type_into_focused`, `get_dom`, …) times out with no error
+// anywhere. Additive on purpose — the linked-checkout, E2E, and production
+// paths all resolve exactly as before.
 const isTauriMcpE2EBuild = process.env.VITE_TEAMCLU_E2E === 'true'
+// Tauri v2 renamed `TAURI_DEBUG` to `TAURI_ENV_DEBUG`; v1's name is kept as a
+// fallback. Compared against the literal string rather than tested for
+// truthiness: a release build sets it to `"false"`, which is truthy.
+const isTauriDevRun =
+  process.env.TAURI_ENV_DEBUG === 'true' || process.env.TAURI_DEBUG === 'true'
+// Same rename, same v1 fallback. Values are unchanged between the two
+// (`windows` / `darwin` / `linux`), so only the variable name had to move.
+const tauriTargetPlatform = process.env.TAURI_ENV_PLATFORM || process.env.TAURI_PLATFORM
+const tauriPluginMcpLinked = existsSync(path.join(tauriPluginMcpPath, 'package.json'))
+const tauriPluginMcpInstalled = (() => {
+  try {
+    createRequire(import.meta.url).resolve('tauri-plugin-mcp')
+    return true
+  } catch {
+    return false
+  }
+})()
 const useTauriPluginMcpStub =
-  !isTauriMcpE2EBuild && !existsSync(path.join(tauriPluginMcpPath, 'package.json'))
+  !isTauriMcpE2EBuild &&
+  !tauriPluginMcpLinked &&
+  !(tauriPluginMcpInstalled && isTauriDevRun)
 
 // --- Build config: read build.config.json + optional environment/local overrides ---
 function readJSON(filePath: string): Record<string, unknown> | null {
@@ -258,9 +286,20 @@ export default defineConfig({
   build: {
     // Tauri uses Chromium on Windows and WebKit on macOS and Linux
     // In web mode, target modern browsers (Chrome extension context).
-    target: process.env.VITE_APP_PLATFORM === 'web' ? 'chrome105' : (process.env.TAURI_PLATFORM === 'windows' ? 'chrome105' : 'safari13'),
-    // Produce sourcemaps for error reporting
-    sourcemap: !!process.env.TAURI_DEBUG,
+    // The Windows arm read the v1 `TAURI_PLATFORM`, which v2 never sets, so it
+    // had been permanently false: every Windows build was transpiled down to
+    // the WebKit `safari13` target even though it runs on evergreen WebView2.
+    target:
+      process.env.VITE_APP_PLATFORM === 'web'
+        ? 'chrome105'
+        : tauriTargetPlatform === 'windows'
+          ? 'chrome105'
+          : 'safari13',
+    // Produce sourcemaps for error reporting. Reuses `isTauriDevRun` because
+    // the bare `TAURI_DEBUG` this used to read is a Tauri v1 name that v2 never
+    // sets — so this had been permanently false and no debug build has shipped
+    // a sourcemap since the v2 upgrade.
+    sourcemap: isTauriDevRun,
     // Chunk splitting strategy (Vite 8 / Rolldown requires manualChunks as a function)
     rollupOptions: {
       // tauri-plugin-mcp is dev-only (linked from .tauri-plugin-mcp/, gitignored).

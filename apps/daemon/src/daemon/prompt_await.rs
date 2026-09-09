@@ -1,3 +1,10 @@
+/// Keep in sync with `apps/desktop/src/commands/cron/types.rs`.
+pub(crate) const DEFAULT_CRON_WALL_TIMEOUT_SECS: u64 = 3600;
+pub(crate) const MAX_CRON_WALL_TIMEOUT_SECS: u64 = 3600;
+pub(crate) const MIN_CRON_WALL_TIMEOUT_SECS: u64 = 60;
+pub(crate) const DEFAULT_CRON_IDLE_TIMEOUT_SECS: u64 = 300;
+pub(crate) const MAX_CRON_IDLE_TIMEOUT_SECS: u64 = 1800;
+
 #[derive(Debug)]
 pub(crate) struct PromptAwaitPayload<'a> {
     pub session_key: &'a str,
@@ -19,7 +26,11 @@ pub(crate) struct PromptAwaitPayload<'a> {
     /// run means the turn waits until the timeout). Absent for jobs saved by a
     /// desktop that predates the field — those keep full access.
     pub permission_mode: Option<&'a str>,
+    /// Hard wall-clock cap for the whole turn, in seconds.
     pub timeout_secs: u64,
+    /// Silence budget: how long the turn may go without ACP progress. Reset on
+    /// every event inside `drive_cron_turn`.
+    pub idle_timeout_secs: u64,
 }
 
 pub(crate) fn parse_prompt_await_payload(
@@ -70,8 +81,14 @@ pub(crate) fn parse_prompt_await_payload(
     let timeout_secs = payload
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
-        .unwrap_or(300)
-        .clamp(1, 600);
+        .unwrap_or(DEFAULT_CRON_WALL_TIMEOUT_SECS)
+        .clamp(MIN_CRON_WALL_TIMEOUT_SECS, MAX_CRON_WALL_TIMEOUT_SECS);
+    let idle_timeout_secs = payload
+        .get("idle_timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_CRON_IDLE_TIMEOUT_SECS)
+        .clamp(30, MAX_CRON_IDLE_TIMEOUT_SECS)
+        .min(timeout_secs);
 
     Ok(PromptAwaitPayload {
         session_key,
@@ -83,6 +100,7 @@ pub(crate) fn parse_prompt_await_payload(
         agent_type,
         permission_mode,
         timeout_secs,
+        idle_timeout_secs,
     })
 }
 
@@ -127,7 +145,8 @@ mod tests {
         assert!(parsed.model_override.is_none());
         assert!(parsed.agent_type.is_none());
         assert!(parsed.permission_mode.is_none());
-        assert_eq!(parsed.timeout_secs, 300);
+        assert_eq!(parsed.timeout_secs, DEFAULT_CRON_WALL_TIMEOUT_SECS);
+        assert_eq!(parsed.idle_timeout_secs, DEFAULT_CRON_IDLE_TIMEOUT_SECS);
     }
 
     #[test]
@@ -159,6 +178,31 @@ mod tests {
             Some("sonnet")
         );
         assert_eq!(parsed.timeout_secs, 120);
+        assert_eq!(parsed.idle_timeout_secs, 120);
+    }
+
+    #[test]
+    fn parse_clamps_wall_timeout_to_sixty_minutes() {
+        let p = json!({
+            "session_key": "cron/j1/r1",
+            "message": "hi",
+            "timeout_secs": 7200
+        });
+        let parsed = parse_prompt_await_payload(&p).unwrap();
+        assert_eq!(parsed.timeout_secs, MAX_CRON_WALL_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn parse_idle_timeout_never_exceeds_wall_timeout() {
+        let p = json!({
+            "session_key": "cron/j1/r1",
+            "message": "hi",
+            "timeout_secs": 120,
+            "idle_timeout_secs": 600
+        });
+        let parsed = parse_prompt_await_payload(&p).unwrap();
+        assert_eq!(parsed.timeout_secs, 120);
+        assert_eq!(parsed.idle_timeout_secs, 120);
     }
 
     #[test]

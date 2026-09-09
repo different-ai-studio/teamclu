@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+use crate::wecom_delivery::{
+    DEFAULT_FINAL_MAX_RETRIES, DEFAULT_PROGRESS_FRAME_GAP_SECS, DEFAULT_STREAM_MAX_SECS,
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct WeComConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -23,6 +27,30 @@ pub struct WeComConfig {
     /// cannot tell where a multi-word name ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_name: Option<String>,
+    /// Seconds a stream bubble may stay open. Past this the driver finishes
+    /// it with a "still running" frame and later pushes the answer as
+    /// markdown. `0` disables the early close (tests / emergency).
+    pub stream_max_secs: u64,
+    /// Minimum gap between two frames of the same stream, in seconds.
+    pub progress_frame_gap_secs: u64,
+    /// How many times a failed proactive send is retried from the outbox.
+    pub final_max_retries: u32,
+}
+
+impl Default for WeComConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_id: String::new(),
+            secret: String::new(),
+            encoding_aes_key: None,
+            owner_id: None,
+            bot_name: None,
+            stream_max_secs: DEFAULT_STREAM_MAX_SECS,
+            progress_frame_gap_secs: DEFAULT_PROGRESS_FRAME_GAP_SECS,
+            final_max_retries: DEFAULT_FINAL_MAX_RETRIES,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -100,4 +128,18 @@ pub struct WeComQrAuthPollResult {
     pub status: String, // "waiting" | "success" | "expired"
     pub bot_id: Option<String>,
     pub secret: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_delivery_fields_take_the_new_defaults() {
+        let cfg: WeComConfig = serde_json::from_str(r#"{"enabled":true,"botId":"b"}"#).unwrap();
+        assert_eq!(cfg.bot_id, "b");
+        assert_eq!(cfg.stream_max_secs, DEFAULT_STREAM_MAX_SECS);
+        assert_eq!(cfg.progress_frame_gap_secs, DEFAULT_PROGRESS_FRAME_GAP_SECS);
+        assert_eq!(cfg.final_max_retries, DEFAULT_FINAL_MAX_RETRIES);
+    }
 }

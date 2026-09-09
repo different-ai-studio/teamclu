@@ -910,7 +910,10 @@ mod tests {
             other => panic!("expected Network error, got {other:?}"),
         };
         // host_str() drops the port; the mock server is 127.0.0.1:<port>.
-        assert!(msg.contains("127.0.0.1"), "error should name the host that returned 413: {msg}");
+        assert!(
+            msg.contains("127.0.0.1"),
+            "error should name the host that returned 413: {msg}"
+        );
         assert!(msg.contains("413"), "error should name the status: {msg}");
     }
 

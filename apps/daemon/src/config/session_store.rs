@@ -108,8 +108,7 @@ impl SessionStore {
     }
 
     fn from_legacy_rows(rows: Vec<LegacyStoredSession>) -> Self {
-        let mut grouped: HashMap<(String, String, i32), Vec<&LegacyStoredSession>> =
-            HashMap::new();
+        let mut grouped: HashMap<(String, String, i32), Vec<&LegacyStoredSession>> = HashMap::new();
         for row in &rows {
             let session_id = if !row.session_id.is_empty() {
                 row.session_id.clone()
@@ -128,16 +127,13 @@ impl SessionStore {
         let mut bindings = Vec::new();
         for ((cloud_session_id, workspace_id, agent_type), mut group) in grouped {
             group.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-            let Some(acp_session_id) = group
-                .iter()
-                .find_map(|row| {
-                    if row.acp_session_id.is_empty() {
-                        None
-                    } else {
-                        Some(row.acp_session_id.clone())
-                    }
-                })
-            else {
+            let Some(acp_session_id) = group.iter().find_map(|row| {
+                if row.acp_session_id.is_empty() {
+                    None
+                } else {
+                    Some(row.acp_session_id.clone())
+                }
+            }) else {
                 continue;
             };
             bindings.push(SessionBinding {
@@ -162,11 +158,7 @@ impl SessionStore {
 
     pub fn upsert(&mut self, binding: SessionBinding) {
         let key = binding.composite_key();
-        if let Some(existing) = self
-            .bindings
-            .iter_mut()
-            .find(|b| b.composite_key() == key)
-        {
+        if let Some(existing) = self.bindings.iter_mut().find(|b| b.composite_key() == key) {
             *existing = binding;
         } else {
             self.bindings.push(binding);
@@ -217,7 +209,10 @@ mod tests {
         store.upsert(SessionBinding::new("s1", "ws-a", 1, "acp-1"));
         store.upsert(SessionBinding::new("s1", "ws-a", 1, "acp-2"));
         assert_eq!(store.bindings.len(), 1);
-        assert_eq!(store.lookup("s1", "ws-a", 1).unwrap().acp_session_id, "acp-2");
+        assert_eq!(
+            store.lookup("s1", "ws-a", 1).unwrap().acp_session_id,
+            "acp-2"
+        );
     }
 
     #[test]
@@ -235,7 +230,10 @@ mod tests {
         };
         let store = SessionStore::from_legacy_rows(legacy.sessions);
         assert_eq!(store.bindings.len(), 1);
-        assert_eq!(store.lookup("cloud-1", "ws-a", 3).unwrap().acp_session_id, "acp-old");
+        assert_eq!(
+            store.lookup("cloud-1", "ws-a", 3).unwrap().acp_session_id,
+            "acp-old"
+        );
     }
 
     #[test]

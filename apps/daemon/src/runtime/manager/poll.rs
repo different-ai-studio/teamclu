@@ -36,6 +36,7 @@ impl RuntimeManager {
                 continue;
             }
             let mut got_any = false;
+            let drained_at = events.len();
             if let Some(rx) = handle.event_rx.as_mut() {
                 while let Ok(event) = rx.try_recv() {
                     events.push((agent_id.clone(), event));
@@ -44,6 +45,14 @@ impl RuntimeManager {
             }
             if got_any {
                 handle.bump_activity();
+                let now = chrono::Utc::now().timestamp();
+                for (_, frame) in &events[drained_at..] {
+                    crate::runtime::turn_reply::apply_tool_deadline_unix(
+                        &frame.event,
+                        &mut handle.in_flight_tool_deadline,
+                        now,
+                    );
+                }
             }
         }
         events

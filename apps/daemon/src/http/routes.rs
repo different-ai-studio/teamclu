@@ -146,6 +146,10 @@ pub fn build(state: HttpState) -> Router {
         // matched the path `/v1/apps/%7Bapp_id%7D/workdir` and answered 404 for
         // every real app — which is exactly what it did, from the day it landed.
         .route("/v1/apps/:app_id/workdir", get(apps::app_workdir))
+        // What the checkout declares about how it is built and run. Read
+        // before a deploy is minted: a container app needs a registry to push
+        // to where a node app needs a presigned URL to upload to.
+        .route("/v1/apps/:app_id/manifest", get(apps::app_manifest))
         // Which apps this machine actually holds. The sidebar's app list shows
         // only these; everything else lives in the library dialog behind a
         // download.
@@ -294,6 +298,10 @@ pub fn build(state: HttpState) -> Router {
             "/v1/team/skills/:slug/draft",
             get(team_sync::get_team_skill_draft_handler)
                 .put(team_sync::update_team_skill_draft_handler),
+        )
+        .route(
+            "/v1/team/skills/:slug/draft/file",
+            get(team_sync::read_team_skill_draft_file_handler),
         )
         // Pull team MCP / team env from Cloud API into the daemon cache now
         // (desktop calls this after a successful env-secret write/delete).

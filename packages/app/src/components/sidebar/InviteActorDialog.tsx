@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input'
 import { UpgradeToOrgDialog } from '@/components/auth/UpgradeToOrgDialog'
 import { getBackend } from '@/lib/backend'
 import { buildInviteDeeplink } from '@/lib/team/invite-deeplink'
+import { getEffectiveServerConfigSync } from '@/lib/config/server-config'
 import { cn } from '@/lib/utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 
@@ -104,8 +105,10 @@ export function InviteActorDialog({ open, onOpenChange, teamId }: InviteActorDia
         token: row.token,
         expiresAt: row.expiresAt ?? new Date(Date.now() + 604800 * 1000).toISOString(),
         // Not row.deeplink: that carries the backend's `amux://` scheme, which
-        // no build registers with the OS.
-        deeplink: buildInviteDeeplink(row.token),
+        // no build registers with the OS. The endpoint rides along so the
+        // invitee's onboarding reaches this backend without being told to type
+        // an address.
+        deeplink: buildInviteDeeplink(row.token, getEffectiveServerConfigSync().cloudApiUrl),
       })
     } catch (e) {
       // Default-org teams are solo-only: inviting members requires upgrading the

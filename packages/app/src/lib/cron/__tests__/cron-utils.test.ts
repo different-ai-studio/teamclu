@@ -74,6 +74,27 @@ describe('cron-utils permission mode', () => {
     expect(form.permissionMode).toBe('default')
     expect(formStateToPayload(form).permissionMode).toBe('default')
   })
+
+  it('treats a stringified at-schedule stuffed in cron expr as one-time', () => {
+    const now = new Date().toISOString()
+    const form = jobToFormState({
+      id: 'job-1',
+      name: 'One-shot ping',
+      enabled: true,
+      schedule: {
+        kind: 'cron',
+        expr: '{"kind":"at","at":"2026-09-09T20:10:30+08:00"}',
+      },
+      payload: { message: 'ping' },
+      deleteAfterRun: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    expect(form.scheduleKind).toBe('at')
+    expect(form.at).toBe('2026-09-09T20:10:30+08:00')
+    expect(form.cronExpr).toBe('')
+  })
 })
 
 describe('cron-utils seatalk delivery registry', () => {

@@ -2,7 +2,7 @@ import {
   scheduleSessionListRefresh,
 } from "@/lib/messages/inbox-handler";
 import { MessageKind} from "@/lib/proto/teamclu_pb";
-import { agentStreamKey, isToolOnlyTurnAnchor} from "@/lib/stream/live-agent-stream";
+import { agentStreamKey, isToolOnlyTurnAnchor, shouldFlushParkedAgentReply } from "@/lib/stream/live-agent-stream";
 import { flushAllStreamDeltas } from "@/lib/stream/stream-delta-buffer";
 import { bumpSessionListLastMessage, messageKindUpdatesSessionPreview } from "@/lib/session/session-list-preview";
 import { resolveStreamEntryForPersist} from "@/lib/stream/streaming-persist";
@@ -82,8 +82,12 @@ export function handleLiveMessage(
                 nextPendingReplies,
                 resolvedStreamEntry,
               );
-              const shouldFlush =
-                terminalPending || toolOnlyAnchor;
+              const streamInactive = !streamEntry.active;
+              const shouldFlush = shouldFlushParkedAgentReply({
+                terminalPending,
+                toolOnlyAnchor,
+                streamActive: streamEntry.active,
+              });
               logInterruptMsgDiag("mqtt.agentReply.parked", {
                 sessionId: sid,
                 actorId: senderActorId,
@@ -92,6 +96,7 @@ export function handleLiveMessage(
                 contentLength: (msg.content ?? "").trim().length,
                 terminalPending,
                 toolOnlyAnchor,
+                streamInactive,
                 shouldFlush,
                 ...summarizeFlushDecision({
                   pending: nextPendingReplies,
@@ -105,9 +110,11 @@ export function handleLiveMessage(
                   senderActorId,
                   terminalPending
                     ? "mqtt.message.created.terminalPending"
-                    : "mqtt.message.created.toolOnlyAnchor",
+                    : toolOnlyAnchor
+                      ? "mqtt.message.created.toolOnlyAnchor"
+                      : "mqtt.message.created.streamInactive",
                 );
-                if (flushed && terminalPending) {
+                if (flushed && (terminalPending || streamInactive)) {
                   clearTerminalFlushPending(streamKey);
                 }
               }

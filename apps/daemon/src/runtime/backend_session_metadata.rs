@@ -5,11 +5,9 @@ pub(crate) fn stamp_pi_backend_session_metadata(
     acp_session_id: &str,
     pi_leaf_id: Option<&str>,
 ) -> String {
-    let session_path = acp_session_id
-        .strip_prefix("pi:")
-        .unwrap_or(acp_session_id);
-    let mut root: serde_json::Value = serde_json::from_str(existing_metadata_json)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let session_path = acp_session_id.strip_prefix("pi:").unwrap_or(acp_session_id);
+    let mut root: serde_json::Value =
+        serde_json::from_str(existing_metadata_json).unwrap_or_else(|_| serde_json::json!({}));
     if !root.is_object() {
         root = serde_json::json!({});
     }
@@ -32,8 +30,8 @@ pub(crate) fn stamp_opencode_backend_session_metadata(
     acp_session_id: &str,
     opencode_message_id: Option<&str>,
 ) -> String {
-    let mut root: serde_json::Value = serde_json::from_str(existing_metadata_json)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let mut root: serde_json::Value =
+        serde_json::from_str(existing_metadata_json).unwrap_or_else(|_| serde_json::json!({}));
     if !root.is_object() {
         root = serde_json::json!({});
     }
@@ -55,11 +53,7 @@ mod tests {
 
     #[test]
     fn stamps_opencode_fork_point() {
-        let out = stamp_opencode_backend_session_metadata(
-            "{}",
-            "ses_abc123",
-            Some("msg_xyz"),
-        );
+        let out = stamp_opencode_backend_session_metadata("{}", "ses_abc123", Some("msg_xyz"));
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["backend_session"]["kind"], "opencode");
         assert_eq!(
@@ -70,15 +64,8 @@ mod tests {
 
     #[test]
     fn stamps_pi_fork_point() {
-        let out = stamp_pi_backend_session_metadata(
-            "{}",
-            "pi:/tmp/s.jsonl",
-            Some("leaf-1"),
-        );
+        let out = stamp_pi_backend_session_metadata("{}", "pi:/tmp/s.jsonl", Some("leaf-1"));
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(
-            v["backend_session"]["fork_point"]["pi_leaf_id"],
-            "leaf-1"
-        );
+        assert_eq!(v["backend_session"]["fork_point"]["pi_leaf_id"], "leaf-1");
     }
 }

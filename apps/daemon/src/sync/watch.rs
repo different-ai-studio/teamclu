@@ -56,18 +56,14 @@ fn pull_writes() -> &'static Mutex<PullWriteSuppress> {
 /// `fs::write` for that path. Recording after the write races the OS watcher:
 /// inotify can deliver a Local trigger before the suppress entry exists.
 pub fn record_pull_write(team_id: &str, rel_path: &str) {
-    let mut guard = pull_writes()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut guard = pull_writes().lock().unwrap_or_else(|e| e.into_inner());
     guard.record_with_parents(team_id, rel_path, Instant::now());
 }
 
 /// Test / internal: clear all recorded pull writes.
 #[cfg(test)]
 fn clear_pull_writes() {
-    let mut guard = pull_writes()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut guard = pull_writes().lock().unwrap_or_else(|e| e.into_inner());
     *guard = PullWriteSuppress::new();
 }
 
@@ -445,11 +441,7 @@ mod tests {
         let now = Instant::now();
 
         let storm: Vec<PathBuf> = (0..200)
-            .map(|i| {
-                content_root.join(format!(
-                    "knowledge/node_modules/pkg/file-{i}.js"
-                ))
-            })
+            .map(|i| content_root.join(format!("knowledge/node_modules/pkg/file-{i}.js")))
             .collect();
 
         let scheduled = scheduled_for_paths(
@@ -594,7 +586,10 @@ mod tests {
                 Instant::now(),
             )
         };
-        assert!(suppressed, "global record_pull_write must suppress the path");
+        assert!(
+            suppressed,
+            "global record_pull_write must suppress the path"
+        );
         clear_pull_writes();
     }
 

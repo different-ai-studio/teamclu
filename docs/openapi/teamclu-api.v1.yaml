@@ -5591,9 +5591,22 @@ paths:
                 authMode:
                   $ref: "#/components/schemas/AppAuthMode"
                   description: >-
-                    How the deployed app authenticates end users. Side effects
-                    (GoTrue OAuth client registration, secrets) are applied in
-                    Task 7; the field is accepted here for PATCH updates.
+                    Whether the deployed app has a login wall. Enforced by the
+                    proxy gateway, so a change takes effect on the next request
+                    — no redeploy needed.
+                authAudience:
+                  $ref: "#/components/schemas/AppAuthAudience"
+                authScope:
+                  $ref: "#/components/schemas/AppAuthScope"
+                authRules:
+                  type: array
+                  maxItems: 50
+                  items: { $ref: "#/components/schemas/AppAuthRule" }
+                  description: >-
+                    Exceptions to `authScope`. Longest matching path prefix
+                    wins. Rejected with 400 when `authScope` is `paths` and no
+                    rule has `auth: required` — that combination claims a login
+                    wall while protecting nothing.
       responses:
         "200":
           description: The updated app.
@@ -5723,6 +5736,31 @@ paths:
                   type: string
                   format: uuid
                   description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
+                runtime:
+                  type: object
+                  description: >-
+                    How the app says it starts, read by the daemon out of the
+                    app's own `teamclu.app.json` and resolved against the
+                    built-in contract. Omitted by a client that predates the
+                    declaration, and by an app that ships none — both get the
+                    contract every app had before it existed (node,
+                    `server/index.mjs`, port 9000). `runtime` here is the
+                    interpreter family, NOT the `runtime` column on the app
+                    (`node` vs `container`); a value this deployment has no
+                    layer for is a 400, because the function would otherwise be
+                    created unable to boot.
+                  required: [runtime, entry, port]
+                  properties:
+                    runtime:
+                      type: string
+                      enum: [node]
+                    entry:
+                      type: string
+                      description: Path inside the unpacked artifact.
+                    port:
+                      type: integer
+                      minimum: 1
+                      maximum: 65535
       responses:
         "200":
           description: The app, now live.
@@ -5874,6 +5912,74 @@ paths:
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/logs:
+    get:
+      operationId: readAppLogs
+      summary: Read the deployed app's own logs
+      description: |
+        What the running function printed, and one entry per HTTP request with
+        its status code and duration. Requires `prompt` or `admin` on the app;
+        `view` and non-members receive 404, exactly as the data browser does —
+        a log line carries whatever the app decided to print, which is its
+        users' data.
+
+        Function Compute keeps no logs at all for a function deployed before
+        log delivery was configured; those apps answer with an empty `items`
+        until their next deploy, which is what points them at the logstore.
+
+        `contains` and `requestId` filter the entries read from the window, not
+        all of history: an app's own output carries no request id (the id
+        appears only in Function Compute's framing lines, which this endpoint
+        reads to attach it), and a substring search is done here rather than as
+        a log-service query, whose tokenizer silently drops terms containing
+        punctuation. A window whose scan budget was reached comes back with
+        `truncated: true`.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - name: sinceMinutes
+          in: query
+          required: false
+          description: How far back to read. Clamped to the 14-day retention period.
+          schema: { type: integer, minimum: 1, maximum: 10080, default: 30 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+        - name: kind
+          in: query
+          required: false
+          description: >-
+            `app` is what the application printed; `request` is Function
+            Compute's per-request row (status, duration, cold start); `all` is
+            both, interleaved.
+          schema: { type: string, enum: [app, request, all], default: app }
+        - name: contains
+          in: query
+          required: false
+          description: Case-insensitive substring the entry's message must contain.
+          schema: { type: string }
+        - name: requestId
+          in: query
+          required: false
+          description: Only entries belonging to this request — the way to read one failing request end to end.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Log entries, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppLogsPage" }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/membership:
     get:
       operationId: getAppMembership
@@ -5896,6 +6002,109 @@ paths:
         "401":
           $ref: "#/components/responses/Error"
         "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/custom-domain:
+    put:
+      operationId: setAppCustomDomain
+      summary: Bind a domain the app owner controls
+      description: |
+        Stores `domain` against the app and issues a fresh verification token,
+        clearing any previous verification. The response carries the DNS
+        records to add; the domain is NOT served until `verify` succeeds.
+
+        Refused for a hostname belonging to this deployment (the API, the apps
+        domain, the login domain and so on), for an IP literal, and for a
+        domain already bound to another app.
+
+        SELF-HOST DEPLOYMENTS ONLY. The entry point that makes this work is a
+        catch-all site on our own reverse proxy, which accepts a connection for
+        any hostname. A deployment on Alibaba Function Compute has no
+        equivalent — there a hostname reaches a function only if a custom
+        domain was created for it — so a domain bound on such a deployment will
+        verify but never serve traffic. Clients aimed at that target should not
+        offer this.
+
+        Only the app creator or a member with `admin` on the app may call this;
+        others receive 404, like every other app mutation.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain:
+                  type: string
+                  description: >-
+                    Hostname only, no scheme and no path — `app.example.com`.
+                    An internationalised name is stored in its ASCII (punycode)
+                    form, which is what DNS and the certificate will carry.
+      responses:
+        "200":
+          description: The stored domain and the DNS records that prove it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppCustomDomain" }
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAppCustomDomain
+      summary: Unbind the app's custom domain
+      description: |
+        Clears the domain, its token and its verification. The app stays
+        reachable on its vanity hostname. Any certificate already issued is
+        left to expire on its own — nothing serves the name once the gate
+        stops recognising it.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: The app, with the domain cleared.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppCustomDomain" }
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/custom-domain/verify:
+    post:
+      operationId: verifyAppCustomDomain
+      summary: Check the DNS proof for the app's custom domain
+      description: |
+        Resolves `TXT _teamclu.<domain>` and looks for
+        `teamclu-verify=<token>`. On success the domain becomes servable: the
+        certificate gate starts answering for it and the proxy routes it to
+        this app.
+
+        TXT rather than only the CNAME, because a CNAME cannot exist on an apex
+        domain and because the owner can add the TXT before cutting traffic
+        over.
+
+        409 `dns_verification_failed` when the record is absent or carries a
+        different token — DNS propagation is the usual reason, so this is
+        safe to retry.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Ownership proven; the domain is now served.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppCustomDomain" }
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "503":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/access:
     get:
@@ -7021,14 +7230,36 @@ components:
           $ref: "#/components/schemas/AppRuntime"
         authMode:
           $ref: "#/components/schemas/AppAuthMode"
+        authAudience:
+          $ref: "#/components/schemas/AppAuthAudience"
+        authScope:
+          $ref: "#/components/schemas/AppAuthScope"
+        authRules:
+          type: array
+          items: { $ref: "#/components/schemas/AppAuthRule" }
+          description: >-
+            Exceptions to `authScope`; longest matching path prefix wins.
+            Empty on most apps — the whole site behind the wall needs no
+            exceptions.
+        customDomain:
+          type: [string, "null"]
+          description: >-
+            A domain the app's owner controls, bound to this app. Null until
+            one is set. Serving on it also requires `customDomainVerifiedAt`.
+        customDomainVerifiedAt:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            When DNS ownership of `customDomain` was last proven. Null means
+            the domain is stored but NOT served: the certificate gate answers
+            404 for it, so no certificate is ever requested.
         authModePendingRedeploy:
           type: boolean
           description: >-
-            `authMode` was changed after the app went live, so the running
-            function still enforces the mode it was deployed with — the OAuth
-            env is injected at finalize, not on the PATCH. True until the next
-            successful deploy. Clients MUST surface this: an app switched to
-            `platform` reads as protected while its site is still public.
+            The function env still lags the app's auth settings — the Supabase
+            variables an app may use itself are injected at finalize, not on
+            the PATCH. This does NOT mean the site is unprotected: the login
+            wall lives in the proxy gateway and takes effect immediately.
             Server-derived from `fc_status` and the deployed mode; false for an
             app that has never been live.
         oauthClientId:
@@ -7079,6 +7310,52 @@ components:
           type: string
           format: date-time
           description: Informational TTL (~15m); the key remains until deleted on Gitea.
+    AppLogEntry:
+      type: object
+      required: [ts, kind, level, message]
+      properties:
+        ts: { type: string, format: date-time }
+        kind:
+          type: string
+          enum: [app, request]
+          description: "`app`: printed by the application. `request`: Function Compute's own per-request row."
+        level:
+          type: string
+          enum: [info, warn, error]
+          description: >-
+            For an `app` entry this is inferred from the text — Function Compute
+            adds no level of its own. For a `request` entry it follows the
+            status code.
+        message: { type: string }
+        requestId:
+          type: [string, "null"]
+          description: >-
+            Present on every `request` entry, and on an `app` entry whose
+            invocation could be identified from the surrounding framing lines.
+        instanceId: { type: [string, "null"] }
+        statusCode: { type: [integer, "null"] }
+        durationMs: { type: [number, "null"] }
+        method: { type: [string, "null"] }
+        path: { type: [string, "null"] }
+        coldStart: { type: [boolean, "null"] }
+    AppLogsPage:
+      type: object
+      required: [items, truncated]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppLogEntry"
+        truncated:
+          type: boolean
+          description: More entries matched than `limit`, or the scan budget ended the window early.
+        from:
+          type: [string, "null"]
+          format: date-time
+          description: Start of the window actually read. Null when the app has no logstore yet.
+        to:
+          type: [string, "null"]
+          format: date-time
     AppGitHead:
       type: object
       required: [sha]
@@ -7086,6 +7363,68 @@ components:
         sha:
           type: string
           description: Default-branch HEAD commit id on the app's Gitea repo.
+    AppAuthAudience:
+      type: string
+      enum: [any, org]
+      description: >-
+        Who may pass an app's login wall. `any` — anyone with an account on
+        this platform's Supabase, which visitors create through the app's own
+        login page. `org` — additionally, the visitor's organisation must be
+        the one that owns the app. Only read when `authMode` is `platform`.
+        Defaults to `org`: opening an app to everyone is a decision to be made
+        on purpose, not one to arrive at by omission.
+    AppAuthScope:
+      type: string
+      enum: [all, paths]
+      description: >-
+        The baseline for which paths sit behind the login wall, applied when no
+        rule in `authRules` matches. `all` — the whole site. `paths` — only
+        what the rules protect. Defaults to `all`.
+    AppAuthRule:
+      type: object
+      required: [path, auth]
+      description: >-
+        One exception to `authScope`. Matching is by case-insensitive path
+        PREFIX (`/admin` covers `/admin` and `/admin/...`, but never
+        `/administrator`), and the LONGEST matching prefix decides — so the
+        rule set reads the same whatever order it is stored in.
+      properties:
+        path:
+          type: string
+          pattern: "^/"
+          description: >-
+            Path prefix. A trailing `/*` is accepted and stripped (a prefix
+            already covers every sub-path); a `*` anywhere else is rejected,
+            since it can only mean the author expected glob matching.
+        auth:
+          type: string
+          enum: [required, public]
+    AppCustomDomain:
+      type: object
+      required: [domain, verified, dns]
+      description: >-
+        The app's custom domain and the proof it needs. `dns` is what the owner
+        must add at their registrar; it is returned on every response here so a
+        client never has to reconstruct it.
+      properties:
+        domain:
+          type: [string, "null"]
+          description: ASCII (punycode) form of the bound hostname; null when none is bound.
+        verified:
+          type: boolean
+        verifiedAt:
+          type: [string, "null"]
+          format: date-time
+        dns:
+          type: array
+          description: Empty when no domain is bound.
+          items:
+            type: object
+            required: [type, name, value]
+            properties:
+              type: { type: string, enum: [CNAME, TXT] }
+              name: { type: string }
+              value: { type: string }
     AppMembership:
       type: object
       required: [member]

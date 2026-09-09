@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registerApps } from "../src/lib/routes/apps.js";
+import { registerApps, stripUrlCredentials } from "../src/lib/routes/apps.js";
 
 function makeRouter() {
   const routes = [];
@@ -60,6 +60,72 @@ test("POST /v1/apps passes an optional gitRemoteUrl through", async () => {
 
   await post({ json: { teamId: "t1", name: "X", type: "static_web", gitRemoteUrl: "   " }, repository });
   assert.equal(seen.gitRemoteUrl, null, "an empty field is the same as none");
+});
+
+test("a pasted token never reaches the stored repo URL", async () => {
+  // `apps.git_remote_url` is handed to every member who can see the app, and
+  // nothing redacts it. One paste of the URL GitHub shows you for a private
+  // repo would make a personal access token team-readable, permanently.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const post = routes.find((r) => r[0] === "POST" && r[1] === "/v1/apps")[2];
+  let seen: any;
+  const repository = { createApp: async (input: any) => { seen = input; return { id: "app-1" }; } };
+
+  await post({
+    json: {
+      teamId: "t1", name: "X", type: "static_web",
+      gitRemoteUrl: "https://someone:ghp_0123456789abcdef@github.com/owner/private.git",
+    },
+    repository,
+  });
+  assert.equal(seen.gitRemoteUrl, "https://github.com/owner/private.git");
+  assert.ok(!seen.gitRemoteUrl.includes("ghp_"), "no token survives the write");
+});
+
+test("stripUrlCredentials keeps the parts of a URL that are the address", () => {
+  // http(s): all of the userinfo is a credential.
+  assert.equal(
+    stripUrlCredentials("https://ghp_secret@github.com/o/r.git"),
+    "https://github.com/o/r.git",
+  );
+  assert.equal(
+    stripUrlCredentials("http://u:p@git.internal:3000/o/r?ref=main#frag"),
+    "http://git.internal:3000/o/r?ref=main#frag",
+  );
+
+  // ssh / git: `git@` IS the address; only a password would be a secret.
+  assert.equal(
+    stripUrlCredentials("ssh://git@github.com/o/r.git"),
+    "ssh://git@github.com/o/r.git",
+  );
+  assert.equal(
+    stripUrlCredentials("ssh://git:hunter2@github.com/o/r.git"),
+    "ssh://git@github.com/o/r.git",
+  );
+
+  // scp-like has no scheme to reason about, and `git@` is load-bearing there too.
+  assert.equal(
+    stripUrlCredentials("git@github.com:owner/repo.git"),
+    "git@github.com:owner/repo.git",
+  );
+
+  // Nothing to strip is left exactly as it was.
+  for (const url of [
+    "https://github.com/owner/repo.git",
+    "git://example.com/repo.git",
+  ]) {
+    assert.equal(stripUrlCredentials(url), url);
+  }
+});
+
+test("a password containing an @ does not cut the host off", () => {
+  // Such a password should be percent-encoded, and git tolerates it when it is
+  // not; splitting on the FIRST `@` would store `p@github.com` as the host.
+  assert.equal(
+    stripUrlCredentials("https://u:p@ss@github.com/o/r.git"),
+    "https://github.com/o/r.git",
+  );
 });
 
 test("POST /v1/apps rejects a gitRemoteUrl git would not treat as an address", async () => {
@@ -270,6 +336,47 @@ test("DELETE /v1/apps/:id 404s when repo returns false", async () => {
   await assert.rejects(
     () => handler({ params: { appId: "missing" }, repository: { deleteApp: async () => false } }),
     (e) => (e as { statusCode?: number }).statusCode === 404,
+  );
+});
+
+// --- App logs route ---------------------------------------------------------
+
+test("GET /v1/apps/:id/logs forwards the query and 404s on null", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/logs")[2];
+  let seen: any;
+  const res = await handler({
+    params: { appId: "app-1" },
+    query: new URLSearchParams(
+      "sinceMinutes=120&limit=50&kind=all&contains=user_sessions&requestId=req-A",
+    ),
+    repository: {
+      getAppLogs: async (appId: string, query: any) => {
+        seen = { appId, query };
+        return { items: [], truncated: false };
+      },
+    },
+  });
+  assert.deepEqual(res.body, { items: [], truncated: false });
+  assert.equal(seen.appId, "app-1");
+  assert.deepEqual(seen.query, {
+    sinceMinutes: "120",
+    limit: "50",
+    kind: "all",
+    contains: "user_sessions",
+    requestId: "req-A",
+  });
+
+  // Null is "you cannot see this app", which must be indistinguishable from it
+  // not existing — the same contract the data browser routes hold to.
+  await assert.rejects(
+    () => handler({
+      params: { appId: "x" },
+      query: new URLSearchParams(""),
+      repository: { getAppLogs: async () => null },
+    }),
+    (e: any) => e?.statusCode === 404,
   );
 });
 

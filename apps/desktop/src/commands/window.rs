@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// window_label → workspace_path mapping for every workspace-owning window.
 ///
@@ -41,13 +41,17 @@ pub fn workspace_for_window(registry: &WindowRegistry, label: &str) -> Option<St
 
 /// Resolve the workspace for the calling window.
 ///
+/// Take [`tauri::Window`], not `WebviewWindow`: native URL tabs attach a child
+/// webview, and Tauri then refuses to inject `WebviewWindow` (`current webview
+/// is not a WebviewWindow`). `Window` still resolves.
+///
 /// Strategy:
 /// 1. Look up the window label in `WindowRegistry` — this is authoritative once
 ///    the workspace is selected.
 /// 2. Fall back to `current_workspace` for the single-window flow before
 ///    the registry is populated.
 pub fn current_workspace_for_window(
-    window: &tauri::WebviewWindow,
+    window: &tauri::Window,
     registry: &WindowRegistry,
 ) -> Result<String, String> {
     if let Some(ws) = workspace_for_window(registry, window.label()) {
@@ -121,7 +125,7 @@ pub fn open_local_agent_panel_window(app: AppHandle) -> Result<(), String> {
 /// the active workspace (env catalog, MCP, etc.).
 #[tauri::command]
 pub async fn register_window_workspace(
-    window: WebviewWindow,
+    window: tauri::Window,
     registry: tauri::State<'_, WindowRegistry>,
     workspace_path: String,
 ) -> Result<(), String> {
@@ -181,6 +185,6 @@ pub async fn register_window_workspace(
 /// Update the title of the calling window (used by the frontend after workspace selection).
 /// This keeps the dock right-click menu label in sync with the active workspace.
 #[tauri::command]
-pub fn set_window_title(window: WebviewWindow, title: String) {
+pub fn set_window_title(window: tauri::Window, title: String) {
     let _ = window.set_title(&title);
 }

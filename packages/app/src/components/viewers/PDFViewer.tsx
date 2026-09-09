@@ -13,7 +13,14 @@ import {
   AlertCircle,
 } from "lucide-react";
 
-// Configure PDF.js worker - use local file via Vite ?url import
+// Configure PDF.js worker - use local file via Vite ?url import.
+//
+// The API above comes from react-pdf's own vendored pdfjs-dist; this worker
+// comes from our top-level one. pdf.js compares the two with `!==` and throws
+// `The API version "x" does not match the Worker version "y"` on ANY
+// difference, so our `pdfjs-dist` pin must stay equal to whatever react-pdf
+// depends on — bump the two together, never alone. `viewers/__tests__/
+// pdfjs-worker-version.test.ts` fails when they drift.
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,

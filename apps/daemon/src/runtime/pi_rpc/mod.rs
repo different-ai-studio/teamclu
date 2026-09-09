@@ -32,10 +32,10 @@ use tracing::{debug, info, warn};
 
 use crate::proto::amux;
 use crate::runtime::acp_event_frame::AcpEventFrame;
+use crate::runtime::acp_translate::status_change;
 use crate::runtime::backend::{AcpCommand, AcpStartupMetadata, AgentBackend, ForkSpec};
 use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
 use crate::runtime::manager::AgentLaunchConfig;
-use crate::runtime::acp_translate::status_change;
 use crate::runtime::permission_policy::PermissionPolicy;
 
 pub mod auth;
@@ -1101,12 +1101,16 @@ async fn do_prompt(
 
     let mut message = text;
     crate::runtime::prompt_attachments::substitute_in_message(&mut message, &resolved);
-    crate::runtime::prompt_attachments::append_unreferenced(&mut message, &resolved, true);
+    crate::runtime::prompt_attachments::append_unreferenced(&mut message, &resolved, false);
 
     let mut prompt_body = serde_json::json!({
         "type": "prompt",
         "message": message,
     });
+    let images = crate::runtime::prompt_attachments::pi_prompt_images(&resolved);
+    if !images.is_empty() {
+        prompt_body["images"] = serde_json::Value::Array(images);
+    }
     // pi reads `streamingBehavior` only while a turn is streaming. Mid-turn
     // follow-ups use `steer` (fold into the live run); idle prompts omit it.
     if plan.use_steer {
@@ -1597,6 +1601,24 @@ impl AgentBackend for PiRpcBackend {
         self.shared.pool.kill_all()
     }
 
+    fn invalidate_unattached_workspace_hosts(&mut self) -> usize {
+        let attached: std::collections::HashSet<process::PoolKey> = self
+            .shared
+            .routes
+            .lock()
+            .values()
+            .map(|r| r.pool_key.clone())
+            .collect();
+        let killed = self.shared.pool.kill_except(&attached);
+        if killed > 0 {
+            info!(
+                killed,
+                "evicted unattached pi hosts after provider.team reconcile"
+            );
+        }
+        killed
+    }
+
     async fn shutdown_for_exit(&mut self) -> usize {
         self.shared.pool.kill_all()
     }
@@ -1849,7 +1871,11 @@ mod tests {
             "auth_logout",
         ] {
             let req = serde_json::json!({"type": ty});
-            assert_eq!(auth_command_refresh_fanout(&req), None, "{ty} must not fan out");
+            assert_eq!(
+                auth_command_refresh_fanout(&req),
+                None,
+                "{ty} must not fan out"
+            );
         }
     }
 

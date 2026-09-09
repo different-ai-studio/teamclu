@@ -965,6 +965,60 @@ type AppRuntime = "node" | "container";
 
 export type AppAuthMode = "none" | "platform" | "third";
 
+/** Who may pass an app's login wall. Only read when `authMode` is `platform`. */
+export type AppAuthAudience = "any" | "org";
+
+/** Baseline for WHICH paths sit behind the wall, when no rule matches. */
+export type AppAuthScope = "all" | "paths";
+
+/**
+ * One exception to `authScope`. Matching is by case-insensitive path PREFIX
+ * (`/admin` covers `/admin` and `/admin/...`, never `/administrator`), and the
+ * LONGEST matching prefix decides — so the list reads the same in any order.
+ */
+export interface AppAuthRule {
+  path: string;
+  auth: "required" | "public";
+}
+
+/** Everything about an app's login wall that a single PATCH may change. */
+export interface AppAuthPatch {
+  authMode?: AppAuthMode;
+  authAudience?: AppAuthAudience;
+  authScope?: AppAuthScope;
+  /** Sent WITH `authScope` whenever either changes: the server validates the
+   *  pair, and rejects `paths` with nothing marked `required`. */
+  authRules?: AppAuthRule[];
+}
+
+/** A DNS record the domain's owner has to publish. */
+export interface AppDnsRecord {
+  type: "CNAME" | "TXT";
+  name: string;
+  value: string;
+}
+
+export interface AppCustomDomain {
+  domain: string | null;
+  verified: boolean;
+  verifiedAt: string | null;
+  /** Empty when no domain is bound. Returned on every response so the client
+   *  never reconstructs the token embedded in the TXT value. */
+  dns: AppDnsRecord[];
+}
+
+/**
+ * Outcome of asking the server to check the DNS proof.
+ *
+ * `pending` is its own case rather than an error: DNS propagation is the usual
+ * reason a check fails, it is retryable, and showing it as a failure would tell
+ * the user something is broken when nothing is.
+ */
+export type VerifyAppDomainResult =
+  | { status: "verified"; domain: AppCustomDomain }
+  | { status: "pending"; message: string }
+  | { status: "not_found" };
+
 export interface AppRow {
   id: string;
   teamId: string;
@@ -984,11 +1038,19 @@ export interface AppRow {
   gitCommitSha: string | null;
   runtime: AppRuntime;
   authMode: AppAuthMode;
-  /** `authMode` was changed after the live deploy, so the running function still
-   *  enforces the OLD gate (the OAuth env is injected at finalize). Server-derived
-   *  from `fc_status` + `deployed_auth_mode` so it survives a reload and agrees
-   *  across devices — see design §7.4. */
+  authAudience: AppAuthAudience;
+  authScope: AppAuthScope;
+  /** Exceptions to `authScope`; empty on most apps. */
+  authRules: AppAuthRule[];
+  /** The deployed function's env still lags the app's auth settings — the
+   *  Supabase variables an app may use ITSELF are injected at finalize, not on
+   *  the PATCH. This does NOT mean the site is unprotected: the wall lives in
+   *  the proxy gateway and every auth change takes effect immediately. */
   authModePendingRedeploy: boolean;
+  /** Hostname the owner bound, or null. Served only once verified. */
+  customDomain: string | null;
+  /** When DNS ownership was last proven; null = stored but NOT served. */
+  customDomainVerifiedAt: string | null;
   /** Public OAuth client id for `third` or GoTrue client id for `platform`. */
   oauthClientId: string | null;
   provisionStatus: string;
@@ -1006,8 +1068,20 @@ export interface AppRow {
 /** `POST /v1/apps/:id/deploy` response — app row plus the OSS upload handle the
  *  local daemon needs to upload the build artifact. */
 export interface DeployAppResult extends AppRow {
-  ossObjectName: string;
-  presignedPut: string;
+  /**
+   * Archive deploys. Absent for a container app, which pushes an image instead
+   * — exactly one of these and `image` is ever set.
+   */
+  ossObjectName?: string;
+  presignedPut?: string;
+  /** Container deploys: where to push the image, and short-lived credentials. */
+  image?: {
+    reference: string;
+    registry: string;
+    username: string;
+    password: string;
+    expiresAt?: string;
+  };
   /** Short-lived bearer for finalize; not stored on the app row in mapApp. */
   deployToken: string;
   /** Null for an imported app: there is no forge commit to pin the deploy to. */
@@ -1096,6 +1170,43 @@ export type AppDataTablesResult =
   | { status: "not_deployed" }
   | { status: "unavailable"; reason: string };
 
+/** One line of a deployed app's output, or one of its requests. */
+export interface AppLogEntry {
+  ts: string;
+  /** `app`: printed by the application. `request`: Function Compute's own row. */
+  kind: "app" | "request";
+  level: "info" | "warn" | "error";
+  message: string;
+  requestId?: string | null;
+  instanceId?: string | null;
+  statusCode?: number | null;
+  durationMs?: number | null;
+  method?: string | null;
+  path?: string | null;
+  coldStart?: boolean | null;
+}
+
+export interface AppLogsQuery {
+  /** How far back to read. Server clamps to the retention period. */
+  sinceMinutes?: number;
+  limit?: number;
+  kind?: "app" | "request" | "all";
+  /** Case-insensitive substring on the message, applied within the window. */
+  contains?: string | null;
+  requestId?: string | null;
+}
+
+/**
+ * Same shape as {@link AppDataTablesResult} and for the same reason: an app
+ * that was never deployed, one whose deployment cannot reach a log service,
+ * and one that simply printed nothing are three different sentences, and
+ * flattening them into an empty list makes the first two read as the third.
+ */
+export type AppLogsResult =
+  | { status: "ok"; entries: AppLogEntry[]; truncated: boolean; from: string | null; to: string | null }
+  | { status: "not_deployed" }
+  | { status: "unavailable"; reason: string };
+
 type AppDataFilterOp = "eq" | "contains" | "isNull" | "notNull";
 
 export interface AppDataRowsQuery {
@@ -1126,10 +1237,25 @@ export interface AppsBackend {
   renameApp(appId: string, name: string): Promise<AppRow | null>;
   /** Start FC deploy: provisions the function + returns the OSS upload handle.
    *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
-  deployApp(appId: string, input: { gitCommitSha?: string }): Promise<DeployAppResult>;
+  deployApp(
+    appId: string,
+    input: { gitCommitSha?: string; runtime?: string },
+  ): Promise<DeployAppResult>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
-  finalizeDeploy(appId: string, input: { gitCommitSha?: string; deployToken: string }): Promise<AppRow>;
+  finalizeDeploy(
+    appId: string,
+    input: {
+      gitCommitSha?: string;
+      deployToken: string;
+      /** The app's declared start contract, from `teamclu.app.json`. A
+       *  container app declares no entry — its image's ENTRYPOINT is one. */
+      runtime?: { runtime: string; entry: string; port: number; healthCheckPath?: string };
+      /** The image a container build pushed. Required for one, refused for
+       *  anything else — see the control plane's parseDeployedImage. */
+      image?: string;
+    },
+  ): Promise<AppRow>;
   /** Mint a JIT Gitea deploy key for git push (creator only). Returns null on
    *  404, and for an app that is not Gitea-managed. */
   getGitCredential(appId: string): Promise<AppGitCredential | null>;
@@ -1156,7 +1282,19 @@ export interface AppsBackend {
   /** Delete an app (admin required). False on 404. */
   deleteApp(appId: string): Promise<boolean>;
   /** Change auth mode (creator only). Returns null on 404. */
-  updateAppAuthMode(appId: string, authMode: AppAuthMode): Promise<AppRow | null>;
+  /**
+   * Change any part of the login wall in ONE request.
+   *
+   * Scope and rules travel together because the server validates them as a
+   * pair — `paths` with nothing `required` is refused — so splitting them
+   * across two PATCHes would be rejected on the intermediate state.
+   */
+  updateAppAuth(appId: string, patch: AppAuthPatch): Promise<AppRow | null>;
+  /** Bind a domain the owner controls. Returns the DNS records to publish. */
+  setAppCustomDomain(appId: string, domain: string): Promise<AppCustomDomain | null>;
+  /** Check the published TXT proof. */
+  verifyAppCustomDomain(appId: string): Promise<VerifyAppDomainResult>;
+  deleteAppCustomDomain(appId: string): Promise<AppCustomDomain | null>;
 
   // --- Data browser (design 2026-08-27-app-data-browser) ---
   // `prompt` may read, `admin` may also edit; `view` gets null, same as a
@@ -1204,6 +1342,14 @@ export interface AppsBackend {
   purgeAppFiles(appId: string): Promise<{ deleted: number } | null>;
   /** Set or clear (null) this app's ceiling. */
   setAppStorageQuota(appId: string, quotaBytes: number | null): Promise<{ quotaBytes: number | null } | null>;
+
+  /**
+   * What the deployed function printed, newest first. Null on 404.
+   *
+   * Same tier as the data browser: a log line carries whatever the app decided
+   * to print, which is its users' data.
+   */
+  readAppLogs(appId: string, query?: AppLogsQuery): Promise<AppLogsResult | null>;
 }
 
 export interface AppFile {

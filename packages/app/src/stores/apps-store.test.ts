@@ -16,7 +16,9 @@ const mocks = vi.hoisted(() => ({
   daemonAppWorkdir: vi.fn(),
   daemonLocalAppIds: vi.fn(),
   buildDaemonApp: vi.fn(),
+  daemonAppManifest: vi.fn(),
   bindAppWorkdir: vi.fn(),
+  bindDaemonAppWorkdir: vi.fn(),
   getDaemonEnvActivationDiagnostics: vi.fn(),
   toastError: vi.fn(),
   workdirExists: vi.fn(),
@@ -52,6 +54,8 @@ vi.mock("@/lib/daemon/daemon-local-client", () => ({
   daemonAppWorkdir: mocks.daemonAppWorkdir,
   daemonLocalAppIds: mocks.daemonLocalAppIds,
   buildDaemonApp: mocks.buildDaemonApp,
+  daemonAppManifest: mocks.daemonAppManifest,
+  bindDaemonAppWorkdir: mocks.bindDaemonAppWorkdir,
   getDaemonEnvActivationDiagnostics: mocks.getDaemonEnvActivationDiagnostics,
 }));
 
@@ -86,7 +90,9 @@ const buildResult = (
   outcome: "built" | "failed" | "unreachable",
   error: string | null = null,
   gitCommitSha: string | null = null,
-) => ({ outcome, error, gitCommitSha });
+  runtime: { runtime: string; entry: string; port: number } | null = null,
+  image: string | null = null,
+) => ({ outcome, error, gitCommitSha, runtime, image });
 
 const gitCred = {
   remoteUrl: "git@gitea:team/app-1.git",
@@ -188,7 +194,48 @@ describe("apps-store", () => {
       type: "slides",
       visibility: "team",
     });
-    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-4", "team-1", "Slides", "slides", null, null);
+    // The trailing `false` is "write the starter template" — the normal path.
+    expect(mocks.seedDaemonApp).toHaveBeenCalledWith(
+      "app-4", "team-1", "Slides", "slides", null, null, false,
+    );
+  });
+
+  it("adopting a folder binds it before the seed, and seeds no template", async () => {
+    // Order is the whole of it: the seed resolves the app's workdir from this
+    // binding, so binding afterwards would publish an empty default directory
+    // and leave the folder the user picked unattached.
+    const calls: string[] = [];
+    mocks.bindDaemonAppWorkdir.mockImplementationOnce(async () => {
+      calls.push("bind");
+      return { workdir: "/home/me/mine", gitRemoteUrl: null };
+    });
+    mocks.seedDaemonApp.mockImplementationOnce(async () => {
+      calls.push("seed");
+      return { outcome: "seeded", workdir: "/home/me/mine", error: null };
+    });
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ id: "app-9", name: "Mine", type: "imported", provisionStatus: "repo_created" }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({
+      teamId: "team-1",
+      name: "Mine",
+      type: "imported",
+      visibility: "personal",
+      adoptLocalDir: "/home/me/mine",
+    });
+
+    expect(calls).toEqual(["bind", "seed"]);
+    expect(mocks.bindDaemonAppWorkdir).toHaveBeenCalledWith("app-9", "team-1", "/home/me/mine");
+    // `adoptLocalDir` is the desktop's own field: the cloud API never sees it.
+    expect(mocks.createApp).toHaveBeenCalledWith(
+      expect.not.objectContaining({ adoptLocalDir: expect.anything() }),
+    );
+    // The 7th argument is `adoptExisting`: publish the folder, write no
+    // template over it.
+    const seedArgs = mocks.seedDaemonApp.mock.calls.at(-1);
+    expect(seedArgs?.slice(0, 4)).toEqual(["app-9", "team-1", "Mine", "imported"]);
+    expect(seedArgs?.[6]).toBe(true);
   });
 
   it("create: seeded → PATCH ready", async () => {
@@ -204,7 +251,7 @@ describe("apps-store", () => {
       type: "fullstack_tanstack_postgres",
       visibility: "team",
     });
-    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-1", "team-1", "App", "fullstack_tanstack_postgres", null, null);
+    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-1", "team-1", "App", "fullstack_tanstack_postgres", null, null, false);
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
 
@@ -252,7 +299,7 @@ describe("apps-store", () => {
       teamId: "team-1",
     });
     await useAppsStore.getState().reseed("app-1");
-    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-1", "team-1", "App", "fullstack_tanstack_postgres", "https://g/x.git", null);
+    expect(mocks.seedDaemonApp).toHaveBeenCalledWith("app-1", "team-1", "App", "fullstack_tanstack_postgres", "https://g/x.git", null, false);
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
 
@@ -287,6 +334,7 @@ describe("apps-store", () => {
       "fullstack_tanstack_postgres",
       "git@gitea:team/app-1.git",
       gitCred.privateKeyPem,
+      false,
     );
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
@@ -306,8 +354,50 @@ describe("apps-store", () => {
       gitRemoteUrl: "git@github.com:owner/repo.git",
     });
     expect(mocks.seedDaemonApp).toHaveBeenCalledWith(
-      "app-1", "team-1", "App", "fullstack_tanstack_postgres", "git@github.com:owner/repo.git", null,
+      "app-1", "team-1", "App", "fullstack_tanstack_postgres", "git@github.com:owner/repo.git", null, false,
     );
+  });
+
+  it("create: the clone gets the address the user typed, not the stored one", async () => {
+    // `POST /v1/apps` strips credentials before writing the row, so the row
+    // comes back without them. The clone still has to authenticate, and this
+    // one call is the only place the typed credential exists — losing it here
+    // is how importing a private repo silently stops working.
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(seedResult("seeded"));
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({
+      teamId: "team-1",
+      name: "N",
+      type: "static_web",
+      visibility: "team",
+      gitRemoteUrl: "https://x:ghp_token@github.com/owner/private.git",
+    });
+    const seedArgs = mocks.seedDaemonApp.mock.calls.at(-1);
+    expect(seedArgs?.[4]).toBe("https://x:ghp_token@github.com/owner/private.git");
+  });
+
+  it("create: a clone that timed out explains what the raw error does not", async () => {
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(
+      seedResult("failed", { error: '{"error":{"message":"git clone timed out after 5 minutes"}}' }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({
+      teamId: "team-1",
+      name: "N",
+      type: "static_web",
+      visibility: "team",
+      gitRemoteUrl: "https://github.com/owner/private.git",
+    });
+    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
+    expect(String((opts as any)?.description)).toMatch(/凭证助手/);
   });
 
   it("create: repo_created fetches deploy key and seeds with push", async () => {
@@ -335,6 +425,7 @@ describe("apps-store", () => {
       "fullstack_tanstack_postgres",
       "git@gitea:team/app-1.git",
       gitCred.privateKeyPem,
+      false,
     );
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
@@ -579,6 +670,9 @@ describe("apps-store deploy", () => {
     });
     mocks.getGitHead.mockResolvedValue({ sha: "abc1234567890" });
     mocks.getGitCredential.mockResolvedValue(gitCred);
+    // An app that declares nothing: the daemon reports the built-in contract,
+    // which is what every app deployed before declarations existed gets.
+    mocks.daemonAppManifest.mockResolvedValue(null);
     mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
       workspace_has_active_turn: false,
     });
@@ -592,6 +686,59 @@ describe("apps-store deploy", () => {
       teamId: "team-1",
       deployingIds: [],
     });
+  });
+
+  it("a container app pushes an image and finalizes with it", async () => {
+    // The whole point of the container path: no OSS upload handle is minted,
+    // the daemon is handed a registry instead, and the image it pushed is what
+    // the function is pointed at.
+    mocks.daemonAppManifest.mockResolvedValue({
+      runtime: "container",
+      entry: "",
+      port: 5000,
+      healthCheckPath: "/api/health",
+    });
+    const image = {
+      reference: "registry.cn-shenzhen.aliyuncs.com/tc/tc-app-app-1:abc1234567890",
+      registry: "registry.cn-shenzhen.aliyuncs.com",
+      username: "temp-user",
+      password: "temp-token",
+    };
+    mocks.deployApp.mockResolvedValueOnce({
+      ...readyApp(),
+      fcStatus: "awaiting_build",
+      image,
+      deployToken: "tok-1",
+      gitCommitSha: "abc1234567890",
+    });
+    mocks.buildDaemonApp.mockResolvedValueOnce(
+      buildResult("built", null, null, { runtime: "container", entry: "", port: 5000 }, image.reference),
+    );
+    mocks.finalizeDeploy.mockResolvedValueOnce({
+      ...readyApp(),
+      fcStatus: "live",
+      fcEndpoint: "https://x.fcapp.run",
+    });
+
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {
+      gitCommitSha: "abc1234567890",
+      runtime: "container",
+    });
+    expect(mocks.buildDaemonApp).toHaveBeenCalledWith(
+      "app-1",
+      "team-1",
+      expect.objectContaining({ image, presignedPut: undefined }),
+    );
+    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
+      gitCommitSha: "abc1234567890",
+      runtime: { runtime: "container", entry: "", port: 5000 },
+      image: image.reference,
+      deployToken: "tok-1",
+    });
+    expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });
   });
 
   it("happy path: git-head → deploy → daemon build → finalize", async () => {
@@ -613,12 +760,14 @@ describe("apps-store deploy", () => {
 
     expect(mocks.getGitHead).toHaveBeenCalledWith("app-1");
     expect(mocks.deployApp).toHaveBeenCalledWith("app-1", { gitCommitSha: "abc1234567890" });
+    expect(mocks.daemonAppManifest).toHaveBeenCalledWith("app-1", "team-1");
     expect(mocks.getGitCredential).toHaveBeenCalledWith("app-1");
     expect(mocks.buildDaemonApp).toHaveBeenCalledWith("app-1", "team-1", {
       gitCommitSha: "abc1234567890",
       gitRemoteUrl: gitCred.remoteUrl,
       deployKeyPem: gitCred.privateKeyPem,
       presignedPut: "https://oss/put?sig=x",
+      image: undefined,
     });
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
       gitCommitSha: "abc1234567890",
@@ -661,6 +810,30 @@ describe("apps-store deploy", () => {
       gitCommitSha: "def4567890123",
       deployToken: "tok-1",
     });
+  });
+
+  it("finalizes with how the app says it starts", async () => {
+    // The control plane assumed one answer for every app (node,
+    // server/index.mjs, 9000). An app that builds elsewhere deployed a function
+    // that could not boot, and nothing said so until the instance failed.
+    mocks.deployApp.mockResolvedValueOnce({
+      ...readyApp(),
+      fcStatus: "awaiting_build",
+      presignedPut: "https://oss/put?sig=x",
+      deployToken: "tok-1",
+      gitCommitSha: "abc1234567890",
+    });
+    mocks.buildDaemonApp.mockResolvedValueOnce(
+      buildResult("built", null, null, { runtime: "node", entry: "index.js", port: 8080 }),
+    );
+    mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp(), fcStatus: "live" });
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().deploy("app-1");
+
+    expect(mocks.finalizeDeploy).toHaveBeenCalledWith(
+      "app-1",
+      expect.objectContaining({ runtime: { runtime: "node", entry: "index.js", port: 8080 } }),
+    );
   });
 
   it("authMode=none prompts for public deploy confirmation", async () => {
@@ -845,6 +1018,7 @@ describe("apps-store deploy", () => {
       gitRemoteUrl: undefined,
       deployKeyPem: undefined,
       presignedPut: "https://oss/put?sig=x",
+      image: undefined,
     });
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", { deployToken: "tok-1" });
     expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });

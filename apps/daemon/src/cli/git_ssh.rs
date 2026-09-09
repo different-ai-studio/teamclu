@@ -132,9 +132,8 @@ fn revoke_deploy_key(sock_path: &Path, app_id: &str, deploy_key_id: i64) -> Resu
 
 /// One sock round trip, unwrapped to the `result` object or a readable reason.
 fn sock_result(sock_path: &Path, request: &Value) -> Result<Value, String> {
-    let raw = super::sock::sock_roundtrip(sock_path, &request.to_string()).map_err(|e| {
-        format!("amuxd is not reachable on {} ({e})", sock_path.display())
-    })?;
+    let raw = super::sock::sock_roundtrip(sock_path, &request.to_string())
+        .map_err(|e| format!("amuxd is not reachable on {} ({e})", sock_path.display()))?;
     let parsed: Value = serde_json::from_str(raw.trim())
         .map_err(|e| format!("unreadable reply from amuxd: {e}"))?;
     if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -189,7 +188,8 @@ mod tests {
 
     #[test]
     fn a_refusal_is_reported_with_its_reason() {
-        let parsed: Value = serde_json::from_str(r#"{"ok":false,"error":"app not found"}"#).unwrap();
+        let parsed: Value =
+            serde_json::from_str(r#"{"ok":false,"error":"app not found"}"#).unwrap();
         assert_eq!(parsed.get("ok").and_then(Value::as_bool), Some(false));
     }
 
@@ -210,7 +210,10 @@ mod tests {
         let parsed: Value = serde_json::from_str(reply).unwrap();
         let result = parsed.get("result").unwrap();
         assert_eq!(result.get("deployKeyId").and_then(Value::as_i64), None);
-        assert_eq!(result.get("privateKeyPem").and_then(Value::as_str), Some("pem"));
+        assert_eq!(
+            result.get("privateKeyPem").and_then(Value::as_str),
+            Some("pem")
+        );
     }
 
     #[test]

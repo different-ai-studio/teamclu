@@ -7,12 +7,16 @@ import type {
   AppDataRowsPage,
   AppDataRowsQuery,
   AppDataTable,
+  AppLogEntry,
+  AppLogsQuery,
+  AppLogsResult,
   AppSessionRow,
   AppGitCredential,
   AppGitHead,
   AppMembership,
   AppMemberAccessRow,
   AppPermissionLevel,
+  AppCustomDomain,
   DeployAppResult,
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
@@ -148,9 +152,50 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
-    async updateAppAuthMode(appId, authMode) {
+    async updateAppAuth(appId, patch) {
       try {
-        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { authMode });
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, patch);
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async setAppCustomDomain(appId, domain) {
+      try {
+        return await client.put<AppCustomDomain>(
+          `/v1/apps/${encodeURIComponent(appId)}/custom-domain`,
+          { domain },
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async verifyAppCustomDomain(appId) {
+      try {
+        const domain = await client.post<AppCustomDomain>(
+          `/v1/apps/${encodeURIComponent(appId)}/custom-domain/verify`,
+          {},
+        );
+        return { status: "verified", domain };
+      } catch (e) {
+        if (!(e instanceof CloudApiError)) throw e;
+        if (e.status === 404) return { status: "not_found" };
+        // 409 is "the record is not visible yet", which is ordinary while DNS
+        // propagates. Surfacing it as a failure would tell the user something
+        // is broken when the only thing to do is wait and press again.
+        if (e.status === 409) return { status: "pending", message: e.message };
+        throw e;
+      }
+    },
+
+    async deleteAppCustomDomain(appId) {
+      try {
+        return await client.delete<AppCustomDomain>(
+          `/v1/apps/${encodeURIComponent(appId)}/custom-domain`,
+        );
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;
@@ -301,6 +346,41 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         );
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async readAppLogs(appId, query: AppLogsQuery = {}): Promise<AppLogsResult | null> {
+      const params = new URLSearchParams();
+      if (query.sinceMinutes) params.set("sinceMinutes", String(query.sinceMinutes));
+      if (query.limit) params.set("limit", String(query.limit));
+      if (query.kind) params.set("kind", query.kind);
+      if (query.contains) params.set("contains", query.contains);
+      if (query.requestId) params.set("requestId", query.requestId);
+      const qs = params.toString();
+      try {
+        const page = await client.get<{
+          items: AppLogEntry[];
+          truncated: boolean;
+          from?: string | null;
+          to?: string | null;
+        }>(`/v1/apps/${encodeURIComponent(appId)}/logs${qs ? `?${qs}` : ""}`);
+        return {
+          status: "ok",
+          entries: page.items ?? [],
+          truncated: page.truncated ?? false,
+          from: page.from ?? null,
+          to: page.to ?? null,
+        };
+      } catch (e) {
+        if (!(e instanceof CloudApiError)) throw e;
+        if (e.status === 404) return null;
+        // Translated rather than thrown, as with listAppDataTables: each is a
+        // state the view explains in its own sentence.
+        if (e.code === "app_not_deployed") return { status: "not_deployed" };
+        if (e.status === 503 || e.status === 502) {
+          return { status: "unavailable", reason: e.message };
+        }
         throw e;
       }
     },

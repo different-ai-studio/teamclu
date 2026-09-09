@@ -1,62 +1,76 @@
 /**
- * Platform SSO contract stub (`auth_mode=platform`). Phase 1: env helpers +
- * membership fetch only — wire `/auth/login` + `/auth/callback` routes when
- * implementing PKCE. See AGENTS.md §登录.
+ * Reading the signed-in visitor, when this app has a login wall.
  *
- * Injected at deploy finalize (never commit secrets):
- * - OAUTH_CLIENT_ID — this app's public OAuth client id
- * - OAUTH_CLIENT_SECRET — server-only; token exchange at callback
- * - APP_PUBLIC_URL — vanity origin (e.g. https://slug-id8.apps.example)
- * - API_BASE — TeamClu control-plane / GoTrue origin (no trailing slash)
+ * THE APP DOES NOT IMPLEMENT THE LOGIN. It has no login page, no callback
+ * route, no session cookie of its own, and nothing to get wrong. The platform's
+ * proxy sits in front of every request: it runs the whole email round trip on
+ * its own hostname, decides who may enter, and only then forwards the request
+ * here with the visitor's identity attached as headers.
+ *
+ * That placement is deliberate. This file is rewritten by an agent whenever the
+ * app changes, and a login wall living in code like that survives exactly until
+ * the next rewrite — while the control panel goes on saying the app requires a
+ * sign-in. In the proxy it cannot be edited away.
+ *
+ * WHAT YOU GET
+ *
+ *   X-Teamclu-User-Id     the visitor's id in the platform's Supabase
+ *   X-Teamclu-User-Email  their address
+ *   X-Teamclu-Org-Id      their organisation, when there is one
+ *
+ * These appear only when the visitor satisfies EVERY condition for entering
+ * this app. They carry exactly one meaning wherever they appear — "this person
+ * is allowed in" — so an app never has to re-check an audience. On a public
+ * path of an app whose wall is set to staff-only, an outsider arrives with no
+ * headers at all rather than with headers you would have to second-guess.
+ *
+ * The proxy strips any client-supplied copy of these before writing its own, so
+ * a caller cannot forge one. They are trustworthy exactly because they came
+ * through that hop — never read them from a request that did not.
+ *
+ * WHAT THIS DOES NOT DO
+ *
+ * Path rules gate who can FETCH a URL, not who can see a screen. This app's
+ * first paint is server-rendered and is gated, but an in-app navigation is
+ * client-side routing the proxy never observes. Protect the DATA — the server
+ * functions this app calls — and the interface follows. The proxy is the outer
+ * layer; your own queries are still the real boundary.
+ *
+ * ENV, when the app's login is on:
+ *   APP_PUBLIC_URL     this app's own address
+ *   API_BASE           the platform's control-plane origin
+ *   SUPABASE_URL       browser-reachable Supabase, if you want supabase-js
+ *   SUPABASE_ANON_KEY  its anon key — public by design, never a service role
  */
 
 /** Seeded from template placeholder {{APP_ID}} — this app's Cloud API id. */
 export const APP_ID = '{{APP_ID}}'
 
-export type AppMembership = { member: boolean }
-
-/** True when platform OAuth env was injected (auth_mode=platform deploy). */
-export function platformAuthConfigured(): boolean {
-  return Boolean(process.env.OAUTH_CLIENT_ID && process.env.APP_PUBLIC_URL)
+export type Visitor = {
+  id: string
+  email: string
+  /** Null when the app admits anyone, or when the visitor has no org. */
+  orgId: string | null
 }
 
 /**
- * redirect_uri registered with GoTrue. Use APP_PUBLIC_URL — not Host — because
- * the app sits behind FC reverse proxy (see AGENTS.md).
+ * The visitor behind a request, or null when there is none.
+ *
+ * Null means one of three things, and the app should treat them the same: the
+ * app has no login wall, the path is public and nobody is signed in, or the
+ * visitor was not admitted. In every case there is nobody to name.
+ *
+ * Takes a `Headers` rather than a whole request so it works with anything —
+ * a server function's request, a middleware, a test.
  */
-export function oauthRedirectUri(): string {
-  const base = process.env.APP_PUBLIC_URL?.replace(/\/+$/, '')
-  if (!base) {
-    throw new Error('APP_PUBLIC_URL is required for platform auth')
-  }
-  return `${base}/auth/callback`
+export function visitorFrom(headers: Headers): Visitor | null {
+  const id = headers.get('x-teamclu-user-id')?.trim()
+  const email = headers.get('x-teamclu-user-email')?.trim()
+  if (!id || !email) return null
+  return { id, email, orgId: headers.get('x-teamclu-org-id')?.trim() || null }
 }
 
-/**
- * PKCE login (not implemented in Phase 1):
- * 1. Generate code_verifier + S256 code_challenge.
- * 2. Redirect browser to `${API_BASE}/authorize?client_id=${OAUTH_CLIENT_ID}
- *    &redirect_uri=${oauthRedirectUri()}&response_type=code&code_challenge=…
- *    &code_challenge_method=S256`.
- * 3. At `/auth/callback`, exchange code + verifier for tokens using
- *    OAUTH_CLIENT_SECRET server-side only.
- */
-
-/**
- * Gate logged-in users: call with the end-user's bearer access token — never a
- * service role. Returns whether that user belongs to this app's team.
- */
-export async function fetchAppMembership(accessToken: string): Promise<AppMembership> {
-  const apiBase = process.env.API_BASE?.replace(/\/+$/, '')
-  if (!apiBase) {
-    throw new Error('API_BASE is required for membership check')
-  }
-  const res = await fetch(
-    `${apiBase}/v1/apps/${encodeURIComponent(APP_ID)}/membership`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  )
-  if (!res.ok) {
-    throw new Error(`membership check failed: ${res.status}`)
-  }
-  return (await res.json()) as AppMembership
+/** True when this deployment injected the Supabase details an app may use itself. */
+export function supabaseConfigured(): boolean {
+  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY)
 }

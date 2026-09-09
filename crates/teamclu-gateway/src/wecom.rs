@@ -1,12 +1,18 @@
 use crate::i18n;
 use crate::wecom_config::{WeComConfig, WeComGatewayStatus, WeComGatewayStatusResponse};
+use crate::wecom_delivery::{
+    self, decide_finish, decide_progress, progress_frame_with_notice, progress_rewrite_due,
+    should_requeue, still_running_close_with_notice, FinishDecision, ProgressDecision, SendError,
+    StreamPhase,
+};
+use crate::wecom_outbox::{PendingSend, WeComOutbox};
 use base64::Engine as _;
 use futures_util::stream::SplitSink;
 #[allow(unused_imports)]
 use futures_util::StreamExt;
 use serde::Deserialize;
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, Weak};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::{driver, AgentHandle, ChannelStore};
@@ -506,71 +512,90 @@ const HEARTBEAT_TIMEOUT_SECS: u64 = 6;
 type PendingResponses =
     Arc<tokio::sync::Mutex<std::collections::HashMap<String, oneshot::Sender<serde_json::Value>>>>;
 
-/// Minimum spacing between two frames of the same streamed reply. See
-/// [`StreamPacer`] for why frames cannot simply be fired as fast as the agent
-/// produces text.
-/// Minimum gap between two frames of one streaming reply.
-///
-/// WeCom counts **every** frame against "30 messages/minute, 1000/hour per
-/// conversation" — replies and proactive pushes share that budget, and a stream
-/// is not consolidated into one message
-/// (<https://developer.work.weixin.qq.com/document/path/101463>). At the old
-/// 900ms this burned 66 frames a minute, more than twice the allowance, so a
-/// long answer would start losing frames part-way through and read as a reply
-/// that froze. 2.1s keeps it at ~28/minute with room for the final message.
-const STREAM_FRAME_MIN_GAP: std::time::Duration = std::time::Duration::from_millis(2100);
-
-#[allow(dead_code)]
-const TERMINAL_FRAME_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Default gap when config is missing or zero. 10s keeps a long turn at
+/// ~6 frames/minute against WeCom's 30/minute conversation quota
+/// (<https://developer.work.weixin.qq.com/document/path/101463>).
+const STREAM_FRAME_MIN_GAP: Duration =
+    Duration::from_secs(wecom_delivery::DEFAULT_PROGRESS_FRAME_GAP_SECS);
 
 /// Paces the frames of one streamed reply.
 ///
 /// Every frame of a turn rewrites the *same* bubble, and WeCom applies those
 /// rewrites under optimistic concurrency: two landing close together come back
-/// as errcode 6000 (数据版本冲突, "possible simultaneous modification by
-/// multiple callers, retry later") and the losing rewrite is dropped. The agent
-/// side sends an update the moment a segment flushes — deliberately, so text
-/// appears promptly — which on a long answer means several frames within
-/// milliseconds. Spacing them here keeps that behaviour for every other channel
-/// while staying inside what WeCom will accept.
+/// as errcode 6000 (数据版本冲突) and the losing rewrite is dropped. Progress
+/// frames that arrive inside `min_gap` are **dropped**, not slept — sleeping
+/// serialized leftover progress after the turn had already finished, so WeCom
+/// kept ticking and desktop `write_reply` waited on it. Finish and wait-notice
+/// frames send immediately; a 6000 is retried in `send_stream_chunk_acked`.
 #[derive(Clone)]
 struct StreamPacer {
     req_id: String,
     stream_id: String,
     ws_sink: WsSink,
-    last_frame_at: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
+    gateway: WeComGateway,
+    min_gap: Duration,
+    last_frame_at: Arc<tokio::sync::Mutex<Option<Instant>>>,
 }
 
 impl StreamPacer {
-    fn new(req_id: &str, stream_id: &str, ws_sink: &WsSink) -> Self {
+    fn new(
+        req_id: &str,
+        stream_id: &str,
+        ws_sink: &WsSink,
+        gateway: WeComGateway,
+        min_gap: Duration,
+    ) -> Self {
         Self {
             req_id: req_id.to_string(),
             stream_id: stream_id.to_string(),
             ws_sink: ws_sink.clone(),
+            gateway,
+            min_gap,
             last_frame_at: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
-    /// Send one frame, waiting out the remainder of the gap since the previous
-    /// one. The lock is deliberately held across the wait: it is what serializes
-    /// the progressive-update task against the terminal frame.
-    async fn send(&self, content: &str, finish: bool) -> Result<(), String> {
+    /// Send one frame. Progress inside `min_gap` is skipped; finish always
+    /// sends. The lock serializes progress against the terminal frame.
+    async fn send(&self, content: &str, finish: bool) -> Result<(), SendError> {
+        self.send_impl(content, finish, finish).await
+    }
+
+    /// Wait-notice / queue rewrite: send now even inside the progress gap.
+    async fn send_now(&self, content: &str) -> Result<(), SendError> {
+        self.send_impl(content, false, true).await
+    }
+
+    async fn send_impl(
+        &self,
+        content: &str,
+        finish: bool,
+        must_send: bool,
+    ) -> Result<(), SendError> {
         let mut last = self.last_frame_at.lock().await;
-        if let Some(prev) = *last {
-            let since = prev.elapsed();
-            if since < STREAM_FRAME_MIN_GAP {
-                tokio::time::sleep(STREAM_FRAME_MIN_GAP - since).await;
+        if !must_send {
+            let since = (*last).map(|prev| prev.elapsed());
+            if !progress_rewrite_due(since, self.min_gap) {
+                return Ok(());
             }
         }
-        let result = WeComGateway::send_stream_chunk_static(
-            &self.req_id,
-            &self.stream_id,
-            content,
-            finish,
-            &self.ws_sink,
-        )
-        .await;
-        *last = Some(std::time::Instant::now());
+        let timeout = if finish {
+            wecom_delivery::PROACTIVE_ACK_TIMEOUT
+        } else {
+            wecom_delivery::STREAM_FRAME_ACK_TIMEOUT
+        };
+        let result = self
+            .gateway
+            .send_stream_chunk_acked(
+                &self.req_id,
+                &self.stream_id,
+                content,
+                finish,
+                &self.ws_sink,
+                timeout,
+            )
+            .await;
+        *last = Some(Instant::now());
         result
     }
 }
@@ -599,6 +624,15 @@ pub struct WeComGateway {
     /// be switched back without a rebuild. It goes away once the new path has
     /// been through a real WeCom round trip.
     inbound_sink: Arc<RwLock<Option<Arc<dyn driver::InboundSink>>>>,
+    /// Proactive sends that failed while the socket was down. Flushed after
+    /// the next successful subscribe. Process crash is not covered — the
+    /// session already has the reply.
+    outbox: WeComOutbox,
+    /// The core-pipeline driver that owns in-flight stream pacers. MCP
+    /// `send_to_user` has no `reply_context`, so it cannot `deliver()`; it
+    /// upgrades this weak ref to piggyback onto an open stream instead of
+    /// firing `aibot_send_msg` that WeCom drops while the bubble is live.
+    live_driver: Arc<RwLock<Weak<WeComDriver>>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -946,17 +980,23 @@ pub struct WeComDriver {
     pacers: tokio::sync::Mutex<std::collections::HashMap<String, InFlightReply>>,
 }
 
-/// A streaming reply being written, and where its finished text has to go.
+/// A streaming reply being written.
 ///
-/// The conversation is kept because the final answer does NOT go out through
-/// the stream: `stream` carries plain text, so a markdown answer arrives with
-/// its fences and lists as literal characters. The stream shows progress, and
-/// the finished answer is sent once as a `markdown` message, which WeCom
-/// renders.
+/// Short turns still finish inside the stream bubble (that content is what
+/// WeCom keeps). Turns that outlive [`WeComConfig::stream_max_secs`] close the
+/// stream with a "still running" frame and push the answer afterwards via
+/// `aibot_send_msg` on a new req_id.
 struct InFlightReply {
     pacer: StreamPacer,
     chatid: String,
     chat_type: u32,
+    opened_at: Instant,
+    deadline: Instant,
+    stream_closed: bool,
+    /// Queue notice to keep rewriting into the bubble while the stream is the
+    /// only rewrite WeCom will reliably accept (proactive send during an open
+    /// stream is often dropped).
+    pending_notice: Option<String>,
 }
 
 impl WeComDriver {
@@ -1086,8 +1126,17 @@ impl driver::ChannelDriver for WeComDriver {
 
         let Some(req_id) = reply_context else {
             // Nothing to answer: this is proactive, which WeCom does through a
-            // different command entirely.
+            // different command entirely. If a stream bubble is still open on
+            // this chat, piggyback the text there — aibot_send_msg during an
+            // open stream is often dropped.
             let (chatid, chat_type) = Self::chat_target(to);
+            if self
+                .piggyback_notice(chatid, &msg.text)
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(driver::DeliveryId(format!("notice-on-stream:{chatid}")));
+            }
             self.gateway
                 .send_chat_message(chatid, chat_type, &msg.text)
                 .await
@@ -1107,12 +1156,28 @@ impl driver::ChannelDriver for WeComDriver {
             return Ok(driver::DeliveryId(format!("markdown:{chatid}")));
         }
 
+        let cfg = self.gateway.config.read().await.clone();
+        let min_gap = if cfg.progress_frame_gap_secs == 0 {
+            STREAM_FRAME_MIN_GAP
+        } else {
+            Duration::from_secs(cfg.progress_frame_gap_secs)
+        };
+        let opened_at = Instant::now();
+        let deadline = if cfg.stream_max_secs == 0 {
+            opened_at + Duration::from_secs(365 * 24 * 3600)
+        } else {
+            opened_at + Duration::from_secs(cfg.stream_max_secs)
+        };
+
         let stream_id = uuid::Uuid::new_v4().to_string();
-        let pacer = StreamPacer::new(req_id, &stream_id, &sink);
+        let pacer = StreamPacer::new(req_id, &stream_id, &sink, self.gateway.clone(), min_gap);
         pacer
-            .send(PROGRESS_OPENING, false)
+            .send(
+                &progress_frame_with_notice(Duration::ZERO, None),
+                false,
+            )
             .await
-            .map_err(driver::DriverError::Transport)?;
+            .map_err(|e| driver::DriverError::Transport(e.to_string()))?;
 
         self.pacers.lock().await.insert(
             stream_id.clone(),
@@ -1120,6 +1185,10 @@ impl driver::ChannelDriver for WeComDriver {
                 pacer,
                 chatid: chatid.to_string(),
                 chat_type,
+                opened_at,
+                deadline,
+                stream_closed: false,
+                pending_notice: None,
             },
         );
         Ok(driver::DeliveryId(stream_id))
@@ -1127,21 +1196,34 @@ impl driver::ChannelDriver for WeComDriver {
 
     /// Progress while the turn runs; the answer itself at the end.
     ///
-    /// The intermediate text is deliberately NOT streamed. `stream` carries
-    /// plain text, so a markdown answer would arrive with its fences, tables
-    /// and lists as literal characters, and every frame spends one of the 30
-    /// messages a minute this conversation is allowed. A progress line costs
-    /// the same per frame but does not need to be complete or pretty.
+    /// Intermediate agent text is not written into the stream card — only the
+    /// elapsed timer (and an optional queue notice). `stream` is plain text, so
+    /// a markdown draft would show fences and tables as literals, and every
+    /// frame spends one of the 30 messages a minute this conversation is
+    /// allowed. The finish frame / follow-up markdown carries the real answer.
+    ///
+    /// Past `stream_max_secs` this driver closes the bubble itself and later
+    /// `update(..., Some(end))` pushes markdown on a new req_id. Core keeps
+    /// calling; closed progress is swallowed so a long turn is not a render
+    /// error.
     async fn update(
         &self,
         id: &driver::DeliveryId,
         text: &str,
         end: Option<driver::TurnEnd>,
     ) -> Result<(), driver::DriverError> {
-        let (pacer, chatid, chat_type) = {
+        let snapshot = {
             let pacers = self.pacers.lock().await;
             match pacers.get(&id.0) {
-                Some(r) => (r.pacer.clone(), r.chatid.clone(), r.chat_type),
+                Some(r) => InFlightSnapshot {
+                    pacer: r.pacer.clone(),
+                    chatid: r.chatid.clone(),
+                    chat_type: r.chat_type,
+                    opened_at: r.opened_at,
+                    deadline: r.deadline,
+                    stream_closed: r.stream_closed,
+                    pending_notice: r.pending_notice.clone(),
+                },
                 None => {
                     return Err(driver::DriverError::Transport(format!(
                         "no streaming reply {} to update — it was already finished",
@@ -1151,55 +1233,157 @@ impl driver::ChannelDriver for WeComDriver {
             }
         };
 
+        let phase = if snapshot.stream_closed {
+            StreamPhase::ClosedForFollowup
+        } else {
+            StreamPhase::Open
+        };
+        let elapsed = snapshot.opened_at.elapsed();
+        let notice = snapshot.pending_notice.as_deref();
+
         let Some(end) = end else {
-            let frame = match newest_line(text) {
-                Some(line) => format!("{PROGRESS_OPENING} {line}"),
-                None => PROGRESS_OPENING.to_string(),
-            };
-            return pacer
-                .send(&frame, false)
-                .await
-                .map_err(driver::DriverError::Transport);
+            match decide_progress(phase, Instant::now() >= snapshot.deadline) {
+                ProgressDecision::Swallow => return Ok(()),
+                ProgressDecision::SendProgress => {
+                    let frame = progress_frame_with_notice(elapsed, notice);
+                    if let Err(e) = snapshot.pacer.send(&frame, false).await {
+                        // A missed progress ack must not abort the turn.
+                        eprintln!("[WeCom] progress frame failed: {e}");
+                    }
+                    return Ok(());
+                }
+                ProgressDecision::CloseEarly => {
+                    let closing = still_running_close_with_notice(elapsed, notice);
+                    if let Err(e) = snapshot.pacer.send(&closing, true).await {
+                        eprintln!("[WeCom] early stream close failed: {e}");
+                    }
+                    if let Some(r) = self.pacers.lock().await.get_mut(&id.0) {
+                        r.stream_closed = true;
+                    }
+                    return Ok(());
+                }
+            }
         };
 
-        // WeCom has no delete/recall API, so this bubble is permanent once
-        // opened. The finish=true `content` *is* what the user keeps — official
-        // docs put the answer there. Closing on "✅ 已完成" and sending the
-        // body via `aibot_send_msg` left only the marker: WeCom often drops a
-        // proactive send that follows a stream on the same callback (already
-        // observed for template_card).
-        //
-        // A turn that ended with nothing to show closes on "cancelled": saying
-        // "done" after the user typed `/stop` reports that the thing they
-        // stopped finished anyway.
-        let closing = stream_finish_content(end, text);
-        if let Err(e) = pacer.send(&closing, true).await {
-            // Last resort: the stream frame did not leave. A proactive
-            // markdown may still land — it is how commands reply without a
-            // stream — but it is the path that was failing in the common case.
-            if text.trim().is_empty() {
+        match decide_finish(phase) {
+            FinishDecision::Swallow => {
                 self.pacers.lock().await.remove(&id.0);
-                return Err(driver::DriverError::Transport(e));
+                Ok(())
             }
-            eprintln!("[WeCom] stream finish failed ({e}); falling back to markdown send");
-            self.gateway
-                .send_chat_message(&chatid, chat_type, text)
-                .await
-                .map_err(driver::DriverError::Transport)?;
+            FinishDecision::FollowupMarkdown => {
+                self.pacers.lock().await.remove(&id.0);
+                if matches!(end, driver::TurnEnd::NoAnswer) {
+                    let _ = self
+                        .gateway
+                        .send_chat_message(&snapshot.chatid, snapshot.chat_type, PROGRESS_CANCELLED)
+                        .await;
+                    return Ok(());
+                }
+                if text.trim().is_empty() {
+                    return Ok(());
+                }
+                self.send_answer_followup(&snapshot.chatid, snapshot.chat_type, text)
+                    .await
+            }
+            FinishDecision::FinishInStream => {
+                // WeCom has no delete/recall API, so this bubble is permanent
+                // once opened. For a short turn the finish=true content *is*
+                // what the user keeps. A turn that ended with nothing to show
+                // closes on "cancelled".
+                let closing = stream_finish_content(end, text);
+                if let Err(e) = snapshot.pacer.send(&closing, true).await {
+                    if text.trim().is_empty() {
+                        self.pacers.lock().await.remove(&id.0);
+                        return Err(driver::DriverError::Transport(e.to_string()));
+                    }
+                    eprintln!("[WeCom] stream finish failed ({e}); falling back to markdown send");
+                    self.pacers.lock().await.remove(&id.0);
+                    return self
+                        .send_answer_followup(&snapshot.chatid, snapshot.chat_type, text)
+                        .await;
+                }
+                self.pacers.lock().await.remove(&id.0);
+                Ok(())
+            }
         }
-        self.pacers.lock().await.remove(&id.0);
-        Ok(())
     }
 }
 
-/// What the progress bubble says while a turn runs.
-const PROGRESS_OPENING: &str = "💭 正在思考…";
+struct InFlightSnapshot {
+    pacer: StreamPacer,
+    chatid: String,
+    chat_type: u32,
+    opened_at: Instant,
+    deadline: Instant,
+    stream_closed: bool,
+    pending_notice: Option<String>,
+}
+
+impl WeComDriver {
+    /// If this chat still has an open stream, rewrite the queue notice into
+    /// the progress bubble and remember it for later frames. Returns whether
+    /// the notice was piggybacked (so the caller must not also send markdown).
+    pub(crate) async fn piggyback_notice(
+        &self,
+        chatid: &str,
+        text: &str,
+    ) -> Result<bool, driver::DriverError> {
+        let mut pacers = self.pacers.lock().await;
+        let Some((_, inflight)) = pacers
+            .iter_mut()
+            .find(|(_, r)| r.chatid == chatid && !r.stream_closed)
+        else {
+            return Ok(false);
+        };
+        inflight.pending_notice = Some(text.to_string());
+        let pacer = inflight.pacer.clone();
+        let elapsed = inflight.opened_at.elapsed();
+        let notice = inflight.pending_notice.clone();
+        drop(pacers);
+        let frame = progress_frame_with_notice(elapsed, notice.as_deref());
+        if let Err(e) = pacer.send_now(&frame).await {
+            eprintln!("[WeCom] queue notice piggyback failed: {e}");
+        }
+        Ok(true)
+    }
+
+    async fn send_answer_followup(
+        &self,
+        chatid: &str,
+        chat_type: u32,
+        text: &str,
+    ) -> Result<(), driver::DriverError> {
+        match self
+            .gateway
+            .send_markdown_segments(chatid, chat_type, text)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("[WeCom] follow-up markdown failed ({e}); sending fallback");
+                match self
+                    .gateway
+                    .send_chat_message(chatid, chat_type, wecom_delivery::FALLBACK_SEE_SESSION)
+                    .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(fb) => {
+                        eprintln!("[WeCom] fallback notice also failed: {fb}");
+                        // Session already has the reply; do not fail the turn.
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Fallback when an answered turn produced nothing showable.
 const PROGRESS_DONE: &str = "✅ 已完成";
 /// …or once it was stopped, which is a different thing from finishing.
 const PROGRESS_CANCELLED: &str = "⏹️ 已取消";
 /// WeCom `stream.content` / markdown cap, in UTF-8 bytes.
-const WECOM_CONTENT_MAX_BYTES: usize = 20480;
+const WECOM_CONTENT_MAX_BYTES: usize = wecom_delivery::WECOM_CONTENT_MAX_BYTES;
 
 /// The `finish=true` stream body. This is the bubble WeCom keeps.
 fn stream_finish_content(end: driver::TurnEnd, text: &str) -> String {
@@ -1225,35 +1409,6 @@ fn truncate_wecom_content(text: &str) -> String {
         end -= 1;
     }
     text[..end].to_string()
-}
-
-/// How much of the newest line rides along in the progress frame.
-const PROGRESS_LINE_CHARS: usize = 40;
-
-/// The tail of what the agent has written so far, for the progress bubble.
-///
-/// The turn reports **cumulative** text, so "newest" means the last non-empty
-/// line. Fence markers and heading hashes are dropped: `stream` is plain text,
-/// so they would show up as literal characters in the one place we cannot
-/// render them.
-///
-/// Truncation counts characters, not bytes — a byte slice through a Chinese
-/// reply panics, and this runs on every frame of every turn.
-fn newest_line(text: &str) -> Option<String> {
-    let line = text
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("```"))?;
-    let line = line.trim_start_matches(['#', '*', '-', '>', ' ']);
-    if line.is_empty() {
-        return None;
-    }
-    let mut out: String = line.chars().take(PROGRESS_LINE_CHARS).collect();
-    if line.chars().count() > PROGRESS_LINE_CHARS {
-        out.push('…');
-    }
-    Some(out)
 }
 
 /// WeCom's media API takes its own type word, not a mime.
@@ -1359,7 +1514,16 @@ impl WeComGateway {
             card_metadata: Arc::new(RwLock::new(std::collections::HashMap::new())),
             inbound_sink: Arc::new(RwLock::new(None)),
             pending_responses: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            outbox: WeComOutbox::new(),
+            live_driver: Arc::new(RwLock::new(Weak::new())),
         }
+    }
+
+    /// Remember the driver the core pipeline is using so proactive MCP sends
+    /// can piggyback on its open stream. Pass a downgrade of the same `Arc`
+    /// handed to `use_core_pipeline`.
+    pub async fn bind_live_driver(&self, driver: Weak<WeComDriver>) {
+        *self.live_driver.write().await = driver;
     }
 
     pub async fn set_config(&self, config: WeComConfig) {
@@ -1560,6 +1724,10 @@ impl WeComGateway {
         // Heartbeat task
         let ws_sink = Arc::new(tokio::sync::Mutex::new(ws_sink));
         *self.shared_ws_sink.write().await = Some(Arc::clone(&ws_sink));
+        let flusher = self.clone();
+        tokio::spawn(async move {
+            flusher.flush_outbox().await;
+        });
         let ws_sink_hb = Arc::clone(&ws_sink);
         let (hb_shutdown_tx, mut hb_shutdown_rx) = mpsc::channel::<()>(1);
 
@@ -1997,16 +2165,17 @@ impl WeComGateway {
         Ok(())
     }
 
-    /// Static version of send_stream_chunk for use in spawned tasks (no &self needed)
-    async fn send_stream_chunk_static(
+    /// Send one stream frame and wait for the WS ack (same callback req_id,
+    /// serialized by the pacer so waiters do not collide).
+    async fn send_stream_chunk_acked(
+        &self,
         req_id: &str,
         stream_id: &str,
         content: &str,
         finish: bool,
         ws_sink: &WsSink,
-    ) -> Result<(), String> {
-        use futures_util::SinkExt;
-
+        timeout: Duration,
+    ) -> Result<(), SendError> {
         let reply = serde_json::json!({
             "cmd": "aibot_respond_msg",
             "headers": { "req_id": req_id },
@@ -2019,35 +2188,69 @@ impl WeComGateway {
                 },
             }
         });
-
-        ws_sink
-            .lock()
+        self.send_json_acked_retry(reply, req_id, ws_sink, timeout)
             .await
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                reply.to_string().into(),
-            ))
-            .await
-            .map_err(|e| format!("Failed to send reply: {}", e))
     }
 
     /// Send a proactive message to a WeCom conversation via aibot_send_msg.
     /// Requires the gateway to be connected and the target user to have
     /// previously messaged the bot in that conversation.
+    ///
+    /// Transport / timeout failures are queued and flushed after the next
+    /// subscribe so a disconnect during a long turn does not drop the answer.
     pub async fn send_chat_message(
         &self,
         chatid: &str,
         chat_type: u32,
         text: &str,
     ) -> Result<(), String> {
-        use futures_util::SinkExt;
+        if !text.trim().is_empty() {
+            let driver = self.live_driver.read().await.upgrade();
+            if let Some(driver) = driver {
+                match driver.piggyback_notice(chatid, text).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(e) => {
+                        eprintln!("[WeCom] mid-turn piggyback failed: {e}");
+                    }
+                }
+            }
+        }
+        match self
+            .send_chat_message_attempt(chatid, chat_type, text)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e @ (SendError::Transport(_) | SendError::Timeout | SendError::Conflict)) => {
+                self.outbox.enqueue(PendingSend {
+                    chatid: chatid.to_string(),
+                    chat_type,
+                    text: text.to_string(),
+                    retry_count: 0,
+                });
+                eprintln!("[WeCom] queued proactive send to {chatid} after {e}");
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
 
+    async fn send_chat_message_attempt(
+        &self,
+        chatid: &str,
+        chat_type: u32,
+        text: &str,
+    ) -> Result<(), SendError> {
         let ws_sink = self.shared_ws_sink.read().await.clone().ok_or_else(|| {
-            "WeCom gateway is not connected. Cannot send proactive message.".to_string()
+            SendError::Transport(
+                "WeCom gateway is not connected. Cannot send proactive message.".into(),
+            )
         })?;
 
+        let req_id = uuid::Uuid::new_v4().to_string();
         let msg = serde_json::json!({
             "cmd": "aibot_send_msg",
-            "headers": { "req_id": uuid::Uuid::new_v4().to_string() },
+            "headers": { "req_id": req_id },
             "body": {
                 "chatid": chatid,
                 "chat_type": chat_type,
@@ -2056,20 +2259,73 @@ impl WeComGateway {
             }
         });
 
-        ws_sink
-            .lock()
-            .await
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                msg.to_string().into(),
-            ))
-            .await
-            .map_err(|e| format!("Failed to send proactive message: {}", e))?;
+        self.send_json_acked_retry(
+            msg,
+            &req_id,
+            &ws_sink,
+            wecom_delivery::PROACTIVE_ACK_TIMEOUT,
+        )
+        .await?;
 
         println!(
             "[WeCom] Proactive message sent to chatid={}, chat_type={}",
             chatid, chat_type
         );
         Ok(())
+    }
+
+    /// Split a long answer and send each piece with quota-safe spacing.
+    async fn send_markdown_segments(
+        &self,
+        chatid: &str,
+        chat_type: u32,
+        text: &str,
+    ) -> Result<(), String> {
+        let segments = wecom_delivery::split_markdown_segments(
+            text,
+            wecom_delivery::MARKDOWN_SEGMENT_MAX_BYTES,
+        );
+        if segments.is_empty() {
+            return Ok(());
+        }
+        for (i, seg) in segments.iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(wecom_delivery::QUOTA_SAFE_GAP).await;
+            }
+            self.send_chat_message(chatid, chat_type, seg).await?;
+        }
+        Ok(())
+    }
+
+    async fn flush_outbox(&self) {
+        let items = self.outbox.drain();
+        if items.is_empty() {
+            return;
+        }
+        println!("[WeCom] flushing {} pending send(s)", items.len());
+        let max_retries = self.config.read().await.final_max_retries.max(1);
+        for (i, mut item) in items.into_iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(wecom_delivery::QUOTA_SAFE_GAP).await;
+            }
+            match self
+                .send_chat_message_attempt(&item.chatid, item.chat_type, &item.text)
+                .await
+            {
+                Ok(()) => {}
+                Err(e) => {
+                    if should_requeue(item.retry_count, max_retries, &e) {
+                        item.retry_count += 1;
+                        self.outbox.enqueue(item);
+                    } else {
+                        eprintln!(
+                            "[WeCom] dropping pending send to {} after {}: {e}",
+                            item.chatid, max_retries
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Send a WS command and wait for the response (matched by req_id).
@@ -2079,6 +2335,18 @@ impl WeComGateway {
         req_id: &str,
         ws_sink: &WsSink,
     ) -> Result<serde_json::Value, String> {
+        self.ws_request_timeout(msg, req_id, ws_sink, Duration::from_secs(30))
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn ws_request_timeout(
+        &self,
+        msg: serde_json::Value,
+        req_id: &str,
+        ws_sink: &WsSink,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, SendError> {
         use futures_util::SinkExt;
 
         let (tx, rx) = oneshot::channel();
@@ -2087,27 +2355,84 @@ impl WeComGateway {
             .await
             .insert(req_id.to_string(), tx);
 
-        ws_sink
+        if let Err(e) = ws_sink
             .lock()
             .await
             .send(tokio_tungstenite::tungstenite::Message::Text(
                 msg.to_string().into(),
             ))
             .await
-            .map_err(|e| {
-                // Clean up on send failure
-                let pending = self.pending_responses.clone();
-                let rid = req_id.to_string();
-                tokio::spawn(async move {
-                    pending.lock().await.remove(&rid);
-                });
-                format!("Failed to send WS request: {}", e)
-            })?;
+        {
+            self.pending_responses.lock().await.remove(req_id);
+            return Err(SendError::Transport(format!(
+                "Failed to send WS request: {e}"
+            )));
+        }
 
-        tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(_)) => {
+                self.pending_responses.lock().await.remove(req_id);
+                Err(SendError::Transport(
+                    "WS response channel closed".to_string(),
+                ))
+            }
+            Err(_) => {
+                self.pending_responses.lock().await.remove(req_id);
+                Err(SendError::Timeout)
+            }
+        }
+    }
+
+    async fn send_json_acked(
+        &self,
+        msg: serde_json::Value,
+        req_id: &str,
+        ws_sink: &WsSink,
+        timeout: Duration,
+    ) -> Result<(), SendError> {
+        let resp = self
+            .ws_request_timeout(msg, req_id, ws_sink, timeout)
+            .await?;
+        wecom_delivery::classify_response(&resp)
+    }
+
+    async fn send_json_acked_retry(
+        &self,
+        msg: serde_json::Value,
+        req_id: &str,
+        ws_sink: &WsSink,
+        timeout: Duration,
+    ) -> Result<(), SendError> {
+        match self
+            .send_json_acked(msg.clone(), req_id, ws_sink, timeout)
             .await
-            .map_err(|_| "WS request timed out".to_string())?
-            .map_err(|_| "WS response channel closed".to_string())
+        {
+            Ok(()) => Ok(()),
+            Err(SendError::Conflict) => {
+                for backoff_ms in wecom_delivery::CONFLICT_BACKOFF_MS {
+                    tokio::time::sleep(Duration::from_millis(*backoff_ms)).await;
+                    match self
+                        .send_json_acked(msg.clone(), req_id, ws_sink, timeout)
+                        .await
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(SendError::Conflict) => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(SendError::Conflict)
+            }
+            Err(SendError::RateLimited { retry_after_ms }) => {
+                tokio::time::sleep(Duration::from_millis(
+                    retry_after_ms.unwrap_or(wecom_delivery::RATE_LIMIT_RETRY_MS),
+                ))
+                .await;
+                self.send_json_acked(msg, req_id, ws_sink, timeout).await
+            }
+            Err(SendError::Timeout) => self.send_json_acked(msg, req_id, ws_sink, timeout).await,
+            Err(e) => Err(e),
+        }
     }
 
     /// Upload media data to WeCom via the 3-step WebSocket upload protocol.
@@ -2740,39 +3065,16 @@ mod message_parts_tests {
 #[cfg(test)]
 mod stream_frame_tests {
     use super::*;
-    use serde_json::json;
+
+    #[test]
+    fn progress_frames_are_spaced_ten_seconds_apart() {
+        assert_eq!(STREAM_FRAME_MIN_GAP, Duration::from_secs(10));
+    }
 }
 
 #[cfg(test)]
 mod progress_line_tests {
     use super::*;
-
-    #[test]
-    fn the_progress_line_is_the_newest_line_not_the_first() {
-        // The turn reports cumulative text; the reader wants to see where the
-        // agent is now, not where it started.
-        let text = "第一行\n第二行\n第三行";
-        assert_eq!(newest_line(text).unwrap(), "第三行");
-    }
-
-    #[test]
-    fn a_long_line_is_truncated_by_characters_not_bytes() {
-        // Slicing bytes through a Chinese reply panics, and this runs on every
-        // frame of every turn.
-        let line = "中".repeat(100);
-        let out = newest_line(&line).unwrap();
-        assert_eq!(out.chars().count(), PROGRESS_LINE_CHARS + 1, "40 chars + …");
-        assert!(out.ends_with('…'));
-    }
-
-    #[test]
-    fn fence_and_heading_markers_do_not_leak_into_the_bubble() {
-        // `stream` is plain text, so markdown syntax shows up as characters in
-        // exactly the place it cannot be rendered.
-        assert_eq!(newest_line("答案\n```python").unwrap(), "答案");
-        assert_eq!(newest_line("## 标题").unwrap(), "标题");
-        assert_eq!(newest_line("- 列表项").unwrap(), "列表项");
-    }
 
     #[test]
     fn a_stopped_turn_and_a_finished_one_close_differently() {
@@ -2827,13 +3129,6 @@ mod progress_line_tests {
         assert!(closing.len() <= WECOM_CONTENT_MAX_BYTES);
         assert!(closing.is_char_boundary(closing.len()));
         assert!(!closing.is_empty());
-    }
-
-    #[test]
-    fn text_with_nothing_showable_falls_back_to_no_line() {
-        assert!(newest_line("").is_none());
-        assert!(newest_line("   \n\n  ").is_none());
-        assert!(newest_line("###").is_none());
     }
 }
 

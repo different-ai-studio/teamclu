@@ -8,9 +8,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use base64::Engine as _;
-use teamclu_skillpack::manifest::build_manifest;
+use serde::{Deserialize, Serialize};
+use teamclu_skillpack::package_digest;
 use teamclu_types::skill_frontmatter::parse_frontmatter;
 use uuid::Uuid;
 
@@ -19,8 +19,10 @@ use super::roles_skills::is_inherent_skill;
 const GLOBAL_SKILLS_REL: &str = ".agents/skills";
 pub(crate) const SKILL_MD: &str = "SKILL.md";
 pub(crate) const MAX_PACK_FILES: usize = 500;
-pub(crate) const MAX_SINGLE_FILE_BYTES: usize = 1024 * 1024;
-pub(crate) const MAX_PACK_TOTAL_BYTES: usize = 5 * 1024 * 1024;
+/// Publish/write cap: 0.5 MiB per file. Distinct from the get_draft JSON budget.
+pub(crate) const MAX_SINGLE_FILE_BYTES: usize = 512 * 1024;
+/// Publish/write cap: 2.5 MiB pack total.
+pub(crate) const MAX_PACK_TOTAL_BYTES: usize = 2560 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +98,8 @@ pub struct CreatePackRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdatePackRequest {
     pub slug: String,
+    /// Full SKILL.md. Empty/omitted on `update_draft` keeps the existing file.
+    #[serde(default)]
     pub content: String,
     #[serde(default)]
     pub files: Vec<PackFileInput>,
@@ -157,21 +161,12 @@ impl ClaimedTeamContext {
 }
 
 pub fn pack_digest(dir: &Path) -> Result<String, ManagedSkillError> {
-    let manifest = build_manifest(dir).map_err(|e| {
+    package_digest(dir).map_err(|e| {
         ManagedSkillError::new(
             ManagedSkillErrorCode::SkillWriteFailed,
             format!("manifest: {e}"),
         )
-    })?;
-    let json = serde_json::to_string(&manifest).map_err(|e| {
-        ManagedSkillError::new(
-            ManagedSkillErrorCode::SkillWriteFailed,
-            format!("manifest encode: {e}"),
-        )
-    })?;
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(json.as_bytes());
-    Ok(format!("sha256:{:x}", hash))
+    })
 }
 
 fn io_managed(e: std::io::Error) -> ManagedSkillError {
@@ -305,7 +300,10 @@ pub(crate) fn reject_symlink(path: &Path) -> Result<(), ManagedSkillError> {
     {
         return Err(ManagedSkillError::new(
             ManagedSkillErrorCode::InvalidSkillFilePath,
-            format!("symlinks are not allowed in skill packs: {}", path.display()),
+            format!(
+                "symlinks are not allowed in skill packs: {}",
+                path.display()
+            ),
         ));
     }
     Ok(())
@@ -336,19 +334,13 @@ fn verify_tree_confined(root: &Path) -> Result<(), ManagedSkillError> {
     Ok(())
 }
 
-/// Validates size and file-count limits on the final on-disk pack tree.
+/// Validates size and file-count limits on the published file set.
 pub(crate) fn validate_pack_tree_limits(root: &Path) -> Result<(), ManagedSkillError> {
     verify_tree_confined(root)?;
+    let index = teamclu_skillpack::build_package_index(root).map_err(io_managed)?;
     let mut file_count = 0usize;
     let mut total_bytes = 0usize;
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-    {
-        let entry = entry.map_err(|e| io_managed(std::io::Error::other(e.to_string())))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
+    for rel in &index.included {
         file_count += 1;
         if file_count > MAX_PACK_FILES {
             return Err(ManagedSkillError::new(
@@ -356,20 +348,16 @@ pub(crate) fn validate_pack_tree_limits(root: &Path) -> Result<(), ManagedSkillE
                 "skill pack exceeds file count limit",
             ));
         }
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .map_err(|_| io_managed(std::io::Error::other("strip pack prefix")))?;
-        let len = entry
-            .metadata()
-            .map_err(|e| io_managed(std::io::Error::other(e.to_string())))?
+        let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let len = fs::metadata(&path)
+            .map_err(io_managed)?
             .len()
             .try_into()
             .unwrap_or(usize::MAX);
         if len > MAX_SINGLE_FILE_BYTES {
             return Err(ManagedSkillError::new(
                 ManagedSkillErrorCode::SkillPackTooLarge,
-                format!("file {} exceeds size limit", rel.display()),
+                format!("file {rel} exceeds size limit"),
             ));
         }
         total_bytes = total_bytes.saturating_add(len);
@@ -483,10 +471,7 @@ impl Drop for TempPackGuard {
 
 pub(crate) fn copy_pack_tree(src: &Path, dst: &Path) -> Result<(), ManagedSkillError> {
     reject_symlink(src)?;
-    for entry in walkdir::WalkDir::new(src)
-        .follow_links(false)
-        .into_iter()
-    {
+    for entry in walkdir::WalkDir::new(src).follow_links(false).into_iter() {
         let entry = entry.map_err(|e| io_managed(std::io::Error::other(e.to_string())))?;
         let rel = entry
             .path()
@@ -647,12 +632,20 @@ pub fn update_pack(
             format!("invalid slug {:?}", req.slug),
         ));
     }
-    validate_strict_frontmatter(&req.content, &req.slug)?;
-    if req.content.len() > MAX_SINGLE_FILE_BYTES {
+    if req.content.is_empty() && req.files.is_empty() && req.delete_files.is_empty() {
         return Err(ManagedSkillError::new(
-            ManagedSkillErrorCode::SkillPackTooLarge,
-            "SKILL.md exceeds size limit",
+            ManagedSkillErrorCode::InvalidSkillFilePath,
+            "update requires at least one of content, files, or deleteFiles",
         ));
+    }
+    if !req.content.is_empty() {
+        validate_strict_frontmatter(&req.content, &req.slug)?;
+        if req.content.len() > MAX_SINGLE_FILE_BYTES {
+            return Err(ManagedSkillError::new(
+                ManagedSkillErrorCode::SkillPackTooLarge,
+                "SKILL.md exceeds size limit",
+            ));
+        }
     }
 
     let mut patch_files = Vec::new();
@@ -710,7 +703,9 @@ pub fn update_pack(
 
     let temp = TempPackGuard::new(skills_root.join(format!(".teamclu-update-{}", Uuid::new_v4())));
     copy_pack_tree(&target, temp.path())?;
-    fs::write(temp.path().join(SKILL_MD), req.content.as_bytes()).map_err(io_managed)?;
+    if !req.content.is_empty() {
+        fs::write(temp.path().join(SKILL_MD), req.content.as_bytes()).map_err(io_managed)?;
+    }
     apply_patch_files(temp.path(), &patch_files)?;
     apply_delete_files(temp.path(), &req.delete_files)?;
     verify_final_skill_md(temp.path(), &req.slug)?;
@@ -805,13 +800,7 @@ mod tests {
                 encoding: None,
             }],
         };
-        let resp = create_pack(
-            ws.path(),
-            home.path(),
-            &req,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        let resp = create_pack(ws.path(), home.path(), &req, &ClaimedTeamContext::NoTeam).unwrap();
         assert!(resp.created);
         assert!(home
             .path()
@@ -830,20 +819,9 @@ mod tests {
             content: "---\nname: dup\ndescription: One.\n---\n".into(),
             files: vec![],
         };
-        create_pack(
-            ws.path(),
-            home.path(),
-            &req,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
-        let err = create_pack(
-            ws.path(),
-            home.path(),
-            &req,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap_err();
+        create_pack(ws.path(), home.path(), &req, &ClaimedTeamContext::NoTeam).unwrap();
+        let err =
+            create_pack(ws.path(), home.path(), &req, &ClaimedTeamContext::NoTeam).unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::SkillAlreadyExists);
     }
 
@@ -879,13 +857,8 @@ mod tests {
                 encoding: None,
             }],
         };
-        let err = create_pack(
-            ws.path(),
-            home.path(),
-            &req,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap_err();
+        let err =
+            create_pack(ws.path(), home.path(), &req, &ClaimedTeamContext::NoTeam).unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::InvalidSkillFilePath);
         assert!(!home.path().join(".agents/skills/bad-path").exists());
     }
@@ -948,13 +921,7 @@ mod tests {
                 },
             ],
         };
-        create_pack(
-            ws.path(),
-            home.path(),
-            &create,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        create_pack(ws.path(), home.path(), &create, &ClaimedTeamContext::NoTeam).unwrap();
 
         let update = UpdatePackRequest {
             slug: "api-review".into(),
@@ -967,16 +934,13 @@ mod tests {
             expected_digest: None,
             delete_files: vec![],
         };
-        update_pack(
-            ws.path(),
-            home.path(),
-            &update,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        update_pack(ws.path(), home.path(), &update, &ClaimedTeamContext::NoTeam).unwrap();
 
         let root = home.path().join(".agents/skills/api-review");
-        assert_eq!(fs::read_to_string(root.join("scripts/check.sh")).unwrap(), "v2\n");
+        assert_eq!(
+            fs::read_to_string(root.join("scripts/check.sh")).unwrap(),
+            "v2\n"
+        );
         assert_eq!(
             fs::read_to_string(root.join("references/checklist.md")).unwrap(),
             "unchanged\n"
@@ -1009,13 +973,7 @@ mod tests {
                 },
             ],
         };
-        create_pack(
-            ws.path(),
-            home.path(),
-            &create,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        create_pack(ws.path(), home.path(), &create, &ClaimedTeamContext::NoTeam).unwrap();
 
         let update = UpdatePackRequest {
             slug: "api-review".into(),
@@ -1024,13 +982,7 @@ mod tests {
             expected_digest: None,
             delete_files: vec!["references/checklist.md".into()],
         };
-        update_pack(
-            ws.path(),
-            home.path(),
-            &update,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        update_pack(ws.path(), home.path(), &update, &ClaimedTeamContext::NoTeam).unwrap();
 
         let root = home.path().join(".agents/skills/api-review");
         assert!(root.join("scripts/check.sh").is_file());
@@ -1059,13 +1011,7 @@ mod tests {
                 },
             ],
         };
-        create_pack(
-            ws.path(),
-            home.path(),
-            &create,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        create_pack(ws.path(), home.path(), &create, &ClaimedTeamContext::NoTeam).unwrap();
 
         let update = UpdatePackRequest {
             slug: "api-review".into(),
@@ -1074,13 +1020,7 @@ mod tests {
             expected_digest: None,
             delete_files: vec![],
         };
-        update_pack(
-            ws.path(),
-            home.path(),
-            &update,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        update_pack(ws.path(), home.path(), &update, &ClaimedTeamContext::NoTeam).unwrap();
 
         let root = home.path().join(".agents/skills/api-review");
         assert!(root.join("scripts/check.sh").is_file());
@@ -1099,18 +1039,9 @@ mod tests {
             content: "---\nname: deploy-check\ndescription: One.\n---\n".into(),
             files: vec![],
         };
-        create_pack(
-            ws.path(),
-            home.path(),
-            &create,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
-        let original = fs::read_to_string(
-            home.path()
-                .join(".agents/skills/deploy-check/SKILL.md"),
-        )
-        .unwrap();
+        create_pack(ws.path(), home.path(), &create, &ClaimedTeamContext::NoTeam).unwrap();
+        let original =
+            fs::read_to_string(home.path().join(".agents/skills/deploy-check/SKILL.md")).unwrap();
 
         let update = UpdatePackRequest {
             slug: "deploy-check".into(),
@@ -1127,11 +1058,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::SkillOwnershipUnavailable);
-        let after = fs::read_to_string(
-            home.path()
-                .join(".agents/skills/deploy-check/SKILL.md"),
-        )
-        .unwrap();
+        let after =
+            fs::read_to_string(home.path().join(".agents/skills/deploy-check/SKILL.md")).unwrap();
         assert_eq!(after, original);
     }
 
@@ -1145,13 +1073,7 @@ mod tests {
             content: "---\nname: existing\ndescription: One.\n---\n".into(),
             files: vec![],
         };
-        create_pack(
-            ws.path(),
-            home.path(),
-            &req,
-            &ClaimedTeamContext::NoTeam,
-        )
-        .unwrap();
+        create_pack(ws.path(), home.path(), &req, &ClaimedTeamContext::NoTeam).unwrap();
         let err = create_pack(
             ws.path(),
             home.path(),
@@ -1229,7 +1151,10 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::SkillPackTooLarge);
-        assert_eq!(get_pack(home.path(), "big-md").unwrap().digest, before.digest);
+        assert_eq!(
+            get_pack(home.path(), "big-md").unwrap().digest,
+            before.digest
+        );
         assert_no_update_temp_dirs(&home.path().join(".agents/skills"));
     }
 
@@ -1269,7 +1194,10 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::SkillPackTooLarge);
-        assert_eq!(get_pack(home.path(), "many-files").unwrap().digest, before.digest);
+        assert_eq!(
+            get_pack(home.path(), "many-files").unwrap().digest,
+            before.digest
+        );
         assert_no_update_temp_dirs(&home.path().join(".agents/skills"));
     }
 
@@ -1306,7 +1234,10 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ManagedSkillErrorCode::SkillPackTooLarge);
-        assert_eq!(get_pack(home.path(), "heavy").unwrap().digest, before.digest);
+        assert_eq!(
+            get_pack(home.path(), "heavy").unwrap().digest,
+            before.digest
+        );
         assert_no_update_temp_dirs(&home.path().join(".agents/skills"));
     }
 
@@ -1413,5 +1344,51 @@ mod tests {
         let root = home.path().join(".agents/skills/trim");
         assert!(!root.join("assets/base-0.bin").exists());
         assert!(root.join("assets/extra-0.bin").exists());
+    }
+
+    #[test]
+    fn update_can_patch_sidecar_without_rewriting_skill_md() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        create_pack(
+            ws.path(),
+            home.path(),
+            &CreatePackRequest {
+                slug: "keep-md".into(),
+                content: "---\nname: keep-md\ndescription: Keep.\n---\n\n# Keep\n".into(),
+                files: vec![PackFileInput {
+                    path: "notes.md".into(),
+                    content: "v1\n".into(),
+                    encoding: None,
+                }],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        update_pack(
+            ws.path(),
+            home.path(),
+            &UpdatePackRequest {
+                slug: "keep-md".into(),
+                content: String::new(),
+                files: vec![PackFileInput {
+                    path: "notes.md".into(),
+                    content: "v2\n".into(),
+                    encoding: None,
+                }],
+                expected_digest: None,
+                delete_files: vec![],
+            },
+            &ClaimedTeamContext::NoTeam,
+        )
+        .unwrap();
+
+        let root = home.path().join(".agents/skills/keep-md");
+        assert!(fs::read_to_string(root.join("SKILL.md"))
+            .unwrap()
+            .contains("# Keep"));
+        assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "v2\n");
     }
 }

@@ -28,8 +28,7 @@ use super::records::{
 };
 use super::{
     AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult, BootstrapMqttOverride,
-    CloudAuthSnapshot,
-    ManagedLlmConfig, TeamEnvSecretRow, TeamSkillDownload, TeamSkillRow,
+    CloudAuthSnapshot, ManagedLlmConfig, TeamEnvSecretRow, TeamSkillDownload, TeamSkillRow,
 };
 
 /// Error returned by every business call before onboarding completes.
@@ -171,7 +170,9 @@ impl Backend for DeferredBackend {
         app_id: &str,
         deploy_key_id: i64,
     ) -> BackendResult<()> {
-        self.inner()?.revoke_app_git_credential(app_id, deploy_key_id).await
+        self.inner()?
+            .revoke_app_git_credential(app_id, deploy_key_id)
+            .await
     }
 
     async fn team_mcp_config(&self, team_id: &str) -> BackendResult<serde_json::Value> {
@@ -647,7 +648,10 @@ mod tests {
         // backend" — the default, not the real answer. A trait default is a
         // silent opt-out for every wrapper in this file.
         let b = DeferredBackend::unclaimed();
-        assert!(b.app_git_credential("app-1").await.is_err(), "unclaimed must refuse");
+        assert!(
+            b.app_git_credential("app-1").await.is_err(),
+            "unclaimed must refuse"
+        );
 
         b.install(Arc::new(MockBackend::with_identity("team-1", "actor-1")));
         let cred = b.app_git_credential("app-1").await.expect("must delegate");

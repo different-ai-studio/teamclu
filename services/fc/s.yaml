@@ -95,6 +95,13 @@ resources:
         APPS_ACCESS_KEY_ID: ${env('APPS_ACCESS_KEY_ID', '')}
         APPS_ACCESS_KEY_SECRET: ${env('APPS_ACCESS_KEY_SECRET', '')}
         APPS_OSS_BUCKET: ${env('APPS_OSS_BUCKET', '')}
+        APPS_REGISTRY_HOST: ${env('APPS_REGISTRY_HOST', '')}
+        APPS_REGISTRY_NAMESPACE: ${env('APPS_REGISTRY_NAMESPACE', '')}
+        APPS_REGISTRY_USERNAME: ${env('APPS_REGISTRY_USERNAME', '')}
+        APPS_REGISTRY_PASSWORD: ${env('APPS_REGISTRY_PASSWORD', '')}
+        APPS_REGISTRY_PULL_USERNAME: ${env('APPS_REGISTRY_PULL_USERNAME', '')}
+        APPS_REGISTRY_PULL_PASSWORD: ${env('APPS_REGISTRY_PULL_PASSWORD', '')}
+        APPS_REGISTRY_PULL_HOST: ${env('APPS_REGISTRY_PULL_HOST', '')}
         APPS_REGION: ${env('APPS_REGION', '')}
         APPS_OSS_ENDPOINT: ${env('APPS_OSS_ENDPOINT', '')}
         # App file storage. Same three knobs as the compose target; declared
@@ -102,10 +109,16 @@ resources:
         APPS_STS_ROLE_ARN: ${env('APPS_STS_ROLE_ARN', '')}
         APPS_CLOUD_API_URL: ${env('APPS_CLOUD_API_URL', '')}
         APPS_STORAGE_QUOTA_BYTES: ${env('APPS_STORAGE_QUOTA_BYTES', '')}
+        # Log destination for deployed apps. Blank → derived from the account
+        # id (`teamclu-apps-<accountId>` / `app-logs`) and created on deploy.
+        APPS_SLS_PROJECT: ${env('APPS_SLS_PROJECT', '')}
+        APPS_SLS_LOGSTORE: ${env('APPS_SLS_LOGSTORE', '')}
         # Parent domain for per-app vanity hostnames. Only self-host has the
         # reverse proxy that terminates them, so this is normally blank here —
         # declared so the two targets stay in step (deploy-env-parity.test.ts).
         APPS_PUBLIC_DOMAIN: ${env('APPS_PUBLIC_DOMAIN', '')}
+        LOGIN_DOMAIN: ${env('LOGIN_DOMAIN', '')}
+        APPS_AUTH_SESSION_SECRET: ${env('APPS_AUTH_SESSION_SECRET', '')}
         # Per-app git repos on Gitea. Blank disables repo provisioning (503
         # gitea_unavailable naming the empty variable).
         GITEA_URL: ${env('GITEA_URL', '')}

@@ -30,6 +30,7 @@ pub use daemon_config::{
 // Only test fixtures build a `DaemonConfig` field by field.
 #[cfg(test)]
 pub use daemon_config::{ActorConfig, AgentBackendConfig, AgentsConfig, MqttConfig};
+pub use knowledge_scaffold::{domain_index_template, scaffold_knowledge, ScaffoldReport};
 pub use managed_skill_writer::{
     create_pack, get_pack, pack_digest, update_pack, ClaimedTeamContext, CreatePackRequest,
     ManageSkillResponse, ManagedSkillError, ManagedSkillErrorCode, UpdatePackRequest,
@@ -46,9 +47,9 @@ pub use skill_creation_policy::{
     append_policy_to_prompt, materialize_policy_file, SKILL_CREATION_POLICY,
 };
 pub use team_skill_draft::{
-    get_team_skill_draft, update_team_skill_draft, TeamSkillDraftUpdateResult, TeamSkillDraftView,
+    get_team_skill_draft, read_team_skill_draft_file, update_team_skill_draft, DraftFileRead,
+    TeamSkillDraftUpdateResult, TeamSkillDraftView,
 };
-pub use knowledge_scaffold::{domain_index_template, scaffold_knowledge, ScaffoldReport};
 pub use workspace_control::{
     decode_workspace_path, encode_workspace_path, ApplyOutcome, OpenCodeCompatStore,
     ProviderAuthRequest, ProviderModelConfig, WorkspaceControlStore,

@@ -1,3 +1,4 @@
+mod apps;
 mod capabilities;
 mod channels;
 mod config;
@@ -105,14 +106,19 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_cron_job",
-            "description": "Create, pause, resume, delete, or inspect cron jobs.",
+            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). The TeamClu desktop app must be running.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
                         "description": "The action to perform.",
-                        "enum": ["create", "pause", "resume", "delete", "run", "get_runs"]
+                        "enum": ["create", "list", "pause", "resume", "delete", "run", "get_runs"]
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "Where to store the job. Defaults to 'global' (the default settings list). Use 'workspace' only for jobs that must run in a specific project folder.",
+                        "enum": ["global", "workspace"]
                     },
                     "job_id": {
                         "type": "string",
@@ -127,7 +133,7 @@ fn tool_definitions() -> Value {
                         "description": "Human-readable description of what the job does."
                     },
                     "schedule": {
-                        "description": "Schedule for the job (required for create). A plain string is treated as a 5-field cron expression, e.g. '0 9 * * 1-5'. For one-time or interval jobs, pass an object such as {\"kind\":\"at\",\"at\":\"2026-05-07T09:00:00Z\"}, {\"kind\":\"every\",\"everyMs\":3600000}, or {\"kind\":\"cron\",\"expr\":\"0 9 * * 1-5\",\"tz\":\"Asia/Shanghai\"}.",
+                        "description": "Schedule for the job (required for create). Pass an object, do not stringify it. One-time: {\"kind\":\"at\",\"at\":\"2026-09-09T20:10:30+08:00\"} (ISO-8601). Interval: {\"kind\":\"every\",\"everyMs\":3600000}. Recurring cron: {\"kind\":\"cron\",\"expr\":\"0 9 * * 1-5\",\"tz\":\"Asia/Shanghai\"}. A plain string is only a 5-field cron expression (e.g. '0 9 * * 1-5') or an ISO-8601 timestamp.",
                         "anyOf": [
                             { "type": "string" },
                             {
@@ -351,19 +357,33 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_team_skills",
-            "description": "List the team's Skills catalog, install/uninstall a team Skill for this Agent, or edit the local working copy draft of an installed team Skill. Draft edits affect only this machine until published from the team Skills page; new sessions pick up draft changes, the current session keeps its prior content. Use get_draft before update_draft and pass expectedDigest for optimistic concurrency. Cannot target another Actor and cannot manage MCP servers.",
+            "description": "List the team's Skills catalog, install/uninstall a team Skill for this Agent, or edit the local working copy draft of an installed team Skill. Draft edits affect only this machine until published from the team Skills page; new sessions pick up draft changes, the current session keeps its prior content. get_draft returns SKILL.md plus a file listing (no sidecar bodies). Use read_draft_file with a specific path to fetch a chunk. Then update_draft with expectedDigest; content is optional when only files or deleteFiles change. Cannot target another Actor and cannot manage MCP servers.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "install", "uninstall", "get_draft", "update_draft"]
+                        "enum": ["list", "install", "uninstall", "get_draft", "read_draft_file", "update_draft"]
                     },
                     "slug": { "type": "string", "description": "Required except for list." },
                     "version": { "type": "integer", "minimum": 1, "description": "Required for install." },
+                    "path": {
+                        "type": "string",
+                        "description": "Skill-relative file path. Required for read_draft_file (e.g. scripts/run.py or SKILL.md)."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Byte offset for read_draft_file. Defaults to 0."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Max bytes for read_draft_file. Defaults to 16384, capped at 32768."
+                    },
                     "content": {
                         "type": "string",
-                        "description": "Full SKILL.md content with YAML frontmatter. Required for update_draft."
+                        "description": "Full SKILL.md with YAML frontmatter. Optional on update_draft when patching files or deleteFiles only."
                     },
                     "files": {
                         "type": "array",
@@ -392,7 +412,11 @@ fn tool_definitions() -> Value {
                 "allOf": [
                     {
                         "if": { "properties": { "action": { "const": "update_draft" } } },
-                        "then": { "required": ["slug", "content", "expectedDigest"] }
+                        "then": { "required": ["slug", "expectedDigest"] }
+                    },
+                    {
+                        "if": { "properties": { "action": { "const": "read_draft_file" } } },
+                        "then": { "required": ["slug", "path"] }
                     }
                 ]
             }
@@ -483,6 +507,67 @@ fn tool_definitions() -> Value {
                     }
                 }
             }
+        },
+        {
+            "name": "manage_app",
+            "description": "Work with a TeamClu app: list this team's apps, read one's status, deploy it, or read the deployed app's logs. Omit app_id and app_name to act on the app whose checkout is the workspace you are working in — you do not need to ask the user which app this is, and `list` reports each app's local `workdir` so you can see it for yourself. `deploy` runs the full publish (build the checkout on the local machine, upload it, put it live) and PUBLISHES TO THE PUBLIC INTERNET — an app whose auth_mode is \"none\" is readable by anyone with the URL. `logs` reads what the running app printed, which is how you find out why it 500s. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (deploying needs admin on the app).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "status", "deploy", "logs"],
+                        "description": "list: this team's apps, each with its checkout path on this machine when it has one. status: one app, plus where its checkout is on this machine. deploy: build and publish. logs: the deployed app's own output."
+                    },
+                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name (not both); omit both to mean the app whose checkout is the current workspace. Not needed for list." },
+                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team. Omit it and app_id to mean the app whose checkout is the current workspace." },
+                    "since_minutes": { "type": "integer", "description": "logs: how far back to read. Default 30, max 10080 (7 days)." },
+                    "limit": { "type": "integer", "description": "logs: how many entries. Default 100, max 200." },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["app", "request", "all"],
+                        "description": "logs: `app` is what the app printed (default), `request` is one line per HTTP request with status and duration, `all` is both."
+                    },
+                    "contains": { "type": "string", "description": "logs: only entries whose message contains this text." },
+                    "request_id": { "type": "string", "description": "logs: only entries from this request id — the way to see one failing request end to end." }
+                },
+                "required": ["action"]
+            }
+        },
+        {
+            "name": "manage_app_data",
+            "description": "Read and edit the rows in a deployed app's own database — its real production data. Use it to check what the app actually stored, or to fix one bad row. Reads need `prompt` permission on the app and writes need `admin`; only apps with a database (data_app) that have been deployed have one. Writes address exactly one row by primary key; there is no bulk update or delete.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["tables", "rows", "update_row", "delete_row"],
+                        "description": "tables: what tables exist, with their columns and primary key. rows: one page of rows. update_row / delete_row: change exactly one row."
+                    },
+                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name, not both; omit both to mean the app whose checkout is the current workspace." },
+                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team. Omit it and app_id to mean the app whose checkout is the current workspace." },
+                    "table": { "type": "string", "description": "Table name, as reported by action \"tables\". Required for everything but tables." },
+                    "limit": { "type": "integer", "description": "rows: page size. Default 50, max 100." },
+                    "after": { "type": "string", "description": "rows: the previous page's next_cursor. Omit for the first page." },
+                    "direction": { "type": "string", "enum": ["asc", "desc"], "description": "rows: order along the primary key. Default asc." },
+                    "filter_column": { "type": "string", "description": "rows: column to filter on. Give with filter_op." },
+                    "filter_op": { "type": "string", "enum": ["eq", "contains", "isNull", "notNull"], "description": "rows: how to compare." },
+                    "filter_value": { "type": "string", "description": "rows: the value to compare against. Ignored by isNull / notNull." },
+                    "key": {
+                        "type": "object",
+                        "description": "update_row / delete_row: the row's primary-key columns and values, e.g. {\"id\": 42}. Read them off the row you got from action \"rows\".",
+                        "additionalProperties": true
+                    },
+                    "row_key": { "type": "string", "description": "Alternative to `key`: the opaque row key form, if you already have one." },
+                    "patch": {
+                        "type": "object",
+                        "description": "update_row: column → new value. Primary-key columns cannot be changed here.",
+                        "additionalProperties": true
+                    }
+                },
+                "required": ["action"]
+            }
         }
     ])
 }
@@ -511,16 +596,45 @@ fn mcp_error(id: &Value, code: i64, message: &str) -> Value {
 }
 
 fn tool_ok(text: &str) -> Value {
-    json!({
-        "content": [{"type": "text", "text": text}]
-    })
+    enforce_tool_budget(text, false)
 }
 
 fn tool_err(text: &str) -> Value {
-    json!({
-        "content": [{"type": "text", "text": text}],
-        "isError": true
-    })
+    enforce_tool_budget(text, true)
+}
+
+/// Last-resort cap so any introspect tool that inlines too much still cannot
+/// blow the model context. get_draft itself stays under 64 KiB; this fuse is
+/// 128 KiB and returns a structured envelope instead of slicing JSON.
+const MAX_TOOL_RESULT_BYTES: usize = 128 * 1024;
+
+fn tool_payload(text: &str, is_error: bool) -> Value {
+    if is_error {
+        json!({
+            "content": [{"type": "text", "text": text}],
+            "isError": true
+        })
+    } else {
+        json!({
+            "content": [{"type": "text", "text": text}]
+        })
+    }
+}
+
+fn enforce_tool_budget(text: &str, is_error: bool) -> Value {
+    let candidate = tool_payload(text, is_error);
+    let encoded = serde_json::to_vec(&candidate).unwrap_or_default();
+    if encoded.len() <= MAX_TOOL_RESULT_BYTES {
+        return candidate;
+    }
+    let envelope = json!({
+        "truncated": true,
+        "reason": "response_budget_exceeded",
+        "originalBytes": encoded.len(),
+        "hint": "Use a narrower query or read_draft_file with a specific path"
+    });
+    let text = serde_json::to_string(&envelope).unwrap_or_default();
+    tool_payload(&text, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +804,21 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
+                "manage_app" => match apps::handle_manage(workspace, api_port, &arguments).await {
+                    Ok(v) => {
+                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        tool_ok(&text)
+                    }
+                    Err(e) => tool_err(&e),
+                },
+                "manage_app_data" => match apps::handle_data(workspace, api_port, &arguments).await
+                {
+                    Ok(v) => {
+                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        tool_ok(&text)
+                    }
+                    Err(e) => tool_err(&e),
+                },
                 unknown => tool_err(&format!("Unknown tool: {unknown}")),
             };
 
@@ -766,4 +895,43 @@ async fn main() {
     }
 
     eprintln!("[introspect] stdin closed, exiting");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_ok_leaves_small_payloads_alone() {
+        let ok = tool_ok("hello");
+        assert_eq!(ok["content"][0]["text"], "hello");
+        assert!(ok.get("isError").is_none());
+    }
+
+    #[test]
+    fn tool_ok_returns_structured_envelope_when_over_budget() {
+        let big = "x".repeat(MAX_TOOL_RESULT_BYTES + 100);
+        let ok = tool_ok(&big);
+        let text = ok["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["truncated"], true);
+        assert_eq!(parsed["reason"], "response_budget_exceeded");
+        assert!(parsed["originalBytes"].as_u64().unwrap() > MAX_TOOL_RESULT_BYTES as u64);
+        assert!(parsed["hint"].as_str().unwrap().contains("read_draft_file"));
+        assert_eq!(ok["isError"], true);
+        assert!(
+            serde_json::to_vec(&ok).unwrap().len() < MAX_TOOL_RESULT_BYTES,
+            "envelope itself must fit the budget"
+        );
+        assert!(!text.contains(&"x".repeat(64)));
+    }
+
+    #[test]
+    fn tool_err_also_uses_structured_envelope() {
+        let big = "y".repeat(MAX_TOOL_RESULT_BYTES + 8);
+        let err = tool_err(&big);
+        let text = err["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("response_budget_exceeded"));
+        assert_eq!(err["isError"], true);
+    }
 }

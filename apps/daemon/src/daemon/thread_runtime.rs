@@ -127,9 +127,6 @@ mod tests {
     #[test]
     fn parses_pi_leaf_from_backend_session_metadata() {
         let md = r#"{"backend_session":{"kind":"pi","fork_point":{"pi_leaf_id":"abc123"}}}"#;
-        assert_eq!(
-            parse_pi_leaf_from_metadata(md).as_deref(),
-            Some("abc123")
-        );
+        assert_eq!(parse_pi_leaf_from_metadata(md).as_deref(), Some("abc123"));
     }
 }

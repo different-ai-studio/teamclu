@@ -747,6 +747,55 @@ pub fn init_commit_push(
     head_sha(dir)
 }
 
+/// Publish a directory the user already had as this app's repo.
+///
+/// Same shape as [`init_commit_push`] minus the one thing that would be a
+/// surprise: `commit_worktree` false pushes the history that is already there
+/// and leaves uncommitted work uncommitted. Adopting a folder is not a licence
+/// to commit whatever the user happened to have open in it.
+///
+/// Returns HEAD after the push, or `None` when there was nothing to push —
+/// which only happens for a repo with no commits that we were told not to
+/// commit, and the caller does not ask for that combination.
+pub fn adopt_commit_push(
+    dir: &Path,
+    app_id: &str,
+    remote_url: &str,
+    deploy_key_pem: &str,
+    commit_message: &str,
+    git_user_name: Option<&str>,
+    git_user_email: Option<&str>,
+    commit_worktree: bool,
+) -> anyhow::Result<String> {
+    let ssh = SshEnv::from_deploy_key_pem(deploy_key_pem)?;
+    init_if_needed(dir)?;
+    set_repo_user_identity(dir, git_user_name, git_user_email)?;
+    if let Err(e) = set_repo_ssh_command(dir, app_id) {
+        tracing::warn!(app_id, error = %e, "could not point the checkout at git-ssh");
+    }
+    set_remote_origin(dir, remote_url, Some(&ssh))?;
+    ensure_on_branch(dir)?;
+    if let Err(e) = ensure_runtime_excludes(dir) {
+        tracing::warn!(app_id, error = %e, "could not write .git/info/exclude");
+    }
+    if commit_worktree {
+        add_all(dir)?;
+        commit_if_needed(dir, commit_message)?;
+    }
+    push_origin_head(dir, Some(&ssh))?;
+    head_sha(dir)
+}
+
+/// Whether this checkout has any commit at all.
+///
+/// A `git init` with nothing committed has an unborn HEAD, which is neither a
+/// repo we can push nor one whose history we should leave alone.
+pub fn has_commits(dir: &Path) -> bool {
+    run_git(dir, None, &["rev-parse", "--verify", "HEAD"])
+        .ok()
+        .is_some_and(|o| o.status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

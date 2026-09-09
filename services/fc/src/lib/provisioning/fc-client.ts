@@ -1,6 +1,8 @@
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
+import { imageForPull } from "./apps-registry.js";
+import { ApiError } from "../http-utils.js";
 
 type FcClientInstance = InstanceType<typeof FcClient.default>;
 
@@ -97,10 +99,66 @@ export interface FcOpsConfig {
   bucket: string;
   role: string | undefined;
   region: string;
+  /**
+   * How a deployed container function logs into the image registry, and the
+   * host it reaches it on. Absent on a deployment with no registry — which is
+   * every deployment that has no container apps.
+   */
+  registryAuth?: { username: string; password: string; host?: string };
   /** When set, every app function create/update joins this VPC. */
   vpc?: AppsFcVpcConfig;
+  /**
+   * Where the function's own output goes. Omitted (the state every app was in
+   * until 2026-09) means Function Compute keeps NO logs at all: not in the
+   * console, not through any API, so "why does my app 500" has no answer.
+   *
+   * A getter, not a value: the destination has to exist before a function may
+   * point at it, and the caller only learns whether it does when it tries to
+   * create it. Returning undefined after that failed is what keeps a missing
+   * SLS permission from turning every deploy into a hard failure.
+   */
+  logs?: () => { project: string; logstore: string } | undefined;
 }
-export interface EnsureFunctionArgs { ossObjectName: string; env: Record<string, string>; }
+export interface EnsureFunctionArgs {
+  ossObjectName: string;
+  env: Record<string, string>;
+  /** What the app declared about how it is started. Absent → the built-in Node contract. */
+  runtime?: AppRuntimeSpec;
+  /**
+   * The image to run, for a `container` app. Already in the registry: the
+   * daemon pushed it before finalize was called, so there is no code object
+   * for this deploy and `ossObjectName` is not read.
+   */
+  image?: string;
+}
+
+/**
+ * Log delivery for an app function.
+ *
+ * `enableRequestMetrics` is what produces the one-row-per-request stream with
+ * status code and duration — the half of "logs" that answers whether a request
+ * arrived at all, which the app's own output cannot.
+ *
+ * Delivery does NOT need the function to carry a role: the live function that
+ * had logs on before this existed has `role: ""`, and the account's
+ * `AliyunServiceRoleForFC` is what writes. So this stays safe on a deployment
+ * whose `ROLE_ARN` is empty, which is the documented shape.
+ */
+function functionLogInput(logs: { project: string; logstore: string } | undefined) {
+  if (!logs) return {};
+  return {
+    logConfig: new $fc.LogConfig({
+      project: logs.project,
+      logstore: logs.logstore,
+      enableRequestMetrics: true,
+      enableInstanceMetrics: true,
+      // How FC decides where one multi-line log entry ends. `DefaultRegex` is
+      // what the console configures; `None` makes every line its own entry and
+      // shreds stack traces.
+      logBeginRule: "DefaultRegex",
+    }),
+  };
+}
 
 function functionNetworkInput(vpc: AppsFcVpcConfig | undefined) {
   if (!vpc) return { internetAccess: true };
@@ -133,6 +191,145 @@ function functionNetworkInput(vpc: AppsFcVpcConfig | undefined) {
  * its Node runtime underneath it.
  */
 export const NODE_BIN = "/opt/nodejs20/bin/node";
+
+/** The runtimes this deployment can actually start, and what starts them. */
+const RUNTIME_BINARIES: Record<string, string> = { node: NODE_BIN };
+
+/**
+ * The app ships its own image instead of code for one of our layers.
+ *
+ * Not in RUNTIME_BINARIES: there is no interpreter to name, because the image
+ * brings its own. It is a supported runtime all the same.
+ */
+export const CONTAINER_RUNTIME = "container";
+
+/** An app's declared start contract, already validated against RUNTIME_BINARIES. */
+export interface AppRuntimeSpec {
+  runtime: string;
+  entry: string;
+  port: number;
+  /** `container` only: a path the app answers 200 on. */
+  healthCheckPath?: string;
+}
+
+export function isContainerRuntime(runtime: string | undefined): boolean {
+  return runtime === CONTAINER_RUNTIME;
+}
+
+export function isSupportedRuntime(runtime: string): boolean {
+  return isContainerRuntime(runtime) || Object.hasOwn(RUNTIME_BINARIES, runtime);
+}
+
+export const SUPPORTED_RUNTIMES = [...Object.keys(RUNTIME_BINARIES), CONTAINER_RUNTIME];
+
+/**
+ * The start command, from what the app declared or from the contract every app
+ * had before declarations existed.
+ *
+ * The interpreter comes from a table, never from the app: the runtime image
+ * ships no interpreter at all, so a binary reaches the instance only if a
+ * matching layer was attached. An app naming `python3` would start a function
+ * that cannot boot, and the failure would surface as an opaque instance error.
+ */
+function startCommand(spec: AppRuntimeSpec | undefined) {
+  const resolved: AppRuntimeSpec = spec ?? { runtime: "node", entry: "server/index.mjs", port: 9000 };
+  const bin = RUNTIME_BINARIES[resolved.runtime];
+  if (!bin) {
+    throw new ApiError(
+      400,
+      "unsupported_runtime",
+      `runtime "${resolved.runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
+    );
+  }
+  return new $fc.CustomRuntimeConfig({ command: [bin], args: [resolved.entry], port: resolved.port });
+}
+
+/**
+ * The container half of the same question: what starts this app.
+ *
+ * Nothing about the process is named here — the image's own `ENTRYPOINT` and
+ * `CMD` are its start command, which is the whole reason an app reaches for a
+ * container. What the deployment must state is the port, because FC has to
+ * know where to send a request and `EXPOSE` is documentation that nothing
+ * reads.
+ */
+function containerConfig(
+  image: string,
+  spec: AppRuntimeSpec | undefined,
+  auth: FcOpsConfig["registryAuth"],
+) {
+  const port = spec?.port ?? 9000;
+  const healthCheckPath = spec?.healthCheckPath?.trim();
+  return new $fc.CustomContainerConfig({
+    image: imageForPull(image, auth?.host),
+    port,
+    // A private registry that is not ACR is reached with a plain login, which
+    // is what `registryConfig` exists for. Read-only where the deployment
+    // configured a separate pull user: this credential lives in the function's
+    // config, and a writable one there means anyone who can read that config
+    // can replace what the app runs.
+    ...(auth
+      ? {
+          registryConfig: new $fc.RegistryConfig({
+            authConfig: new $fc.RegistryAuthConfig({
+              userName: auth.username,
+              password: auth.password,
+            }),
+          }),
+        }
+      : {}),
+    ...(healthCheckPath
+      ? {
+          healthCheckConfig: new $fc.CustomHealthCheckConfig({
+            httpGetUrl: healthCheckPath,
+            // An emulated-build image is big and its first pull is slow, so the
+            // check has to allow a real cold start before it calls the instance
+            // dead — the defaults are tuned for a code package that is already
+            // on the machine.
+            initialDelaySeconds: 10,
+            periodSeconds: 5,
+            timeoutSeconds: 3,
+            failureThreshold: 6,
+            successThreshold: 1,
+          }),
+        }
+      : {}),
+  });
+}
+
+/**
+ * The create/update fields that differ between a code app and a container app.
+ *
+ * Split out because both calls need exactly the same answer: `updateFunction`
+ * re-sends the whole runtime shape on every deploy (see `updateFunctionCode`),
+ * and a container app that only got its image on create would keep running the
+ * first image it was ever given.
+ */
+function runtimeInput(cfg: FcOpsConfig, args: EnsureFunctionArgs, codeLocation: (n: string) => any) {
+  if (isContainerRuntime(args.runtime?.runtime)) {
+    if (!args.image) {
+      throw new ApiError(
+        400,
+        "validation_failed",
+        'a "container" app must be finalized with the image the build pushed',
+      );
+    }
+    // No layers and no code: the image is both. Sending either alongside
+    // `customContainerConfig` is how a function ends up with a Node layer
+    // mounted into someone's Python image.
+    return {
+      runtime: "custom-container",
+      customContainerConfig: containerConfig(args.image, args.runtime, cfg.registryAuth),
+    };
+  }
+  return {
+    runtime: "custom.debian10",
+    layers: [nodejsLayerArn(cfg.region)],
+    customRuntimeConfig: startCommand(args.runtime),
+    code: codeLocation(args.ossObjectName),
+  };
+}
+
 export function nodejsLayerArn(region: string): string {
   return `acs:fc:${region}:official:layers/Nodejs20/versions/3`;
 }
@@ -158,22 +355,20 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         await client.createFunction(new $fc.CreateFunctionRequest({
           body: new $fc.CreateFunctionInput({
             functionName,
-            runtime: "custom.debian10",
             handler: "index.handler",
             memorySize: 512, cpu: 0.5, timeout: 60, diskSize: 512,
             role: cfg.role,
             environmentVariables: args.env,
-            layers: [nodejsLayerArn(cfg.region)],
-            customRuntimeConfig: new $fc.CustomRuntimeConfig({
-              // The daemon zips the CONTENTS of the build's `.output` directory
-              // (app_build.rs `zip_dir(workdir.join(".output"))`), so the server
-              // entry sits at `server/index.mjs` inside the artifact — a
-              // `.output/` prefix here points at a path that is never unpacked
-              // and the function never boots.
-              command: [NODE_BIN], args: ["server/index.mjs"], port: 9000,
-            }),
-            code: codeLocation(args.ossObjectName),
+            // Runtime, and what it needs to start: the Node layer plus a start
+            // command over the uploaded code, or the app's own image.
+            //
+            // The daemon zips the CONTENTS of the build's output directory, so
+            // the entry is relative to that directory — a `.output/` prefix
+            // here points at a path that is never unpacked and the function
+            // never boots.
+            ...runtimeInput(cfg, args, codeLocation),
             ...functionNetworkInput(cfg.vpc),
+            ...functionLogInput(cfg.logs?.()),
           }),
         }));
       } else {
@@ -189,16 +384,16 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       //
       // VPC config is re-sent for the same reason: a function created before
       // APPS_FC_VPC_* was wired would keep an empty vpcConfig through every
-      // redeploy and time out against an internal RDS host forever.
+      // redeploy and time out against an internal RDS host forever. And the log
+      // config for the same reason again — the nine functions deployed before
+      // it existed have no logs, and a code-only update would leave them with
+      // none no matter how many times their owner redeployed.
       await client.updateFunction(functionName, new $fc.UpdateFunctionRequest({
         body: new $fc.UpdateFunctionInput({
           environmentVariables: args.env,
-          layers: [nodejsLayerArn(cfg.region)],
-          customRuntimeConfig: new $fc.CustomRuntimeConfig({
-            command: [NODE_BIN], args: ["server/index.mjs"], port: 9000,
-          }),
-          code: codeLocation(args.ossObjectName),
+          ...runtimeInput(cfg, args, codeLocation),
           ...functionNetworkInput(cfg.vpc),
+          ...functionLogInput(cfg.logs?.()),
         }),
       }));
     },

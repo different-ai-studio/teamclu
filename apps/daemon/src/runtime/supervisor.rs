@@ -978,6 +978,11 @@ impl RuntimeSupervisor {
         agents.request_all_workspace_host_refreshes().await
     }
 
+    pub async fn request_unattached_workspace_host_refreshes(&self) -> usize {
+        let mut agents = self.agents.lock().await;
+        agents.request_unattached_workspace_host_refreshes().await
+    }
+
     /// Install the channel that receives `(workspace_id, path)` whenever a
     /// reload evicted the pooled provider hosts (see `prewarm_notify`).
     pub fn set_prewarm_notifier(&self, tx: tokio::sync::mpsc::Sender<(String, String)>) {
@@ -2073,7 +2078,6 @@ mod tests {
         assert_eq!(dto.status, "clean", "pending should clear after apply");
     }
 
-
     #[tokio::test]
     async fn reload_workspace_rejects_active_turn() {
         let dir = tempfile::tempdir().unwrap();
@@ -2296,7 +2300,6 @@ mod tests {
         assert_eq!(clean, 1, "exactly one workspace should apply this tick");
         assert_eq!(pending, 1, "the other workspace stays pending");
     }
-
 
     #[tokio::test]
     async fn skills_plus_env_refresh_is_not_auto_applicable() {
@@ -2646,11 +2649,7 @@ mod skill_path_normalize_tests {
                 Some(HOSTED_A),
                 Some(MEMBER)
             ),
-            vec![
-                MEMBER.to_string(),
-                CUSTOM.to_string(),
-                extra.to_string()
-            ]
+            vec![MEMBER.to_string(), CUSTOM.to_string(), extra.to_string()]
         );
     }
 
