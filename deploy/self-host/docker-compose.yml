@@ -375,6 +375,21 @@ services:
       # Defaults to https://oss-<APPS_REGION>.aliyuncs.com; override only for a
       # VPC/internal OSS endpoint.
       APPS_OSS_ENDPOINT: "${APPS_OSS_ENDPOINT:-}"
+      # Container Registry namespace for apps that ship an image instead of a
+      # code archive (`teamclu.app.json` → `runtime: "container"`). Blank means
+      # that kind of app is refused naming this variable; every other app
+      # deploys exactly as before. The registry must be in APPS_REGION and the
+      # namespace must auto-create repositories — the deploy pushes to
+      # <registry>/<namespace>/tc-app-<appId> and never creates it.
+      APPS_ACR_NAMESPACE: "${APPS_ACR_NAMESPACE:-}"
+      # Defaults to registry.<APPS_REGION>.aliyuncs.com. The host a developer's
+      # machine pushes to.
+      APPS_ACR_REGISTRY: "${APPS_ACR_REGISTRY:-}"
+      # The host the deployed function PULLS from; defaults to the push host.
+      # Set it to registry-vpc.<region>.aliyuncs.com only when the app
+      # functions join a VPC that can reach it — otherwise the image is
+      # unreachable at instance start rather than at deploy.
+      APPS_ACR_PULL_REGISTRY: "${APPS_ACR_PULL_REGISTRY:-}"
       # Where deployed apps send their logs (Alibaba SLS, same account as the
       # profile above). Both optional: the project defaults to
       # `teamclu-apps-<accountId>` and the logstore to `app-logs`, and the

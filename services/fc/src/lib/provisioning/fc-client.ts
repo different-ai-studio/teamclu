@@ -117,6 +117,12 @@ export interface EnsureFunctionArgs {
   env: Record<string, string>;
   /** What the app declared about how it is started. Absent → the built-in Node contract. */
   runtime?: AppRuntimeSpec;
+  /**
+   * The image to run, for a `container` app. Already in the registry: the
+   * daemon pushed it before finalize was called, so there is no code object
+   * for this deploy and `ossObjectName` is not read.
+   */
+  image?: string;
 }
 
 /**
@@ -182,14 +188,32 @@ export const NODE_BIN = "/opt/nodejs20/bin/node";
 /** The runtimes this deployment can actually start, and what starts them. */
 const RUNTIME_BINARIES: Record<string, string> = { node: NODE_BIN };
 
-/** An app's declared start contract, already validated against RUNTIME_BINARIES. */
-export interface AppRuntimeSpec { runtime: string; entry: string; port: number }
+/**
+ * The app ships its own image instead of code for one of our layers.
+ *
+ * Not in RUNTIME_BINARIES: there is no interpreter to name, because the image
+ * brings its own. It is a supported runtime all the same.
+ */
+export const CONTAINER_RUNTIME = "container";
 
-export function isSupportedRuntime(runtime: string): boolean {
-  return Object.hasOwn(RUNTIME_BINARIES, runtime);
+/** An app's declared start contract, already validated against RUNTIME_BINARIES. */
+export interface AppRuntimeSpec {
+  runtime: string;
+  entry: string;
+  port: number;
+  /** `container` only: a path the app answers 200 on. */
+  healthCheckPath?: string;
 }
 
-export const SUPPORTED_RUNTIMES = Object.keys(RUNTIME_BINARIES);
+export function isContainerRuntime(runtime: string | undefined): boolean {
+  return runtime === CONTAINER_RUNTIME;
+}
+
+export function isSupportedRuntime(runtime: string): boolean {
+  return isContainerRuntime(runtime) || Object.hasOwn(RUNTIME_BINARIES, runtime);
+}
+
+export const SUPPORTED_RUNTIMES = [...Object.keys(RUNTIME_BINARIES), CONTAINER_RUNTIME];
 
 /**
  * The start command, from what the app declared or from the contract every app
@@ -211,6 +235,73 @@ function startCommand(spec: AppRuntimeSpec | undefined) {
     );
   }
   return new $fc.CustomRuntimeConfig({ command: [bin], args: [resolved.entry], port: resolved.port });
+}
+
+/**
+ * The container half of the same question: what starts this app.
+ *
+ * Nothing about the process is named here — the image's own `ENTRYPOINT` and
+ * `CMD` are its start command, which is the whole reason an app reaches for a
+ * container. What the deployment must state is the port, because FC has to
+ * know where to send a request and `EXPOSE` is documentation that nothing
+ * reads.
+ */
+function containerConfig(image: string, spec: AppRuntimeSpec | undefined) {
+  const port = spec?.port ?? 9000;
+  const healthCheckPath = spec?.healthCheckPath?.trim();
+  return new $fc.CustomContainerConfig({
+    image,
+    port,
+    ...(healthCheckPath
+      ? {
+          healthCheckConfig: new $fc.CustomHealthCheckConfig({
+            httpGetUrl: healthCheckPath,
+            // An emulated-build image is big and its first pull is slow, so the
+            // check has to allow a real cold start before it calls the instance
+            // dead — the defaults are tuned for a code package that is already
+            // on the machine.
+            initialDelaySeconds: 10,
+            periodSeconds: 5,
+            timeoutSeconds: 3,
+            failureThreshold: 6,
+            successThreshold: 1,
+          }),
+        }
+      : {}),
+  });
+}
+
+/**
+ * The create/update fields that differ between a code app and a container app.
+ *
+ * Split out because both calls need exactly the same answer: `updateFunction`
+ * re-sends the whole runtime shape on every deploy (see `updateFunctionCode`),
+ * and a container app that only got its image on create would keep running the
+ * first image it was ever given.
+ */
+function runtimeInput(cfg: FcOpsConfig, args: EnsureFunctionArgs, codeLocation: (n: string) => any) {
+  if (isContainerRuntime(args.runtime?.runtime)) {
+    if (!args.image) {
+      throw new ApiError(
+        400,
+        "validation_failed",
+        'a "container" app must be finalized with the image the build pushed',
+      );
+    }
+    // No layers and no code: the image is both. Sending either alongside
+    // `customContainerConfig` is how a function ends up with a Node layer
+    // mounted into someone's Python image.
+    return {
+      runtime: "custom-container",
+      customContainerConfig: containerConfig(args.image, args.runtime),
+    };
+  }
+  return {
+    runtime: "custom.debian10",
+    layers: [nodejsLayerArn(cfg.region)],
+    customRuntimeConfig: startCommand(args.runtime),
+    code: codeLocation(args.ossObjectName),
+  };
 }
 
 export function nodejsLayerArn(region: string): string {
@@ -238,18 +329,18 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         await client.createFunction(new $fc.CreateFunctionRequest({
           body: new $fc.CreateFunctionInput({
             functionName,
-            runtime: "custom.debian10",
             handler: "index.handler",
             memorySize: 512, cpu: 0.5, timeout: 60, diskSize: 512,
             role: cfg.role,
             environmentVariables: args.env,
-            layers: [nodejsLayerArn(cfg.region)],
+            // Runtime, and what it needs to start: the Node layer plus a start
+            // command over the uploaded code, or the app's own image.
+            //
             // The daemon zips the CONTENTS of the build's output directory, so
             // the entry is relative to that directory — a `.output/` prefix
             // here points at a path that is never unpacked and the function
             // never boots.
-            customRuntimeConfig: startCommand(args.runtime),
-            code: codeLocation(args.ossObjectName),
+            ...runtimeInput(cfg, args, codeLocation),
             ...functionNetworkInput(cfg.vpc),
             ...functionLogInput(cfg.logs?.()),
           }),
@@ -274,9 +365,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       await client.updateFunction(functionName, new $fc.UpdateFunctionRequest({
         body: new $fc.UpdateFunctionInput({
           environmentVariables: args.env,
-          layers: [nodejsLayerArn(cfg.region)],
-          customRuntimeConfig: startCommand(args.runtime),
-          code: codeLocation(args.ossObjectName),
+          ...runtimeInput(cfg, args, codeLocation),
           ...functionNetworkInput(cfg.vpc),
           ...functionLogInput(cfg.logs?.()),
         }),

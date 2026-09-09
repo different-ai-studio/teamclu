@@ -7,6 +7,7 @@ import {
   resolveAppConnectionString,
 } from "./app-postgres.js";
 import {
+  isContainerRuntime,
   isSupportedRuntime,
   readAppsFcVpcConfig,
   SUPPORTED_RUNTIMES,
@@ -65,7 +66,9 @@ export function parseAppRuntimeSpec(raw: unknown): AppRuntimeSpec | undefined {
   const runtime = typeof r.runtime === "string" ? r.runtime.trim() : "";
   const entry = typeof r.entry === "string" ? r.entry.trim() : "";
   const port = typeof r.port === "number" ? r.port : Number.NaN;
-  if (!runtime || !entry) {
+  const container = isContainerRuntime(runtime);
+  // A container app has no entry to state: the image's own ENTRYPOINT is it.
+  if (!runtime || (!entry && !container)) {
     throw new ApiError(400, "validation_failed", "runtime.runtime and runtime.entry are required");
   }
   if (!isSupportedRuntime(runtime)) {
@@ -77,13 +80,71 @@ export function parseAppRuntimeSpec(raw: unknown): AppRuntimeSpec | undefined {
   }
   // An absolute or climbing path escapes the unpacked artifact, and the entry
   // is joined against it by the runtime, not by us.
-  if (entry.startsWith("/") || entry.split("/").includes("..")) {
+  if (entry && (entry.startsWith("/") || entry.split("/").includes(".."))) {
     throw new ApiError(400, "validation_failed", "runtime.entry must be a path inside the artifact");
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new ApiError(400, "validation_failed", "runtime.port must be a TCP port");
   }
-  return { runtime, entry, port };
+  const healthCheckPath =
+    typeof r.healthCheckPath === "string" ? r.healthCheckPath.trim() : "";
+  if (healthCheckPath && !healthCheckPath.startsWith("/")) {
+    throw new ApiError(400, "validation_failed", "runtime.healthCheckPath must start with /");
+  }
+  return {
+    runtime,
+    entry,
+    port,
+    ...(healthCheckPath ? { healthCheckPath } : {}),
+  };
+}
+
+/**
+ * The runtime a deploy says it is building, from the client's hint.
+ *
+ * Only the family, not the whole spec: at this point the daemon has read the
+ * declaration but built nothing, and the rest of it (entry, port) is checked
+ * at finalize against what was actually produced.
+ */
+export function parseDeclaredRuntime(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw !== "string") {
+    throw new ApiError(400, "validation_failed", "runtime must be a string");
+  }
+  const runtime = raw.trim();
+  if (!runtime) return undefined;
+  if (!isSupportedRuntime(runtime)) {
+    throw new ApiError(
+      400,
+      "unsupported_runtime",
+      `runtime "${runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
+    );
+  }
+  return runtime;
+}
+
+/**
+ * The image reference a container deploy finished with.
+ *
+ * Required for a container app and refused for any other: an archive deploy
+ * that carried an image would be a client sending the result of a different
+ * build, and pointing a function at it is how the wrong code goes live.
+ */
+export function parseDeployedImage(
+  raw: unknown,
+  spec: AppRuntimeSpec | undefined,
+): string | undefined {
+  const image = typeof raw === "string" ? raw.trim() : "";
+  if (!isContainerRuntime(spec?.runtime)) {
+    if (image) {
+      throw new ApiError(400, "validation_failed", "image is only accepted for a container runtime");
+    }
+    return undefined;
+  }
+  if (!image) {
+    throw new ApiError(400, "validation_failed", "a container deploy must finalize with its image");
+  }
+  return image;
 }
 
 export function parseDeployToken(raw: unknown): string {
@@ -109,10 +170,23 @@ function runtimeOf(row: DeployGateRow): string {
   return row.runtime ?? "node";
 }
 
-/** Shared deploy/finalize preconditions — runtime and auth mode. */
+/**
+ * Shared deploy/finalize preconditions — runtime and auth mode.
+ *
+ * The runtime check used to refuse anything but `node` outright. It no longer
+ * can: a container app is a supported shape, and whether THIS deployment can
+ * build one depends on a registry config that is not in the row. That question
+ * is answered where the deploy handle is minted (`startDeploy`), which is also
+ * the only place that can name the missing variable.
+ */
 export function assertDeployAllowed(row: DeployGateRow): void {
-  if (runtimeOf(row) !== "node") {
-    throw new ApiError(409, "unsupported_runtime", "container runtime deploy is not supported yet");
+  const runtime = runtimeOf(row);
+  if (!isSupportedRuntime(runtime)) {
+    throw new ApiError(
+      409,
+      "unsupported_runtime",
+      `runtime "${runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
+    );
   }
   const authMode = authModeOf(row);
   if (authMode === "third") {
@@ -218,21 +292,75 @@ export function deployUnavailable(reason?: string): ApiError {
 
 export interface StartDeployDeps {
   mintUploadUrl: (ossObjectName: string) => Promise<string>;
-}
-export interface StartDeployInput { appId: string; region: string; }
-export interface StartDeployResult {
-  fcFunctionName: string; fcRegion: string; ossObjectName: string; presignedPut: string;
+  /**
+   * Registry handle for a container app. Absent on a deployment with no
+   * registry configured — a node app deploys there exactly as before, and a
+   * container app is refused with the variable to set.
+   */
+  mintImagePush?: (
+    appId: string,
+    gitCommitSha: string | null | undefined,
+  ) => Promise<ImagePushHandle>;
+  /** Why `mintImagePush` is absent, for the error a container app gets. */
+  imagePushUnavailable?: string;
 }
 
+/** What the daemon needs to push this deploy's image, and nothing more. */
+export interface ImagePushHandle {
+  /** Full reference to push: `<registry>/<namespace>/<repo>:<tag>`. */
+  reference: string;
+  registry: string;
+  username: string;
+  password: string;
+  expiresAt?: string;
+}
+
+export interface StartDeployInput {
+  appId: string;
+  region: string;
+  /**
+   * What the app's checkout declares, read by the daemon before the deploy is
+   * minted. Absent means the built-in contract, which is what every client
+   * older than container support sends.
+   */
+  runtime?: string;
+  gitCommitSha?: string | null;
+}
+export interface StartDeployResult {
+  fcFunctionName: string;
+  fcRegion: string;
+  /** Archive deploys only. */
+  ossObjectName?: string;
+  presignedPut?: string;
+  /** Container deploys only. */
+  image?: ImagePushHandle;
+}
+
+/**
+ * Mint the handle this deploy's build will put its result into.
+ *
+ * Which one it is has to be decided here, before the build runs: an archive
+ * travels through a presigned OSS upload and an image is pushed straight to the
+ * registry, and the daemon cannot be handed both without having to guess which
+ * deploy it is finishing.
+ */
 export async function startDeploy(deps: StartDeployDeps, input: StartDeployInput): Promise<StartDeployResult> {
+  const base = { fcFunctionName: appFunctionName(input.appId), fcRegion: input.region };
+  if (isContainerRuntime(input.runtime)) {
+    if (!deps.mintImagePush) {
+      throw new ApiError(
+        503,
+        "deploy_unavailable",
+        deps.imagePushUnavailable
+          ? `container deploys are not configured: ${deps.imagePushUnavailable}`
+          : "container deploys are not configured on this deployment",
+      );
+    }
+    return { ...base, image: await deps.mintImagePush(input.appId, input.gitCommitSha) };
+  }
   const ossObjectName = appOssObjectName(input.appId);
   const presignedPut = await deps.mintUploadUrl(ossObjectName);
-  return {
-    fcFunctionName: appFunctionName(input.appId),
-    fcRegion: input.region,
-    ossObjectName,
-    presignedPut,
-  };
+  return { ...base, ossObjectName, presignedPut };
 }
 
 export interface FinalizeDeps {
@@ -248,7 +376,12 @@ export interface FinalizeDeps {
   fcOps: {
     ensureFunction: (
       name: string,
-      a: { ossObjectName: string; env: Record<string, string>; runtime?: AppRuntimeSpec },
+      a: {
+        ossObjectName: string;
+        env: Record<string, string>;
+        runtime?: AppRuntimeSpec;
+        image?: string;
+      },
     ) => Promise<void>;
     ensureHttpTrigger: (name: string) => Promise<string>;
     /** Absent on a deployment that has no route domain configured. */
@@ -285,6 +418,12 @@ export interface FinalizeInput {
    * built it. Absent → the contract every app had before declarations existed.
    */
   runtime?: AppRuntimeSpec;
+  /**
+   * The image the build pushed, for a `container` app. Required for one:
+   * there is no code object for that deploy, so a finalize without it would
+   * point the function at whatever the previous deploy left in OSS.
+   */
+  image?: string;
 }
 
 /**
@@ -357,6 +496,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     ossObjectName: input.ossObjectName,
     env,
     runtime: input.runtime,
+    image: input.image,
   });
   // The trigger URL is still created: it is what the function is reachable on
   // before a custom domain exists, and the only address a deployment without a

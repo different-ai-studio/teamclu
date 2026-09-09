@@ -95,6 +95,9 @@ resources:
         APPS_ACCESS_KEY_ID: ${env('APPS_ACCESS_KEY_ID', '')}
         APPS_ACCESS_KEY_SECRET: ${env('APPS_ACCESS_KEY_SECRET', '')}
         APPS_OSS_BUCKET: ${env('APPS_OSS_BUCKET', '')}
+        APPS_ACR_NAMESPACE: ${env('APPS_ACR_NAMESPACE', '')}
+        APPS_ACR_REGISTRY: ${env('APPS_ACR_REGISTRY', '')}
+        APPS_ACR_PULL_REGISTRY: ${env('APPS_ACR_PULL_REGISTRY', '')}
         APPS_REGION: ${env('APPS_REGION', '')}
         APPS_OSS_ENDPOINT: ${env('APPS_OSS_ENDPOINT', '')}
         # Log destination for deployed apps. Blank → derived from the account
