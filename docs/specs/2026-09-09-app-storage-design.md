@@ -1,14 +1,15 @@
 # App 文件存储 — 一个 bucket、每 app 一个前缀，与它的权限模型
 
 - **Date**: 2026-09-09
-- **Status**: Draft，待评审。决策逐条落定见 §9。
+- **Status**: Draft，待评审。决策逐条落定见 §9。§2.4 的云配额已实测（2026-09-09），并因此修正了两处初稿结论、带出一条独立的安全问题。
 - **Path**: `docs/specs/2026-09-09-app-storage-design.md`
 - **Scope**: 给每个 app 一块可存放文件的 OSS 空间：控制面里能浏览/上传/下载/删除，部署后的 app 运行时能读写自己那块。含 bucket 划分、key 布局、凭证形态、权限档位、配额计量、删除语义。
 - **Builds on**: `docs/specs/2026-08-27-apps-first-class-design.md`（控制面、`view`/`prompt`/`admin` 三档、§7.2 删除语义）、`docs/specs/2026-08-27-app-data-browser-design.md`（控制面里操作线上资源的既有形状）
 - **Non-goals**: 图片处理与缩略图、CDN 与自定义分发域名、跨 app 共享文件、对象版本历史、本地开发时的存储模拟、把 team 知识库的 blob 迁进来
 
 > 沿用同系列的规矩：**所有对现网行为的陈述都带 `file:line`，实现时以代码为准，不以本文为准。**
-> 唯一的例外是 §2.4 的云厂商配额——那些数字本仓核实不了，已单独标注并给了核实方法。
+> 唯一的例外是 §2.4 的云厂商配额——代码里查不到，已于 2026-09-09 用只读 API 在
+> 线上账号实测，实测值与初稿的两处出入写在原地。
 
 ---
 
@@ -28,15 +29,27 @@ FC 从同一个 key 读代码（`fc-client.ts:149-150`）。
 
 **没有任何"应用的用户数据"存在 OSS 上。** 这是一块空地，不是改造。
 
-### 1.2 一个 bucket、靠前缀分隔，是仓库已经表过态的原则
+### 1.2 「靠前缀分隔租户」是仓库已经表过态的原则
 
 `services/fc/src/lib/team-blob-storage.ts:24-30` 的模块注释写死了它：
 
 > On S3 everything shares ONE bucket (`BUCKET`) and is separated by key prefix,
 > so a deployment needs exactly one bucket to provision and one policy to reason about
 
-现有三个前缀共存于同一个 bucket：`apps/`（app 产物）、`team-blobs/`（知识库）、
-`team-skills/`（skill 包）。本设计**不推翻这条原则**，只在它下面加第四个前缀。
+**但线上实际是两个 bucket**（2026-09-09 实测，见 §2.4）：
+
+| bucket | 由谁解析 | 装什么 |
+|---|---|---|
+| `teamclu-app` | `APPS_OSS_BUCKET`（apps profile，§1.3） | `apps/<appId>/code.zip` |
+| `teamclu-self-host-storage` | `BUCKET`（默认 profile） | `team-blobs/`、`team-skills/` |
+
+两者都在 `cn-shenzhen`，账号 `1457752404144823`。注释写的是那套代码自己的取舍，
+不是整个部署的形状——引用它时要按"**同一个 bucket 内靠前缀分隔租户**"来理解，
+而不是"全世界一个 bucket"。
+
+**app 文件落在 `teamclu-app`**，也就是 apps profile 解析出来的那个，与 `code.zip`
+同 bucket 不同顶层前缀（§3.1）。理由见 §1.3：apps profile 和默认 profile 在
+self-host 上可以是两套凭证、两个 endpoint，跨过去就会 403。
 
 ### 1.3 凭证：apps 用的是独立 profile，不是默认那把
 
@@ -87,7 +100,9 @@ FC 从同一个 key 读代码（`fc-client.ts:149-150`）。
 
 ### 2.1 三条理由
 
-1. **bucket 是账号级稀缺资源，而 app 是用户随手创建的对象。** 撞配额的时刻是
+1. **bucket 是 region 级稀缺资源，而 app 是用户随手创建的对象。** 实测每 region
+   上限 100（现用 2），可调但**单次增量不得超过 100**（§2.4）——也就是说这个上限
+   不是"提一次工单就解决"，而是每多 100 个 app 提一次工单。撞配额的时刻是
    "创建 app"或"首次部署"，这是最难向用户解释、也最难降级的失败点。前缀方案没有
    这个上限。
 2. **它会给 provisioning 加一条新的失败路径。** 建 bucket 需要给 apps 那把 key
@@ -120,19 +135,48 @@ rule 原生支持按 prefix 匹配。
 也要做到，否则将来"给某个大客户单独一个 bucket"是一次跨全代码库的改造，而现在只是
 一行数据。
 
-### 2.4 外部约束（本仓核实不了，实施前需实测）
+### 2.4 外部约束（2026-09-09 实测，非传闻）
 
-下面三个数字决定了 §2.1 的第 1 条，但它们是云厂商配额，代码里查不到。
-**实施第一步就是拿真账号核实**，方法写在这里，不要等到线上撞墙：
+下面的数字决定了 §2.1 的第 1 条。**已经拿线上账号 `1457752404144823` 实测过**
+（只读 API：`GetCallerIdentity` / OSS `ListBuckets` / RAM `GetAccountSummary` /
+Quotas `ListProductQuotas ProductCode=oss` / RAM `ListRoles`），结果如下：
 
-| 约束 | 传闻值 | 核实方法 |
-|---|---|---|
-| 每账号 OSS bucket 上限 | 默认 100（可提工单调整，但非无限） | OSS 控制台配额页 / `ListBuckets` + 配额中心 |
-| 每账号 RAM 用户上限 | 1000 | RAM 控制台配额页——决定 per-app RAM 用户方案是否可行 |
-| STS token 最长有效期 | 默认 1h，角色 `MaxSessionDuration` 最长 12h | 建角色时设置并 `AssumeRole` 实测 |
+| 约束 | 实测值 | 现用量 | 备注 |
+|---|---|---|---|
+| OSS bucket 上限 | **100，且是「每 region」不是「每账号」** | 2 | `QuotaActionCode=bucketlimit`，可调，**但单次调整增量不得超过 100** |
+| RAM 用户上限 | 5000 | 2 | 比传闻的 1000 宽 |
+| RAM 角色上限 | 1000 | 22（全是阿里云服务关联角色） | |
+| **自定义策略上限** | **1500** | **0** | per-app 方案真正的天花板，见下 |
+| 每用户 AK 数 | 2 | — | 决定 AK 轮转的操作空间 |
+| 每用户可附加策略数 | 10 | — | |
+| STS token 最长有效期 | **未验证** | — | 现有 22 个角色 `MaxSessionDuration` 全是默认 3600；账号里没有自建角色可查，建角色是写操作，本次没做 |
 
-若实测结果推翻其中任何一条，回到 §9 重新评估——但请注意即使 bucket 上限被提到
-1000，第 2、3 条理由依然成立。
+**两处修正了本文初稿：**
+
+1. bucket 上限是**每 region 100**，不是每账号 100。听上去更宽，实际结论更硬：
+   调整"单次增量不超过 100"，也就是说要撑到 5000 个 app 需要提 49 次工单。
+   per-bucket 方案不是"配额可以提"，是"配额只能一格一格地提"。
+2. RAM 用户上限是 5000 不是 1000。但这不救 per-app RAM 用户方案——**真正的天花板
+   是自定义策略的 1500**：每个 app 要一条前缀受限的策略，1500 个 app 就到顶，
+   而且每个用户最多只能附加 10 条策略、每个用户最多 2 把 AK（轮转时要腾挪）。
+   per-app RAM 角色同理，天花板 1000。
+
+**STS 有效期这一条不影响设计**：即使最长只有 1 小时，§4.1 的方案也只是刷新更频繁，
+而刷新逻辑本来就必须写（红线 3）。建角色时按 43200 申请，被拒就退回 3600，不需要
+为此改设计。
+
+> **实测中发现的一个独立问题（不属于本设计，但优先级更高）**
+>
+> `GetCallerIdentity` 返回 `IdentityType: "Account"` / `Arn: acs:ram::…:root`
+> ——**self-host 的 `.env` 里放的是主账号 AccessKey，不是 RAM 用户的**。也就是说
+> FC 容器（以及任何能读到那个 `.env` 或容器 env 的东西）当前持有整个阿里云账号的
+> 完全控制权，远不止 OSS。账号里目前只有 2 个 RAM 用户、0 条自定义策略，说明这套
+> 权限从来没有收敛过。
+>
+> 这件事**是 §4.1 的前置条件**：`AssumeRole` 的标准形态是"一个受限 RAM 用户去
+> assume 一个受限角色"，拿主账号 AK 去做这件事既不必要也没意义——它本来就什么都能干。
+> 所以阶段二的第一步不是写代码，是把主账号 AK 换成一个只有 OSS + FC + STS 权限的
+> RAM 用户，见 §11。
 
 ---
 
@@ -184,8 +228,13 @@ Resource: acs:oss:*:*:<bucket>/app-files/<appId>/*
 Action:   oss:GetObject, oss:PutObject, oss:DeleteObject, oss:ListObjects(带 prefix 条件)
 ```
 
-一个角色、一条策略，app 数量无上限。对照被否的两条：per-app RAM 用户死在用户配额
-上（§2.4），per-app RAM 角色死在角色配额上，两者还都多出 AK 轮转的运维面。
+一个角色、一条策略，app 数量无上限。对照被否的两条：per-app 的方案要给每个 app
+一条自定义策略，实测上限 1500（§2.4）；per-app 角色的上限是 1000；而每个 RAM 用户
+只能有 2 把 AK，轮转时没有腾挪空间。
+
+**前置条件（实测发现，§2.4 末尾）**：现在 `.env` 里那把是**主账号 AK**。
+`AssumeRole` 的前提是有一个受限主体去 assume，所以这一步之前必须先把它换成一个
+只有 OSS + FC + STS 权限的 RAM 用户——否则"收窄权限"这件事从第一行代码起就是假的。
 
 **三条实施红线**：
 
@@ -353,7 +402,7 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
 | 1 | 一个 app 一个 bucket | **否** | §2.1：配额、新失败路径、与既有原则冲突 |
 | 2 | 用户数据放 `apps/<appId>/files/` | **否** | §3.1：与"删产物、留数据"的语义在 key 空间上会混 |
 | 3 | 把 apps 的长期 AK 注进函数 env | **否** | §4.1：等于给 LLM 产物跨租户读取权 |
-| 4 | per-app RAM 用户 / per-app RAM 角色 | **否** | 死在账号配额上（§2.4），且多出 AK 轮转运维面 |
+| 4 | per-app RAM 用户 / per-app RAM 角色 | **否** | 实测天花板：自定义策略 1500 / 角色 1000（§2.4），且每用户仅 2 把 AK，轮转无腾挪空间 |
 | 5 | app 的每次文件操作都回调 Cloud API 换签名 URL | **否，但保留为阶段一** | 把控制面放进应用的热路径；不过阶段一本来就只有控制面，见 §11 |
 | 6 | 同步扣配额 | **否** | §5：STS 直写绕过我们，同步配额是假的 |
 | 7 | 提供公开可读前缀 | **本轮否** | §4.3：与 authMode 的安全预期冲突 |
@@ -374,6 +423,10 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
    欠账；真要回收需要一个独立的、有人工确认的运维流程，不在本轮。
 5. **`apps.oss_bucket` 第一版恒为 null**，等于一条没有测试覆盖的分支。要么在单测里
    构造一个非 null 的 app 覆盖 key builder，要么明确接受它是死代码直到被用上。
+6. **当前 self-host 的 `.env` 持有主账号 AccessKey**（§2.4 实测）。这不是本设计
+   引入的，但本设计的阶段二**依赖它先被修掉**，而且在修掉之前，"app 文件的权限
+   边界"这句话对能读到那个 `.env` 的人是不成立的。阶段一（只有控制面）不受影响，
+   因为它不把任何凭证交给 app。
 
 ---
 
@@ -381,7 +434,7 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
 
 **阶段一：只做控制面，零新增认证主体、零新增 SDK。**
 
-1. 核实 §2.4 的三个配额（第一步，因为它可能推翻 §2）
+1. ~~核实 §2.4 的配额~~ —— **已于 2026-09-09 完成**，结论与修正见 §2.4
 2. 迁移（§8）+ `appFilesPrefix` + key 校验 + 单测
 3. OpenAPI 契约（人相关的 7 条路由）
 4. repository 实现 + 三档授权
@@ -394,16 +447,19 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
 
 **阶段二：app 运行时读写（STS）。**
 
-7. RAM 角色与策略（人工，一次性）
-8. `app-storage.ts` + policy 断言测试 + 跨 app 越权实测
-9. `storage_token` 的生成、密封、注入（挂在 `finalizeDeploy` 上）
-10. `/storage/sts` 路由
-11. 模板与 `AGENTS.md` 里给出读写文件的示例，否则 agent 不会知道这个能力存在
+7. **先换掉主账号 AK**（§2.4 / §10.6）：建一个只有 OSS + FC + STS 权限的 RAM 用户，
+   换进 self-host 的 `.env` 与 GitHub Actions secret，确认 app 部署仍然正常，
+   再禁用主账号那把。这一步不做，后面的"收窄权限"全是装饰。
+8. RAM 角色与策略（人工，一次性）
+9. `app-storage.ts` + policy 断言测试 + 跨 app 越权实测
+10. `storage_token` 的生成、密封、注入（挂在 `finalizeDeploy` 上）
+11. `/storage/sts` 路由
+12. 模板与 `AGENTS.md` 里给出读写文件的示例，否则 agent 不会知道这个能力存在
 
 **阶段三：配额计量。**
 
-12. 定期扫描 + `storage_bytes` 回写
-13. 超配额时拒发写凭证
+13. 定期扫描 + `storage_bytes` 回写
+14. 超配额时拒发写凭证
 
 阶段一与阶段二之间**不移动任何字节**——key 布局在阶段一就定死，这是把它先想清楚
 的全部意义。
