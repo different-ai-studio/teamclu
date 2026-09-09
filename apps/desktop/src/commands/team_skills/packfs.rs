@@ -26,17 +26,6 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Zip the published file set for upload.
-///
-/// Uses [`teamclu_skillpack::list_managed_paths`] so the archive matches dirty
-/// detection, the diff, and the post-publish baseline. `.clawhub/`, OS junk,
-/// ignored runtime files, and symlinks are not in that list.
-pub(super) fn zip_skill_dir(dir: &Path) -> Result<Vec<u8>, String> {
-    let included = teamclu_skillpack::list_managed_paths(dir)
-        .map_err(|e| format!("Failed to list skill files: {e}"))?;
-    zip_skill_files(dir, &included)
-}
-
 pub(super) fn zip_skill_files(dir: &Path, included: &[String]) -> Result<Vec<u8>, String> {
     let cursor = std::io::Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
@@ -75,7 +64,7 @@ pub(super) fn zip_skill_files(dir: &Path, included: &[String]) -> Result<Vec<u8>
 
 #[cfg(test)]
 mod tests {
-    use super::zip_skill_dir;
+    use super::zip_skill_files;
 
     fn write(dir: &std::path::Path, rel: &str, body: &str) {
         let path = dir.join(rel);
@@ -104,7 +93,8 @@ mod tests {
         write(&dir, "results/out.json", "{}\n");
         write(&dir, ".clawhub/origin.json", "{}\n");
 
-        let names = zip_names(&zip_skill_dir(&dir).unwrap());
+        let included = teamclu_skillpack::list_managed_paths(&dir).unwrap();
+        let names = zip_names(&zip_skill_files(&dir, &included).unwrap());
         assert_eq!(
             names,
             vec![
