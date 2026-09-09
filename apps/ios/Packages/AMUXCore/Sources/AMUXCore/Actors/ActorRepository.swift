@@ -35,15 +35,29 @@ public struct InviteCreated: Equatable, Sendable {
     public let expiresAt: Date
     public let deeplink: String
 
-    public init(token: String, expiresAt: Date, deeplink: String) {
+    /// - Parameter cloudAPIURL: the endpoint this invite was minted against.
+    ///   It rides along in the link so the invitee's onboarding reaches the
+    ///   right backend without being told to type an address — the same
+    ///   `cloud_api_url` parameter the daemon already reads off an agent invite
+    ///   (`apps/daemon/src/onboarding/invite_url.rs`). Optional so callers with
+    ///   no endpoint resolved emit the bare link rather than a lie.
+    public init(token: String, expiresAt: Date, deeplink: String, cloudAPIURL: URL? = nil) {
         self.token = token
         self.expiresAt = expiresAt
-        self.deeplink = Self.teamcluDeeplink(from: deeplink)
+        self.deeplink = Self.appDeeplink(from: deeplink, cloudAPIURL: cloudAPIURL)
     }
 
-    private static func teamcluDeeplink(from deeplink: String) -> String {
-        guard deeplink.hasPrefix("amux://") else { return deeplink }
-        return "teamclu://" + deeplink.dropFirst("amux://".count)
+    private static func appDeeplink(from deeplink: String, cloudAPIURL: URL?) -> String {
+        // The backend mints `amux://`, a scheme no build registers with the OS.
+        var link = deeplink.hasPrefix("amux://")
+            ? "teamclu://" + deeplink.dropFirst("amux://".count)
+            : deeplink
+        guard let cloudAPIURL, !link.isEmpty, !link.contains("cloud_api_url=") else { return link }
+        let base = cloudAPIURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let encoded = base.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        else { return link }
+        link += link.contains("?") ? "&" : "?"
+        return link + "cloud_api_url=" + encoded
     }
 }
 

@@ -1,11 +1,11 @@
-import { useState } from "react";
-import { AlertCircle, ArrowLeft, Link2, LogIn, RotateCcw, Server } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, ArrowLeft, Link2, RotateCcw, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { probeCloudApi } from "@/lib/config/bootstrap";
-import { parseInviteTokenInput } from "@/lib/team/invite-deeplink";
+import { parseInviteInput } from "@/lib/team/invite-deeplink";
 import { confirmInviteLinkToken } from "@/lib/team/invite-link-confirmation";
 import {
   displayHost,
@@ -18,37 +18,114 @@ import {
 import { useAppVersion } from "@/lib/config/version";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding";
+import { useUpdaterStore } from "@/stores/updater";
 import { LoginScreen } from "./LoginScreen";
 import { useShallow } from "zustand/react/shallow";
 
-type Step = "choose" | "login" | "invite" | "server";
+/**
+ * First-run setup, as a straight line: invite link → server → sign in.
+ *
+ * It replaced a three-way menu (sign in / join a team / custom server) that
+ * asked the user to classify themselves before they had been told what the
+ * options meant. The line asks one answerable question at a time, and the first
+ * one — "do you have an invite link?" — answers the second for most people,
+ * because the link names the server it belongs to.
+ */
+type Step = "invite" | "server" | "login";
+
+/** Where the server address came from, once the wizard has settled it. */
+type ServerOutcome = "invite" | "official" | "custom";
 
 /**
- * Everything this screen needs to know about the backend, read once.
+ * The version line, which doubles as the way to update from here.
  *
- * `hasBackendConfig()` answers the same question as `!cloudApiUrl` — both reduce
- * to `Boolean(getCloudApiUrlOverride() ?? env.cloudApiUrl)` — but reaching for
- * it here meant resolving the whole server config twice per render.
+ * Being able to update while signed out is the point: the updater used to be
+ * mounted inside `App`, so it only ever ran for someone who had already got
+ * past this screen — and a release that strands people here is exactly the one
+ * they need to leave.
  */
-function readServerSummary(): {
-  cloudApiUrl: string | undefined;
-  override: string | null;
-  unconfigured: boolean;
-} {
-  const cloudApiUrl = getEffectiveServerConfigSync().cloudApiUrl;
-  return { cloudApiUrl, override: getCloudApiUrlOverride(), unconfigured: !cloudApiUrl };
+function VersionFooter() {
+  const { t } = useTranslation();
+  const appVersion = useAppVersion();
+  const { state, progress, checkForUpdates } = useUpdaterStore(
+    useShallow((s) => ({
+      state: s.update.state,
+      progress: s.update.progress,
+      checkForUpdates: s.checkForUpdates,
+    })),
+  );
+
+  const status = () => {
+    switch (state) {
+      case "checking":
+        return t("updater.checking", "Checking for updates…");
+      case "downloading":
+        return t("updater.downloading", "Downloading {{percent}}%", {
+          percent: Math.round(progress ?? 0),
+        });
+      case "ready":
+        return t("updater.restartToUpdate", "Restart to update");
+      case "up-to-date":
+        return t("updater.upToDate", "Up to date");
+      // `error` reaches the dialog, which says more than a footer can. A silent
+      // check never lands here — it resets to idle — so this is only ever the
+      // result of a click.
+      case "error":
+        return t("updater.checkFailed", "Update check failed");
+      default:
+        return t("updater.check", "Check for updates");
+    }
+  };
+
+  const busy = state === "checking" || state === "downloading";
+
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={() => void checkForUpdates()}
+      className="mt-6 self-center rounded-[6px] px-2 py-1 font-mono text-[11px] text-faint transition-colors hover:text-foreground disabled:cursor-default disabled:hover:text-faint"
+    >
+      v{appVersion} · {status()}
+    </button>
+  );
+}
+
+/**
+ * Look for an update once per app run, while the user is still signed out.
+ *
+ * Deliberately NOT gated on the Settings → General opt-in the background
+ * checker honours. That preference keeps a working install from downloading
+ * things unasked; this call is for the install that cannot get past this
+ * screen, where updating is the only way out. It costs one request for the
+ * release manifest, and anything it finds still ends at a dismissable
+ * "restart to apply" prompt.
+ *
+ * Runs at most once per mount of the wizard, and never on top of a check that
+ * is already in flight or has already found something — `checkForUpdates`
+ * restarts the download from scratch.
+ */
+function useOnboardingUpdateCheck() {
+  const asked = useRef(false);
+  useEffect(() => {
+    if (asked.current) return;
+    asked.current = true;
+    const updater = useUpdaterStore.getState();
+    if (updater.update.state !== "idle") return;
+    void updater.checkForUpdates(true);
+  }, []);
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation();
-  const appVersion = useAppVersion();
-  const { cloudApiUrl, override } = readServerSummary();
+  const cloudApiUrl = getEffectiveServerConfigSync().cloudApiUrl;
+  const override = getCloudApiUrlOverride();
   return (
     <div className="relative flex min-h-screen flex-col bg-background px-6 py-8 text-foreground">
       <div className="absolute inset-x-0 top-0 h-12" data-tauri-drag-region />
       <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col">
         {children}
-        <p className="mt-6 text-center font-mono text-[11px] text-faint">v{appVersion}</p>
+        <VersionFooter />
         {/* An absent URL used to render nothing at all, so a build with no
             backend baked in looked exactly like a working one. */}
         <p
@@ -71,31 +148,63 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function BackButton({ onClick }: { onClick: () => void }) {
+/**
+ * Re-run the wizard from the top — the language step included; the runtime
+ * install lives in the post-login daemon wizard and re-checks itself every
+ * launch.
+ *
+ * Reload rather than flipping state in place: half the wizard's inputs (the
+ * daemon store) were seeded on the way here, and a reload re-derives all of it,
+ * which is what makes the re-run identical to a first run.
+ */
+function rerunSetup() {
+  useOnboardingStore.getState().reset();
+  window.location.reload();
+}
+
+function RerunButton() {
   const { t } = useTranslation();
   return (
+    // Sits inside the drag strip, opposite the traffic lights. Painted after
+    // the drag region, so it stays clickable.
     <button
       type="button"
-      onClick={onClick}
-      className="mb-5 inline-flex w-fit items-center gap-1.5 rounded-[8px] px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-panel hover:text-foreground"
+      onClick={rerunSetup}
+      className="absolute right-6 top-6 inline-flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-[12px] text-faint transition-colors hover:bg-panel hover:text-foreground"
     >
-      <ArrowLeft className="h-3.5 w-3.5" />
-      {t("onboarding.common.back", "Back")}
+      <RotateCcw className="h-3.5 w-3.5" />
+      {t("auth.onboarding.rerunSetup", "Run setup again")}
     </button>
   );
 }
 
-function DetailFrame({
+function StepFrame({
   children,
   onBack,
+  rerun,
 }: {
   children: React.ReactNode;
-  onBack: () => void;
+  onBack?: () => void;
+  rerun?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <Shell>
+      {rerun && <RerunButton />}
       <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center">
-        <BackButton onClick={onBack} />
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="mb-5 inline-flex w-fit items-center gap-1.5 rounded-[8px] px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-panel hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {t("onboarding.common.back", "Back")}
+          </button>
+        ) : (
+          // Reserve the row so the card does not jump between steps.
+          <div className="mb-5 h-[26px]" />
+        )}
         {children}
       </div>
     </Shell>
@@ -107,32 +216,19 @@ function ChoiceRow({
   title,
   caption,
   primary,
-  active,
-  badge,
-  disabled,
   onClick,
 }: {
   icon: React.ReactNode;
   title: string;
   caption: React.ReactNode;
   primary?: boolean;
-  /** This row describes the state the app is already in. Drawn in `--selected`
-   *  ("selected row in panel sections"), not coral: AGENTS.md caps a frame at
-   *  two coral spots, and the sign-in chip and the footer already spend both. */
-  active?: boolean;
-  badge?: string;
-  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
-      disabled={disabled}
       onClick={onClick}
-      className={[
-        "flex w-full items-center gap-3 rounded-[14px] border border-border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-        active ? "bg-selected/70" : "bg-paper hover:bg-selected/45",
-      ].join(" ")}
+      className="flex w-full items-center gap-3 rounded-[14px] border border-border bg-paper p-3 text-left transition-colors hover:bg-selected/45"
     >
       <span
         className={[
@@ -146,245 +242,67 @@ function ChoiceRow({
         <span className="block text-[13px] font-semibold text-foreground">{title}</span>
         <span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{caption}</span>
       </span>
-      {badge && (
-        <span className="shrink-0 rounded-[6px] bg-panel px-2 py-0.5 text-[11px] font-medium text-ink-2">
-          {badge}
-        </span>
-      )}
     </button>
   );
 }
 
-function ChooseStep({
-  onLogin,
-  onInvite,
-  onServer,
-}: {
-  onLogin: () => void;
-  onInvite: () => void;
-  onServer: () => void;
-}) {
-  const { t } = useTranslation();
-  const { loading, errorMessage } = useAuthStore(
-    useShallow((s) => ({ loading: s.loading, errorMessage: s.errorMessage })),
-  );
-  // The footer already prints the effective URL in coral, but it is 10px type
-  // at the bottom of the window — easy to miss, and it says nothing about which
-  // of these three entries put the app there. Mark the entry itself too.
-  //
-  // `unconfigured` means no Cloud API at all: none baked into the build, none
-  // set by hand. Signing in and joining a team both dead-end in that state (the
-  // login screen refuses to send a code), so say it once up top and point
-  // everything at the one entry that can fix it.
-  const { override, unconfigured } = readServerSummary();
-
-  /**
-   * Run the first-run wizard again — the language step; the runtime install
-   * lives in the post-login daemon wizard and re-checks itself every launch.
-   *
-   * Reload rather than flipping state in place: half the wizard's inputs (the
-   * daemon store) were seeded on the way here, and a reload re-derives all of
-   * it, which is what makes the re-run identical to a first run.
-   */
-  const rerunSetup = () => {
-    useOnboardingStore.getState().reset();
-    window.location.reload();
-  };
-
-  return (
-    <Shell>
-      {/* Sits inside the drag strip, opposite the traffic lights. Painted after
-          the drag region, so it stays clickable. */}
-      <button
-        type="button"
-        onClick={rerunSetup}
-        className="absolute right-6 top-6 inline-flex items-center gap-1.5 rounded-[8px] px-2 py-1 text-[12px] text-faint transition-colors hover:bg-panel hover:text-foreground"
-      >
-        <RotateCcw className="h-3.5 w-3.5" />
-        {t("auth.onboarding.rerunSetup", "Run setup again")}
-      </button>
-      <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center">
-        <div className="mb-5">
-          <h1 className="text-[24px] font-semibold text-foreground">
-            {t("auth.onboarding.setupTitle", "Choose setup")}
-          </h1>
-          <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
-            {t(
-              "auth.onboarding.setupDesc",
-              "Sign in, join a team, or connect a self-hosted server.",
-            )}
-          </p>
-        </div>
-        {unconfigured && (
-          <div className="mb-4 flex items-start gap-2 rounded-[12px] border border-border bg-panel px-3.5 py-3 text-[12px] leading-5 text-ink-2">
-            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-coral" />
-            <span>
-              {t(
-                "auth.onboarding.noServerNotice",
-                "No server address is configured yet. Set your company's Cloud API below — signing in and joining a team both need one.",
-              )}
-            </span>
-          </div>
-        )}
-        <div className="space-y-3">
-          <ChoiceRow
-            primary={!unconfigured}
-            icon={<LogIn className="h-4 w-4" />}
-            title={t("auth.onboarding.signInOrRegister", "Sign in or register")}
-            caption={t(
-              "auth.onboarding.signInOrRegisterDesc",
-              "Sign in directly with a verification code and bind a valid contact method.",
-            )}
-            disabled={loading || unconfigured}
-            onClick={onLogin}
-          />
-          <ChoiceRow
-            icon={<Link2 className="h-4 w-4" />}
-            title={t("auth.onboarding.joinTeam", "Join the team")}
-            caption={t("auth.onboarding.joinTeamDesc", "Paste an invite link or token to join an existing team.")}
-            disabled={loading || unconfigured}
-            onClick={onInvite}
-          />
-          {/* Not disabled while auth is in flight, unlike the two above: this is
-              the way out of a backend that is not answering, which is exactly
-              when a request is left hanging. */}
-          <ChoiceRow
-            icon={<Server className="h-4 w-4" />}
-            // With nothing configured this is the only entry that does
-            // anything, so the accent moves here from the sign-in row.
-            primary={unconfigured}
-            active={Boolean(override)}
-            badge={override ? t("auth.onboarding.serverCustomTag", "custom") : undefined}
-            title={t("auth.onboarding.customServer", "Enterprise custom server")}
-            caption={
-              override ? (
-                // Which server, not just that there is one: the address is the
-                // whole answer to "what am I about to sign in against". Kept to
-                // one line — an internal host with a port and a path wraps to
-                // three and leaves this card taller than the two above it.
-                <span
-                  className="block truncate font-mono text-[11.5px] text-ink-2"
-                  title={displayHost(override)}
-                >
-                  {displayHost(override)}
-                </span>
-              ) : unconfigured ? (
-                t(
-                  "auth.onboarding.customServerRequiredDesc",
-                  "Start here: enter the Cloud API address of your company's own server.",
-                )
-              ) : (
-                t(
-                  "auth.onboarding.customServerDesc",
-                  "Point the app at your company's self-hosted Cloud API and sign in there.",
-                )
-              )
-            }
-            onClick={onServer}
-          />
-        </div>
-        {errorMessage && (
-          <p className="mt-4 rounded-[8px] border border-destructive/20 bg-paper px-3 py-2 text-[12px] leading-5 text-destructive">
-            {errorMessage}
-          </p>
-        )}
-      </div>
-    </Shell>
-  );
+/**
+ * Applies a server address without reloading the window.
+ *
+ * The reload the "custom server" screen used to do exists to throw away a
+ * session issued by the previous backend — and this wizard only ever runs while
+ * signed out (`AuthGate` renders it under `!session`). Reloading here would
+ * also undo the wizard itself: React state is lost, the flow restarts at step
+ * one, and the invite confirmation — deliberately per-run, see
+ * `invite-link-confirmation.ts` — is gone, so a token the user just typed gets
+ * a "join this team?" dialog after sign-in.
+ *
+ * Nothing else is stale afterwards: `getBackend()` caches by
+ * `cloud_api:<url>`, remote features listen for the change event, and every
+ * other reader resolves the config at call time.
+ */
+function applyServerUrl(url: string | null): boolean {
+  try {
+    setCloudApiUrlOverride(url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function InviteStep({ onBack, onNeedLogin }: { onBack: () => void; onNeedLogin: () => void }) {
+/** Shared probe + apply, used by both the invite and the custom-server steps. */
+function useServerProbe() {
   const { t } = useTranslation();
-  const { setPendingInviteToken, errorMessage } = useAuthStore(
-    useShallow((s) => ({ setPendingInviteToken: s.setPendingInviteToken, errorMessage: s.errorMessage })),
-  );
-  const [raw, setRaw] = useState("");
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault();
-    const token = parseInviteTokenInput(raw);
-    if (!token) {
-      setLocalError(t("auth.onboarding.inviteParseError", "Enter a valid invite token or invite link."));
-      return;
-    }
-    setLocalError(null);
-    // Member invites require a real account: stash the token and send the user
-    // to sign in. The invite is claimed automatically once they're signed in.
-    setPendingInviteToken(token);
-    // The user typed this token themselves; skip the deep-link confirmation prompt.
-    confirmInviteLinkToken(token);
-    onNeedLogin();
-  };
-
-  return (
-    <DetailFrame onBack={onBack}>
-      <form onSubmit={submit} className="rounded-[16px] border border-border bg-paper p-5">
-        <h1 className="text-[18px] font-semibold">{t("auth.onboarding.inviteTitle", "Join the team")}</h1>
-        <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
-          {t("auth.onboarding.inviteDesc", "Paste an invite link or token, then sign in to join. The invite is claimed once you're signed in.")}
-        </p>
-        <label className="mt-5 block space-y-2">
-          <span className="text-[12px] font-medium text-ink-2">{t("auth.onboarding.inviteLabel", "Invite link or token")}</span>
-          <Input value={raw} onChange={(event) => setRaw(event.target.value)} className="h-10 font-mono text-[12px]" />
-        </label>
-        {(localError || errorMessage) && (
-          <p className="mt-3 text-[12px] text-destructive">{localError || errorMessage}</p>
-        )}
-        <Button type="submit" disabled={!raw.trim()} className="mt-5 h-10 w-full bg-coral text-coral-foreground">
-          {t("auth.onboarding.inviteContinueToSignIn", "Continue to sign in")}
-        </Button>
-      </form>
-    </DetailFrame>
-  );
-}
-
-function ServerStep({ onBack }: { onBack: () => void }) {
-  const { t } = useTranslation();
-  const override = getCloudApiUrlOverride();
-  const defaultUrl = getDefaultCloudApiUrl();
-  const [raw, setRaw] = useState(override ?? defaultUrl ?? "");
-  const [localError, setLocalError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   // Set once a probe has failed, so the user can override a verdict that may be
-  // wrong for their situation — configuring a server that is not up yet, or one
-  // only reachable from a network they are not on right now.
+  // wrong for their situation — a server that is not up yet, or one only
+  // reachable from a network they are not on right now.
   const [allowUnverified, setAllowUnverified] = useState(false);
 
-  // A session issued by the previous backend is meaningless against the new one,
-  // so reload from scratch instead of trying to migrate state in place.
-  const applyAndReload = (value: string | null) => {
-    try {
-      setCloudApiUrlOverride(value);
-    } catch {
-      setLocalError(t("auth.onboarding.serverUrlInvalid", "Enter a valid http(s) URL, e.g. https://api.example.com"));
-      return;
-    }
-    window.location.reload();
+  const reset = () => {
+    setError(null);
+    setAllowUnverified(false);
   };
 
-  // Syntax is not enough. `https://api.example.com111` parses fine, saves fine,
-  // and reloads the app into a backend that does not exist — every subsequent
-  // failure then looks like a bug somewhere else. Ask the address whether it is
-  // a Cloud API before persisting anything.
-  const verifyAndApply = async (value: string) => {
-    setLocalError(null);
+  /** Returns true when the address was verified and applied. */
+  const verifyAndApply = async (raw: string): Promise<boolean> => {
+    setError(null);
     // Shape first. A scheme-less `api.mycorp.com` is fetched as a URL relative
     // to tauri://localhost, fails, and comes back as "could not reach that
     // address" — sending the user off to check a server that was never asked.
-    // The real problem only surfaced later, when setCloudApiUrlOverride threw.
-    if (!normalizeCloudApiUrl(value)) {
-      setLocalError(
+    if (!normalizeCloudApiUrl(raw)) {
+      setError(
         t("auth.onboarding.serverUrlInvalid", "Enter a valid http(s) URL, e.g. https://api.example.com"),
       );
-      return;
+      return false;
     }
     setChecking(true);
     try {
-      const probe = await probeCloudApi(value);
+      const probe = await probeCloudApi(raw);
       if (!probe.ok) {
         setAllowUnverified(true);
-        setLocalError(
+        setError(
           probe.reason === "unreachable"
             ? t(
                 "auth.onboarding.serverUnreachable",
@@ -396,30 +314,232 @@ function ServerStep({ onBack }: { onBack: () => void }) {
                 { status: probe.status ?? "?" },
               ),
         );
-        return;
+        return false;
       }
-      applyAndReload(value);
     } finally {
       setChecking(false);
     }
+    if (!applyServerUrl(raw)) {
+      setError(
+        t("auth.onboarding.serverUrlInvalid", "Enter a valid http(s) URL, e.g. https://api.example.com"),
+      );
+      return false;
+    }
+    return true;
+  };
+
+  return { checking, error, setError, allowUnverified, reset, verifyAndApply };
+}
+
+/**
+ * Step 1: the invite link, or an explicit "I don't have one".
+ *
+ * A link carries the inviter's Cloud API address, so answering yes settles the
+ * server question too and the next screen is sign-in. Answering no falls
+ * through to picking a server by hand.
+ */
+function InviteStep({
+  onSkip,
+  onNeedServer,
+  onDone,
+}: {
+  onSkip: () => void;
+  onNeedServer: (token: string) => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const setPendingInviteToken = useAuthStore((s) => s.setPendingInviteToken);
+  const [raw, setRaw] = useState("");
+  const [parseError, setParseError] = useState<string | null>(null);
+  const probe = useServerProbe();
+
+  /** Stash the token for the claim that runs right after sign-in. */
+  const acceptToken = (token: string) => {
+    setPendingInviteToken(token);
+    // The user typed this token themselves; skip the deep-link confirmation.
+    confirmInviteLinkToken(token);
+  };
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setParseError(null);
+    probe.reset();
+    const parsed = parseInviteInput(raw);
+    if (!parsed) {
+      setParseError(
+        t("auth.onboarding.inviteParseError", "Enter a valid invite token or invite link."),
+      );
+      return;
+    }
+    if (parsed.cloudApiUrl) {
+      if (!(await probe.verifyAndApply(parsed.cloudApiUrl))) return;
+      acceptToken(parsed.token);
+      onDone();
+      return;
+    }
+    // A bare token names no server. Use the one already in effect; with no
+    // effective address at all there is nothing to claim it against, so ask.
+    acceptToken(parsed.token);
+    if (getEffectiveServerConfigSync().cloudApiUrl) onDone();
+    else onNeedServer(parsed.token);
+  };
+
+  const continueUnverified = () => {
+    const parsed = parseInviteInput(raw);
+    if (!parsed?.cloudApiUrl || !applyServerUrl(parsed.cloudApiUrl)) return;
+    acceptToken(parsed.token);
+    onDone();
   };
 
   return (
-    <DetailFrame onBack={onBack}>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void verifyAndApply(raw);
-        }}
-        className="rounded-[16px] border border-border bg-paper p-5"
-      >
-        <h1 className="text-[18px] font-semibold">{t("auth.onboarding.serverTitle", "Enterprise custom server")}</h1>
+    <StepFrame rerun>
+      <form onSubmit={submit} className="rounded-[16px] border border-border bg-paper p-5">
+        <h1 className="text-[18px] font-semibold">
+          {t("auth.onboarding.inviteQuestion", "Do you have an invite link?")}
+        </h1>
         <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
           {t(
-            "auth.onboarding.serverDesc",
-            "Point the app at a different TeamClu Cloud API. The app reloads and you sign in against that server.",
+            "auth.onboarding.inviteQuestionDesc",
+            "Paste it here and everything else is set up for you — including which server to sign in to. The invite is claimed right after you sign in.",
           )}
         </p>
+        <label className="mt-5 block space-y-2">
+          <span className="text-[12px] font-medium text-ink-2">
+            {t("auth.onboarding.inviteLabel", "Invite link or token")}
+          </span>
+          <Input
+            value={raw}
+            onChange={(event) => {
+              setRaw(event.target.value);
+              setParseError(null);
+              // A different link has not been rejected yet, so it does not
+              // inherit the previous one's "continue anyway".
+              probe.reset();
+            }}
+            spellCheck={false}
+            autoCapitalize="none"
+            className="h-10 font-mono text-[12px]"
+          />
+        </label>
+        {(parseError || probe.error) && (
+          <p className="mt-3 text-[12px] text-destructive">{parseError || probe.error}</p>
+        )}
+        <Button
+          type="submit"
+          disabled={probe.checking || !raw.trim()}
+          className="mt-5 h-10 w-full bg-coral text-coral-foreground"
+        >
+          {probe.checking
+            ? t("auth.onboarding.serverChecking", "Checking…")
+            : t("onboarding.common.next", "Next")}
+        </Button>
+        {probe.allowUnverified && !probe.checking && (
+          <button
+            type="button"
+            onClick={continueUnverified}
+            className="mt-3 w-full rounded-[6px] py-1 text-[12px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
+          >
+            {t("auth.onboarding.inviteContinueAnyway", "Continue anyway")}
+          </button>
+        )}
+      </form>
+      <button
+        type="button"
+        onClick={onSkip}
+        className="mt-4 w-full rounded-[8px] py-2 text-[13px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
+      >
+        {t("auth.onboarding.inviteNone", "I don't have an invite link")}
+      </button>
+    </StepFrame>
+  );
+}
+
+/**
+ * Step 2: which server. Only reached when no invite link named one.
+ *
+ * A build with nothing baked in has no official server to offer, so the choice
+ * collapses to the custom form rather than showing an entry that cannot work.
+ */
+function ServerStep({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+  const { t } = useTranslation();
+  const defaultUrl = getDefaultCloudApiUrl();
+  const [custom, setCustom] = useState(!defaultUrl);
+  const [raw, setRaw] = useState(getCloudApiUrlOverride() ?? defaultUrl ?? "");
+  const probe = useServerProbe();
+
+  const chooseOfficial = () => {
+    applyServerUrl(null);
+    onDone();
+  };
+
+  const submitCustom = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (await probe.verifyAndApply(raw)) onDone();
+  };
+
+  if (!custom) {
+    return (
+      <StepFrame onBack={onBack} rerun>
+        <div className="mb-5">
+          <h1 className="text-[18px] font-semibold">
+            {t("auth.onboarding.serverChoiceTitle", "Which server do you sign in to?")}
+          </h1>
+          <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
+            {t(
+              "auth.onboarding.serverChoiceDesc",
+              "Use the official server, or point the app at your company's own deployment.",
+            )}
+          </p>
+        </div>
+        <div className="space-y-3">
+          <ChoiceRow
+            primary
+            icon={<Server className="h-4 w-4" />}
+            title={t("auth.onboarding.serverOfficial", "Official server")}
+            caption={
+              <span className="block truncate font-mono text-[11.5px] text-ink-2">
+                {displayHost(defaultUrl as string)}
+              </span>
+            }
+            onClick={chooseOfficial}
+          />
+          <ChoiceRow
+            icon={<Link2 className="h-4 w-4" />}
+            title={t("auth.onboarding.serverCustom", "Custom server")}
+            caption={t(
+              "auth.onboarding.serverCustomDesc",
+              "Enter the Cloud API address of your company's own deployment.",
+            )}
+            onClick={() => setCustom(true)}
+          />
+        </div>
+      </StepFrame>
+    );
+  }
+
+  return (
+    <StepFrame onBack={defaultUrl ? () => setCustom(false) : onBack} rerun>
+      <form onSubmit={submitCustom} className="rounded-[16px] border border-border bg-paper p-5">
+        <h1 className="text-[18px] font-semibold">
+          {t("auth.onboarding.serverCustom", "Custom server")}
+        </h1>
+        <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
+          {t(
+            "auth.onboarding.serverCustomFormDesc",
+            "Enter the Cloud API address of your company's own deployment. You sign in against that server.",
+          )}
+        </p>
+        {!defaultUrl && (
+          <div className="mt-4 flex items-start gap-2 rounded-[12px] border border-border bg-panel px-3.5 py-3 text-[12px] leading-5 text-ink-2">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-coral" />
+            <span>
+              {t(
+                "auth.onboarding.noServerNotice",
+                "This build ships no server address, so there is nothing to fall back to — signing in needs one.",
+              )}
+            </span>
+          </div>
+        )}
         <label className="mt-5 block space-y-2">
           <span className="text-[12px] font-medium text-ink-2">
             {t("auth.onboarding.serverUrlLabel", "Cloud API URL")}
@@ -428,10 +548,7 @@ function ServerStep({ onBack }: { onBack: () => void }) {
             value={raw}
             onChange={(event) => {
               setRaw(event.target.value);
-              setLocalError(null);
-              // A different address has not been rejected yet, so it does not
-              // inherit the previous one's "save anyway".
-              setAllowUnverified(false);
+              probe.reset();
             }}
             placeholder="https://api.example.com"
             spellCheck={false}
@@ -439,65 +556,77 @@ function ServerStep({ onBack }: { onBack: () => void }) {
             className="h-10 font-mono text-[12px]"
           />
         </label>
-        {defaultUrl && (
-          <p className="mt-2 font-mono text-[11px] text-faint">
-            {t("auth.onboarding.serverDefaultHint", "Built-in default: {{url}}", { url: defaultUrl })}
-          </p>
-        )}
-        {localError && <p className="mt-3 text-[12px] text-destructive">{localError}</p>}
+        {probe.error && <p className="mt-3 text-[12px] text-destructive">{probe.error}</p>}
         <Button
           type="submit"
-          disabled={checking || !raw.trim() || raw.trim() === override}
+          disabled={probe.checking || !raw.trim()}
           className="mt-5 h-10 w-full bg-coral text-coral-foreground"
         >
-          {checking
+          {probe.checking
             ? t("auth.onboarding.serverChecking", "Checking…")
-            : t("auth.onboarding.serverSaveAndReload", "Save and reload")}
+            : t("onboarding.common.next", "Next")}
         </Button>
-        {allowUnverified && !checking && (
+        {probe.allowUnverified && !probe.checking && (
           <button
             type="button"
-            onClick={() => applyAndReload(raw)}
+            onClick={() => {
+              if (applyServerUrl(raw)) onDone();
+            }}
             className="mt-3 w-full rounded-[6px] py-1 text-[12px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
           >
             {t("auth.onboarding.serverSaveAnyway", "Save it anyway")}
           </button>
         )}
-        {/* `defaultUrl` matters: with no baked default, "reset" would drop the
-            app back to having no backend at all — the state this screen exists
-            to get out of. Overwriting the address still works. */}
-        {override && defaultUrl && (
-          <button
-            type="button"
-            onClick={() => applyAndReload(null)}
-            className="mt-3 w-full rounded-[6px] py-1 text-[12px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
-          >
-            {t("auth.onboarding.serverReset", "Reset to the built-in default")}
-          </button>
-        )}
       </form>
-    </DetailFrame>
+    </StepFrame>
   );
 }
 
 export function DesktopOnboarding() {
-  const [step, setStep] = useState<Step>("choose");
+  useOnboardingUpdateCheck();
+  const { serverAck, markServerAck } = useOnboardingStore(
+    useShallow((s) => ({ serverAck: s.serverAck, markServerAck: s.markServerAck })),
+  );
+  // Someone who has been through this once — and anyone arriving on an
+  // OS-delivered invite link, whose token is already stashed — is past the
+  // questions and only has to sign in.
+  const [step, setStep] = useState<Step>(() =>
+    serverAck || useAuthStore.getState().pendingInviteToken ? "login" : "invite",
+  );
+  const [serverFrom, setServerFrom] = useState<ServerOutcome>("official");
 
-  if (step === "login") {
+  const settled = (outcome: ServerOutcome) => {
+    markServerAck();
+    setServerFrom(outcome);
+    setStep("login");
+  };
+
+  if (step === "invite") {
     return (
-      <DetailFrame onBack={() => setStep("choose")}>
-        <LoginScreen embedded />
-      </DetailFrame>
+      <InviteStep
+        onSkip={() => setStep("server")}
+        onNeedServer={() => setStep("server")}
+        onDone={() => settled("invite")}
+      />
     );
   }
-  if (step === "invite") return <InviteStep onBack={() => setStep("choose")} onNeedLogin={() => setStep("login")} />;
-  if (step === "server") return <ServerStep onBack={() => setStep("choose")} />;
-
+  if (step === "server") {
+    return (
+      <ServerStep onBack={() => setStep("invite")} onDone={() => settled("custom")} />
+    );
+  }
   return (
-    <ChooseStep
-      onLogin={() => setStep("login")}
-      onInvite={() => setStep("invite")}
-      onServer={() => setStep("server")}
-    />
+    <StepFrame
+      // No way back out of a run that never asked anything — "Run setup again"
+      // is the way to revisit those answers.
+      onBack={
+        serverAck && serverFrom === "official"
+          ? undefined
+          : () => setStep(serverFrom === "invite" ? "invite" : "server")
+      }
+      rerun
+    >
+      <LoginScreen embedded />
+    </StepFrame>
   );
 }

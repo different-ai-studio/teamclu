@@ -37,7 +37,6 @@ import { MqttLiveWiring } from "@/components/MqttLiveWiring";
 import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { ThreadHistoryLoader } from "@/components/ThreadHistoryLoader";
-import { UpdateDialogContainer } from "@/components/updater/UpdateDialog";
 import { AppDeployConfirmDialog } from "@/components/apps/AppDeployConfirmDialog";
 import { resolveControlPanelAppId } from "@/lib/apps/app-control-panel";
 import { lazyNamed } from "@/lib/lazy-component";
@@ -909,7 +908,6 @@ function App() {
           descriptionClassName: '!text-muted-foreground !text-[11px]',
         }}
       />
-      <UpdateDialogContainer />
       <CloseToTrayHost />
       <AppDeployConfirmDialog />
       <NewSessionDialog />
