@@ -225,6 +225,7 @@ export const ClawHubMarketplace = React.memo(function ClawHubMarketplace({
     async (slug: string) => {
       setInstallingSlugs((prev) => new Set(prev).add(slug))
       try {
+        await ensureAgentsSkillsPaths(workspacePath)
         await invoke<string>("clawhub_install", {
           workspacePath: workspacePath ?? null,
           slug,
@@ -232,7 +233,6 @@ export const ClawHubMarketplace = React.memo(function ClawHubMarketplace({
           force: false,
           isGlobal: true,
         })
-        await ensureAgentsSkillsPaths(workspacePath)
         setInstalledSlugs((prev) => new Set(prev).add(slug))
         await onInstalled?.()
       } catch (err) {

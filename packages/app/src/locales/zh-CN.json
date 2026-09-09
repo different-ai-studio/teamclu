@@ -3313,6 +3313,17 @@
     }
   },
   "skills": {
+    "access": {
+      "title": "无法访问技能目录",
+      "osPermissionBody": "当前用户无法读写 {{path}}。请在访达中选中该文件夹 →「显示简介」→「共享与权限」修正所有者后重试。",
+      "tauriScopeBody": "应用尚未获得对 {{path}} 的文件系统访问。请点击「重试」重新授权，或在访达中打开该目录。",
+      "homeMissingBody": "无法解析用户主目录，因此无法使用 ~/.agents/skills。",
+      "createFailedBody": "无法创建 {{path}}：{{detail}}",
+      "genericBody": "在可以访问 ~/.agents/skills 之前，无法安装技能。",
+      "reveal": "在访达中显示",
+      "retry": "重试",
+      "dismiss": "关闭"
+    },
     "builtinLabel": "内置",
     "builtinPath": "~/.agents/skills/（{{app}} 内置）",
     "roleManagedLabel": "角色"

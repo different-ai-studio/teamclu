@@ -1049,6 +1049,7 @@ async function materializeSkill(
   // Download URLs are storage-presigned (S3/MinIO/Supabase). Passing a Bearer
   // JWT makes MinIO answer 400 "multiple authentication types" and is what
   // made marketplace auto-follow stuck on "Update failed — retry".
+  await ensureAgentsSkillsPaths(wsPath)
   const result = await invoke<{ archivedPath?: string }>('team_skill_install', {
     request: {
       workspacePath: wsPath,
@@ -1068,7 +1069,6 @@ async function materializeSkill(
       archiveUnmanaged: opts.archiveUnmanaged ?? false,
     },
   })
-  await ensureAgentsSkillsPaths(wsPath)
   return result ?? {}
 }
 
@@ -1611,6 +1611,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     // other member's copy gets. The pack would then differ from itself
     // depending on who installed it, and the publisher's conflict diff would
     // show a phantom deleted line they never touched.
+    await ensureAgentsSkillsPaths(wsPath)
     await invoke('team_skill_install_from_dir', {
       request: {
         workspacePath: wsPath,
@@ -1627,7 +1628,6 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
         isGlobal: true,
       },
     })
-    await ensureAgentsSkillsPaths(wsPath)
 
     // Against the Agent, not the member. `team_skill_install_from_dir` above put
     // the pack in this machine's skills root, and the machine is an Agent — the

@@ -550,6 +550,7 @@ pub fn run() {
             commands::team_skills::team_skill_retire_personal,
             commands::team_skills::team_skill_fork,
             commands::agents_skills::ensure_agents_skills_paths,
+            commands::agents_skills::check_agents_skills_access,
             commands::skillssh::import_skill_from_zip,
             commands::updater::check_update,
             commands::updater::download_and_install_update,

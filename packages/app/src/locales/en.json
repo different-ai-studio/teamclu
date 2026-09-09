@@ -3313,6 +3313,17 @@
     }
   },
   "skills": {
+    "access": {
+      "title": "Cannot access skills folder",
+      "osPermissionBody": "Your user account cannot read or write {{path}}. Fix ownership in Finder (Get Info → Sharing & Permissions), then retry.",
+      "tauriScopeBody": "The app does not have filesystem access to {{path}}. Click Retry to re-authorize, or open the folder in Finder.",
+      "homeMissingBody": "Could not resolve your home directory, so ~/.agents/skills is unavailable.",
+      "createFailedBody": "Could not create {{path}}: {{detail}}",
+      "genericBody": "Skills cannot be installed until ~/.agents/skills is accessible.",
+      "reveal": "Reveal in Finder",
+      "retry": "Retry",
+      "dismiss": "Dismiss"
+    },
     "builtinLabel": "Built-in",
     "builtinPath": "~/.agents/skills/ ({{app}} built-in)",
     "roleManagedLabel": "Role"
