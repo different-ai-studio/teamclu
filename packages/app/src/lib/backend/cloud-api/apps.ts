@@ -85,6 +85,16 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
+    async setAppType(appId, type) {
+      try {
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { type });
+      } catch (e) {
+        // Admin only, and a caller without admin gets the same 404 as a missing
+        // app — the route will not say which.
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
     async deployApp(appId, input) {
       return client.post<DeployAppResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy`, input);
     },
