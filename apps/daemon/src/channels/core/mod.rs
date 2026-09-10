@@ -483,9 +483,19 @@ impl Core {
             updates += 1;
         }
 
-        let reply = turn
+        let reply = match turn
             .await
-            .map_err(|e| CoreError::Turn(format!("turn task: {e}")))??;
+            .map_err(|e| CoreError::Turn(format!("turn task: {e}")))?
+        {
+            Ok(reply) => reply,
+            Err(e) => {
+                // The progress bubble is already on the channel. Close it even
+                // when the wait loop fails, otherwise WeCom stays on
+                // "thinking…" after desktop already has the (failed) row.
+                let _ = driver.update(&handle, "", Some(TurnEnd::NoAnswer)).await;
+                return Err(e);
+            }
+        };
         let attachments = self.collect_attachments(&session.session_id).await;
         let outbound = render(driver, &reply, attachments.clone());
 

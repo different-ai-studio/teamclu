@@ -878,12 +878,29 @@ impl AmuxdAgentHandle {
             );
 
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
-                let details = if err.details.is_empty() {
-                    err.message.clone()
-                } else {
-                    err.details.clone()
-                };
-                break Err(AgentError::Send(format!("agent turn failed: {details}")));
+                match crate::runtime::turn_reply::gateway_error_action(err, &segments, &live) {
+                    crate::runtime::turn_reply::GatewayErrorAction::Continue => {
+                        tracing::warn!(
+                            session = %session,
+                            details = %if err.details.is_empty() {
+                                err.message.as_str()
+                            } else {
+                                err.details.as_str()
+                            },
+                            "ignoring side-channel ACP error; gateway turn continues"
+                        );
+                    }
+                    crate::runtime::turn_reply::GatewayErrorAction::ReturnReply(reply) => {
+                        tracing::warn!(
+                            session = %session,
+                            "ACP error after reply text; salvaging for the channel"
+                        );
+                        break Ok(reply);
+                    }
+                    crate::runtime::turn_reply::GatewayErrorAction::Fail(details) => {
+                        break Err(AgentError::Send(format!("agent turn failed: {details}")));
+                    }
+                }
             }
 
             // Mirror the aggregator's unflushed reply buffer so streamed

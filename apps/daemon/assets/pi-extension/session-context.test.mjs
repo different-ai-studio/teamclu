@@ -799,6 +799,13 @@ test("session title source never calls pi.getSessionName or setSessionName", () 
   assert.doesNotMatch(src, /pi\.setSessionName\s*\??\s*\(/);
 });
 
+test("before_agent_start and tool_call swallow stale extension ctx", () => {
+  const src = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
+  assert.match(src, /function isStaleExtensionCtxError/);
+  assert.match(src, /before_agent_start skipped stale ctx/);
+  assert.match(src, /tool_call skipped stale ctx/);
+});
+
 test("session title still runs when a session already has a pi name", async () => {
   // Skip is sidecar-only. Reading pi.getSessionName() hits the shared
   // ExtensionRuntime, which any session dispose() marks stale.
