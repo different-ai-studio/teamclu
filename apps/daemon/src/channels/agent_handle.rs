@@ -654,7 +654,9 @@ fn reply_channel_note(token: &str) -> String {
         "[SYSTEM] Reply token for this chat: {token}\n\
 Pass it as `reply_token` to attach a FILE to your reply, e.g. \
 `send_channel_message(reply_token=\"{token}\", file_path=\"/tmp/report.pdf\")`. \
-Your text reply needs no tool — it is delivered on its own."
+Your text reply needs no tool — it is delivered on its own.\n\
+To schedule a job that delivers back here, set manage_cron_job `delivery.to` to this \
+same token (or wecom `single:<userid>` / `group:<chatid>`). An empty `to` is not this chat."
     )
 }
 

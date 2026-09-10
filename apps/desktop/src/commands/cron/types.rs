@@ -114,6 +114,28 @@ pub enum DeliveryChannel {
     Seatalk,
 }
 
+impl DeliveryChannel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Discord => "discord",
+            Self::Feishu => "feishu",
+            Self::Email => "email",
+            Self::Kook => "kook",
+            Self::Wechat => "wechat",
+            Self::Wecom => "wecom",
+            Self::Seatalk => "seatalk",
+        }
+    }
+}
+
+/// MCP used to accept `delivery.to: ""` as "this conversation". Cron announce
+/// delivery has no such default — empty falls through to a missing ownerId and
+/// the run's result never leaves the desktop.
+pub const ANNOUNCE_DELIVERY_TO_REQUIRED: &str = "delivery.to is required for announce. \
+An empty value is not this chat. For the current conversation, set delivery.to to this \
+run's reply_token (from the prompt); it is stored as a stable chat id. \
+WeCom also accepts single:<userid> or group:<chatid>.";
+
 /// Delivery configuration for cron job results
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

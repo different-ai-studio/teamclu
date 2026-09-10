@@ -306,6 +306,14 @@ pub async fn channel_send_media_at(
 }
 
 async fn amuxd_json_roundtrip(sock_path: &Path, payload: &serde_json::Value) -> Result<(), String> {
+    amuxd_json_call(sock_path, payload).await.map(|_| ())
+}
+
+/// One JSON line out, one JSON line back. `ok: false` becomes `Err`.
+async fn amuxd_json_call(
+    sock_path: &Path,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let mut stream = amuxd_control::connect_at(sock_path).await?;
 
     let line = serde_json::to_string(payload).map_err(|e| format!("encode request: {e}"))?;
@@ -337,22 +345,53 @@ async fn amuxd_json_roundtrip(sock_path: &Path, payload: &serde_json::Value) -> 
         }
     }
 
-    #[derive(serde::Deserialize)]
-    struct Wire {
-        ok: bool,
-        #[serde(default)]
-        error: Option<String>,
-    }
-
     let body = String::from_utf8(buf).map_err(|e| format!("amuxd bad response: not utf8: {e}"))?;
-    let parsed: Wire = serde_json::from_str(body.trim())
+    let parsed: serde_json::Value = serde_json::from_str(body.trim())
         .map_err(|e| format!("amuxd bad response: {e} (body={body:?})"))?;
-    if !parsed.ok {
-        return Err(parsed
-            .error
-            .unwrap_or_else(|| "unknown amuxd error".to_string()));
+    if parsed.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        let reason = parsed
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown amuxd error");
+        return Err(reason.to_string());
     }
-    Ok(())
+    Ok(parsed)
+}
+
+/// Chat a reply token currently maps to, in the shape cron announce delivery
+/// stores (`single:<userid>` / `group:<chatid>` for WeCom).
+#[derive(Debug)]
+pub struct ResolvedCronTarget {
+    pub channel: String,
+    pub to: String,
+}
+
+pub async fn resolve_reply_token(token: &str) -> Result<ResolvedCronTarget, String> {
+    resolve_reply_token_at(&amuxd_control::endpoint(), token).await
+}
+
+pub async fn resolve_reply_token_at(
+    sock_path: &Path,
+    token: &str,
+) -> Result<ResolvedCronTarget, String> {
+    let payload = serde_json::json!({
+        "cmd": "resolve-reply-token",
+        "reply_token": token,
+    });
+    let parsed = amuxd_json_call(sock_path, &payload).await?;
+    let channel = parsed
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "amuxd resolve-reply-token missing channel".to_string())?
+        .to_string();
+    let to = parsed
+        .get("to")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "amuxd resolve-reply-token missing to".to_string())?
+        .to_string();
+    Ok(ResolvedCronTarget { channel, to })
 }
 
 #[cfg(all(test, unix))]
@@ -740,5 +779,41 @@ mod tests {
         channel_send_at(&sock_path, "wecom", "user:alice", "hello")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolve_reply_token_reads_channel_and_to() {
+        let sock_path = mock_server(|req| {
+            assert_eq!(req["cmd"].as_str(), Some("resolve-reply-token"));
+            assert_eq!(req["reply_token"].as_str(), Some("abc"));
+            serde_json::json!({
+                "ok": true,
+                "channel": "wecom",
+                "to": "single:HuangWeiGan"
+            })
+            .to_string()
+        })
+        .await;
+
+        let got = resolve_reply_token_at(&sock_path, "abc").await.unwrap();
+        assert_eq!(got.channel, "wecom");
+        assert_eq!(got.to, "single:HuangWeiGan");
+    }
+
+    #[tokio::test]
+    async fn resolve_reply_token_surfaces_unknown_token() {
+        let sock_path = mock_server(|_req| {
+            serde_json::json!({
+                "ok": false,
+                "error": "unknown reply_token — use the token from this chat's prompt"
+            })
+            .to_string()
+        })
+        .await;
+
+        let err = resolve_reply_token_at(&sock_path, "deadbeef")
+            .await
+            .unwrap_err();
+        assert!(err.contains("unknown reply_token"), "got: {err}");
     }
 }
