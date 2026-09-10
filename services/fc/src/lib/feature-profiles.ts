@@ -128,7 +128,8 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   // Mirrors build.config.production.json (in this repo).
   "self-host": {
     auth: { google: true, wechat: false, phone: false, password: false, webSSO: false },
-    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: true },
+    // SeaTalk is Copilot 361 only — official TeamClu never shipped it.
+    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: false },
     // Entry point only. Creating an app needs GITEA_* (see makeGiteaDeps in
     // src/index.ts); deploy needs ACCESS_KEY_ID + APPS_FC_ENDPOINT (see
     // makeDeployDeps). With those unset this box answers 503 naming the empty
@@ -143,7 +144,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   // deployment, not from anything baked into the build.
   belayo: {
     auth: { google: false, wechat: false, phone: true, password: false, webSSO: true },
-    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: true },
+    channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: false },
     // Entry point only, same as self-host. Creating an app needs GITEA_*, which
     // this deployment now has (its own Gitea, reached over the VPC). Deploying
     // one additionally needs ACCESS_KEY_ID + APPS_FC_ENDPOINT, which it does
@@ -159,6 +160,8 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   // carries no `auth` block at all — every alternative sign-in method is off and
   // only email OTP remains. Restated explicitly here so it is a decision on the
   // record rather than an omission.
+  //
+  // SeaTalk is this brand's channel: self-host and belayo keep it off.
   copilot361: {
     auth: { google: false, wechat: false, phone: false, password: false, webSSO: false },
     channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: true },
