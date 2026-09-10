@@ -734,17 +734,19 @@ export function useChatSend({
       : (firstMessage.text ?? '').trim() || 'New chat';
 
     try {
-      const { createSessionShell } = await import('@/lib/session/session-create');
+      const { createSessionShell, resolveLocalDaemonWorkspaceBinding } = await import('@/lib/session/session-create');
       const memberIds = picks.members.map((m) => m.id);
       const agentIds = picks.agents.map((a) => a.id);
       const allAdditional = Array.from(new Set([...memberIds, ...agentIds]));
       const draftIdeaId = useUIStore.getState().draftIdeaId;
+      const localWorkspace = await resolveLocalDaemonWorkspaceBinding(teamIdForSend, agentIds);
       sessionFlowLog("session_create.shell.begin", {
         teamId: teamIdForSend,
         creatorActorId: myActorId,
         additionalActorCount: allAdditional.length,
         agentActorCount: agentIds.length,
         hasIdeaId: !!draftIdeaId,
+        hasLocalWorkspace: !!localWorkspace,
         title: titleSource,
       });
       const { sessionId } = await createSessionShell({
@@ -753,6 +755,7 @@ export function useChatSend({
         title: titleSource,
         additionalActorIds: allAdditional,
         ideaId: draftIdeaId,
+        localWorkspace,
       });
       if (soloActor) {
         const { markSessionNeedsAutoTitle } = await import("@/lib/session/session-auto-title");

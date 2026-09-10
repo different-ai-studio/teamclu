@@ -179,6 +179,49 @@ function guardedFetch(input: any, init?: any) {
 }
 
 /**
+ * Agent seats carry a workspace (ADR-0005); member seats do not.
+ * Callers that already picked a folder pass it in `overrideByActorId`.
+ */
+async function workspaceIdByAgentActor(
+  supabase: any,
+  actorIds: string[],
+  overrideByActorId: Record<string, string> = {},
+): Promise<Map<string, string>> {
+  const ids = [...new Set(actorIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const defaults = new Map<string, string>();
+  if (ids.length > 0) {
+    const rows = await chunkedIn(ids, async (chunk: string[]) => {
+      const { data, error } = await supabase
+        .from("agents")
+        .select("id, default_workspace_id")
+        .in("id", chunk);
+      if (error) throw error;
+      return data ?? [];
+    });
+    for (const row of rows) {
+      const id = typeof row?.id === "string" ? row.id.trim() : "";
+      const workspaceId =
+        typeof row?.default_workspace_id === "string" ? row.default_workspace_id.trim() : "";
+      if (id && workspaceId) defaults.set(id, workspaceId);
+    }
+  }
+  const out = new Map<string, string>();
+  for (const actorId of ids) {
+    const override =
+      typeof overrideByActorId[actorId] === "string" ? overrideByActorId[actorId].trim() : "";
+    const workspaceId = override || defaults.get(actorId) || "";
+    if (workspaceId) out.set(actorId, workspaceId);
+  }
+  return out;
+}
+
+function participantSeedRow(sessionId: string, actorId: string, workspaceId: string | null) {
+  const row: Record<string, string> = { session_id: sessionId, actor_id: actorId };
+  if (workspaceId) row.workspace_id = workspaceId;
+  return row;
+}
+
+/**
  * Archive sessions bound to a workspace via session_participants.workspace_id.
  *
  * This used to read `agent_runtimes`, which 20260803010000 dropped once
@@ -2709,7 +2752,18 @@ export function createSupabaseBusinessRepository(options) {
         ),
       );
       if (seedActorIds.length > 0) {
-        const rows = seedActorIds.map((actorId) => ({ session_id: id, actor_id: actorId }));
+        const overrideByActorId =
+          input.workspaceByActorId && typeof input.workspaceByActorId === "object"
+            ? input.workspaceByActorId
+            : {};
+        const workspaceByActor = await workspaceIdByAgentActor(
+          supabase,
+          seedActorIds,
+          overrideByActorId,
+        );
+        const rows = seedActorIds.map((actorId) =>
+          participantSeedRow(id, actorId, workspaceByActor.get(actorId) ?? null),
+        );
         const { error: partError } = await supabase
           .from("session_participants")
           .upsert(rows, { onConflict: "session_id,actor_id" });
@@ -2870,11 +2924,28 @@ export function createSupabaseBusinessRepository(options) {
         .select(SESSION_FULL_COLUMNS)
         .single();
       if (error) throw error;
-      // Bootstrap primary agent as participant.
+      // Bootstrap primary agent as participant, with the folder it will run
+      // in. Without this the desktop file tree has nothing to adopt and shows
+      // "Agent 尚未启动" even after the cron turn has already replied.
+      const overrideByActorId: Record<string, string> = {};
+      if (typeof input.workspaceId === "string" && input.workspaceId.trim()) {
+        overrideByActorId[input.primaryAgentActorId] = input.workspaceId.trim();
+      }
+      const workspaceByActor = await workspaceIdByAgentActor(
+        supabase,
+        [input.primaryAgentActorId],
+        overrideByActorId,
+      );
       const { error: partError } = await supabase
         .from("session_participants")
         .upsert(
-          [{ session_id: id, actor_id: input.primaryAgentActorId }],
+          [
+            participantSeedRow(
+              id,
+              input.primaryAgentActorId,
+              workspaceByActor.get(input.primaryAgentActorId) ?? null,
+            ),
+          ],
           { onConflict: "session_id,actor_id" },
         );
       if (partError) throw partError;

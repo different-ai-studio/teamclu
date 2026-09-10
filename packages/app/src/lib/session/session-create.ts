@@ -46,6 +46,13 @@ import {
 } from '@/lib/teamclu/resolve-runtime-start-workspace'
 import { resolveSessionWorkspacePath } from '@/lib/session/session-by-workspace'
 import { RUNTIME_START_RPC_TIMEOUT_MS } from '@/lib/teamclu/runtime-rpc-timeouts'
+
+export type LocalDaemonWorkspaceBinding = {
+  agentId: string
+  workspaceId: string
+  path: string
+}
+
 interface CreateSessionShellArgs {
   teamId: string
   creatorActorId: string
@@ -56,6 +63,12 @@ interface CreateSessionShellArgs {
   ideaId?: string | null
   /** When set, the new session row is linked to this app_id at insert time. */
   appId?: string
+  /**
+   * Folder the local daemon agent should run this session in. Sent as
+   * `workspaceByActorId` so Cloud API stamps `session_participants.workspace_id`
+   * at insert (the file tree reads that column, not the local cache).
+   */
+  localWorkspace?: LocalDaemonWorkspaceBinding | null
 }
 
 interface CreateSessionShellResult {
@@ -84,6 +97,7 @@ export async function createSessionShell(
   })
 
   const participantActorIds = Array.from(new Set([args.creatorActorId, ...args.additionalActorIds]))
+  const workspaceByActorId = workspaceByActorIdFromLocal(args.localWorkspace, participantActorIds)
   let sessionId = requestedSessionId
   try {
     const created = await getBackend().sessions.createSessionShell({
@@ -94,6 +108,7 @@ export async function createSessionShell(
       additionalActorIds: args.additionalActorIds,
       ideaId: args.ideaId ?? null,
       ...(args.appId ? { appId: args.appId } : {}),
+      ...(workspaceByActorId ? { workspaceByActorId } : {}),
     })
     sessionId = created.sessionId
   } catch (error) {
@@ -168,11 +183,74 @@ export async function createSessionShell(
     }
   }
 
+  await bindLocalDaemonSessionWorkspace(sessionId, {
+    teamId: args.teamId,
+    agentActorIds: args.additionalActorIds,
+    localWorkspace: args.localWorkspace,
+  })
+
   sessionFlowLog('session_shell.ok', {
     sessionId,
     teamId: args.teamId,
   })
   return { sessionId }
+}
+
+function workspaceByActorIdFromLocal(
+  localWorkspace: LocalDaemonWorkspaceBinding | null | undefined,
+  participantActorIds: string[],
+): Record<string, string> | undefined {
+  const agentId = localWorkspace?.agentId?.trim()
+  const workspaceId = localWorkspace?.workspaceId?.trim()
+  if (!agentId || !workspaceId) return undefined
+  if (!participantActorIds.some((id) => id.trim() === agentId)) return undefined
+  return { [agentId]: workspaceId }
+}
+
+/**
+ * Map the current window folder to a cloud workspace UUID for the local
+ * daemon, when that agent is among the new session's participants.
+ *
+ * Used by the composer quick-create path (no folder picker). The advanced
+ * dialog already has an explicit `localWorkspace` from the user.
+ */
+export async function resolveLocalDaemonWorkspaceBinding(
+  teamId: string,
+  agentActorIds: readonly string[],
+): Promise<LocalDaemonWorkspaceBinding | null> {
+  if (!isTauri()) return null
+  const trimmedTeam = teamId.trim()
+  if (!trimmedTeam) return null
+
+  let localDaemonActorId: string | null = null
+  try {
+    const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
+    localDaemonActorId = (await getLocalDaemonActorId())?.trim() || null
+  } catch {
+    localDaemonActorId = null
+  }
+  if (!localDaemonActorId) return null
+  if (!agentActorIds.some((id) => id.trim() === localDaemonActorId)) return null
+
+  const path = useWorkspaceStore.getState().workspacePath?.trim() || ''
+  if (!path) return null
+
+  let workspaceId =
+    (await resolveCloudWorkspaceIdForLocalPath(trimmedTeam, path, {
+      agentActorId: localDaemonActorId,
+    })) ?? ''
+  if (!workspaceId) {
+    const createdByMemberId = useCurrentTeamStore.getState().currentMember?.id?.trim() || null
+    workspaceId = await ensureCloudWorkspaceIdForAgentRuntime({
+      teamId: trimmedTeam,
+      agentActorId: localDaemonActorId,
+      localWorkspacePath: path,
+      createdByMemberId,
+    })
+  }
+  const trimmedId = workspaceId.trim()
+  if (!trimmedId) return null
+  return { agentId: localDaemonActorId, workspaceId: trimmedId, path }
 }
 
 interface CreateSessionWithFirstMessageArgs {
@@ -207,7 +285,7 @@ interface CreateSessionWithFirstMessageArgs {
    * daemon names a row that daemon cannot resolve — it would fall back to its
    * own onboarded default and run in the wrong directory, silently.
    */
-  localWorkspace?: { agentId: string; workspaceId: string; path: string } | null
+  localWorkspace?: LocalDaemonWorkspaceBinding | null
 }
 
 /**
@@ -228,7 +306,11 @@ interface CreateSessionWithFirstMessageArgs {
  */
 async function bindLocalDaemonSessionWorkspace(
   sessionId: string,
-  args: CreateSessionWithFirstMessageArgs,
+  args: {
+    teamId: string
+    agentActorIds: readonly string[]
+    localWorkspace?: LocalDaemonWorkspaceBinding | null
+  },
 ): Promise<void> {
   const workspaceId = args.localWorkspace?.workspaceId?.trim()
   const workspacePath = args.localWorkspace?.path?.trim()
@@ -309,10 +391,8 @@ export async function createSessionWithFirstMessage(
     additionalActorIds: args.additionalActorIds,
     ideaId: args.ideaId ?? null,
     ...(args.appId ? { appId: args.appId } : {}),
+    localWorkspace: args.localWorkspace,
   })
-
-  // Before the first message exists, so no runtime can start ahead of it.
-  await bindLocalDaemonSessionWorkspace(sessionId, args)
 
   const messageId = crypto.randomUUID()
   const createdAt = BigInt(Math.floor(Date.now() / 1000))

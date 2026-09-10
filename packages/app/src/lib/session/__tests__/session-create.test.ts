@@ -27,6 +27,16 @@ const daemonAdminMocks = vi.hoisted(() => ({
   getLocalDaemonActorId: vi.fn().mockResolvedValue(null),
 }))
 
+const localCacheMocks = vi.hoisted(() => ({
+  upsertSessionsBatch: vi.fn().mockResolvedValue(undefined),
+  upsertSessionParticipantsBatch: vi.fn().mockResolvedValue(undefined),
+  upsertSessionWorkspacesBatch: vi.fn().mockResolvedValue(undefined),
+}))
+
+const currentTeamMocks = vi.hoisted(() => ({
+  currentMember: { id: 'member-1' } as { id: string } | null,
+}))
+
 vi.mock('@/lib/utils', () => ({
   isTauri: () => true,
 }))
@@ -72,6 +82,24 @@ vi.mock('@/lib/actor/current-actor', () => ({
   resolveCurrentMemberActorId: vi.fn().mockResolvedValue('member-1'),
 }))
 
+vi.mock('@/lib/cache/local-cache', () => ({
+  upsertSessionsBatch: (...args: unknown[]) => localCacheMocks.upsertSessionsBatch(...args),
+  upsertSessionParticipantsBatch: (...args: unknown[]) =>
+    localCacheMocks.upsertSessionParticipantsBatch(...args),
+  upsertSessionWorkspacesBatch: (...args: unknown[]) =>
+    localCacheMocks.upsertSessionWorkspacesBatch(...args),
+}))
+
+vi.mock('@/stores/current-team', () => ({
+  useCurrentTeamStore: {
+    getState: () => ({ currentMember: currentTeamMocks.currentMember }),
+  },
+}))
+
+vi.mock('@/lib/mqtt/mqtt-bridge', () => ({
+  mqttPublish: vi.fn().mockResolvedValue(undefined),
+}))
+
 describe('startAgentRuntimesAsync', () => {
   beforeEach(() => {
     mockRuntimeStart.mockClear()
@@ -85,6 +113,13 @@ describe('startAgentRuntimesAsync', () => {
     backendMocks.createDaemonWorkspace.mockReset()
     daemonAdminMocks.getLocalDaemonActorId.mockReset()
     daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue(null)
+    localCacheMocks.upsertSessionsBatch.mockReset()
+    localCacheMocks.upsertSessionParticipantsBatch.mockReset()
+    localCacheMocks.upsertSessionWorkspacesBatch.mockReset()
+    localCacheMocks.upsertSessionsBatch.mockResolvedValue(undefined)
+    localCacheMocks.upsertSessionParticipantsBatch.mockResolvedValue(undefined)
+    localCacheMocks.upsertSessionWorkspacesBatch.mockResolvedValue(undefined)
+    currentTeamMocks.currentMember = { id: 'member-1' }
     workspaceStoreMocks.workspacePath = ''
     backendMocks.createSessionShell.mockResolvedValue({ sessionId: 'sess-1' })
     backendMocks.insertOutgoingMessage.mockResolvedValue({})
@@ -153,6 +188,145 @@ describe('startAgentRuntimesAsync', () => {
       createdByActorId: 'member-1',
       additionalActorIds: ['agent-1'],
     }))
+    expect(backendMocks.createSessionShell.mock.calls[0][0]).not.toHaveProperty('workspaceByActorId')
+  })
+
+  it('forwards localWorkspace as workspaceByActorId and binds the local cache', async () => {
+    backendMocks.createSessionShell.mockResolvedValueOnce({ sessionId: 'sess-ws' })
+
+    const { createSessionShell } = await import('@/lib/session/session-create')
+    await createSessionShell({
+      teamId: 'team-1',
+      creatorActorId: 'member-1',
+      title: 'hello',
+      additionalActorIds: ['agent-local'],
+      localWorkspace: {
+        agentId: 'agent-local',
+        workspaceId: 'ws-picked',
+        path: '/Users/me/copilot',
+      },
+    })
+
+    expect(backendMocks.createSessionShell).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceByActorId: { 'agent-local': 'ws-picked' },
+    }))
+    expect(localCacheMocks.upsertSessionWorkspacesBatch).toHaveBeenCalledWith([
+      expect.objectContaining({
+        sessionId: 'sess-ws',
+        teamId: 'team-1',
+        viewerMemberId: 'member-1',
+        agentId: 'agent-local',
+        workspaceId: 'ws-picked',
+        workspacePath: '/Users/me/copilot',
+      }),
+    ])
+  })
+
+  it('does not stamp workspaceByActorId when the local agent is not a participant', async () => {
+    const { createSessionShell } = await import('@/lib/session/session-create')
+    await createSessionShell({
+      teamId: 'team-1',
+      creatorActorId: 'member-1',
+      title: 'hello',
+      additionalActorIds: ['remote-agent'],
+      localWorkspace: {
+        agentId: 'agent-local',
+        workspaceId: 'ws-picked',
+        path: '/Users/me/copilot',
+      },
+    })
+
+    expect(backendMocks.createSessionShell.mock.calls[0][0]).not.toHaveProperty('workspaceByActorId')
+    expect(localCacheMocks.upsertSessionWorkspacesBatch).not.toHaveBeenCalled()
+  })
+
+  it('createSessionWithFirstMessage passes localWorkspace into the shell', async () => {
+    const { createSessionWithFirstMessage } = await import('@/lib/session/session-create')
+    await createSessionWithFirstMessage({
+      teamId: 'team-1',
+      creatorActorId: 'member-1',
+      additionalActorIds: ['agent-local'],
+      agentActorIds: ['agent-local'],
+      messageText: 'hi',
+      localWorkspace: {
+        agentId: 'agent-local',
+        workspaceId: 'ws-dialog',
+        path: '/tmp/other',
+      },
+    })
+
+    expect(backendMocks.createSessionShell).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceByActorId: { 'agent-local': 'ws-dialog' },
+    }))
+  })
+
+  it('resolveLocalDaemonWorkspaceBinding maps the current folder for the local daemon', async () => {
+    daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    workspaceStoreMocks.workspacePath = '/Users/me/copilot'
+    backendMocks.listDaemonWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-copilot',
+        team_id: 'team-1',
+        agent_id: 'agent-local',
+        created_by_member_id: null,
+        name: 'copilot',
+        path: '/Users/me/copilot',
+        archived: false,
+        created_at: '2026-05-18T00:00:00.000Z',
+        updated_at: '2026-05-18T00:00:00.000Z',
+      },
+    ])
+
+    const { resolveLocalDaemonWorkspaceBinding } = await import('@/lib/session/session-create')
+    await expect(
+      resolveLocalDaemonWorkspaceBinding('team-1', ['agent-local']),
+    ).resolves.toEqual({
+      agentId: 'agent-local',
+      workspaceId: 'ws-copilot',
+      path: '/Users/me/copilot',
+    })
+  })
+
+  it('resolveLocalDaemonWorkspaceBinding returns null when the local daemon is not a participant', async () => {
+    daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    workspaceStoreMocks.workspacePath = '/Users/me/copilot'
+
+    const { resolveLocalDaemonWorkspaceBinding } = await import('@/lib/session/session-create')
+    await expect(
+      resolveLocalDaemonWorkspaceBinding('team-1', ['remote-agent']),
+    ).resolves.toBeNull()
+  })
+
+  it('resolveLocalDaemonWorkspaceBinding creates a cloud workspace when the path is unknown', async () => {
+    daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    workspaceStoreMocks.workspacePath = '/Users/me/brand-new'
+    backendMocks.listDaemonWorkspaces.mockResolvedValue([])
+    backendMocks.createDaemonWorkspace.mockResolvedValue({
+      id: 'ws-created',
+      team_id: 'team-1',
+      agent_id: 'agent-local',
+      name: 'brand-new',
+      path: '/Users/me/brand-new',
+      archived: false,
+      created_at: '',
+      updated_at: '',
+    })
+
+    const { resolveLocalDaemonWorkspaceBinding } = await import('@/lib/session/session-create')
+    await expect(
+      resolveLocalDaemonWorkspaceBinding('team-1', ['agent-local']),
+    ).resolves.toEqual({
+      agentId: 'agent-local',
+      workspaceId: 'ws-created',
+      path: '/Users/me/brand-new',
+    })
+    expect(backendMocks.createDaemonWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        teamId: 'team-1',
+        agentId: 'agent-local',
+        path: '/Users/me/brand-new',
+      }),
+    )
   })
 
   it('sends opencode runtimeStart requests for this-session runtime workspace', async () => {

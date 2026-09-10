@@ -1071,6 +1071,12 @@ paths:
                   format: uuid
                 title:
                   type: string
+                workspaceId:
+                  type: string
+                  format: uuid
+                  description: |
+                    Cloud workspace the primary agent runs this job in.
+                    When omitted, FC stamps `agents.default_workspace_id`.
       responses:
         "200":
           description: Cron session result.
@@ -8968,6 +8974,20 @@ components:
           items:
             type: string
             format: uuid
+        additionalActorIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        workspaceByActorId:
+          type: object
+          additionalProperties:
+            type: string
+            format: uuid
+          description: |
+            Cloud workspace UUID for each agent participant. Overrides
+            `agents.default_workspace_id` for that actor. Member seats stay
+            unbound (workspace_id is not applicable).
     SessionThreadSummary:
       type: object
       required: [threadSessionId, rootMessageId, messageCount, participantCount]

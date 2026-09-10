@@ -126,6 +126,9 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
         ideaId: input.ideaId ?? null,
         additionalActorIds: input.additionalActorIds,
         ...(input.appId ? { appId: input.appId } : {}),
+        ...(input.workspaceByActorId && Object.keys(input.workspaceByActorId).length > 0
+          ? { workspaceByActorId: input.workspaceByActorId }
+          : {}),
       });
       return { sessionId: input.id };
     },

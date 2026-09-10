@@ -99,6 +99,39 @@ describe("sessions module", () => {
     expect("appId" in bodies[1]).toBe(false);
   });
 
+  it("createSessionShell forwards workspaceByActorId when provided, omits otherwise", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const client = {
+      async get() { throw new Error("unexpected"); },
+      async post(_path: string, body: Record<string, unknown>) { bodies.push(body); return cloudSession as never; },
+      async patch() { throw new Error("unexpected"); },
+      async put() { throw new Error("unexpected"); },
+      async delete() { throw new Error("unexpected"); },
+      async postRaw() { throw new Error("unexpected"); },
+      async getRaw() { throw new Error("unexpected"); },
+    } as unknown as CloudApiClient;
+    const mod = createSessionsModule(client);
+
+    await mod.createSessionShell({
+      id: "s-ws",
+      teamId: "team-1",
+      createdByActorId: "a1",
+      title: "T",
+      additionalActorIds: ["agent-1"],
+      workspaceByActorId: { "agent-1": "ws-picked" },
+    });
+    expect(bodies[0].workspaceByActorId).toEqual({ "agent-1": "ws-picked" });
+
+    await mod.createSessionShell({
+      id: "s-nows",
+      teamId: "team-1",
+      createdByActorId: "a1",
+      title: "T",
+      additionalActorIds: ["agent-1"],
+    });
+    expect("workspaceByActorId" in bodies[1]).toBe(false);
+  });
+
   it("getSession calls /v1/sessions/:id with teamId and maps detail fields", async () => {
     const client = mockClient({
       "GET /v1/sessions/session-1?teamId=team-1": {
