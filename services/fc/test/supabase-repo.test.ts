@@ -1655,6 +1655,7 @@ const APP_ROW = {
   git_remote_url: null,
   git_commit_sha: null,
   runtime: "node",
+  start_spec: { command: ["node"], args: ["server.js"], port: 3000 },
   auth_mode: "none",
   oauth_client_id: null,
   provision_status: "pending",
@@ -1682,7 +1683,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
     "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
     "provisionStatus", "publicUrl",
-    "runtime", "slug", "teamId", "type", "updatedAt", "visibility", "workspaceId",
+    "runtime", "slug", "startSpec", "teamId", "type", "updatedAt", "visibility", "workspaceId",
   ].sort());
   assert.equal(items[0].authMode, "none");
   // A row with no auth columns reads as the STRICT values, never the open ones.
@@ -1690,6 +1691,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.equal(items[0].authScope, "all");
   assert.deepEqual(items[0].authRules, []);
   assert.equal(items[0].runtime, "node");
+  assert.deepEqual(items[0].startSpec, APP_ROW.start_spec);
   assert.equal(items[0].gitCommitSha, null);
   assert.equal(items[0].oauthClientId, null);
   // Null unless the deployment sets an apps domain — this suite sets none.
@@ -2926,8 +2928,9 @@ test("apps: finalizeDeploy rejects 503 when finalizeDeploy dep missing", async (
 });
 
 test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", async () => {
+  const calls: any[] = [];
   const repo = appsRepo(
-    appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] }, calls }),
     {
       startDeploy: async () => ({
         fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
@@ -2945,6 +2948,9 @@ test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", asy
   assert.equal(result.fcStatus, "live");
   assert.equal(result.fcEndpoint, "https://x.fcapp.run");
   assert.equal(result.gitCommitSha, APP_SHA);
+  const liveUpdate = calls.find((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
+  assert.equal(liveUpdate?.row.runtime, APP_DECLARATION.build.kind);
+  assert.deepEqual(liveUpdate?.row.start_spec, APP_DECLARATION.start);
 });
 
 test("apps: finalizeDeploy pins apps.org_id on the first success", async () => {

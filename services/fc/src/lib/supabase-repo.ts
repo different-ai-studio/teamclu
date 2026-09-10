@@ -4097,6 +4097,7 @@ export function createSupabaseBusinessRepository(options) {
             // What is now running, as opposed to what the deploy set out to
             // build. They differ when an app's declaration changed mid-deploy.
             runtime: declaration.build.kind,
+            start_spec: declaration.start,
             // The function that just went live carries this auth_mode's env.
             // Recording it here is what lets `authModePendingRedeploy` clear —
             // and what makes the pending state a property of the row rather
