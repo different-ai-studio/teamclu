@@ -83,26 +83,11 @@ export function countCompactionParts(parts: MessagePart[]): number {
   return parts.filter((part) => part.type === "compaction").length;
 }
 
-/** Merge persisted process parts with live-only compaction rows in timeline order. */
+/** Merge persisted process parts with live-only compaction rows (append in flush order). */
 export function mergeProcessPartsWithCompaction(
   processParts: MessagePart[],
   compactionParts: MessagePart[],
 ): MessagePart[] {
   if (compactionParts.length === 0) return processParts;
-  if (processParts.length === 0) return compactionParts;
-  const merged = [...processParts];
-  for (const compaction of compactionParts) {
-    const at = compaction.startedAt ?? 0;
-    let insertAt = merged.length;
-    for (let i = 0; i < merged.length; i += 1) {
-      const candidate = merged[i];
-      const candidateAt = candidate?.startedAt ?? 0;
-      if (candidateAt > at) {
-        insertAt = i;
-        break;
-      }
-    }
-    merged.splice(insertAt, 0, compaction);
-  }
-  return merged;
+  return [...processParts, ...compactionParts];
 }

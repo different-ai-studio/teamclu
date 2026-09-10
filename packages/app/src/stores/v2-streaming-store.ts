@@ -377,6 +377,7 @@ function upsertCompactionPart(
     return next;
   }
   const startedAt = Date.now();
+  // Append in arrival order — compaction_start often lands after post-tool reply text.
   return [
     ...parts,
     buildCompactionPart(actorId, payload, completed, startedAt, completed ? 0 : undefined),
