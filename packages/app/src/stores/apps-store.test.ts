@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   getGitCredential: vi.fn(),
   revokeGitCredential: vi.fn(),
   getGitHead: vi.fn(),
+  setAppType: vi.fn(),
   seedDaemonApp: vi.fn(),
   cloneDaemonApp: vi.fn(),
   daemonAppWorkdir: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock("@/lib/backend", () => ({
       getGitCredential: mocks.getGitCredential,
       revokeGitCredential: mocks.revokeGitCredential,
       getGitHead: mocks.getGitHead,
+      setAppType: mocks.setAppType,
     },
   }),
 }));
@@ -560,6 +562,70 @@ describe("apps-store", () => {
     });
     expect(row.id).toBe("app-6");
     expect(useAppsStore.getState().items[0]).toMatchObject({ id: "app-6" });
+  });
+});
+
+describe("apps-store setType", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({
+      items: [appRow({ type: "data_app", fcStatus: "live" })],
+      loaded: true,
+      loading: false,
+      error: null,
+      teamId: "team-1",
+    });
+  });
+
+  it("merges the server's row, pending-redeploy flag included", async () => {
+    mocks.setAppType.mockResolvedValueOnce(
+      appRow({ type: "static_web", fcStatus: "live", typePendingRedeploy: true }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    const ok = await useAppsStore.getState().setType("app-1", "static_web");
+
+    expect(ok).toBe(true);
+    expect(mocks.setAppType).toHaveBeenCalledWith("app-1", "static_web");
+    expect(useAppsStore.getState().items[0]).toMatchObject({
+      type: "static_web",
+      typePendingRedeploy: true,
+    });
+  });
+
+  it("asks the panel to recount, because the data row just changed meaning", async () => {
+    // Leaving data_app has the data browser answer "no database" at once; the
+    // panel loads its counts once per app and would keep showing the tables.
+    mocks.setAppType.mockResolvedValueOnce(appRow({ type: "slides" }));
+    const { useAppsStore } = await import("./apps-store");
+    const before = useAppsStore.getState().summaryRevision;
+    await useAppsStore.getState().setType("app-1", "slides");
+    expect(useAppsStore.getState().summaryRevision).toBe(before + 1);
+  });
+
+  it("names the admin rule instead of relaying a bare 404", async () => {
+    mocks.setAppType.mockResolvedValueOnce(null);
+    const { useAppsStore } = await import("./apps-store");
+    const before = useAppsStore.getState().summaryRevision;
+    const ok = await useAppsStore.getState().setType("app-1", "slides");
+
+    expect(ok).toBe(false);
+    expect(useAppsStore.getState().items[0]).toMatchObject({ type: "data_app" });
+    expect(useAppsStore.getState().summaryRevision).toBe(before);
+    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
+    expect(String((opts as { description?: string })?.description)).toMatch(/管理权限|admin/);
+  });
+
+  it("passes a server error through as the toast's reason", async () => {
+    mocks.setAppType.mockRejectedValueOnce(new Error("type must be one of static_web, slides"));
+    const { useAppsStore } = await import("./apps-store");
+    const ok = await useAppsStore.getState().setType("app-1", "slides");
+
+    expect(ok).toBe(false);
+    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
+    expect((opts as { description?: string })?.description).toBe(
+      "type must be one of static_web, slides",
+    );
   });
 });
 

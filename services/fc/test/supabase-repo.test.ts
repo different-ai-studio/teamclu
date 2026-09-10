@@ -1677,7 +1677,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
     "authMode", "authAudience", "authScope", "authRules", "authModePendingRedeploy",
-    "envPendingRedeploy",
+    "envPendingRedeploy", "typePendingRedeploy",
     "createdAt", "createdByActorId",
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
     "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
@@ -1755,6 +1755,49 @@ test("apps: authModePendingRedeploy is derived from the deployed mode", async ()
   // A live row from before the column exists must not light the warning up.
   const legacy = appsRepo(appsSupabase({ seed: { apps: [{ ...live, deployed_auth_mode: null }] } }));
   assert.equal((await legacy.listApps({ teamId: "team-1" }))[0].authModePendingRedeploy, false);
+});
+
+test("apps: typePendingRedeploy is derived from the deployed type", async () => {
+  // Whether the function has a database is decided at finalize, so a type
+  // change does nothing to the running app until the next deploy.
+  const live = { ...APP_ROW, fc_status: "live", type: "data_app" };
+  const pendingOf = async (row: any) =>
+    (await appsRepo(appsSupabase({ seed: { apps: [row] } })).listApps({ teamId: "team-1" }))[0]
+      .typePendingRedeploy;
+
+  assert.equal(await pendingOf({ ...live, deployed_type: "static_web" }), true, "live, deployed as something else");
+  assert.equal(await pendingOf({ ...live, deployed_type: "data_app" }), false, "live, deployed as what it is");
+
+  // Never deployed → nothing is live to be out of date with. Covers both a
+  // row with no deploy at all and one whose last deploy failed.
+  assert.equal(await pendingOf({ ...APP_ROW, type: "data_app", deployed_type: "static_web" }), false);
+  assert.equal(
+    await pendingOf({ ...live, fc_status: "deploy_error", deployed_type: "static_web" }),
+    false,
+  );
+
+  // A live row from before the column exists must not light the warning up.
+  assert.equal(await pendingOf({ ...live, deployed_type: null }), false);
+  assert.equal(await pendingOf({ ...live, deployed_type: undefined }), false);
+
+  // Among the types without a database a deploy builds the same function, so
+  // there is nothing to redeploy for.
+  const staticLive = { ...APP_ROW, fc_status: "live" };
+  assert.equal(await pendingOf({ ...staticLive, type: "slides", deployed_type: "static_web" }), false);
+  assert.equal(await pendingOf({ ...staticLive, type: "imported", deployed_type: "slides" }), false);
+  assert.equal(await pendingOf({ ...staticLive, type: "static_web", deployed_type: "data_app" }), true);
+
+  // The legacy id IS data_app. A pre-split app re-saved as data_app would
+  // otherwise be told to redeploy for a change no deploy can see.
+  assert.equal(await pendingOf({ ...live, deployed_type: "fullstack_tanstack_postgres" }), false);
+  assert.equal(
+    await pendingOf({ ...live, type: "fullstack_tanstack_postgres", deployed_type: "data_app" }),
+    false,
+  );
+  assert.equal(
+    await pendingOf({ ...live, type: "static_web", deployed_type: "fullstack_tanstack_postgres" }),
+    true,
+  );
 });
 
 test("apps: listApps filters by team_id, orders created_at desc, limits", async () => {
@@ -2546,6 +2589,145 @@ test("apps: updateApp rejects an illegal provisionStatus jump", async () => {
   );
 });
 
+test("apps: updateApp writes a new type and persists it", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, type: "data_app" }] }, calls }));
+
+  const result = await repo.updateApp("app-1", { type: "static_web" });
+  assert.equal(result?.type, "static_web");
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update");
+  assert.equal(upd.length, 1);
+  assert.equal(upd[0].row.type, "static_web");
+  // Nothing about the deploy moves on a PATCH — that is finalize's job.
+  assert.equal("deployed_type" in upd[0].row, false);
+  assert.equal((await repo.getApp("app-1"))?.type, "static_web");
+});
+
+test("apps: a type change on a live app is pending until the next deploy", async () => {
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [{ ...APP_ROW, type: "static_web", fc_status: "live", deployed_type: "static_web" }] },
+    }),
+  );
+  assert.equal((await repo.getApp("app-1"))?.typePendingRedeploy, false);
+
+  const switched = await repo.updateApp("app-1", { type: "data_app" });
+  assert.equal(switched?.type, "data_app");
+  assert.equal(switched?.typePendingRedeploy, true);
+
+  // Switching back to what is running clears it without a deploy.
+  const back = await repo.updateApp("app-1", { type: "static_web" });
+  assert.equal(back?.typePendingRedeploy, false);
+});
+
+test("apps: updateApp refuses a type outside the four it may be set to", async () => {
+  // `fullstack_tanstack_postgres` is still READ on old rows, but nobody may
+  // write it again — `data_app` is the same thing.
+  for (const bad of ["fullstack_tanstack_postgres", "tanstack", "", " data_app", "DATA_APP", null, 3, ["slides"]]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] }, calls }));
+    await assert.rejects(
+      () => repo.updateApp("app-1", { type: bad as any }),
+      (err: any) =>
+        err?.statusCode === 400 &&
+        err?.code === "validation_failed" &&
+        /static_web, slides, data_app, imported/.test(err?.message ?? ""),
+      `type ${JSON.stringify(bad)} must be refused`,
+    );
+    assert.deepEqual(
+      calls.filter((c) => c.table === "apps" && c.op === "update"),
+      [],
+      `a refused type ${JSON.stringify(bad)} writes nothing`,
+    );
+  }
+});
+
+test("apps: a refused type is caught before the auth-mode change runs", async () => {
+  // applyAuthModeChange writes and deletes secrets with a service-role client.
+  // A PATCH that is going to be a 400 must not have done that first.
+  let serviceRoleUsed = false;
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, auth_mode: "none" }] } }),
+    {
+      createServiceRoleClient: () => {
+        serviceRoleUsed = true;
+        return appsSupabase({ seed: { apps: [APP_ROW] } });
+      },
+    },
+  );
+  await assert.rejects(
+    () => repo.updateApp("app-1", { authMode: "platform", type: "bogus" }),
+    (err: any) => err?.code === "validation_failed" && err?.statusCode === 400,
+  );
+  assert.equal(serviceRoleUsed, false);
+});
+
+test("apps: a non-admin's type change is a 404 and writes nothing", async () => {
+  const cases: Array<[string, any]> = [
+    // Grantees below admin can see the app — the gate, not RLS, stops them.
+    ["view grantee", { level: "view" }],
+    ["prompt grantee", { level: "prompt" }],
+    // A teammate with no grant at all on a team-visible app.
+    ["teammate without a grant", { level: null }],
+  ];
+  for (const [label, { level }] of cases) {
+    const calls: any[] = [];
+    const adminCalls: any[] = [];
+    const app = { ...GITEA_MANAGED_APP, type: "data_app" };
+    const access = level
+      ? [{ app_id: "app-1", member_id: "member-other", permission_level: level, granted_by_member_id: "actor-app-1" }]
+      : [];
+    const repo = appsRepo(
+      appsSupabase({ seed: { apps: [app], app_member_access: access }, actorRow: { id: "member-other" }, calls }),
+      { createServiceRoleClient: () => appsSupabase({ seed: { apps: [app] }, calls: adminCalls }) },
+    );
+    // Valid and invalid alike: a caller who may not write learns nothing more
+    // than "not found" either way.
+    assert.equal(await repo.updateApp("app-1", { type: "static_web" }), null, `${label}: valid type`);
+    assert.equal(await repo.updateApp("app-1", { type: "bogus" }), null, `${label}: invalid type`);
+    assert.deepEqual(calls.filter((c) => c.table === "apps" && c.op === "update"), [], `${label}: no write`);
+    assert.deepEqual(adminCalls, [], `${label}: service role never touched`);
+    assert.equal((await repo.getApp("app-1"))?.type, "data_app", `${label}: row unchanged`);
+  }
+});
+
+test("apps: an admin grantee who is not the creator can change the type", async () => {
+  const app = { ...GITEA_MANAGED_APP, type: "static_web" };
+  const access = [{ app_id: "app-1", member_id: "admin-member", permission_level: "admin", granted_by_member_id: "actor-app-1" }];
+  const adminCalls: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [app], app_member_access: access }, actorRow: { id: "admin-member" } }),
+    // apps_update_if_creator is creator-only, so the write has to go through
+    // the service role or it matches zero rows and 404s despite being allowed.
+    { createServiceRoleClient: () => appsSupabase({ seed: { apps: [app] }, calls: adminCalls }) },
+  );
+  const result = await repo.updateApp("app-1", { type: "slides" });
+  assert.equal(result?.type, "slides");
+  const upd = adminCalls.filter((c) => c.table === "apps" && c.op === "update");
+  assert.equal(upd.length, 1);
+  assert.equal(upd[0].row.type, "slides");
+});
+
+test("apps: a type-only PATCH tolerates a stale provisionStatus riding along", async () => {
+  // Same allowance name and visibility already had: a settings edit that
+  // echoes back an old provisionStatus is still a settings edit. Refusing it
+  // would fail the type change over a field the caller did not mean to move.
+  const calls: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, type: "data_app", provision_status: "ready" }] }, calls }),
+  );
+  const result = await repo.updateApp("app-1", { type: "slides", provisionStatus: "pending" });
+  assert.equal(result?.type, "slides");
+  assert.equal(result?.provisionStatus, "ready", "the illegal transition is still not applied");
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update");
+  assert.equal("provision_status" in upd[0].row, false);
+
+  // And a legal one alongside is applied as before.
+  const legal = await repo.updateApp("app-1", { type: "static_web", provisionStatus: "error" });
+  assert.equal(legal?.type, "static_web");
+  assert.equal(legal?.provisionStatus, "error");
+});
+
 const APP_SHA = "abc1234";
 const APP_DEPLOY = { gitCommitSha: APP_SHA };
 
@@ -2835,6 +3017,69 @@ test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
   const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
   assert.equal(upd.length, 1);
   assert.equal("org_id" in upd[0].row, false);
+});
+
+test("apps: finalizeDeploy stamps deployed_type with the type it deployed", async () => {
+  const calls: any[] = [];
+  const seen: any[] = [];
+  const repo = appsRepo(
+    appsSupabase({
+      // Live as data_app, since switched to slides: pending until this deploy
+      // takes the database away.
+      seed: {
+        apps: [{ ...APP_ROW, type: "slides", provision_status: "ready", fc_status: "live", deployed_type: "data_app" }],
+      },
+      calls,
+    }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async (input: any) => {
+        seen.push(input);
+        return { fcEndpoint: "https://x.fcapp.run" };
+      },
+    },
+  );
+  assert.equal((await repo.getApp("app-1"))?.typePendingRedeploy, true);
+
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const result = await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+
+  assert.equal(seen[0].appType, "slides");
+  const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
+  assert.equal(upd.length, 1);
+  assert.equal(upd[0].row.deployed_type, "slides", "stamped in the same update as deployed_auth_mode");
+  assert.equal(upd[0].row.deployed_auth_mode, "none");
+  assert.equal(result.typePendingRedeploy, false);
+});
+
+test("apps: a type change that lands mid-finalize stays pending", async () => {
+  // Finalize decides the database from the type it read at the start. A PATCH
+  // that arrives while the function is being written did not reach it, so the
+  // stamp must be the value finalize used — not whatever the row says by the
+  // time it is done.
+  const repo: any = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, type: "static_web", provision_status: "ready" }] } }),
+    {
+      startDeploy: async () => ({
+        fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
+        ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
+      }),
+      finalizeDeploy: async (input: any) => {
+        assert.equal(input.appType, "static_web");
+        await repo.updateApp("app-1", { type: "data_app" });
+        return { fcEndpoint: "https://x.fcapp.run" };
+      },
+    },
+  );
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const result = await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+
+  assert.equal(result.type, "data_app");
+  assert.equal(result.fcStatus, "live");
+  assert.equal(result.typePendingRedeploy, true);
 });
 
 test("apps: finalizeDeploy wraps finalize failure as 502", async () => {

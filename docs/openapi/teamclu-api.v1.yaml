@@ -5569,10 +5569,12 @@ paths:
           $ref: "#/components/responses/Error"
     patch:
       operationId: updateApp
-      summary: Update an app (creator only)
+      summary: Update an app (admin required)
       description: |
-        Renames, changes visibility, or reports a lifecycle status the client
-        owns. `provisionStatus` carries the repo/seed lifecycle the desktop
+        Requires `admin` permission (the creator is treated as admin); anyone
+        else receives 404 and nothing is written.
+        Renames, changes visibility or type, or reports a lifecycle status the
+        client owns. `provisionStatus` carries the repo/seed lifecycle the desktop
         drives via the local daemon; `fcStatus` carries the deploy lifecycle —
         the desktop reports `deploy_error` when the daemon build leg fails,
         since nothing server-side can observe that. Illegal transitions are
@@ -5613,6 +5615,25 @@ paths:
                     wins. Rejected with 400 when `authScope` is `paths` and no
                     rule has `auth: required` — that combination claims a login
                     wall while protecting nothing.
+                type:
+                  $ref: "#/components/schemas/AppType"
+                  description: >-
+                    What kind of app this is. The row changes at once, but the
+                    running function follows only on the next deploy — until
+                    then the app's `typePendingRedeploy` is true. Switching TO
+                    `data_app` provisions the Postgres schema and injects
+                    `DATABASE_URL` on that deploy. Switching AWAY from
+                    `data_app` removes `DATABASE_URL` from the function on the
+                    next deploy, so code that still uses the database breaks;
+                    the schema and its data are kept, and come back if the app
+                    is switched back (the schema name is derived from the slug
+                    and app id, and provisioning is idempotent). The data
+                    browser follows the stored type immediately, answering
+                    `409 app_has_no_database` for a type without a database.
+                    Only `static_web`, `slides`, `data_app` and `imported` may
+                    be written; the legacy `fullstack_tanstack_postgres`, or
+                    any other value, is rejected with 400 `validation_failed`.
+                    Requires `admin`, like the rest of this PATCH.
       responses:
         "200":
           description: The updated app.
@@ -7589,7 +7610,8 @@ components:
         schema and the team's org on its first deploy.
 
         `fullstack_tanstack_postgres` is the legacy id for `data_app` and is
-        still stored on apps created before the split.
+        still stored on apps created before the split. `PATCH /v1/apps/{appId}`
+        refuses to write it; an app is moved off it by setting `data_app`.
       enum: [static_web, slides, data_app, imported, fullstack_tanstack_postgres]
     AppFcStatus:
       type: string
@@ -7702,6 +7724,16 @@ components:
             function was built. The environment is baked in at finalize, so an
             edit does nothing until the next deploy. Server-derived from
             `fc_status` and the two env timestamps; false for an app that has
+            never been live.
+        typePendingRedeploy:
+          type: boolean
+          description: >-
+            The app's `type` changed since the running function was deployed,
+            in the one way a deploy acts on — whether the function gets a
+            database — so the running app does not reflect it until the next
+            deploy. Switching among the types without a database
+            (`static_web`, `slides`, `imported`) is never pending. Server-derived
+            from `fc_status` and the deployed type; false for an app that has
             never been live.
         oauthClientId:
           type: [string, "null"]

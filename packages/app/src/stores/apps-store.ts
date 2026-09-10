@@ -21,6 +21,7 @@ import { isTauri } from "@/lib/utils";
 import { getEffectiveServerConfigSync } from "@/lib/config/server-config";
 import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
+import type { AppTypeId } from "@/lib/apps/app-types";
 import type {
   AppRow,
   AppAuthPatch,
@@ -118,6 +119,8 @@ interface AppsState {
   refreshApp: (appId: string) => Promise<void>;
   /** Who on the team can see this app. True when the change stuck. */
   setVisibility: (appId: string, visibility: "personal" | "team") => Promise<boolean>;
+  /** What kind of app this is. Admin only. True when the change stuck. */
+  setType: (appId: string, type: AppTypeId) => Promise<boolean>;
   /** Change any part of the login wall in one request. True when it stuck. */
   updateAuthPolicy: (appId: string, patch: AppAuthPatch) => Promise<boolean>;
   /** Bind a domain and get back the DNS records the owner must publish. */
@@ -868,6 +871,34 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     } catch (e) {
       await toastError(
         i18n.t("apps.visibilityFailed", "Could not change who can see this app"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return false;
+    }
+  },
+  setType: async (appId, type) => {
+    try {
+      const updated = await getBackend().apps.setAppType(appId, type);
+      if (!updated) {
+        // Same shape as visibility: admin only, and the 404 cannot say so
+        // without confirming the app exists, so the rule is named here.
+        await toastError(
+          i18n.t("apps.typeFailed", "Could not change the app type"),
+          i18n.t("apps.typeDenied", "Only people with admin access to this app can change its type."),
+        );
+        return false;
+      }
+      // The row carries `typePendingRedeploy` from the server, so the "takes
+      // effect on the next deploy" line follows it with no local flag.
+      mergeRow(set, updated);
+      // The panel's counts are loaded once per app and the data row is one of
+      // them: leaving data_app has the data browser answer "no database" from
+      // this moment, and the panel would otherwise keep saying "3 张表".
+      get().invalidateAppSummary();
+      return true;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.typeFailed", "Could not change the app type"),
         e instanceof Error ? e.message : String(e),
       );
       return false;

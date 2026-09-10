@@ -32,6 +32,12 @@ import {
 import { cn, copyToClipboard, isTauri } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
 import { appStatusMeta, canReseed } from '@/lib/apps/app-list-helpers'
+import {
+  APP_TYPES,
+  IMPORTED_APP_TYPE,
+  resolveAppType,
+  type AppTypeId,
+} from '@/lib/apps/app-types'
 import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-local-client'
 import {
   openAppAccess,
@@ -145,6 +151,35 @@ export function visibilityChangeNeedsConfirm(
 ): boolean {
   if (current === next) return false
   return next === 'personal'
+}
+
+/** Every type an app can be: the three the create dialog offers, then imported. */
+const SELECTABLE_APP_TYPES = [...APP_TYPES, IMPORTED_APP_TYPE]
+
+/** Named in the leave-database confirm as the way back. */
+const DATA_APP_TYPE = resolveAppType('data_app')
+
+/**
+ * Whether changing the app's type from `current` to `next` needs confirming.
+ *
+ * Only leaving a type that has a database for one that does not. Nothing is
+ * lost on the spot — the running site keeps its DATABASE_URL until the next
+ * deploy, and the data stays where it is — but that next deploy takes the
+ * variable away and every query the code makes starts failing, and a type
+ * label says nothing about any of that. Every other change either adds a
+ * database or never had one to lose.
+ *
+ * Takes raw stored values so a legacy type reads as the data app it is.
+ * Exported for the same reason as `visibilityChangeNeedsConfirm`.
+ */
+export function typeChangeNeedsConfirm(
+  current: string | null | undefined,
+  next: string | null | undefined,
+): boolean {
+  const from = resolveAppType(current)
+  const to = resolveAppType(next)
+  if (from.id === to.id) return false
+  return from.needsDatabase && !to.needsDatabase
 }
 
 /** Seven characters is what every git UI shows and what people paste. */
@@ -348,6 +383,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const reseed = useAppsStore((s) => s.reseed)
   const setVisibility = useAppsStore((s) => s.setVisibility)
+  const setType = useAppsStore((s) => s.setType)
   const rename = useAppsStore((s) => s.rename)
   const deleteApp = useAppsStore((s) => s.deleteApp)
 
@@ -365,8 +401,17 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const [moving, setMoving] = React.useState(false)
   const [visibilityPending, setVisibilityPending] = React.useState<'personal' | 'team' | null>(null)
   const [visibilitySaving, setVisibilitySaving] = React.useState(false)
+  // Open state and target are separate so the target's name stays on the
+  // confirm button while the dialog animates closed after a success.
+  const [typeConfirmOpen, setTypeConfirmOpen] = React.useState(false)
+  const [typeTarget, setTypeTarget] = React.useState<AppTypeId | null>(null)
+  const [typeSaving, setTypeSaving] = React.useState(false)
 
   const { summary, loading: summaryLoading } = useAppSummary(app)
+  // Resolved, not raw: a legacy stored type has to land on 数据操作 in the
+  // Select, or the trigger would render blank for every pre-split app.
+  const appType = resolveAppType(app.type)
+  const typeTargetMeta = typeTarget ? resolveAppType(typeTarget) : null
 
   React.useEffect(() => {
     setNameDraft(app.name)
@@ -487,6 +532,18 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       if (ok) setVisibilityPending(null)
     } finally {
       setVisibilitySaving(false)
+    }
+  }
+
+  // The store recounts the summary on success — the data row's answer depends
+  // on the type — so there is nothing to refresh here.
+  const handleType = async (next: AppTypeId) => {
+    setTypeSaving(true)
+    try {
+      const ok = await setType(app.id, next)
+      if (ok) setTypeConfirmOpen(false)
+    } finally {
+      setTypeSaving(false)
     }
   }
 
@@ -735,6 +792,53 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
             </p>
           </Field>
 
+          <Field label={t('apps.typeLabel', '类型')}>
+            <Select
+              value={appType.id}
+              onValueChange={(raw) => {
+                const next = resolveAppType(raw).id
+                if (next === appType.id) return
+                if (typeChangeNeedsConfirm(appType.id, next)) {
+                  setTypeTarget(next)
+                  setTypeConfirmOpen(true)
+                  return
+                }
+                void handleType(next)
+              }}
+              disabled={typeSaving}
+            >
+              <SelectTrigger
+                className="h-8 rounded-[7px] text-[12.5px]"
+                data-testid="app-control-type"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SELECTABLE_APP_TYPES.map((meta) => (
+                  <SelectItem key={meta.id} value={meta.id} className="text-[12.5px]">
+                    {t(meta.labelKey, meta.label)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-1.5 text-[11.5px] text-faint" data-testid="app-control-type-hint">
+              {t(appType.descriptionKey, appType.description)}
+            </p>
+            {/* `=== true`: a server older than the flag omits it, and an
+                absent flag is "nothing pending", not "maybe". */}
+            {app.typePendingRedeploy === true && (
+              <p
+                className="mt-1 text-[11.5px] text-muted-foreground"
+                data-testid="app-control-type-pending"
+              >
+                {t(
+                  'apps.typePendingRedeploy',
+                  '线上还是按原来的类型在跑，下次部署后才换过来。',
+                )}
+              </p>
+            )}
+          </Field>
+
           {showReseed && (
             <Field label={t('apps.reseed', '重新播种')}>
               <p className="mb-2 text-[12px] text-muted-foreground">
@@ -946,6 +1050,52 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 t('apps.visibilityNarrowAction', '改成仅授权可见')
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={typeConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open && !typeSaving) setTypeConfirmOpen(false)
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('apps.typeLeaveDatabaseTitle', '改成不带数据库的类型？')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {/* Three things, because each is the one people get wrong: it is
+                  not immediate, it does break on the next deploy, and nothing
+                  is deleted. */}
+              {t(
+                'apps.typeLeaveDatabaseConfirm',
+                '线上站点在下次部署前照常运行。下次部署后，应用不再拿到 DATABASE_URL，代码里用到数据库的地方会出错。数据不会删除：「线上数据」里暂时看不到它，改回「{{dataApp}}」就回来。',
+                { dataApp: t(DATA_APP_TYPE.labelKey, DATA_APP_TYPE.label) },
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={typeSaving}>
+              {t('common.cancel', 'Cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={typeSaving}
+              onClick={(e) => {
+                e.preventDefault()
+                if (typeTarget) void handleType(typeTarget)
+              }}
+              data-testid="app-control-type-confirm"
+            >
+              {typeSaving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                t('apps.typeLeaveDatabaseAction', '改成「{{type}}」', {
+                  type: typeTargetMeta ? t(typeTargetMeta.labelKey, typeTargetMeta.label) : '',
+                })
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

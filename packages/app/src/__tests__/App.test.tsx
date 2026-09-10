@@ -118,6 +118,7 @@ vi.mock('@/hooks/use-opencode-preload', () => ({ useOpenCodePreload: vi.fn() }))
 vi.mock('@/hooks/use-channel-gateway-init', () => ({ useChannelGatewayInit: vi.fn() }))
 vi.mock('@/hooks/use-git-repos-init', () => ({ useGitReposInit: vi.fn() }))
 vi.mock('@/hooks/use-cron-init', () => ({ useCronInit: vi.fn() }))
+vi.mock('@/hooks/use-agent-app-changes', () => ({ useAgentAppChanges: vi.fn() }))
 vi.mock('@/hooks/use-workspace-runtime-refresh-poll', () => ({
   useWorkspaceRuntimeRefreshPoll: vi.fn(),
 }))

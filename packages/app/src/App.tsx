@@ -18,6 +18,7 @@ import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
 import { useGitReposInit } from "@/hooks/use-git-repos-init";
 import { useCronInit } from "@/hooks/use-cron-init";
+import { useAgentAppChanges } from "@/hooks/use-agent-app-changes";
 import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-refresh-poll";
 import { useOpenCodePreload } from "@/hooks/use-opencode-preload";
 import { useExternalLinkHandler } from "@/hooks/use-external-link-handler";
@@ -277,6 +278,7 @@ function AppContent() {
   useChannelGatewayInit();
   useGitReposInit();
   useCronInit();
+  useAgentAppChanges();
   useWorkspaceRuntimeRefreshPoll();
   useAgentsSkillsAccessInit();
   useExternalLinkHandler();

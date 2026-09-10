@@ -4,6 +4,7 @@ import WebSocket from "ws";
 
 import { ApiError } from "../http-utils.js";
 import { appPublicUrl } from "../apps-public-host.js";
+import { typeChangeNeedsRedeploy } from "../validation/app-type.js";
 
 // FC runtime is Node 20 which lacks native WebSocket. supabase-js v2.45+ tries
 // to construct a RealtimeClient at createClient() time and throws without a
@@ -104,7 +105,7 @@ export function mapDefaultAgentError(error: any) {
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, created_by_actor_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, env_updated_at, env_deployed_at, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
+  "id, team_id, org_id, created_by_actor_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, deployed_type, env_updated_at, env_deployed_at, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -169,6 +170,21 @@ export function mapApp(r: any) {
       r.fc_status === "live" &&
       !!r.env_updated_at &&
       (!r.env_deployed_at || new Date(r.env_updated_at) > new Date(r.env_deployed_at)),
+    // Same reasoning again, for the type: whether the function gets a database
+    // is decided at finalize (needsDatabase), so a type change does nothing to
+    // the running app until the next deploy. An operator who just switched an
+    // app to data_app would otherwise go looking for a DATABASE_URL that is not
+    // there yet — and one who switched away would not see coming that the next
+    // deploy takes it from code still using it.
+    //
+    // `deployed_type` is NULL on rows that predate the column, and NULL only
+    // matters once something is live. Only a change a deploy would act on
+    // counts — whether the app gets a database — so static_web → slides is not
+    // pending, and neither is a pre-split app re-saved as data_app.
+    typePendingRedeploy:
+      r.fc_status === "live" &&
+      (r.deployed_type ?? null) !== null &&
+      typeChangeNeedsRedeploy(r.deployed_type, r.type ?? ""),
     // Public client id only — never the secret (stored in app_secrets).
     oauthClientId: r.oauth_client_id ?? null,
     provisionStatus: r.provision_status,
