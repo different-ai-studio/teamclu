@@ -3,7 +3,12 @@ import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
 import { imageForPull } from "./apps-registry.js";
 import { ApiError } from "../http-utils.js";
-import { layerArn as officialLayerArn } from "./app-runtime-spec.js";
+import {
+  isContainerKind,
+  resolveLayers,
+  type AppDeployDeclaration,
+  type AppStartSpec,
+} from "./app-runtime-spec.js";
 
 type FcClientInstance = InstanceType<typeof FcClient.default>;
 
@@ -123,8 +128,8 @@ export interface FcOpsConfig {
 export interface EnsureFunctionArgs {
   ossObjectName: string;
   env: Record<string, string>;
-  /** What the app declared about how it is started. Absent → the built-in Node contract. */
-  runtime?: AppRuntimeSpec;
+  /** The daemon-validated build and start declaration. Required at runtime. */
+  declaration?: AppDeployDeclaration;
   /**
    * The image to run, for a `container` app. Already in the registry: the
    * daemon pushed it before finalize was called, so there is no code object
@@ -174,78 +179,6 @@ function functionNetworkInput(vpc: AppsFcVpcConfig | undefined) {
 }
 
 /**
- * The custom runtime image ships NO node at all — not merely one that is off
- * PATH. `command: ["node"]` therefore failed EVERY deploy at instance start
- * with `CAFileNotFound: the file node is not exist`, and `/bin/sh -c 'exec
- * node …'` failed the same way with `exec: node: not found` (exit 127). The
- * standard `nodejs20` runtime is not an escape either: it rejects a startup
- * command outright (`customRuntimeConfig not supported for non-custom
- * runtime`), because it is handler-based.
- *
- * What works is the official Node.js layer. It mounts under `/opt/nodejs20`
- * and does NOT extend PATH (verified in a live instance: PATH is still
- * `/usr/local/sbin:…:/bin`), so the start command must name the binary by
- * absolute path.
- *
- * The version is pinned rather than floating: a layer version is immutable, so
- * pinning is what keeps a redeploy of an untouched app from silently changing
- * its Node runtime underneath it.
- */
-export const NODE_BIN = "/opt/nodejs20/bin/node";
-
-/** The runtimes this deployment can actually start, and what starts them. */
-const RUNTIME_BINARIES: Record<string, string> = { node: NODE_BIN };
-
-/**
- * The app ships its own image instead of code for one of our layers.
- *
- * Not in RUNTIME_BINARIES: there is no interpreter to name, because the image
- * brings its own. It is a supported runtime all the same.
- */
-export const CONTAINER_RUNTIME = "container";
-
-/** An app's declared start contract, already validated against RUNTIME_BINARIES. */
-export interface AppRuntimeSpec {
-  runtime: string;
-  entry: string;
-  port: number;
-  /** `container` only: a path the app answers 200 on. */
-  healthCheckPath?: string;
-}
-
-export function isContainerRuntime(runtime: string | undefined): boolean {
-  return runtime === CONTAINER_RUNTIME;
-}
-
-export function isSupportedRuntime(runtime: string): boolean {
-  return isContainerRuntime(runtime) || Object.hasOwn(RUNTIME_BINARIES, runtime);
-}
-
-export const SUPPORTED_RUNTIMES = [...Object.keys(RUNTIME_BINARIES), CONTAINER_RUNTIME];
-
-/**
- * The start command, from what the app declared or from the contract every app
- * had before declarations existed.
- *
- * The interpreter comes from a table, never from the app: the runtime image
- * ships no interpreter at all, so a binary reaches the instance only if a
- * matching layer was attached. An app naming `python3` would start a function
- * that cannot boot, and the failure would surface as an opaque instance error.
- */
-function startCommand(spec: AppRuntimeSpec | undefined) {
-  const resolved: AppRuntimeSpec = spec ?? { runtime: "node", entry: "server/index.mjs", port: 9000 };
-  const bin = RUNTIME_BINARIES[resolved.runtime];
-  if (!bin) {
-    throw new ApiError(
-      400,
-      "unsupported_runtime",
-      `runtime "${resolved.runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
-    );
-  }
-  return new $fc.CustomRuntimeConfig({ command: [bin], args: [resolved.entry], port: resolved.port });
-}
-
-/**
  * The container half of the same question: what starts this app.
  *
  * Nothing about the process is named here — the image's own `ENTRYPOINT` and
@@ -256,14 +189,15 @@ function startCommand(spec: AppRuntimeSpec | undefined) {
  */
 function containerConfig(
   image: string,
-  spec: AppRuntimeSpec | undefined,
+  start: AppStartSpec,
   auth: FcOpsConfig["registryAuth"],
 ) {
-  const port = spec?.port ?? 9000;
-  const healthCheckPath = spec?.healthCheckPath?.trim();
+  const healthCheckPath = start.healthCheckPath?.trim();
   return new $fc.CustomContainerConfig({
     image: imageForPull(image, auth?.host),
-    port,
+    port: start.port,
+    ...(start.command ? { command: start.command } : {}),
+    ...(start.args ? { args: start.args } : {}),
     // A private registry that is not ACR is reached with a plain login, which
     // is what `registryConfig` exists for. Read-only where the deployment
     // configured a separate pull user: this credential lives in the function's
@@ -307,7 +241,11 @@ function containerConfig(
  * first image it was ever given.
  */
 function runtimeInput(cfg: FcOpsConfig, args: EnsureFunctionArgs, codeLocation: (n: string) => any) {
-  if (isContainerRuntime(args.runtime?.runtime)) {
+  const declaration = args.declaration;
+  if (!declaration) {
+    throw new ApiError(400, "validation_failed", "declaration (build+start) is required");
+  }
+  if (isContainerKind(declaration.build.kind)) {
     if (!args.image) {
       throw new ApiError(
         400,
@@ -320,19 +258,32 @@ function runtimeInput(cfg: FcOpsConfig, args: EnsureFunctionArgs, codeLocation: 
     // mounted into someone's Python image.
     return {
       runtime: "custom-container",
-      customContainerConfig: containerConfig(args.image, args.runtime, cfg.registryAuth),
+      customContainerConfig: containerConfig(args.image, declaration.start, cfg.registryAuth),
     };
   }
+  const healthCheckPath = declaration.start.healthCheckPath?.trim();
   return {
-    runtime: "custom.debian10",
-    layers: [nodejsLayerArn(cfg.region)],
-    customRuntimeConfig: startCommand(args.runtime),
+    runtime: declaration.start.fcRuntime,
+    layers: resolveLayers(cfg.region, declaration.build.kind, declaration.start.layers),
+    customRuntimeConfig: new $fc.CustomRuntimeConfig({
+      command: declaration.start.command,
+      args: declaration.start.args ?? [],
+      port: declaration.start.port,
+      ...(healthCheckPath
+        ? {
+            healthCheckConfig: new $fc.CustomHealthCheckConfig({
+              httpGetUrl: healthCheckPath,
+              initialDelaySeconds: 10,
+              periodSeconds: 5,
+              timeoutSeconds: 3,
+              failureThreshold: 6,
+              successThreshold: 1,
+            }),
+          }
+        : {}),
+    }),
     code: codeLocation(args.ossObjectName),
   };
-}
-
-export function nodejsLayerArn(region: string): string {
-  return officialLayerArn(region, "Nodejs20", 3);
 }
 
 function isNotFound(e: any): boolean {

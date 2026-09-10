@@ -2730,6 +2730,20 @@ test("apps: a type-only PATCH tolerates a stale provisionStatus riding along", a
 
 const APP_SHA = "abc1234";
 const APP_DEPLOY = { gitCommitSha: APP_SHA };
+const APP_DECLARATION = {
+  build: { kind: "node", output: ".output" },
+  start: {
+    fcRuntime: "custom.debian10",
+    command: ["/opt/nodejs20/bin/node"],
+    args: ["server/index.mjs"],
+    port: 9000,
+  },
+};
+const appFinalize = (deployToken: string) => ({
+  gitCommitSha: APP_SHA,
+  deployToken,
+  runtime: APP_DECLARATION,
+});
 
 test("apps: deployApp method is present", async () => {
   const repo = appsRepo(appsSupabase({}));
@@ -2865,7 +2879,7 @@ test("apps: finalizeDeploy returns null when RLS hides the app", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [] } }), {
     finalizeDeploy: async () => { throw new Error("should not be called"); },
   });
-  assert.equal(await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }), null);
+  assert.equal(await repo.finalizeDeploy("app-1", appFinalize("tok")), null);
 });
 
 test("apps: finalizeDeploy rejects 409 when app has no function", async () => {
@@ -2874,7 +2888,7 @@ test("apps: finalizeDeploy rejects 409 when app has no function", async () => {
     { finalizeDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
+    () => repo.finalizeDeploy("app-1", appFinalize("tok")),
     (err: any) => err?.code === "not_deploying" && err?.statusCode === 409,
   );
 });
@@ -2885,7 +2899,7 @@ test("apps: finalizeDeploy rejects 409 on illegal fc_status transition", async (
     { finalizeDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
+    () => repo.finalizeDeploy("app-1", appFinalize("tok")),
     (err: any) => err?.code === "invalid_deploy_state" && err?.statusCode === 409,
   );
 });
@@ -2896,7 +2910,7 @@ test("apps: finalizeDeploy rejects 409 when deployToken mismatches", async () =>
     { finalizeDeploy: async () => { throw new Error("should not be called"); } },
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "bad" }),
+    () => repo.finalizeDeploy("app-1", appFinalize("bad")),
     (err: any) => err?.code === "deploy_token_mismatch" && err?.statusCode === 409,
   );
 });
@@ -2906,7 +2920,7 @@ test("apps: finalizeDeploy rejects 503 when finalizeDeploy dep missing", async (
     appsSupabase({ seed: { apps: [{ ...APP_ROW, fc_function_name: "tc-app-1", fc_status: "awaiting_build", deploy_token: "tok" }] } }),
   );
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: "tok" }),
+    () => repo.finalizeDeploy("app-1", appFinalize("tok")),
     (err: any) => err?.code === "deploy_unavailable" && err?.statusCode === 503,
   );
 });
@@ -2927,7 +2941,7 @@ test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", asy
     },
   );
   const started = await repo.deployApp("app-1", APP_DEPLOY);
-  const result = await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+  const result = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
   assert.equal(result.fcStatus, "live");
   assert.equal(result.fcEndpoint, "https://x.fcapp.run");
   assert.equal(result.gitCommitSha, APP_SHA);
@@ -2953,7 +2967,7 @@ test("apps: finalizeDeploy pins apps.org_id on the first success", async () => {
     },
   );
   const started = await repo.deployApp("app-1", APP_DEPLOY);
-  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+  await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
 
   assert.equal(seen[0].orgId, "org-old", "first finalize derives the org from the team");
   const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
@@ -2985,7 +2999,7 @@ test("apps: finalizeDeploy deploys to the stored org even after teams.oid change
     },
   );
   const started = await repo.deployApp("app-1", APP_DEPLOY);
-  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+  await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
 
   assert.equal(seen.length, 1);
   assert.equal(seen[0].orgId, "org-old", "provision must target the database the data is already in");
@@ -3012,7 +3026,7 @@ test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
     },
   );
   const started = await repo.deployApp("app-1", APP_DEPLOY);
-  await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+  await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
 
   const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
   assert.equal(upd.length, 1);
@@ -3045,7 +3059,7 @@ test("apps: finalizeDeploy stamps deployed_type with the type it deployed", asyn
   assert.equal((await repo.getApp("app-1"))?.typePendingRedeploy, true);
 
   const started = await repo.deployApp("app-1", APP_DEPLOY);
-  const result = await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+  const result = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
 
   assert.equal(seen[0].appType, "slides");
   const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
@@ -3075,7 +3089,7 @@ test("apps: a type change that lands mid-finalize stays pending", async () => {
     },
   );
   const started = await repo.deployApp("app-1", APP_DEPLOY);
-  const result = await repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken });
+  const result = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
 
   assert.equal(result.type, "data_app");
   assert.equal(result.fcStatus, "live");
@@ -3095,7 +3109,7 @@ test("apps: finalizeDeploy wraps finalize failure as 502", async () => {
   );
   const started = await repo.deployApp("app-1", APP_DEPLOY);
   await assert.rejects(
-    () => repo.finalizeDeploy("app-1", { gitCommitSha: APP_SHA, deployToken: started.deployToken }),
+    () => repo.finalizeDeploy("app-1", appFinalize(started.deployToken)),
     (err: any) => err?.code === "finalize_failed" && err?.statusCode === 502,
   );
 });
