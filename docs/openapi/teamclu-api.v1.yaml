@@ -2358,7 +2358,7 @@ paths:
           description: Registry moved since the publisher loaded it (`stale_team_skill_base`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}:
     get:
       operationId: getTeamSkillVersion
@@ -2428,7 +2428,7 @@ paths:
           description: Package blob is not uploaded yet (`blob_missing`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}/revert:
     post:
       operationId: revertTeamSkillVersion
@@ -2488,7 +2488,7 @@ paths:
             latest (`conflict`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/install:
     put:
       operationId: installTeamSkill
@@ -7161,8 +7161,7 @@ components:
       in: path
       required: true
       schema:
-        type: string
-        pattern: "^[a-z0-9][a-z0-9-]{1,63}$"
+        $ref: "#/components/schemas/TeamSkillSlug"
     TeamMcpServerName:
       name: name
       in: path
@@ -7286,6 +7285,14 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    TeamSkillSlug:
+      type: string
+      pattern: "^[a-z0-9][a-z0-9-]{1,63}$"
+      description: >-
+        Skill identifier inside a team registry. Mirrors
+        `TEAM_SKILL_SLUG_RE` in the FC repository layer — lowercase
+        alphanumerics and hyphens, never leading with a hyphen, 2 to 64
+        characters.
     TeamSkillCategory:
       type: string
       description: >
@@ -7422,7 +7429,7 @@ components:
       type: object
       required: [slug, summary, category, changelog, contentHash]
       properties:
-        slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,63}$" }
+        slug: { $ref: "#/components/schemas/TeamSkillSlug" }
         summary: { type: string, maxLength: 200 }
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }
