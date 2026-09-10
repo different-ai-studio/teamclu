@@ -90,13 +90,23 @@ const seedResult = (
   over: { workdir?: string | null; error?: string | null } = {},
 ) => ({ outcome, workdir: null, error: null, ...over });
 
+const defaultDeclaration = {
+  build: { kind: "node", output: ".output" },
+  start: {
+    fcRuntime: "custom.debian10",
+    command: ["/opt/nodejs20/bin/node"],
+    args: ["server/index.mjs"],
+    port: 9000,
+  },
+};
+
 const buildResult = (
   outcome: "built" | "failed" | "unreachable",
   error: string | null = null,
   gitCommitSha: string | null = null,
-  runtime: { runtime: string; entry: string; port: number } | null = null,
+  declaration: typeof defaultDeclaration | null = defaultDeclaration,
   image: string | null = null,
-) => ({ outcome, error, gitCommitSha, runtime, image });
+) => ({ outcome, error, gitCommitSha, declaration, image });
 
 const gitCred = {
   remoteUrl: "git@gitea:team/app-1.git",
@@ -118,6 +128,7 @@ const appRow = (over = {}) => ({
   gitAuthKind: null,
   gitCommitSha: null,
   runtime: "node" as const,
+  startSpec: null,
   authMode: "none" as const,
   oauthClientId: null,
   provisionStatus: "pending",
@@ -816,9 +827,7 @@ describe("apps-store deploy", () => {
     });
     mocks.getGitHead.mockResolvedValue({ sha: "abc1234567890" });
     mocks.getGitCredential.mockResolvedValue(gitCred);
-    // An app that declares nothing: the daemon reports the built-in contract,
-    // which is what every app deployed before declarations existed gets.
-    mocks.daemonAppManifest.mockResolvedValue(null);
+    mocks.daemonAppManifest.mockResolvedValue(defaultDeclaration);
     mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
       workspace_has_active_turn: false,
     });
@@ -838,12 +847,11 @@ describe("apps-store deploy", () => {
     // The whole point of the container path: no OSS upload handle is minted,
     // the daemon is handed a registry instead, and the image it pushed is what
     // the function is pointed at.
-    mocks.daemonAppManifest.mockResolvedValue({
-      runtime: "container",
-      entry: "",
-      port: 5000,
-      healthCheckPath: "/api/health",
-    });
+    const declaration = {
+      build: { kind: "container", output: ".", dockerfile: "Dockerfile", context: "." },
+      start: { port: 5000, healthCheckPath: "/api/health" },
+    };
+    mocks.daemonAppManifest.mockResolvedValue(declaration);
     const image = {
       reference: "registry.cn-shenzhen.aliyuncs.com/tc/tc-app-app-1:abc1234567890",
       registry: "registry.cn-shenzhen.aliyuncs.com",
@@ -858,7 +866,7 @@ describe("apps-store deploy", () => {
       gitCommitSha: "abc1234567890",
     });
     mocks.buildDaemonApp.mockResolvedValueOnce(
-      buildResult("built", null, null, { runtime: "container", entry: "", port: 5000 }, image.reference),
+      buildResult("built", null, null, declaration, image.reference),
     );
     mocks.finalizeDeploy.mockResolvedValueOnce({
       ...readyApp(),
@@ -880,7 +888,7 @@ describe("apps-store deploy", () => {
     );
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
       gitCommitSha: "abc1234567890",
-      runtime: { runtime: "container", entry: "", port: 5000 },
+      declaration,
       image: image.reference,
       deployToken: "tok-1",
     });
@@ -905,7 +913,10 @@ describe("apps-store deploy", () => {
     await useAppsStore.getState().deploy("app-1");
 
     expect(mocks.getGitHead).toHaveBeenCalledWith("app-1");
-    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", { gitCommitSha: "abc1234567890" });
+    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {
+      gitCommitSha: "abc1234567890",
+      runtime: "node",
+    });
     expect(mocks.daemonAppManifest).toHaveBeenCalledWith("app-1", "team-1");
     expect(mocks.getGitCredential).toHaveBeenCalledWith("app-1");
     expect(mocks.buildDaemonApp).toHaveBeenCalledWith("app-1", "team-1", {
@@ -917,6 +928,7 @@ describe("apps-store deploy", () => {
     });
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
       gitCommitSha: "abc1234567890",
+      declaration: defaultDeclaration,
       deployToken: "tok-1",
     });
     expect(mocks.updateAppDeployStatus).not.toHaveBeenCalled();
@@ -954,6 +966,7 @@ describe("apps-store deploy", () => {
     );
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
       gitCommitSha: "def4567890123",
+      declaration: defaultDeclaration,
       deployToken: "tok-1",
     });
   });
@@ -969,16 +982,18 @@ describe("apps-store deploy", () => {
       deployToken: "tok-1",
       gitCommitSha: "abc1234567890",
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce(
-      buildResult("built", null, null, { runtime: "node", entry: "index.js", port: 8080 }),
-    );
+    const declaration = {
+      build: { kind: "node", output: "dist" },
+      start: { fcRuntime: "custom.debian12", command: ["node"], args: ["index.js"], port: 8080 },
+    };
+    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built", null, null, declaration));
     mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp(), fcStatus: "live" });
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
 
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith(
       "app-1",
-      expect.objectContaining({ runtime: { runtime: "node", entry: "index.js", port: 8080 } }),
+      expect.objectContaining({ declaration }),
     );
   });
 
@@ -1158,7 +1173,7 @@ describe("apps-store deploy", () => {
 
     expect(mocks.getGitHead).not.toHaveBeenCalled();
     expect(mocks.getGitCredential).not.toHaveBeenCalled();
-    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {});
+    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", { runtime: "node" });
     expect(mocks.buildDaemonApp).toHaveBeenCalledWith("app-1", "team-1", {
       gitCommitSha: undefined,
       gitRemoteUrl: undefined,
@@ -1166,7 +1181,10 @@ describe("apps-store deploy", () => {
       presignedPut: "https://oss/put?sig=x",
       image: undefined,
     });
-    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", { deployToken: "tok-1" });
+    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
+      declaration: defaultDeclaration,
+      deployToken: "tok-1",
+    });
     expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });
   });
 

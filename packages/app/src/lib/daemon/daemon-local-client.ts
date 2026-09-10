@@ -14,6 +14,7 @@ import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/diagnostics/env-d
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
+import type { AppBuildKind } from '@/lib/backend/types'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
 
@@ -1034,14 +1035,13 @@ export interface BuildAppResult {
    */
   gitCommitSha: string | null
   /**
-   * What the app declared about how it starts (`teamclu.app.json`), resolved by
-   * the daemon against the built-in contract. Handed to finalize so the
-   * function is started the way the app expects.
+   * The validated build and start declaration from `teamclu.app.json`. Handed
+   * to finalize so the function is built and started the way the app expects.
    */
-  runtime: AppRuntimeDeclaration | null
+  declaration: AppDeployDeclaration | null
   /**
-   * The image this build pushed, for an app that declares `runtime:
-   * "container"`. Null for every other app — that one uploaded an archive to
+   * The image this build pushed, for an app whose `build.kind` is
+   * `"container"`. Null for every other app — that one uploaded an archive to
    * the presigned URL instead.
    */
   image: string | null
@@ -1049,16 +1049,25 @@ export interface BuildAppResult {
 
 /**
  * What an app declares about how it is built and run (`teamclu.app.json`),
- * resolved by the daemon against the built-in contract.
+ * validated by the daemon.
  *
- * `entry` is empty for a container app: the image's own ENTRYPOINT is its
- * entry, and there is nothing for us to name.
  */
-export interface AppRuntimeDeclaration {
-  runtime: string
-  entry: string
-  port: number
-  healthCheckPath?: string
+export interface AppDeployDeclaration {
+  build: {
+    kind: AppBuildKind
+    output: string
+    command?: string
+    dockerfile?: string
+    context?: string
+  }
+  start: {
+    fcRuntime?: string
+    command?: string[]
+    args?: string[]
+    port: number
+    layers?: string[]
+    healthCheckPath?: string
+  }
 }
 
 /**
@@ -1122,23 +1131,23 @@ interface DaemonAppWorkdirInfo {
  *
  * Asked before the deploy is minted, because the answer decides which kind of
  * handle the control plane hands back: a container app pushes an image, every
- * other app uploads an archive. Null when the daemon cannot say — the deploy
- * then takes the contract every app had before declarations existed.
+ * other app uploads an archive. Null when the daemon cannot say; callers must
+ * stop before minting a deploy with the wrong destination.
  */
 export async function daemonAppManifest(
   appId: string,
   teamId?: string | null,
-): Promise<AppRuntimeDeclaration | null> {
+): Promise<AppDeployDeclaration | null> {
   try {
     const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
-    const result = await daemonFetch<{ manifest?: AppRuntimeDeclaration }>(
+    const result = await daemonFetch<{ declaration?: AppDeployDeclaration }>(
       `/v1/apps/${encodeURIComponent(appId)}/manifest${query}`,
     )
     if (!result.ok) {
       console.warn('[daemon-local-client] app manifest unavailable (non-fatal):', result.error)
       return null
     }
-    return result.data?.manifest ?? null
+    return result.data?.declaration ?? null
   } catch (err) {
     console.warn('[daemon-local-client] app manifest unavailable:', err)
     return null
@@ -1302,12 +1311,7 @@ export async function buildDaemonApp(
       status: string
       gitCommitSha?: string
       image?: string
-      manifest?: {
-        runtime?: string
-        entry?: string
-        port?: number
-        healthCheckPath?: string
-      }
+      declaration?: AppDeployDeclaration
     }>('/v1/apps/build', {
       method: 'POST',
       body: JSON.stringify({
@@ -1321,34 +1325,23 @@ export async function buildDaemonApp(
       }),
     })
     if (result.ok) {
-      const m = result.data?.manifest
       return {
         outcome: "built",
         error: null,
         gitCommitSha: result.data?.gitCommitSha?.trim() || null,
-        // A container app states no entry, so requiring one here would drop the
-        // whole declaration — including the port FC has to send requests to.
-        runtime:
-          m?.runtime && m.port
-            ? {
-                runtime: m.runtime,
-                entry: m.entry ?? "",
-                port: m.port,
-                ...(m.healthCheckPath ? { healthCheckPath: m.healthCheckPath } : {}),
-              }
-            : null,
+        declaration: result.data?.declaration ?? null,
         image: result.data?.image?.trim() || null,
       }
     }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null, image: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null, declaration: null, image: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null, runtime: null, image: null }
+    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null, declaration: null, image: null }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null, image: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null, declaration: null, image: null }
   }
 }
 

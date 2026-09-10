@@ -964,7 +964,29 @@ export interface WorkspacesBackend {
   }): Promise<DaemonWorkspaceBackendRow>;
 }
 
-type AppRuntime = "node" | "container";
+export type AppBuildKind = "node" | "python" | "go" | "php" | "java" | "container";
+
+export interface AppBuildSpec {
+  kind: AppBuildKind;
+  output: string;
+  command?: string;
+  dockerfile?: string;
+  context?: string;
+}
+
+export interface AppStartSpec {
+  fcRuntime?: string;
+  command?: string[];
+  args?: string[];
+  port: number;
+  layers?: string[];
+  healthCheckPath?: string;
+}
+
+export interface AppDeployDeclaration {
+  build: AppBuildSpec;
+  start: AppStartSpec;
+}
 
 export type AppAuthMode = "none" | "platform" | "third";
 
@@ -1137,7 +1159,10 @@ export interface AppRow {
   gitAuthKind: string | null;
   /** HEAD SHA at last successful deploy; null before first deploy completes. */
   gitCommitSha: string | null;
-  runtime: AppRuntime;
+  /** Build kind persisted from the last successful deploy declaration. */
+  runtime: AppBuildKind;
+  /** Start configuration persisted from the last successful deploy declaration. */
+  startSpec: AppStartSpec | null;
   authMode: AppAuthMode;
   authAudience: AppAuthAudience;
   authScope: AppAuthScope;
@@ -1392,9 +1417,8 @@ export interface AppsBackend {
     input: {
       gitCommitSha?: string;
       deployToken: string;
-      /** The app's declared start contract, from `teamclu.app.json`. A
-       *  container app declares no entry — its image's ENTRYPOINT is one. */
-      runtime?: { runtime: string; entry: string; port: number; healthCheckPath?: string };
+      /** The daemon-validated build and start contract from `teamclu.app.json`. */
+      declaration: AppDeployDeclaration;
       /** The image a container build pushed. Required for one, refused for
        *  anything else — see the control plane's parseDeployedImage. */
       image?: string;

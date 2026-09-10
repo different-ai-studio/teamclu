@@ -4016,10 +4016,10 @@ export function createSupabaseBusinessRepository(options) {
 
     async finalizeDeploy(
       appId: string,
-      input: { gitCommitSha?: string; deployToken: string; runtime?: unknown; image?: unknown },
+      input: { gitCommitSha?: string; deployToken: string; declaration?: unknown; image?: unknown },
     ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
-      const declaration = parseAppDeployDeclaration(input?.runtime);
+      const declaration = parseAppDeployDeclaration(input?.declaration);
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.

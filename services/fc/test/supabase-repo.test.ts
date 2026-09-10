@@ -2744,7 +2744,7 @@ const APP_DECLARATION = {
 const appFinalize = (deployToken: string) => ({
   gitCommitSha: APP_SHA,
   deployToken,
-  runtime: APP_DECLARATION,
+  declaration: APP_DECLARATION,
 });
 
 test("apps: deployApp method is present", async () => {
