@@ -32,6 +32,7 @@ pub const ERR_LOCKFILE_MISMATCH: &str =
     "lockfile out of sync with package.json; commit updated pnpm-lock.yaml";
 pub const ERR_INSTALL_TIMEOUT: &str = "pnpm install timed out after 10 minutes";
 pub const ERR_BUILD_TIMEOUT: &str = "pnpm build timed out after 10 minutes";
+pub const ERR_BUILD_COMMAND_TIMEOUT: &str = "build command timed out after 10 minutes";
 /// pnpm could not be started at all. Distinct from every failure above, which
 /// are pnpm's own: this one is a fact about the machine, and on Windows it used
 /// to surface as a bare "the system cannot find the file specified" with no
@@ -280,7 +281,7 @@ fn run_shell_override(command: &str, workdir: &Path, image: Option<&str>) -> any
         &["-c", command],
         workdir,
         BUILD_TIMEOUT,
-        ERR_BUILD_TIMEOUT,
+        ERR_BUILD_COMMAND_TIMEOUT,
         image_env.as_ref().map_or(&[], |env| env.as_slice()),
     )
     .map(|_| ())
@@ -328,7 +329,11 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
                 .env("GOOS", "linux")
                 .env("GOARCH", "amd64");
             let out =
-                crate::sync::bounded_proc::run_bounded(command, BUILD_TIMEOUT, ERR_BUILD_TIMEOUT)?;
+                crate::sync::bounded_proc::run_bounded(
+                    command,
+                    BUILD_TIMEOUT,
+                    ERR_BUILD_COMMAND_TIMEOUT,
+                )?;
             if !out.status.success() {
                 let combined = [
                     String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -360,7 +365,7 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
                         &["package"],
                         workdir,
                         BUILD_TIMEOUT,
-                        ERR_BUILD_TIMEOUT,
+                        ERR_BUILD_COMMAND_TIMEOUT,
                     )?;
                 } else {
                     run_with_timeout(
@@ -368,7 +373,7 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
                         &["package"],
                         workdir,
                         BUILD_TIMEOUT,
-                        ERR_BUILD_TIMEOUT,
+                        ERR_BUILD_COMMAND_TIMEOUT,
                     )?;
                 }
             } else if workdir.join("gradlew").is_file() {
@@ -377,7 +382,7 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
                     &["build"],
                     workdir,
                     BUILD_TIMEOUT,
-                    ERR_BUILD_TIMEOUT,
+                    ERR_BUILD_COMMAND_TIMEOUT,
                 )?;
             } else {
                 run_with_timeout(
@@ -385,7 +390,7 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
                     &["build"],
                     workdir,
                     BUILD_TIMEOUT,
-                    ERR_BUILD_TIMEOUT,
+                    ERR_BUILD_COMMAND_TIMEOUT,
                 )?;
             }
         }
@@ -719,10 +724,13 @@ pub fn build_artifact(
         git_commit_sha = prepare_git_build(workdir, ctx)?;
     }
     let declaration = read_app_declaration(workdir)?;
+    let build_override = declaration
+        .build
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|command| !command.is_empty());
     if declaration.build.kind == "container" {
-        if !workdir.join(&declaration.build.dockerfile).is_file() {
-            anyhow::bail!("{ERR_NO_DOCKERFILE}: {}", declaration.build.dockerfile);
-        }
         let minted = push.ok_or_else(|| anyhow::anyhow!("{ERR_NO_PUSH_TARGET}"))?;
         // `git_commit_sha` is set only when the build published work the client
         // did not know about, which is exactly when the minted tag is stale.
@@ -736,13 +744,7 @@ pub fn build_artifact(
             username: minted.username,
             password: minted.password,
         };
-        if let Some(command) = declaration
-            .build
-            .command
-            .as_deref()
-            .map(str::trim)
-            .filter(|command| !command.is_empty())
-        {
+        if let Some(command) = build_override {
             // For containers the override must build and tag
             // `$TEAMCLU_IMAGE`; pushing remains daemon-owned so registry
             // credentials stay out of the app command and the user's Docker
@@ -760,38 +762,31 @@ pub fn build_artifact(
     }
 
     let output_dir = workdir.join(&declaration.build.output);
-    match declaration.build.kind.as_str() {
-        "node" if !workdir.join("package.json").is_file() => {
-            anyhow::bail!("{ERR_NO_PACKAGE_JSON}")
-        }
-        "python"
-            if !workdir.join("requirements.txt").is_file()
-                && !workdir.join("pyproject.toml").is_file()
-                && (!output_dir.is_dir() || !output_dir_has_files(&output_dir)) =>
-        {
-            anyhow::bail!("{ERR_NO_PYTHON_PROJECT}")
-        }
-        "go" if !workdir.join("go.mod").is_file() => anyhow::bail!("{ERR_NO_GO_MOD}"),
-        "java"
-            if !workdir.join("pom.xml").is_file()
-                && !workdir.join("build.gradle").is_file()
-                && !workdir.join("build.gradle.kts").is_file() =>
-        {
-            anyhow::bail!("{ERR_NO_JAVA_BUILD}")
-        }
-        _ => {}
-    }
-
-    if let Some(command) = declaration
-        .build
-        .command
-        .as_deref()
-        .map(str::trim)
-        .filter(|command| !command.is_empty())
-    {
+    if let Some(command) = build_override {
         // An override is the complete build, not an extra post-build step.
         run_shell_override(command, workdir, None)?;
     } else {
+        match declaration.build.kind.as_str() {
+            "node" if !workdir.join("package.json").is_file() => {
+                anyhow::bail!("{ERR_NO_PACKAGE_JSON}")
+            }
+            "python"
+                if !workdir.join("requirements.txt").is_file()
+                    && !workdir.join("pyproject.toml").is_file()
+                    && (!output_dir.is_dir() || !output_dir_has_files(&output_dir)) =>
+            {
+                anyhow::bail!("{ERR_NO_PYTHON_PROJECT}")
+            }
+            "go" if !workdir.join("go.mod").is_file() => anyhow::bail!("{ERR_NO_GO_MOD}"),
+            "java"
+                if !workdir.join("pom.xml").is_file()
+                    && !workdir.join("build.gradle").is_file()
+                    && !workdir.join("build.gradle.kts").is_file() =>
+            {
+                anyhow::bail!("{ERR_NO_JAVA_BUILD}")
+            }
+            _ => {}
+        }
         run_default_build(&declaration.build.kind, &declaration.build.output, workdir)?;
     }
 
@@ -1226,9 +1221,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn build_command_replaces_the_node_default_steps() {
+    fn build_command_replaces_node_defaults_and_their_preconditions() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
         std::fs::write(
             tmp.path().join(MANIFEST_FILE),
             serde_json::json!({
@@ -1257,6 +1251,40 @@ mod tests {
             .read_to_string(&mut result)
             .unwrap();
         assert_eq!(result, "overridden");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_override_replaces_dockerfile_precondition_through_build_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {
+                    "kind": "container",
+                    "command": "printf reached > override-ran && exit 23"
+                },
+                "start": {"port": 9000}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let target = ImagePushTarget {
+            image: "registry.example.com/apps/a:sha",
+            registry: "registry.example.com",
+            username: "u",
+            password: "p",
+        };
+
+        let err = match build_artifact(tmp.path(), None, Some(&target)) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("the intentionally failing override must stop the build"),
+        };
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("override-ran")).unwrap(),
+            "reached"
+        );
+        assert!(!err.contains(ERR_NO_DOCKERFILE), "{err}");
     }
 
     #[cfg(unix)]

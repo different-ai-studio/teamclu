@@ -1129,6 +1129,7 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
         crate::sync::app_build::ERR_NO_JAVA_BUILD,
         crate::sync::app_build::ERR_INSTALL_TIMEOUT,
         crate::sync::app_build::ERR_BUILD_TIMEOUT,
+        crate::sync::app_build::ERR_BUILD_COMMAND_TIMEOUT,
         // Container builds: every one of these is a fact about the machine the
         // build ran on or about the app's own files, so it belongs to the
         // caller. A 500 would send them to the daemon log for something the
