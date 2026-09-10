@@ -415,6 +415,86 @@ impl DaemonServer {
         Ok(response.encode_to_vec())
     }
 
+    pub(crate) async fn handle_fetch_session_rpc(
+        &mut self,
+        request: &crate::proto::teamclu::RpcRequest,
+        r: &crate::proto::teamclu::FetchSessionRequest,
+    ) -> crate::proto::teamclu::RpcResponse {
+        use crate::proto::teamclu::RpcResponse;
+
+        if let Some(tc) = self.teamclu.as_ref() {
+            if let Some(info) = tc.sessions.to_proto_session_info(&r.session_id) {
+                return RpcResponse {
+                    request_id: request.request_id.clone(),
+                    success: true,
+                    error: String::new(),
+                    requester_client_id: String::new(),
+                    requester_actor_id: String::new(),
+                    result: Some(crate::proto::teamclu::rpc_response::Result::SessionInfo(
+                        info,
+                    )),
+                };
+            }
+        }
+
+        match self
+            .backend
+            .fetch_session_with_participants(&r.session_id)
+            .await
+        {
+            Ok(snap) => {
+                if let Some(tc) = &mut self.teamclu {
+                    if let Err(err) = tc
+                        .insert_session_from_backend(&snap.session, &snap.participants)
+                        .await
+                    {
+                        warn!(
+                            ?err,
+                            session_id = %r.session_id,
+                            "FetchSession: failed to cache cloud session locally"
+                        );
+                        return RpcResponse {
+                            request_id: request.request_id.clone(),
+                            success: false,
+                            error: format!("failed to cache session: {err}"),
+                            requester_client_id: String::new(),
+                            requester_actor_id: String::new(),
+                            result: None,
+                        };
+                    }
+                    if let Some(info) = tc.sessions.to_proto_session_info(&r.session_id) {
+                        return RpcResponse {
+                            request_id: request.request_id.clone(),
+                            success: true,
+                            error: String::new(),
+                            requester_client_id: String::new(),
+                            requester_actor_id: String::new(),
+                            result: Some(
+                                crate::proto::teamclu::rpc_response::Result::SessionInfo(info),
+                            ),
+                        };
+                    }
+                }
+                RpcResponse {
+                    request_id: request.request_id.clone(),
+                    success: false,
+                    error: "session_manager not initialized".to_string(),
+                    requester_client_id: String::new(),
+                    requester_actor_id: String::new(),
+                    result: None,
+                }
+            }
+            Err(err) => RpcResponse {
+                request_id: request.request_id.clone(),
+                success: false,
+                error: format!("session {} not found: {err}", r.session_id),
+                requester_client_id: String::new(),
+                requester_actor_id: String::new(),
+                result: None,
+            },
+        }
+    }
+
     /// Transport-agnostic RPC method dispatch shared by the MQTT `rpc/req`
     /// path and the local HTTP `/v1/rpc` path.
     pub(crate) async fn dispatch_rpc_request(
@@ -424,9 +504,9 @@ impl DaemonServer {
         use crate::proto::teamclu::{rpc_request::Method, RpcResponse};
 
         match &request.method {
+            Some(Method::FetchSession(r)) => self.handle_fetch_session_rpc(&request, r).await,
             // ─── Session/idea methods — delegate to SessionManager ───
             Some(Method::CreateSession(_))
-            | Some(Method::FetchSession(_))
             | Some(Method::FetchSessionMessages(_))
             | Some(Method::JoinSession(_))
             | Some(Method::AddParticipant(_))

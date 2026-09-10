@@ -75,7 +75,6 @@ pub struct SessionManager {
     #[allow(dead_code)]
     rpc_server: RpcServer,
     pub(crate) sessions: TeamcluSessionStore,
-    sessions_path: PathBuf,
     pub(crate) config_dir: PathBuf,
     config_actor_id: String,
     team_id: String,
@@ -106,19 +105,13 @@ impl SessionManager {
             team_id.to_string(),
             config_actor_id.to_string(),
         );
-        // Before the first read: sessions/messages/ideas written by a
-        // pre-rebrand daemon live one directory over.
-        let sessions_path = TeamcluSessionStore::default_path(&config_dir);
-        let sessions = TeamcluSessionStore::load(&sessions_path)?;
-
         Ok(Self {
             topics,
             client,
             live_publisher,
             notify_publisher,
             rpc_server,
-            sessions,
-            sessions_path,
+            sessions: TeamcluSessionStore::default(),
             config_dir,
             config_actor_id: config_actor_id.to_string(),
             team_id: team_id.to_string(),
@@ -155,21 +148,29 @@ impl SessionManager {
         self.live_publisher.set_local_tee(tx);
     }
 
-    /// Subscribe to all relevant teamclu topics.
-    pub async fn subscribe_all(&mut self) -> crate::error::Result<()> {
+    /// Team-scoped MQTT topics (RPC + notify). Must complete before marking
+    /// MQTT ready — session/{id}/live is restored separately.
+    pub async fn subscribe_team_topics(&mut self) -> crate::error::Result<()> {
         for topic in self.base_subscription_topics() {
             self.client
                 .subscribe(&topic, DeliveryGuarantee::AtLeastOnce)
                 .await?;
         }
-        // MQTT uses clean sessions, so a reconnect drops broker-side
-        // session/live subscriptions even though this in-memory set still
-        // contains them. Force `refresh_membership_subscriptions` to reissue
-        // every live SUBSCRIBE after `DaemonServer` calls `subscribe_all()`.
-        self.subscribed_live_sessions.clear();
-        self.refresh_membership_subscriptions().await?;
-
         Ok(())
+    }
+
+    /// Re-SUB `session/{id}/live` for sessions this process was already
+    /// tracking. Safe to run outside the CONNACK restore deadline.
+    pub async fn resubscribe_tracked_live_sessions(&mut self) -> crate::error::Result<()> {
+        let tracked: Vec<String> = self.subscribed_live_sessions.iter().cloned().collect();
+        self.subscribed_live_sessions.clear();
+        self.apply_membership_sessions(tracked).await
+    }
+
+    /// Subscribe to all relevant teamclu topics (team + tracked live).
+    pub async fn subscribe_all(&mut self) -> crate::error::Result<()> {
+        self.subscribe_team_topics().await?;
+        self.resubscribe_tracked_live_sessions().await
     }
 
     /// Handle a pre-parsed RPC request. Only dispatches session/idea-scoped methods.
@@ -191,9 +192,6 @@ impl SessionManager {
             Some(teamclu::rpc_request::Method::CreateSession(r)) => {
                 self.handle_create_session(&request, r, primary_agent_id)
                     .await
-            }
-            Some(teamclu::rpc_request::Method::FetchSession(r)) => {
-                self.handle_fetch_session(&request, r).await
             }
             Some(teamclu::rpc_request::Method::FetchSessionMessages(r)) => {
                 self.handle_fetch_session_messages(&request, r).await
@@ -265,11 +263,8 @@ impl SessionManager {
         };
 
         self.sessions.upsert(session);
-        if let Err(e) = self.sessions.save(&self.sessions_path) {
-            warn!("handle_create_session: failed to save sessions: {}", e);
-        }
 
-        if let Err(e) = self.refresh_membership_subscriptions().await {
+        if let Err(e) = self.ensure_session_live_subscription(&session_id).await {
             warn!(
                 session_id = %session_id,
                 "handle_create_session: failed to refresh membership subscriptions: {}",
@@ -287,31 +282,6 @@ impl SessionManager {
             requester_client_id: String::new(),
             requester_actor_id: String::new(),
             result: session_info.map(|s| teamclu::rpc_response::Result::SessionInfo(s)),
-        }
-    }
-
-    async fn handle_fetch_session(
-        &self,
-        req: &RpcRequest,
-        r: teamclu::FetchSessionRequest,
-    ) -> RpcResponse {
-        match self.sessions.to_proto_session_info(&r.session_id) {
-            Some(info) => RpcResponse {
-                request_id: req.request_id.clone(),
-                success: true,
-                error: String::new(),
-                requester_client_id: String::new(),
-                requester_actor_id: String::new(),
-                result: Some(teamclu::rpc_response::Result::SessionInfo(info)),
-            },
-            None => RpcResponse {
-                request_id: req.request_id.clone(),
-                success: false,
-                error: format!("session {} not found", r.session_id),
-                requester_client_id: String::new(),
-                requester_actor_id: String::new(),
-                result: None,
-            },
         }
     }
 
@@ -411,13 +381,10 @@ impl SessionManager {
             }
         }
 
-        if let Err(e) = self.sessions.save(&self.sessions_path) {
-            warn!("handle_join_session: failed to save sessions: {}", e);
-        }
-        if let Err(e) = self.refresh_membership_subscriptions().await {
+        if let Err(e) = self.ensure_session_live_subscription(&r.session_id).await {
             warn!(
                 session_id = %r.session_id,
-                "handle_join_session: failed to refresh membership subscriptions: {}",
+                "handle_join_session: failed to subscribe session live: {}",
                 e
             );
         }
@@ -515,13 +482,10 @@ impl SessionManager {
             }
         }
 
-        if let Err(e) = self.sessions.save(&self.sessions_path) {
-            warn!("handle_add_participant: failed to save sessions: {}", e);
-        }
-        if let Err(e) = self.refresh_membership_subscriptions().await {
+        if let Err(e) = self.ensure_session_live_subscription(&r.session_id).await {
             warn!(
                 session_id = %r.session_id,
-                "handle_add_participant: failed to refresh membership subscriptions: {}",
+                "handle_add_participant: failed to subscribe session live: {}",
                 e
             );
         }
@@ -591,13 +555,10 @@ impl SessionManager {
             }
         };
 
-        if let Err(e) = self.sessions.save(&self.sessions_path) {
-            warn!("handle_remove_participant: failed to save sessions: {}", e);
-        }
         if let Err(e) = self.refresh_membership_subscriptions().await {
             warn!(
                 session_id = %r.session_id,
-                "handle_remove_participant: failed to refresh membership subscriptions: {}",
+                "handle_remove_participant: failed to refresh live subscriptions: {}",
                 e
             );
         }
@@ -643,9 +604,9 @@ impl SessionManager {
         }
     }
 
-    /// Synthesise a local `StoredSession` from a backend fetch, populate
-    /// participants, and trigger a `refresh_membership_subscriptions` so the
-    /// daemon subscribes to `session/{sid}/live` if it is a participant.
+    /// Synthesise an in-memory `StoredSession` from a backend fetch and
+    /// subscribe to `session/{sid}/live` when the local daemon actor is a
+    /// participant.
     ///
     /// iOS creates collab sessions by writing directly to the remote backend
     /// `sessions`/`session_participants`; the daemon only learns about them
@@ -656,10 +617,7 @@ impl SessionManager {
     /// `session_participants` doesn't carry an explicit actor_type. We stamp
     /// the local daemon actor as `personal_agent` (which it is — the daemon
     /// owns the device's primary agent), and other participants as
-    /// `unknown` until a richer source of truth is wired through. This is
-    /// load-bearing for `agents_to_activate`, which only routes messages to
-    /// participants whose stored actor_type is `personal_agent` or
-    /// `role_agent`.
+    /// `unknown` until a richer source of truth is wired through.
     pub async fn insert_session_from_backend(
         &mut self,
         session: &crate::backend::BackendSessionRow,
@@ -695,15 +653,17 @@ impl SessionManager {
             primary_agent_id: session.primary_agent_id.clone().unwrap_or_default(),
         };
 
+        let session_id = session.id.clone();
+        let is_local_participant = local_actor_id.is_some_and(|actor_id| {
+            participants
+                .iter()
+                .any(|participant| participant.actor_id == actor_id)
+        });
         self.sessions.upsert(stored);
-        if let Err(e) = self.sessions.save(&self.sessions_path) {
-            warn!(
-                "insert_session_from_backend: failed to save sessions: {}",
-                e
-            );
-        }
 
-        self.refresh_membership_subscriptions().await?;
+        if is_local_participant {
+            self.ensure_session_live_subscription(&session_id).await?;
+        }
         info!(
             session_id = %session.id,
             "inserted backend-sourced session into teamclu cache"
@@ -1126,36 +1086,6 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Returns the agent actor_ids that should receive this message.
-    ///
-    /// If there's only one agent in the session, all messages are relevant.
-    /// Otherwise, only agents that are explicitly mentioned.
-    #[allow(dead_code)]
-    pub fn agents_to_activate(&self, session_id: &str, message: &teamclu::Message) -> Vec<String> {
-        let session = match self.sessions.find_by_id(session_id) {
-            Some(s) => s,
-            None => return vec![],
-        };
-
-        let agents: Vec<String> = session
-            .participants
-            .iter()
-            .filter(|p| p.actor_type == "personal_agent" || p.actor_type == "role_agent")
-            .map(|p| p.actor_id.clone())
-            .collect();
-
-        if agents.len() == 1 {
-            // Only one agent — all messages activate it
-            return agents;
-        }
-
-        // Multiple agents — only activate those mentioned
-        agents
-            .into_iter()
-            .filter(|actor_id| message.mentions.contains(actor_id))
-            .collect()
-    }
-
     /// Returns the agent actor_ids that should be activated for a idea event.
     ///
     /// - Claimed → activate the claiming agent
@@ -1197,20 +1127,8 @@ impl SessionManager {
         }
     }
 
-    /// Get session_ids where this agent participates.
-    #[allow(dead_code)]
-    pub fn sessions_for_agent(&self, agent_actor_id: &str) -> Vec<String> {
-        self.sessions
-            .sessions
-            .iter()
-            .filter(|s| s.participants.iter().any(|p| p.actor_id == agent_actor_id))
-            .map(|s| s.session_id.clone())
-            .collect()
-    }
-
     /// Fan-out wrapper around `LivePublisher::publish_acp_event` for a single
-    /// session. Mirrors the `publish_agent_message` indirection so server.rs
-    /// can stay decoupled from the LivePublisher type.
+    /// session so server.rs can stay decoupled from the LivePublisher type.
     pub async fn publish_agent_acp_event(
         &self,
         session_id: &str,
@@ -1234,37 +1152,6 @@ impl SessionManager {
 
     /// Publish an agent's output as a session message.
     ///
-    /// `model` is the model id the agent was running on when it produced this
-    /// reply (looked up from `RuntimeManager.current_model` by the caller).
-    /// Pass an empty string for legacy / unknown.
-    #[allow(dead_code)]
-    pub async fn publish_agent_message(
-        &self,
-        session_id: &str,
-        agent_actor_id: &str,
-        content: &str,
-        model: &str,
-    ) {
-        let msg = teamclu::Message {
-            message_id: Uuid::new_v4().to_string()[..8].to_string(),
-            session_id: session_id.to_string(),
-            sender_actor_id: agent_actor_id.to_string(),
-            kind: teamclu::MessageKind::Text as i32,
-            content: content.to_string(),
-            created_at: Utc::now().timestamp(),
-            model: model.to_string(),
-            ..Default::default()
-        };
-        let envelope = teamclu::SessionMessageEnvelope {
-            message: Some(msg),
-            mention_actor_ids: vec![],
-        };
-        let _ = self
-            .live_publisher
-            .publish_message(session_id, agent_actor_id, &envelope)
-            .await;
-    }
-
     /// Emit one logical agent message: append to local TOML, publish to
     /// session/live as `message.created`, and (if `persist_backend`) write
     /// to backend `messages`.
@@ -1457,14 +1344,6 @@ pub struct SessionMessageWrite<'a> {
 }
 
 impl SessionManager {
-    #[allow(dead_code)]
-    pub async fn ensure_session_subscription(
-        &mut self,
-        _session_id: &str,
-    ) -> crate::error::Result<()> {
-        self.refresh_membership_subscriptions().await
-    }
-
     /// Subscribe to `session/{sid}/live` when attaching a runtime. Unlike
     /// `refresh_membership_subscriptions`, this does not depend on the local
     /// participant cache being complete — a race where the backend fetch omits
@@ -1485,8 +1364,8 @@ impl SessionManager {
     }
 
     pub async fn refresh_membership_subscriptions(&mut self) -> crate::error::Result<()> {
-        self.apply_membership_sessions(self.membership_session_ids())
-            .await
+        let tracked: Vec<String> = self.subscribed_live_sessions.iter().cloned().collect();
+        self.apply_membership_sessions(tracked).await
     }
 
     pub async fn apply_membership_sessions(
@@ -1521,7 +1400,11 @@ impl SessionManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    pub fn tracked_live_session_count(&self) -> usize {
+        self.subscribed_live_sessions.len()
+    }
+
+    #[cfg(test)]
     pub fn subscribed_live_sessions(&self) -> Vec<String> {
         self.subscribed_live_sessions.iter().cloned().collect()
     }
@@ -1593,23 +1476,6 @@ impl SessionManager {
 
     fn live_session_topic(&self, session_id: &str) -> String {
         self.topics.session_live(session_id)
-    }
-
-    pub fn membership_session_ids(&self) -> Vec<String> {
-        let local_actor_id = self.actor_id.as_deref();
-        self.sessions
-            .sessions
-            .iter()
-            .filter(|session| {
-                local_actor_id.is_some_and(|actor_id| {
-                    session
-                        .participants
-                        .iter()
-                        .any(|participant| participant.actor_id == actor_id)
-                })
-            })
-            .map(|session| session.session_id.clone())
-            .collect()
     }
 
     async fn request_recent_session_events(&self, _session_id: &str) -> crate::error::Result<()> {
@@ -1735,126 +1601,6 @@ mod tests {
         }
     }
 
-    fn make_agent_participant(actor_id: &str) -> StoredParticipant {
-        StoredParticipant {
-            actor_id: actor_id.to_string(),
-            actor_type: "personal_agent".to_string(),
-            display_name: actor_id.to_string(),
-            joined_at: Utc::now(),
-        }
-    }
-
-    fn make_human_participant(actor_id: &str) -> StoredParticipant {
-        StoredParticipant {
-            actor_id: actor_id.to_string(),
-            actor_type: "human".to_string(),
-            display_name: actor_id.to_string(),
-            joined_at: Utc::now(),
-        }
-    }
-
-    fn make_message(session_id: &str, mentions: Vec<String>) -> teamclu::Message {
-        teamclu::Message {
-            message_id: "msg1".to_string(),
-            session_id: session_id.to_string(),
-            sender_actor_id: "human1".to_string(),
-            kind: teamclu::MessageKind::Text as i32,
-            content: "hello".to_string(),
-            created_at: Utc::now().timestamp(),
-            mentions,
-            ..Default::default()
-        }
-    }
-
-    // --- agents_to_activate tests ---
-
-    #[test]
-    fn test_agents_to_activate_no_session() {
-        let tmp = TempDir::new().unwrap();
-        let sm = dummy_session_manager(tmp.path());
-        let msg = make_message("nonexistent", vec![]);
-        let result = sm.agents_to_activate("nonexistent", &msg);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_agents_to_activate_session_no_agents() {
-        let tmp = TempDir::new().unwrap();
-        let mut sm = dummy_session_manager(tmp.path());
-
-        let mut session = make_session("s1");
-        session.participants.push(make_human_participant("human1"));
-        sm.sessions.upsert(session);
-
-        let msg = make_message("s1", vec![]);
-        let result = sm.agents_to_activate("s1", &msg);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_agents_to_activate_sole_agent_gets_all_messages() {
-        let tmp = TempDir::new().unwrap();
-        let mut sm = dummy_session_manager(tmp.path());
-
-        let mut session = make_session("s1");
-        session.participants.push(make_human_participant("human1"));
-        session.participants.push(make_agent_participant("agent1"));
-        sm.sessions.upsert(session);
-
-        // No mentions — sole agent still receives it
-        let msg = make_message("s1", vec![]);
-        let result = sm.agents_to_activate("s1", &msg);
-        assert_eq!(result, vec!["agent1".to_string()]);
-    }
-
-    #[test]
-    fn test_agents_to_activate_two_agents_mentioned_one() {
-        let tmp = TempDir::new().unwrap();
-        let mut sm = dummy_session_manager(tmp.path());
-
-        let mut session = make_session("s1");
-        session.participants.push(make_agent_participant("agent1"));
-        session.participants.push(make_agent_participant("agent2"));
-        sm.sessions.upsert(session);
-
-        let msg = make_message("s1", vec!["agent1".to_string()]);
-        let result = sm.agents_to_activate("s1", &msg);
-        assert_eq!(result, vec!["agent1".to_string()]);
-    }
-
-    #[test]
-    fn test_agents_to_activate_two_agents_no_mention_returns_empty() {
-        let tmp = TempDir::new().unwrap();
-        let mut sm = dummy_session_manager(tmp.path());
-
-        let mut session = make_session("s1");
-        session.participants.push(make_agent_participant("agent1"));
-        session.participants.push(make_agent_participant("agent2"));
-        sm.sessions.upsert(session);
-
-        let msg = make_message("s1", vec![]);
-        let result = sm.agents_to_activate("s1", &msg);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_agents_to_activate_sender_is_agent_still_returned() {
-        // Filtering out the sender happens in server.rs, not here.
-        // The method should still return the agent even if they sent the message.
-        let tmp = TempDir::new().unwrap();
-        let mut sm = dummy_session_manager(tmp.path());
-
-        let mut session = make_session("s1");
-        session.participants.push(make_agent_participant("agent1"));
-        sm.sessions.upsert(session);
-
-        let mut msg = make_message("s1", vec![]);
-        msg.sender_actor_id = "agent1".to_string();
-
-        let result = sm.agents_to_activate("s1", &msg);
-        assert_eq!(result, vec!["agent1".to_string()]);
-    }
-
     #[test]
     fn test_membership_refresh_targets_only_include_requester() {
         let tmp = TempDir::new().unwrap();
@@ -1890,18 +1636,6 @@ mod tests {
         (tmp, sm)
     }
 
-    fn test_message(sender_actor_id: &str, session_id: &str, content: &str) -> teamclu::Message {
-        teamclu::Message {
-            message_id: "msg-test".to_string(),
-            session_id: session_id.to_string(),
-            sender_actor_id: sender_actor_id.to_string(),
-            kind: teamclu::MessageKind::Text as i32,
-            content: content.to_string(),
-            created_at: Utc::now().timestamp(),
-            ..Default::default()
-        }
-    }
-
     #[tokio::test]
     async fn test_ensure_session_live_subscription_subscribes_without_membership_refresh() {
         let tmp = TempDir::new().unwrap();
@@ -1935,10 +1669,6 @@ mod tests {
             subs.contains(&"sess-1".to_string()),
             "expected sess-1 to be subscribed; got {subs:?}"
         );
-
-        let msg = test_message("user-1", "sess-1", "hello");
-        let activated = sm.agents_to_activate("sess-1", &msg);
-        assert_eq!(activated, vec!["daemon-actor-1".to_string()]);
     }
 
     #[tokio::test]
@@ -1961,7 +1691,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_membership_subscriptions_uses_local_actor_truth() {
+    async fn test_refresh_membership_subscriptions_reapplies_tracked_live_set() {
         let tmp = TempDir::new().unwrap();
         let (client, _eventloop) =
             rumqttc::AsyncClient::new(rumqttc::MqttOptions::new("test", "localhost", 1883), 10);
@@ -1976,24 +1706,16 @@ mod tests {
         .unwrap();
         sm.skip_live_subscription_io = true;
 
-        let mut joined = make_session("joined");
-        joined.participants.push(make_human_participant("member-a"));
-
-        let mut unrelated = make_session("unrelated");
-        unrelated
-            .participants
-            .push(make_human_participant("someone-else"));
-
-        sm.sessions.upsert(joined);
-        sm.sessions.upsert(unrelated);
-
+        sm.apply_membership_sessions(vec!["joined".to_string()])
+            .await
+            .unwrap();
         sm.refresh_membership_subscriptions().await.unwrap();
 
         assert_eq!(sm.subscribed_live_sessions(), vec!["joined".to_string()]);
     }
 
     #[tokio::test]
-    async fn test_subscribe_all_rebuilds_live_set_from_membership_truth() {
+    async fn test_subscribe_all_rebuilds_broker_live_subs_from_tracked_set() {
         let tmp = TempDir::new().unwrap();
         let (client, _eventloop) =
             rumqttc::AsyncClient::new(rumqttc::MqttOptions::new("test", "localhost", 1883), 10);
@@ -2008,11 +1730,9 @@ mod tests {
         .unwrap();
         sm.skip_live_subscription_io = true;
 
-        let mut joined = make_session("joined");
-        joined.participants.push(make_human_participant("member-a"));
-
-        sm.sessions.upsert(joined);
-
+        sm.apply_membership_sessions(vec!["joined".to_string()])
+            .await
+            .unwrap();
         sm.subscribe_all().await.unwrap();
 
         assert_eq!(sm.subscribed_live_sessions(), vec!["joined".to_string()]);
@@ -2034,17 +1754,13 @@ mod tests {
         .unwrap();
         sm.skip_live_subscription_io = true;
 
-        let mut joined = make_session("joined");
-        joined.participants.push(make_human_participant("member-a"));
-
-        sm.sessions.upsert(joined);
+        sm.apply_membership_sessions(vec!["joined".to_string()])
+            .await
+            .unwrap();
         sm.subscribe_all().await.unwrap();
         assert_eq!(sm.subscribed_live_sessions(), vec!["joined".to_string()]);
 
-        let mut unrelated = make_session("replacement");
-        sm.sessions.sessions.clear();
-        sm.sessions.upsert(unrelated);
-
+        sm.apply_membership_sessions(vec![]).await.unwrap();
         sm.subscribe_all().await.unwrap();
 
         assert!(sm.subscribed_live_sessions().is_empty());
@@ -2218,44 +1934,6 @@ mod tests {
         };
 
         let result = sm.agents_to_activate_for_idea("s1", &event);
-        assert!(result.is_empty());
-    }
-
-    // --- sessions_for_agent tests ---
-
-    #[test]
-    fn test_sessions_for_agent_in_two_sessions() {
-        let tmp = TempDir::new().unwrap();
-        let mut sm = dummy_session_manager(tmp.path());
-
-        let mut s1 = make_session("s1");
-        s1.participants.push(make_agent_participant("agent1"));
-        sm.sessions.upsert(s1);
-
-        let mut s2 = make_session("s2");
-        s2.participants.push(make_agent_participant("agent1"));
-        sm.sessions.upsert(s2);
-
-        // s3 does not have agent1
-        let mut s3 = make_session("s3");
-        s3.participants.push(make_agent_participant("agent2"));
-        sm.sessions.upsert(s3);
-
-        let mut result = sm.sessions_for_agent("agent1");
-        result.sort();
-        assert_eq!(result, vec!["s1".to_string(), "s2".to_string()]);
-    }
-
-    #[test]
-    fn test_sessions_for_agent_not_in_any_session() {
-        let tmp = TempDir::new().unwrap();
-        let mut sm = dummy_session_manager(tmp.path());
-
-        let mut s1 = make_session("s1");
-        s1.participants.push(make_agent_participant("agent2"));
-        sm.sessions.upsert(s1);
-
-        let result = sm.sessions_for_agent("agent1");
         assert!(result.is_empty());
     }
 
