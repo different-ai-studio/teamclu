@@ -662,7 +662,13 @@ impl SessionManager {
         self.sessions.upsert(stored);
 
         if is_local_participant {
-            self.ensure_session_live_subscription(&session_id).await?;
+            if let Err(e) = self.ensure_session_live_subscription(&session_id).await {
+                warn!(
+                    session_id = %session_id,
+                    err = %e,
+                    "insert_session_from_backend: ensure_session_live_subscription failed"
+                );
+            }
         }
         info!(
             session_id = %session.id,
@@ -1363,9 +1369,28 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Reconcile `session/{id}/live` subs with the local participant cache
+    /// (e.g. after RemoveParticipant). Does not replay the old tracked set.
     pub async fn refresh_membership_subscriptions(&mut self) -> crate::error::Result<()> {
-        let tracked: Vec<String> = self.subscribed_live_sessions.iter().cloned().collect();
-        self.apply_membership_sessions(tracked).await
+        let desired = self.live_session_ids_from_local_membership();
+        self.apply_membership_sessions(desired).await
+    }
+
+    fn live_session_ids_from_local_membership(&self) -> Vec<String> {
+        let Some(actor_id) = self.actor_id.as_deref() else {
+            return Vec::new();
+        };
+        self.sessions
+            .sessions
+            .iter()
+            .filter(|session| {
+                session
+                    .participants
+                    .iter()
+                    .any(|participant| participant.actor_id == actor_id)
+            })
+            .map(|session| session.session_id.clone())
+            .collect()
     }
 
     pub async fn apply_membership_sessions(
@@ -1691,27 +1716,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_membership_subscriptions_reapplies_tracked_live_set() {
-        let tmp = TempDir::new().unwrap();
-        let (client, _eventloop) =
-            rumqttc::AsyncClient::new(rumqttc::MqttOptions::new("test", "localhost", 1883), 10);
-        let client: Arc<dyn MessagePublisher> = Arc::new(client);
-        let mut sm = SessionManager::new(
-            client,
-            "team1",
-            "dev-a",
-            Some("member-a".to_string()),
-            tmp.path().to_path_buf(),
-        )
-        .unwrap();
-        sm.skip_live_subscription_io = true;
+    async fn test_refresh_membership_subscriptions_matches_local_participant_cache() {
+        let (_tmp, mut sm) = make_test_session_manager_with_actor("member-a");
 
-        sm.apply_membership_sessions(vec!["joined".to_string()])
-            .await
-            .unwrap();
+        sm.insert_session_from_backend_for_test(
+            "joined",
+            "team1",
+            None,
+            &[("member-a", "member"), ("other", "member")],
+        )
+        .await
+        .unwrap();
         sm.refresh_membership_subscriptions().await.unwrap();
 
         assert_eq!(sm.subscribed_live_sessions(), vec!["joined".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_membership_subscriptions_unsubscribes_after_local_remove() {
+        let (_tmp, mut sm) = make_test_session_manager_with_actor("member-a");
+
+        sm.insert_session_from_backend_for_test(
+            "sess-left",
+            "team1",
+            None,
+            &[("member-a", "member"), ("other", "member")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(sm.subscribed_live_sessions(), vec!["sess-left".to_string()]);
+
+        sm.sessions
+            .find_by_id_mut("sess-left")
+            .unwrap()
+            .participants
+            .retain(|p| p.actor_id != "member-a");
+        sm.refresh_membership_subscriptions().await.unwrap();
+
+        assert!(sm.subscribed_live_sessions().is_empty());
     }
 
     #[tokio::test]

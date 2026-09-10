@@ -453,14 +453,6 @@ impl DaemonServer {
                             session_id = %r.session_id,
                             "FetchSession: failed to cache cloud session locally"
                         );
-                        return RpcResponse {
-                            request_id: request.request_id.clone(),
-                            success: false,
-                            error: format!("failed to cache session: {err}"),
-                            requester_client_id: String::new(),
-                            requester_actor_id: String::new(),
-                            result: None,
-                        };
                     }
                     if let Some(info) = tc.sessions.to_proto_session_info(&r.session_id) {
                         return RpcResponse {
