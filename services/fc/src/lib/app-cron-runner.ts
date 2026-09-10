@@ -35,6 +35,11 @@ const TICK_CONCURRENCY = 8;
  * `next_run_at` is untouched, so the following tick picks it up. Overrunning
  * would stack ticks on top of each other, which is the one thing the
  * compare-and-set cannot make safe — it stops double EXECUTION, not pile-up.
+ *
+ * A job already running is bounded by what remains of this budget too (see
+ * executeJob), so the whole tick lands within about a second of it. Both deploy
+ * targets must allow at least that much: the FC function timeout in s.yaml, and
+ * the sidecar's curl budget in docker-compose.yml.
  */
 const MAX_TICK_MS = 45_000;
 /** Execution rows kept per job. Trimmed on write; there is no sweeper. */
@@ -168,7 +173,7 @@ export async function runDueAppCronJobs(deps: AppCronDeps): Promise<AppCronTickR
       if (!job) return;
       const claimed = await claimJob(db, job, now);
       if (!claimed) continue; // Another tick took it. Not an error, not a run.
-      outcomes.push(await executeJob(db, job, { env, doFetch }));
+      outcomes.push(await executeJob(db, job, { env, doFetch, deadline }));
     }
   };
   await Promise.all(
@@ -237,13 +242,16 @@ export async function executeAppCronJob(
   return executeJob(db, job, {
     env: ctx.env ?? process.env,
     doFetch: ctx.doFetch ?? fetch,
+    // A manual run is one request in its own invocation — there is no tick to
+    // share, so the job's own timeout is the whole budget.
+    deadline: Date.now() + job.timeout_ms,
   });
 }
 
 async function executeJob(
   db: any,
   job: JobRow,
-  ctx: { env: NodeJS.ProcessEnv; doFetch: typeof fetch },
+  ctx: { env: NodeJS.ProcessEnv; doFetch: typeof fetch; deadline: number },
 ): Promise<AppCronTickOutcome> {
   const startedAt = new Date();
 
@@ -269,7 +277,19 @@ async function executeJob(
 
   const url = `${base}${job.path.startsWith("/") ? job.path : `/${job.path}`}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), job.timeout_ms);
+  // Bounded by whatever is LEFT of the tick, not just by the job's own setting.
+  //
+  // The deadline above only stops new jobs being claimed; a job already in
+  // flight can outlive it by its full timeout. That is survivable on self-host,
+  // where the sidecar's curl gives up but the container keeps writing the run
+  // row — and fatal on Function Compute, which kills the invocation at the
+  // function timeout with the row unwritten. The job would then show no history
+  // at all for that minute, which reads as "never ran" rather than "timed out".
+  //
+  // A floor of one second so a tick that is already past its deadline still
+  // gives the job a real attempt rather than aborting before the connection.
+  const budgetMs = Math.max(1000, Math.min(job.timeout_ms, ctx.deadline - Date.now()));
+  const timer = setTimeout(() => controller.abort(), budgetMs);
   try {
     const method = job.method.toUpperCase();
     const res = await ctx.doFetch(url, {
@@ -311,7 +331,7 @@ async function executeJob(
       status: aborted ? "timeout" : "failed",
       responseStatus: null,
       error: aborted
-        ? `超过 ${job.timeout_ms}ms 没有响应`
+        ? `超过 ${budgetMs}ms 没有响应`
         : e instanceof Error
           ? e.message
           : String(e),
