@@ -332,13 +332,28 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  // `delimiter=/` browses ONE level: everything deeper collapses into `folders`.
+  // Without it the listing is fully recursive, which is what the control panel's
+  // count wants and what a browser must not do.
   router.get("/v1/apps/:appId/storage/objects", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const out = await ctx.repository.listAppFiles(appId, {
       prefix: ctx.query.get("prefix"),
       after: ctx.query.get("after"),
       limit: parseLimit(ctx.query.get("limit")),
+      delimiter: ctx.query.get("delimiter"),
     });
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // Deleting a folder is deleting every key under a prefix. `prompt`, like a
+  // single file — a folder is not a different kind of object, and emptying the
+  // WHOLE app is the separate admin-only purge below.
+  router.delete("/v1/apps/:appId/storage/folder", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const prefix = ctx.query.get("prefix") ?? "";
+    const out = await ctx.repository.deleteAppFolder(appId, prefix);
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });

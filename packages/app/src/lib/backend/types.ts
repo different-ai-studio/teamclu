@@ -1464,6 +1464,8 @@ export interface AppsBackend {
   ): Promise<{ url: string; size?: number; contentType?: string | null } | null>;
   /** Delete one file. */
   deleteAppFile(appId: string, path: string): Promise<void>;
+  /** Delete every key under one folder. `prompt`+, like deleting each file. */
+  deleteAppFolder(appId: string, prefix: string): Promise<{ deleted: number } | null>;
   /** Delete every file. Irreversible, `admin` only. */
   purgeAppFiles(appId: string): Promise<{ deleted: number } | null>;
   /** Set or clear (null) this app's ceiling. */
@@ -1520,6 +1522,14 @@ export interface AppFile {
 
 export interface AppFilesPage {
   items: AppFile[]
+  /**
+   * Sub-folders at this level, each ending in `/` and relative to the app root.
+   *
+   * Only populated when the request asked for a delimiter. An object store has
+   * no directories — these are the common prefixes below the next separator,
+   * which is what makes browsing one level possible at all.
+   */
+  folders: string[]
   nextCursor: string | null
   /** False for `view`, so the panel does not offer controls that would 404. */
   canWrite: boolean
@@ -1529,6 +1539,8 @@ export interface AppFilesQuery {
   prefix?: string | null
   after?: string | null
   limit?: number
+  /** `"/"` to browse one level. Absent lists every key under the prefix. */
+  delimiter?: string | null
 }
 
 export interface AppStorageUsage {

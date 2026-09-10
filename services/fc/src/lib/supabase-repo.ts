@@ -132,7 +132,7 @@ import {
 function appEnvSecretKind(key: string): string {
   return `env:${key}`;
 }
-import { appFileKey, appFilesPrefix } from "./provisioning/apps-oss.js";
+import { appFileKey, appFilesPrefix, normalizeAppFolderPrefix } from "./provisioning/apps-oss.js";
 import { isOverQuota, type AppStorageOps } from "./provisioning/app-storage.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
@@ -4563,7 +4563,13 @@ export function createSupabaseBusinessRepository(options) {
 
     async listAppFiles(
       appId: string,
-      query: { prefix?: string | null; after?: string | null; limit?: number } = {},
+      query: {
+        prefix?: string | null;
+        after?: string | null;
+        limit?: number;
+        /** "/" to browse one level; absent lists every key under the prefix. */
+        delimiter?: string | null;
+      } = {},
     ) {
       const access = await this.resolveAppStorageAccess(appId, "view");
       if (!access) return null;
@@ -4571,15 +4577,48 @@ export function createSupabaseBusinessRepository(options) {
       const bucket = ops.bucketFor(access.app);
       // A caller-supplied prefix filters WITHIN the app's own space; it is
       // appended to the app prefix and can never replace it.
-      const sub = (query.prefix ?? "").replace(/^\/+/, "");
+      const sub = normalizeAppFolderPrefix(query.prefix);
       const page = await ops.list(bucket, `${appFilesPrefix(appId)}${sub}`, {
         after: query.after ?? null,
         limit: query.limit,
+        delimiter: query.delimiter ?? null,
       });
       // Paths come back relative to the filtered prefix; re-attach the caller's
       // sub-prefix so what the client sees is always relative to the app root.
       const items = sub ? page.items.map((e) => ({ ...e, path: `${sub}${e.path}` })) : page.items;
-      return { items, nextCursor: page.nextCursor, canWrite: access.level !== "view" };
+      const folders = sub ? page.folders.map((f) => `${sub}${f}`) : page.folders;
+      return {
+        items,
+        folders,
+        nextCursor: page.nextCursor,
+        canWrite: access.level !== "view",
+      };
+    },
+
+    /**
+     * Delete everything under one folder.
+     *
+     * `prompt` and above, matching a single file's delete — a folder is not a
+     * different kind of thing in an object store, it is a prefix, and someone
+     * who may delete each of its files one at a time may delete them together.
+     *
+     * The empty prefix is REFUSED here: that is the whole app, and wiping the
+     * app's storage is `purgeAppFiles`, which is admin-only and asks first.
+     */
+    async deleteAppFolder(appId: string, prefix: string) {
+      const access = await this.resolveAppStorageAccess(appId, "prompt");
+      if (!access) return null;
+      const sub = normalizeAppFolderPrefix(prefix);
+      if (!sub) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "a folder prefix is required; use the purge endpoint to empty the whole app",
+        );
+      }
+      const ops = this.requireAppStorage();
+      const deleted = await ops.removePrefix(ops.bucketFor(access.app), `${appFilesPrefix(appId)}${sub}`);
+      return { deleted };
     },
 
     async getAppStorageUsage(appId: string) {

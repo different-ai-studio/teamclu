@@ -282,6 +282,7 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
       if (query.prefix) params.set("prefix", query.prefix);
       if (query.after) params.set("after", query.after);
       if (query.limit) params.set("limit", String(query.limit));
+      if (query.delimiter) params.set("delimiter", query.delimiter);
       const qs = params.toString();
       try {
         return await client.get<AppFilesPage>(
@@ -343,6 +344,17 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
       await client.delete<{ ok: true }>(
         `/v1/apps/${encodeURIComponent(appId)}/storage/objects/${encodeFilePath(path)}`,
       );
+    },
+
+    async deleteAppFolder(appId, prefix) {
+      try {
+        return await client.delete<{ deleted: number }>(
+          `/v1/apps/${encodeURIComponent(appId)}/storage/folder?prefix=${encodeURIComponent(prefix)}`,
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
     },
 
     async purgeAppFiles(appId) {

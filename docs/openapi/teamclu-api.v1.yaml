@@ -6794,13 +6794,31 @@ paths:
         never address another app's; `after` is the opaque cursor from a
         previous page. `canWrite` tells the panel whether to render upload and
         delete, so a `view` member is not shown controls that would 404.
+
+        With `delimiter=/` the store collapses everything below the next
+        separator into `folders`, and `items` holds only the objects sitting
+        directly at `prefix` — one level, the way a file browser reads. Without
+        it the listing is fully RECURSIVE, which is what a count or a sweep
+        wants and what a browser must not do: an app writing
+        `uploads/<user>/<file>` has thousands of keys and about six things a
+        person wants to look at.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
         - name: prefix
           in: query
+          description: >-
+            Folder to list, relative to the app root. Leading slashes and `..`
+            segments are stripped; an object store has no parent directory.
           schema:
             type: string
+        - name: delimiter
+          in: query
+          description: >-
+            `/` to browse one level. Omit for a fully recursive listing.
+          schema:
+            type: string
+            enum: ["/"]
         - name: after
           in: query
           schema:
@@ -6816,16 +6834,64 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items, canWrite]
+                required: [items, folders, canWrite]
                 properties:
                   items:
                     type: array
                     items:
                       $ref: "#/components/schemas/AppFile"
+                  folders:
+                    type: array
+                    description: >-
+                      Sub-folders at this level, each ending in `/` and relative
+                      to the app root. Empty unless `delimiter` was given — an
+                      object store has no directories, these are the common
+                      prefixes below the next separator.
+                    items:
+                      type: string
                   nextCursor:
                     type: [string, "null"]
                   canWrite:
                     type: boolean
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/folder:
+    delete:
+      operationId: deleteAppFolder
+      summary: Delete every file under one folder
+      description: |
+        Requires `prompt`, the same tier as deleting a single file — a folder is
+        not a different kind of object in a store like this, it is a prefix, and
+        whoever may delete each of its files one at a time may delete them
+        together.
+
+        An EMPTY prefix is refused with 400: that would be the whole app, and
+        emptying an app's storage is the separate admin-only purge.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - name: prefix
+          in: query
+          required: true
+          description: Folder to empty, relative to the app root.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: How many objects were removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: integer }
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
         "404":

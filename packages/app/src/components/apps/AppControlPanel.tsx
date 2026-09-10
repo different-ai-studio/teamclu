@@ -284,6 +284,8 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
       const [access, tables, files, usage, cron, env, gitHead] = await Promise.allSettled([
         backend.listAppAccess(app.id),
         backend.listAppDataTables(app.id),
+        // No delimiter on purpose: this is a COUNT, and one level of the root
+        // folder is not the answer to "how many files does this app have".
         backend.listAppFiles(app.id, { limit: 100 }),
         backend.getAppStorageUsage(app.id),
         backend.listAppCronJobs(app.id),

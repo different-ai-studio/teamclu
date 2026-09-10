@@ -215,3 +215,20 @@ export function defaultStorageQuotaBytes(env: Env = process.env): number | null 
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 }
+
+/**
+ * A caller-supplied folder prefix, made safe to append to the app's own.
+ *
+ * Leading slashes go (they would produce a double separator), `..` segments go
+ * (an object store has no parent traversal, but the string would still address
+ * a literal ".." key nobody meant), and a non-empty prefix always ends in "/"
+ * so that `logs` cannot also match `logs-archive/`.
+ */
+export function normalizeAppFolderPrefix(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const parts = raw
+    .split("/")
+    .map((p) => p.trim())
+    .filter((p) => p !== "" && p !== "." && p !== "..");
+  return parts.length === 0 ? "" : `${parts.join("/")}/`;
+}
