@@ -154,10 +154,17 @@ update amux.app_cron_jobs
 - **self-host（今天在跑的那个）**：compose 里加一个 `app-cron` 服务，对齐整分钟后
   `curl` 循环。**不放 profile 里** —— 放 profile 就是默认不跑，而一个默认不跑的定时
   任务等于没有。
-- **阿里云 FC**：同一个端点，心跳由外部每分钟 `curl` 一次（一行，跟 sidecar 里那条
-  完全一样）。这里**没有**用 FC 的 timer trigger：timer 事件不是 HTTP 请求，落到 web
-  函数上的路径和头都跟普通请求不同，猜错的结果是这一侧静默没有调度器 —— 而这正是本
-  设计要消灭的失败模式。端点是有鉴权的，谁来打都一样。
+- **阿里云 FC**：`s.yaml` 里声明一个 timer trigger（`app-cron`，六段式 `0 * * * * *`
+  —— 阿里云的表达式第一段是秒）。
+
+  这里原来写的是「不用 timer trigger，因为 timer 事件不是 HTTP 请求」—— **那是猜的，
+  而且是错的**。同账号的 `banana-api` 上跑着 20 多个 timer trigger 打自己的 HTTP 路径，
+  payload 形如 `{"path":"/api/cron/…","method":"POST","body":{…}}`，其中就有每分钟一次
+  的。timer 确实能驱动 web 函数。
+
+  它**不能**做的是加请求头：payload 只有 `path` / `method` / `body` 三个字段。所以密钥
+  走 **body**，端点两种都收（sidecar 发 bearer，timer 放 body）。没走 query 是因为
+  query 会进 URL 和访问日志，body 不会。
 
 `APP_CRON_SECRET` 必须**两边都声明**（compose 的 `environment:` 白名单 + `s.yaml`），
 少一边就是那一边静默没有 —— CLAUDE.md 里点名的坑，`deploy-env-parity.test.ts` 守着。
