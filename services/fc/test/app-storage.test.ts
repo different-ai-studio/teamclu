@@ -130,3 +130,57 @@ test("truncation is reported as a cursor, and only when truncated", async () => 
   const done = opsWith({ Contents: [], IsTruncated: false, NextContinuationToken: "ignored" });
   assert.equal((await done.ops.list("apps", "p/", {})).nextCursor, null);
 });
+
+// --- presigned uploads -------------------------------------------------------
+
+test("a presigned PUT carries no checksum parameters", async () => {
+  // Alibaba OSS has no flexible-checksum extension, and aws-sdk >= 3.729
+  // volunteers one on every PutObject by default. On a presigned URL it is
+  // SIGNED into the query string, computed over the body known at signing time
+  // — nothing — so the browser then uploads real bytes against a signature that
+  // promises an empty payload and OSS rejects the request.
+  //
+  // Signing needs no network, so this is checkable here: the guard is that the
+  // URL comes back clean.
+  const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
+  const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+  const { getAppsS3Client } = await import("../src/lib/provisioning/apps-oss.js");
+
+  const client = getAppsS3Client({
+    bucket: "b",
+    region: "cn-shenzhen",
+    endpoint: "https://oss-cn-shenzhen.aliyuncs.com",
+    accessKeyId: "AKID",
+    accessKeySecret: "SECRET",
+    forcePathStyle: false,
+  } as any);
+
+  // `as any` on the client, the way team-blob-storage.ts already calls it: the
+  // presigner declares its own structural Client type and the two never line up
+  // nominally. Nothing about the assertion below depends on the cast.
+  const url = await getSignedUrl(
+    client as any,
+    new PutObjectCommand({ Bucket: "b", Key: "app-files/app-1/AGENTS.md" }),
+    { expiresIn: 900 },
+  );
+
+  assert.ok(!/x-amz-checksum-/i.test(url), `checksum parameter in ${url}`);
+  assert.ok(!/x-amz-sdk-checksum-algorithm/i.test(url), `checksum algorithm in ${url}`);
+  // The signature itself must still be there — a URL with neither would mean
+  // this test passes on something that could never work at all.
+  assert.match(url, /X-Amz-Signature=/);
+
+  // And the default really is the other way round, so this guard is not
+  // asserting something that would hold with no configuration at all.
+  const bare = new S3Client({
+    region: "cn-shenzhen",
+    endpoint: "https://oss-cn-shenzhen.aliyuncs.com",
+    credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+  });
+  const bareUrl = await getSignedUrl(
+    bare as any,
+    new PutObjectCommand({ Bucket: "b", Key: "k" }),
+    { expiresIn: 900 },
+  );
+  assert.match(bareUrl, /x-amz-checksum-crc32/i, "the SDK default was expected to add one");
+});
