@@ -1611,6 +1611,7 @@
     "deleteFailed": "Delete failed",
     "deleteDenied": "App not found, or you cannot delete it",
     "deleted": "App deleted",
+    "cloneFailed": "Repository clone failed",
     "seedErrorReason": {
       "cloneTimeout": "The clone timed out. Most often this machine's git credential helper is waiting on a sign-in window that has nowhere to appear — clone the repo once in a terminal, then try again."
     },

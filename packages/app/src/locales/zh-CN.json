@@ -1611,6 +1611,7 @@
     "deleteFailed": "删除失败",
     "deleteDenied": "应用不存在或无权删除",
     "deleted": "应用已删除",
+    "cloneFailed": "仓库克隆失败",
     "seedErrorReason": {
       "cloneTimeout": "克隆超时。多半是这台机器的 git 凭证助手在等一个弹不出来的登录框；先在终端里 clone 一次这个仓库，再回来重试。"
     },

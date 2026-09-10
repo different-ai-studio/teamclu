@@ -4,6 +4,7 @@ import { publicDeployConfirm } from "@/lib/apps/app-deploy-confirm";
 const mocks = vi.hoisted(() => ({
   listApps: vi.fn(),
   createApp: vi.fn(),
+  deleteApp: vi.fn(),
   updateAppProvisionStatus: vi.fn(),
   updateAppDeployStatus: vi.fn(),
   deployApp: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("@/lib/backend", () => ({
     apps: {
       listApps: mocks.listApps,
       createApp: mocks.createApp,
+      deleteApp: mocks.deleteApp,
       updateAppProvisionStatus: mocks.updateAppProvisionStatus,
       updateAppDeployStatus: mocks.updateAppDeployStatus,
       deployApp: mocks.deployApp,
@@ -141,6 +143,7 @@ describe("apps-store", () => {
     mocks.workdirExists.mockResolvedValue(false);
     mocks.readDir.mockResolvedValue([]);
     mocks.getGitCredential.mockResolvedValue(gitCred);
+    mocks.deleteApp.mockResolvedValue(true);
     const { useAppsStore } = await import("./apps-store");
     useAppsStore.setState({
       items: [],
@@ -413,22 +416,31 @@ describe("apps-store", () => {
 
   it("create: a clone that timed out explains what the raw error does not", async () => {
     mocks.createApp.mockResolvedValueOnce(
-      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+      appRow({
+        id: "app-timeout",
+        provisionStatus: "pending",
+        gitRemoteUrl: "https://github.com/owner/private.git",
+      }),
     );
-    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) =>
+      appRow({ id: "app-timeout", provisionStatus: st }),
+    );
+    mocks.deleteApp.mockResolvedValueOnce(true);
     mocks.seedDaemonApp.mockResolvedValueOnce(
       seedResult("failed", { error: '{"error":{"message":"git clone timed out after 5 minutes"}}' }),
     );
     const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().create({
-      teamId: "team-1",
-      name: "N",
-      type: "static_web",
-      visibility: "team",
-      gitRemoteUrl: "https://github.com/owner/private.git",
-    });
-    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
-    expect(String((opts as any)?.description)).toMatch(/凭证助手/);
+    await expect(
+      useAppsStore.getState().create({
+        teamId: "team-1",
+        name: "N",
+        type: "static_web",
+        visibility: "team",
+        gitRemoteUrl: "https://github.com/owner/private.git",
+      }),
+    ).rejects.toThrow(/凭证助手/);
+    expect(mocks.deleteApp).toHaveBeenCalledWith("app-timeout");
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("create: repo_created fetches deploy key and seeds with push", async () => {
@@ -495,27 +507,37 @@ describe("apps-store", () => {
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
 
-  it("create: a failed clone tells the user what git said", async () => {
+  it("create: a failed remote clone rolls the empty app back and throws", async () => {
     mocks.createApp.mockResolvedValueOnce(
-      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/nope.git" }),
+      appRow({
+        id: "app-orphan",
+        provisionStatus: "pending",
+        gitRemoteUrl: "https://github.com/owner/nope.git",
+      }),
     );
-    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) =>
+      appRow({ id: "app-orphan", provisionStatus: st }),
+    );
+    mocks.deleteApp.mockResolvedValueOnce(true);
     mocks.seedDaemonApp.mockResolvedValueOnce(
       seedResult("failed", { error: "git clone failed: repository not found" }),
     );
     const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().create({
-      teamId: "team-1",
-      name: "N",
-      type: "static_web",
-      visibility: "team",
-      gitRemoteUrl: "https://github.com/owner/nope.git",
-    });
+    await expect(
+      useAppsStore.getState().create({
+        teamId: "team-1",
+        name: "N",
+        type: "static_web",
+        visibility: "team",
+        gitRemoteUrl: "https://github.com/owner/nope.git",
+      }),
+    ).rejects.toThrow("git clone failed: repository not found");
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["error"]);
-    expect(mocks.toastError).toHaveBeenCalledWith(
-      "仓库克隆失败",
-      { description: "git clone failed: repository not found" },
-    );
+    expect(mocks.deleteApp).toHaveBeenCalledWith("app-orphan");
+    expect(useAppsStore.getState().items).toEqual([]);
+    // The form shows the error; no "clone failed" toast that would make the
+    // create look half-successful.
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("create: a template app that fails to seed does not toast a clone error", async () => {
@@ -530,6 +552,35 @@ describe("apps-store", () => {
       visibility: "team",
     });
     expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(mocks.deleteApp).not.toHaveBeenCalled();
+  });
+
+  it("reseed: a failed clone toasts and keeps the app row", async () => {
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(
+      seedResult("failed", { error: "git clone failed: repository not found" }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({
+      items: [
+        appRow({
+          provisionStatus: "error",
+          gitRemoteUrl: "https://github.com/owner/nope.git",
+          teamId: "team-1",
+        }),
+      ],
+      loaded: true,
+      loading: false,
+      error: null,
+      teamId: "team-1",
+    });
+    await useAppsStore.getState().reseed("app-1");
+    expect(mocks.deleteApp).not.toHaveBeenCalled();
+    expect(useAppsStore.getState().items).toHaveLength(1);
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "仓库克隆失败",
+      { description: "git clone failed: repository not found" },
+    );
   });
 
   it("create: a thrown status PATCH does not reject create", async () => {
