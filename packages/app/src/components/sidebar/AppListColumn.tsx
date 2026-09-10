@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, ChevronRight, LayoutGrid, Loader2 } from 'lucide-react'
+import { AppWindow, ChevronRight, Download, LayoutGrid, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
@@ -11,27 +11,55 @@ import { openAppLibrary, openCreateApp } from '@/lib/tabs/app-tabs'
 import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appStatusMeta, showsPublicBadge } from '@/lib/apps/app-list-helpers'
+import { resolveAppLocality } from '@/lib/apps/app-locality'
 import type { AppRow } from '@/lib/backend/types'
 
-function AppRowButton({ app, onSelect }: { app: AppRow; onSelect: () => void }) {
+function AppRowButton({
+  app,
+  local,
+  downloading,
+  onSelect,
+  onDownload,
+}: {
+  app: AppRow
+  /** `null` while the daemon has not answered — treated as "here". */
+  local: boolean | null
+  downloading: boolean
+  onSelect: () => void
+  onDownload: () => void
+}) {
   const { t } = useTranslation()
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const meta = appStatusMeta(app, deploying)
   const typeMeta = resolveAppType(app.type)
   const TypeIcon = appTypeIcon(app.type)
   const publicLive = showsPublicBadge(app)
+  // Only a definite "no" changes the row. Unknown keeps the normal one.
+  const away = local === false
+  const awayLabel = t('apps.notDownloadedBadge', '未下载')
 
   return (
     <button
       type="button"
-      onClick={onSelect}
-      className="group flex w-full items-center gap-3 border-l-2 border-transparent py-2.5 pl-4 pr-3 text-left transition-colors hover:bg-selected/40"
+      onClick={away ? onDownload : onSelect}
+      disabled={downloading}
+      title={
+        away
+          ? t('apps.notDownloadedHint', '这个应用还没下载到本机，点击下载后才能打开它的会话')
+          : undefined
+      }
+      className={cn(
+        'group flex w-full items-center gap-3 border-l-2 border-transparent py-2.5 pl-4 pr-3 text-left transition-colors hover:bg-selected/40',
+        // Dimmed, not hidden. The row is still the app's place in the list —
+        // it just has nothing behind it on this machine yet.
+        away && 'opacity-55 hover:opacity-100',
+      )}
     >
       {/* One glyph per type, on a quiet disc. Eleven identical coral marks
           down the left edge said nothing about eleven different apps, and
           spent the palette's whole coral budget saying it. */}
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-panel text-muted-foreground">
-        {deploying ? (
+        {deploying || downloading ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
           <TypeIcon className="h-[15px] w-[15px]" />
@@ -40,6 +68,14 @@ function AppRowButton({ app, onSelect }: { app: AppRow; onSelect: () => void }) 
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-[13px] font-semibold text-foreground">{app.name}</span>
+          {away && (
+            <span
+              data-testid="app-row-not-downloaded"
+              className="shrink-0 rounded border border-border px-1 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              {awayLabel}
+            </span>
+          )}
           {publicLive && (
             <span className="shrink-0 rounded border border-border px-1 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
               {t('apps.publicBadge', '公开')}
@@ -62,19 +98,29 @@ function AppRowButton({ app, onSelect }: { app: AppRow; onSelect: () => void }) 
       </span>
       {/* The row drills one level deeper into this same column, which is not
           something the other column-two lists do — the chevron is what says so
-          before the click rather than after it. */}
-      <ChevronRight className="h-4 w-4 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+          before the click rather than after it. An app that is not here does
+          something else entirely, so it says that instead. */}
+      {away ? (
+        <Download className="h-4 w-4 shrink-0 text-faint transition-opacity group-hover:text-muted-foreground" />
+      ) : (
+        <ChevronRight className="h-4 w-4 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+      )}
     </button>
   )
 }
 
 /**
- * Level one of column two's Apps section: the apps on this machine.
+ * Level one of column two's Apps section: the team's apps, marked by whether
+ * each one is on this machine.
  *
- * Picking one swaps this column for that app's sessions (`AppsColumn` decides,
- * on `selectedAppId`), which is why nothing here opens a session or a dialog
- * beyond creating. The library — every app the team has, downloadable — is not
- * a list of what is here, so it opens in column three instead of replacing this.
+ * Picking one that is here swaps this column for that app's sessions
+ * (`AppsColumn` decides, on `selectedAppId`). Picking one that is not here
+ * downloads it first and only then drills in — an app with no checkout has
+ * sessions in the cloud but nothing for an agent to run in, so opening its
+ * session list would offer work that cannot happen.
+ *
+ * The library in column three still exists for what this list cannot do:
+ * search, creators, and every app at once regardless of section.
  */
 export function AppListColumn() {
   const { t } = useTranslation()
@@ -82,12 +128,14 @@ export function AppListColumn() {
   const sidebarCollapsed = sidebarState === 'collapsed'
 
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? '')
-  const allItems = useAppsStore((s) => s.items)
+  const items = useAppsStore((s) => s.items)
   const localAppIds = useAppsStore((s) => s.localAppIds)
   const loading = useAppsStore((s) => s.loading)
   const refreshLocalApps = useAppsStore((s) => s.refreshLocalApps)
   const load = useAppsStore((s) => s.load)
   const selectApp = useAppsStore((s) => s.selectApp)
+  const download = useAppsStore((s) => s.download)
+  const [downloadingId, setDownloadingId] = React.useState<string | null>(null)
 
   const createLabel = t('apps.createTitle', '新建')
   const libraryLabel = t('apps.libraryTitle', '所有应用')
@@ -103,18 +151,26 @@ export function AppListColumn() {
   }, [teamId, load, refreshLocalApps])
 
   /**
-   * Only what is actually on this machine. Everything else lives in the library
-   * behind a download.
+   * Fetch it, then drill in — but only if the files actually landed.
    *
-   * `localAppIds === null` means the daemon has not answered yet, which is not
-   * the same as "nothing is local": showing an empty list then would tell the
-   * user their apps are gone every time the daemon is slow to start.
+   * `download` surfaces its own reason when it fails (no repo to fetch, daemon
+   * down, no access to the forge), so there is nothing to say here; what there
+   * is to do is not select an app whose session list still cannot open
+   * anything.
    */
-  const items = React.useMemo(() => {
-    if (localAppIds === null) return allItems
-    const local = new Set(localAppIds)
-    return allItems.filter((app) => local.has(app.id))
-  }, [allItems, localAppIds])
+  const handleDownload = React.useCallback(
+    async (app: AppRow) => {
+      if (downloadingId) return
+      setDownloadingId(app.id)
+      try {
+        await download(app)
+        if (useAppsStore.getState().localAppIds?.includes(app.id)) selectApp(app.id)
+      } finally {
+        setDownloadingId(null)
+      }
+    },
+    [download, downloadingId, selectApp],
+  )
 
   return (
     <div className="flex h-full min-w-0 flex-col border-r border-border bg-background">
@@ -164,11 +220,6 @@ export function AppListColumn() {
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
             <p className="text-[13px] text-muted-foreground">{t('apps.empty', '还没有内容')}</p>
-            {/*
-              Two ways out, because there are two reasons this list is empty:
-              nothing has been created yet, or the team's apps are simply not on
-              this machine — and the second is the more common one.
-            */}
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -190,7 +241,14 @@ export function AppListColumn() {
           </div>
         ) : (
           items.map((app) => (
-            <AppRowButton key={app.id} app={app} onSelect={() => selectApp(app.id)} />
+            <AppRowButton
+              key={app.id}
+              app={app}
+              local={resolveAppLocality(localAppIds, app.id)}
+              downloading={downloadingId === app.id}
+              onSelect={() => selectApp(app.id)}
+              onDownload={() => void handleDownload(app)}
+            />
           ))
         )}
       </div>

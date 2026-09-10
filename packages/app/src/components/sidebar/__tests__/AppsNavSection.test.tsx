@@ -55,15 +55,15 @@ describe('AppsNavSection', () => {
     expect(screen.getAllByRole('button')).toHaveLength(1)
   })
 
-  it('counts only what is on this machine', () => {
+  it('counts the same set column two lists — every app, here or not', () => {
+    // It used to count only local ones, which put a badge saying 1 above a
+    // column showing 2 the moment that column stopped hiding the rest.
     useAppsStore.setState({ localAppIds: ['app-2'] })
     render(<AppsNavSection />)
-    expect(screen.getByRole('button', { name: /^应用/ })).toHaveTextContent('1')
+    expect(screen.getByRole('button', { name: /^应用/ })).toHaveTextContent('2')
   })
 
   it('counts everything while the daemon has not answered yet', () => {
-    // `null` is "unknown", not "none" — counting zero here would say the
-    // user's apps are gone every time the daemon is slow to start.
     useAppsStore.setState({ localAppIds: null })
     render(<AppsNavSection />)
     expect(screen.getByRole('button', { name: /^应用/ })).toHaveTextContent('2')

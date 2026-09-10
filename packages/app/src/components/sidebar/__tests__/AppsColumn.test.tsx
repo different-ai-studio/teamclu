@@ -35,7 +35,11 @@ const mkApp = (id: string, name: string): AppRow => ({
 
 describe('AppsColumn', () => {
   beforeEach(() => {
-    useAppsStore.setState({ items: [mkApp('app-1', 'Alpha')], selectedAppId: null })
+    useAppsStore.setState({
+      items: [mkApp('app-1', 'Alpha')],
+      selectedAppId: null,
+      localAppIds: ['app-1'],
+    })
   })
 
   it('shows the app list when nothing is selected', () => {
@@ -45,6 +49,23 @@ describe('AppsColumn', () => {
 
   it('shows the selected app’s sessions', () => {
     useAppsStore.setState({ selectedAppId: 'app-1' })
+    render(<AppsColumn />)
+    expect(screen.getByTestId('app-sessions')).toHaveTextContent('Alpha')
+  })
+
+  it('will not open the sessions of an app that is not on this machine', () => {
+    // They exist in the cloud, but nothing here can run in them — and the list
+    // is where the download that fixes that lives.
+    useAppsStore.setState({ selectedAppId: 'app-1', localAppIds: [] })
+    render(<AppsColumn />)
+    expect(screen.getByTestId('app-list')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-sessions')).not.toBeInTheDocument()
+  })
+
+  it('still opens them while the daemon has not answered', () => {
+    // `null` is unknown, not "no": bouncing the user back to the list for the
+    // second amuxd takes to start would break every launch.
+    useAppsStore.setState({ selectedAppId: 'app-1', localAppIds: null })
     render(<AppsColumn />)
     expect(screen.getByTestId('app-sessions')).toHaveTextContent('Alpha')
   })
