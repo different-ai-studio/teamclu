@@ -439,7 +439,7 @@ HTTP/1.1 403 Forbidden
 
 | 工具 | 控制面 | 动作 |
 |---|---|---|
-| `manage_app` | 应用组、部署、运行日志、删除 | list / status / sessions / update / deploy / logs / delete |
+| `manage_app` | 新建、应用组（含本机路径、重新播种）、下载到本机、部署、运行日志、删除 | list / status / sessions / create / update / reseed / download / move_workdir / deploy / logs / delete |
 | `manage_app_access` | 协作权限 | list / grant / revoke |
 | `manage_app_data` | 线上数据 | tables / rows / update_row / delete_row |
 | `manage_app_files` | 应用附件 | usage / list / download / upload / delete / delete_folder / purge / set_quota |
@@ -463,8 +463,28 @@ HTTP/1.1 403 Forbidden
 - **agent 改完 UI 要跟上**：桌面端每次改动发 `apps:changed-by-agent`，
   `hooks/use-agent-app-changes.ts` 合并一串事件后重读应用列表和控制面计数。
 
-本机那几件事（新建、重新播种、下载到本机、移动目录）要把前端的播种和 workspace 行绑定逻辑
-移植成 Rust，单独一期做。
+### 13.1 本机那几件事：新建、重新播种、下载、移动目录
+
+这四件事不只是调 Cloud API：要签部署密钥、让 daemon 播种/克隆/移动、再把本机路径写回
+云端 workspace 行。前端的做法原样移植到了 `introspect_api/apps/checkout.rs`（文件头有逐个
+对照），而不是让桌面进程去调窗口里的 store——agent 的调用得在没人打开应用视图时也能工作。
+
+代价是两份实现，改一边要改另一边：
+
+- **播种**（`runSeed`）：是否取部署密钥看仓库怎么认证（Gitea 托管），不看行状态；密钥用完
+  立刻归还；成功写 `ready`、失败写 `error`、daemon 不在什么都不写（仍可重新播种）。克隆用
+  调用者**原样输入**的地址（服务端存行前会剥掉里面的凭证），回复里再把凭证剥一遍。
+- **新建**的三种来源和建应用对话框一致：模板 / 仓库地址（`imported`）/ 本机目录。本机目录
+  先问 daemon：带 origin 的 git 检出 → `localOnly`、原地绑定、不播种；否则 → 我们的仓库、
+  **先绑定再播种**（`adoptExisting`），否则会发布一个空的默认目录。目录不存在或 daemon 不在时
+  **在建行之前**就拒绝，不留空壳应用。
+- **workspace 行**（`ensureAppWorkspaceRow`）：应用自己的行只在无路径或已是本机目录时认领，
+  否则是另一台机器的副本，本机另起一行（按路径找或新建）。`createdByMemberId` 发 null——
+  服务端从 token 推导、忽略客户端的值。绑定失败不回滚已就位的检出，但会在回复里说出来。
+- **重新播种**只对 `pending` / `repo_created` / `error` 开放（同 `canReseed`）。
+- **下载**不会克隆到非空目录上。
+- **移动目录**不允许移动 agent 自己正在里面跑的那个检出——会把工作目录从当前会话脚下抽走；
+  这种情况让用户去控制面板移。
 
 ## 14. 类型可改
 
