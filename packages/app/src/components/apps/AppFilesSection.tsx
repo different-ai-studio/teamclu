@@ -71,6 +71,16 @@ function formatWhen(iso: string | null): string {
 
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i
 
+/**
+ * Rows per request.
+ *
+ * Capped by the API, not by taste: every `/v1` list route runs its `limit`
+ * through `parseLimit`, whose ceiling is 100 — anything above it is a 400, not a
+ * clamp. Asking for 200 made the whole tab render "暂时无法访问这个应用的文件：
+ * limit must be an integer from 1 to 100". Raising it means raising it there.
+ */
+const PAGE_SIZE = 100
+
 /** The last segment of a path, which is what a browser row shows. */
 export function baseName(path: string): string {
   const trimmed = path.endsWith('/') ? path.slice(0, -1) : path
@@ -115,7 +125,7 @@ export function AppFilesSection({ app, canManage }: AppFilesSectionProps) {
       setState('loading')
       try {
         const [page, u] = await Promise.all([
-          getBackend().apps.listAppFiles(app.id, { prefix: at, delimiter: '/', limit: 200 }),
+          getBackend().apps.listAppFiles(app.id, { prefix: at, delimiter: '/', limit: PAGE_SIZE }),
           getBackend().apps.getAppStorageUsage(app.id),
         ])
         if (!page) {
@@ -153,7 +163,7 @@ export function AppFilesSection({ app, canManage }: AppFilesSectionProps) {
       const page = await getBackend().apps.listAppFiles(app.id, {
         prefix,
         delimiter: '/',
-        limit: 200,
+        limit: PAGE_SIZE,
         after: nextCursor,
       })
       if (page) {

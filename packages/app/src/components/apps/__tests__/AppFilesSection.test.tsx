@@ -87,10 +87,13 @@ describe('AppFilesSection', () => {
     render(<AppFilesSection app={app} canManage />)
     await waitFor(() => expect(screen.getAllByTestId('app-files-folder')).toHaveLength(2))
 
+    // 100, not a round number of taste: `parseLimit` on the server rejects
+    // anything above it with a 400, and the mocked backend here cannot tell us
+    // that — see the route test that pins the ceiling.
     expect(backendMocks.listAppFiles).toHaveBeenCalledWith('app-1', {
       prefix: '',
       delimiter: '/',
-      limit: 200,
+      limit: 100,
     })
     const rows = screen.getAllByTestId(/^app-files-(folder|file)$/)
     expect(rows.map((r) => r.getAttribute('data-testid'))).toEqual([
@@ -110,7 +113,7 @@ describe('AppFilesSection', () => {
     expect(backendMocks.listAppFiles).toHaveBeenLastCalledWith('app-1', {
       prefix: 'resumes/',
       delimiter: '/',
-      limit: 200,
+      limit: 100,
     })
 
     await user.click(screen.getByText('全部文件'))
@@ -200,7 +203,7 @@ describe('AppFilesSection', () => {
       expect(backendMocks.listAppFiles).toHaveBeenLastCalledWith('app-1', {
         prefix: '',
         delimiter: '/',
-        limit: 200,
+        limit: 100,
         after: 'tok',
       }),
     )

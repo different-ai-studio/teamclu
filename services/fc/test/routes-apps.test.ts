@@ -813,3 +813,70 @@ test("an empty env is a 200, not a 404", async () => {
   assert.deepEqual(res.body, { items: [], canWrite: true });
 });
 
+test("the object listing's limit ceiling is 100, and it rejects rather than clamps", async () => {
+  // The client picks its own page size and the mocked backend in its tests
+  // cannot refuse one — so the ceiling is pinned here, on the side that owns it.
+  // A silent clamp would be worse: the caller would page forever believing it
+  // asked for more.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/storage/objects")[2];
+  const repository = { listAppFiles: async () => ({ items: [], folders: [], nextCursor: null, canWrite: true }) };
+
+  await handler({
+    params: { appId: "a1" },
+    query: new URLSearchParams("limit=100&delimiter=/"),
+    repository,
+  });
+
+  await assert.rejects(
+    handler({ params: { appId: "a1" }, query: new URLSearchParams("limit=101"), repository }),
+    (e: any) => e.statusCode === 400 && /1 to 100/.test(e.message),
+  );
+});
+
+test("the delimiter reaches the repository verbatim, or not at all", async () => {
+  // `delimiter=/` is what makes the listing one level deep; dropping it silently
+  // turns a browser into every key in the app.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/storage/objects")[2];
+  const seen: unknown[] = [];
+  const repository = {
+    listAppFiles: async (_id: string, q: any) => {
+      seen.push(q.delimiter);
+      return { items: [], folders: [], nextCursor: null, canWrite: true };
+    },
+  };
+
+  await handler({ params: { appId: "a1" }, query: new URLSearchParams("delimiter=/"), repository });
+  await handler({ params: { appId: "a1" }, query: new URLSearchParams(""), repository });
+  assert.deepEqual(seen, ["/", null]);
+});
+
+test("deleting a folder requires a prefix and reports the count", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "DELETE", "/v1/apps/:appId/storage/folder")[2];
+  const seen: unknown[] = [];
+  const repository = {
+    deleteAppFolder: async (_id: string, prefix: string) => {
+      seen.push(prefix);
+      return { deleted: 12 };
+    },
+  };
+
+  const res = await handler({
+    params: { appId: "a1" },
+    query: new URLSearchParams("prefix=resumes/"),
+    repository,
+  });
+  assert.deepEqual(res.body, { deleted: 12 });
+  assert.deepEqual(seen, ["resumes/"]);
+
+  // The repository is what refuses an empty prefix (it is the whole app); the
+  // route must still forward it rather than defaulting to something.
+  await handler({ params: { appId: "a1" }, query: new URLSearchParams(""), repository });
+  assert.deepEqual(seen, ["resumes/", ""]);
+});
+

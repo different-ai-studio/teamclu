@@ -6825,8 +6825,14 @@ paths:
             type: string
         - name: limit
           in: query
+          description: >-
+            1-100. Above the ceiling the request is REFUSED, not clamped — a
+            silent clamp would have the caller page forever believing it asked
+            for more.
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
       responses:
         "200":
           description: One page of files.
