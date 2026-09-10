@@ -24,10 +24,6 @@ use std::io::{BufRead, BufReader, Write};
 // CLI args
 // ---------------------------------------------------------------------------
 
-/// Default port of the internal TeamClu introspect HTTP API (must match
-/// `commands::introspect_api::INTROSPECT_API_PORT` in the desktop crate).
-const DEFAULT_INTROSPECT_API_PORT: u16 = 13144;
-
 #[derive(Parser, Debug)]
 #[command(
     name = "teamclu-introspect",

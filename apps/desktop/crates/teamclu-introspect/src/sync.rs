@@ -22,7 +22,6 @@ pub async fn handle(_workspace: &str, api_port: u16, _arguments: &Value) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
 
     #[test]

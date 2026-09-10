@@ -423,19 +423,13 @@ async fn kook_send_message(
         "https://www.kookapp.cn/api/v3/message/create"
     };
 
-    let body = if is_dm {
-        json!({
-            "target_id": target_id,
-            "type": 1,
-            "content": content
-        })
-    } else {
-        json!({
-            "target_id": target_id,
-            "type": 1,
-            "content": content
-        })
-    };
+    // Same body for both: a DM and a channel message differ only in the
+    // endpoint above, where `target_id` names a user or a channel respectively.
+    let body = json!({
+        "target_id": target_id,
+        "type": 1,
+        "content": content
+    });
 
     let resp = client
         .post(url)
@@ -646,7 +640,10 @@ mod daemon_send_result_tests {
     #[test]
     fn a_delivered_send_still_reads_as_message_sent() {
         let reply = json!({ "ok": true, "result": { "message_sent": true } });
-        assert_eq!(text_of(&tool_result_from_daemon_send(&reply)), "Message sent.");
+        assert_eq!(
+            text_of(&tool_result_from_daemon_send(&reply)),
+            "Message sent."
+        );
     }
 
     #[test]
