@@ -1,4 +1,5 @@
-//! Materialize team global dir + workspace `teamclu-team` link.
+//! Materialize the team's global dir and a workspace's links into it
+//! (`team-knowledge`, `team-documents`).
 //!
 //! Shared by the daemon core and the HTTP `/v1/team/link` handler so HTTP
 //! integration tests do not need to pull in `daemon::server`.
@@ -149,8 +150,8 @@ pub fn materialize_team_link(team_id: &str, ws_path: &str) -> LinkStatus {
     ensure_team_link(team_id, ws_path)
 }
 
-/// Idempotently materialize a team's global shared dir and a workspace's
-/// `teamclu-team` symlink into it.
+/// Idempotently materialize a team's global shared dir and a workspace's links
+/// to its synced roots. A `teamclu-team` symlink from an older build is removed.
 pub fn ensure_team_link(team_id: &str, ws_path: &str) -> LinkStatus {
     if team_id.trim().is_empty() || ws_path.trim().is_empty() {
         return LinkStatus::Fallback;

@@ -987,6 +987,7 @@
   },
   "fileExplorer": {
     "agentNotStarted": "Agent has not started yet",
+    "teamLink": "Linked to the team's shared folder",
     "newFile": "New File",
     "newFolder": "New Folder",
     "copyPath": "Copy Path",

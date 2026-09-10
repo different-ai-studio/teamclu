@@ -4,7 +4,8 @@ import { isTauri } from '@/lib/utils'
 import { allowFsScopeDirs } from '@/lib/fs-scope'
 import { ensureGitignoreEntries } from '@/lib/workspace/gitignore-manager'
 import { seedDefaultWorkspaceInstructions } from '@/lib/workspace-seed/seed-default-instructions'
-import { appDisplayName, appStoragePrefix, TEAM_REPO_DIR } from '@/lib/config/build-config'
+import { appDisplayName, appStoragePrefix } from '@/lib/config/build-config'
+import { TEAM_LINK_DIRS } from '@/lib/team/team-skill-paths'
 import { useTeamModeStore } from './team-mode'
 
 // Start watching a directory for file changes
@@ -194,6 +195,38 @@ interface WorkspaceState {
 }
 
 // Extract folder name from path
+/**
+ * The order a directory's entries are shown in.
+ *
+ * At the workspace root the team's links (`team-documents`, `team-knowledge`)
+ * come first, in that order — they are the team's content, not the project's,
+ * and belong above it rather than wherever their names happen to sort. Below
+ * the root nothing is pinned: a user's own folder that happens to be called
+ * `team-documents` is just a folder.
+ *
+ * `teamclu-team` used to be pinned here, at every level. The daemon no longer
+ * creates it (nothing lives behind it), so it is no longer special.
+ */
+export function sortWorkspaceEntries(nodes: FileNode[], atRoot: boolean): FileNode[] {
+  const pinRank = (node: FileNode): number => {
+    if (!atRoot || node.type !== "directory") return -1;
+    return TEAM_LINK_DIRS.indexOf(node.name);
+  };
+  return [...nodes].sort((a, b) => {
+    const ra = pinRank(a);
+    const rb = pinRank(b);
+    if (ra !== rb) {
+      if (ra === -1) return 1;
+      if (rb === -1) return -1;
+      return ra - rb;
+    }
+    if (a.type !== b.type) {
+      return a.type === "directory" ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
 function getFolderName(path: string): string {
   const parts = path.replace(/\/$/, "").split("/");
   return parts[parts.length - 1] || path;
@@ -635,23 +668,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const nodes = await readWorkspaceDirectory(base, fullPath);
       console.log("[Workspace] Found", nodes.length, "entries");
 
-      const visibleNodes = [...nodes];
-
-      visibleNodes.sort((a, b) => {
-        // Always put teamclu-team first
-        if (a.name === TEAM_REPO_DIR && b.name !== TEAM_REPO_DIR) return -1;
-        if (b.name === TEAM_REPO_DIR && a.name !== TEAM_REPO_DIR) return 1;
-        
-        // Then directories before files
-        if (a.type !== b.type) {
-          return a.type === "directory" ? -1 : 1;
-        }
-        
-        // Then alphabetical
-        return a.name.localeCompare(b.name);
-      });
-
-      return visibleNodes;
+      // Root by value, not by the "." shorthand: callers pass either, and a
+      // trailing separator must not decide whether the links get pinned.
+      const trim = (p: string) => p.replace(/[\\/]+$/, "");
+      return sortWorkspaceEntries(nodes, trim(fullPath) === trim(base));
     } catch (error) {
       console.error("[Workspace] Failed to load directory:", error);
       return [];
