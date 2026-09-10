@@ -36,6 +36,7 @@ function assertNewOrgAllowed(): void {
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
+import { parseAppType } from "./validation/app-type.js";
 import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
 import { MAX_ENV_VARS_PER_APP, parseEnvKey, parseEnvValue } from "./app-env.js";
 import { executeAppCronJob, JOB_COLUMNS as CRON_JOB_COLUMNS } from "./app-cron-runner.js";
@@ -3635,6 +3636,11 @@ export function createSupabaseBusinessRepository(options) {
         authScope?: string;
         /** Raw from the client; parsed and validated before it is stored. */
         authRules?: unknown;
+        /**
+         * Raw from the client. Takes effect on the next deploy — see
+         * `typePendingRedeploy` in mapApp.
+         */
+        type?: unknown;
       },
     ) {
       // RLS apps_update_if_creator blocks non-creators: the UPDATE matches zero
@@ -3671,11 +3677,22 @@ export function createSupabaseBusinessRepository(options) {
       if (callerPermission?.level !== "admin") return null;
       const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
 
+      // Validated before the auth-mode change below, which has side effects (it
+      // writes and deletes secrets with a service-role client): a PATCH that is
+      // going to be refused for its `type` must not have done that first.
+      const nextType = parseAppType(patch.type);
+
       const set: any = { updated_at: new Date().toISOString() };
       if (typeof patch.name === "string" && patch.name.length > 0) set.name = patch.name;
       if (patch.visibility === "team" || patch.visibility === "personal") {
         set.visibility = patch.visibility;
       }
+      // Written as-is and nothing else moves: whether the function gets a
+      // database is decided at the next finalize (needsDatabase), which also
+      // stamps `deployed_type`. Switching away from data_app never drops the
+      // schema — it is named from slug + id and provisioning is idempotent, so
+      // switching back finds the data where it was.
+      if (nextType !== undefined) set.type = nextType;
 
       const nextAuthMode = parseAuthMode(patch.authMode);
       if (nextAuthMode !== undefined && cur) {
@@ -3727,7 +3744,10 @@ export function createSupabaseBusinessRepository(options) {
         const from = cur?.provision_status ?? "";
         if (isLegalStatusTransition(from, patch.provisionStatus)) {
           set.provision_status = patch.provisionStatus;
-        } else if (set.name === undefined && set.visibility === undefined) {
+        } else if (set.name === undefined && set.visibility === undefined && set.type === undefined) {
+          // A settings edit that carries a stale provisionStatus along is still
+          // a settings edit; only a PATCH that is nothing BUT the illegal
+          // transition is refused.
           throw new ApiError(400, "invalid_status_transition",
             `cannot move provision_status ${from} -> ${patch.provisionStatus}`);
         }
@@ -4083,6 +4103,11 @@ export function createSupabaseBusinessRepository(options) {
             // and what makes the pending state a property of the row rather
             // than of one desktop's memory.
             deployed_auth_mode: existing.auth_mode ?? "none",
+            // And the type this finalize actually built with — the value read
+            // above and handed to needsDatabase, not whatever the row says by
+            // now: a PATCH that lands while the function is being written did
+            // not reach it. Clears `typePendingRedeploy`.
+            deployed_type: existing.type,
             // Same idea for the environment: what is baked into the function
             // that just went live. Compared against env_updated_at to tell the
             // operator their last env change is not live yet.
