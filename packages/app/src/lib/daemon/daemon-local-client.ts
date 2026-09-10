@@ -14,7 +14,7 @@ import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/diagnostics/env-d
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
-import type { AppBuildKind } from '@/lib/backend/types'
+import type { AppDeployDeclaration } from '@/lib/backend/types'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
 
@@ -1045,29 +1045,6 @@ export interface BuildAppResult {
    * the presigned URL instead.
    */
   image: string | null
-}
-
-/**
- * What an app declares about how it is built and run (`teamclu.app.json`),
- * validated by the daemon.
- *
- */
-export interface AppDeployDeclaration {
-  build: {
-    kind: AppBuildKind
-    output: string
-    command?: string
-    dockerfile?: string
-    context?: string
-  }
-  start: {
-    fcRuntime?: string
-    command?: string[]
-    args?: string[]
-    port: number
-    layers?: string[]
-    healthCheckPath?: string
-  }
 }
 
 /**

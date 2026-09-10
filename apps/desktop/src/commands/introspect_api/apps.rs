@@ -725,10 +725,10 @@ async fn app_status(api: &AppApi, row: &Value) -> Value {
     out["git_managed"] = json!(is_gitea_managed(row));
     out["custom_domain"] = f("customDomain");
     out["custom_domain_verified"] = json!(row_str(row, "customDomainVerifiedAt").is_some());
-    // What the last deploy recorded, next to what the checkout says now: the
-    // row's `runtime` is written by deploy from the declaration, so the two
-    // disagree exactly when the declaration changed since.
-    out["deployed_runtime"] = f("runtime");
+    // What the last successful deploy recorded, next to what the checkout
+    // declares now. These disagree exactly when the declaration changed since.
+    out["deployed_build_kind"] = f("runtime");
+    out["deployed_start_spec"] = f("startSpec");
 
     let app_id = row_str(row, "id").unwrap_or_default().to_string();
     let team_id = row_str(row, "teamId").unwrap_or_default().to_string();
@@ -737,10 +737,11 @@ async fn app_status(api: &AppApi, row: &Value) -> Value {
         out["workdir"] = json!(workdir);
         out["device_name"] = json!(device);
     }
-    if let Some(manifest) = daemon_app_manifest(&app_id, &team_id).await {
-        out["declared_runtime"] = json!({
-            "manifest": manifest,
-            "note": "Read from teamclu.app.json in the checkout (or inferred from it). It is not a setting: edit that file and deploy to change how the app is built and started.",
+    if let Ok(declaration) = daemon_app_declaration(&app_id, &team_id).await {
+        out["checkout_declaration"] = json!({
+            "build": declaration.get("build").cloned().unwrap_or(Value::Null),
+            "start": declaration.get("start").cloned().unwrap_or(Value::Null),
+            "note": "Read from the required build + start blocks in teamclu.app.json. This is a hard-cut contract: legacy declaration shapes are rejected. Edit that file and deploy to change how the app is built and started.",
         });
     }
 
@@ -1022,12 +1023,8 @@ fn redact_deploy_secrets(reason: &str) -> String {
     out
 }
 
-/// What the app's checkout declares about how it is built.
-///
-/// Best-effort: a daemon that cannot answer leaves the deploy on the contract
-/// every app had before declarations existed, which is what an older daemon
-/// would have done anyway.
-async fn daemon_app_manifest(app_id: &str, team_id: &str) -> Option<Value> {
+/// The checkout's required build-and-start declaration.
+async fn daemon_app_declaration(app_id: &str, team_id: &str) -> Result<Value, String> {
     use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
     let path = format!("/v1/apps/{}/manifest", urlencoding::encode(app_id));
     let query = format!("?teamId={}", urlencoding::encode(team_id));
@@ -1038,18 +1035,10 @@ async fn daemon_app_manifest(app_id: &str, team_id: &str) -> Option<Value> {
         NO_BODY,
     )
     .await
-    .ok()?;
-    out.get("manifest").cloned()
-}
-
-fn manifest_runtime(manifest: Option<&Value>) -> String {
-    manifest
-        .and_then(|m| m.get("runtime"))
-        .and_then(|x| x.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("node")
-        .to_string()
+    .map_err(|e| format!("Could not read the app's build + start declaration: {e}"))?;
+    out.get("declaration")
+        .cloned()
+        .ok_or_else(|| "The daemon returned no build + start declaration.".to_string())
 }
 
 /// Kick the local daemon's build-and-upload leg.
@@ -1138,7 +1127,6 @@ async fn finish_app_deploy(
     git_commit_sha: Option<String>,
     deploy_token: &str,
     handle: &DeployHandle,
-    manifest: Option<&Value>,
 ) -> Result<Value, String> {
     let credential = if via_gitea {
         Some(mint_git_credential(api, app_id).await?)
@@ -1181,6 +1169,9 @@ async fn finish_app_deploy(
         return_git_credential(api, app_id, cred.deploy_key_id).await;
     }
     let build = build?;
+    let declaration = build
+        .get("declaration")
+        .ok_or("The daemon build response did not include the build + start declaration.")?;
 
     // What the daemon built, not what we asked for: a deploy publishes work the
     // agent left uncommitted, so HEAD can sit past the sha read off Gitea before
@@ -1197,9 +1188,7 @@ async fn finish_app_deploy(
     // actually pushed. This path used to send neither, so an agent-driven
     // deploy of an app with its own declaration silently finalized on the
     // built-in contract while the same deploy from the UI honoured it.
-    if let Some(manifest) = manifest {
-        finalize_body["runtime"] = manifest.clone();
-    }
+    finalize_body["runtime"] = declaration.clone();
     if let Some(image) = row_str(&build, "image") {
         finalize_body["image"] = json!(image);
     }
@@ -1255,8 +1244,10 @@ async fn run_app_deploy(api: &AppApi, row: &Value) -> Result<Value, String> {
     // Read before the deploy is minted, not after: a container app is handed a
     // registry to push to and every other app a presigned URL to upload to, and
     // only the machine holding the checkout can say which this is.
-    let manifest = daemon_app_manifest(&app_id, &team_id).await;
-    let mut start_body = json!({ "runtime": manifest_runtime(manifest.as_ref()) });
+    let declaration = daemon_app_declaration(&app_id, &team_id).await?;
+    let build_kind = row_str(&declaration["build"], "kind")
+        .ok_or("The daemon's app declaration has no build.kind.")?;
+    let mut start_body = json!({ "runtime": build_kind });
     if let Some(sha) = &git_commit_sha {
         start_body["gitCommitSha"] = json!(sha);
     }
@@ -1295,7 +1286,6 @@ async fn run_app_deploy(api: &AppApi, row: &Value) -> Result<Value, String> {
         git_commit_sha,
         &deploy_token,
         &handle,
-        manifest.as_ref(),
     )
     .await
     {

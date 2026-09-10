@@ -10,14 +10,8 @@ export function canReseed(status: string): boolean {
 
 /**
  * i18n key when deploy is blocked by auth policy, or null when allowed.
- *
- * `runtime` is deliberately not consulted. It used to block `container`, back
- * when nothing could build an image — but the row only says `container` once a
- * deploy has written it, so the gate let the first deploy through and then
- * disabled the button for every one after it. An app that had just shipped read
- * as "not supported". Whether a runtime can deploy is the control plane's
- * answer (it knows which registries and layers exist), and it gives it by
- * refusing `startDeploy`; a list helper cannot know it.
+ * Build compatibility belongs to the build-and-start control plane, not a
+ * helper that only has the last successful deployment snapshot.
  */
 export function deployDisabledReason(
   app: Pick<AppRow, 'authMode'>,

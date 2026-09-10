@@ -545,10 +545,11 @@ pub struct BuildAppBody {
     pub deploy_key_pem: String,
     /// Presigned OSS PUT URL for the build artifact. Short-lived signed-URL
     /// secret — never logged. Required for an app that builds to an archive,
-    /// which is every app that does not declare `runtime: "container"`.
+    /// which is every app whose declaration does not use `build.kind:
+    /// "container"`.
     #[serde(default)]
     pub presigned_put: String,
-    /// Where to push the image, for an app that declares `runtime:
+    /// Where to push the image, for an app that declares `build.kind:
     /// "container"`. Carries a registry password — never logged.
     #[serde(default)]
     pub image: Option<ImagePushBody>,
@@ -627,9 +628,9 @@ fn build_destination(
 }
 
 /// `POST /v1/apps/build` — build the app and put the result where the deploy
-/// reads it from: `pnpm build` + zip `.output` to the presigned OSS URL, or —
-/// for an app declaring `runtime: "container"` — a cross-built image pushed to
-/// the registry named in `image`.
+/// reads it from: an archive sent to the presigned OSS URL, or — for an app
+/// declaring `build.kind: "container"` — a cross-built image pushed to the
+/// registry named in `image`.
 ///
 /// Requires `workspace:write`. The workdir MUST already exist (it's the seeded
 /// checkout). Returns `{ "status": "built" }`. The presigned URL is a
