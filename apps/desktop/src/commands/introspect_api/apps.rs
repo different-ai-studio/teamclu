@@ -1188,7 +1188,7 @@ async fn finish_app_deploy(
     // actually pushed. This path used to send neither, so an agent-driven
     // deploy of an app with its own declaration silently finalized on the
     // built-in contract while the same deploy from the UI honoured it.
-    finalize_body["runtime"] = declaration.clone();
+    finalize_body["declaration"] = declaration.clone();
     if let Some(image) = row_str(&build, "image") {
         finalize_body["image"] = json!(image);
     }
