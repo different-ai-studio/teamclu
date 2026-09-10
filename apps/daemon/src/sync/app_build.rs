@@ -23,6 +23,11 @@ pub const ERR_ARTIFACT_TOO_LARGE: &str = "artifact exceeds 50 MiB limit";
 /// `ERR_PNPM_NO_PKG_MANIFEST`, which is accurate and says nothing a user can
 /// act on; the desktop turns this marker into the two things they can do.
 pub const ERR_NO_PACKAGE_JSON: &str = "the app's folder has no package.json to build";
+pub const ERR_NO_PYTHON_PROJECT: &str =
+    "the app declares build.kind \"python\" but has no requirements.txt, pyproject.toml, or build output";
+pub const ERR_NO_GO_MOD: &str = "the app declares build.kind \"go\" but has no go.mod";
+pub const ERR_NO_JAVA_BUILD: &str =
+    "the app declares build.kind \"java\" but has no pom.xml, build.gradle, or build.gradle.kts";
 pub const ERR_LOCKFILE_MISMATCH: &str =
     "lockfile out of sync with package.json; commit updated pnpm-lock.yaml";
 pub const ERR_INSTALL_TIMEOUT: &str = "pnpm install timed out after 10 minutes";
@@ -40,12 +45,8 @@ pub const ERR_NO_DOCKER: &str =
 pub const ERR_DOCKER_NOT_RUNNING: &str = "Docker is installed but not running; start it and retry";
 pub const ERR_NO_BUILDX: &str =
     "this Docker has no buildx; a container app is cross-built for linux/amd64 with it";
-pub const ERR_NO_DOCKERFILE: &str = "the app declares runtime \"container\" but has no Dockerfile";
-/// Neither of the two things a build can start from. Its own message because
-/// the app is not "a container app missing a Dockerfile" — it is an app with no
-/// code at all, and the two call for different next moves.
-pub const ERR_NO_CODE: &str =
-    "the app's folder has neither a package.json nor a Dockerfile, so there is nothing to build";
+pub const ERR_NO_DOCKERFILE: &str =
+    "the app declares build.kind \"container\" but has no Dockerfile";
 pub const ERR_IMAGE_BUILD_TIMEOUT: &str = "docker build timed out after 30 minutes";
 pub const ERR_IMAGE_PUSH_TIMEOUT: &str = "docker push timed out after 15 minutes";
 pub const ERR_IMAGE_PUSH_DENIED: &str =
@@ -197,12 +198,24 @@ fn run_with_timeout(
     timeout: Duration,
     timeout_msg: &str,
 ) -> anyhow::Result<Output> {
+    run_with_timeout_env(cmd, args, cwd, timeout, timeout_msg, &[])
+}
+
+fn run_with_timeout_env(
+    cmd: &str,
+    args: &[&str],
+    cwd: &Path,
+    timeout: Duration,
+    timeout_msg: &str,
+    env: &[(&str, &str)],
+) -> anyhow::Result<Output> {
     let mut command = Command::new(build_tool_program(cmd));
     command
         .no_window()
         .args(args)
         .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0");
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().copied());
 
     // The spawn, the pipe draining and the kill live in `bounded_proc`: the
     // clone path needs exactly the same thing, and two copies of a poll loop
@@ -221,15 +234,164 @@ fn run_with_timeout(
         }
     };
     if !out.status.success() {
-        let msg = map_pnpm_failure(
-            cmd,
-            args,
-            &String::from_utf8_lossy(&out.stdout),
-            &String::from_utf8_lossy(&out.stderr),
-        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let msg = if cmd == "pnpm" {
+            map_pnpm_failure(cmd, args, &stdout, &stderr)
+        } else {
+            let combined = [stdout.trim(), stderr.trim()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{cmd} {:?} failed: {}",
+                args,
+                tail(&combined, MAX_FAILURE_OUTPUT)
+            )
+        };
         anyhow::bail!("{msg}");
     }
     Ok(out)
+}
+
+/// The default command table. Conditional rows are selected by
+/// [`run_default_build`]; this pure view keeps the six-kind contract explicit
+/// and cheaply testable.
+pub fn default_build_plan(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "node" => Some(&["pnpm install --frozen-lockfile", "pnpm build"]),
+        "python" => Some(&["pip install -r requirements.txt -t <output> (when present)"]),
+        "go" => Some(&["CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <output>/main ."]),
+        "php" => Some(&["composer install --no-dev (when composer.json is present)"]),
+        "java" => Some(&[
+            "./mvnw package or mvn package",
+            "./gradlew build or gradle build",
+        ]),
+        "container" => Some(&["docker buildx build", "docker push"]),
+        _ => None,
+    }
+}
+
+fn run_shell_override(command: &str, workdir: &Path, image: Option<&str>) -> anyhow::Result<()> {
+    let image_env = image.map(|value| [("TEAMCLU_IMAGE", value)]);
+    run_with_timeout_env(
+        "sh",
+        &["-c", command],
+        workdir,
+        BUILD_TIMEOUT,
+        ERR_BUILD_TIMEOUT,
+        image_env.as_ref().map_or(&[], |env| env.as_slice()),
+    )
+    .map(|_| ())
+}
+
+fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result<()> {
+    match kind {
+        "node" => {
+            run_with_timeout(
+                "pnpm",
+                &["install", "--frozen-lockfile"],
+                workdir,
+                INSTALL_TIMEOUT,
+                ERR_INSTALL_TIMEOUT,
+            )?;
+            run_with_timeout(
+                "pnpm",
+                &["build"],
+                workdir,
+                BUILD_TIMEOUT,
+                ERR_BUILD_TIMEOUT,
+            )?;
+        }
+        "python" => {
+            if workdir.join("requirements.txt").is_file() {
+                run_with_timeout(
+                    "pip",
+                    &["install", "-r", "requirements.txt", "-t", output],
+                    workdir,
+                    INSTALL_TIMEOUT,
+                    ERR_INSTALL_TIMEOUT,
+                )?;
+            }
+        }
+        "go" => {
+            std::fs::create_dir_all(workdir.join(output))?;
+            let output_main = format!("{output}/main");
+            let mut command = Command::new(build_tool_program("go"));
+            command
+                .no_window()
+                .args(["build", "-o", &output_main, "."])
+                .current_dir(workdir)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("CGO_ENABLED", "0")
+                .env("GOOS", "linux")
+                .env("GOARCH", "amd64");
+            let out =
+                crate::sync::bounded_proc::run_bounded(command, BUILD_TIMEOUT, ERR_BUILD_TIMEOUT)?;
+            if !out.status.success() {
+                let combined = [
+                    String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                    String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                ]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+                anyhow::bail!("go build failed: {}", tail(&combined, MAX_FAILURE_OUTPUT));
+            }
+        }
+        "php" => {
+            if workdir.join("composer.json").is_file() {
+                run_with_timeout(
+                    "composer",
+                    &["install", "--no-dev"],
+                    workdir,
+                    INSTALL_TIMEOUT,
+                    ERR_INSTALL_TIMEOUT,
+                )?;
+            }
+        }
+        "java" => {
+            if workdir.join("pom.xml").is_file() {
+                if workdir.join("mvnw").is_file() {
+                    run_with_timeout(
+                        "./mvnw",
+                        &["package"],
+                        workdir,
+                        BUILD_TIMEOUT,
+                        ERR_BUILD_TIMEOUT,
+                    )?;
+                } else {
+                    run_with_timeout(
+                        "mvn",
+                        &["package"],
+                        workdir,
+                        BUILD_TIMEOUT,
+                        ERR_BUILD_TIMEOUT,
+                    )?;
+                }
+            } else if workdir.join("gradlew").is_file() {
+                run_with_timeout(
+                    "./gradlew",
+                    &["build"],
+                    workdir,
+                    BUILD_TIMEOUT,
+                    ERR_BUILD_TIMEOUT,
+                )?;
+            } else {
+                run_with_timeout(
+                    "gradle",
+                    &["build"],
+                    workdir,
+                    BUILD_TIMEOUT,
+                    ERR_BUILD_TIMEOUT,
+                )?;
+            }
+        }
+        other => anyhow::bail!("unsupported build.kind {other}"),
+    }
+    Ok(())
 }
 
 /// Message on the commit a deploy makes for work the agent left uncommitted.
@@ -539,8 +701,8 @@ pub struct BuildOutput {
 ///
 /// When `git` is present the workdir is fetched, published and checked out
 /// first (see [`prepare_git_build`]). What happens after that is the app's own
-/// declaration: `container` builds and pushes an image, everything else runs
-/// `pnpm install` then `pnpm build` and zips the output directory.
+/// declaration: `container` builds and pushes an image; the five archive kinds
+/// use their row in the build table (or `build.command`) and zip `build.output`.
 ///
 /// The manifest is read **before** the build rather than after. It used to be
 /// read only to find the output directory, which a node build has already
@@ -557,17 +719,10 @@ pub fn build_artifact(
         git_commit_sha = prepare_git_build(workdir, ctx)?;
     }
     let declaration = read_app_declaration(workdir)?;
-    // Neither of the two things a build can start from. Checked here rather
-    // than inside each branch because this app has no code of *either* kind:
-    // the container branch would report a missing registry (the control plane's
-    // problem, not the user's) and the node branch a missing package.json,
-    // neither of which says the app was never given any files.
-    if !workdir.join("package.json").is_file()
-        && !workdir.join(&declaration.build.dockerfile).is_file()
-    {
-        anyhow::bail!("{ERR_NO_CODE}");
-    }
     if declaration.build.kind == "container" {
+        if !workdir.join(&declaration.build.dockerfile).is_file() {
+            anyhow::bail!("{ERR_NO_DOCKERFILE}: {}", declaration.build.dockerfile);
+        }
         let minted = push.ok_or_else(|| anyhow::anyhow!("{ERR_NO_PUSH_TARGET}"))?;
         // `git_commit_sha` is set only when the build published work the client
         // did not know about, which is exactly when the minted tag is stale.
@@ -581,29 +736,65 @@ pub fn build_artifact(
             username: minted.username,
             password: minted.password,
         };
-        build_image(workdir, &declaration.build, &target)?;
+        if let Some(command) = declaration
+            .build
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        {
+            // For containers the override must build and tag
+            // `$TEAMCLU_IMAGE`; pushing remains daemon-owned so registry
+            // credentials stay out of the app command and the user's Docker
+            // config.
+            run_shell_override(command, workdir, Some(target.image))?;
+            push_image(workdir, &target)?;
+        } else {
+            build_image(workdir, &declaration.build, &target)?;
+        }
         return Ok(BuildOutput {
             product: BuildProduct::Image(target.image.to_string()),
             git_commit_sha,
             declaration,
         });
     }
-    run_with_timeout(
-        "pnpm",
-        &["install", "--frozen-lockfile"],
-        workdir,
-        INSTALL_TIMEOUT,
-        ERR_INSTALL_TIMEOUT,
-    )?;
-    run_with_timeout(
-        "pnpm",
-        &["build"],
-        workdir,
-        BUILD_TIMEOUT,
-        ERR_BUILD_TIMEOUT,
-    )?;
 
     let output_dir = workdir.join(&declaration.build.output);
+    match declaration.build.kind.as_str() {
+        "node" if !workdir.join("package.json").is_file() => {
+            anyhow::bail!("{ERR_NO_PACKAGE_JSON}")
+        }
+        "python"
+            if !workdir.join("requirements.txt").is_file()
+                && !workdir.join("pyproject.toml").is_file()
+                && (!output_dir.is_dir() || !output_dir_has_files(&output_dir)) =>
+        {
+            anyhow::bail!("{ERR_NO_PYTHON_PROJECT}")
+        }
+        "go" if !workdir.join("go.mod").is_file() => anyhow::bail!("{ERR_NO_GO_MOD}"),
+        "java"
+            if !workdir.join("pom.xml").is_file()
+                && !workdir.join("build.gradle").is_file()
+                && !workdir.join("build.gradle.kts").is_file() =>
+        {
+            anyhow::bail!("{ERR_NO_JAVA_BUILD}")
+        }
+        _ => {}
+    }
+
+    if let Some(command) = declaration
+        .build
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+    {
+        // An override is the complete build, not an extra post-build step.
+        run_shell_override(command, workdir, None)?;
+    } else {
+        run_default_build(&declaration.build.kind, &declaration.build.output, workdir)?;
+    }
+
     if !output_dir.is_dir() || !output_dir_has_files(&output_dir) {
         // Name what was looked for. The message used to say only ".output/",
         // which is unhelpful precisely when an app builds somewhere else — the
@@ -876,6 +1067,22 @@ mod tests {
         .unwrap();
     }
 
+    fn write_code_declaration(workdir: &Path, kind: &str, output: &str) {
+        std::fs::write(
+            workdir.join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {"kind": kind, "output": output},
+                "start": {
+                    "fcRuntime": "custom.debian12",
+                    "command": ["run"],
+                    "port": 9000
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn an_app_with_no_manifest_is_refused() {
         let tmp = node_checkout();
@@ -985,14 +1192,98 @@ mod tests {
     }
 
     #[test]
-    fn an_app_with_neither_package_json_nor_dockerfile_says_so() {
+    fn default_build_table_covers_all_six_kinds() {
+        for kind in VALID_BUILD_KINDS {
+            let plan = default_build_plan(kind).unwrap_or_else(|| panic!("missing {kind} plan"));
+            assert!(!plan.is_empty(), "{kind} plan must have a default step");
+        }
+        assert_eq!(
+            default_build_plan("node").unwrap(),
+            ["pnpm install --frozen-lockfile", "pnpm build"]
+        );
+        assert!(default_build_plan("ruby").is_none());
+    }
+
+    #[test]
+    fn project_preconditions_follow_declared_kind_not_file_inference() {
+        for (kind, marker) in [
+            ("node", ERR_NO_PACKAGE_JSON),
+            ("python", ERR_NO_PYTHON_PROJECT),
+            ("go", ERR_NO_GO_MOD),
+            ("java", ERR_NO_JAVA_BUILD),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            write_code_declaration(tmp.path(), kind, ".output");
+            // A Dockerfile must not make any of these kinds pass.
+            std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+            let err = match build_artifact(tmp.path(), None, None) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{kind} app without its project marker must not build"),
+            };
+            assert_eq!(err, marker, "{kind}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_replaces_the_node_default_steps() {
         let tmp = tempfile::tempdir().unwrap();
-        write_container_declaration(tmp.path(), "Dockerfile", None);
-        let err = match build_artifact(tmp.path(), None, None) {
-            Err(e) => e.to_string(),
-            Ok(_) => panic!("an app with no code must not build"),
-        };
-        assert_eq!(err, ERR_NO_CODE);
+        std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {
+                    "kind": "node",
+                    "output": "custom-out",
+                    "command": "mkdir -p custom-out && printf overridden > custom-out/result.txt"
+                },
+                "start": {
+                    "fcRuntime": "custom.debian12",
+                    "command": ["node"],
+                    "port": 9000
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let built = build_artifact(tmp.path(), None, None).unwrap();
+        let bytes = built.product.archive().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut result = String::new();
+        archive
+            .by_name("result.txt")
+            .unwrap()
+            .read_to_string(&mut result)
+            .unwrap();
+        assert_eq!(result, "overridden");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_override_receives_the_minted_image_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        run_shell_override(
+            "printf %s \"$TEAMCLU_IMAGE\" > image.txt",
+            tmp.path(),
+            Some("registry.example.com/apps/a:sha"),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("image.txt")).unwrap(),
+            "registry.example.com/apps/a:sha"
+        );
+    }
+
+    #[test]
+    fn php_without_composer_archives_declared_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_code_declaration(tmp.path(), "php", "public");
+        std::fs::create_dir(tmp.path().join("public")).unwrap();
+        std::fs::write(tmp.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
+
+        let built = build_artifact(tmp.path(), None, None).unwrap();
+        assert!(built.product.archive().is_some());
     }
 
     #[test]

@@ -1124,6 +1124,9 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
         crate::sync::app_build::ERR_ARTIFACT_TOO_LARGE,
         crate::sync::app_build::ERR_LOCKFILE_MISMATCH,
         crate::sync::app_build::ERR_NO_PACKAGE_JSON,
+        crate::sync::app_build::ERR_NO_PYTHON_PROJECT,
+        crate::sync::app_build::ERR_NO_GO_MOD,
+        crate::sync::app_build::ERR_NO_JAVA_BUILD,
         crate::sync::app_build::ERR_INSTALL_TIMEOUT,
         crate::sync::app_build::ERR_BUILD_TIMEOUT,
         // Container builds: every one of these is a fact about the machine the
