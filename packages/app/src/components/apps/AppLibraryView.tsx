@@ -85,7 +85,7 @@ const GRID = 'grid gap-2.5 @[520px]:grid-cols-2 @[880px]:grid-cols-3'
 /** Top-right of the card: the download button, or the chevron on hover. */
 const TRAILING = 'flex shrink-0 items-center justify-end'
 
-/** A row for an app that is already here — clicking it opens it in column two. */
+/** A card for an app that is already here — clicking it opens it in column two. */
 function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
   const open = React.useCallback(() => {
     useAppsStore.getState().selectApp(app.id)
@@ -172,14 +172,15 @@ function GroupHeading({ label, count }: { label: string; count: number }) {
 }
 
 /**
- * Every app the caller can see — their own and the team's — with the one action
- * column two cannot offer: bringing a copy onto this machine.
+ * Every app the caller can see — their own and the team's — sorted by whether
+ * it is on this machine, with search and creators.
  *
- * Column two lists only what is already here, which is what makes this view
- * necessary: without it a team app nobody had downloaded would be invisible and
- * unreachable. It lives in the main column rather than in a dialog because
- * downloading from it changes that column-two list, and watching a row move out
- * of 未在本机 next to the list it lands in is the point.
+ * Column two lists the same apps and marks the ones that are not here, so this
+ * is no longer the only way to reach them; what it still does that a sidebar
+ * column cannot is show them as cards, grouped, searchable by name, creator or
+ * type. It lives in the main column rather than in a dialog because downloading
+ * from it changes that column-two list, and watching a row move out of 未在本机
+ * next to the list it lands in is the point.
  *
  * The split into 未在本机 / 已在本机 is what removed the per-row "已在本机" tick
  * that ran down eight of nine rows: the group says it once, and the rows that

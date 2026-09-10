@@ -88,6 +88,8 @@ const TerminalPanel = React.lazy(async () => ({
   default: (await import("@/components/terminal/TerminalPanel")).TerminalPanel,
 }));
 import { useTerminalStore } from "@/stores/terminal-store";
+import { useSessionApp } from "@/lib/apps/app-locality";
+import { AppNotDownloadedComposer } from "@/components/apps/AppNotDownloadedComposer";
 const EMPTY_AGENTS: AttachedAgent[] = [];
 
 // ─── Main component ────────────────────────────────────────────────────────
@@ -107,6 +109,10 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   const activeSessionId = useSessionSelectionStore(s => s.activeSessionId);
   const ensureParticipants = useSessionParticipantStore(s => s.ensureParticipants);
   const sessionPermissionMode = useSessionPermissionMode(activeSessionId);
+  // The app this session belongs to, if any, and whether its checkout is here.
+  // `null` locality is "the daemon has not said" and leaves the composer alone.
+  const { app: activeSessionApp, local: activeSessionAppLocal } =
+    useSessionApp(activeSessionId);
 
   React.useEffect(() => {
     if (!activeSessionId) return;
@@ -1220,7 +1226,11 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       </div>
 
       {/* ─── Input Area (with Permission & Error UI above it) ─────────── */}
-      {activeSessionId || draftPreselectedActor ? (
+      {/* An app session whose app is not on this machine reads but does not
+          write: the composer is replaced by the download it needs first. */}
+      {activeSessionApp && activeSessionAppLocal === false ? (
+        <AppNotDownloadedComposer app={activeSessionApp} />
+      ) : activeSessionId || draftPreselectedActor ? (
           <ChatInputArea
             activeSessionId={activeSessionId}
             compact={compact}
