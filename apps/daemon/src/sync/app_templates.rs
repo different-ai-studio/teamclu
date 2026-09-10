@@ -178,6 +178,32 @@ mod tests {
                 "{t:?}: committed lockfile"
             );
             assert!(root.join("AGENTS.md").is_file(), "{t:?}: AGENTS.md");
+            assert!(
+                root.join("teamclu.app.json").is_file(),
+                "{t:?}: teamclu.app.json"
+            );
+        }
+    }
+
+    #[test]
+    fn seeded_manifest_passes_read_app_declaration() {
+        for t in [AppType::StaticWeb, AppType::Slides, AppType::DataApp] {
+            let tmp = seed(t);
+            let declaration =
+                crate::sync::app_build::read_app_declaration(tmp.path()).unwrap_or_else(|e| {
+                    panic!("{t:?}: seeded teamclu.app.json must parse: {e}")
+                });
+            assert_eq!(declaration.build.kind, "node");
+            assert_eq!(declaration.build.output, ".output");
+            assert_eq!(
+                declaration.start.command,
+                Some(vec!["/opt/nodejs20/bin/node".to_string()])
+            );
+            assert_eq!(
+                declaration.start.args,
+                Some(vec!["server/index.mjs".to_string()])
+            );
+            assert_eq!(declaration.start.port, 9000);
         }
     }
 
