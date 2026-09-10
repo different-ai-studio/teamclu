@@ -157,13 +157,32 @@ update amux.app_cron_jobs
 - **阿里云 FC**：`s.yaml` 里声明一个 timer trigger（`app-cron`，六段式 `0 * * * * *`
   —— 阿里云的表达式第一段是秒）。
 
-  这里原来写的是「不用 timer trigger，因为 timer 事件不是 HTTP 请求」—— **那是猜的，
-  而且是错的**。同账号的 `banana-api` 上跑着 20 多个 timer trigger 打自己的 HTTP 路径，
-  payload 形如 `{"path":"/api/cron/…","method":"POST","body":{…}}`，其中就有每分钟一次
-  的。timer 确实能驱动 web 函数。
+  **timer 事件不是 HTTP 请求，这一段翻过两次车，两次都是同一个坑。**
 
-  它**不能**做的是加请求头：payload 只有 `path` / `method` / `body` 三个字段。所以密钥
-  走 **body**，端点两种都收（sidecar 发 bearer，timer 放 body）。没走 query 是因为
+  最初写的是「不用 timer trigger，因为 timer 事件不是 HTTP 请求」；看到同账号的
+  `banana-api` 上跑着 20 多个 timer trigger 打自己的 HTTP 路径（payload 形如
+  `{"path":"/api/cron/…","method":"POST","body":{…}}`，其中就有每分钟一次的），就改
+  成了「timer 确实能驱动 web 函数」。**后半句同样是错的**：能跑起来的是那个 payload
+  约定，而约定是**函数自己**兑现的，不是 FC 兑现的。
+
+  FC 交给函数的就是 `{triggerTime, triggerName, payload}` —— 没有 rawPath、没有
+  method、没有 header。`hono/aws-lambda` 认不出这个形状，`getProcessor` 退回 v1
+  processor，读 `event.path` / `event.httpMethod` 读到两个 undefined，拼出来的请求
+  404。**没有异常抛出**，所以 FC 记的是一次干净的成功。
+
+  2026-09-10 belayo 上的表现正是如此：`app-cron` 每分钟按时触发（`t-…` 开头的
+  requestId，`hasFunctionError: false`），一条任务都没跑；同一个 tick 走 HTTP 是通的。
+  排查时先怀疑过 `CRON_TZ=` 前缀 —— 也是错的，同一个函数上不带前缀的
+  `oss-abandon-sessions` 一样在触发。**判据只有一条：查 `FCRequestMetrics` 里
+  `invocationType: Async` 的记录，有就是在触发，问题在函数里。**
+
+  所以 `src/index.ts` 的 `handler()` 里有一步 `timerEventToHttpEvent()`：认出 timer
+  事件，把 payload 里的 `path` / `method` / `body` 翻译成 hono 认得的 v2 事件（host 固
+  定 `localhost`，免得撞上按域名路由的应用和登录服务）。不是 timer 事件、或者 payload
+  里没有可路由的 `path`，一律原样放行。
+
+  timer **不能**做的是加请求头：payload 只有 `path` / `method` / `body` 三个字段。所以
+  密钥走 **body**，端点两种都收（sidecar 发 bearer，timer 放 body）。没走 query 是因为
   query 会进 URL 和访问日志，body 不会。
 
 `APP_CRON_SECRET` 必须**两边都声明**（compose 的 `environment:` 白名单 + `s.yaml`），

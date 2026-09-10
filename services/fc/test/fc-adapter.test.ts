@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import { handle } from "hono/aws-lambda";
-import { handler, normalizeFcEvent } from "../src/index.js";
+import { handler, normalizeFcEvent, timerEventToHttpEvent } from "../src/index.js";
 
 function fcEvent(method: string, path: string, opts: { headers?: any; body?: any } = {}) {
   return {
@@ -131,4 +131,79 @@ test("hono/aws-lambda base64-encodes binary (png) round-trip", async () => {
   );
   assert.equal(res.isBase64Encoded, true);
   assert.deepEqual(Buffer.from(res.body, "base64"), png);
+});
+
+
+// ---- timer triggers ---------------------------------------------------------
+//
+// A timer trigger invokes the function with an event, not an HTTP request. On
+// belayo that difference was invisible: hono/aws-lambda routed the timer event
+// to a 404 without throwing, so FC recorded a successful invocation every
+// minute while the cron tick never ran once.
+
+const timerEvent = (payload: unknown) => ({
+  triggerTime: "2026-09-10T02:03:00Z",
+  triggerName: "app-cron",
+  payload: typeof payload === "string" ? payload : JSON.stringify(payload),
+});
+
+test("a timer payload becomes the request it names", () => {
+  const ev = timerEventToHttpEvent(
+    timerEvent({ path: "/v1/internal/app-cron/tick", method: "POST", body: { secret: "s" } }),
+  );
+  assert.equal(ev.rawPath, "/v1/internal/app-cron/tick");
+  assert.equal(ev.requestContext.http.method, "POST");
+  assert.equal(ev.body, JSON.stringify({ secret: "s" }));
+  // v2 is the processor that reads rawPath; without requestContext.http the
+  // adapter silently falls back to v1 and reads `path`, which is not set.
+  assert.ok(Object.hasOwn(ev, "rawPath") && Object.hasOwn(ev.requestContext, "http"));
+});
+
+test("a query string in the payload path is split out, not left in the path", () => {
+  // The v2 processor reads the two separately; a path carrying "?" would be
+  // matched literally and never hit the route.
+  const ev = timerEventToHttpEvent(timerEvent({ path: "/v1/x?a=1&b=2" }));
+  assert.equal(ev.rawPath, "/v1/x");
+  assert.equal(ev.rawQueryString, "a=1&b=2");
+  assert.equal(ev.requestContext.http.method, "POST", "POST is the default for a timer");
+});
+
+test("the synthesized host matches no app, so app routing cannot swallow the tick", () => {
+  const ev = timerEventToHttpEvent(timerEvent({ path: "/v1/internal/app-cron/tick" }));
+  assert.equal(ev.headers.host, "localhost");
+  assert.equal(ev.body, undefined, "no body means no body, not an empty JSON object");
+});
+
+test("anything that is not a timer payload is left alone", () => {
+  // An HTTP event must pass through untouched...
+  assert.equal(timerEventToHttpEvent(fcEvent("GET", "/v1/teams")), null);
+  // ...and so must a timer whose payload names nothing routable, rather than
+  // being turned into a request to "/undefined".
+  assert.equal(timerEventToHttpEvent(timerEvent({ task: "oss-gc-blobs" })), null);
+  assert.equal(timerEventToHttpEvent(timerEvent("not json at all")), null);
+  assert.equal(timerEventToHttpEvent(timerEvent({ path: "no-leading-slash" })), null);
+  assert.equal(timerEventToHttpEvent(null), null);
+  assert.equal(timerEventToHttpEvent({ payload: '{"path":"/v1/x"}' }), null);
+});
+
+test("the timer reaches the tick route's auth check instead of a 404", async () => {
+  // The discriminator: a 404 here means the translation did not happen, and is
+  // precisely the failure that hid for a day. 401 means the request arrived at
+  // the route with a body the auth kind could read.
+  const before = process.env.APP_CRON_SECRET;
+  process.env.APP_CRON_SECRET = "the-real-secret";
+  try {
+    const res: any = await handler(
+      timerEvent({
+        path: "/v1/internal/app-cron/tick",
+        method: "POST",
+        body: { secret: "not-the-real-secret" },
+      }),
+      {},
+    );
+    assert.equal(res.statusCode, 401, `expected 401, got ${res.statusCode}: ${res.body}`);
+  } finally {
+    if (before === undefined) delete process.env.APP_CRON_SECRET;
+    else process.env.APP_CRON_SECRET = before;
+  }
 });

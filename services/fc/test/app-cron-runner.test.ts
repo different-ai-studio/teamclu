@@ -319,6 +319,41 @@ test("an aborted request is a timeout, told apart from a failure", async () => {
   assert.match(out.outcomes[0].error!, /1000ms/);
 });
 
+test("a job cannot outlive the tick that started it", async () => {
+  // The deadline only stops new CLAIMS. A job already in flight could outrun it
+  // by its own timeout — 60s is a legal setting — and on Function Compute the
+  // invocation is killed at the function timeout with the run row still
+  // unwritten. That job then shows no history at all for the minute it ran,
+  // which reads as "never fired" rather than "timed out".
+  const db = makeDb({
+    app_cron_jobs: [job({ timeout_ms: 60_000 })],
+    apps: apps(),
+    app_cron_runs: [] as any[],
+  });
+  const startedAt = Date.now();
+  const out = await runDueAppCronJobs({
+    client: db,
+    env: ENV as any,
+    now: new Date("2026-09-10T09:00:30.000Z"),
+    maxTickMs: 1200,
+    // Hangs until aborted, which is the only way the abort is observable.
+    fetchImpl: ((_url: any, init: any) =>
+      new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const e = new Error("aborted");
+          e.name = "AbortError";
+          reject(e);
+        });
+      })) as any,
+  });
+
+  assert.equal(out.outcomes[0].status, "timeout");
+  assert.ok(Date.now() - startedAt < 10_000, "the tick waited out the job's own timeout");
+  // And the message says what was actually waited for, not the stored setting.
+  const ms = Number(/(\d+)ms/.exec(out.outcomes[0].error!)?.[1]);
+  assert.ok(ms >= 1000 && ms <= 1200, `budget should be what was left of the tick, got ${ms}`);
+});
+
 test("a stored expression that no longer parses parks the job instead of spinning", async () => {
   const rows = [job({ schedule_expr: "not a cron" })];
   const db = makeDb({ app_cron_jobs: rows, apps: apps(), app_cron_runs: [] });
