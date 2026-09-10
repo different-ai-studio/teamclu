@@ -25,7 +25,24 @@ import { ApiError } from "./http-utils.js";
 export const AUTH_SCOPES = ["all", "paths"] as const;
 export type AuthScope = (typeof AUTH_SCOPES)[number];
 
-export type AuthRule = { path: string; auth: "required" | "public" };
+export const AUTH_AUDIENCES = ["any", "org"] as const;
+export type AuthAudience = (typeof AUTH_AUDIENCES)[number];
+
+/**
+ * One path rule.
+ *
+ * `audience` narrows WHO satisfies the login on this path, and is only
+ * meaningful with `auth: "required"`. Absent means "whatever the app's own
+ * `auth_audience` says" — NOT a hard-coded default. Every rule stored before
+ * this key existed is absent, so reading absence as `org` would tighten the
+ * wall on every app currently set to "any signed-in user", which is a live
+ * access boundary changing because a column grew a key.
+ */
+export type AuthRule = {
+  path: string;
+  auth: "required" | "public";
+  audience?: AuthAudience;
+};
 
 const MAX_RULES = 50;
 const MAX_PATH_LEN = 512;
@@ -103,7 +120,23 @@ export function parseAuthRules(raw: unknown): AuthRule[] {
       throw new ApiError(400, "validation_failed", `duplicate auth rule for ${path}`);
     }
     seen.add(key);
-    out.push({ path, auth });
+
+    // Dropped rather than stored on a public path: a public path admits
+    // everyone by definition, so an audience there would be a setting the UI
+    // shows and the gateway ignores.
+    const rawAudience = (entry as any).audience;
+    if (auth === "public" || rawAudience === undefined || rawAudience === null) {
+      out.push({ path, auth });
+      continue;
+    }
+    if (typeof rawAudience !== "string" || !AUTH_AUDIENCES.includes(rawAudience.trim() as AuthAudience)) {
+      throw new ApiError(
+        400,
+        "validation_failed",
+        `auth rule "audience" must be one of: ${AUTH_AUDIENCES.join(", ")}`,
+      );
+    }
+    out.push({ path, auth, audience: rawAudience.trim() as AuthAudience });
   }
   return out;
 }
@@ -172,7 +205,14 @@ function readRule(entry: unknown): AuthRule | null {
   if (auth !== "required" && auth !== "public") return null;
   let p = path.trim();
   while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
-  return { path: p, auth };
+
+  const audience = (entry as any).audience;
+  if (audience === undefined || audience === null) return { path: p, auth };
+  // Present but not a value we know: unreadable, like a bad `auth`. The caller
+  // treats an unreadable rule as "protect everything", which is the direction
+  // this whole file errs in.
+  if (audience !== "any" && audience !== "org") return null;
+  return { path: p, auth, audience };
 }
 
 /**
@@ -184,21 +224,41 @@ function readRule(entry: unknown): AuthRule | null {
  * scope must not either. Writes are validated strictly, so reaching these
  * branches means something wrote to the column directly.
  */
-export function pathRequiresLogin(pathname: string, scope: unknown, rawRules: unknown): boolean {
-  if (isUnreasonable(pathname)) return true;
+/**
+ * Both halves of a path's verdict, from ONE longest-prefix match: whether it
+ * needs a login, and — when it does — which audience satisfies it.
+ *
+ * One function rather than two because the two answers must come from the same
+ * winning rule. Matching twice would mean two copies of the longest-prefix
+ * comparison, and the next person to touch one of them would have no way to
+ * know the other existed.
+ *
+ * `audience: null` means the winning rule did not name one (or no rule won at
+ * all), and the caller falls back to the app-level `auth_audience`.
+ */
+export function resolvePathPolicy(
+  pathname: string,
+  scope: unknown,
+  rawRules: unknown,
+): { requiresLogin: boolean; audience: AuthAudience | null } {
+  // Fail-safe on every unusable input: protected, and under the app's own
+  // audience rather than a per-path widening we could not read.
+  const protectedFallback = { requiresLogin: true, audience: null };
+  if (isUnreasonable(pathname)) return protectedFallback;
 
-  const baseline = scope !== "paths"; // unknown scope behaves as "all"
+  // unknown scope behaves as "all"
+  const baseline = { requiresLogin: scope !== "paths", audience: null };
 
   if (rawRules === undefined || rawRules === null) return baseline;
-  if (!Array.isArray(rawRules)) return true;
+  if (!Array.isArray(rawRules)) return protectedFallback;
 
   const path = pathname.toLowerCase();
-  let verdict: AuthRule["auth"] | null = null;
+  let winner: AuthRule | null = null;
   let bestLength = -1;
 
   for (const entry of rawRules) {
     const rule = readRule(entry);
-    if (!rule) return true; // an unreadable rule invalidates the whole set
+    if (!rule) return protectedFallback; // an unreadable rule invalidates the whole set
     const prefix = rule.path.toLowerCase();
     if (!matchesPrefix(path, prefix)) continue;
     // `/` is length 1 but is the least specific prefix there is, so it must
@@ -206,10 +266,13 @@ export function pathRequiresLogin(pathname: string, scope: unknown, rawRules: un
     const length = prefix === "/" ? 0 : prefix.length;
     if (length > bestLength) {
       bestLength = length;
-      verdict = rule.auth;
+      winner = rule;
     }
   }
 
-  if (verdict === null) return baseline;
-  return verdict === "required";
+  if (!winner) return baseline;
+  return {
+    requiresLogin: winner.auth === "required",
+    audience: winner.auth === "required" ? (winner.audience ?? null) : null,
+  };
 }

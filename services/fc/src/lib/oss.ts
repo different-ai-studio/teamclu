@@ -30,5 +30,24 @@ export function getS3Client(): S3Client {
       secretAccessKey: ACCESS_KEY_SECRET()!,
     },
     forcePathStyle: OSS_FORCE_PATH_STYLE(),
+    // Alibaba OSS does not implement AWS's flexible-checksum extension, and
+    // since aws-sdk v3.729 the default is `WHEN_SUPPORTED` — which adds
+    // `x-amz-sdk-checksum-algorithm` and `x-amz-checksum-crc32` to every
+    // PutObject. On a PRESIGNED put those land in the SIGNED query string, and
+    // the value is the CRC32 of the body known at signing time: nothing. The
+    // browser then uploads the real bytes against a signature that promises an
+    // empty payload.
+    //
+    // Measured 2026-09-10: OSS ACCEPTS such a PUT and answers 200, so this is
+    // hardening rather than a fix — the parameters describe a payload that is
+    // not the one being sent, and nothing promises OSS keeps ignoring them.
+    // (The upload failure that prompted this was the bucket having no CORS
+    // rule at all; the preflight never reached the PUT.)
+    //
+    // `WHEN_REQUIRED` keeps checksums for the operations that genuinely need
+    // one and adds none otherwise. Harmless against real S3; the difference is
+    // only that an optional checksum is no longer volunteered.
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
   });
 }

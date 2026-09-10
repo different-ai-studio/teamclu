@@ -237,20 +237,50 @@ test("GET /v1/apps/:id/git-head 404s when repo returns null", async () => {
   registerApps(router);
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-head")[2];
   await assert.rejects(
-    () => handler({ params: { appId: "app-1" }, repository: { getAppGitHead: async () => null } }),
+    () =>
+      handler({
+        params: { appId: "app-1" },
+        query: new URLSearchParams(""),
+        repository: { getAppGitHead: async () => null },
+      }),
     (e) => (e as { statusCode?: number }).statusCode === 404,
   );
 });
 
-test("GET /v1/apps/:id/git-head returns default branch sha", async () => {
+test("GET /v1/apps/:id/git-head returns the head, and compares only when asked", async () => {
+  // The compare costs a round trip to the forge, and the deploy path hits this
+  // endpoint on every deploy while reading only `sha`.
   const { router, routes } = makeRouter();
   registerApps(router);
   const handler = routes.find((r) => r[0] === "GET" && r[1] === "/v1/apps/:appId/git-head")[2];
+  const seen: unknown[] = [];
+  const head = {
+    sha: "abc123def456",
+    branch: "main",
+    deployedSha: "999888777666",
+    undeployedCommits: 2,
+  };
+  const repository = {
+    getAppGitHead: async (_id: string, opts: unknown) => {
+      seen.push(opts);
+      return head;
+    },
+  };
+
   const res = await handler({
     params: { appId: "app-1" },
-    repository: { getAppGitHead: async () => ({ sha: "abc123def456" }) },
+    query: new URLSearchParams("compare=1"),
+    repository,
   });
-  assert.deepEqual(res.body, { sha: "abc123def456" });
+  assert.deepEqual(res.body, head);
+
+  await handler({ params: { appId: "app-1" }, query: new URLSearchParams(""), repository });
+  await handler({
+    params: { appId: "app-1" },
+    query: new URLSearchParams("compare=yes"),
+    repository,
+  });
+  assert.deepEqual(seen, [{ compare: true }, { compare: false }, { compare: false }]);
 });
 
 test("GET /v1/apps/:id/membership returns member verdict", async () => {
@@ -562,13 +592,22 @@ test("quota accepts a number or null, and nothing else", async () => {
   );
 });
 
-test("the STS route is the only one registered outside the user JWT", async () => {
+test("only the two machine routes are registered outside the user JWT", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
-  const nonBearer = routes.filter((r) => r[3] && r[3].auth && r[3].auth !== "bearer");
-  assert.equal(nonBearer.length, 1, "exactly one app route may skip the user JWT");
-  assert.equal(nonBearer[0][1], "/v1/apps/:appId/storage/sts");
-  assert.equal(nonBearer[0][3].auth, "app-token");
+  const nonBearer = routes
+    .filter((r) => r[3] && r[3].auth && r[3].auth !== "bearer")
+    .map((r) => [r[1], r[3].auth])
+    .sort();
+  // An exhaustive list, not a count: every entry here is a route a person's
+  // token does not guard, so adding one has to be a deliberate edit of this
+  // test rather than a number quietly going up.
+  assert.deepEqual(nonBearer, [
+    // The heartbeat that fires scheduled tasks. Shared secret, no user.
+    ["/v1/internal/app-cron/tick", "cron-tick"],
+    // The deployed app fetching its own storage credentials.
+    ["/v1/apps/:appId/storage/sts", "app-token"],
+  ].sort());
 });
 
 test("STS refuses a request with no bearer, and cannot tell a bad token from an unknown app", async () => {
@@ -617,3 +656,227 @@ test("STS returns the credentials and nothing about the token", async () => {
   assert.equal(seenToken, "s3cret", "the bearer is trimmed before comparison");
   assert.deepEqual(res.body, credentials);
 });
+
+// --- scheduled tasks --------------------------------------------------------
+
+test("cron routes 404 when the repository declines", async () => {
+  // Null from the repo means "not visible, or not yours" and must be
+  // indistinguishable from "no such app", like every other app route.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const repository = {
+    listAppCronJobs: async () => null,
+    createAppCronJob: async () => null,
+    updateAppCronJob: async () => null,
+    deleteAppCronJob: async () => false,
+    runAppCronJobNow: async () => null,
+    listAppCronRuns: async () => null,
+  };
+  const params = { appId: "a1", jobId: "j1" };
+  const calls: Array<Promise<unknown>> = [
+    findRoute(routes, "GET", "/v1/apps/:appId/cron-jobs")[2]({ params, repository }),
+    findRoute(routes, "POST", "/v1/apps/:appId/cron-jobs")[2]({
+      params, json: { name: "n", schedule: "0 9 * * *" }, repository,
+    }),
+    findRoute(routes, "PATCH", "/v1/apps/:appId/cron-jobs/:jobId")[2]({ params, json: {}, repository }),
+    findRoute(routes, "DELETE", "/v1/apps/:appId/cron-jobs/:jobId")[2]({ params, repository }),
+    findRoute(routes, "POST", "/v1/apps/:appId/cron-jobs/:jobId/run")[2]({ params, repository }),
+    findRoute(routes, "GET", "/v1/apps/:appId/cron-jobs/:jobId/runs")[2]({
+      params, query: new URLSearchParams(""), repository,
+    }),
+  ];
+  for (const call of calls) {
+    await assert.rejects(call, (e: any) => e.statusCode === 404);
+  }
+});
+
+test("an empty task list is a 200, not a 404", async () => {
+  // `[]` and `null` mean different things here — no tasks vs. no access — and
+  // collapsing them would make an app with nothing scheduled look missing.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const get = findRoute(routes, "GET", "/v1/apps/:appId/cron-jobs")[2];
+  const res = await get({ params: { appId: "a1" }, repository: { listAppCronJobs: async () => [] } });
+  assert.deepEqual(res.body, { items: [] });
+});
+
+test("creating a task needs a name and a schedule, and answers 201", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const post = findRoute(routes, "POST", "/v1/apps/:appId/cron-jobs")[2];
+  const repository = { createAppCronJob: async (_id: string, body: any) => ({ id: "j1", ...body }) };
+
+  const res = await post({
+    params: { appId: "a1" },
+    json: { name: "daily", schedule: "0 9 * * *" },
+    repository,
+  });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.body.id, "j1");
+
+  for (const json of [{ schedule: "0 9 * * *" }, { name: "daily" }, {}]) {
+    await assert.rejects(
+      post({ params: { appId: "a1" }, json, repository }),
+      (e: any) => e.statusCode === 400,
+    );
+  }
+});
+
+test("the run-history limit is passed through, and defaults without one", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const get = findRoute(routes, "GET", "/v1/apps/:appId/cron-jobs/:jobId/runs")[2];
+  const seen: unknown[] = [];
+  const repository = {
+    listAppCronRuns: async (_a: string, _j: string, limit: number) => {
+      seen.push(limit);
+      return [];
+    },
+  };
+  await get({ params: { appId: "a1", jobId: "j1" }, query: new URLSearchParams("limit=5"), repository });
+  await get({ params: { appId: "a1", jobId: "j1" }, query: new URLSearchParams(""), repository });
+  assert.deepEqual(seen, [5, 20]);
+});
+
+// --- environment ------------------------------------------------------------
+
+test("env routes 404 when the repository declines", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const repository = {
+    listAppEnv: async () => null,
+    putAppEnv: async () => null,
+    deleteAppEnv: async () => false,
+  };
+  const params = { appId: "a1", key: "STRIPE_KEY" };
+  await assert.rejects(
+    findRoute(routes, "GET", "/v1/apps/:appId/env")[2]({ params, repository }),
+    (e: any) => e.statusCode === 404,
+  );
+  await assert.rejects(
+    findRoute(routes, "PUT", "/v1/apps/:appId/env/:key")[2]({ params, json: { value: "x" }, repository }),
+    (e: any) => e.statusCode === 404,
+  );
+  await assert.rejects(
+    findRoute(routes, "DELETE", "/v1/apps/:appId/env/:key")[2]({ params, repository }),
+    (e: any) => e.statusCode === 404,
+  );
+});
+
+test("an env value may be empty, but not missing", async () => {
+  // "" is a variable someone deliberately set to nothing; undefined is a
+  // malformed request. A truthiness check would conflate them and reject the
+  // first, which is a legitimate thing to want.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const seen: unknown[] = [];
+  const repository = {
+    putAppEnv: async (_a: string, _k: string, body: any) => {
+      seen.push(body.value);
+      return { key: "K", isSecret: false, value: body.value, updatedAt: "x" };
+    },
+  };
+  const params = { appId: "a1", key: "K" };
+
+  await findRoute(routes, "PUT", "/v1/apps/:appId/env/:key")[2]({ params, json: { value: "" }, repository });
+  assert.deepEqual(seen, [""]);
+
+  for (const json of [{}, { value: null }, { value: 1 }, { isSecret: true }]) {
+    await assert.rejects(
+      findRoute(routes, "PUT", "/v1/apps/:appId/env/:key")[2]({ params, json, repository }),
+      (e: any) => e.statusCode === 400,
+      `accepted ${JSON.stringify(json)}`,
+    );
+  }
+});
+
+test("the env list is passed through with its canWrite flag", async () => {
+  // The client learns what it may do from the same response that tells it what
+  // exists — no second request, and no way for the two to disagree.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const out = { items: [{ key: "K", isSecret: true, value: null, updatedAt: "x" }], canWrite: false };
+  const res = await findRoute(routes, "GET", "/v1/apps/:appId/env")[2]({
+    params: { appId: "a1" },
+    repository: { listAppEnv: async () => out },
+  });
+  assert.deepEqual(res.body, out);
+});
+
+test("an empty env is a 200, not a 404", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const res = await findRoute(routes, "GET", "/v1/apps/:appId/env")[2]({
+    params: { appId: "a1" },
+    repository: { listAppEnv: async () => ({ items: [], canWrite: true }) },
+  });
+  assert.deepEqual(res.body, { items: [], canWrite: true });
+});
+
+test("the object listing's limit ceiling is 100, and it rejects rather than clamps", async () => {
+  // The client picks its own page size and the mocked backend in its tests
+  // cannot refuse one — so the ceiling is pinned here, on the side that owns it.
+  // A silent clamp would be worse: the caller would page forever believing it
+  // asked for more.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/storage/objects")[2];
+  const repository = { listAppFiles: async () => ({ items: [], folders: [], nextCursor: null, canWrite: true }) };
+
+  await handler({
+    params: { appId: "a1" },
+    query: new URLSearchParams("limit=100&delimiter=/"),
+    repository,
+  });
+
+  await assert.rejects(
+    handler({ params: { appId: "a1" }, query: new URLSearchParams("limit=101"), repository }),
+    (e: any) => e.statusCode === 400 && /1 to 100/.test(e.message),
+  );
+});
+
+test("the delimiter reaches the repository verbatim, or not at all", async () => {
+  // `delimiter=/` is what makes the listing one level deep; dropping it silently
+  // turns a browser into every key in the app.
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/storage/objects")[2];
+  const seen: unknown[] = [];
+  const repository = {
+    listAppFiles: async (_id: string, q: any) => {
+      seen.push(q.delimiter);
+      return { items: [], folders: [], nextCursor: null, canWrite: true };
+    },
+  };
+
+  await handler({ params: { appId: "a1" }, query: new URLSearchParams("delimiter=/"), repository });
+  await handler({ params: { appId: "a1" }, query: new URLSearchParams(""), repository });
+  assert.deepEqual(seen, ["/", null]);
+});
+
+test("deleting a folder requires a prefix and reports the count", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "DELETE", "/v1/apps/:appId/storage/folder")[2];
+  const seen: unknown[] = [];
+  const repository = {
+    deleteAppFolder: async (_id: string, prefix: string) => {
+      seen.push(prefix);
+      return { deleted: 12 };
+    },
+  };
+
+  const res = await handler({
+    params: { appId: "a1" },
+    query: new URLSearchParams("prefix=resumes/"),
+    repository,
+  });
+  assert.deepEqual(res.body, { deleted: 12 });
+  assert.deepEqual(seen, ["resumes/"]);
+
+  // The repository is what refuses an empty prefix (it is the whole app); the
+  // route must still forward it rather than defaulting to something.
+  await handler({ params: { appId: "a1" }, query: new URLSearchParams(""), repository });
+  assert.deepEqual(seen, ["resumes/", ""]);
+});
+

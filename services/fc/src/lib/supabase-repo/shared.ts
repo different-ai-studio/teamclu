@@ -104,7 +104,7 @@ export function mapDefaultAgentError(error: any) {
 // the client contract. Selecting it keeps finalizeDeploy and the data browser
 // from needing a second round trip.
 export const APP_COLUMNS =
-  "id, team_id, org_id, created_by_actor_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
+  "id, team_id, org_id, created_by_actor_id, name, slug, type, visibility, workspace_id, git_remote_url, git_auth_kind, git_commit_sha, runtime, auth_mode, auth_audience, auth_scope, auth_rules, deployed_auth_mode, env_updated_at, env_deployed_at, oauth_client_id, provision_status, fc_status, fc_endpoint, fc_function_name, fc_region, created_at, updated_at";
 
 export function slugify(name: string): string {
   return (
@@ -158,6 +158,17 @@ export function mapApp(r: any) {
       r.fc_status === "live" &&
       (r.deployed_auth_mode ?? null) !== null &&
       (r.deployed_auth_mode ?? "none") !== (r.auth_mode ?? "none"),
+    // Same reasoning as authModePendingRedeploy, for the environment: the
+    // variables are baked into the function at finalize, so an env change does
+    // nothing to the running app until the next deploy. An operator who just
+    // pasted an API key would otherwise believe it is already in effect.
+    //
+    // Only meaningful once something is live: an app that has never deployed is
+    // not "pending", it simply has not been deployed.
+    envPendingRedeploy:
+      r.fc_status === "live" &&
+      !!r.env_updated_at &&
+      (!r.env_deployed_at || new Date(r.env_updated_at) > new Date(r.env_deployed_at)),
     // Public client id only — never the secret (stored in app_secrets).
     oauthClientId: r.oauth_client_id ?? null,
     provisionStatus: r.provision_status,

@@ -266,11 +266,20 @@ export interface AppStorageOps {
   readonly region: string;
   readonly endpoint: string;
   bucketFor(app: { oss_bucket?: string | null } | null | undefined): string;
+  /**
+   * One page of objects under `prefix`.
+   *
+   * With `delimiter: "/"` the store collapses everything below the next `/`
+   * into `folders` and returns only the objects sitting directly at this level
+   * — which is what makes a browser a browser rather than a flat dump of every
+   * key in the app. Without it the listing is fully recursive, which is what a
+   * count or a sweep wants.
+   */
   list(
     bucket: string,
     prefix: string,
-    opts: { after?: string | null; limit?: number },
-  ): Promise<{ items: AppFileEntry[]; nextCursor: string | null }>;
+    opts: { after?: string | null; limit?: number; delimiter?: string | null },
+  ): Promise<{ items: AppFileEntry[]; folders: string[]; nextCursor: string | null }>;
   signUpload(bucket: string, key: string, contentType?: string | null): Promise<string>;
   signDownload(bucket: string, key: string, filename?: string | null): Promise<string>;
   head(bucket: string, key: string): Promise<{ size: number; contentType: string | null } | null>;
@@ -308,11 +317,12 @@ export function makeAppStorageOps(
       return appStorageBucket(app, profile);
     },
 
-    async list(bucket, prefix, { after, limit }) {
+    async list(bucket, prefix, { after, limit, delimiter }) {
       const out: any = await s3.send(
         new C.ListObjectsV2Command({
           Bucket: bucket,
           Prefix: prefix,
+          Delimiter: delimiter || undefined,
           ContinuationToken: after || undefined,
           MaxKeys: Math.min(Math.max(limit ?? 100, 1), 1000),
         }),
@@ -327,7 +337,16 @@ export function makeAppStorageOps(
         // A key equal to the prefix itself is a directory marker, not a file;
         // it would render as a nameless row.
         .filter((e: AppFileEntry) => e.path !== "");
-      return { items, nextCursor: out.IsTruncated ? (out.NextContinuationToken ?? null) : null };
+      // CommonPrefixes come back as the FULL key prefix; the caller thinks in
+      // paths relative to what it asked for, so strip its own prefix back off.
+      const folders: string[] = (out.CommonPrefixes ?? [])
+        .map((p: any) => String(p.Prefix ?? "").slice(prefix.length))
+        .filter((p: string) => p !== "");
+      return {
+        items,
+        folders,
+        nextCursor: out.IsTruncated ? (out.NextContinuationToken ?? null) : null,
+      };
     },
 
     signUpload(bucket, key, contentType) {

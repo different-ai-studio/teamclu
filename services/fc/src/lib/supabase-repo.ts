@@ -36,6 +36,9 @@ function assertNewOrgAllowed(): void {
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
+import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
+import { MAX_ENV_VARS_PER_APP, parseEnvKey, parseEnvValue } from "./app-env.js";
+import { executeAppCronJob, JOB_COLUMNS as CRON_JOB_COLUMNS } from "./app-cron-runner.js";
 // Backend-neutral request validation — keep free of PostgREST calls.
 import {
   assertTransportShape as assertTeamMcpTransportShape,
@@ -115,9 +118,21 @@ import {
   APP_STORAGE_TOKEN_KIND,
   deleteAppSecretSupabase,
   getAppSecretSupabase,
+  open as openAppSecret,
   putAppSecretSupabase,
+  seal as sealAppSecret,
 } from "./provisioning/app-secrets.js";
-import { appFileKey, appFilesPrefix } from "./provisioning/apps-oss.js";
+
+/**
+ * AAD for one env secret, so a sealed value cannot be replayed under another
+ * key's name — the same reason `seal` binds `kind` for the platform's own
+ * secrets. Moving a ciphertext from STRIPE_TEST_KEY to STRIPE_LIVE_KEY by
+ * editing the row would otherwise decrypt cleanly.
+ */
+function appEnvSecretKind(key: string): string {
+  return `env:${key}`;
+}
+import { appFileKey, appFilesPrefix, normalizeAppFolderPrefix } from "./provisioning/apps-oss.js";
 import { isOverQuota, type AppStorageOps } from "./provisioning/app-storage.js";
 import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
@@ -278,6 +293,54 @@ function mapAppAccessRow(r: any) {
     permissionLevel: r.permission_level,
     grantedByMemberId: r.granted_by_member_id ?? null,
     createdAt: appIso(r.created_at)!,
+  };
+}
+
+function mapAppCronJobRow(r: any) {
+  return {
+    id: r.id,
+    appId: r.app_id,
+    name: r.name,
+    enabled: Boolean(r.enabled),
+    // `schedule` on the wire, `schedule_expr` in the column: the column name
+    // exists to leave room for a second kind of schedule later, and the API
+    // should not have to be renamed if that ever happens.
+    schedule: r.schedule_expr,
+    timezone: r.timezone,
+    method: r.method,
+    path: r.path,
+    headers: r.headers ?? {},
+    body: r.body ?? null,
+    timeoutMs: r.timeout_ms,
+    lastRunAt: appIso(r.last_run_at),
+    nextRunAt: appIso(r.next_run_at),
+    createdAt: appIso(r.created_at)!,
+    updatedAt: appIso(r.updated_at)!,
+  };
+}
+
+function mapAppEnvRow(r: any) {
+  return {
+    key: r.key,
+    isSecret: Boolean(r.is_secret),
+    // A secret's value never leaves the server, not even to the person who set
+    // it. `null` here is the whole contract: the panel shows "已设置" and the
+    // only way to change it is to type a new one.
+    value: r.is_secret ? null : (r.value ?? ""),
+    updatedAt: appIso(r.updated_at)!,
+  };
+}
+
+function mapAppCronRunRow(r: any) {
+  return {
+    id: r.id,
+    jobId: r.job_id,
+    startedAt: appIso(r.started_at)!,
+    finishedAt: appIso(r.finished_at),
+    status: r.status,
+    responseStatus: r.response_status ?? null,
+    durationMs: r.duration_ms ?? null,
+    error: r.error ?? null,
   };
 }
 
@@ -571,6 +634,54 @@ export function createSupabaseBusinessRepository(options) {
       endpoint: appStorage.endpoint,
       cloudApiUrl,
     });
+  }
+
+  /** Move the app into "env changed since the last deploy". */
+  async function touchAppEnv(admin: any, appId: string, at: string): Promise<void> {
+    const { error } = await admin
+      .from("apps")
+      .update({ env_updated_at: at, updated_at: at })
+      .eq("id", appId);
+    if (error) throw error;
+  }
+
+  /**
+   * The operator's own variables, decrypted, for baking into the function.
+   *
+   * The CALLER's client, not the service role: finalize has already established
+   * that this caller is `admin` on the app, and the RLS select policy admits
+   * them. Escalating would make every deploy depend on a service-role key being
+   * configured, which is how an app with no env vars at all would stop being
+   * deployable on a deployment that never needed one.
+   *
+   * Reading `ciphertext` here is safe for the same reason the table's comment
+   * gives: the sealing key lives in FC's environment, never in the database, so
+   * the ciphertext is not the secret.
+   *
+   * A secret whose ciphertext will not open is SKIPPED rather than fatal. The
+   * encryption key changing (or a row written under an older one) must not make
+   * every deploy of the app fail; the app then runs without that variable,
+   * which the operator can see and fix, instead of not running at all.
+   */
+  async function buildUserEnvForFinalize(appId: string): Promise<Record<string, string>> {
+    const { data, error } = await supabase
+      .from("app_env_vars")
+      .select("key, is_secret, value, ciphertext")
+      .eq("app_id", appId);
+    if (error) throw error;
+    const out: Record<string, string> = {};
+    for (const row of data ?? []) {
+      if (!row.is_secret) {
+        if (typeof row.value === "string") out[row.key] = row.value;
+        continue;
+      }
+      try {
+        out[row.key] = openAppSecret(appEnvSecretKind(row.key), row.ciphertext);
+      } catch (e) {
+        console.warn(`[apps] skipping env secret ${row.key}: ${e}`);
+      }
+    }
+    return out;
   }
 
   /**
@@ -3761,6 +3872,9 @@ export function createSupabaseBusinessRepository(options) {
           region: process.env.REGION || "cn-hangzhou",
           runtime: declaredRuntime,
           gitCommitSha,
+          // Only consulted when a function is first minted, so an app that has
+          // already deployed keeps the name stored on its row.
+          slug: existing.slug,
         });
         const { data: row, error: updErr } = await supabase
           .from("apps")
@@ -3860,6 +3974,12 @@ export function createSupabaseBusinessRepository(options) {
         // credential that is stored but never handed to the function is one the
         // app cannot use, and the failure only shows up on the second deploy.
         const storageEnv = await buildStorageEnvForFinalize(existing);
+        // Read at finalize, not at deploy start: an env edit made while a build
+        // was running belongs to the function that is about to be written, and
+        // reading it earlier would ship the previous values under a deploy the
+        // operator watched succeed after their change.
+        const userEnv = await buildUserEnvForFinalize(appId);
+        const envDeployedAt = new Date().toISOString();
         const r = await finalizeDeploy({
           appId,
           slug: existing.slug,
@@ -3869,6 +3989,7 @@ export function createSupabaseBusinessRepository(options) {
           ossObjectName: appOssObjectName(appId),
           platformAuthEnv,
           storageEnv,
+          userEnv,
           // What the daemon read out of the app's own declaration. Absent for a
           // client that predates it, which is the contract every app had before.
           runtime: runtimeSpec,
@@ -3891,6 +4012,10 @@ export function createSupabaseBusinessRepository(options) {
             // and what makes the pending state a property of the row rather
             // than of one desktop's memory.
             deployed_auth_mode: existing.auth_mode ?? "none",
+            // Same idea for the environment: what is baked into the function
+            // that just went live. Compared against env_updated_at to tell the
+            // operator their last env change is not live yet.
+            env_deployed_at: envDeployedAt,
             // Pin the org on the first success; a no-op on every later one.
             // Static apps have no schema anywhere, so they get no ledger entry
             // — a non-null org_id on one would claim data exists that does not.
@@ -4258,17 +4383,42 @@ export function createSupabaseBusinessRepository(options) {
       return { revoked };
     },
 
-    async getAppGitHead(appId: string) {
+    /**
+     * Default-branch HEAD on the app's Gitea repo.
+     *
+     * `compare` is opt-in because the deploy path calls this on every deploy
+     * and only wants the sha: doing the extra /compare round trip there would
+     * buy a number nothing reads. The panel asks for it; the deploy does not.
+     */
+    async getAppGitHead(appId: string, opts: { compare?: boolean } = {}) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, git_auth_kind")
+        .select("id, git_auth_kind, git_commit_sha")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
+      // An imported app's repo is somebody else's and we hold no credential for
+      // it, so there is no head to read. Null, not an error: "we cannot see the
+      // branch" is a legitimate state for such an app, permanently.
       if (existing.git_auth_kind !== GITEA_AUTH_KIND) return null;
       if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
-      return gitea.getRepoHead(appId);
+
+      const head = await gitea.getRepoHead(appId);
+      const deployedSha = existing.git_commit_sha ?? null;
+      if (!opts.compare) return { ...head, deployedSha, undeployedCommits: null };
+
+      // Three cases, and only the last one costs a request:
+      //   nothing deployed  → unknown, not zero (there is no baseline)
+      //   already on head   → zero, known without asking
+      //   otherwise         → ask the forge
+      let undeployedCommits: number | null = null;
+      if (deployedSha === head.sha) {
+        undeployedCommits = 0;
+      } else if (deployedSha) {
+        undeployedCommits = await gitea.compareCommits(appId, deployedSha, head.sha);
+      }
+      return { ...head, deployedSha, undeployedCommits };
     },
 
     async getAppMembership(appId: string) {
@@ -4416,7 +4566,13 @@ export function createSupabaseBusinessRepository(options) {
 
     async listAppFiles(
       appId: string,
-      query: { prefix?: string | null; after?: string | null; limit?: number } = {},
+      query: {
+        prefix?: string | null;
+        after?: string | null;
+        limit?: number;
+        /** "/" to browse one level; absent lists every key under the prefix. */
+        delimiter?: string | null;
+      } = {},
     ) {
       const access = await this.resolveAppStorageAccess(appId, "view");
       if (!access) return null;
@@ -4424,15 +4580,48 @@ export function createSupabaseBusinessRepository(options) {
       const bucket = ops.bucketFor(access.app);
       // A caller-supplied prefix filters WITHIN the app's own space; it is
       // appended to the app prefix and can never replace it.
-      const sub = (query.prefix ?? "").replace(/^\/+/, "");
+      const sub = normalizeAppFolderPrefix(query.prefix);
       const page = await ops.list(bucket, `${appFilesPrefix(appId)}${sub}`, {
         after: query.after ?? null,
         limit: query.limit,
+        delimiter: query.delimiter ?? null,
       });
       // Paths come back relative to the filtered prefix; re-attach the caller's
       // sub-prefix so what the client sees is always relative to the app root.
       const items = sub ? page.items.map((e) => ({ ...e, path: `${sub}${e.path}` })) : page.items;
-      return { items, nextCursor: page.nextCursor, canWrite: access.level !== "view" };
+      const folders = sub ? page.folders.map((f) => `${sub}${f}`) : page.folders;
+      return {
+        items,
+        folders,
+        nextCursor: page.nextCursor,
+        canWrite: access.level !== "view",
+      };
+    },
+
+    /**
+     * Delete everything under one folder.
+     *
+     * `prompt` and above, matching a single file's delete — a folder is not a
+     * different kind of thing in an object store, it is a prefix, and someone
+     * who may delete each of its files one at a time may delete them together.
+     *
+     * The empty prefix is REFUSED here: that is the whole app, and wiping the
+     * app's storage is `purgeAppFiles`, which is admin-only and asks first.
+     */
+    async deleteAppFolder(appId: string, prefix: string) {
+      const access = await this.resolveAppStorageAccess(appId, "prompt");
+      if (!access) return null;
+      const sub = normalizeAppFolderPrefix(prefix);
+      if (!sub) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "a folder prefix is required; use the purge endpoint to empty the whole app",
+        );
+      }
+      const ops = this.requireAppStorage();
+      const deleted = await ops.removePrefix(ops.bucketFor(access.app), `${appFilesPrefix(appId)}${sub}`);
+      return { deleted };
     },
 
     async getAppStorageUsage(appId: string) {
@@ -4591,6 +4780,348 @@ export function createSupabaseBusinessRepository(options) {
       }
       const credentials = await ops.assume(app);
       return { credentials };
+    },
+
+
+
+    // ─── App environment (design 2026-09-10-app-control-panel §9) ───────────
+    //
+    // Read is the `prompt` tier: the people who write the app's code are the
+    // ones who need to know what its environment contains. Writing is `admin`,
+    // like every other app mutation. A secret's value is never returned to
+    // anyone, including the person who set it.
+
+    /** The app row plus the caller's level, when it reaches `minLevel`. */
+    async resolveAppEnvAccess(appId: string, minLevel: "view" | "prompt" | "admin") {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission) return null;
+      const rank = { view: 0, prompt: 1, admin: 2 } as const;
+      if (rank[permission.level] < rank[minLevel]) return null;
+      return { app, level: permission.level, callerMemberId: permission.callerMemberId };
+    },
+
+    async listAppEnv(appId: string) {
+      const access = await this.resolveAppEnvAccess(appId, "prompt");
+      if (!access) return null;
+      // `ciphertext` is deliberately not selected. RLS is row-level, so this
+      // reader could ask for it; not asking is what keeps a sealed value from
+      // ever being one refactor away from a response body.
+      const { data, error } = await supabase
+        .from("app_env_vars")
+        .select("key, is_secret, value, updated_at")
+        .eq("app_id", appId)
+        .order("key", { ascending: true });
+      if (error) throw error;
+      return {
+        items: (data ?? []).map(mapAppEnvRow),
+        // Carried in the list response the way listAppFiles carries it, so the
+        // client learns what it may do without a second request.
+        canWrite: access.level === "admin",
+      };
+    },
+
+    async putAppEnv(appId: string, key: string, input: any) {
+      const access = await this.resolveAppEnvAccess(appId, "admin");
+      if (!access) return null;
+      const name = parseEnvKey(key);
+      const value = parseEnvValue(input?.value);
+      const isSecret = Boolean(input?.isSecret);
+
+      const admin = await serviceRoleClient("write app env");
+      const { count, error: countErr } = await admin
+        .from("app_env_vars")
+        .select("key", { count: "exact", head: true })
+        .eq("app_id", appId);
+      if (countErr) throw countErr;
+      const { data: existing, error: exErr } = await admin
+        .from("app_env_vars")
+        .select("key")
+        .eq("app_id", appId)
+        .eq("key", name)
+        .maybeSingle();
+      if (exErr) throw exErr;
+      if (!existing && (count ?? 0) >= MAX_ENV_VARS_PER_APP) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          `an app can have at most ${MAX_ENV_VARS_PER_APP} environment variables`,
+        );
+      }
+
+      const now = new Date().toISOString();
+      const { data, error } = await admin
+        .from("app_env_vars")
+        .upsert(
+          {
+            app_id: appId,
+            key: name,
+            is_secret: isSecret,
+            // Exactly one of the two, matching the table's check constraint.
+            value: isSecret ? null : value,
+            ciphertext: isSecret ? sealAppSecret(appEnvSecretKind(name), value) : null,
+            updated_by_member_id: access.callerMemberId,
+            updated_at: now,
+          },
+          { onConflict: "app_id,key" },
+        )
+        .select("key, is_secret, value, updated_at")
+        .single();
+      if (error) throw error;
+      await touchAppEnv(admin, appId, now);
+      return mapAppEnvRow(data);
+    },
+
+    async deleteAppEnv(appId: string, key: string) {
+      const access = await this.resolveAppEnvAccess(appId, "admin");
+      if (!access) return false;
+      const admin = await serviceRoleClient("delete app env");
+      const { data, error } = await admin
+        .from("app_env_vars")
+        .delete()
+        .eq("app_id", appId)
+        // Not parseEnvKey: a reserved or malformed name cannot be WRITTEN, but a
+        // row that already holds one must still be removable.
+        .eq("key", key)
+        .select("key");
+      if (error) throw error;
+      if ((data ?? []).length === 0) return false;
+      // A delete changes the environment as much as a write does, so it moves
+      // the app back into "needs a redeploy" too.
+      await touchAppEnv(admin, appId, new Date().toISOString());
+      return true;
+    },
+
+    // ─── App scheduled tasks (design 2026-09-10-app-control-panel §5) ────────
+    //
+    // Reads are open to anyone the app has named (RLS lets a `view` grantee
+    // select); writes need `admin` and go through the service role, exactly
+    // like the member-access grants above — the RLS manage policy is
+    // creator-only and an admin grantee is not the creator.
+
+    /** The one place a job's user-supplied fields are validated. */
+    normalizeAppCronInput(input: any, existing: any = null) {
+      const pick = (key: string, fallback: any) =>
+        input[key] === undefined ? fallback : input[key];
+
+      const name = String(pick("name", existing?.name) ?? "").trim();
+      if (!name || name.length > 120) {
+        throw new ApiError(400, "validation_failed", "name must be 1-120 characters");
+      }
+
+      const schedule = String(pick("schedule", existing?.schedule_expr) ?? "").trim();
+      const timezone = String(pick("timezone", existing?.timezone) ?? "UTC").trim() || "UTC";
+      assertTimeZone(timezone);
+      parseCronExpression(schedule); // throws 400 on a bad expression
+
+      const method = String(pick("method", existing?.method) ?? "GET").trim().toUpperCase();
+      if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
+        throw new ApiError(400, "validation_failed", `method ${method} is not supported`);
+      }
+
+      let path = String(pick("path", existing?.path) ?? "/").trim();
+      if (!path.startsWith("/")) {
+        throw new ApiError(400, "validation_failed", 'path must start with "/"');
+      }
+      if (path.length > 512) {
+        throw new ApiError(400, "validation_failed", "path is too long");
+      }
+
+      const rawHeaders = pick("headers", existing?.headers) ?? {};
+      if (typeof rawHeaders !== "object" || rawHeaders === null || Array.isArray(rawHeaders)) {
+        throw new ApiError(400, "validation_failed", "headers must be an object");
+      }
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rawHeaders)) {
+        if (typeof v !== "string") {
+          throw new ApiError(400, "validation_failed", `header ${k} must be a string`);
+        }
+        headers[k] = v;
+      }
+      if (Object.keys(headers).length > 20) {
+        throw new ApiError(400, "validation_failed", "at most 20 headers");
+      }
+
+      const rawBody = pick("body", existing?.body);
+      if (rawBody !== null && rawBody !== undefined && typeof rawBody !== "string") {
+        throw new ApiError(400, "validation_failed", "body must be a string or null");
+      }
+      if (typeof rawBody === "string" && rawBody.length > 64 * 1024) {
+        throw new ApiError(400, "validation_failed", "body is larger than 64 KiB");
+      }
+
+      const timeoutMs = Number(pick("timeoutMs", existing?.timeout_ms) ?? 30000);
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 60000) {
+        throw new ApiError(400, "validation_failed", "timeoutMs must be between 1000 and 60000");
+      }
+
+      const enabledRaw = pick("enabled", existing?.enabled ?? true);
+      const enabled = enabledRaw === undefined ? true : Boolean(enabledRaw);
+
+      return {
+        name,
+        enabled,
+        schedule_expr: schedule,
+        timezone,
+        method,
+        path,
+        headers,
+        body: rawBody ?? null,
+        timeout_ms: timeoutMs,
+        // A disabled job has no next fire. Recomputing it on enable is what
+        // keeps a job that was off for a month from firing the instant it comes
+        // back for every occurrence it missed.
+        next_run_at: enabled ? computeNextRun(schedule, timezone, new Date())?.toISOString() ?? null : null,
+      };
+    },
+
+    async listAppCronJobs(appId: string) {
+      const { data: app, error: appErr } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (appErr) throw appErr;
+      if (!app) return null;
+      if (!(await this.resolveAppCallerPermissionForApp(app))) return null;
+
+      const { data, error } = await supabase
+        .from("app_cron_jobs")
+        .select("*")
+        .eq("app_id", appId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map(mapAppCronJobRow);
+    },
+
+    /** admin on this app, or null. The gate for every cron write. */
+    async resolveAppCronManager(appId: string) {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission || permission.level !== "admin") return null;
+      return { callerMemberId: permission.callerMemberId };
+    },
+
+    async createAppCronJob(appId: string, input: any) {
+      const manager = await this.resolveAppCronManager(appId);
+      if (!manager) return null;
+      const fields = this.normalizeAppCronInput(input ?? {});
+
+      const admin = await serviceRoleClient("create app cron job");
+      const { count, error: countErr } = await admin
+        .from("app_cron_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("app_id", appId);
+      if (countErr) throw countErr;
+      // A ceiling rather than a rate limit: 20 jobs on a one-minute floor is
+      // already 20 requests a minute against one function, and anything past
+      // that is a workload the app should be scheduling internally.
+      if ((count ?? 0) >= 20) {
+        throw new ApiError(400, "validation_failed", "an app can have at most 20 scheduled tasks");
+      }
+
+      const { data, error } = await admin
+        .from("app_cron_jobs")
+        .insert({ ...fields, app_id: appId, created_by_member_id: manager.callerMemberId })
+        .select("*")
+        .single();
+      if (error) throw error;
+      return mapAppCronJobRow(data);
+    },
+
+    async updateAppCronJob(appId: string, jobId: string, patch: any) {
+      const manager = await this.resolveAppCronManager(appId);
+      if (!manager) return null;
+
+      const admin = await serviceRoleClient("update app cron job");
+      const { data: existing, error: selErr } = await admin
+        .from("app_cron_jobs")
+        .select("*")
+        .eq("id", jobId)
+        .eq("app_id", appId)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (!existing) return null;
+
+      const fields = this.normalizeAppCronInput(patch ?? {}, existing);
+      const { data, error } = await admin
+        .from("app_cron_jobs")
+        .update({ ...fields, updated_at: new Date().toISOString() })
+        .eq("id", jobId)
+        .eq("app_id", appId)
+        .select("*")
+        .single();
+      if (error) throw error;
+      return mapAppCronJobRow(data);
+    },
+
+    async deleteAppCronJob(appId: string, jobId: string) {
+      const manager = await this.resolveAppCronManager(appId);
+      if (!manager) return false;
+      const admin = await serviceRoleClient("delete app cron job");
+      const { data, error } = await admin
+        .from("app_cron_jobs")
+        .delete()
+        .eq("id", jobId)
+        .eq("app_id", appId)
+        .select("id");
+      if (error) throw error;
+      return (data ?? []).length > 0;
+    },
+
+    /**
+     * Fire a job right now, without touching its schedule.
+     *
+     * `next_run_at` is deliberately left alone: "run it now" is a test, and
+     * moving the schedule because someone pressed a button would make the next
+     * scheduled run happen at a time nobody chose.
+     */
+    async runAppCronJobNow(appId: string, jobId: string) {
+      const manager = await this.resolveAppCronManager(appId);
+      if (!manager) return null;
+      const admin = await serviceRoleClient("run app cron job");
+      const { data: job, error } = await admin
+        .from("app_cron_jobs")
+        .select(CRON_JOB_COLUMNS)
+        .eq("id", jobId)
+        .eq("app_id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!job) return null;
+      return executeAppCronJob(admin, job, {});
+    },
+
+    async listAppCronRuns(appId: string, jobId: string, limit = 20) {
+      const { data: app, error: appErr } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (appErr) throw appErr;
+      if (!app) return null;
+      if (!(await this.resolveAppCallerPermissionForApp(app))) return null;
+
+      const { data, error } = await supabase
+        .from("app_cron_runs")
+        .select("id, job_id, started_at, finished_at, status, response_status, duration_ms, error")
+        .eq("app_id", appId)
+        .eq("job_id", jobId)
+        .order("started_at", { ascending: false })
+        .limit(Math.min(Math.max(limit, 1), 100));
+      if (error) throw error;
+      return (data ?? []).map(mapAppCronRunRow);
     },
 
     async deleteApp(appId: string) {

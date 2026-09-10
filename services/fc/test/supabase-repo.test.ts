@@ -1624,7 +1624,8 @@ function fakeGitea(over: Record<string, unknown> = {}) {
     archiveAndRenameAppRepo: async (appId: string) => ({
       sshUrl: `git@gitea.example:teamclaw-apps/deleted-tc-app-${appId}.git`,
     }),
-    getRepoHead: async () => ({ sha: "abc123" }),
+    getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
+    compareCommits: async () => 4,
     ...over,
   };
 }
@@ -1674,6 +1675,7 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.equal(items.length, 1);
   assert.deepEqual(Object.keys(items[0]).sort(), [
     "authMode", "authAudience", "authScope", "authRules", "authModePendingRedeploy",
+    "envPendingRedeploy",
     "createdAt", "createdByActorId",
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
     "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
@@ -1695,6 +1697,41 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
   assert.equal(items[0].provisionStatus, "pending");
   // The apps list names who made each app; without this it can only show ids.
   assert.equal(items[0].createdByActorId, "actor-app-1");
+});
+
+test("apps: envPendingRedeploy compares the two env timestamps", async () => {
+  // The environment is baked into the function at finalize, so an env edit does
+  // nothing to the running app until the next deploy. An operator who just
+  // pasted an API key would otherwise believe it is already in effect.
+  const live = { ...APP_ROW, fc_status: "live" };
+  const older = "2026-09-10T09:00:00.000Z";
+  const newer = "2026-09-10T10:00:00.000Z";
+
+  const pending = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...live, env_updated_at: newer, env_deployed_at: older }] } }),
+  );
+  assert.equal((await pending.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, true);
+
+  const settled = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...live, env_updated_at: older, env_deployed_at: newer }] } }),
+  );
+  assert.equal((await settled.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, false);
+
+  // Env set on an app that has never deployed: pending would be true forever,
+  // and there is nothing live for it to be out of date with.
+  const neverDeployed = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...live, env_updated_at: newer, env_deployed_at: null }] } }),
+  );
+  assert.equal((await neverDeployed.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, true);
+
+  const notLive = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, env_updated_at: newer, env_deployed_at: null }] } }),
+  );
+  assert.equal((await notLive.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, false);
+
+  // No env at all is the ordinary case and must never read as pending.
+  const noEnv = appsRepo(appsSupabase({ seed: { apps: [live] } }));
+  assert.equal((await noEnv.listApps({ teamId: "team-1" }))[0].envPendingRedeploy, false);
 });
 
 test("apps: authModePendingRedeploy is derived from the deployed mode", async () => {
@@ -2164,7 +2201,81 @@ test("apps: a Gitea-managed app gets an OpenSSH credential and its repo head", a
   const cred = await repo.getAppGitCredential("app-1");
   assert.equal(cred?.remoteUrl, managed.git_remote_url);
   assert.match(cred!.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
-  assert.deepEqual(await repo.getAppGitHead("app-1"), { sha: "abc123" });
+  // Without `compare`, the head comes back with no distance measured — the
+  // deploy path calls this on every deploy and reads only `sha`.
+  assert.deepEqual(await repo.getAppGitHead("app-1"), {
+    sha: "abc123",
+    branch: "main",
+    deployedSha: null,
+    undeployedCommits: null,
+  });
+});
+
+test("apps: git head compares against the deployed commit only when asked", async () => {
+  const managed = {
+    ...APP_ROW,
+    created_by_actor_id: "actor-app-1",
+    git_auth_kind: "gitea_deploy_key",
+    git_commit_sha: "deadbee",
+  };
+  let compares = 0;
+  const gitea = {
+    getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
+    compareCommits: async () => {
+      compares += 1;
+      return 4;
+    },
+  };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
+
+  const plain = await repo.getAppGitHead("app-1");
+  assert.equal(plain.undeployedCommits, null);
+  assert.equal(compares, 0, "no comparison without compare:true");
+
+  const compared = await repo.getAppGitHead("app-1", { compare: true });
+  assert.equal(compared.deployedSha, "deadbee");
+  assert.equal(compared.undeployedCommits, 4);
+  assert.equal(compares, 1);
+});
+
+test("apps: a deployed commit that IS the head needs no forge round trip", async () => {
+  // Asking the forge to compare a commit with itself would be a request whose
+  // answer is already known.
+  const managed = {
+    ...APP_ROW,
+    created_by_actor_id: "actor-app-1",
+    git_auth_kind: "gitea_deploy_key",
+    git_commit_sha: "abc123",
+  };
+  const gitea = {
+    getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
+    compareCommits: async () => {
+      throw new Error("must not be called");
+    },
+  };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
+  const out = await repo.getAppGitHead("app-1", { compare: true });
+  assert.equal(out.undeployedCommits, 0);
+});
+
+test("apps: an app that never deployed reports an unknown distance, not zero", async () => {
+  // Zero would read as "up to date" on an app that has never been live.
+  const managed = {
+    ...APP_ROW,
+    created_by_actor_id: "actor-app-1",
+    git_auth_kind: "gitea_deploy_key",
+    git_commit_sha: null,
+  };
+  const gitea = {
+    getRepoHead: async () => ({ sha: "abc123", branch: "main" }),
+    compareCommits: async () => {
+      throw new Error("must not be called");
+    },
+  };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [managed] } }), { gitea });
+  const out = await repo.getAppGitHead("app-1", { compare: true });
+  assert.equal(out.deployedSha, null);
+  assert.equal(out.undeployedCommits, null);
 });
 
 function appAccessRepo(permissionLevel: string, actorId = "member-other", extra: Record<string, unknown> = {}) {

@@ -225,6 +225,16 @@ jobs:
             if ! grep -qE '^AI_GATEWAY_SERVICE_TOKEN=.+' .env; then
               upsert_env AI_GATEWAY_SERVICE_TOKEN "$(openssl rand -hex 32)"
             fi
+            # Shared secret the app-cron sidecar presents to FC's tick endpoint.
+            # Minted here for the same reason as the token above: FC fails CLOSED
+            # on an unset secret, so without this every scheduled task an
+            # operator creates would silently never fire while the sidecar
+            # 401-looped once a minute with nothing in the deploy output saying
+            # so. Preserved once set — there is no state keyed on it, but
+            # rotating it mid-deploy would drop ticks until both restart.
+            if ! grep -qE '^APP_CRON_SECRET=.+' .env; then
+              upsert_env APP_CRON_SECRET "$(openssl rand -hex 32)"
+            fi
             # Where the gateway asks GoTrue who a token belongs to. In-network;
             # it never needs the public hostname.
             grep -qE '^SUPABASE_URL=.+' .env || upsert_env SUPABASE_URL "http://kong:8000"

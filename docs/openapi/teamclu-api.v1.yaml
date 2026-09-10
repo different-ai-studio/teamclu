@@ -5898,10 +5898,23 @@ paths:
       description: |
         Reads the default branch SHA via the server-side Gitea bot token.
         Visible to the same callers as `getApp`. 404 when the app is not
-        Gitea-managed (`gitAuthKind` is null).
+        Gitea-managed (`gitAuthKind` is null) — such an app's repo belongs to
+        someone else and this deployment holds no credential for it.
+
+        `compare=1` additionally reports how many commits the branch is ahead of
+        what is deployed. It is opt-in because it costs an extra request to the
+        forge, and the deploy path calls this endpoint on every deploy while
+        reading only `sha`.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
+        - name: compare
+          in: query
+          required: false
+          description: >-
+            Set to `1` to populate `undeployedCommits`. Anything else omits the
+            comparison and leaves it null.
+          schema: { type: string, enum: ["1"] }
       responses:
         "200":
           description: Default branch HEAD.
@@ -6105,6 +6118,331 @@ paths:
         "409":
           $ref: "#/components/responses/Error"
         "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/env:
+    get:
+      operationId: listAppEnv
+      summary: The app's environment variables
+      description: |
+        The operator's own variables, injected into the deployed function at
+        `finalizeDeploy`. Readable by anyone with `prompt` or `admin` on the app
+        — the people who write its code need to know what its environment holds.
+
+        A secret's `value` is always `null`, for everyone, including whoever set
+        it. Changing a secret means writing a new value.
+
+        `canWrite` says whether this caller may change any of it (`admin`), so
+        the client does not need a second request to find out.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: The app's environment, by key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, canWrite]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppEnvVar"
+                  canWrite: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/env/{key}:
+    put:
+      operationId: putAppEnv
+      summary: Set or replace one environment variable
+      description: |
+        Requires `admin`. Creates the key or replaces its value, including
+        flipping it between plain and secret.
+
+        Names the platform sets itself are refused with `env_key_reserved`:
+        `PORT`, `NODE_ENV`, `DATABASE_URL`, `APP_PUBLIC_URL`, `API_BASE`,
+        `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and anything starting `TEAMCLU_`.
+        The deploy also applies user variables UNDERNEATH the platform's, so
+        such a key could not take effect even if it reached the table.
+
+        The change is NOT live until the app is deployed again — the environment
+        is baked into the function. The app row's `envPendingRedeploy` says so.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppEnvKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  type: string
+                  maxLength: 8192
+                  description: >-
+                    May be empty — a variable set to the empty string is a
+                    legitimate thing to want. May not contain newlines or NUL.
+                isSecret:
+                  type: boolean
+                  default: false
+                  description: >-
+                    A secret is sealed with AES-256-GCM and never returned
+                    again. Storing a plain value readable is the point of the
+                    distinction, so this is the operator's call per key.
+      responses:
+        "200":
+          description: The stored variable (a secret's value comes back null).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppEnvVar"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAppEnv
+      summary: Remove one environment variable
+      description: |
+        Requires `admin`. Like a write, this only reaches the running app on the
+        next deploy.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppEnvKey"
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/cron-jobs:
+    get:
+      operationId: listAppCronJobs
+      summary: List an app's scheduled tasks
+      description: |
+        Cloud-side schedules: at the given minute, the platform sends one HTTP
+        request to the app's own public URL. Distinct from the desktop's cron,
+        which runs agent turns against a workspace and needs the machine awake.
+
+        Readable by anyone with any permission on the app; 404 otherwise, like
+        every other app route.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: The app's scheduled tasks, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppCronJob"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createAppCronJob
+      summary: Create a scheduled task
+      description: |
+        Requires `admin` on the app. At most 20 tasks per app.
+
+        The request the task sends carries NO session, so a `path` behind the
+        login wall is answered with a redirect to the login service and the run
+        is recorded as failed. Make that path public and authenticate it with a
+        header of your own (`headers`).
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppCronJobInput"
+      responses:
+        "201":
+          description: The created task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppCronJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/cron-jobs/{jobId}:
+    patch:
+      operationId: updateAppCronJob
+      summary: Update a scheduled task
+      description: |
+        Requires `admin`. Fields not present are left as they were. Changing the
+        schedule, the timezone, or `enabled` recomputes `nextRunAt` — a task
+        that was disabled for a month does not fire once per missed occurrence
+        when it comes back.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppCronJobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppCronJobInput"
+      responses:
+        "200":
+          description: The updated task.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppCronJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAppCronJob
+      summary: Delete a scheduled task
+      description: Requires `admin`. The task's run history goes with it.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppCronJobId"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/cron-jobs/{jobId}/run:
+    post:
+      operationId: runAppCronJobNow
+      summary: Run a scheduled task immediately
+      description: |
+        Requires `admin`. Sends the task's request right now and answers with
+        the outcome. The schedule is NOT advanced: this is a test, and moving
+        `nextRunAt` because someone pressed a button would put the next real run
+        at a time nobody chose.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppCronJobId"
+      responses:
+        "200":
+          description: >-
+            What happened. A non-2xx from the app is still a 200 here, with
+            `status` set to `failed`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppCronRunOutcome"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/cron-jobs/{jobId}/runs:
+    get:
+      operationId: listAppCronRuns
+      summary: A scheduled task's execution history
+      description: |
+        Newest first. Only the most recent 20 runs per task are kept; older rows
+        are trimmed when a new one is written.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - $ref: "#/components/parameters/AppCronJobId"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: Execution history.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppCronRun"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/internal/app-cron/tick:
+    post:
+      operationId: appCronTick
+      summary: Fire every scheduled task that is due (internal)
+      description: |
+        The heartbeat, called once a minute by the deployment's own scheduler —
+        the `app-cron` compose sidecar on self-host, an external minute cron on
+        Function Compute. NOT a user endpoint.
+
+        Authenticated by `Authorization: Bearer <APP_CRON_SECRET>`, compared in
+        constant time. An unset secret is refused, so a deployment that has not
+        configured one has no scheduler rather than an open trigger.
+      tags: [Apps]
+      security: []
+      responses:
+        "200":
+          description: What this tick did.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [due, ran, outcomes]
+                properties:
+                  due:
+                    type: integer
+                    description: Tasks found due.
+                  ran:
+                    type: integer
+                    description: >-
+                      Tasks this process claimed and ran. Lower than `due` when
+                      another tick claimed one first, which is not an error.
+                  outcomes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AppCronRunOutcome"
+        "401":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/access:
     get:
@@ -6456,21 +6794,45 @@ paths:
         never address another app's; `after` is the opaque cursor from a
         previous page. `canWrite` tells the panel whether to render upload and
         delete, so a `view` member is not shown controls that would 404.
+
+        With `delimiter=/` the store collapses everything below the next
+        separator into `folders`, and `items` holds only the objects sitting
+        directly at `prefix` — one level, the way a file browser reads. Without
+        it the listing is fully RECURSIVE, which is what a count or a sweep
+        wants and what a browser must not do: an app writing
+        `uploads/<user>/<file>` has thousands of keys and about six things a
+        person wants to look at.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
         - name: prefix
           in: query
+          description: >-
+            Folder to list, relative to the app root. Leading slashes and `..`
+            segments are stripped; an object store has no parent directory.
           schema:
             type: string
+        - name: delimiter
+          in: query
+          description: >-
+            `/` to browse one level. Omit for a fully recursive listing.
+          schema:
+            type: string
+            enum: ["/"]
         - name: after
           in: query
           schema:
             type: string
         - name: limit
           in: query
+          description: >-
+            1-100. Above the ceiling the request is REFUSED, not clamped — a
+            silent clamp would have the caller page forever believing it asked
+            for more.
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
       responses:
         "200":
           description: One page of files.
@@ -6478,16 +6840,64 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items, canWrite]
+                required: [items, folders, canWrite]
                 properties:
                   items:
                     type: array
                     items:
                       $ref: "#/components/schemas/AppFile"
+                  folders:
+                    type: array
+                    description: >-
+                      Sub-folders at this level, each ending in `/` and relative
+                      to the app root. Empty unless `delimiter` was given — an
+                      object store has no directories, these are the common
+                      prefixes below the next separator.
+                    items:
+                      type: string
                   nextCursor:
                     type: [string, "null"]
                   canWrite:
                     type: boolean
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/storage/folder:
+    delete:
+      operationId: deleteAppFolder
+      summary: Delete every file under one folder
+      description: |
+        Requires `prompt`, the same tier as deleting a single file — a folder is
+        not a different kind of object in a store like this, it is a prefix, and
+        whoever may delete each of its files one at a time may delete them
+        together.
+
+        An EMPTY prefix is refused with 400: that would be the whole app, and
+        emptying an app's storage is the separate admin-only purge.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - name: prefix
+          in: query
+          required: true
+          description: Folder to empty, relative to the app root.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: How many objects were removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: integer }
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
         "404":
@@ -6792,6 +7202,23 @@ components:
       in: path
       required: true
       description: Team member actor id receiving the grant.
+      schema:
+        type: string
+        format: uuid
+    AppEnvKey:
+      name: key
+      in: path
+      required: true
+      description: Environment variable name (letters, digits, underscores).
+      schema:
+        type: string
+        pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+        maxLength: 128
+    AppCronJobId:
+      name: jobId
+      in: path
+      required: true
+      description: Scheduled task id.
       schema:
         type: string
         format: uuid
@@ -7262,6 +7689,14 @@ components:
             wall lives in the proxy gateway and takes effect immediately.
             Server-derived from `fc_status` and the deployed mode; false for an
             app that has never been live.
+        envPendingRedeploy:
+          type: boolean
+          description: >-
+            The app's environment variables have changed since the running
+            function was built. The environment is baked in at finalize, so an
+            edit does nothing until the next deploy. Server-derived from
+            `fc_status` and the two env timestamps; false for an app that has
+            never been live.
         oauthClientId:
           type: [string, "null"]
           description: >-
@@ -7358,11 +7793,29 @@ components:
           format: date-time
     AppGitHead:
       type: object
-      required: [sha]
+      required: [sha, branch, deployedSha, undeployedCommits]
       properties:
         sha:
           type: string
           description: Default-branch HEAD commit id on the app's Gitea repo.
+        branch:
+          type: string
+          description: >-
+            The default branch's name. Returned because "3 commits behind" is
+            much easier to act on when it also says behind what.
+        deployedSha:
+          type: [string, "null"]
+          description: >-
+            The commit the running function was built from (`apps.git_commit_sha`).
+            Null when the app has never been deployed.
+        undeployedCommits:
+          type: [integer, "null"]
+          description: >-
+            Commits on the branch that the deployed commit does not have. `0`
+            means the deployed commit IS the head. Null means the question was
+            not asked (no `compare=1`), or could not be answered — nothing is
+            deployed yet, or the forge could not compare the two, which is what
+            a force-push away from the deployed commit looks like.
     AppAuthAudience:
       type: string
       enum: [any, org]
@@ -7399,6 +7852,140 @@ components:
         auth:
           type: string
           enum: [required, public]
+        audience:
+          type: string
+          enum: [any, org]
+          description: >-
+            Who satisfies the login on this path. Only meaningful with
+            `auth: required`, and OPTIONAL: an absent `audience` means "use the
+            app's own `authAudience`", never a default of its own. Reading it as
+            `org` when absent would tighten the wall on every app currently set
+            to `any` — every rule stored before this field existed is absent.
+    AppEnvVar:
+      type: object
+      required: [key, isSecret, value, updatedAt]
+      properties:
+        key: { type: string }
+        isSecret: { type: boolean }
+        value:
+          type: [string, "null"]
+          description: >-
+            The stored value, or null when `isSecret`. Null is not "empty" — a
+            secret's value is never returned to anyone.
+        updatedAt: { type: string, format: date-time }
+    AppCronJobInput:
+      type: object
+      description: >-
+        Fields of a scheduled task. On create, `name` and `schedule` are
+        required; on update every field is optional and what is absent is left
+        alone.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        enabled:
+          type: boolean
+          default: true
+          description: A disabled task has no `nextRunAt` and is never claimed by a tick.
+        schedule:
+          type: string
+          description: >-
+            Five cron fields — minute hour day-of-month month day-of-week —
+            supporting `*`, lists, ranges and `/n` steps, plus three-letter
+            month and weekday names. When BOTH day fields are restricted, a run
+            happens if EITHER matches, as Vixie cron has always done. `@daily`,
+            `L`/`W`/`#` and seconds are not supported.
+        timezone:
+          type: string
+          default: UTC
+          description: >-
+            IANA zone the expression is read in. A local time inside a
+            spring-forward gap simply does not occur that day; a time inside an
+            autumn overlap runs once, not twice.
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE, HEAD]
+          default: GET
+        path:
+          type: string
+          pattern: "^/"
+          maxLength: 512
+          description: >-
+            Path on the app's own public URL. Path only — the host comes from
+            the app row at fire time, so a task can never be aimed at another
+            origin and keeps working if the app is renamed.
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: >-
+            Extra request headers, at most 20. This is where a task carries its
+            own shared secret: the request has NO session, so authenticating it
+            is the app's job. `host` and hop-by-hop headers are dropped.
+        body:
+          type: [string, "null"]
+          maxLength: 65536
+          description: Ignored on GET and HEAD, which cannot carry one.
+        timeoutMs:
+          type: integer
+          minimum: 1000
+          maximum: 60000
+          default: 30000
+    AppCronJob:
+      type: object
+      required: [id, appId, name, enabled, schedule, timezone, method, path, headers, timeoutMs, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        appId: { type: string, format: uuid }
+        name: { type: string }
+        enabled: { type: boolean }
+        schedule: { type: string }
+        timezone: { type: string }
+        method: { type: string }
+        path: { type: string }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        body: { type: [string, "null"] }
+        timeoutMs: { type: integer }
+        lastRunAt: { type: [string, "null"], format: date-time }
+        nextRunAt:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            When this task fires next. Null means never again — it is disabled,
+            or its expression names a date that does not exist (Feb 30). Both
+            are ordinary states, not errors.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AppCronRunOutcome:
+      type: object
+      required: [jobId, status, responseStatus, error]
+      properties:
+        jobId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [success, failed, timeout]
+          description: >-
+            `success` is any 2xx or 3xx that is not a bounce to the login
+            service. An app's own redirect is a success; the login wall turning
+            the task away is not.
+        responseStatus: { type: [integer, "null"] }
+        error: { type: [string, "null"] }
+    AppCronRun:
+      type: object
+      required: [id, jobId, startedAt, status]
+      properties:
+        id: { type: string, format: uuid }
+        jobId: { type: string, format: uuid }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+        status:
+          type: string
+          enum: [success, failed, timeout]
+        responseStatus: { type: [integer, "null"] }
+        durationMs: { type: [integer, "null"] }
+        error: { type: [string, "null"] }
     AppCustomDomain:
       type: object
       required: [domain, verified, dns]

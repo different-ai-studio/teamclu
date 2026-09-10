@@ -4,7 +4,7 @@ import {
   normalizeRulePath,
   parseAuthRules,
   parseAuthScope,
-  pathRequiresLogin,
+  resolvePathPolicy,
   validateAuthPathConfig,
 } from "../src/lib/apps-auth-paths.js";
 import { ApiError } from "../src/lib/http-utils.js";
@@ -100,21 +100,21 @@ test("paths scope with nothing protected is refused", () => {
 // --- reading: the baseline ---------------------------------------------------
 
 test("the all baseline protects everything", () => {
-  assert.equal(pathRequiresLogin("/", "all", []), true);
-  assert.equal(pathRequiresLogin("/anything/deep", "all", []), true);
+  assert.equal(resolvePathPolicy("/", "all", []).requiresLogin, true);
+  assert.equal(resolvePathPolicy("/anything/deep", "all", []).requiresLogin, true);
 });
 
 test("the paths baseline leaves everything else public", () => {
   const rules = [{ path: "/admin", auth: "required" }];
-  assert.equal(pathRequiresLogin("/", "paths", rules), false);
-  assert.equal(pathRequiresLogin("/pricing", "paths", rules), false);
-  assert.equal(pathRequiresLogin("/admin", "paths", rules), true);
+  assert.equal(resolvePathPolicy("/", "paths", rules).requiresLogin, false);
+  assert.equal(resolvePathPolicy("/pricing", "paths", rules).requiresLogin, false);
+  assert.equal(resolvePathPolicy("/admin", "paths", rules).requiresLogin, true);
 });
 
 test("an unrecognised scope behaves as all", () => {
-  assert.equal(pathRequiresLogin("/x", "PATHS", []), true);
-  assert.equal(pathRequiresLogin("/x", "", []), true);
-  assert.equal(pathRequiresLogin("/x", null, []), true);
+  assert.equal(resolvePathPolicy("/x", "PATHS", []).requiresLogin, true);
+  assert.equal(resolvePathPolicy("/x", "", []).requiresLogin, true);
+  assert.equal(resolvePathPolicy("/x", null, []).requiresLogin, true);
 });
 
 // --- reading: prefix semantics -----------------------------------------------
@@ -122,7 +122,7 @@ test("an unrecognised scope behaves as all", () => {
 test("a prefix covers the path itself and everything under it", () => {
   const rules = [{ path: "/admin", auth: "required" }];
   for (const p of ["/admin", "/admin/", "/admin/users", "/admin/a/b/c"]) {
-    assert.equal(pathRequiresLogin(p, "paths", rules), true, p);
+    assert.equal(resolvePathPolicy(p, "paths", rules).requiresLogin, true, p);
   }
 });
 
@@ -130,7 +130,7 @@ test("a prefix stops at a path boundary", () => {
   // The classic off-by-one: /admin must not swallow /administrator.
   const rules = [{ path: "/admin", auth: "required" }];
   for (const p of ["/administrator", "/admins", "/admin-tools"]) {
-    assert.equal(pathRequiresLogin(p, "paths", rules), false, p);
+    assert.equal(resolvePathPolicy(p, "paths", rules).requiresLogin, false, p);
   }
 });
 
@@ -139,8 +139,8 @@ test("matching ignores case", () => {
   // bytes as /admin, so a case-sensitive match would leave that spelling open
   // on exactly the deployments where it resolves.
   const rules = [{ path: "/admin", auth: "required" }];
-  assert.equal(pathRequiresLogin("/Admin/Users", "paths", rules), true);
-  assert.equal(pathRequiresLogin("/ADMIN", "paths", rules), true);
+  assert.equal(resolvePathPolicy("/Admin/Users", "paths", rules).requiresLogin, true);
+  assert.equal(resolvePathPolicy("/ADMIN", "paths", rules).requiresLogin, true);
 });
 
 // --- reading: longest prefix wins --------------------------------------------
@@ -152,9 +152,9 @@ test("the longest matching prefix wins, regardless of order", () => {
   ];
   const reversed = [...forward].reverse();
   for (const rules of [forward, reversed]) {
-    assert.equal(pathRequiresLogin("/api/users", "paths", rules), true);
-    assert.equal(pathRequiresLogin("/api/webhook", "paths", rules), false);
-    assert.equal(pathRequiresLogin("/api/webhook/stripe", "paths", rules), false);
+    assert.equal(resolvePathPolicy("/api/users", "paths", rules).requiresLogin, true);
+    assert.equal(resolvePathPolicy("/api/webhook", "paths", rules).requiresLogin, false);
+    assert.equal(resolvePathPolicy("/api/webhook/stripe", "paths", rules).requiresLogin, false);
   }
 });
 
@@ -163,8 +163,8 @@ test("a deeper exception can re-protect below a public one", () => {
     { path: "/docs", auth: "public" },
     { path: "/docs/internal", auth: "required" },
   ];
-  assert.equal(pathRequiresLogin("/docs/getting-started", "all", rules), false);
-  assert.equal(pathRequiresLogin("/docs/internal/runbook", "all", rules), true);
+  assert.equal(resolvePathPolicy("/docs/getting-started", "all", rules).requiresLogin, false);
+  assert.equal(resolvePathPolicy("/docs/internal/runbook", "all", rules).requiresLogin, true);
 });
 
 test("a root rule is the least specific match, not the longest", () => {
@@ -174,8 +174,8 @@ test("a root rule is the least specific match, not the longest", () => {
     { path: "/", auth: "public" },
     { path: "/admin", auth: "required" },
   ];
-  assert.equal(pathRequiresLogin("/", "all", rules), false);
-  assert.equal(pathRequiresLogin("/admin/x", "all", rules), true);
+  assert.equal(resolvePathPolicy("/", "all", rules).requiresLogin, false);
+  assert.equal(resolvePathPolicy("/admin/x", "all", rules).requiresLogin, true);
 });
 
 // --- reading: fail closed ----------------------------------------------------
@@ -193,7 +193,7 @@ test("a path we cannot reason about is protected", () => {
     "/public/./x",
     "/public\\admin",
   ]) {
-    assert.equal(pathRequiresLogin(p, "paths", rules), true, p);
+    assert.equal(resolvePathPolicy(p, "paths", rules).requiresLogin, true, p);
   }
 });
 
@@ -201,19 +201,86 @@ test("an unusable rule set protects everything", () => {
   // Writes are validated strictly, so reaching this means something wrote to
   // the column directly. A broken rule must never be the reason a protected
   // path became reachable.
-  assert.equal(pathRequiresLogin("/x", "paths", "not-an-array"), true);
-  assert.equal(pathRequiresLogin("/x", "paths", [{ path: "/x" }]), true);
-  assert.equal(pathRequiresLogin("/x", "paths", [{ path: "x", auth: "public" }]), true);
-  assert.equal(pathRequiresLogin("/x", "paths", [{ path: "/x", auth: "sometimes" }]), true);
-  assert.equal(pathRequiresLogin("/x", "paths", [null]), true);
+  assert.equal(resolvePathPolicy("/x", "paths", "not-an-array").requiresLogin, true);
+  assert.equal(resolvePathPolicy("/x", "paths", [{ path: "/x" }]).requiresLogin, true);
+  assert.equal(resolvePathPolicy("/x", "paths", [{ path: "x", auth: "public" }]).requiresLogin, true);
+  assert.equal(resolvePathPolicy("/x", "paths", [{ path: "/x", auth: "sometimes" }]).requiresLogin, true);
+  assert.equal(resolvePathPolicy("/x", "paths", [null]).requiresLogin, true);
   // ...even when a good rule would have said public.
   assert.equal(
-    pathRequiresLogin("/x", "paths", [{ path: "/x", auth: "public" }, 42]),
+    resolvePathPolicy("/x", "paths", [{ path: "/x", auth: "public" }, 42]).requiresLogin,
     true,
   );
 });
 
 test("a missing rule column falls back to the baseline", () => {
-  assert.equal(pathRequiresLogin("/x", "paths", null), false);
-  assert.equal(pathRequiresLogin("/x", "all", undefined), true);
+  assert.equal(resolvePathPolicy("/x", "paths", null).requiresLogin, false);
+  assert.equal(resolvePathPolicy("/x", "all", undefined).requiresLogin, true);
+});
+
+// --- per-path audience ------------------------------------------------------
+
+test("a rule may name its own audience, and only on a protected path", () => {
+  assert.deepEqual(
+    parseAuthRules([
+      { path: "/admin", auth: "required", audience: "org" },
+      { path: "/", auth: "required", audience: "any" },
+      // Public admits everyone by definition; an audience here would be a
+      // setting the panel shows and the gateway ignores.
+      { path: "/health", auth: "public", audience: "org" },
+    ]),
+    [
+      { path: "/admin", auth: "required", audience: "org" },
+      { path: "/", auth: "required", audience: "any" },
+      { path: "/health", auth: "public" },
+    ],
+  );
+});
+
+test("an audience that is not one of the two is refused", () => {
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", audience: "employees" }]), /audience/);
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", audience: 1 }]), /audience/);
+});
+
+test("a rule with no audience stays without one, so the app's own value applies", () => {
+  // The whole point: every rule stored before this key existed reads as
+  // "inherit", never as a default that could tighten a live wall.
+  assert.deepEqual(parseAuthRules([{ path: "/x", auth: "required" }]), [
+    { path: "/x", auth: "required" },
+  ]);
+  assert.equal(resolvePathPolicy("/x", "all", [{ path: "/x", auth: "required" }]).audience, null);
+});
+
+test("the winning rule decides both the login and the audience", () => {
+  const rules = [
+    { path: "/", auth: "required", audience: "any" },
+    { path: "/admin", auth: "required", audience: "org" },
+  ];
+  assert.deepEqual(resolvePathPolicy("/", "all", rules), { requiresLogin: true, audience: "any" });
+  assert.deepEqual(resolvePathPolicy("/admin/users", "all", rules), {
+    requiresLogin: true,
+    audience: "org",
+  });
+});
+
+test("a public path resolves no audience at all", () => {
+  const policy = resolvePathPolicy("/health", "all", [{ path: "/health", auth: "public" }]);
+  assert.deepEqual(policy, { requiresLogin: false, audience: null });
+});
+
+test("an unreadable audience invalidates the set, like an unreadable verdict", () => {
+  const policy = resolvePathPolicy("/anything", "paths", [
+    { path: "/x", auth: "required", audience: "everyone" },
+  ]);
+  assert.deepEqual(policy, { requiresLogin: true, audience: null });
+});
+
+test("the login verdict is exactly what it used to be", () => {
+  // The point is that adding per-path audiences moved no verdict: the wall's
+  // behaviour must not change with a feature that only adds a second answer.
+  const rules = [{ path: "/health", auth: "public" }, { path: "/admin", auth: "required" }];
+  assert.equal(resolvePathPolicy("/health", "all", rules).requiresLogin, false);
+  assert.equal(resolvePathPolicy("/admin", "paths", rules).requiresLogin, true);
+  assert.equal(resolvePathPolicy("/other", "paths", rules).requiresLogin, false);
+  assert.equal(resolvePathPolicy("/other", "all", rules).requiresLogin, true);
 });

@@ -979,6 +979,104 @@ export type AppAuthScope = "all" | "paths";
 export interface AppAuthRule {
   path: string;
   auth: "required" | "public";
+  /**
+   * Who satisfies the login on this path. Only meaningful with
+   * `auth: "required"`.
+   *
+   * `undefined` means "use the app's own `authAudience`", and is NOT the same
+   * as `"org"`. Every rule saved before this field existed is undefined, so
+   * treating absence as `org` would tighten a live wall on every app currently
+   * set to "any signed-in user".
+   */
+  audience?: AppAuthAudience;
+}
+
+/**
+ * One environment variable of a deployed app.
+ *
+ * `value` is `null` for a secret — for everyone, including whoever set it.
+ * That is the whole distinction: a plain value is readable and editable because
+ * the operator said it is not a secret, and a secret is write-only because they
+ * said it is. Null here never means "empty string".
+ */
+export interface AppEnvVar {
+  key: string;
+  isSecret: boolean;
+  value: string | null;
+  updatedAt: string;
+}
+
+/** The env list, with what this caller may do to it. */
+export interface AppEnvList {
+  items: AppEnvVar[];
+  /** `admin` on the app. Carried here so the client needs no second request. */
+  canWrite: boolean;
+}
+
+/** How a scheduled task's last attempt ended. */
+export type AppCronRunStatus = "success" | "failed" | "timeout";
+
+/**
+ * A cloud-side scheduled task: at the scheduled minute, one HTTP request to
+ * this app's own public URL.
+ *
+ * Not the desktop's cron. That one runs agent turns against a workspace
+ * directory and needs the machine awake; this runs in the cloud whether or not
+ * anyone is logged in.
+ */
+export interface AppCronJob {
+  id: string;
+  appId: string;
+  name: string;
+  enabled: boolean;
+  /** Five cron fields: minute hour day-of-month month day-of-week. */
+  schedule: string;
+  /** IANA zone the expression is read in. */
+  timezone: string;
+  method: string;
+  /** Path on the app's own URL. The host is resolved server-side at fire time. */
+  path: string;
+  headers: Record<string, string>;
+  body: string | null;
+  timeoutMs: number;
+  lastRunAt: string | null;
+  /** Null means never again: disabled, or an expression no date satisfies. */
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Fields of a task. On create `name` and `schedule` are required. */
+export interface AppCronJobInput {
+  name?: string;
+  enabled?: boolean;
+  schedule?: string;
+  timezone?: string;
+  method?: string;
+  path?: string;
+  headers?: Record<string, string>;
+  body?: string | null;
+  timeoutMs?: number;
+}
+
+/** One execution, as the history lists it. */
+export interface AppCronRun {
+  id: string;
+  jobId: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: AppCronRunStatus;
+  responseStatus: number | null;
+  durationMs: number | null;
+  error: string | null;
+}
+
+/** What a single run did, as "run now" answers it. */
+export interface AppCronRunOutcome {
+  jobId: string;
+  status: AppCronRunStatus;
+  responseStatus: number | null;
+  error: string | null;
 }
 
 /** Everything about an app's login wall that a single PATCH may change. */
@@ -1047,6 +1145,10 @@ export interface AppRow {
    *  the PATCH. This does NOT mean the site is unprotected: the wall lives in
    *  the proxy gateway and every auth change takes effect immediately. */
   authModePendingRedeploy: boolean;
+  /** The app's env has changed since the running function was built. Like the
+   *  auth flag, the environment is baked in at finalize, so an edit does
+   *  nothing until the next deploy. */
+  envPendingRedeploy: boolean;
   /** Hostname the owner bound, or null. Served only once verified. */
   customDomain: string | null;
   /** When DNS ownership was last proven; null = stored but NOT served. */
@@ -1097,7 +1199,22 @@ export interface AppGitCredential {
 }
 
 export interface AppGitHead {
+  /** Default-branch HEAD on the app's own Gitea repo. */
   sha: string;
+  /** The default branch's name, so "3 commits behind" says behind what. */
+  branch: string;
+  /** The commit the running function was built from, per the app row. */
+  deployedSha: string | null;
+  /**
+   * Commits on the branch the deployed one does not have.
+   *
+   * Only populated when the caller asked to compare. `0` means the deployed
+   * commit IS the head; `null` means the question could not be answered —
+   * nothing is deployed yet, the comparison was not requested, or the forge
+   * could not compare the two (a force-push away from the deployed commit is
+   * the ordinary way that happens).
+   */
+  undeployedCommits: number | null;
 }
 
 /** `GET /v1/apps/:id/membership` — whether the caller belongs to the app's team. */
@@ -1235,6 +1352,15 @@ export interface AppsBackend {
   updateAppDeployStatus(appId: string, fcStatus: string, deployError?: string): Promise<AppRow | null>;
   /** Rename an app (PATCH name). Returns null on 404. */
   renameApp(appId: string, name: string): Promise<AppRow | null>;
+  /**
+   * Who on the team can see this app at all.
+   *
+   * `personal` does not mean private: the RLS policy admits the creator, anyone
+   * holding an explicit grant, AND nothing else. `team` admits every team
+   * member. Null on 404, which is also what a non-creator gets — the update is
+   * creator-only, like renaming.
+   */
+  setAppVisibility(appId: string, visibility: "personal" | "team"): Promise<AppRow | null>;
   /** Start FC deploy: provisions the function + returns the OSS upload handle.
    *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
   deployApp(
@@ -1266,7 +1392,7 @@ export interface AppsBackend {
   revokeGitCredential(appId: string, deployKeyId: number): Promise<void>;
   /** Default-branch HEAD on the app's Gitea repo (same visibility as getApp).
    *  Null for an app that is not Gitea-managed. */
-  getGitHead(appId: string): Promise<AppGitHead | null>;
+  getGitHead(appId: string, opts?: { compare?: boolean }): Promise<AppGitHead | null>;
   /** Whether the caller is a member of the app's team (platform-auth templates). */
   getAppMembership(appId: string): Promise<AppMembership | null>;
   /** List per-member grants (creator or app admin only). Null on 404. */
@@ -1338,10 +1464,44 @@ export interface AppsBackend {
   ): Promise<{ url: string; size?: number; contentType?: string | null } | null>;
   /** Delete one file. */
   deleteAppFile(appId: string, path: string): Promise<void>;
+  /** Delete every key under one folder. `prompt`+, like deleting each file. */
+  deleteAppFolder(appId: string, prefix: string): Promise<{ deleted: number } | null>;
   /** Delete every file. Irreversible, `admin` only. */
   purgeAppFiles(appId: string): Promise<{ deleted: number } | null>;
   /** Set or clear (null) this app's ceiling. */
   setAppStorageQuota(appId: string, quotaBytes: number | null): Promise<{ quotaBytes: number | null } | null>;
+
+  // --- Environment (design 2026-09-10-app-control-panel §9) ---
+  // `prompt` may read (the tier that writes the app's code), `admin` may write.
+  // A secret's value is never returned, so there is no "reveal".
+
+  /** The app's variables, plus whether this caller may change them. Null on 404. */
+  listAppEnv(appId: string): Promise<AppEnvList | null>;
+  /** Set or replace one variable. `admin` only. Null on 404. */
+  putAppEnv(
+    appId: string,
+    key: string,
+    input: { value: string; isSecret?: boolean },
+  ): Promise<AppEnvVar | null>;
+  /** Remove one variable. `admin` only. False on 404. */
+  deleteAppEnv(appId: string, key: string): Promise<boolean>;
+
+  // --- Scheduled tasks (design 2026-09-10-app-control-panel §5) ---
+  // Any tier may read the schedule; only `admin` may change it. Null is 404,
+  // which is also what "not yours" answers.
+
+  /** This app's scheduled tasks, oldest first. Null on 404. */
+  listAppCronJobs(appId: string): Promise<AppCronJob[] | null>;
+  /** Create one. `admin` only; at most 20 per app. Null on 404. */
+  createAppCronJob(appId: string, input: AppCronJobInput): Promise<AppCronJob | null>;
+  /** Patch one; absent fields are left alone. `admin` only. Null on 404. */
+  updateAppCronJob(appId: string, jobId: string, input: AppCronJobInput): Promise<AppCronJob | null>;
+  /** Delete one. `admin` only. False on 404. */
+  deleteAppCronJob(appId: string, jobId: string): Promise<boolean>;
+  /** Send the request now without advancing the schedule. `admin` only. */
+  runAppCronJobNow(appId: string, jobId: string): Promise<AppCronRunOutcome | null>;
+  /** Execution history, newest first. Only the last 20 are kept. */
+  listAppCronRuns(appId: string, jobId: string, limit?: number): Promise<AppCronRun[] | null>;
 
   /**
    * What the deployed function printed, newest first. Null on 404.
@@ -1362,6 +1522,14 @@ export interface AppFile {
 
 export interface AppFilesPage {
   items: AppFile[]
+  /**
+   * Sub-folders at this level, each ending in `/` and relative to the app root.
+   *
+   * Only populated when the request asked for a delimiter. An object store has
+   * no directories — these are the common prefixes below the next separator,
+   * which is what makes browsing one level possible at all.
+   */
+  folders: string[]
   nextCursor: string | null
   /** False for `view`, so the panel does not offer controls that would 404. */
   canWrite: boolean
@@ -1371,6 +1539,8 @@ export interface AppFilesQuery {
   prefix?: string | null
   after?: string | null
   limit?: number
+  /** `"/"` to browse one level. Absent lists every key under the prefix. */
+  delimiter?: string | null
 }
 
 export interface AppStorageUsage {

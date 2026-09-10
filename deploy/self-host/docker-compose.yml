@@ -444,6 +444,11 @@ services:
       # APP_SECRETS_ENCRYPTION_KEY disabled platform auth. Set it to rotate
       # every app session independently of the service role key.
       APPS_AUTH_SESSION_SECRET: "${APPS_AUTH_SESSION_SECRET:-}"
+      # Shared secret the app-cron heartbeat presents. Blank = scheduled tasks
+      # never fire: `sharedSecretMatches` refuses an unset secret, so the tick
+      # endpoint answers 401 rather than running jobs for anyone who finds it.
+      # The `app-cron` service below reads the same variable.
+      APP_CRON_SECRET: "${APP_CRON_SECRET:-}"
       # Per-app git repos on Gitea. Blank disables repo provisioning (503
       # gitea_unavailable naming the empty variable). May be the Caddy-proxied
       # public HTTPS URL (https://${GITEA_DOMAIN}) or the in-network address
@@ -526,6 +531,61 @@ services:
       # NOTE: CORS_HANDLED_BY_PROXY is deliberately NOT here. Caddy is a
       # transparent proxy that adds no CORS headers, so Hono must own CORS
       # (see services/fc/src/app.ts). Setting it would strip CORS entirely.
+
+  # ── The heartbeat that fires apps' scheduled tasks ──
+  #
+  # A one-minute loop against FC's tick endpoint. Not in a compose profile on
+  # purpose: a profile means "off unless you opt in", and a scheduler that is
+  # off by default is a feature that silently does not exist — the failure mode
+  # the whole design is trying to avoid.
+  #
+  # It costs nothing when nobody uses it. With no APP_CRON_SECRET set the
+  # endpoint answers 401 and this loop just logs it; with no scheduled tasks
+  # stored, the tick is one indexed query that returns no rows.
+  #
+  # `curl -fsS` keeps a failed tick quiet-but-visible: no progress bar, a
+  # non-zero exit on 4xx/5xx, and the error body on stderr where `docker compose
+  # logs app-cron` shows it. The loop never exits, so one bad minute (FC
+  # restarting, say) is retried on the next.
+  app-cron:
+    image: curlimages/curl:8.11.1
+    restart: unless-stopped
+    depends_on:
+      # service_started, not service_healthy: the `fc` service defines no
+      # healthcheck, and a `service_healthy` condition on a service without one
+      # aborts `docker compose up` for everything. Start order is all this needs
+      # anyway — a tick that lands before FC is listening is retried a minute
+      # later, which is the same thing that happens on any restart.
+      fc:
+        condition: service_started
+    environment:
+      APP_CRON_SECRET: "${APP_CRON_SECRET:-}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Line up with the wall clock before each tick. A job scheduled for
+        # 09:00 should not fire at 09:00:37 just because the container happened
+        # to start then.
+        #
+        # `date +%S` is ZERO-PADDED, and POSIX arithmetic reads a leading zero as
+        # octal — so `60 - 08` and `60 - 09` are parse errors that kill the
+        # script outright (busybox ash, dash, everything but bash's $((10#..))).
+        # Stripping the pad is the portable fix; without it the heartbeat died
+        # for two seconds out of every minute and the container restart-looped
+        # if it happened to start on one of them.
+        align_sleep() {
+          s=$$(date +%S)
+          sleep $$(( 60 - $${s#0} ))
+        }
+        align_sleep
+        while true; do
+          curl -fsS -m 55 -X POST \
+            -H "Authorization: Bearer $$APP_CRON_SECRET" \
+            http://fc:9000/v1/internal/app-cron/tick >/dev/null \
+            || echo "app-cron: tick failed at $$(date -u +%FT%TZ)"
+          align_sleep
+        done
 
   # ── Blob storage for team files (knowledge, skill packages) ──
   #

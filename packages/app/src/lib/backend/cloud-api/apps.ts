@@ -17,6 +17,12 @@ import type {
   AppMemberAccessRow,
   AppPermissionLevel,
   AppCustomDomain,
+  AppEnvList,
+  AppEnvVar,
+  AppCronJob,
+  AppCronJobInput,
+  AppCronRun,
+  AppCronRunOutcome,
   DeployAppResult,
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
@@ -69,6 +75,16 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         throw e;
       }
     },
+    async setAppVisibility(appId, visibility) {
+      try {
+        return await client.patch<AppRow>(`/v1/apps/${encodeURIComponent(appId)}`, { visibility });
+      } catch (e) {
+        // 404 is also what a non-creator gets: `apps_update_if_creator` matches
+        // zero rows and the route cannot tell that apart from a missing app.
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
     async deployApp(appId, input) {
       return client.post<DeployAppResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy`, input);
     },
@@ -94,9 +110,12 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         console.warn("revokeGitCredential failed (non-fatal)", e);
       }
     },
-    async getGitHead(appId) {
+    async getGitHead(appId, opts) {
+      // The compare costs the server an extra forge round trip, so it is asked
+      // for rather than assumed — the deploy path wants only the sha.
+      const qs = opts?.compare ? '?compare=1' : ''
       try {
-        return await client.get<AppGitHead>(`/v1/apps/${encodeURIComponent(appId)}/git-head`);
+        return await client.get<AppGitHead>(`/v1/apps/${encodeURIComponent(appId)}/git-head${qs}`);
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;
@@ -263,6 +282,7 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
       if (query.prefix) params.set("prefix", query.prefix);
       if (query.after) params.set("after", query.after);
       if (query.limit) params.set("limit", String(query.limit));
+      if (query.delimiter) params.set("delimiter", query.delimiter);
       const qs = params.toString();
       try {
         return await client.get<AppFilesPage>(
@@ -326,6 +346,17 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
       );
     },
 
+    async deleteAppFolder(appId, prefix) {
+      try {
+        return await client.delete<{ deleted: number }>(
+          `/v1/apps/${encodeURIComponent(appId)}/storage/folder?prefix=${encodeURIComponent(prefix)}`,
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
     async purgeAppFiles(appId) {
       try {
         return await client.post<{ deleted: number }>(
@@ -344,6 +375,120 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
           `/v1/apps/${encodeURIComponent(appId)}/storage/quota`,
           { quotaBytes },
         );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    // --- Environment (design 2026-09-10-app-control-panel §9) ---
+
+    async listAppEnv(appId) {
+      try {
+        return await client.get<AppEnvList>(`/v1/apps/${encodeURIComponent(appId)}/env`);
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async putAppEnv(appId, key, input) {
+      try {
+        return await client.put<AppEnvVar>(
+          `/v1/apps/${encodeURIComponent(appId)}/env/${encodeURIComponent(key)}`,
+          { value: input.value, isSecret: input.isSecret ?? false },
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async deleteAppEnv(appId, key) {
+      try {
+        await client.delete<{ ok: true }>(
+          `/v1/apps/${encodeURIComponent(appId)}/env/${encodeURIComponent(key)}`,
+        );
+        return true;
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return false;
+        throw e;
+      }
+    },
+
+    // --- Scheduled tasks (design 2026-09-10-app-control-panel §5) ---
+    //
+    // 404 → null throughout, the same convention the rest of this module uses:
+    // the server answers 404 for "no such app" and for "not yours to see" alike,
+    // so the client cannot tell them apart and must not pretend to.
+
+    async listAppCronJobs(appId) {
+      try {
+        const page = await client.get<Page<AppCronJob>>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs`,
+        );
+        return page.items ?? [];
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async createAppCronJob(appId, input: AppCronJobInput) {
+      try {
+        return await client.post<AppCronJob>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs`,
+          input,
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async updateAppCronJob(appId, jobId, input: AppCronJobInput) {
+      try {
+        return await client.patch<AppCronJob>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs/${encodeURIComponent(jobId)}`,
+          input,
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async deleteAppCronJob(appId, jobId) {
+      try {
+        await client.delete<{ ok: true }>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs/${encodeURIComponent(jobId)}`,
+        );
+        return true;
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return false;
+        throw e;
+      }
+    },
+
+    async runAppCronJobNow(appId, jobId) {
+      try {
+        return await client.post<AppCronRunOutcome>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs/${encodeURIComponent(jobId)}/run`,
+          {},
+        );
+      } catch (e) {
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+
+    async listAppCronRuns(appId, jobId, limit) {
+      const qs = limit ? `?limit=${limit}` : "";
+      try {
+        const page = await client.get<Page<AppCronRun>>(
+          `/v1/apps/${encodeURIComponent(appId)}/cron-jobs/${encodeURIComponent(jobId)}/runs${qs}`,
+        );
+        return page.items ?? [];
       } catch (e) {
         if (e instanceof CloudApiError && e.status === 404) return null;
         throw e;

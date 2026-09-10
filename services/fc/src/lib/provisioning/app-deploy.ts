@@ -1,4 +1,4 @@
-import { appFcRouteHost } from "../apps-public-host.js";
+import { appFcRouteHost, appPublicLabel, appPublicUrl } from "../apps-public-host.js";
 import { randomBytes } from "node:crypto";
 import {
   provisionAppPostgres,
@@ -13,7 +13,6 @@ import {
   SUPPORTED_RUNTIMES,
   type AppRuntimeSpec,
 } from "./fc-client.js";
-import { appPublicUrl } from "../apps-public-host.js";
 import { ApiError } from "../http-utils.js";
 
 /** Git commit SHA — 7–40 lowercase/uppercase hex (short or full). */
@@ -257,7 +256,31 @@ export function checkDeployInProgress(row: DeployProgressRow): "ok" | "stale" | 
   return "blocked";
 }
 
-export function appFunctionName(appId: string): string { return `tc-app-${appId}`; }
+/**
+ * The Function Compute function backing one app.
+ *
+ * With a slug, this is the SAME label the app is served on
+ * (`<slug>-<id8>`, e.g. `python-test-5c714425`), so the function and the
+ * hostname can be matched by eye. Reading `tc-app-ed76a811-a3c8-4207-…` in the
+ * FC console and `python-test-5c714425.apps.example.com` in a browser gave no
+ * way to tell which was which without a database lookup.
+ *
+ * WITHOUT a slug it returns the original `tc-app-<uuid>`, and that fallback is
+ * load-bearing rather than legacy: every already-deployed app stores its name in
+ * `apps.fc_function_name`, and the paths that fall back to computing one
+ * (delete, logs) must keep computing the name that app is actually running
+ * under. A slug is passed only where a NEW function is being minted.
+ *
+ * The label is reused for a second reason: it is already punycode-encoded and
+ * length-checked for DNS, which is strictly stricter than FC's own rule. The
+ * one thing DNS allows and FC does not is a leading digit, so a slug starting
+ * with one falls back too.
+ */
+export function appFunctionName(appId: string, slug?: string | null): string {
+  const label = slug ? appPublicLabel(slug, appId) : null;
+  if (label && /^[A-Za-z_]/.test(label)) return label;
+  return `tc-app-${appId}`;
+}
 export function appOssObjectName(appId: string): string { return `apps/${appId}/code.zip`; }
 
 /**
@@ -318,6 +341,9 @@ export interface ImagePushHandle {
 export interface StartDeployInput {
   appId: string;
   region: string;
+  /** Names the function after the app's own hostname label. Absent on a client
+   *  that predates this, which then gets the `tc-app-<uuid>` shape. */
+  slug?: string | null;
   /**
    * What the app's checkout declares, read by the daemon before the deploy is
    * minted. Absent means the built-in contract, which is what every client
@@ -345,7 +371,13 @@ export interface StartDeployResult {
  * deploy it is finishing.
  */
 export async function startDeploy(deps: StartDeployDeps, input: StartDeployInput): Promise<StartDeployResult> {
-  const base = { fcFunctionName: appFunctionName(input.appId), fcRegion: input.region };
+  // The slug is what makes the function's name match the app's hostname. It is
+  // only consulted here, where a function is first minted; everything later
+  // reads `apps.fc_function_name` off the row.
+  const base = {
+    fcFunctionName: appFunctionName(input.appId, input.slug),
+    fcRegion: input.region,
+  };
   if (isContainerRuntime(input.runtime)) {
     if (!deps.mintImagePush) {
       throw new ApiError(
@@ -430,6 +462,12 @@ export interface FinalizeInput {
    */
   storageEnv?: Record<string, string>;
   /**
+   * The operator's own variables (amux.app_env_vars), secrets already opened.
+   * Applied UNDER everything the platform sets, never over it — see the merge
+   * in finalizeDeploy.
+   */
+  userEnv?: Record<string, string>;
+  /**
    * What the app declared about how it starts, reported by the daemon that
    * built it. Absent → the contract every app had before declarations existed.
    */
@@ -506,9 +544,22 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     );
   }
 
-  if (input.platformAuthEnv) Object.assign(env, input.platformAuthEnv);
-  if (input.storageEnv) Object.assign(env, input.storageEnv);
-  if (deps.extraEnv) Object.assign(env, deps.extraEnv(input));
+  // The operator's own variables go UNDER everything the platform sets, so a
+  // user key can never take DATABASE_URL or the storage token away from the
+  // app. The write endpoint also refuses the reserved names (app-env.ts), but
+  // that only guards rows written through it — this guards the rest.
+  const platform: Record<string, string> = {};
+  if (input.platformAuthEnv) Object.assign(platform, input.platformAuthEnv);
+  if (input.storageEnv) Object.assign(platform, input.storageEnv);
+  if (deps.extraEnv) Object.assign(platform, deps.extraEnv(input));
+
+  if (input.userEnv) {
+    for (const [k, v] of Object.entries(input.userEnv)) {
+      if (k in env || k in platform) continue; // platform wins, silently and always
+      env[k] = v;
+    }
+  }
+  Object.assign(env, platform);
 
   // Best-effort, and deliberately not fatal. An app deployed without logs is
   // worse off than one with them; an app that cannot deploy at all because the

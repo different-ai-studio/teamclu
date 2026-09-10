@@ -10,7 +10,12 @@ import {
   decodeVersionHistoryTarget,
 } from "@/lib/tabs/teamshare-target"
 import {
+  decodeAppAccessTarget,
+  decodeAppAuthTarget,
+  decodeAppCronTarget,
   decodeAppDataTarget,
+  decodeAppEnvTarget,
+  decodeAppFilesTarget,
   decodeAppLogsTarget,
   isAppCreateTarget,
   isAppLibraryTarget,
@@ -46,6 +51,26 @@ const AppDataTabContent = lazyNamed(
 const AppLogsTabContent = lazyNamed(
   () => import("@/components/apps/AppLogsTabContent"),
   "AppLogsTabContent",
+)
+const AppAccessTabContent = lazyNamed(
+  () => import("@/components/apps/AppAccessTabContent"),
+  "AppAccessTabContent",
+)
+const AppAuthTabContent = lazyNamed(
+  () => import("@/components/apps/AppAuthTabContent"),
+  "AppAuthTabContent",
+)
+const AppFilesTabContent = lazyNamed(
+  () => import("@/components/apps/AppFilesTabContent"),
+  "AppFilesTabContent",
+)
+const AppCronTabContent = lazyNamed(
+  () => import("@/components/apps/AppCronTabContent"),
+  "AppCronTabContent",
+)
+const AppEnvTabContent = lazyNamed(
+  () => import("@/components/apps/AppEnvTabContent"),
+  "AppEnvTabContent",
 )
 const AppLibraryView = lazyNamed(
   () => import("@/components/apps/AppLibraryView"),
@@ -94,6 +119,21 @@ function resolveNativeBody(target: string) {
 
   const appLogs = decodeAppLogsTarget(target)
   if (appLogs) return <AppLogsTabContent appId={appLogs.appId} />
+
+  const appAccess = decodeAppAccessTarget(target)
+  if (appAccess) return <AppAccessTabContent appId={appAccess.appId} />
+
+  const appAuth = decodeAppAuthTarget(target)
+  if (appAuth) return <AppAuthTabContent appId={appAuth.appId} />
+
+  const appFiles = decodeAppFilesTarget(target)
+  if (appFiles) return <AppFilesTabContent appId={appFiles.appId} />
+
+  const appCron = decodeAppCronTarget(target)
+  if (appCron) return <AppCronTabContent appId={appCron.appId} />
+
+  const appEnv = decodeAppEnvTarget(target)
+  if (appEnv) return <AppEnvTabContent appId={appEnv.appId} />
 
   if (isAppLibraryTarget(target)) return <AppLibraryView />
 

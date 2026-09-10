@@ -1,5 +1,7 @@
 import { ApiError } from "../http-utils.js";
 import { parseLimit, requireString } from "../routing-utils.js";
+import { runDueAppCronJobs } from "../app-cron-runner.js";
+import { createServiceRoleClient } from "../supabase.js";
 
 /**
  * Object paths travel as base64url, the same trick the data browser plays with
@@ -192,9 +194,14 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  // `?compare=1` also reports how many commits the branch is ahead of what is
+  // deployed. Opt-in: the deploy path calls this endpoint on every deploy and
+  // reads only `sha`, so the extra forge round trip is not made for it.
   router.get("/v1/apps/:appId/git-head", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.getAppGitHead(appId);
+    const out = await ctx.repository.getAppGitHead(appId, {
+      compare: ctx.query.get("compare") === "1",
+    });
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });
@@ -325,13 +332,28 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  // `delimiter=/` browses ONE level: everything deeper collapses into `folders`.
+  // Without it the listing is fully recursive, which is what the control panel's
+  // count wants and what a browser must not do.
   router.get("/v1/apps/:appId/storage/objects", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const out = await ctx.repository.listAppFiles(appId, {
       prefix: ctx.query.get("prefix"),
       after: ctx.query.get("after"),
       limit: parseLimit(ctx.query.get("limit")),
+      delimiter: ctx.query.get("delimiter"),
     });
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // Deleting a folder is deleting every key under a prefix. `prompt`, like a
+  // single file — a folder is not a different kind of object, and emptying the
+  // WHOLE app is the separate admin-only purge below.
+  router.delete("/v1/apps/:appId/storage/folder", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const prefix = ctx.query.get("prefix") ?? "";
+    const out = await ctx.repository.deleteAppFolder(appId, prefix);
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });
@@ -379,6 +401,117 @@ export function registerApps(router) {
     }
     const out = await ctx.repository.setAppStorageQuota(appId, raw);
     if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // --- App environment (design 2026-09-10-app-control-panel §9) ---
+  //
+  // `:key` is an ordinary path segment: env names are letters, digits and
+  // underscores, so unlike a file path or a table row key there is nothing here
+  // that needs encoding to survive one.
+
+  router.get("/v1/apps/:appId/env", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.listAppEnv(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.put("/v1/apps/:appId/env/:key", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const key = decodeURIComponent(ctx.params.key);
+    const body = ctx.json ?? {};
+    // Present-but-empty is a legitimate value (an env var set to ""), so the
+    // check is for the field's absence, not its truthiness.
+    if (typeof body.value !== "string") {
+      throw new ApiError(400, "validation_failed", "value is required");
+    }
+    const out = await ctx.repository.putAppEnv(appId, key, body);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/env/:key", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const key = decodeURIComponent(ctx.params.key);
+    const ok = await ctx.repository.deleteAppEnv(appId, key);
+    if (!ok) throw new ApiError(404, "not_found", "env variable not found");
+    return { body: { ok: true } };
+  });
+
+  // --- App scheduled tasks (design 2026-09-10-app-control-panel §5/§6) ---
+  //
+  // Reads are open to anyone the app has named; every write is `admin`, and the
+  // repository is the only place that decides which is which. A null return is
+  // 404 for the same reason every other app route does it: telling "you may
+  // not" apart from "it does not exist" leaks which apps exist.
+
+  router.get("/v1/apps/:appId/cron-jobs", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const items = await ctx.repository.listAppCronJobs(appId);
+    if (items === null) throw new ApiError(404, "not_found", "app not found");
+    return { body: { items } };
+  });
+
+  router.post("/v1/apps/:appId/cron-jobs", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const body = ctx.json ?? {};
+    requireString(body.name, "name");
+    requireString(body.schedule, "schedule");
+    const out = await ctx.repository.createAppCronJob(appId, body);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { statusCode: 201, body: out };
+  });
+
+  router.patch("/v1/apps/:appId/cron-jobs/:jobId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const jobId = decodeURIComponent(ctx.params.jobId);
+    const out = await ctx.repository.updateAppCronJob(appId, jobId, ctx.json ?? {});
+    if (!out) throw new ApiError(404, "not_found", "cron job not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/cron-jobs/:jobId", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const jobId = decodeURIComponent(ctx.params.jobId);
+    const ok = await ctx.repository.deleteAppCronJob(appId, jobId);
+    if (!ok) throw new ApiError(404, "not_found", "cron job not found");
+    return { body: { ok: true } };
+  });
+
+  // Runs the job's request immediately and answers with the outcome. The
+  // schedule is untouched — see runAppCronJobNow.
+  router.post("/v1/apps/:appId/cron-jobs/:jobId/run", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const jobId = decodeURIComponent(ctx.params.jobId);
+    const out = await ctx.repository.runAppCronJobNow(appId, jobId);
+    if (!out) throw new ApiError(404, "not_found", "cron job not found");
+    return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/cron-jobs/:jobId/runs", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const jobId = decodeURIComponent(ctx.params.jobId);
+    // parseLimit's own default is the 50-row list default, which is not this
+    // endpoint's: only 20 runs per job are ever kept. It still validates the
+    // value when one is given, so garbage is a 400 rather than a silent clamp.
+    const rawLimit = ctx.query.get("limit");
+    const items = await ctx.repository.listAppCronRuns(
+      appId,
+      jobId,
+      rawLimit ? parseLimit(rawLimit) : 20,
+    );
+    if (items === null) throw new ApiError(404, "not_found", "app not found");
+    return { body: { items } };
+  });
+
+  // The one-minute heartbeat. Both deploy targets drive this same path — a
+  // compose sidecar on self-host, a timer trigger on Alibaba FC — so a job
+  // behaves identically wherever it runs. `auth: "cron-tick"` is the whole
+  // authentication: a constant-time compare against APP_CRON_SECRET, which
+  // fails closed when the variable is unset.
+  router.post("/v1/internal/app-cron/tick", { auth: "cron-tick" }, async () => {
+    const out = await runDueAppCronJobs({ client: createServiceRoleClient() });
     return { body: out };
   });
 

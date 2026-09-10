@@ -186,9 +186,12 @@ describe('AppLibraryView', () => {
   })
 
   it('marks team apps and says nothing about personal ones', () => {
+    // The badge has its own key (visibilityTeamBadge) precisely so it can stay
+    // one word: the picker's label had to become a sentence to say what the
+    // setting does, and a sentence is not a badge.
     render(<AppLibraryView />)
-    expect(screen.getAllByText('Team')).toHaveLength(1)
-    expect(screen.queryByText('Personal')).not.toBeInTheDocument()
+    expect(screen.getAllByText('团队')).toHaveLength(1)
+    expect(screen.queryByText('个人')).not.toBeInTheDocument()
   })
 
   it('renders nothing for a creator who is not in the directory', () => {

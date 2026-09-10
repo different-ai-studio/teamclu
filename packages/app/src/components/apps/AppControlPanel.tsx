@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  ChevronRight,
+  Copy,
   Loader2,
   RefreshCw,
   Save,
   Trash2,
   FolderInput,
-  Shield,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -28,21 +29,22 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { cn } from '@/lib/utils'
+import { cn, copyToClipboard, isTauri } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
-import { listTeamMembersForAccess, type TeamMemberOption } from '@/lib/daemon/daemon-agent-admin'
 import { appStatusMeta, canReseed } from '@/lib/apps/app-list-helpers'
 import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-local-client'
-import { isTauri } from '@/lib/utils'
-import { useAppsStore } from '@/stores/apps-store'
-import { AppDataSection } from './AppDataSection'
-import { AppAuthSection } from './AppAuthSection'
+import {
+  openAppAccess,
+  openAppAuth,
+  openAppCron,
+  openAppDataTable,
+  openAppEnv,
+  openAppFiles,
+  openAppLogs,
+} from '@/lib/tabs/app-tabs'
+import { isGiteaManaged, useAppsStore } from '@/stores/apps-store'
 import { AppCustomDomainSection } from './AppCustomDomainSection'
-import { AppFilesSection } from './AppFilesSection'
-import { AppLogsSection } from './AppLogsSection'
-import type { AppMemberAccessRow, AppPermissionLevel, AppRow } from '@/lib/backend/types'
-
-const PERMISSION_LEVELS: AppPermissionLevel[] = ['view', 'prompt', 'admin']
+import type { AppGitHead, AppRow } from '@/lib/backend/types'
 
 function StatusDot({ tone }: { tone: 'live' | 'ready' | 'failed' | 'idle' }) {
   const color =
@@ -63,13 +65,7 @@ function StatusDot({ tone }: { tone: 'live' | 'ready' | 'failed' | 'idle' }) {
  * boxing every group turned it into a stack of chrome with the actual controls
  * squeezed inside. The heading and the spacing carry the grouping instead.
  */
-function Group({
-  title,
-  children,
-}: {
-  title: string
-  children: React.ReactNode
-}) {
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="[&+&]:mt-6">
       <h3 className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-2">
@@ -80,26 +76,267 @@ function Group({
   )
 }
 
-/**
- * One labelled group inside a card.
- *
- * The panel used to be seven separate cards, which made a scroll of mostly
- * borders. Grouping them puts the two questions a user actually has — "what is
- * this app" and "what is live" — one per card.
- */
-function Field({
-  label,
-  children,
-}: {
-  label: string
-  children: React.ReactNode
-}) {
+/** One labelled group inside a card. */
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="border-t border-border-soft/60 pt-3 first:border-t-0 first:pt-0 [&+&]:mt-3">
       <h4 className="mb-1.5 text-[11px] font-medium text-faint">{label}</h4>
       {children}
     </div>
   )
+}
+
+/**
+ * One management surface, as a line: what it is, how much of it there is, and a
+ * way in.
+ *
+ * The panel used to hold the controls themselves — a grant table, a rule
+ * editor, a file list — inside 280px. Each of them needed a row, and a row
+ * needs width, so each was cramped into a column of its own. Here the panel
+ * answers only "how much is there", which is the question you can actually ask
+ * of a narrow column, and the editing happens in a tab that has room.
+ *
+ * `value` is a count when there is one and a REASON when there is not
+ * ("not deployed", "no database"). Zero and not-applicable are different
+ * answers and showing both as "0" loses the difference.
+ */
+function SummaryRow({
+  label,
+  value,
+  loading,
+  onOpen,
+  testId,
+}: {
+  label: string
+  value: string | null
+  loading?: boolean
+  onOpen: () => void
+  testId?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      data-testid={testId}
+      className="flex w-full items-center gap-2 rounded-[7px] px-1.5 py-2 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <span className="shrink-0 text-[13px] text-foreground">{label}</span>
+      <span className="min-w-0 flex-1 truncate text-right text-[12px] text-muted-foreground">
+        {loading ? <Loader2 className="ml-auto h-3 w-3 animate-spin" /> : value}
+      </span>
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-faint" />
+    </button>
+  )
+}
+
+/**
+ * Whether changing visibility to `next` needs to be confirmed first.
+ *
+ * Only narrowing does. Widening a personal app to the team can surprise nobody
+ * — it adds people to a list. Narrowing takes the app off every teammate's
+ * list, and the word "personal" does not say that on its own.
+ *
+ * Exported because the rule is the interesting part and a Radix Select cannot
+ * be opened in jsdom to reach it through the UI.
+ */
+export function visibilityChangeNeedsConfirm(
+  current: AppRow['visibility'],
+  next: AppRow['visibility'],
+): boolean {
+  if (current === next) return false
+  return next === 'personal'
+}
+
+/** Seven characters is what every git UI shows and what people paste. */
+const shortSha = (sha: string) => sha.slice(0, 7)
+
+/**
+ * What the code-version line says, given the app row and the branch head.
+ *
+ * Split out because there are five states and only one of them is the happy
+ * path — the interesting ones are "never deployed", "we cannot see the branch"
+ * and "we can see it but cannot count the distance". Each needs different
+ * words, and none of them should render as a blank line.
+ */
+export function describeCodeVersion(
+  app: Pick<AppRow, 'gitCommitSha' | 'gitAuthKind' | 'fcStatus'>,
+  head: AppGitHead | null,
+): { key: string; fallback: string; vars?: Record<string, string | number> } {
+  if (!isGiteaManaged(app)) {
+    return {
+      key: 'apps.controlPanel.codeVersionExternalRepo',
+      fallback: '这个应用用的是外部仓库，看不到它的分支。',
+    }
+  }
+  if (!head) {
+    return { key: 'apps.controlPanel.codeVersionUnavailable', fallback: '暂时读不到仓库' }
+  }
+  if (!head.deployedSha) {
+    return {
+      key: 'apps.controlPanel.codeVersionNeverDeployed',
+      fallback: '还没有部署过 · 分支 {{branch}} 在 {{head}}',
+      vars: { branch: head.branch, head: shortSha(head.sha) },
+    }
+  }
+  // `apps.git_commit_sha` is stamped when a deploy STARTS, not when it
+  // finishes, so on anything but a live app it names the commit the last deploy
+  // ATTEMPTED — not what is serving. A failed build would otherwise have the
+  // panel print "线上 abc123 · 已是最新" while the function still ran the commit
+  // before it, and the operator would read "nothing to deploy" and stop looking.
+  if (app.fcStatus !== 'live') {
+    return {
+      key: 'apps.controlPanel.codeVersionNotLive',
+      fallback: '上次部署的是 {{sha}}，但没有成功上线 · 分支 {{branch}} 在 {{head}}',
+      vars: {
+        sha: shortSha(head.deployedSha),
+        branch: head.branch,
+        head: shortSha(head.sha),
+      },
+    }
+  }
+  if (head.undeployedCommits === 0 || head.deployedSha === head.sha) {
+    return {
+      key: 'apps.controlPanel.codeVersionUpToDate',
+      fallback: '线上 {{sha}} · 已是分支 {{branch}} 的最新',
+      vars: { sha: shortSha(head.deployedSha), branch: head.branch },
+    }
+  }
+  if (head.undeployedCommits === null) {
+    // The forge could not compare them. Saying "有更新" without a number is
+    // honest; inventing one, or falling back to "up to date", is not.
+    return {
+      key: 'apps.controlPanel.codeVersionBehindUnknown',
+      fallback: '线上 {{sha}} · 分支 {{branch}} 上有没部署的改动',
+      vars: { sha: shortSha(head.deployedSha), branch: head.branch },
+    }
+  }
+  return {
+    key: 'apps.controlPanel.codeVersionBehind',
+    fallback: '线上 {{sha}} · 分支 {{branch}} 上还有 {{count}} 个提交没部署',
+    vars: { sha: shortSha(head.deployedSha), branch: head.branch, count: head.undeployedCommits },
+  }
+}
+
+/** Bytes for humans. Deliberately not a dependency; three lines. */
+function formatBytes(n: number | null | undefined): string | null {
+  if (n == null) return null
+  if (n < 1024) return `${n} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let v = n / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`
+}
+
+interface Summary {
+  members: number | null
+  // `first` rides along so opening the browser does not re-ask the server which
+  // tables exist; the browser has its own switcher and only needs a starting
+  // point.
+  tables:
+    | { count: number; first: string | null }
+    | { reason: 'no_database' | 'not_deployed' | 'unavailable' }
+    | null
+  files: { count: number; more: boolean; bytes: number | null } | null
+  cronJobs: number | null
+  env: { count: number; secrets: number } | null
+  /** Null for an app whose repo is not ours to read (see isGiteaManaged). */
+  gitHead: AppGitHead | null
+}
+
+/**
+ * Every count the panel shows, in one pass.
+ *
+ * `allSettled`, not `all`: these are four independent surfaces and one of them
+ * being unreachable (an app with no database, a storage bucket that is not
+ * configured) must not blank the other three.
+ */
+function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
+  // Re-run when a tab reports it changed something these counts describe.
+  const revision = useAppsStore((s) => s.summaryRevision)
+  const [summary, setSummary] = React.useState<Summary>({
+    members: null,
+    tables: null,
+    files: null,
+    cronJobs: null,
+    env: null,
+    gitHead: null,
+  })
+  const [loading, setLoading] = React.useState(true)
+
+  React.useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setSummary({
+      members: null,
+      tables: null,
+      files: null,
+      cronJobs: null,
+      env: null,
+      gitHead: null,
+    })
+
+    void (async () => {
+      const backend = getBackend().apps
+      const [access, tables, files, usage, cron, env, gitHead] = await Promise.allSettled([
+        backend.listAppAccess(app.id),
+        backend.listAppDataTables(app.id),
+        // No delimiter on purpose: this is a COUNT, and one level of the root
+        // folder is not the answer to "how many files does this app have".
+        backend.listAppFiles(app.id, { limit: 100 }),
+        backend.getAppStorageUsage(app.id),
+        backend.listAppCronJobs(app.id),
+        backend.listAppEnv(app.id),
+        // Only for a repo we host: an imported app's branch is on someone
+        // else's forge and this deployment holds no credential for it.
+        isGiteaManaged(app) ? backend.getGitHead(app.id, { compare: true }) : Promise.resolve(null),
+      ])
+      if (cancelled) return
+
+      const filesPage = files.status === 'fulfilled' ? files.value : null
+      setSummary({
+        members: access.status === 'fulfilled' ? (access.value?.length ?? null) : null,
+        tables:
+          tables.status === 'fulfilled' && tables.value
+            ? tables.value.status === 'ok'
+              ? {
+                  count: tables.value.tables.length,
+                  first: tables.value.tables[0]?.name ?? null,
+                }
+              : { reason: tables.value.status }
+            : null,
+        files: filesPage
+          ? {
+              count: filesPage.items.length,
+              // One page was fetched; a further page means the count is a
+              // floor, not a total. Rendering "100 个文件" for an app with 500
+              // is wrong in the direction that looks entirely plausible.
+              more: Boolean(filesPage.nextCursor),
+              bytes: usage.status === 'fulfilled' ? (usage.value?.bytes ?? null) : null,
+            }
+          : null,
+        cronJobs: cron.status === 'fulfilled' ? (cron.value?.length ?? null) : null,
+        env:
+          env.status === 'fulfilled' && env.value
+            ? {
+                count: env.value.items.length,
+                secrets: env.value.items.filter((v) => v.isSecret).length,
+              }
+            : null,
+        gitHead: gitHead.status === 'fulfilled' ? gitHead.value : null,
+      })
+      setLoading(false)
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [app.id, revision])
+
+  return { summary, loading }
 }
 
 interface AppControlPanelProps {
@@ -109,13 +346,9 @@ interface AppControlPanelProps {
 export function AppControlPanel({ app }: AppControlPanelProps) {
   const { t } = useTranslation()
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
-  // From the row, not from local state: an in-memory list vanished on reload and
-  // never existed for a second admin or another device, so the app looked
-  // protected while the live site was still public (design §7.4).
-  const pendingRedeploy = app.authModePendingRedeploy
   const reseed = useAppsStore((s) => s.reseed)
+  const setVisibility = useAppsStore((s) => s.setVisibility)
   const rename = useAppsStore((s) => s.rename)
-  const deploy = useAppsStore((s) => s.deploy)
   const deleteApp = useAppsStore((s) => s.deleteApp)
 
   const [nameDraft, setNameDraft] = React.useState(app.name)
@@ -124,20 +357,16 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const [deleteOpen, setDeleteOpen] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
 
-  const [members, setMembers] = React.useState<TeamMemberOption[]>([])
-  const [accessRows, setAccessRows] = React.useState<AppMemberAccessRow[] | null>(null)
-  const [accessLoading, setAccessLoading] = React.useState(false)
-  const [accessSaving, setAccessSaving] = React.useState(false)
-  const [canManageAccess, setCanManageAccess] = React.useState(false)
-  const [grantMemberId, setGrantMemberId] = React.useState('')
-  const [grantLevel, setGrantLevel] = React.useState<AppPermissionLevel>('prompt')
-
   const [localWorkdir, setLocalWorkdir] = React.useState<string | null>(null)
   const [localDeviceName, setLocalDeviceName] = React.useState<string | null>(null)
   const [localPathLoading, setLocalPathLoading] = React.useState(false)
   const [moveOpen, setMoveOpen] = React.useState(false)
   const [moveDest, setMoveDest] = React.useState('')
   const [moving, setMoving] = React.useState(false)
+  const [visibilityPending, setVisibilityPending] = React.useState<'personal' | 'team' | null>(null)
+  const [visibilitySaving, setVisibilitySaving] = React.useState(false)
+
+  const { summary, loading: summaryLoading } = useAppSummary(app)
 
   React.useEffect(() => {
     setNameDraft(app.name)
@@ -145,31 +374,6 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
 
   const status = appStatusMeta(app, deploying)
   const showReseed = canReseed(app.provisionStatus)
-  const showAuthModePending = pendingRedeploy
-
-  const loadAccess = React.useCallback(async () => {
-    setAccessLoading(true)
-    try {
-      const [teamMembers, grants] = await Promise.all([
-        listTeamMembersForAccess(app.teamId),
-        getBackend().apps.listAppAccess(app.id),
-      ])
-      setMembers(teamMembers)
-      setAccessRows(grants ?? [])
-      setCanManageAccess(grants !== null)
-    } catch (e) {
-      console.error('[AppControlPanel] failed to load access', e)
-      setMembers([])
-      setAccessRows([])
-      setCanManageAccess(false)
-    } finally {
-      setAccessLoading(false)
-    }
-  }, [app.id, app.teamId])
-
-  React.useEffect(() => {
-    void loadAccess()
-  }, [loadAccess])
 
   const loadLocalPath = React.useCallback(async () => {
     if (!isTauri()) {
@@ -194,26 +398,6 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   React.useEffect(() => {
     void loadLocalPath()
   }, [loadLocalPath])
-
-  const memberName = React.useCallback(
-    (memberId: string) => members.find((m) => m.id === memberId)?.displayName ?? memberId,
-    [members],
-  )
-
-  const grantCandidates = React.useMemo(
-    () => members.filter((m) => !accessRows?.some((row) => row.memberId === m.id)),
-    [members, accessRows],
-  )
-
-  React.useEffect(() => {
-    if (grantCandidates.length === 0) {
-      setGrantMemberId('')
-      return
-    }
-    if (!grantCandidates.some((m) => m.id === grantMemberId)) {
-      setGrantMemberId(grantCandidates[0]?.id ?? '')
-    }
-  }, [grantCandidates, grantMemberId])
 
   const handleRename = async () => {
     const trimmed = nameDraft.trim()
@@ -242,51 +426,6 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       if (ok) setDeleteOpen(false)
     } finally {
       setDeleting(false)
-    }
-  }
-
-  const handleGrant = async () => {
-    if (!grantMemberId || !canManageAccess) return
-    setAccessSaving(true)
-    try {
-      const row = await getBackend().apps.setAppAccess(app.id, grantMemberId, grantLevel)
-      if (row) {
-        setAccessRows((prev) => {
-          const list = prev ?? []
-          const idx = list.findIndex((r) => r.memberId === row.memberId)
-          if (idx >= 0) {
-            const next = [...list]
-            next[idx] = row
-            return next
-          }
-          return [...list, row]
-        })
-        toast.success(t('apps.controlPanel.accessGranted', '已授权'))
-      }
-    } catch (e) {
-      toast.error(t('apps.controlPanel.accessError', '权限操作失败'), {
-        description: e instanceof Error ? e.message : String(e),
-      })
-    } finally {
-      setAccessSaving(false)
-    }
-  }
-
-  const handleUpdateAccess = async (memberId: string, level: AppPermissionLevel) => {
-    setAccessSaving(true)
-    try {
-      const row = await getBackend().apps.setAppAccess(app.id, memberId, level)
-      if (row) {
-        setAccessRows((prev) =>
-          (prev ?? []).map((r) => (r.memberId === memberId ? row : r)),
-        )
-      }
-    } catch (e) {
-      toast.error(t('apps.controlPanel.accessError', '权限操作失败'), {
-        description: e instanceof Error ? e.message : String(e),
-      })
-    } finally {
-      setAccessSaving(false)
     }
   }
 
@@ -341,21 +480,95 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
     }
   }
 
-  const handleRevoke = async (memberId: string) => {
-    setAccessSaving(true)
+  const handleVisibility = async (next: 'personal' | 'team') => {
+    setVisibilitySaving(true)
     try {
-      const ok = await getBackend().apps.removeAppAccess(app.id, memberId)
-      if (ok) {
-        setAccessRows((prev) => (prev ?? []).filter((r) => r.memberId !== memberId))
-        toast.success(t('apps.controlPanel.accessRevoked', '已撤销'))
-      }
-    } catch (e) {
-      toast.error(t('apps.controlPanel.accessError', '权限操作失败'), {
-        description: e instanceof Error ? e.message : String(e),
-      })
+      const ok = await setVisibility(app.id, next)
+      if (ok) setVisibilityPending(null)
     } finally {
-      setAccessSaving(false)
+      setVisibilitySaving(false)
     }
+  }
+
+  // --- what each summary row says ---------------------------------------------
+
+  const membersValue =
+    summary.members === null
+      ? t('apps.controlPanel.summaryRestricted', '仅创建者可见')
+      : t('apps.controlPanel.summaryMembers', '{{count}} 位成员', { count: summary.members })
+
+  const rulesValue = (() => {
+    if (app.authMode !== 'platform') {
+      return t('apps.controlPanel.summaryNoLogin', '不需要登录')
+    }
+    const count = app.authRules?.length ?? 0
+    return count === 0
+      ? t('apps.controlPanel.summaryAllPages', '全站一条规则')
+      : t('apps.controlPanel.summaryRules', '{{count}} 条页面规则', { count })
+  })()
+
+  const tablesValue = (() => {
+    const tables = summary.tables
+    if (!tables) return t('apps.controlPanel.summaryUnavailable', '暂时读不到')
+    if ('reason' in tables) {
+      if (tables.reason === 'no_database') return t('apps.data.noDatabaseShort', '没有数据库')
+      if (tables.reason === 'not_deployed') return t('apps.controlPanel.summaryNotDeployed', '未部署')
+      return t('apps.controlPanel.summaryUnavailable', '暂时读不到')
+    }
+    return t('apps.controlPanel.summaryTables', '{{count}} 张表', { count: tables.count })
+  })()
+
+  const filesValue = (() => {
+    if (!summary.files) return t('apps.controlPanel.summaryUnavailable', '暂时读不到')
+    const used = formatBytes(summary.files.bytes)
+    const count = summary.files.more
+      ? t('apps.controlPanel.summaryFilesMore', '{{count}}+ 个文件', {
+          count: summary.files.count,
+        })
+      : t('apps.controlPanel.summaryFiles', '{{count}} 个文件', {
+          count: summary.files.count,
+        })
+    return used ? `${count} · ${used}` : count
+  })()
+
+  const deployed = Boolean(app.fcStatus) && app.fcStatus !== 'not_deployed'
+  const logsValue = deployed
+    ? t('apps.logs.open', '查看日志')
+    : t('apps.controlPanel.summaryNotDeployed', '未部署')
+
+  const cronValue =
+    summary.cronJobs === null
+      ? t('apps.controlPanel.summaryUnavailable', '暂时读不到')
+      : t('apps.controlPanel.summaryCronJobs', '{{count}} 个任务', { count: summary.cronJobs })
+
+  const envValue = (() => {
+    if (!summary.env) return t('apps.controlPanel.summaryRestricted', '仅创建者可见')
+    const count = t('apps.controlPanel.summaryEnvVars', '{{count}} 个变量', {
+      count: summary.env.count,
+    })
+    // The secret count is worth its own clause: it is the part that cannot be
+    // read back, so knowing how much of this app's config is write-only is a
+    // different fact from knowing how much config there is.
+    return summary.env.secrets > 0
+      ? `${count} · ${t('apps.controlPanel.summarySecrets', '{{count}} 个密钥', {
+          count: summary.env.secrets,
+        })}`
+      : count
+  })()
+
+  const openData = () => {
+    // Still loading: the row shows a spinner, and the reason text has not been
+    // decided yet. Saying "cannot read it right now" here would be a lie about
+    // a request that is still in flight.
+    if (summaryLoading) return
+    const tables = summary.tables
+    // "The first table" is as good a start as any — the browser switches from
+    // there. With nothing to open, say why rather than opening an empty tab.
+    if (tables && !('reason' in tables) && tables.first) {
+      openAppDataTable(app, tables.first)
+      return
+    }
+    toast.info(tablesValue)
   }
 
   return (
@@ -373,8 +586,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto px-3.5 py-3.5">
-        {/* Everything about the app itself: what it is called, where its
-            code sits on this machine, who may touch it, and removing it. */}
+        {/* What the app is called, and where its code sits on this machine. */}
         <Group title={t('apps.controlPanel.appGroup', '应用')}>
           <Field label={t('apps.rename', '重命名')}>
             <div className="flex gap-1.5">
@@ -399,6 +611,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
               </Button>
             </div>
           </Field>
+
           <Field label={t('apps.controlPanel.localPath', '本机路径')}>
             {localPathLoading ? (
               <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted-foreground">
@@ -424,19 +637,35 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                 >
                   {localWorkdir}
                 </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 gap-1.5 rounded-[7px] text-[12px]"
-                  onClick={() => {
-                    setMoveDest('')
-                    setMoveOpen(true)
-                  }}
-                >
-                  <FolderInput className="h-3.5 w-3.5" />
-                  {t('apps.controlPanel.moveDirectory', '移动目录')}
-                </Button>
+                <div className="flex gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-[7px] text-[12px]"
+                    data-testid="app-control-copy-path"
+                    onClick={() => {
+                      void copyToClipboard(localWorkdir)
+                      toast.success(t('apps.controlPanel.pathCopied', '路径已复制'))
+                    }}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    {t('common.copy', '复制')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-[7px] text-[12px]"
+                    onClick={() => {
+                      setMoveDest('')
+                      setMoveOpen(true)
+                    }}
+                  >
+                    <FolderInput className="h-3.5 w-3.5" />
+                    {t('apps.controlPanel.moveDirectory', '移动目录')}
+                  </Button>
+                </div>
               </div>
             ) : (
               <p className="text-[12.5px] text-muted-foreground">
@@ -447,6 +676,65 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
               </p>
             )}
           </Field>
+
+          <Field label={t('apps.controlPanel.codeVersion', '代码版本')}>
+            {summaryLoading && isGiteaManaged(app) ? (
+              <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {t('common.loading', 'Loading…')}
+              </div>
+            ) : (
+              <p
+                className="text-[12.5px] text-muted-foreground"
+                data-testid="app-control-code-version"
+              >
+                {(() => {
+                  const line = describeCodeVersion(app, summary.gitHead)
+                  return t(line.key, line.fallback, line.vars)
+                })()}
+              </p>
+            )}
+          </Field>
+
+          <Field label={t('apps.visibilityLabel', '可见性')}>
+            <Select
+              value={app.visibility}
+              onValueChange={(raw) => {
+                const next = raw as AppRow['visibility']
+                if (next === app.visibility) return
+                if (visibilityChangeNeedsConfirm(app.visibility, next)) {
+                  setVisibilityPending(next)
+                  return
+                }
+                void handleVisibility(next)
+              }}
+              disabled={visibilitySaving}
+            >
+              <SelectTrigger
+                className="h-8 rounded-[7px] text-[12.5px]"
+                data-testid="app-control-visibility"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="personal" className="text-[12.5px]">
+                  {t('apps.visibilityPersonal', '仅自己和被授权的人')}
+                </SelectItem>
+                <SelectItem value="team" className="text-[12.5px]">
+                  {t('apps.visibilityTeam', '全团队可见')}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1.5 text-[11.5px] text-faint">
+              {app.visibility === 'team'
+                ? t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')
+                : t(
+                    'apps.visibilityPersonalHint',
+                    '只有你、以及在「协作权限」里被授权的成员看得到。本机 daemon 也看不到它。',
+                  )}
+            </p>
+          </Field>
+
           {showReseed && (
             <Field label={t('apps.reseed', '重新播种')}>
               <p className="mb-2 text-[12px] text-muted-foreground">
@@ -472,200 +760,74 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
               </Button>
             </Field>
           )}
-          <Field label={t('apps.controlPanel.permissions', '成员权限')}>
-            <div className="mb-2 flex items-center gap-1.5 text-[12px] text-muted-foreground">
-              <Shield className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                {t(
-                  'apps.controlPanel.permissionsHint',
-                  'view 仅可见；prompt 可协作改代码；admin 可部署与授权。',
-                )}
-              </span>
-            </div>
-
-            {accessLoading ? (
-              <div className="flex items-center gap-2 py-2 text-[12.5px] text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                {t('common.loading', 'Loading…')}
-              </div>
-            ) : !canManageAccess ? (
-              <p
-                className="text-[12.5px] text-muted-foreground"
-                data-testid="app-control-permissions-readonly"
-              >
-                {t(
-                  'apps.controlPanel.permissionsReadOnly',
-                  '仅创建者或 admin 可管理成员权限。',
-                )}
-              </p>
-            ) : (
-              <>
-                {accessRows && accessRows.length > 0 ? (
-                  <ul className="mb-3 space-y-1.5">
-                    {accessRows.map((row) => (
-                      <li
-                        key={row.memberId}
-                        className="flex items-center justify-between gap-2 rounded-lg border border-border-soft bg-background/40 px-2.5 py-2"
-                      >
-                        <span className="min-w-0 truncate text-[13px] text-foreground">
-                          {memberName(row.memberId)}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <Select
-                            value={row.permissionLevel}
-                            onValueChange={(v) =>
-                              void handleUpdateAccess(row.memberId, v as AppPermissionLevel)
-                            }
-                            disabled={accessSaving}
-                          >
-                            <SelectTrigger className="h-7 w-[88px] rounded-[7px] font-mono text-[11px]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {PERMISSION_LEVELS.map((level) => (
-                                <SelectItem key={level} value={level} className="font-mono text-[11px]">
-                                  {t(`apps.controlPanel.permission.${level}`, level)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 shrink-0 text-muted-foreground"
-                            disabled={accessSaving}
-                            onClick={() => void handleRevoke(row.memberId)}
-                            title={t('apps.controlPanel.revokeAccess', '撤销')}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mb-3 text-[12.5px] text-muted-foreground">
-                    {t('apps.controlPanel.noAccessRows', '尚未授权其他成员')}
-                  </p>
-                )}
-
-                {grantCandidates.length > 0 && (
-                  <div className="flex flex-wrap items-end gap-1.5 border-t border-border-soft pt-2.5">
-                    <div className="min-w-[120px] flex-1">
-                      <Select
-                        value={grantMemberId}
-                        onValueChange={setGrantMemberId}
-                        disabled={accessSaving}
-                      >
-                        <SelectTrigger className="h-8 rounded-[7px] text-[12px]">
-                          <SelectValue placeholder={t('apps.controlPanel.pickMember', '选择成员')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {grantCandidates.map((m) => (
-                            <SelectItem key={m.id} value={m.id}>
-                              {m.displayName}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <Select
-                      value={grantLevel}
-                      onValueChange={(v) => setGrantLevel(v as AppPermissionLevel)}
-                      disabled={accessSaving}
-                    >
-                      <SelectTrigger className="h-8 w-[88px] rounded-[7px] font-mono text-[11px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {PERMISSION_LEVELS.map((level) => (
-                          <SelectItem key={level} value={level} className="font-mono text-[11px]">
-                            {t(`apps.controlPanel.permission.${level}`, level)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="h-8 rounded-[7px] text-[12px]"
-                      disabled={accessSaving || !grantMemberId}
-                      onClick={() => void handleGrant()}
-                    >
-                      {t('apps.controlPanel.grantAccess', '授权')}
-                    </Button>
-                  </div>
-                )}
-              </>
-            )}
-          </Field>
         </Group>
 
-        {/* Everything about the deployed site: who may open it, its live
-            data, and the address it answers on. */}
+        {/* Six surfaces, six lines. Each opens a tab in the main column. */}
+        <Group title={t('apps.controlPanel.manageGroup', '管理')}>
+          <div className="-mx-1.5">
+            <SummaryRow
+              label={t('apps.access.tabTitle', '协作权限')}
+              value={membersValue}
+              loading={summaryLoading}
+              testId="app-control-open-access"
+              onOpen={() => openAppAccess(app, t('apps.access.tabTitle', '协作权限'))}
+            />
+            <SummaryRow
+              label={t('apps.auth.tabTitle', '应用权限')}
+              value={rulesValue}
+              testId="app-control-open-auth"
+              onOpen={() => openAppAuth(app, t('apps.auth.tabTitle', '应用权限'))}
+            />
+            <SummaryRow
+              label={t('apps.data.section', '线上数据')}
+              value={tablesValue}
+              loading={summaryLoading}
+              testId="app-control-open-data"
+              onOpen={openData}
+            />
+            <SummaryRow
+              label={t('apps.files.tabTitle', '应用附件')}
+              value={filesValue}
+              loading={summaryLoading}
+              testId="app-control-open-files"
+              onOpen={() => openAppFiles(app, t('apps.files.tabTitle', '应用附件'))}
+            />
+            <SummaryRow
+              label={t('apps.env.tabTitle', '变量与密钥')}
+              value={envValue}
+              loading={summaryLoading}
+              testId="app-control-open-env"
+              onOpen={() => openAppEnv(app, t('apps.env.tabTitle', '变量与密钥'))}
+            />
+            <SummaryRow
+              label={t('apps.logs.section', '运行日志')}
+              value={logsValue}
+              testId="app-control-open-logs"
+              onOpen={() => {
+                if (!deployed) {
+                  toast.info(
+                    t(
+                      'apps.logs.notDeployed',
+                      '这个应用还没有部署过，部署之后才会有日志。',
+                    ),
+                  )
+                  return
+                }
+                openAppLogs(app, t('apps.logs.tabLabel', '日志'))
+              }}
+            />
+            <SummaryRow
+              label={t('apps.cron.tabTitle', '定时任务')}
+              value={cronValue}
+              loading={summaryLoading}
+              testId="app-control-open-cron"
+              onOpen={() => openAppCron(app, t('apps.cron.tabTitle', '定时任务'))}
+            />
+          </div>
+        </Group>
+
+        {/* The address the deployed site answers on. Unchanged. */}
         <Group title={t('apps.controlPanel.liveGroup', '线上')}>
-          <Field label={t('apps.controlPanel.authMode', '登录方式')}>
-            <AppAuthSection app={app} />
-            {showAuthModePending && (
-              <span
-                className="mt-2 inline-block rounded-[7px] border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                data-testid="app-control-auth-pending-redeploy"
-              >
-                {t('apps.controlPanel.pendingRedeploy', '待重新部署')}
-              </span>
-            )}
-            {showAuthModePending && (
-              <div className="mt-2.5 border-t border-border-soft/60 pt-2.5">
-                {/* The wall itself lives in the proxy and every change here is
-                    live immediately. What lags is the function's env — the
-                    Supabase variables an app may use ITSELF. Saying "the site
-                    is still public" (as this warning used to) would now be
-                    false, and false in the direction that matters. */}
-                <p
-                  className="mb-2 text-[12px] text-muted-foreground"
-                  data-testid="app-control-auth-live-warning"
-                >
-                  {t(
-                    'apps.controlPanel.authEnvPending',
-                    '登录设置已生效。但应用代码要读取登录用户信息，还需要重新部署一次 —— 相关配置是在部署时写进应用的。',
-                  )}
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 gap-1.5 rounded-[7px] text-[12px]"
-                  disabled={deploying || app.provisionStatus !== 'ready'}
-                  onClick={() => void deploy(app.id)}
-                  data-testid="app-control-redeploy-now"
-                >
-                  {deploying ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  )}
-                  {t('apps.controlPanel.redeployNow', '立即重新部署')}
-                </Button>
-              </div>
-            )}
-          </Field>
-          <Field label={t('apps.data.section', '线上数据')}>
-            {/* `canManageAccess` is the same signal the grants block uses: the
-                access list is readable only by the creator or an app admin, which
-                is exactly the tier design §6 lets edit data. */}
-            <AppDataSection app={app} canEdit={canManageAccess} />
-          </Field>
-          <Field label={t('apps.files.section', '文件')}>
-            {/* Unlike the data browser, this is shown for every app type: files
-                are not tied to having a database, and a static site can have
-                assets uploaded to it. Whether the CONTROLS appear is decided by
-                the server's `canWrite`, not by the app's shape. */}
-            <AppFilesSection app={app} canManage={canManageAccess} />
-          </Field>
-          <Field label={t('apps.logs.section', '运行日志')}>
-            <AppLogsSection app={app} />
-          </Field>
           <Field label={t('apps.controlPanel.customDomain', '自定义域名')}>
             <AppCustomDomainSection app={app} />
           </Field>
@@ -744,6 +906,46 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 t('apps.controlPanel.moveDirectoryConfirm', '移动')
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={visibilityPending !== null}
+        onOpenChange={(open) => {
+          if (!open && !visibilitySaving) setVisibilityPending(null)
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('apps.visibilityNarrowTitle', '改成只有你和被授权的人可见？')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'apps.visibilityNarrowConfirm',
+                '团队里其他人会在应用列表里看不到它。在「协作权限」里授权过的成员不受影响 —— 他们仍然看得到。本机 daemon 拿不到授权，所以它会看不到这个应用。',
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={visibilitySaving}>
+              {t('common.cancel', 'Cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={visibilitySaving}
+              onClick={(e) => {
+                e.preventDefault()
+                void handleVisibility('personal')
+              }}
+              data-testid="app-control-visibility-confirm"
+            >
+              {visibilitySaving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                t('apps.visibilityNarrowAction', '改成仅授权可见')
               )}
             </AlertDialogAction>
           </AlertDialogFooter>
