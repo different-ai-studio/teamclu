@@ -1201,11 +1201,15 @@ interface BindAppWorkdirResult {
 }
 
 /**
- * Point an app at a git checkout that already exists on this machine.
+ * Point an app at a directory that already exists on this machine.
  *
- * Nothing is moved or written — unlike {@link moveDaemonAppWorkdir}, which
- * relocates the tree. Throws with the daemon's own reason so the picker can say
- * "not a git repository" at the moment of choosing rather than failing later.
+ * Nothing is moved — unlike {@link moveDaemonAppWorkdir}, which relocates the
+ * tree. A folder that is not yet a git repository gets a `git init` from the
+ * daemon; the seed that follows publishes it.
+ *
+ * Throws with the daemon's own `detail`, not the response body. The body is
+ * RFC 7807 JSON, and passing it through verbatim is how a user was once shown
+ * `{"type":"https://teamclu/errors/validation_failed","title":…}` in a toast.
  */
 export async function bindDaemonAppWorkdir(
   appId: string,
@@ -1217,7 +1221,8 @@ export async function bindDaemonAppWorkdir(
     { method: 'POST', body: JSON.stringify({ teamId, workdir }) },
   )
   if (!result.ok) {
-    throw new Error(result.error ?? 'could not bind the app to that directory')
+    const { detail } = problemDetailFromErrorBody(result.error ?? '')
+    throw new Error(detail || 'could not bind the app to that directory')
   }
   return {
     workdir: result.data.workdir,
