@@ -94,7 +94,7 @@ fn tool_definitions() -> Value {
                     },
                     "target": {
                         "type": "string",
-                        "description": "Target recipient within the channel. Format varies by channel: wecom: 'single:<userid>' or 'group:<chatid>' (default: single); discord: 'dm:<user_id>' or 'channel:<channel_id>'; feishu: open_id (ou_xxx), user_id (on_xxx), or chat_id (oc_xxx); kook: 'dm:<user_id>' or 'channel:<channel_id>'; wechat: user identifier. If omitted for wecom, sends to the last active conversation."
+                        "description": "Target recipient within the channel. Format varies by channel: wecom: 'single:<userid>' or 'group:<chatid>' (default: single); discord: 'dm:<user_id>' or 'channel:<channel_id>'; feishu: open_id (ou_xxx), user_id (on_xxx), or chat_id (oc_xxx); kook: 'dm:<user_id>' or 'channel:<channel_id>'; wechat: user identifier. Omit target when using reply_token to address this chat — an empty wecom target is not the current conversation."
                     },
                     "file_path": {
                         "type": "string",
@@ -106,7 +106,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_cron_job",
-            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). The TeamClu desktop app must be running.",
+            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). The TeamClu desktop app must be running. When announcing results to this chat, set delivery.to to this run's reply_token (from the prompt) or an explicit wecom target such as single:<userid> / group:<chatid> — an empty to is not this conversation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -153,13 +153,21 @@ fn tool_definitions() -> Value {
                         "type": "string",
                         "description": "Message or prompt to execute on each run (required for create)."
                     },
+                    "reply_token": {
+                        "type": "string",
+                        "description": "This run's reply_token from the prompt. When creating a job that should announce back to this chat, pass it here or as delivery.to; it is resolved to a stable chat id before the job is stored."
+                    },
                     "delivery": {
                         "type": "object",
-                        "description": "Optional delivery settings for cron results.",
+                        "description": "Optional delivery settings for cron results. Announce needs a real target — empty to does not mean the current conversation.",
                         "properties": {
                             "mode": { "type": "string", "enum": ["announce", "none"] },
                             "channel": { "type": "string", "enum": ["discord", "feishu", "email", "kook", "wechat", "wecom"] },
-                            "to": { "type": "string" },
+                            "to": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Where to send the run result. For the current WeCom/Feishu chat, pass this run's reply_token. WeCom also accepts single:<userid> or group:<chatid>. Do not pass an empty string."
+                            },
                             "bestEffort": { "type": "boolean" }
                         },
                         "required": ["mode", "channel", "to"]

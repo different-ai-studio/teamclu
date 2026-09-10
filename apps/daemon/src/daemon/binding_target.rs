@@ -84,6 +84,42 @@ pub(crate) fn resolve_mcp_send_route(
     ))
 }
 
+/// Cron announce delivery stores WeCom as `single:<id>` / `group:<id>`
+/// (the settings picker and `wecom_cron_target_to_dispatch`). Dispatch uses
+/// `user:` / `chat:`. Pin the current chat at job-create time by mapping the
+/// gateway binding onto that stored shape.
+pub(crate) fn cron_delivery_target(binding: &str) -> anyhow::Result<(String, String)> {
+    let (channel, dispatch) = parse_binding_to_target(binding)?;
+    let to = match (channel, dispatch.as_deref()) {
+        ("wecom", Some(t)) => wecom_dispatch_to_cron_to(t)?,
+        ("cron", _) => anyhow::bail!(
+            "this reply_token is a cron run, not a chat — pass single:<userid> or group:<chatid>"
+        ),
+        (_, Some(t)) => t.to_string(),
+        (ch, None) => anyhow::bail!(
+            "channel {ch} has no pin-able chat id; set delivery.to to an explicit target \
+             (wecom: single:<userid> or group:<chatid>)"
+        ),
+    };
+    Ok((channel.to_string(), to))
+}
+
+fn wecom_dispatch_to_cron_to(dispatch: &str) -> anyhow::Result<String> {
+    if let Some(id) = dispatch.strip_prefix("user:") {
+        if id.is_empty() {
+            anyhow::bail!("wecom user id is empty");
+        }
+        return Ok(format!("single:{id}"));
+    }
+    if let Some(id) = dispatch.strip_prefix("chat:") {
+        if id.is_empty() {
+            anyhow::bail!("wecom chat id is empty");
+        }
+        return Ok(format!("group:{id}"));
+    }
+    anyhow::bail!("unexpected wecom dispatch target: {dispatch}");
+}
+
 fn normalize_dispatch_target(channel: &str, target: &str) -> String {
     let target = target.trim();
     if target.starts_with("user:") || target.starts_with("chat:") || target.starts_with("bot:") {
@@ -186,5 +222,27 @@ mod tests {
                 .unwrap();
         assert_eq!(channel, "wecom");
         assert_eq!(target, "user:HuangWeiGan");
+    }
+
+    #[test]
+    fn wecom_dm_binding_pins_cron_single_target() {
+        let (channel, to) = cron_delivery_target("wecom://corp/agent/single/HuangWeiGan").unwrap();
+        assert_eq!(channel, "wecom");
+        assert_eq!(to, "single:HuangWeiGan");
+    }
+
+    #[test]
+    fn wecom_group_binding_pins_cron_group_target() {
+        let (channel, to) = cron_delivery_target("wecom://corp/agent/group/chat-1").unwrap();
+        assert_eq!(channel, "wecom");
+        assert_eq!(to, "group:chat-1");
+    }
+
+    #[test]
+    fn cron_binding_cannot_be_a_delivery_target() {
+        let err = cron_delivery_target("cron://job-key/run-1")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cron run"), "got: {err}");
     }
 }

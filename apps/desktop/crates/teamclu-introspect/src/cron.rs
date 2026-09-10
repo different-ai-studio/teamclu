@@ -51,13 +51,65 @@ fn create_request_body(workspace: &str, args: &Value) -> Result<Value, String> {
             body["description"] = d.clone();
         }
     }
-    if let Some(d) = args.get("delivery") {
-        if !d.is_null() {
-            body["delivery"] = d.clone();
+    if let Some(delivery) = normalize_delivery(args)? {
+        body["delivery"] = delivery;
+    }
+    if let Some(token) = args.get("reply_token").and_then(|v| v.as_str()) {
+        let token = token.trim();
+        if !token.is_empty() {
+            body["reply_token"] = json!(token);
         }
     }
     attach_workspace_path(&mut body, workspace, args, scope);
     Ok(body)
+}
+
+fn normalize_delivery(args: &Value) -> Result<Option<Value>, String> {
+    let Some(delivery) = args.get("delivery") else {
+        return Ok(None);
+    };
+    if delivery.is_null() {
+        return Ok(None);
+    }
+    let Some(obj) = delivery.as_object() else {
+        return Err("delivery must be an object".to_string());
+    };
+    let mode = obj
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("announce");
+    if mode == "none" {
+        return Ok(Some(delivery.clone()));
+    }
+
+    let mut out = obj.clone();
+    let mut to = out
+        .get("to")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if to.is_empty() {
+        if let Some(token) = args
+            .get("reply_token")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            to = token.to_string();
+        }
+    }
+    if to.is_empty() {
+        return Err(
+            "delivery.to is required for announce. An empty value is not this chat. \
+             For the current conversation, set delivery.to to this run's reply_token \
+             (from the prompt); it is stored as a stable chat id. \
+             WeCom also accepts single:<userid> or group:<chatid>."
+                .to_string(),
+        );
+    }
+    out.insert("to".into(), json!(to));
+    Ok(Some(Value::Object(out)))
 }
 
 fn job_action_body(workspace: &str, args: &Value, action: &str) -> Result<Value, String> {
@@ -244,6 +296,7 @@ fn safe_job_summary(job: &Value) -> Value {
         "description",
         "enabled",
         "schedule",
+        "delivery",
         "createdAt",
         "updatedAt",
         "lastRunAt",
@@ -429,5 +482,53 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn announce_delivery_rejects_empty_to() {
+        let err = create_request_body(
+            "/tmp/ws",
+            &json!({
+                "name": "日报",
+                "schedule": "0 10 * * *",
+                "message": "写日报",
+                "delivery": { "mode": "announce", "channel": "wecom", "to": "" }
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("delivery.to is required"), "got: {err}");
+        assert!(err.contains("reply_token"), "got: {err}");
+    }
+
+    #[test]
+    fn announce_delivery_fills_empty_to_from_reply_token() {
+        let token = "0c2a4f9d1ed3c8e310824f6dcf60ff8d";
+        let body = create_request_body(
+            "/tmp/ws",
+            &json!({
+                "name": "日报",
+                "schedule": "0 10 * * *",
+                "message": "写日报",
+                "reply_token": token,
+                "delivery": { "mode": "announce", "channel": "wecom", "to": "" }
+            }),
+        )
+        .unwrap();
+        assert_eq!(body["delivery"]["to"], token);
+        assert_eq!(body["reply_token"], token);
+    }
+
+    #[test]
+    fn safe_job_summary_echoes_delivery() {
+        let summary = safe_job_summary(&json!({
+            "id": "j1",
+            "name": "日报",
+            "schedule": { "kind": "cron", "expr": "0 10 * * *" },
+            "delivery": { "mode": "announce", "channel": "wecom", "to": "single:HuangWeiGan" }
+        }));
+        assert_eq!(
+            summary["delivery"],
+            json!({ "mode": "announce", "channel": "wecom", "to": "single:HuangWeiGan" })
+        );
     }
 }
