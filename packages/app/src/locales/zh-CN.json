@@ -579,7 +579,28 @@
     "loadEarlierMessages": "加载前 {{count}} 条消息",
     "compaction": {
       "title": "已自动压缩上下文",
-      "inProgressTitle": "正在自动压缩上下文..."
+      "inProgressTitle": "正在自动压缩上下文...",
+      "label": "compact",
+      "inProgressMeta": "{{reason}} · 进行中",
+      "completedMeta": "完成 · {{duration}}",
+      "completedShort": "完成",
+      "durationMs": "{{ms}}ms",
+      "durationSec": "{{sec}}s",
+      "tokenCount": "{{count, number}}",
+      "tokenCountApprox": "~{{count, number}}",
+      "tokenChange": "{{before}} → {{after}} tokens · {{reason}}",
+      "reason": {
+        "threshold": "阈值",
+        "overflow": "溢出",
+        "manual": "手动"
+      }
+    },
+    "processSummary": {
+      "thinking": "思考",
+      "tools": "{{count}} 工具",
+      "tools_other": "{{count}} 工具",
+      "compacts": "{{count}} 次压缩",
+      "compacts_other": "{{count}} 次压缩"
     },
     "analyzing": "助手正在分析规划...",
     "generatingComponents": "生成中... ({{count}} 个组件)",

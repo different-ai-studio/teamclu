@@ -107,7 +107,7 @@ export function splitAssistantProcessAndFinalParts<T extends TranscriptPart>(
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index];
     const type = part?.type;
-    if (type === "reasoning" || (type === "tool-call" && !isBookkeepingToolPart(part))) {
+    if (type === "reasoning" || type === "compaction" || (type === "tool-call" && !isBookkeepingToolPart(part))) {
       lastProcessIndex = index;
     }
   }

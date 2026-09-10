@@ -135,6 +135,14 @@ export interface MessagePart {
   auto?: boolean;
   overflow?: boolean;
   completed?: boolean;
+  /** Compaction reason from pi (`threshold` | `overflow` | `manual`). */
+  reason?: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  /** Epoch ms — orders compaction rows among process parts. */
+  startedAt?: number;
+  /** Wall time for completed compaction rows. */
+  durationMs?: number;
   tool?: {
     name: string;
     id: string;
@@ -215,7 +223,7 @@ export interface Message {
   /** Historical turn: process parts omitted until user expands collapsible. */
   processDeferred?: boolean;
   /** Lightweight process summary while {@link processDeferred} is true. */
-  processMeta?: { toolCount: number; hasThinking: boolean };
+  processMeta?: { toolCount: number; hasThinking: boolean; compactionCount?: number };
   /** Locates proto rows for on-demand process hydration. */
   lazyProcessRef?: {
     sessionId: string;

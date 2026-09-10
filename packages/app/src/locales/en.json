@@ -579,7 +579,28 @@
     "loadEarlierMessages": "Load {{count}} earlier messages",
     "compaction": {
       "title": "Context automatically compacted",
-      "inProgressTitle": "Compacting context automatically..."
+      "inProgressTitle": "Compacting context automatically...",
+      "label": "compact",
+      "inProgressMeta": "{{reason}} · in progress",
+      "completedMeta": "ok · {{duration}}",
+      "completedShort": "ok",
+      "durationMs": "{{ms}}ms",
+      "durationSec": "{{sec}}s",
+      "tokenCount": "{{count, number}}",
+      "tokenCountApprox": "~{{count, number}}",
+      "tokenChange": "{{before}} → {{after}} tokens · {{reason}}",
+      "reason": {
+        "threshold": "threshold",
+        "overflow": "overflow",
+        "manual": "manual"
+      }
+    },
+    "processSummary": {
+      "thinking": "Thinking",
+      "tools": "{{count}} tool",
+      "tools_other": "{{count}} tools",
+      "compacts": "{{count}} compact",
+      "compacts_other": "{{count}} compacts"
     },
     "analyzing": "Agent is analyzing and planning...",
     "generatingComponents": "Generating... ({{count}} components)",

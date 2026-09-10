@@ -6,7 +6,11 @@ import { bumpSessionListLastMessage } from "@/lib/session/session-list-preview";
 import { persistStreamingPartsForReply, resolveStreamEntryForPersist } from "@/lib/stream/streaming-persist";
 import { upsertMessagesBatch, type MessageRow } from "@/lib/cache/local-cache";
 import { useSessionMessageStore } from "@/stores/session-message-store";
-import { useV2StreamingStore, type AgentStreamEntry } from "@/stores/v2-streaming-store";
+import {
+  extractCompactionPartsFromEntry,
+  useV2StreamingStore,
+  type AgentStreamEntry,
+} from "@/stores/v2-streaming-store";
 import { flushStreamDeltasFor } from "@/lib/stream/stream-delta-buffer";
 import {
   registerFlushedTurn,
@@ -130,6 +134,16 @@ function commitFlushedAgentReply(
     .replaceTurnAgentRepliesInStore(sessionId, enrichedReply);
   upsertAgentReplyToCache(opts.teamId, enrichedReply);
   const persistedPartsJson = (enrichedReply as { partsJson?: string }).partsJson;
+  const compactionParts = extractCompactionPartsFromEntry(opts.streamEntrySnapshot);
+  if (compactionParts.length > 0) {
+    useV2StreamingStore
+      .getState()
+      .attachCompactionPartsForMessage(
+        sessionId,
+        enrichedReply.messageId,
+        compactionParts,
+      );
+  }
   registerFlushedTurn(sessionId, actorId, {
     messageId: enrichedReply.messageId,
     streamId: opts.streamEntrySnapshot?.streamId ?? "",
