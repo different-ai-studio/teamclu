@@ -134,11 +134,15 @@ test("truncation is reported as a cursor, and only when truncated", async () => 
 // --- presigned uploads -------------------------------------------------------
 
 test("a presigned PUT carries no checksum parameters", async () => {
-  // Alibaba OSS has no flexible-checksum extension, and aws-sdk >= 3.729
-  // volunteers one on every PutObject by default. On a presigned URL it is
-  // SIGNED into the query string, computed over the body known at signing time
-  // — nothing — so the browser then uploads real bytes against a signature that
-  // promises an empty payload and OSS rejects the request.
+  // aws-sdk >= 3.729 volunteers a CRC32 on every PutObject, and on a presigned
+  // URL it is SIGNED into the query string having been computed over the body
+  // known at signing time — nothing.
+  //
+  // This is hardening, NOT a fix: measured against the live bucket on
+  // 2026-09-10, OSS accepts the PUT with those parameters present and returns
+  // 200. The reason to drop them is that they describe a payload that is not
+  // the one being sent, and nothing in OSS's contract says it will keep
+  // ignoring them.
   //
   // Signing needs no network, so this is checkable here: the guard is that the
   // URL comes back clean.

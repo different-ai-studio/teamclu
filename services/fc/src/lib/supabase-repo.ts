@@ -3872,6 +3872,9 @@ export function createSupabaseBusinessRepository(options) {
           region: process.env.REGION || "cn-hangzhou",
           runtime: declaredRuntime,
           gitCommitSha,
+          // Only consulted when a function is first minted, so an app that has
+          // already deployed keeps the name stored on its row.
+          slug: existing.slug,
         });
         const { data: row, error: updErr } = await supabase
           .from("apps")
