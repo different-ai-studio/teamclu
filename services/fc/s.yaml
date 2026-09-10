@@ -121,11 +121,14 @@ resources:
         APPS_AUTH_SESSION_SECRET: ${env('APPS_AUTH_SESSION_SECRET', '')}
         # Shared secret the app-cron heartbeat presents when it POSTs
         # /v1/internal/app-cron/tick once a minute. On self-host that heartbeat
-        # is the `app-cron` compose sidecar; on this target it is an external
-        # minute cron running the same one-line curl (deliberately NOT an FC
-        # timer trigger — a timer event is not an HTTP request and would not
-        # reach the route). Blank on either target = scheduled tasks never
-        # fire, because the endpoint refuses an unset secret.
+        # is the `app-cron` compose sidecar; here it is the `app-cron` timer
+        # trigger declared below.
+        #
+        # A timer trigger CAN drive a web function: it POSTs to the `path` in
+        # its payload. What it cannot do is attach a header, so the secret rides
+        # in the payload BODY — which the route accepts alongside the bearer the
+        # sidecar sends. Blank on either target = scheduled tasks never fire,
+        # because the endpoint refuses an unset secret.
         APP_CRON_SECRET: ${env('APP_CRON_SECRET', '')}
         # Per-app git repos on Gitea. Blank disables repo provisioning (503
         # gitea_unavailable naming the empty variable).
@@ -229,6 +232,23 @@ resources:
         AUTH_BASE_URL: ${env('AUTH_BASE_URL', 'https://cloud.ucar.cc')}
         PG_POOL_MAX: ${env('PG_POOL_MAX', '1')}
       triggers:
+        # The one-minute heartbeat that fires apps' scheduled tasks. Six cron
+        # fields here, not five — Alibaba's timer takes seconds first, so
+        # `0 * * * * *` is "second 0 of every minute".
+        #
+        # The secret is in the body because a timer payload has no place for a
+        # header; see APP_CRON_SECRET above. Substituted at deploy time, so a
+        # deployment that has not set it gets an empty secret and the route
+        # refuses the tick — which is the same fail-closed shape as everywhere
+        # else, not a silent open door.
+        - triggerName: app-cron
+          triggerType: timer
+          triggerConfig:
+            cronExpression: "0 * * * * *"
+            enable: true
+            # Double-quoted on the outside: the substitution below contains
+            # single quotes, which would end a single-quoted YAML scalar early.
+            payload: "{\"path\":\"/v1/internal/app-cron/tick\",\"method\":\"POST\",\"body\":{\"secret\":\"${env('APP_CRON_SECRET', '')}\"}}"
         # Trigger name is parameterized so we can adopt a pre-existing function's
         # http trigger (FC console default is `defaultTrigger`). Defaults to
         # http-trigger for the legacy teamclu-sync function.

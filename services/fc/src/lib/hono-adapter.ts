@@ -141,12 +141,31 @@ export function createHonoRouterAdapter(app: Hono, deps: Deps) {
           // both presenting APP_CRON_SECRET. `sharedSecretMatches` fails closed
           // on an unset secret, so a deployment that never configured one has
           // no scheduler rather than an open one.
-          if (
-            !sharedSecretMatches(
-              extractBearerToken(Object.fromEntries(c.req.raw.headers)),
-              process.env.APP_CRON_SECRET,
-            )
-          ) {
+          // Two ways in, because the two heartbeats cannot both use a header.
+          //
+          // The compose sidecar curls it and sends `Authorization: Bearer`.
+          // An Alibaba FC timer trigger drives a web function by POSTing to a
+          // path from its payload, and that payload carries only `path`,
+          // `method` and `body` — there is no way to attach a header. So the
+          // secret may also arrive in the body, which (unlike a query string)
+          // stays out of URLs and access logs.
+          // Read the header directly rather than through `extractBearerToken`:
+          // that helper THROWS a 401 when the header is absent, which is right
+          // for a route where a bearer is the only way in — and fatal here,
+          // because the timer's request has no header and must still get as far
+          // as the body.
+          const auth = c.req.header("authorization") ?? "";
+          const bearer = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim();
+          let fromBody: string | undefined;
+          if (!bearer) {
+            try {
+              const parsed = JSON.parse(await c.req.raw.clone().text() || "{}");
+              if (parsed && typeof parsed.secret === "string") fromBody = parsed.secret;
+            } catch {
+              // Not JSON, or no body. Falls through to the 401 below.
+            }
+          }
+          if (!sharedSecretMatches(bearer || fromBody, process.env.APP_CRON_SECRET)) {
             throw new ApiError(401, "unauthorized", "app cron secret required");
           }
           // No repository. The tick works on a raw service-role client, not on
