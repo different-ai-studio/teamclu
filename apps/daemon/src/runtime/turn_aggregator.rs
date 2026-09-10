@@ -22,6 +22,7 @@
 //!   agent-facing English content plus:
 //!   - `{"turn_status":"interrupted"}` — user abort
 //!   - `{"turn_status":"failed"}` — the model provider errored out
+//!     (host/extension noise is *not* this; see `AcpErrorKind::SideChannel`)
 //!   - `{"turn_status":"no_final_reply"}` — Idle with no final prose
 //!     (frontends hide the English notice and render a localized strip)
 //!   - `{"turn_status":"skill_created_in_unsupported_directory", ...}` —
@@ -60,8 +61,35 @@ the user explicitly asks.";
 
 const NO_FINAL_REPLY_METADATA_JSON: &str = r#"{"turn_status":"no_final_reply"}"#;
 
+/// How an ACP `Error` event should affect the open turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcpErrorKind {
+    /// User pressed stop / the run was cancelled. Stamp `interrupted`.
+    UserAbort,
+    /// Host/extension noise while the model is still running (stale ctx after
+    /// session replacement, title-LLM side-effects). Must not abort a channel
+    /// wait and must not stamp `turn_status: failed`.
+    SideChannel,
+    /// The model provider actually failed. Stamp `failed`.
+    TurnFailure,
+}
+
+pub(crate) fn classify_acp_error(err: &amux::AcpError) -> AcpErrorKind {
+    if is_turn_abort_error(err) {
+        AcpErrorKind::UserAbort
+    } else if is_side_channel_error(err) {
+        AcpErrorKind::SideChannel
+    } else {
+        AcpErrorKind::TurnFailure
+    }
+}
+
+fn is_side_channel_error(err: &amux::AcpError) -> bool {
+    err.message == crate::runtime::pi_rpc::translate::EXTENSION_ERROR_MESSAGE
+}
+
 /// Durable AGENT_REPLY body when the turn ends because the model provider
-/// failed — an `AcpError` that is not a user abort.
+/// failed — an `AcpError` that is neither a user abort nor host/extension noise.
 ///
 /// English for the same reason as the notices above. Frontends hide it when
 /// `metadata.turn_status == "failed"` and render a localized strip.
@@ -180,10 +208,11 @@ pub struct TurnAggregator {
     turn_had_reply: bool,
     /// True when an ACP Error for user abort arrived before Active→Idle.
     turn_was_interrupted: bool,
-    /// True when a non-abort ACP Error (a provider failure) arrived before
-    /// Active→Idle. Kept separate from `turn_was_interrupted` because the two
-    /// carry opposite meanings to the model: one is "the user stopped you",
-    /// the other is "the call failed".
+    /// True when a provider-failure ACP Error arrived before Active→Idle.
+    /// Side-channel noise (`pi extension error`) does not set this. Kept
+    /// separate from `turn_was_interrupted` because the two carry opposite
+    /// meanings to the model: one is "the user stopped you", the other is
+    /// "the call failed".
     turn_failed: bool,
     /// pi aborted a tool mid-flight (`tool_execution_end` with an abort-shaped
     /// summary) without emitting assistant `stopReason: "aborted"`.
@@ -243,16 +272,26 @@ impl TurnAggregator {
                 });
             }
             Some(amux::acp_event::Event::Error(err)) => {
-                // Both kinds arrive before Active→Idle. Remember which one so
-                // turn end can emit the matching durable AGENT_REPLY (catchup
-                // + UI); marking activity guarantees the turn produces a row
-                // even when nothing else was streamed.
-                self.ensure_turn_started();
-                self.turn_had_activity = true;
-                if is_turn_abort_error(err) {
-                    self.turn_was_interrupted = true;
-                } else {
-                    self.turn_failed = true;
+                // Abort and provider failure arrive before Active→Idle.
+                // Remember which one so turn end can emit the matching durable
+                // AGENT_REPLY (catchup + UI); marking activity guarantees the
+                // turn produces a row even when nothing else was streamed.
+                //
+                // Side-channel noise (pi extension error after session
+                // replacement) must not mark the turn failed: the model is
+                // still running and the real answer lands at Idle.
+                match classify_acp_error(err) {
+                    AcpErrorKind::SideChannel => {}
+                    AcpErrorKind::UserAbort => {
+                        self.ensure_turn_started();
+                        self.turn_had_activity = true;
+                        self.turn_was_interrupted = true;
+                    }
+                    AcpErrorKind::TurnFailure => {
+                        self.ensure_turn_started();
+                        self.turn_had_activity = true;
+                        self.turn_failed = true;
+                    }
                 }
             }
             Some(amux::acp_event::Event::StatusChange(sc)) => {
@@ -419,13 +458,28 @@ mod tests {
     /// failed turn is shown to the user.
     #[test]
     fn pi_turn_stop_reasons_route_to_the_intended_rendering() {
-        use crate::runtime::pi_rpc::translate::{ABORTED_ERROR_MESSAGE, PROVIDER_ERROR_MESSAGE};
+        use crate::runtime::pi_rpc::translate::{
+            ABORTED_ERROR_MESSAGE, EXTENSION_ERROR_MESSAGE, PROVIDER_ERROR_MESSAGE,
+        };
         let err = |message: &str| amux::AcpError {
             message: message.to_string(),
             details: String::new(),
         };
         assert!(is_turn_abort_error(&err(ABORTED_ERROR_MESSAGE)));
         assert!(!is_turn_abort_error(&err(PROVIDER_ERROR_MESSAGE)));
+        assert!(!is_turn_abort_error(&err(EXTENSION_ERROR_MESSAGE)));
+        assert_eq!(
+            classify_acp_error(&err(ABORTED_ERROR_MESSAGE)),
+            AcpErrorKind::UserAbort
+        );
+        assert_eq!(
+            classify_acp_error(&err(PROVIDER_ERROR_MESSAGE)),
+            AcpErrorKind::TurnFailure
+        );
+        assert_eq!(
+            classify_acp_error(&err(EXTENSION_ERROR_MESSAGE)),
+            AcpErrorKind::SideChannel
+        );
     }
 
     fn thinking_chunk(text: &str) -> amux::AcpEvent {
@@ -536,6 +590,16 @@ mod tests {
         }
     }
 
+    fn extension_error() -> amux::AcpEvent {
+        amux::AcpEvent {
+            event: Some(amux::acp_event::Event::Error(amux::AcpError {
+                message: crate::runtime::pi_rpc::translate::EXTENSION_ERROR_MESSAGE.into(),
+                details: "This extension ctx is stale after session replacement or reload.".into(),
+            })),
+            model: String::new(),
+        }
+    }
+
     #[test]
     fn a_failed_turn_is_not_recorded_as_a_completed_one() {
         let mut agg = TurnAggregator::new();
@@ -562,6 +626,35 @@ mod tests {
         assert_ne!(emitted[0].content, NO_FINAL_REPLY_AGENT_CONTENT);
         assert!(!emitted[0].metadata_json.contains("no_final_reply"));
         assert!(TurnAggregator::cloud_persistent(&emitted[0]));
+    }
+
+    #[test]
+    fn an_extension_error_does_not_fail_a_turn_that_then_answers() {
+        // WeCom re-spawn after idle eviction emits `pi extension error`
+        // (stale ctx) in the first 300ms. The model keeps going and writes
+        // the real answer; that must land as a completed reply, not
+        // `turn_status: failed` — otherwise the channel aborts the wait
+        // and desktop shows "provider error" under a finished report.
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        assert!(agg.ingest(&extension_error()).is_empty());
+        agg.ingest(&output_chunk("今日抖音来客数据"));
+
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].kind, MessageKind::AgentReply);
+        assert_eq!(emitted[0].content, "今日抖音来客数据");
+        assert!(
+            !emitted[0].metadata_json.contains("failed"),
+            "extension noise must not stamp the answer as a provider failure: {}",
+            emitted[0].metadata_json
+        );
     }
 
     #[test]

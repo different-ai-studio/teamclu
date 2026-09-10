@@ -182,6 +182,15 @@ function backendSessionIdFromContext(ctx?: ExtensionContext): string | undefined
   return ctx?.ui?.sessionId?.trim() || undefined;
 }
 
+/** pi marks a captured ExtensionContext stale after session replace/reload. */
+function isStaleExtensionCtxError(e: unknown): boolean {
+  const msg = String((e as { message?: unknown })?.message ?? e);
+  return (
+    msg.includes("stale after session replacement") ||
+    msg.includes("extension ctx is stale")
+  );
+}
+
 async function resolveTeamcluSessionId(backendSessionId: string): Promise<string> {
   const baseUrl = process.env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
   const token = process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
@@ -1584,51 +1593,67 @@ export default async function (pi: ExtensionAPI) {
 
   // -- Permission gate -------------------------------------------------------
   pi.on("before_agent_start", async (event, ctx) => {
-    startSessionTitle(event, ctx);
+    try {
+      startSessionTitle(event, ctx);
 
-    const original = String(event.systemPrompt ?? "").trim();
-    let base = original;
-    if (shouldStripPiSelfDocumentation(ctx)) {
-      base = stripPiSelfDocumentation(base);
+      const original = String(event.systemPrompt ?? "").trim();
+      let base = original;
+      if (shouldStripPiSelfDocumentation(ctx)) {
+        base = stripPiSelfDocumentation(base);
+      }
+
+      const backendSessionId = backendSessionIdFromContext(ctx);
+      const append = backendSessionId
+        ? await fetchSessionPromptAppend(backendSessionId)
+        : undefined;
+
+      if (base === original && !append) return undefined;
+
+      const systemPrompt = append ? (base ? `${base}\n\n${append}` : append) : base;
+      return { systemPrompt };
+    } catch (e) {
+      if (isStaleExtensionCtxError(e)) {
+        console.error(`[teamclu] before_agent_start skipped stale ctx: ${e}`);
+        return undefined;
+      }
+      throw e;
     }
-
-    const backendSessionId = backendSessionIdFromContext(ctx);
-    const append = backendSessionId
-      ? await fetchSessionPromptAppend(backendSessionId)
-      : undefined;
-
-    if (base === original && !append) return undefined;
-
-    const systemPrompt = append ? (base ? `${base}\n\n${append}` : append) : base;
-    return { systemPrompt };
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    if (ownTools.has(event.toolName)) return undefined;
+    try {
+      if (ownTools.has(event.toolName)) return undefined;
 
-    const rules = loadRules(); // re-read per call: daemon appends "always" grants
-    if (rules.defaultAction === "allow") return undefined;
+      const rules = loadRules(); // re-read per call: daemon appends "always" grants
+      if (rules.defaultAction === "allow") return undefined;
 
-    const key = matchKey(event.toolName, event.input ?? {});
-    if (rules.alwaysAllowed.some((p) => patternMatches(p, key))) return undefined;
+      const key = matchKey(event.toolName, event.input ?? {});
+      if (rules.alwaysAllowed.some((p) => patternMatches(p, key))) return undefined;
 
-    const pattern = alwaysPattern(event.toolName, event.input ?? {});
-    const title = `${event.toolName}: ${summarize(event.toolName, event.input ?? {})}`;
-    // Trailer line is machine-read by amuxd (and its "always" substring makes
-    // the host offer an "Always allow" option).
-    const argsJson = (JSON.stringify(event.input ?? {}, null, 2) ?? "{}").slice(0, 2000);
-    const message = `${argsJson}\n\nteamclu.always-pattern=${pattern}`;
+      const pattern = alwaysPattern(event.toolName, event.input ?? {});
+      const title = `${event.toolName}: ${summarize(event.toolName, event.input ?? {})}`;
+      // Trailer line is machine-read by amuxd (and its "always" substring makes
+      // the host offer an "Always allow" option).
+      const argsJson = (JSON.stringify(event.input ?? {}, null, 2) ?? "{}").slice(0, 2000);
+      const message = `${argsJson}\n\nteamclu.always-pattern=${pattern}`;
 
-    const confirmed = await ctx.ui.confirm(title, message, { signal: ctx.signal });
-    if (!confirmed) {
-      return {
-        block: true,
-        reason: ctx.signal?.aborted
-          ? "Permission request cancelled"
-          : "Denied by TeamClu permission gate",
-      };
+      const confirmed = await ctx.ui.confirm(title, message, { signal: ctx.signal });
+      if (!confirmed) {
+        return {
+          block: true,
+          reason: ctx.signal?.aborted
+            ? "Permission request cancelled"
+            : "Denied by TeamClu permission gate",
+        };
+      }
+      return undefined;
+    } catch (e) {
+      if (isStaleExtensionCtxError(e)) {
+        console.error(`[teamclu] tool_call skipped stale ctx: ${e}`);
+        return undefined;
+      }
+      throw e;
     }
-    return undefined;
   });
 
   // -- MCP bridges (pi has no native MCP) -----------------------------------
