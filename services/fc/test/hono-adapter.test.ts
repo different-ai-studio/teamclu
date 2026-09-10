@@ -69,3 +69,76 @@ test("postRaw route: ctx.rawBody is a Buffer of the raw body", async () => {
   const res = await app.request("/v1/up", { method: "POST", body: Buffer.from([1, 2, 3]) });
   assert.deepEqual(await res.json(), { len: 3 });
 });
+
+// --- the app-cron heartbeat -------------------------------------------------
+
+/** The tick route takes no repository; only the secret decides admission. */
+function cronApp(secret: string | undefined) {
+  const prev = process.env.APP_CRON_SECRET;
+  if (secret === undefined) delete process.env.APP_CRON_SECRET;
+  else process.env.APP_CRON_SECRET = secret;
+  const app = new Hono();
+  const router = createHonoRouterAdapter(app, makeDeps() as any);
+  router.post("/v1/internal/tick", { auth: "cron-tick" }, async () => ({ body: { ran: true } }));
+  return { app, restore: () => { if (prev === undefined) delete process.env.APP_CRON_SECRET; else process.env.APP_CRON_SECRET = prev; } };
+}
+
+test("the heartbeat is admitted by a bearer — what the compose sidecar sends", async () => {
+  const { app, restore } = cronApp("s3cret");
+  try {
+    const res = await app.request("/v1/internal/tick", {
+      method: "POST",
+      headers: { authorization: "Bearer s3cret" },
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ran: true });
+  } finally { restore(); }
+});
+
+test("the heartbeat is admitted by a body secret — what an FC timer sends", async () => {
+  // A timer payload carries only path/method/body, so there is no header to put
+  // the secret in. The body is the only place left that stays out of URLs and
+  // access logs.
+  const { app, restore } = cronApp("s3cret");
+  try {
+    const res = await app.request("/v1/internal/tick", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret: "s3cret" }),
+    });
+    assert.equal(res.status, 200);
+  } finally { restore(); }
+});
+
+test("a wrong or missing secret is refused, in either position", async () => {
+  const { app, restore } = cronApp("s3cret");
+  try {
+    for (const init of [
+      { method: "POST" },
+      { method: "POST", headers: { authorization: "Bearer nope" } },
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret: "nope" }) },
+      { method: "POST", headers: { "content-type": "application/json" }, body: "not json" },
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret: 42 }) },
+    ]) {
+      const res = await app.request("/v1/internal/tick", init as any);
+      assert.equal(res.status, 401, `should have refused ${JSON.stringify(init)}`);
+    }
+  } finally { restore(); }
+});
+
+test("an UNSET secret refuses everything, including an empty one", async () => {
+  // Fail-closed: a deployment that never configured a secret has no scheduler,
+  // rather than a tick endpoint anyone who finds it can fire.
+  const { app, restore } = cronApp(undefined);
+  try {
+    for (const init of [
+      { method: "POST", headers: { authorization: "Bearer " } },
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret: "" }) },
+      { method: "POST" },
+    ]) {
+      const res = await app.request("/v1/internal/tick", init as any);
+      assert.equal(res.status, 401);
+    }
+  } finally { restore(); }
+});
+
