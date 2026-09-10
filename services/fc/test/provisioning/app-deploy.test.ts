@@ -40,7 +40,7 @@ test("finalizeDeploy provisions the org DB + schema, then sets code + env togeth
   const orgId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const declaration = {
     build: { kind: "python" as const, output: "." },
-    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 9000 },
+    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8088 },
   };
   const out = await finalizeDeploy(
     {
@@ -80,7 +80,7 @@ test("finalizeDeploy provisions the org DB + schema, then sets code + env togeth
   const [, name, args] = ensure;
   assert.equal(name, "tc-app-3f1c9a2e-0000-4000-8000-000000000abc");
   assert.equal(args.ossObjectName, "apps/3f1c9a2e-0000-4000-8000-000000000abc/code.zip");
-  assert.equal(args.env.PORT, "9000");
+  assert.equal(args.env.PORT, "8088");
   assert.match(args.env.DATABASE_URL, /tc_org_/);
   assert.match(args.env.DATABASE_URL, /pw-fixed/);
   assert.deepEqual(args.declaration, declaration);
@@ -244,7 +244,22 @@ test("a static app deploys with no database at all", async () => {
           ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
         },
       } as any,
-      { appId: "app-1", slug: "demo", appType, fcFunctionName: "tc-app-1", ossObjectName: "apps/app-1/code.zip" },
+      {
+        appId: "app-1",
+        slug: "demo",
+        appType,
+        fcFunctionName: "tc-app-1",
+        ossObjectName: "apps/app-1/code.zip",
+        declaration: {
+          build: { kind: "node", output: ".output" },
+          start: {
+            fcRuntime: "custom.debian10",
+            command: ["/opt/nodejs20/bin/node"],
+            args: ["server/index.mjs"],
+            port: 9000,
+          },
+        },
+      },
     );
     assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
   }

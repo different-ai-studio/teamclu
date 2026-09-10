@@ -23,24 +23,32 @@ test("parse: accepts build+start for node", () => {
 });
 
 test("parse: refuses legacy runtime/entry shape", () => {
-  assert.throws(
-    () =>
-      parseAppDeployDeclaration({
-        runtime: "node",
-        entry: "server/index.mjs",
-        port: 9000,
-      }),
-    (e: any) => /legacy|runtime\.entry|teamclu\.app\.json/i.test(String(e?.message ?? e)),
-  );
+  for (const legacy of [{ runtime: null }, { entry: { path: "server/index.mjs" } }]) {
+    assert.throws(
+      () =>
+        parseAppDeployDeclaration({
+          ...legacy,
+          build: { kind: "node" },
+          start: {
+            fcRuntime: "custom.debian10",
+            command: ["node"],
+            port: 9000,
+          },
+        }),
+      (e: any) => /legacy|runtime\.entry|teamclu\.app\.json/i.test(String(e?.message ?? e)),
+    );
+  }
 });
 
-test("parse: container may omit command; forces no required fcRuntime", () => {
+test("parse: omitted container command and args stay undefined", () => {
   const d = parseAppDeployDeclaration({
     build: { kind: "container", dockerfile: "Dockerfile", context: "." },
     start: { port: 5000, healthCheckPath: "/api/health" },
   });
   assert.equal(d.build.kind, "container");
   assert.equal(d.start.port, 5000);
+  assert.equal(d.start.command, undefined);
+  assert.equal(d.start.args, undefined);
 });
 
 test("parse: non-container requires non-empty command array", () => {

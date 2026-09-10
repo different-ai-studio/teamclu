@@ -440,7 +440,10 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     );
   }
 
-  const env: Record<string, string> = { PORT: "9000", NODE_ENV: "production" };
+  const env: Record<string, string> = { NODE_ENV: "production" };
+  if (input.declaration) {
+    env.PORT = String(input.declaration.start.port);
+  }
 
   if (needsDatabase(input.appType)) {
     const appsAdminUrl = deps.appsAdminUrl ?? readAppsAdminUrl();

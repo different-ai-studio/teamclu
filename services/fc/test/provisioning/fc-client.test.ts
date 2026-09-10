@@ -317,7 +317,7 @@ test("a deployment with no usable log store deploys without a log config", async
 
 const CONTAINER = {
   build: { kind: "container" as const, output: ".", dockerfile: "Dockerfile", context: "." },
-  start: { args: [], port: 5000 },
+  start: { port: 5000 },
 };
 
 test("a container app runs its own image, with no layer and no code object", async () => {
@@ -337,6 +337,8 @@ test("a container app runs its own image, with no layer and no code object", asy
   assert.equal(create.runtime, "custom-container");
   assert.equal(create.customContainerConfig.image, "registry.cn-shenzhen.aliyuncs.com/ns/tc-app-1:abc1234");
   assert.equal(create.customContainerConfig.port, 5000);
+  assert.equal(create.customContainerConfig.command, undefined);
+  assert.equal(create.customContainerConfig.args, undefined);
   assert.equal(create.layers, undefined);
   assert.equal(create.code, undefined);
   assert.equal(create.customRuntimeConfig, undefined);

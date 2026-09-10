@@ -113,8 +113,8 @@ function requireObject(raw: unknown, label: string): Record<string, unknown> {
 }
 
 function rejectLegacyShape(raw: Record<string, unknown>): void {
-  const hasRuntime = typeof raw.runtime === "string";
-  const hasEntry = typeof raw.entry === "string";
+  const hasRuntime = Object.prototype.hasOwnProperty.call(raw, "runtime");
+  const hasEntry = Object.prototype.hasOwnProperty.call(raw, "entry");
   if (hasRuntime || hasEntry) {
     throw new ApiError(
       400,
@@ -209,11 +209,11 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
       );
     }
     const command = parseStringArray(s.command, "start.command", { required: false });
-    const args = parseStringArray(s.args, "start.args", { required: false }) ?? [];
+    const args = parseStringArray(s.args, "start.args", { required: false });
     return {
       ...(fcRuntimeRaw ? { fcRuntime: fcRuntimeRaw } : {}),
       ...(command ? { command } : {}),
-      args,
+      ...(args ? { args } : {}),
       port,
       ...(layers !== undefined ? { layers } : {}),
       ...(healthCheckPath ? { healthCheckPath } : {}),
