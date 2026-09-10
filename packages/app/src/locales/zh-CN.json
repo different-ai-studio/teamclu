@@ -1399,6 +1399,8 @@
     "files": {
       "tabTitle": "应用附件",
       "root": "全部文件",
+      "uploadFailed": "上传失败",
+      "uploadBlocked": "浏览器没能把文件送到存储。最常见的原因是存储桶没有开启 CORS —— 需要允许来源 {{origin}} 的 PUT 请求。（也可能只是网络不通。）",
       "colName": "名称",
       "colModified": "修改时间",
       "colSize": "大小",

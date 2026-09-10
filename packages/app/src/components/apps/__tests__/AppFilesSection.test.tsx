@@ -149,6 +149,44 @@ describe('AppFilesSection', () => {
     expect(backendMocks.createAppFileUploadUrl.mock.calls[0][1].path).toBe('resumes/carol.pdf')
   })
 
+  it('names CORS when the upload never reached the store', async () => {
+    // A blocked preflight rejects `fetch` with a bare TypeError — "Failed to
+    // fetch" / "Load failed" — which is indistinguishable from being offline and
+    // tells the one person who can fix the bucket nothing.
+    backendMocks.createAppFileUploadUrl.mockResolvedValue({ url: 'https://signed', path: 'x' })
+    global.fetch = vi.fn(async () => {
+      throw new TypeError('Load failed')
+    }) as any
+
+    render(<AppFilesSection app={app} canManage />)
+    await waitFor(() => expect(screen.getByText('resume.pdf')).toBeTruthy())
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await userEvent.setup().upload(input, new File(['x'], 'a.txt', { type: 'text/plain' }))
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalled())
+    const [title, opts] = toastMocks.error.mock.calls.at(-1)!
+    expect(title).toBe('上传失败')
+    expect(opts.description).toContain('CORS')
+    expect(opts.description).not.toContain('Load failed')
+  })
+
+  it('passes a real storage error through instead of blaming CORS', async () => {
+    // A 403 from the store DID reach it; saying "CORS" there would send the
+    // reader to configure something that is already correct.
+    backendMocks.createAppFileUploadUrl.mockResolvedValue({ url: 'https://signed', path: 'x' })
+    global.fetch = vi.fn(async () => new Response('', { status: 403 })) as any
+
+    render(<AppFilesSection app={app} canManage />)
+    await waitFor(() => expect(screen.getByText('resume.pdf')).toBeTruthy())
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await userEvent.setup().upload(input, new File(['x'], 'a.txt', { type: 'text/plain' }))
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalled())
+    const [, opts] = toastMocks.error.mock.calls.at(-1)!
+    expect(opts.description).toContain('403')
+    expect(opts.description).not.toContain('CORS')
+  })
+
   it('deletes a file by its full path, not its displayed name', async () => {
     render(<AppFilesSection app={app} canManage />)
     await waitFor(() => expect(screen.getByText('resumes')).toBeTruthy())

@@ -72,6 +72,31 @@ function formatWhen(iso: string | null): string {
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i
 
 /**
+ * Why a direct-to-storage PUT failed before it ever got a response.
+ *
+ * The bytes go browser -> object store on a signed URL, so the store's bucket
+ * has to permit this origin. When it does not, the browser blocks the request
+ * at the CORS preflight and `fetch` rejects with a bare `TypeError` — "Failed
+ * to fetch" on Chromium, "Load failed" in the WKWebView the desktop runs. Both
+ * are indistinguishable from being offline, and neither tells the one person
+ * who can fix it what to change.
+ *
+ * So the message names the likely cause and the origin that has to be allowed,
+ * WITHOUT claiming to know which it was: a rejection here really can be the
+ * network.
+ */
+function describeUploadFailure(e: unknown, t: (k: string, d: string, o?: Record<string, string>) => string): string {
+  if (e instanceof TypeError) {
+    return t(
+      'apps.files.uploadBlocked',
+      '浏览器没能把文件送到存储。最常见的原因是存储桶没有开启 CORS —— 需要允许来源 {{origin}} 的 PUT 请求。（也可能只是网络不通。）',
+      { origin: typeof location !== 'undefined' ? location.origin : '' },
+    )
+  }
+  return e instanceof Error ? e.message : String(e)
+}
+
+/**
  * Rows per request.
  *
  * Capped by the API, not by taste: every `/v1` list route runs its `limit`
@@ -193,7 +218,9 @@ export function AppFilesSection({ app, canManage }: AppFilesSectionProps) {
       toast.success(t('apps.files.uploaded', '已上传 {{name}}', { name: file.name }))
       await load(prefix)
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
+      toast.error(t('apps.files.uploadFailed', '上传失败'), {
+        description: describeUploadFailure(e, t),
+      })
     } finally {
       setBusy(false)
     }

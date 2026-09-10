@@ -1399,6 +1399,8 @@
     "files": {
       "tabTitle": "Attachments",
       "root": "All files",
+      "uploadFailed": "Upload failed",
+      "uploadBlocked": "The browser could not reach the object store. The usual cause is that the bucket has no CORS rule allowing PUT from {{origin}}. (It can also just be the network.)",
       "colName": "Name",
       "colModified": "Modified",
       "colSize": "Size",

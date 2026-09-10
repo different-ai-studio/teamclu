@@ -305,6 +305,31 @@ agent actor 根本拿不到授权（`resolveAppGitCredentialActor` 里那段服�
 东西，就是个前缀）。**空 prefix 一律拒绝** —— 那是整个应用，清空应用是另一个 admin 专属的
 purge。
 
+### 12.1 上传要求存储桶开 CORS（部署前提，仓库里没人配）
+
+字节是**浏览器直传对象存储**的（签名 URL，不经过 FC），所以浏览器会先发一个 preflight，
+桶必须答得上来。`belayo-teamclu-apps` 2026-09-10 实测：
+
+```
+$ curl -i -X OPTIONS 'https://belayo-teamclu-apps.oss-cn-shenzhen.aliyuncs.com/app-files/probe' \
+    -H 'Origin: http://127.0.0.1:1420' -H 'Access-Control-Request-Method: PUT'
+HTTP/1.1 403 Forbidden
+<Code>AccessForbidden</Code>
+<Message>CORSResponse: CORS is not enabled for this bucket.</Message>
+```
+
+也就是说**桌面端上传从来没通过**。仓库里 `grep PutBucketCors|CreateBucket` 一个都没有 ——
+桶是手工建的，CORS 没人配过，而失败发生在 PUT 之前，服务端什么也看不到。
+
+规则写在 `deploy/self-host/.env.example` 的 `APPS_OSS_BUCKET` 旁边（来源要同时放
+`http://127.0.0.1:1420` 开发端和 `tauri://localhost` 打包端）。
+
+界面这边只能把话说清楚：preflight 被挡时 `fetch` 抛的是裸 `TypeError`（Chromium 是
+"Failed to fetch"，桌面用的 WKWebView 是 "Load failed"），跟断网完全一样 —— 直接 toast
+出来对唯一能修的人毫无用处。所以文案点名 CORS 和需要放行的 origin，同时**不假装知道**
+一定是它（真的可能只是网络不通）。真从存储拿到了状态码（403/500）则原样透出，不提 CORS ——
+那会把人支去改一个本来就对的东西。
+
 ## 11. 代码版本
 
 「现在线上跑的是哪个 commit」在界面上一直没有答案：`gitCommitSha` 在 app 行上，
