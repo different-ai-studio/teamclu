@@ -430,3 +430,60 @@ HTTP/1.1 403 Forbidden
 
 **没做的**：角色（§2 非目标）。`员工/用户` 这一档就是受众，网关透传的身份里
 仍然只有 user id / email / orgId。
+
+## 13. Agent 侧：同一个控制面
+
+控制面上能做的事，agent 通过 `teamclu-introspect` sidecar 也要能做——否则 agent 做到
+一半就得停下来请人去点另一半。工具按控制面的块切，一个工具对应桌面端 loopback 上的一个
+路由（`apps/desktop/src/commands/introspect_api/apps.rs` 顶部有对照表）：
+
+| 工具 | 控制面 | 动作 |
+|---|---|---|
+| `manage_app` | 应用组、部署、运行日志、删除 | list / status / sessions / update / deploy / logs / delete |
+| `manage_app_access` | 协作权限 | list / grant / revoke |
+| `manage_app_data` | 线上数据 | tables / rows / update_row / delete_row |
+| `manage_app_files` | 应用附件 | usage / list / download / upload / delete / delete_folder / purge / set_quota |
+| `manage_app_env` | 变量与密钥 | list / set / delete |
+| `manage_app_cron` | 定时任务 | list / create / update / delete / run / runs |
+| `manage_app_domain` | 自定义域名 | get / set / verify / remove |
+
+几条和 UI 不一样、但是有意为之的规则：
+
+- **`update` 一次 PATCH 改所有行上的设置**：name / type / visibility / 登录墙四个字段。
+  登录墙没有单独成工具——它和改名是同一个 PATCH，拆开只会多一份工具描述。
+  `runtime` 不给改：它是每次部署从 `teamclu.app.json` 推出来写回的，改了下次部署就被覆盖；
+  `status` 里把 checkout 的声明和行上记录的并排给出。slug / 线上地址不给改。
+- **不可逆的动作必须显式点名应用**：`delete` 和 `purge` 不接受"当前工作区就是这个应用"的
+  默认值，其它动作接受。
+- **按名字找人 / 找任务只认唯一精确匹配**，零个或多个就把候选列表还回去，什么都不做。
+- **文件字节在 sidecar 里搬**：桌面端只签 URL，读写路径用的是 agent 自己进程的权限。
+- **错误原样透出**：app 路由用 409 表达很多正常状态（没数据库、未部署、超配额、DNS 未生效），
+  而 `FcClient` 会把所有 409 折成 `conflict: remote_version=None`，所以 app 路由走自己的
+  请求封装，保留状态码、错误码和原文。
+- **agent 改完 UI 要跟上**：桌面端每次改动发 `apps:changed-by-agent`，
+  `hooks/use-agent-app-changes.ts` 合并一串事件后重读应用列表和控制面计数。
+
+本机那几件事（新建、重新播种、下载到本机、移动目录）要把前端的播种和 workspace 行绑定逻辑
+移植成 Rust，单独一期做。
+
+## 14. 类型可改
+
+`apps.type` 以前只在创建时写一次，`PATCH` 会忽略它。现在可改（admin），控制面「应用」组
+有一个类型下拉框，agent 走 `manage_app update`。
+
+类型在服务端只决定一件事：finalize 时 `needsDatabase` ——要不要建 schema、注入
+`DATABASE_URL`。所以：
+
+- **改到 data_app**：下次部署才建库；代码不会自己用上它。
+- **从 data_app 改走**：下次部署起函数里没有 `DATABASE_URL`，用库的代码会挂；数据保留
+  （schema 名由 slug + id 决定、建库幂等），改回来就接上。数据浏览器立刻按新类型回答
+  「没有数据库」。UI 在这个方向上二次确认。
+- **static_web / slides / imported 之间互改**：部署产物完全一样，只影响标签和重新播种写的模板。
+
+「待重新部署」照 `deployed_auth_mode` 的做法：新列 `deployed_type`（finalize 时写入，
+迁移 `20260911000000_apps_deployed_type.sql` 回填 live 行），行上派生
+`typePendingRedeploy`——**只在两边对要不要数据库的答案不同时为 true**
+（`typeChangeNeedsRedeploy`），static_web ↔ slides 不会亮。
+
+部署顺序：`APP_COLUMNS` 现在查 `deployed_type`，所以 Cloud API 不能先于这条迁移上线。
+self-host 的 `migrate` 服务先跑；belayo 迁移是手工的，要先迁移再发 FC。
