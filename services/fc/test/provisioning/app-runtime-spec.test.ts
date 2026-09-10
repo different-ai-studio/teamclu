@@ -22,6 +22,26 @@ test("parse: accepts build+start for node", () => {
   assert.equal(d.start.layers, undefined);
 });
 
+test("parse: build output defaults match the daemon build table", () => {
+  for (const [kind, output] of [
+    ["node", ".output"],
+    ["python", "."],
+    ["go", "."],
+    ["php", "."],
+    ["java", "."],
+  ] as const) {
+    const d = parseAppDeployDeclaration({
+      build: { kind },
+      start: {
+        fcRuntime: "custom.debian10",
+        command: ["run"],
+        port: 9000,
+      },
+    });
+    assert.equal(d.build.output, output, kind);
+  }
+});
+
 test("parse: refuses legacy runtime/entry shape", () => {
   for (const legacy of [{ runtime: null }, { entry: { path: "server/index.mjs" } }]) {
     assert.throws(
@@ -78,4 +98,7 @@ test("resolveLayers: omitted uses defaults; [] uses none", () => {
     resolveLayers(region, "node", [layerArn(region, "Python310", 1)]),
     [layerArn(region, "Python310", 1)],
   );
+  assert.deepEqual(defaultLayersForKind(region, "java"), [
+    layerArn(region, "Java17", 3),
+  ]);
 });

@@ -57,7 +57,7 @@ pub const ERR_IMAGE_PUSH_DENIED: &str =
 /// rather than anything the user can fix — but it must not read as a build
 /// failure in their app.
 pub const ERR_NO_PUSH_TARGET: &str =
-    "this deploy supplied no image registry, and the app declares runtime \"container\"";
+    "this deploy supplied no image registry, and the app declares build.kind \"container\"";
 
 /// Cap on the command output carried in a failure message.
 ///
@@ -101,7 +101,26 @@ pub fn zip_dir(dir: &Path) -> anyhow::Result<Vec<u8>> {
     let mut zip = zip::ZipWriter::new(buf);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
-    for entry in walkdir::WalkDir::new(dir) {
+    let mut excluded = vec![".git".to_string()];
+    excluded.extend(app_git::runtime_exclude_entries(
+        &teamclu_runtime_env::brand_short_name_from_env(),
+    ));
+    let excluded: Vec<_> = excluded
+        .iter()
+        .map(|entry| Path::new(entry.trim_end_matches('/')))
+        .collect();
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|entry| {
+            let Ok(relative) = entry.path().strip_prefix(dir) else {
+                return false;
+            };
+            relative.as_os_str().is_empty()
+                || !excluded
+                    .iter()
+                    .any(|excluded| relative == *excluded || relative.starts_with(excluded))
+        })
+    {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() {
@@ -451,9 +470,16 @@ const DEFAULT_OUTPUT: &str = ".output";
 const DEFAULT_DOCKERFILE: &str = "Dockerfile";
 const DEFAULT_CONTEXT: &str = ".";
 const VALID_BUILD_KINDS: &[&str] = &["node", "python", "go", "php", "java", "container"];
+const VALID_CODE_FC_RUNTIMES: &[&str] = &[
+    "custom",
+    "custom.debian10",
+    "custom.debian11",
+    "custom.debian12",
+];
+const CONTAINER_FC_RUNTIME: &str = "custom-container";
 
-pub const ERR_LEGACY_MANIFEST: &str = "teamclu.app.json uses legacy runtime/entry; declare build+start (see docs/specs/2026-09-11-fc-runtime-passthrough-design.md)";
-pub const ERR_MISSING_MANIFEST: &str = "teamclu.app.json is required (build+start)";
+pub const ERR_LEGACY_MANIFEST: &str = r#"teamclu.app.json uses legacy runtime/entry; replace it with build+start, e.g. {"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}} (see docs/specs/2026-09-11-fc-runtime-passthrough-design.md)"#;
+pub const ERR_MISSING_MANIFEST: &str = r#"teamclu.app.json is required; add e.g. {"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}} (see docs/specs/2026-09-11-fc-runtime-passthrough-design.md)"#;
 
 fn default_output() -> String {
     DEFAULT_OUTPUT.to_string()
@@ -532,6 +558,10 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
         anyhow::bail!("{ERR_LEGACY_MANIFEST}");
     }
 
+    let output_was_omitted = value
+        .get("build")
+        .and_then(|build| build.get("output"))
+        .is_none();
     let mut declaration: AppDeclaration = serde_json::from_value(value)
         .map_err(|e| anyhow::anyhow!("invalid {MANIFEST_FILE} build+start declaration: {e}"))?;
     declaration.build.kind = declaration.build.kind.trim().to_string();
@@ -541,6 +571,13 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             declaration.build.kind,
             VALID_BUILD_KINDS.join(", ")
         );
+    }
+    if output_was_omitted {
+        declaration.build.output = if declaration.build.kind == "node" {
+            ".output".to_string()
+        } else {
+            ".".to_string()
+        };
     }
     for (name, path) in [
         ("build.output", &declaration.build.output),
@@ -554,16 +591,39 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
     if declaration.start.port == 0 {
         anyhow::bail!("{MANIFEST_FILE} start.port must be between 1 and 65535");
     }
-    if declaration.build.kind != "container" {
-        let runtime_present = declaration
+    declaration.start.fc_runtime = declaration
+        .start
+        .fc_runtime
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if declaration.build.kind == "container" {
+        if declaration
             .start
             .fc_runtime
             .as_deref()
-            .is_some_and(|value| !value.trim().is_empty());
+            .is_some_and(|runtime| runtime != CONTAINER_FC_RUNTIME)
+        {
+            anyhow::bail!(
+                "{MANIFEST_FILE} start.fcRuntime for container must be {CONTAINER_FC_RUNTIME:?} when set"
+            );
+        }
+    } else {
+        let runtime = declaration.start.fc_runtime.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{MANIFEST_FILE} code apps require non-empty start.fcRuntime and start.command"
+            )
+        })?;
+        if !VALID_CODE_FC_RUNTIMES.contains(&runtime) {
+            anyhow::bail!(
+                "{MANIFEST_FILE} has invalid start.fcRuntime {runtime:?}; expected one of {}",
+                VALID_CODE_FC_RUNTIMES.join(", ")
+            );
+        }
         let command_present = declaration.start.command.as_ref().is_some_and(|command| {
             !command.is_empty() && command.iter().all(|part| !part.trim().is_empty())
         });
-        if !runtime_present || !command_present {
+        if !command_present {
             anyhow::bail!(
                 "{MANIFEST_FILE} code apps require non-empty start.fcRuntime and start.command"
             );
@@ -1008,6 +1068,30 @@ mod tests {
     }
 
     #[test]
+    fn zip_dir_excludes_git_and_daemon_runtime_files_from_checkout_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("app.py"), b"print('ok')").unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/objects")).unwrap();
+        std::fs::write(tmp.path().join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
+        let runtime_dir =
+            teamclu_runtime_env::workspace_meta_dir_name(&teamclu_runtime_env::brand_short_name_from_env());
+        std::fs::create_dir_all(tmp.path().join(&runtime_dir)).unwrap();
+        std::fs::write(tmp.path().join(&runtime_dir).join("state.json"), b"{}").unwrap();
+
+        let bytes = zip_dir(tmp.path()).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.iter().any(|name| name == "app.py"), "{names:?}");
+        assert!(!names.iter().any(|name| name.starts_with(".git/")), "{names:?}");
+        assert!(
+            !names.iter().any(|name| name.starts_with(&runtime_dir)),
+            "{names:?}"
+        );
+    }
+
+    #[test]
     fn output_dir_has_files_detects_empty_tree() {
         let tmp = tempfile::tempdir().unwrap();
         let empty = tmp.path().join("empty");
@@ -1083,6 +1167,8 @@ mod tests {
         let tmp = node_checkout();
         let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
         assert_eq!(err, ERR_MISSING_MANIFEST);
+        assert!(err.contains(r#""build""#) && err.contains(r#""start""#), "{err}");
+        assert!(err.contains("fc-runtime-passthrough-design.md"), "{err}");
     }
 
     #[test]
@@ -1169,6 +1255,61 @@ mod tests {
         assert_eq!(wire["start"]["fcRuntime"], "custom.debian12");
         assert_eq!(wire["start"]["healthCheckPath"], "/health");
         assert!(wire["start"].get("fc_runtime").is_none());
+    }
+
+    #[test]
+    fn omitted_build_output_defaults_by_kind() {
+        for (kind, expected) in [
+            ("node", ".output"),
+            ("python", "."),
+            ("go", "."),
+            ("php", "."),
+            ("java", "."),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(
+                tmp.path().join(MANIFEST_FILE),
+                serde_json::json!({
+                    "build": {"kind": kind},
+                    "start": {
+                        "fcRuntime": "custom.debian10",
+                        "command": ["run"],
+                        "port": 9000
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert_eq!(
+                read_app_declaration(tmp.path()).unwrap().build.output,
+                expected,
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn fc_runtime_is_validated_before_building() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_code_declaration(tmp.path(), "python", ".");
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        raw["start"]["fcRuntime"] = serde_json::json!("python3.10");
+        std::fs::write(tmp.path().join(MANIFEST_FILE), raw.to_string()).unwrap();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert!(err.contains("invalid start.fcRuntime"), "{err}");
+
+        let container = tempfile::tempdir().unwrap();
+        write_container_declaration(container.path(), "Dockerfile", None);
+        let mut raw: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(container.path().join(MANIFEST_FILE)).unwrap(),
+        )
+        .unwrap();
+        raw["start"]["fcRuntime"] = serde_json::json!("custom.debian12");
+        std::fs::write(container.path().join(MANIFEST_FILE), raw.to_string()).unwrap();
+        let err = read_app_declaration(container.path()).unwrap_err().to_string();
+        assert!(err.contains("custom-container"), "{err}");
     }
 
     #[test]

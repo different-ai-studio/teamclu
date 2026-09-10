@@ -57,9 +57,13 @@ export const CONTAINER_RUNTIME_FC = "custom-container";
 const LAYER_VERSIONS: Record<Exclude<AppBuildKind, "container">, { name: string; version: number }> = {
   node: { name: "Nodejs20", version: 3 },
   python: { name: "Python310", version: 3 },
+  // Alibaba's official catalog marks Go1 and PHP81-Debian10 compatible with
+  // custom.debian10, not the newer Debian custom runtimes.
   go: { name: "Go1", version: 1 },
   php: { name: "PHP81-Debian10", version: 1 },
-  java: { name: "Java17", version: 1 },
+  // Alibaba FC official public-layer catalog (ListLayers --official), Java17
+  // version 3. Catalog/docs: https://help.aliyun.com/en/functioncompute/fc/user-guide/configure-common-layers-for-a-function-1
+  java: { name: "Java17", version: 3 },
 };
 
 const OFFICIAL_LAYER_ARN =
