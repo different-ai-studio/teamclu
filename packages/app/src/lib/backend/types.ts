@@ -148,6 +148,8 @@ export interface SessionCreateInput {
   additionalActorIds: string[];
   ideaId?: string | null;
   appId?: string;
+  /** Cloud workspace UUID for each agent participant (ADR-0005). */
+  workspaceByActorId?: Record<string, string>;
 }
 
 export interface SessionParticipant {

@@ -1464,6 +1464,8 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
     // resolveTeamOrgId reads this; unseeded it yields no row, i.e. "team has
     // no org", which is what most apps tests want.
     teams: [...(seed.teams ?? [])],
+    agents: [...(seed.agents ?? [])],
+    session_participants: [...(seed.session_participants ?? [])],
   };
   return {
     auth: appsAuth(),
@@ -3143,6 +3145,98 @@ test("createSession returns 403 when the caller is not a member of the team", as
     () => repo.createSession({ id: "sess-x", teamId: "team-1", title: "Nope" }),
     (err: any) => err?.statusCode === 403,
   );
+});
+
+function participantUpsertRows(calls: any[]) {
+  return calls
+    .filter((c) => c.table === "session_participants" && c.op === "upsert")
+    .flatMap((c) => (Array.isArray(c.row) ? c.row : [c.row]));
+}
+
+test("createSession stamps the agent's default_workspace_id on the agent seat, not the member", async () => {
+  const calls: any[] = [];
+  const supabase = appsSupabase({
+    actorRow: { id: "actor-app-1", actor_type: "member" },
+    calls,
+    seed: {
+      agents: [{ id: "agent-1", default_workspace_id: "ws-default" }],
+    },
+  });
+  const repo = appsRepo(supabase);
+  await repo.createSession({
+    id: "sess-ws-1",
+    teamId: "team-1",
+    title: "Chat",
+    additionalActorIds: ["agent-1"],
+  });
+  const rows = participantUpsertRows(calls);
+  const agentRow = rows.find((r) => r.actor_id === "agent-1");
+  const memberRow = rows.find((r) => r.actor_id === "actor-app-1");
+  assert.equal(agentRow?.workspace_id, "ws-default");
+  assert.equal(memberRow?.workspace_id, undefined);
+});
+
+test("createSession honors workspaceByActorId over the agent default", async () => {
+  const calls: any[] = [];
+  const supabase = appsSupabase({
+    actorRow: { id: "actor-app-1", actor_type: "member" },
+    calls,
+    seed: {
+      agents: [{ id: "agent-1", default_workspace_id: "ws-default" }],
+    },
+  });
+  const repo = appsRepo(supabase);
+  await repo.createSession({
+    id: "sess-ws-2",
+    teamId: "team-1",
+    title: "Chat",
+    additionalActorIds: ["agent-1"],
+    workspaceByActorId: { "agent-1": "ws-picked" },
+  });
+  const rows = participantUpsertRows(calls);
+  const agentRow = rows.find((r) => r.actor_id === "agent-1");
+  assert.equal(agentRow?.workspace_id, "ws-picked");
+});
+
+test("createCronSession stamps the primary agent's default_workspace_id", async () => {
+  const calls: any[] = [];
+  const supabase = appsSupabase({
+    actorRow: { id: "actor-app-1", actor_type: "member" },
+    calls,
+    seed: {
+      agents: [{ id: "agent-1", default_workspace_id: "ws-cron" }],
+    },
+  });
+  const repo = appsRepo(supabase);
+  await repo.createCronSession({
+    teamId: "team-1",
+    primaryAgentActorId: "agent-1",
+    title: "Cron: daily",
+  });
+  const rows = participantUpsertRows(calls);
+  const agentRow = rows.find((r) => r.actor_id === "agent-1");
+  assert.equal(agentRow?.workspace_id, "ws-cron");
+});
+
+test("createCronSession uses the caller workspaceId when provided", async () => {
+  const calls: any[] = [];
+  const supabase = appsSupabase({
+    actorRow: { id: "actor-app-1", actor_type: "member" },
+    calls,
+    seed: {
+      agents: [{ id: "agent-1", default_workspace_id: "ws-cron" }],
+    },
+  });
+  const repo = appsRepo(supabase);
+  await repo.createCronSession({
+    teamId: "team-1",
+    primaryAgentActorId: "agent-1",
+    title: "Cron: scoped",
+    workspaceId: "ws-job",
+  });
+  const rows = participantUpsertRows(calls);
+  const agentRow = rows.find((r) => r.actor_id === "agent-1");
+  assert.equal(agentRow?.workspace_id, "ws-job");
 });
 
 // --- App data browser -------------------------------------------------------
