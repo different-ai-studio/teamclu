@@ -356,20 +356,6 @@ function mapCloudDeployError(e: unknown): string {
 }
 
 /**
- * Kick the local daemon seed and write back the terminal status. The desktop
- * writes ONLY `ready`/`error`; `unreachable` writes nothing so the row stays
- * `pending` and a reseed remains available.
- *
- * The daemon reports the directory it wrote to, and that path is written onto
- * the app's own cloud workspace row right here — before any session exists.
- * Leaving it for the session-open path meant the app's workspace stayed
- * path-less until then, and a path-less workspace is one the daemon resolves by
- * falling back to whatever folder the desktop had open.
- *
- * A clone that fails is the one case worth interrupting the user for: they
- * typed the URL, and the app is empty until they fix it.
- */
-/**
  * Explain a seed failure the raw daemon text does not.
  *
  * A clone that ran out of time is the one failure whose cause is invisible:
@@ -389,6 +375,37 @@ function mapSeedErrorReason(raw: string | null): string | undefined {
 }
 
 /**
+ * Drop a cloud app row that was created only so a clone could run, and that
+ * clone then failed. Silent: the user is about to see the clone error on the
+ * form, not a "App deleted" success toast.
+ */
+async function discardCreatedApp(set: SetState, appId: string): Promise<void> {
+  try {
+    await getBackend().apps.deleteApp(appId);
+  } catch (e) {
+    console.warn("discard created app failed", e);
+  }
+  set((s) => ({
+    items: s.items.filter((a) => a.id !== appId),
+    selectedAppId: s.selectedAppId === appId ? null : s.selectedAppId,
+  }));
+}
+
+/**
+ * Kick the local daemon seed and write back the terminal status. The desktop
+ * writes ONLY `ready`/`error`; `unreachable` writes nothing so the row stays
+ * `pending` and a reseed remains available.
+ *
+ * The daemon reports the directory it wrote to, and that path is written onto
+ * the app's own cloud workspace row right here — before any session exists.
+ * Leaving it for the session-open path meant the app's workspace stayed
+ * path-less until then, and a path-less workspace is one the daemon resolves by
+ * falling back to whatever folder the desktop had open.
+ *
+ * Returns the seed outcome so callers can decide what to surface. A remote
+ * import that fails on create is rolled back by `create` (delete the empty
+ * cloud row + throw); a reseed leaves the row at `error` and toasts.
+ *
  * @param cloneUrl the address to clone from, when it differs from the stored
  * one. Credentials pasted into a repo URL are stripped before the row is
  * written, so the create path passes what the user actually typed — that copy
@@ -399,7 +416,7 @@ async function runSeed(
   app: AppRow,
   adoptExisting = false,
   cloneUrl?: string | null,
-): Promise<void> {
+): Promise<SeedAppResult> {
   let deployKeyPem: string | null = null;
   let deployKeyId: number | null = null;
   // Keyed on how the repo is authenticated, not on the status the row happens
@@ -416,14 +433,16 @@ async function runSeed(
       deployKeyId = cred?.deployKeyId ?? null;
       if (!deployKeyPem) {
         await patchStatus(set, app.id, "error");
-        await toastError("仓库初始化失败", "无法获取 Gitea 部署密钥");
-        return;
+        return { outcome: "failed", workdir: null, error: "无法获取 Gitea 部署密钥" };
       }
     } catch (e) {
       console.warn("getGitCredential failed (non-fatal)", e);
       await patchStatus(set, app.id, "error");
-      await toastError("仓库初始化失败", e instanceof Error ? e.message : String(e));
-      return;
+      return {
+        outcome: "failed",
+        workdir: null,
+        error: e instanceof Error ? e.message : String(e),
+      };
     }
   }
 
@@ -453,11 +472,9 @@ async function runSeed(
     await patchStatus(set, app.id, "ready");
   } else if (result.outcome === "failed") {
     await patchStatus(set, app.id, "error");
-    if (app.gitRemoteUrl) {
-      await toastError("仓库克隆失败", mapSeedErrorReason(result.error));
-    }
   }
   // unreachable → no status change; reseed remains available.
+  return result;
 }
 
 /**
@@ -660,15 +677,26 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     // would write the starter template over the user's own files. The guard is
     // the status rather than the flag so an app that somehow arrives `ready` by
     // another route is treated the same way.
+    let seedResult: SeedAppResult | null = null;
     if (row.provisionStatus === "pending" || row.provisionStatus === "repo_created") {
       // The cloud API only inserts the row; the app's files come from the local
-      // daemon, which writes its own embedded template. Non-fatal — a daemon
-      // that is down (unreachable) leaves the row `pending` so the user can
-      // reseed.
+      // daemon, which writes its own embedded template. Non-fatal when the
+      // daemon is unreachable — the row stays `pending` so the user can reseed.
+      //
       // The typed address, not the stored one: `POST /v1/apps` strips any
       // credential out of it before writing the row, and this is the one call
       // that still needs it.
-      await runSeed(set, row, !!adoptLocalDir?.trim(), input.gitRemoteUrl);
+      seedResult = await runSeed(set, row, !!adoptLocalDir?.trim(), input.gitRemoteUrl);
+    }
+    // Remote import whose clone failed: the cloud row is an empty shell. Leaving
+    // it looks like create succeeded while a toast says it failed. Roll it back
+    // and throw so CreateAppView keeps the form open with the reason.
+    if (input.gitRemoteUrl?.trim() && seedResult?.outcome === "failed") {
+      await discardCreatedApp(set, row.id);
+      throw new Error(
+        mapSeedErrorReason(seedResult.error) ??
+          i18n.t("apps.cloneFailed", "仓库克隆失败"),
+      );
     }
     await get().refreshLocalApps(input.teamId);
     // Return the row as it stands AFTER seeding — the caller decides what to do
@@ -692,7 +720,13 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   reseed: async (appId) => {
     const app = get().items.find((a) => a.id === appId);
     if (!app) return;
-    await runSeed(set, app);
+    const result = await runSeed(set, app);
+    // Reseed keeps the row: the user already owns this app and can retry. Toast
+    // only when a remote clone is what failed — template seed failures stay
+    // quiet (status is already `error`).
+    if (result.outcome === "failed" && app.gitRemoteUrl) {
+      await toastError("仓库克隆失败", mapSeedErrorReason(result.error));
+    }
   },
   deploy: async (appId) => {
     const app = get().items.find((a) => a.id === appId);
