@@ -987,6 +987,7 @@
   },
   "fileExplorer": {
     "agentNotStarted": "Agent 尚未启动",
+    "teamLink": "链接到团队共享目录",
     "newFile": "新建文件",
     "newFolder": "新建文件夹",
     "copyPath": "复制路径",

@@ -24,10 +24,11 @@ import {
   History,
   AlertTriangle,
   Cloud,
+  FolderSymlink,
 } from "lucide-react";
 
 import { cn } from '@/lib/utils';
-import { ObsidianIcon } from './ObsidianIcon';
+import { isTeamLinkDirName } from '@/lib/team/team-skill-paths';
 import { useTabsStore } from '@/stores/tabs';
 import { useCurrentTeamStore } from '@/stores/current-team';
 import { useVersionHistoryStore } from '@/stores/version-history';
@@ -416,7 +417,13 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   const fileIconInfo = !isDirectory ? getFileIcon(node.name) : null;
   const FileIcon = fileIconInfo?.icon || File;
   const fileIconColor = fileIconInfo?.color || "text-muted-foreground";
-  const isKnowledgeDir = isDirectory && node.name === 'team-knowledge' && !node.path.includes('/.trash/');
+  // The workspace's links to the team's synced roots. Root level only — that is
+  // where the daemon puts them, and a user's own nested folder with the same
+  // name is not one. Marked as a link rather than by what opens it: the row is
+  // a pointer into the team's shared tree, which is the thing worth knowing
+  // before editing inside it.
+  const isTeamLink =
+    isDirectory && level === 0 && isTeamLinkDirName(node.name) && !node.path.includes('/.trash/');
   // A team document both sides changed. The row is red either way; this is what
   // decides whether it also offers the way in to resolving it.
   const needsConflictDecision = syncStatus === 'conflict' && !isDirectory;
@@ -502,8 +509,12 @@ export const FileTreeItem = React.memo(function FileTreeItem({
         <img src="/logo-64.png" alt="" className="h-3.5 w-3.5 shrink-0" />
       )}
 
-      {isKnowledgeDir && !isTeamCluTeam && (
-        <ObsidianIcon className="h-3.5 w-3.5 shrink-0" style={{ color: '#7C3AED' }} />
+      {isTeamLink && (
+        <FolderSymlink
+          data-testid="file-tree-team-link-icon"
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          aria-label={t("fileExplorer.teamLink", "Linked to the team's shared folder")}
+        />
       )}
 
       {downloadFailed ? (

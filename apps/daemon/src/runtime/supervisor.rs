@@ -732,15 +732,14 @@ fn ensure_inherent_skills_in_dir(skills_dir: &Path) -> Result<(), WorkspaceContr
     Ok(())
 }
 
-/// Rebuild `<workspace>/team-knowledge` on every workspace init, so a stale,
-/// dangling or missing link never survives one.
+/// Rebuild `<workspace>/team-knowledge` and `team-documents` on every workspace
+/// init, so a stale, dangling or missing link never survives one.
 ///
-/// Two attempts, in order. The workspace-derived one chains through this
-/// workspace's own `teamclu-team` link; when THAT link is the thing that went
-/// missing it can derive nothing, and the workspace was previously stuck
-/// without a knowledge link until something else re-linked the team. So fall
-/// back to the daemon's active team, which is where the knowledge dir lives
-/// anyway.
+/// Two attempts, in order. The workspace-derived one follows a link this
+/// workspace already has (either synced root, or a legacy `teamclu-team`);
+/// when there is none it can derive nothing, and the workspace was previously
+/// stuck without links until something else re-linked the team. So fall back
+/// to the daemon's active team, which is where the synced roots live anyway.
 ///
 /// The fallback only ever re-points at a directory that already exists: it is
 /// gated on the team's synced `knowledge/` dir being there, so it cannot
@@ -749,7 +748,8 @@ fn ensure_inherent_skills_in_dir(skills_dir: &Path) -> Result<(), WorkspaceContr
 /// same reason `ensure_team_link` does.
 fn ensure_workspace_knowledge_link(workspace_path: &Path) {
     use crate::config::workspace_link::{
-        ensure_team_knowledge_link, ensure_team_knowledge_link_from_workspace, LinkStatus,
+        ensure_team_documents_link, ensure_team_knowledge_link,
+        ensure_team_knowledge_link_from_workspace, LinkStatus,
     };
 
     let mut status = ensure_team_knowledge_link_from_workspace(workspace_path);
@@ -762,6 +762,11 @@ fn ensure_workspace_knowledge_link(workspace_path: &Path) {
             .to_str()
             .is_some_and(crate::team_link::is_app_workspace);
         if team_id != crate::config::layout::UNCLAIMED_TEAM && !is_app && knowledge_dir.is_dir() {
+            // Both roots. `teamclu-team` is no longer there to derive them from
+            // on the next open, so this fallback is now the common first path
+            // for a workspace, not a rare one — a documents link left out here
+            // would stay out.
+            let _ = ensure_team_documents_link(workspace_path, &team_id);
             status = ensure_team_knowledge_link(workspace_path, &team_id);
         }
     }

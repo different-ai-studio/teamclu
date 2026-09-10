@@ -3563,13 +3563,28 @@ pub(crate) mod tests {
         let ts = test_server_with_cloud_api(mock.clone());
         ts.server.sync_team_shared_dirs_for_known_workspaces().await;
 
+        // The workspace gets the team's synced roots. `teamclu-team` is no
+        // longer one of them — nothing lives behind it any more.
         assert!(
             existing
                 .path()
-                .join(crate::config::global_team_store::TEAM_LINK_NAME)
+                .join(crate::config::workspace_link::TEAM_KNOWLEDGE_LINK_NAME)
                 .exists(),
-            "existing on-disk path should get a teamclu-team link"
+            "existing on-disk path should get a team-knowledge link"
         );
+        assert!(
+            existing
+                .path()
+                .join(crate::config::workspace_link::TEAM_DOCUMENTS_LINK_NAME)
+                .exists(),
+            "existing on-disk path should get a team-documents link"
+        );
+        assert!(std::fs::symlink_metadata(
+            existing
+                .path()
+                .join(crate::config::global_team_store::TEAM_LINK_NAME)
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -3597,23 +3612,38 @@ pub(crate) mod tests {
             "knowledge scaffold should exist under shared/, not under teamclu-team/"
         );
 
-        // Workspace exposes it via a teamclu-team symlink to that global dir.
-        let link = ws.path().join("teamclu-team");
-        let meta = std::fs::symlink_metadata(&link).unwrap();
-        assert!(
-            meta.file_type().is_symlink(),
-            "workspace entry should be a symlink"
+        // The workspace exposes the team's synced roots — and no longer a
+        // `teamclu-team` link to the empty global dir.
+        let knowledge = ws
+            .path()
+            .join(crate::config::workspace_link::TEAM_KNOWLEDGE_LINK_NAME);
+        let sync_root = crate::config::global_team_store::sync_content_root("team-ondemand");
+        assert!(std::fs::symlink_metadata(&knowledge)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_link(&knowledge).unwrap(),
+            sync_root.join("knowledge")
         );
-        assert_eq!(std::fs::read_link(&link).unwrap(), global);
+        assert!(std::fs::symlink_metadata(ws.path().join("teamclu-team")).is_err());
 
         // Idempotent: a second call must not error or change the target.
         ensure_team_link("team-ondemand", ws_path);
-        assert_eq!(std::fs::read_link(&link).unwrap(), global);
+        assert_eq!(
+            std::fs::read_link(&knowledge).unwrap(),
+            sync_root.join("knowledge")
+        );
 
         // Empty team_id is a no-op (no stray dir/link).
         let ws2 = tempfile::tempdir().unwrap();
         ensure_team_link("", ws2.path().to_str().unwrap());
         assert!(std::fs::symlink_metadata(ws2.path().join("teamclu-team")).is_err());
+        assert!(std::fs::symlink_metadata(
+            ws2.path()
+                .join(crate::config::workspace_link::TEAM_KNOWLEDGE_LINK_NAME)
+        )
+        .is_err());
     }
 
     pub(crate) struct TestServer {

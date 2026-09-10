@@ -40,8 +40,10 @@ pub struct LinkTeamWorkspaceRequest {
 #[derive(Debug, Serialize)]
 pub struct LinkTeamWorkspaceResponse {
     pub team_id: String,
-    /// Resulting link state: `symlink` | `junction` | `fallback` |
-    /// `legacy_retained` (mirrors `workspace_link::LinkStatus`).
+    /// Resulting link state: `symlink` | `junction` | `fallback` (mirrors
+    /// `workspace_link::LinkStatus`). `legacy_retained` is no longer sent: it
+    /// described migrating a real `teamclu-team` dir into a link, and that link
+    /// is no longer made.
     pub status: &'static str,
     /// `~/.amuxd/teams/<team_id>/teamclu-team`.
     pub global_dir: String,
@@ -52,7 +54,6 @@ fn status_str(status: &LinkStatus) -> &'static str {
         LinkStatus::Linked(LinkKind::Symlink) => "symlink",
         LinkStatus::Linked(LinkKind::Junction) => "junction",
         LinkStatus::Fallback => "fallback",
-        LinkStatus::LegacyDirRetained { .. } => "legacy_retained",
     }
 }
 
@@ -172,11 +173,5 @@ mod tests {
             "junction"
         );
         assert_eq!(status_str(&LinkStatus::Fallback), "fallback");
-        assert_eq!(
-            status_str(&LinkStatus::LegacyDirRetained {
-                reason: "non-empty".into(),
-            }),
-            "legacy_retained"
-        );
     }
 }
