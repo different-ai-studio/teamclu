@@ -6,7 +6,7 @@
 //!
 //! | tool                | route         | control panel                                         |
 //! |---------------------|---------------|-------------------------------------------------------|
-//! | `manage_app`        | `/app-manage` | 应用 (name, type, visibility, code version), 应用权限, deploy, 运行日志, 删除 |
+//! | `manage_app`        | `/app-manage` | 应用 (name, type, local path, code version, visibility, reseed), 应用权限, deploy, 运行日志, 删除 — plus create and download |
 //! | `manage_app_access` | `/app-access` | 协作权限                                               |
 //! | `manage_app_data`   | `/app-data`   | 线上数据                                               |
 //! | `manage_app_files`  | `/app-files`  | 应用附件                                               |
@@ -19,12 +19,14 @@
 //! as it does for the desktop UI (`view` / `prompt` / `admin`) — nothing here
 //! escalates past what the user may do themselves. The work lives in this
 //! process because it is the only one holding both that bearer and a line to
-//! the local daemon, which builds the artifact a deploy publishes.
+//! the local daemon, which builds what a deploy publishes and seeds, clones
+//! and moves checkouts.
 //!
 //! A capability added to the panel belongs here too: the panel and these tools
 //! are two views of one control plane, and an agent that can do only half of
 //! it stops and asks the user to click the other half.
 
+mod checkout;
 mod data;
 mod files;
 mod settings;
@@ -141,6 +143,12 @@ impl AppApi {
         Ok(Self {
             fc: introspect_fc_client(app, v, tool).await?,
         })
+    }
+
+    /// The bearer itself — read for its claims (who is committing a seeded
+    /// repo), never sent anywhere but the Cloud API.
+    fn bearer(&self) -> &str {
+        &self.fc.jwt
     }
 
     /// One request. `timeout` overrides the shared client's 30 s for the calls
@@ -555,36 +563,66 @@ async fn app_workdir_on_this_machine(row: &Value) -> Option<(String, Option<Stri
     Some((workdir, row_str(&out, "deviceName").map(str::to_string)))
 }
 
+/// Whether a directory exists and has anything in it — the web app's test for
+/// "this machine already holds a checkout" (`localWorkdirHasCheckout`).
+fn dir_has_files(dir: &str) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
 // ─── manage_app ─────────────────────────────────────────────────────────────
 
-const MANAGE_ACTIONS: [&str; 7] = [
-    "list", "status", "sessions", "update", "deploy", "logs", "delete",
+const MANAGE_ACTIONS: [&str; 11] = [
+    "list",
+    "status",
+    "sessions",
+    "create",
+    "update",
+    "reseed",
+    "download",
+    "move_workdir",
+    "deploy",
+    "logs",
+    "delete",
 ];
 
-/// `manage_app` — the app itself: find it, read its settings, change them,
-/// publish it, read its logs, delete it.
+/// `manage_app` — the app itself: find it, create it, read its settings,
+/// change them, put its code on this machine, publish it, read its logs,
+/// delete it.
 pub(super) async fn handle_app_manage(app: &AppHandle, body: &[u8]) -> Result<String, String> {
     let v = parse_body(body)?;
     let action = require_action(&v, &MANAGE_ACTIONS)?;
+    // Argument mistakes are refused before anything is resolved, so they cost
+    // no round trip and read as the mistakes they are.
     match action.as_str() {
         "delete" => require_named_app(&v, "delete")?,
-        // Checked before anything is resolved, so a call with nothing to change
-        // costs no round trip and reads as the argument mistake it is.
         "update" => {
             update_patch(&v)?;
+        }
+        "create" => {
+            checkout::create_source(&v)?;
+        }
+        "move_workdir" => {
+            checkout::move_destination(&v)?;
         }
         _ => {}
     }
     let api = AppApi::for_tool(app, &v, "manage_app").await?;
 
-    if action == "list" {
-        return Ok(list_apps(app, &api).await?.to_string());
+    match action.as_str() {
+        "list" => return Ok(list_apps(app, &api).await?.to_string()),
+        "create" => return Ok(checkout::create_app(app, &api, &v).await?.to_string()),
+        _ => {}
     }
     let row = resolve_app_row(app, &api, &v).await?;
     let out = match action.as_str() {
         "status" => json!({ "action": "status", "app": app_status(&api, &row).await }),
         "sessions" => app_sessions(&api, &row).await?,
         "update" => update_app(app, &api, &row, &v).await?,
+        "reseed" => checkout::reseed_app(app, &api, &row).await?,
+        "download" => checkout::download_app(app, &api, &row).await?,
+        "move_workdir" => checkout::move_app_workdir(app, &api, &row, &v).await?,
         "deploy" => {
             let deployed = run_app_deploy(&api, &row).await;
             // Either way the row moved — to live, or to deploy_error.
@@ -695,9 +733,7 @@ async fn app_status(api: &AppApi, row: &Value) -> Value {
     let app_id = row_str(row, "id").unwrap_or_default().to_string();
     let team_id = row_str(row, "teamId").unwrap_or_default().to_string();
     if let Some((workdir, device)) = app_workdir_on_this_machine(row).await {
-        out["checkout_present"] = json!(std::fs::read_dir(&workdir)
-            .map(|mut entries| entries.next().is_some())
-            .unwrap_or(false));
+        out["checkout_present"] = json!(dir_has_files(&workdir));
         out["workdir"] = json!(workdir);
         out["device_name"] = json!(device);
     }
@@ -1033,6 +1069,56 @@ async fn daemon_build_app(body: &Value, timeout: Duration) -> Result<Value, Stri
     })
 }
 
+/// A short-lived Gitea deploy key for the app's repo, as the daemon needs it.
+struct GitCredential {
+    remote_url: String,
+    private_key_pem: String,
+    deploy_key_id: Option<i64>,
+}
+
+/// Mint a deploy key for the app's Gitea repo — for a deploy's fetch, a seed's
+/// push, or a download's clone.
+async fn mint_git_credential(api: &AppApi, app_id: &str) -> Result<GitCredential, String> {
+    let cred = api
+        .get(
+            &app_path(app_id, "/git-credential"),
+            "Minting a deploy key for the app's repository",
+        )
+        .await?;
+    let remote_url = row_str(&cred, "remoteUrl").unwrap_or_default().to_string();
+    let private_key_pem = cred
+        .get("privateKeyPem")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if remote_url.is_empty() || private_key_pem.trim().is_empty() {
+        return Err("Could not mint a Gitea deploy credential for this app.".to_string());
+    }
+    Ok(GitCredential {
+        remote_url,
+        private_key_pem,
+        deploy_key_id: cred.get("deployKeyId").and_then(Value::as_i64),
+    })
+}
+
+/// Give a minted key back once the daemon is done with it.
+///
+/// The server revokes expired keys only when something asks the same repo for
+/// another one, so a repo that is seeded or deployed and then left alone keeps
+/// every key it was ever issued. Never fails the work it follows.
+async fn return_git_credential(api: &AppApi, app_id: &str, deploy_key_id: Option<i64>) {
+    if let Some(key_id) = deploy_key_id {
+        let _ = api
+            .send(
+                Method::DELETE,
+                &app_path(app_id, &format!("/git-credential/{key_id}")),
+                None,
+                None,
+            )
+            .await;
+    }
+}
+
 /// Where this deploy's build output goes, as the control plane minted it.
 enum DeployHandle {
     /// Presigned OSS PUT for a code archive.
@@ -1054,27 +1140,11 @@ async fn finish_app_deploy(
     handle: &DeployHandle,
     manifest: Option<&Value>,
 ) -> Result<Value, String> {
-    let mut git_remote_url = String::new();
-    let mut deploy_key_pem = String::new();
-    let mut deploy_key_id: Option<i64> = None;
-    if via_gitea {
-        let cred = api
-            .get(
-                &app_path(app_id, "/git-credential"),
-                "Minting a deploy key for the app's repository",
-            )
-            .await?;
-        git_remote_url = row_str(&cred, "remoteUrl").unwrap_or_default().to_string();
-        deploy_key_pem = cred
-            .get("privateKeyPem")
-            .and_then(|x| x.as_str())
-            .unwrap_or_default()
-            .to_string();
-        deploy_key_id = cred.get("deployKeyId").and_then(|x| x.as_i64());
-        if git_remote_url.is_empty() || deploy_key_pem.is_empty() {
-            return Err("Could not mint a Gitea deploy credential for this app.".to_string());
-        }
-    }
+    let credential = if via_gitea {
+        Some(mint_git_credential(api, app_id).await?)
+    } else {
+        None
+    };
 
     let mut build_body = json!({
         "appId": app_id,
@@ -1084,9 +1154,9 @@ async fn finish_app_deploy(
         DeployHandle::Upload(url) => build_body["presignedPut"] = json!(url),
         DeployHandle::Push(image) => build_body["image"] = image.clone(),
     }
-    if via_gitea {
-        build_body["gitRemoteUrl"] = json!(git_remote_url);
-        build_body["deployKeyPem"] = json!(deploy_key_pem);
+    if let Some(cred) = &credential {
+        build_body["gitRemoteUrl"] = json!(cred.remote_url);
+        build_body["deployKeyPem"] = json!(cred.private_key_pem);
         if let Some(sha) = &git_commit_sha {
             build_body["gitCommitSha"] = json!(sha);
         }
@@ -1107,15 +1177,8 @@ async fn finish_app_deploy(
 
     // The daemon only needs the key for the fetch inside the build; hand it back
     // whether that succeeded or not, exactly as the desktop's `finally` does.
-    if let Some(key_id) = deploy_key_id {
-        let _ = api
-            .send(
-                Method::DELETE,
-                &app_path(app_id, &format!("/git-credential/{key_id}")),
-                None,
-                None,
-            )
-            .await;
+    if let Some(cred) = &credential {
+        return_git_credential(api, app_id, cred.deploy_key_id).await;
     }
     let build = build?;
 

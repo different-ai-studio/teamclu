@@ -1,7 +1,8 @@
 //! The `manage_app*` tools — a TeamClu app's control panel, for an agent.
 //!
-//! One tool per surface of the panel: the app itself (`manage_app`: settings,
-//! deploy, logs, delete), who may work on it (`manage_app_access`), its
+//! One tool per surface of the panel: the app itself (`manage_app`: create,
+//! settings, its checkout on this machine, deploy, logs, delete), who may work
+//! on it (`manage_app_access`), its
 //! database rows (`manage_app_data`), stored files (`manage_app_files`),
 //! environment (`manage_app_env`), cloud schedule (`manage_app_cron`) and
 //! custom domain (`manage_app_domain`).
@@ -142,6 +143,23 @@ fn app_body(
     Ok((action, body))
 }
 
+/// A path the agent gave, made absolute against its workspace.
+fn absolute_from(workspace: &str, raw: &str) -> String {
+    let path = std::path::Path::new(raw);
+    if path.is_absolute() {
+        raw.to_string()
+    } else {
+        // `components` drops the `.` in `<workspace>/.`, which the daemon
+        // would otherwise record as part of the app's path.
+        std::path::Path::new(workspace)
+            .join(path)
+            .components()
+            .collect::<std::path::PathBuf>()
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 fn needs(arguments: &Value, key: &str, message: &str) -> Result<(), String> {
     match arguments.get(key) {
         Some(Value::Null) | None => Err(message.to_string()),
@@ -150,8 +168,18 @@ fn needs(arguments: &Value, key: &str, message: &str) -> Result<(), String> {
     }
 }
 
-const MANAGE_ACTIONS: [&str; 7] = [
-    "list", "status", "sessions", "update", "deploy", "logs", "delete",
+const MANAGE_ACTIONS: [&str; 11] = [
+    "list",
+    "status",
+    "sessions",
+    "create",
+    "update",
+    "reseed",
+    "download",
+    "move_workdir",
+    "deploy",
+    "logs",
+    "delete",
 ];
 const UPDATE_FIELDS: [&str; 7] = [
     "name",
@@ -168,6 +196,40 @@ const UPDATE_FIELDS: [&str; 7] = [
 fn manage_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
     let (action, mut body) = app_body(workspace, arguments, &MANAGE_ACTIONS)?;
     match action.as_str() {
+        "create" => {
+            // Names a new app, so there is no existing one to select.
+            if body.get("app_id").is_some() || body.get("app_name").is_some() {
+                return Err(
+                    "create makes a new app — pass `name`, not app_id or app_name".to_string(),
+                );
+            }
+            needs(arguments, "name", "create needs `name`")?;
+            if str_arg(arguments, "git_remote_url").is_some()
+                && str_arg(arguments, "local_dir").is_some()
+            {
+                return Err(
+                    "pass git_remote_url or local_dir, not both — they are two different sources"
+                        .to_string(),
+                );
+            }
+            copy_args(
+                arguments,
+                &mut body,
+                &["name", "type", "visibility", "git_remote_url"],
+            );
+            // "This folder" is the natural thing for an agent to say, and the
+            // desktop — a different process with a different cwd — needs it
+            // spelled out.
+            if let Some(dir) = str_arg(arguments, "local_dir") {
+                body["local_dir"] = json!(absolute_from(workspace, &dir));
+            }
+        }
+        "move_workdir" => {
+            let dest = str_arg(arguments, "dest_path").ok_or(
+                "move_workdir needs `dest_path` — where to move the app's checkout on this machine",
+            )?;
+            body["dest_path"] = json!(absolute_from(workspace, &dest));
+        }
         "logs" => copy_args(
             arguments,
             &mut body,
@@ -371,7 +433,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "manage_app",
-            "description": "Work with a TeamClu app — what its control panel does. Omit app_id and app_name to act on the app whose checkout is the workspace you are in; you do not need to ask the user which app this is, and `list` reports each app's local `workdir`. list: this team's apps. status: every setting, where the checkout is on this machine, what the checkout declares about how it is built and run, and how far its branch is ahead of what is live. sessions: conversations linked to the app. update: change name, type, visibility and the deployed site's login wall (auth_*) — only the fields you pass change. deploy: build the checkout on this machine and PUBLISH TO THE PUBLIC INTERNET; an app whose auth_mode is \"none\" is readable by anyone with the URL. logs: what the deployed app printed, which is how you find out why it 500s. delete: take the app offline for good; needs an explicit app_id or app_name. Related tools: manage_app_access (who on the team may work on it), manage_app_env, manage_app_cron, manage_app_files, manage_app_data, manage_app_domain. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (most changes need admin on the app).",
+            "description": "Work with a TeamClu app — what its control panel does. Omit app_id and app_name to act on the app whose checkout is the workspace you are in; you do not need to ask the user which app this is, and `list` reports each app's local `workdir`. list: this team's apps. status: every setting, where the checkout is on this machine, what the checkout declares about how it is built and run, and how far its branch is ahead of what is live. sessions: conversations linked to the app. create: a new app with its code on this machine — from a starter template (type), an existing repo (git_remote_url) or a folder already here (local_dir). update: change name, type, visibility and the deployed site's login wall (auth_*) — only the fields you pass change. reseed: write the code again for an app whose code was never written or failed to be. download: clone a team app onto this machine. move_workdir: move this machine's checkout elsewhere (not the one you are running in). deploy: build the checkout on this machine and PUBLISH TO THE PUBLIC INTERNET; an app whose auth_mode is \"none\" is readable by anyone with the URL. logs: what the deployed app printed, which is how you find out why it 500s. delete: take the app offline for good; needs an explicit app_id or app_name. Related tools: manage_app_access (who on the team may work on it), manage_app_env, manage_app_cron, manage_app_files, manage_app_data, manage_app_domain. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (most changes need admin on the app).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -382,16 +444,19 @@ pub fn tool_definitions() -> Vec<Value> {
                     },
                     "app_id": { "type": "string", "description": format!("{APP_SELECTOR_ID} Not needed for list.") },
                     "app_name": { "type": "string", "description": APP_SELECTOR_NAME },
-                    "name": { "type": "string", "description": "update: the new display name. The public URL does not change." },
+                    "name": { "type": "string", "description": "create: the new app's name (required). update: the new display name; the public URL does not change." },
+                    "git_remote_url": { "type": "string", "description": "create: import this repository instead of a starter template — http(s), ssh, git:// or git@host:path. Credentials in the address are used for the clone and not stored." },
+                    "local_dir": { "type": "string", "description": "create: use this folder on this machine (absolute, or relative to the workspace). A git checkout with its own origin stays where it is and deploys as is; any other folder gets a TeamClu repo and is published from where it is, with no template written over it." },
+                    "dest_path": { "type": "string", "description": "move_workdir: where to move the checkout (absolute, or relative to the workspace). The whole tree moves, .git and node_modules included; on failure the original stays." },
                     "type": {
                         "type": "string",
                         "enum": ["static_web", "slides", "data_app", "imported"],
-                        "description": "update: static_web (a website) and slides have no database; data_app gets a Postgres database; imported is code from an existing repo, with no database. What reaches the running app is only whether it has a database, on the next deploy. Leaving data_app removes DATABASE_URL from the app on that deploy, so code using the database breaks — the data is kept and comes back if the type is set to data_app again."
+                        "description": "static_web (a website) and slides have no database; data_app gets a Postgres database; imported is code from an existing repo, with no database. create: picks the starter template (default static_web); an import defaults to imported. update: what reaches the running app is only whether it has a database, on the next deploy. Leaving data_app removes DATABASE_URL from the app on that deploy, so code using the database breaks — the data is kept and comes back if the type is set to data_app again."
                     },
                     "visibility": {
                         "type": "string",
                         "enum": ["personal", "team"],
-                        "description": "update: personal = only the creator and members granted access in manage_app_access (the local daemon cannot see it either); team = everyone on the team."
+                        "description": "create (default personal) / update: personal = only the creator and members granted access in manage_app_access (the local daemon cannot see it either); team = everyone on the team."
                     },
                     "auth_mode": {
                         "type": "string",
@@ -755,6 +820,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body["key"], json!({ "id": 42 }));
+    }
+
+    #[test]
+    fn create_names_a_new_app_and_one_source() {
+        let body = manage_body(
+            WS,
+            &json!({ "action": "create", "name": "记账", "type": "data_app", "visibility": "team" }),
+        )
+        .unwrap();
+        assert_eq!(body["name"], json!("记账"));
+        assert_eq!(body["type"], json!("data_app"));
+
+        let err = manage_body(WS, &json!({ "action": "create" })).unwrap_err();
+        assert!(err.contains("needs `name`"), "{err}");
+        let err = manage_body(
+            WS,
+            &json!({ "action": "create", "name": "x", "app_id": APP }),
+        )
+        .unwrap_err();
+        assert!(err.contains("new app"), "{err}");
+        let err = manage_body(
+            WS,
+            &json!({ "action": "create", "name": "x", "git_remote_url": "https://g/r.git", "local_dir": "." }),
+        )
+        .unwrap_err();
+        assert!(err.contains("not both"), "{err}");
+    }
+
+    #[test]
+    fn paths_are_made_absolute_against_the_workspace() {
+        // The desktop is another process with another cwd; "." has to arrive
+        // as the directory the agent meant.
+        let body = manage_body(
+            WS,
+            &json!({ "action": "create", "name": "x", "local_dir": "." }),
+        )
+        .unwrap();
+        assert_eq!(body["local_dir"], json!(WS));
+        let body = manage_body(
+            WS,
+            &json!({ "action": "create", "name": "x", "local_dir": "/srv/site" }),
+        )
+        .unwrap();
+        assert_eq!(body["local_dir"], json!("/srv/site"));
+
+        let body = manage_body(
+            WS,
+            &json!({ "action": "move_workdir", "dest_path": "../demo-moved" }),
+        )
+        .unwrap();
+        assert_eq!(body["dest_path"], json!("/Users/x/apps/demo/../demo-moved"));
+        let err = manage_body(WS, &json!({ "action": "move_workdir" })).unwrap_err();
+        assert!(err.contains("dest_path"), "{err}");
     }
 
     #[test]
