@@ -242,11 +242,36 @@ fn compaction_wire_payload(event: &serde_json::Value, completed: bool) -> serde_
         .get("reason")
         .and_then(|v| v.as_str())
         .unwrap_or("threshold");
-    serde_json::json!({
-        "reason": reason,
-        "auto": reason != "manual",
-        "overflow": reason == "overflow",
-        "completed": completed,
+    let result = event.get("result");
+    let tokens_before = result.and_then(|r| r.get("tokensBefore")).and_then(json_u64);
+    let tokens_after = result
+        .and_then(|r| r.get("estimatedTokensAfter"))
+        .and_then(json_u64);
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "reason".into(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    payload.insert("auto".into(), serde_json::Value::Bool(reason != "manual"));
+    payload.insert(
+        "overflow".into(),
+        serde_json::Value::Bool(reason == "overflow"),
+    );
+    payload.insert("completed".into(), serde_json::Value::Bool(completed));
+    if let Some(n) = tokens_before {
+        payload.insert("tokensBefore".into(), serde_json::json!(n));
+    }
+    if let Some(n) = tokens_after {
+        payload.insert("tokensAfter".into(), serde_json::json!(n));
+    }
+    serde_json::Value::Object(payload)
+}
+
+fn json_u64(v: &serde_json::Value) -> Option<u64> {
+    v.as_u64().or_else(|| {
+        v.as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0)
+            .map(|f| f as u64)
     })
 }
 
@@ -800,7 +825,13 @@ mod tests {
         }
 
         let end = serde_json::json!({
-            "type": "compaction_end", "sessionId": "pi:/s/a.jsonl", "reason": "overflow"
+            "type": "compaction_end",
+            "sessionId": "pi:/s/a.jsonl",
+            "reason": "threshold",
+            "result": {
+                "tokensBefore": 150000,
+                "estimatedTokensAfter": 32000
+            }
         });
         handle_event(&shared, &key, &client, &end).await;
         let frame = rx.try_recv().expect("compaction_end forwarded");
@@ -809,6 +840,8 @@ mod tests {
                 assert_eq!(raw.method, "compaction_end");
                 let body: serde_json::Value = serde_json::from_slice(&raw.json_payload).unwrap();
                 assert_eq!(body["completed"], true);
+                assert_eq!(body["tokensBefore"], 150000);
+                assert_eq!(body["tokensAfter"], 32000);
             }
             other => panic!("unexpected: {other:?}"),
         }
