@@ -21,7 +21,7 @@ use crate::config::{DaemonConfig, SessionStore};
 // the bin build, which does not compile them.
 #[cfg(test)]
 use crate::config::SessionBinding;
-use crate::daemon::binding_target::parse_binding_to_target;
+use crate::daemon::binding_target::{parse_binding_to_target, resolve_mcp_send_route};
 use crate::daemon::runtime_cursor::{
     compute_effective_cursor_from_messages, last_unanswered_mention_idx,
     messages_strictly_after_cursor, slice_has_actionable_inbound,

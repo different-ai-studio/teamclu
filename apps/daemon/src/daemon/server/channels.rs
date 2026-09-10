@@ -459,6 +459,11 @@ impl DaemonServer {
     /// have no token, so they resolve to no target and cannot send, and an
     /// explicit `target` does not rescue them: overrides are only honoured
     /// once a token has established which chat the caller belongs to.
+    ///
+    /// Cron turns are the exception that still has a token: `cron://…` names
+    /// no chat, so the caller must pass `channel` and `target` with it. That
+    /// is how a scheduled job delivers to WeCom without a workspace
+    /// `teamclu.json` binding.
     pub(crate) async fn handle_mcp_send(
         &self,
         payload: &serde_json::Value,
@@ -474,21 +479,10 @@ impl DaemonServer {
             anyhow::bail!("mcp-send: at least one of 'message' or 'file_path' is required");
         }
 
-        let (default_channel, default_target) = parse_binding_to_target(binding)?;
-        let channel = channel_override.unwrap_or(default_channel);
-        let target_owned: String;
-        let target = match target_override {
-            Some(t) => t,
-            None => match default_target {
-                Some(t) => {
-                    target_owned = t;
-                    target_owned.as_str()
-                }
-                None => anyhow::bail!(
-                    "mcp-send: binding '{binding}' has no default target — pass an explicit 'target' override"
-                ),
-            },
-        };
+        let (channel_owned, target_owned) =
+            resolve_mcp_send_route(binding, channel_override, target_override)?;
+        let channel = channel_owned.as_str();
+        let target = target_owned.as_str();
 
         // Fail closed on placeholder / half-resolved routes (issue #549). A
         // target like `current`, `chat:current`, or `chat:` (empty id) means
