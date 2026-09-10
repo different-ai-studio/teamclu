@@ -98,6 +98,8 @@ const DYNAMIC_PREFIXES = [
   // Keyed by the schedule preset and the run status in AppCronTabContent.tsx.
   'apps.cron.preset.',
   'apps.cron.status.',
+  // Keyed by pi compaction reason (manual | threshold | overflow).
+  'chat.compaction.reason.',
 ]
 // i18next plural/context suffixes resolve from the base key at runtime.
 const PLURAL_SUFFIX = /_(plural|one|two|few|many|other|zero|\d+)$/

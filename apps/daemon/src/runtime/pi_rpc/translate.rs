@@ -517,6 +517,18 @@ pub fn session_title_event(title: &str) -> amux::AcpEvent {
     }
 }
 
+/// Live compaction marker for the chat thread (`compaction_start` /
+/// `compaction_end`). Payload matches the frontend compaction row contract.
+pub fn compaction_event(phase: &str, payload: &serde_json::Value) -> amux::AcpEvent {
+    amux::AcpEvent {
+        event: Some(amux::acp_event::Event::Raw(amux::AcpRawJson {
+            method: phase.to_string(),
+            json_payload: serde_json::to_vec(payload).unwrap_or_default(),
+        })),
+        model: String::new(),
+    }
+}
+
 /// Build the `question_asked` raw event clients already render for opencode's
 /// question tool: `{id, questions, tool: {callID}}`. `request_id` is the
 /// extension_ui_request id — the same id `AnswerQuestion` sends back, which is

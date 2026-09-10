@@ -708,4 +708,40 @@ describe("StreamingAgentBubble", () => {
     expect(expandedText).toContain("Plan first.");
     expect(expandedText).toContain("Plan second.");
   });
+
+  it("renders in-progress compaction rows in the live bubble", () => {
+    const { getByTestId } = render(
+      <StreamingAgentBubble
+        entry={{
+          sessionId: "s1",
+          actorId: "agent-a",
+          outputText: "",
+          thinkingText: "",
+          parts: [
+            {
+              id: "compaction-1",
+              type: "compaction",
+              completed: false,
+              reason: "overflow",
+              startedAt: Date.now(),
+            },
+          ],
+          toolCalls: [],
+          planEntries: [],
+          pendingPermissionsByRequestId: {},
+          errorMessage: null,
+          errorDetails: null,
+          lastUpdate: Date.now(),
+          active: true,
+          streamId: "s1::agent-a::stream-1",
+        }}
+      />,
+    );
+
+    expect(getByTestId("v2-streaming-compaction")).toBeTruthy();
+    expect(getByTestId("compaction-row")).toHaveAttribute(
+      "data-compaction-status",
+      "in_progress",
+    );
+  });
 });

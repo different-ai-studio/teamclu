@@ -270,6 +270,36 @@ interface State {
   clearSubagentsForSession: (sessionId: string) => void;
   /** Drop error-only streams and strip error banners once a new turn starts. */
   clearStaleStreamErrors: (sessionId: string, actorId?: string) => void;
+  /** Live-only compaction rows keyed by flushed AGENT_REPLY message id. */
+  compactionPartsByMessageId: Record<
+    string,
+    { sessionId: string; parts: MessagePart[] }
+  >;
+  beginCompaction: (
+    sessionId: string,
+    actorId: string,
+    payload: CompactionWirePayload,
+  ) => void;
+  completeCompaction: (
+    sessionId: string,
+    actorId: string,
+    payload: CompactionWirePayload,
+  ) => void;
+  attachCompactionPartsForMessage: (
+    sessionId: string,
+    messageId: string,
+    parts: MessagePart[],
+  ) => void;
+  getCompactionPartsForMessage: (messageId: string) => MessagePart[];
+}
+
+export interface CompactionWirePayload {
+  auto?: boolean;
+  overflow?: boolean;
+  completed?: boolean;
+  reason?: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
 }
 
 function k(sessionId: string, actorId: string): string {
@@ -292,6 +322,73 @@ function emptyEntry(sessionId: string, actorId: string): AgentStreamEntry {
     active: true,
     streamId: nextStreamId(sessionId, actorId),
   };
+}
+
+function compactionPartId(actorId: string, startedAt: number): string {
+  return `compaction-${startedAt}-${actorId.slice(0, 8)}`;
+}
+
+function buildCompactionPart(
+  actorId: string,
+  payload: CompactionWirePayload,
+  completed: boolean,
+  startedAt: number,
+  durationMs?: number,
+): MessagePart {
+  return {
+    id: compactionPartId(actorId, startedAt),
+    type: "compaction",
+    auto: payload.auto !== false,
+    overflow: payload.overflow === true,
+    completed,
+    reason: payload.reason?.trim() || "threshold",
+    tokensBefore: payload.tokensBefore,
+    tokensAfter: payload.tokensAfter,
+    startedAt,
+    durationMs,
+  };
+}
+
+function upsertCompactionPart(
+  parts: MessagePart[],
+  actorId: string,
+  payload: CompactionWirePayload,
+  completed: boolean,
+): MessagePart[] {
+  let matchedIndex = -1;
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i];
+    if (part?.type !== "compaction" || part.completed) continue;
+    matchedIndex = i;
+    break;
+  }
+  if (matchedIndex >= 0) {
+    const existing = parts[matchedIndex]!;
+    const startedAt = existing.startedAt ?? Date.now();
+    const durationMs = completed ? Date.now() - startedAt : undefined;
+    const next = [...parts];
+    next[matchedIndex] = buildCompactionPart(
+      actorId,
+      payload,
+      completed,
+      startedAt,
+      durationMs,
+    );
+    return next;
+  }
+  const startedAt = Date.now();
+  // Append in arrival order — compaction_start often lands after post-tool reply text.
+  return [
+    ...parts,
+    buildCompactionPart(actorId, payload, completed, startedAt, completed ? 0 : undefined),
+  ];
+}
+
+export function extractCompactionPartsFromEntry(
+  entry: AgentStreamEntry | undefined,
+): MessagePart[] {
+  if (!entry) return [];
+  return entry.parts.filter((part) => part.type === "compaction");
 }
 
 let archiveCounter = 0;
@@ -601,6 +698,7 @@ export const useV2StreamingStore = create<State>((set, get) => ({
   childAcpSessionToToolId: {},
   pendingSubagentEvents: {},
   archivedSubagentByToolId: {},
+  compactionPartsByMessageId: {},
 
   markInterruptedFlushPending: (sessionId, actorId) => {
     const key = k(sessionId, actorId);
@@ -1004,6 +1102,64 @@ export const useV2StreamingStore = create<State>((set, get) => ({
         nextEntries,
       ),
     });
+  },
+
+  beginCompaction: (sessionId, actorId, payload) => {
+    const state = get();
+    const { entry, toArchive } = prepareMutation(state, sessionId, actorId);
+    set({
+      byKey: {
+        ...state.byKey,
+        [k(sessionId, actorId)]: {
+          ...entry,
+          parts: upsertCompactionPart(entry.parts, actorId, payload, false),
+          lastUpdate: Date.now(),
+          active: true,
+        },
+      },
+      archived: toArchive ? [...state.archived, toArchive] : state.archived,
+      revisionBySession: bumpRevision(state.revisionBySession, sessionId),
+    });
+  },
+
+  completeCompaction: (sessionId, actorId, payload) => {
+    const state = get();
+    const { entry, toArchive } = prepareMutation(state, sessionId, actorId);
+    set({
+      byKey: {
+        ...state.byKey,
+        [k(sessionId, actorId)]: {
+          ...entry,
+          parts: upsertCompactionPart(entry.parts, actorId, payload, true),
+          lastUpdate: Date.now(),
+          active: true,
+        },
+      },
+      archived: toArchive ? [...state.archived, toArchive] : state.archived,
+      revisionBySession: bumpRevision(state.revisionBySession, sessionId),
+    });
+  },
+
+  attachCompactionPartsForMessage: (sessionId, messageId, parts) => {
+    const trimmedMessageId = messageId.trim();
+    const trimmedSessionId = sessionId.trim();
+    if (!trimmedMessageId || !trimmedSessionId || parts.length === 0) return;
+    const state = get();
+    set({
+      compactionPartsByMessageId: {
+        ...state.compactionPartsByMessageId,
+        [trimmedMessageId]: {
+          sessionId: trimmedSessionId,
+          parts: parts.map((part) => ({ ...part })),
+        },
+      },
+    });
+  },
+
+  getCompactionPartsForMessage: (messageId) => {
+    const trimmed = messageId.trim();
+    if (!trimmed) return [];
+    return get().compactionPartsByMessageId[trimmed]?.parts ?? [];
   },
 
   setError: (sessionId, actorId, message, details) => {
@@ -1830,11 +1986,16 @@ export const useV2StreamingStore = create<State>((set, get) => ({
     for (const [key, entry] of Object.entries(state.byKey)) {
       if (entry.sessionId !== sessionId) next[key] = entry;
     }
+    const nextCompactionParts: State["compactionPartsByMessageId"] = {};
+    for (const [messageId, row] of Object.entries(state.compactionPartsByMessageId)) {
+      if (row.sessionId !== sessionId) nextCompactionParts[messageId] = row;
+    }
     const { [sessionId]: _removed, ...persistedPlansBySession } =
       state.persistedPlansBySession;
     set({
       byKey: next,
       archived: state.archived.filter((e) => e.sessionId !== sessionId),
+      compactionPartsByMessageId: nextCompactionParts,
       persistedPlansBySession,
       revisionBySession: bumpRevision(state.revisionBySession, sessionId),
     });

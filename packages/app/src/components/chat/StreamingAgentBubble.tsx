@@ -10,6 +10,7 @@ import { Message, MessageContent, MessageResponse } from "@/packages/ai/message"
 import { useStreamAwaitingNextEvent } from "@/hooks/use-stream-awaiting-next-event";
 import { useStreamRevealText } from "@/hooks/use-stream-reveal-text";
 import { ToolCallCard } from "./ToolCallCard";
+import { CompactionRow } from "./CompactionRow";
 import { ActorLabel } from "./ActorLabel";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { StreamMarkdown } from "./StreamMarkdown";
@@ -121,6 +122,14 @@ function renderOrderedPart(
     );
   }
 
+  if (part.type === "compaction") {
+    return (
+      <div key={part.id} data-testid="v2-streaming-compaction">
+        <CompactionRow part={part} />
+      </div>
+    );
+  }
+
   if (!showText || part.type !== "text") return null;
   const text = part.text || part.content || "";
   if (!text) return null;
@@ -167,7 +176,8 @@ export const StreamingAgentBubble = React.memo(function StreamingAgentBubble({
         (part) =>
           (part.type === "reasoning" && Boolean(part.text || part.content)) ||
           (part.type === "text" && Boolean(part.text || part.content)) ||
-          (part.type === "tool-call" && Boolean(part.toolCall)),
+          (part.type === "tool-call" && Boolean(part.toolCall)) ||
+          part.type === "compaction",
       );
       const visible = ordered.filter(
         (part) =>
@@ -192,6 +202,7 @@ export const StreamingAgentBubble = React.memo(function StreamingAgentBubble({
   const showOutput =
     showText && !hasVisibleOrderedParts && entry.outputText.length > 0;
   const hasFallbackToolCalls = !hasVisibleOrderedParts && entry.toolCalls.length > 0;
+  const hasCompactionParts = entry.parts.some((part) => part.type === "compaction");
   const hasThinking = !hasOrderedThinking && entry.thinkingText.length > 0;
   const hasError = !!entry.errorMessage;
 
@@ -235,6 +246,7 @@ export const StreamingAgentBubble = React.memo(function StreamingAgentBubble({
     !hasVisibleOrderedParts &&
     !showOutput &&
     !hasFallbackToolCalls &&
+    !hasCompactionParts &&
     !hasThinking &&
     !hasError
   ) {

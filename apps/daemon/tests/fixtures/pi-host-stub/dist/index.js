@@ -320,6 +320,7 @@ class StubAgentSession {
       this.sessionManager.appendEntry("assistant", `echo:${text}!`);
     }
     this.emit({ type: "agent_end", aborted: this.aborted });
+    this.emit({ type: "agent_settled" });
   }
 
   async abort() {
