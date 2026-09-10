@@ -611,11 +611,17 @@ FC ListFunctions 与 GetFunction 通、AssumeRole 通；而同区的
 ⚠️ **`ram:PassRole` 是唯一没能实测的一条**：验证它要真的建一个 FC 函数。它会在下次
 真实的 app 部署时得到验证——如果那次报 `Forbidden.RAM`，就是这一条写错了。
 
-**留在人工手上的三件事**：
+**上线状态（2026-09-09 收尾）**：
 
-1. self-host 的主账号旧 AK 仍未禁用（控制台操作，无 OpenAPI）。
-2. belayo 要等代码合并后手工部署一次，STS 变量和新 key 才会真正到函数上。
-3. 那次部署之后：确认 app 部署仍然正常（顺带验 `ram:PassRole`），再把
-   `teamclu-app-storage-assume` 从 `sre` 上摘掉、信任策略收回到只剩
-   `teamclu-belayo`。
+- self-host：随 main 自动部署上线，路由实测 401（存在且在校验），容器已带
+  `APPS_STS_ROLE_ARN` / `APPS_CLOUD_API_URL`。
+- belayo：手工部署完成（`RUN_MIGRATIONS=1`，5 条待办迁移全部落库，含另外 4 条别人
+  的）。函数已换到受限 key `teamclu-belayo`，env 73 → 83 无一被清空。
+- 收尾已完成：`teamclu-app-storage-assume` 从 `sre` 摘除、信任策略收回到只剩
+  `teamclu-belayo`；实测新 key 能 assume、`sre` 已 `NoPermission`。
+
+**仍留在人工手上的一件事**：self-host 的主账号旧 AK 未禁用（控制台操作，无 OpenAPI）。
+
+**尚未实测的一条**：`ram:PassRole`。要等 belayo 上一次真实的 app 部署才验得到；
+若报 `Forbidden.RAM`，就是 `teamclu-belayo-fc-oss` 里那条写错了。
 
