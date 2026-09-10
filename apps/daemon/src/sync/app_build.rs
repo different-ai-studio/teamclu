@@ -27,6 +27,12 @@ pub const ERR_LOCKFILE_MISMATCH: &str =
     "lockfile out of sync with package.json; commit updated pnpm-lock.yaml";
 pub const ERR_INSTALL_TIMEOUT: &str = "pnpm install timed out after 10 minutes";
 pub const ERR_BUILD_TIMEOUT: &str = "pnpm build timed out after 10 minutes";
+/// pnpm could not be started at all. Distinct from every failure above, which
+/// are pnpm's own: this one is a fact about the machine, and on Windows it used
+/// to surface as a bare "the system cannot find the file specified" with no
+/// mention of pnpm in it.
+pub const ERR_NO_PNPM: &str =
+    "pnpm is not installed or not on PATH; an app with a package.json is built with it on this machine";
 /// Container-build markers. Each names the one thing the user can do about it:
 /// every one of these is a fact about their machine, not about the app.
 pub const ERR_NO_DOCKER: &str =
@@ -35,6 +41,11 @@ pub const ERR_DOCKER_NOT_RUNNING: &str = "Docker is installed but not running; s
 pub const ERR_NO_BUILDX: &str =
     "this Docker has no buildx; a container app is cross-built for linux/amd64 with it";
 pub const ERR_NO_DOCKERFILE: &str = "the app declares runtime \"container\" but has no Dockerfile";
+/// Neither of the two things a build can start from. Its own message because
+/// the app is not "a container app missing a Dockerfile" — it is an app with no
+/// code at all, and the two call for different next moves.
+pub const ERR_NO_CODE: &str =
+    "the app's folder has neither a package.json nor a Dockerfile, so there is nothing to build";
 pub const ERR_IMAGE_BUILD_TIMEOUT: &str = "docker build timed out after 30 minutes";
 pub const ERR_IMAGE_PUSH_TIMEOUT: &str = "docker push timed out after 15 minutes";
 pub const ERR_IMAGE_PUSH_DENIED: &str =
@@ -157,6 +168,28 @@ fn map_pnpm_failure(cmd: &str, args: &[&str], stdout: &str, stderr: &str) -> Str
     )
 }
 
+/// The program to hand `Command::new` for a build tool.
+///
+/// Two problems, one answer. On Windows, Rust resolves a bare program name by
+/// appending `.exe` and nothing else — it never consults `PATHEXT` — and
+/// everything npm ships is a `.cmd` shim: there is no `pnpm.exe`. So
+/// `Command::new("pnpm")` cannot start pnpm on a machine where `pnpm --version`
+/// works perfectly in a shell, and the deploy died with a bare "the system
+/// cannot find the file specified". #1046 established the rule for `npm`/`npx`
+/// (`well_known_bin::spawn_name`); this path was simply never taught it.
+///
+/// The absolute path is preferred over the name because amuxd is usually
+/// started by the desktop app rather than a login shell, and the PATH it
+/// inherits then is not the user's own. Falling back to the shim name keeps a
+/// machine whose PATH we cannot reproduce working exactly as before.
+fn build_tool_program(cmd: &str) -> String {
+    use crate::runtime::well_known_bin;
+    well_known_bin::find_in_path(cmd, None)
+        .or_else(|| well_known_bin::find(cmd, &[]))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| well_known_bin::spawn_name(cmd))
+}
+
 fn run_with_timeout(
     cmd: &str,
     args: &[&str],
@@ -164,7 +197,7 @@ fn run_with_timeout(
     timeout: Duration,
     timeout_msg: &str,
 ) -> anyhow::Result<Output> {
-    let mut command = Command::new(cmd);
+    let mut command = Command::new(build_tool_program(cmd));
     command
         .no_window()
         .args(args)
@@ -174,7 +207,19 @@ fn run_with_timeout(
     // The spawn, the pipe draining and the kill live in `bounded_proc`: the
     // clone path needs exactly the same thing, and two copies of a poll loop
     // that kills process groups is one copy too many.
-    let out = crate::sync::bounded_proc::run_bounded(command, timeout, timeout_msg)?;
+    let out = match crate::sync::bounded_proc::run_bounded(command, timeout, timeout_msg) {
+        Ok(out) => out,
+        Err(e) => {
+            // `run_bounded` reports a spawn failure as "could not run <program>"
+            // and the io::ErrorKind is gone by here, so match on what it says —
+            // the same shape `run_docker` uses one screen down. Without this the
+            // user is told the system cannot find a file, and not which.
+            if cmd == "pnpm" && format!("{e}").starts_with("could not run ") {
+                anyhow::bail!("{ERR_NO_PNPM}");
+            }
+            return Err(e);
+        }
+    };
     if !out.status.success() {
         let msg = map_pnpm_failure(
             cmd,
@@ -301,7 +346,31 @@ impl Default for AppRuntimeManifest {
 /// a second convention.
 const MANIFEST_FILE: &str = "teamclu.app.json";
 
-/// Read the app's declaration, falling back to the built-in contract.
+/// What an app that declares no runtime is.
+///
+/// A node build needs a `package.json` — it is the file `pnpm install` reads,
+/// and without one there is no build to run. So an app without one is not a
+/// node app that happens to be broken; it is an app built some other way, and
+/// the only other way this daemon has is an image.
+///
+/// This exists because only the three built-in templates ever write
+/// `teamclu.app.json`. An **imported** repo gets no template and therefore no
+/// declaration, so every Django / Go / Rust checkout read as `node` and had
+/// `pnpm install` run at it — the failure was then "no package.json", which is
+/// true and says nothing about the actual problem.
+///
+/// The workdir has to exist for the answer to mean anything. When it does not
+/// this cannot tell the two apart, so it keeps the historical default; callers
+/// that need to know have `workdirExists` on the manifest endpoint.
+fn inferred_runtime(workdir: &Path) -> String {
+    if !workdir.is_dir() || workdir.join("package.json").is_file() {
+        AppRuntimeManifest::default().runtime
+    } else {
+        CONTAINER_RUNTIME.to_string()
+    }
+}
+
+/// Read the app's declaration, falling back to what the checkout itself says.
 ///
 /// A malformed file is a warning, not a failure: the defaults still describe a
 /// deployable app, and refusing to build because a hint file has a typo would
@@ -309,13 +378,19 @@ const MANIFEST_FILE: &str = "teamclu.app.json";
 pub fn read_runtime_manifest(workdir: &Path) -> AppRuntimeManifest {
     let path = workdir.join(MANIFEST_FILE);
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return AppRuntimeManifest::default();
+        return AppRuntimeManifest {
+            runtime: inferred_runtime(workdir),
+            ..Default::default()
+        };
     };
     match serde_json::from_str::<PartialManifest>(&text) {
-        Ok(partial) => partial.resolve(),
+        Ok(partial) => partial.resolve(workdir),
         Err(e) => {
             tracing::warn!(path = %path.display(), error = %e, "ignoring unreadable app manifest");
-            AppRuntimeManifest::default()
+            AppRuntimeManifest {
+                runtime: inferred_runtime(workdir),
+                ..Default::default()
+            }
         }
     }
 }
@@ -334,7 +409,10 @@ struct PartialManifest {
 }
 
 impl PartialManifest {
-    fn resolve(self) -> AppRuntimeManifest {
+    /// `workdir` only decides the runtime, and only when the file does not: an
+    /// explicit `"runtime"` always wins, including an explicit `"node"` on an
+    /// app whose `package.json` is somewhere this cannot see.
+    fn resolve(self, workdir: &Path) -> AppRuntimeManifest {
         let d = AppRuntimeManifest::default();
         let pick = |v: Option<String>, fallback: String| {
             v.map(|s| s.trim().to_string())
@@ -343,7 +421,7 @@ impl PartialManifest {
         };
         AppRuntimeManifest {
             output: pick(self.output, d.output),
-            runtime: pick(self.runtime, d.runtime),
+            runtime: pick(self.runtime, inferred_runtime(workdir)),
             entry: pick(self.entry, d.entry),
             port: self.port.filter(|p| *p > 0).unwrap_or(d.port),
             // A path that climbs out of the workdir is dropped rather than
@@ -507,6 +585,14 @@ pub fn build_artifact(
         git_commit_sha = prepare_git_build(workdir, ctx)?;
     }
     let manifest = read_runtime_manifest(workdir);
+    // Neither of the two things a build can start from. Checked here rather
+    // than inside each branch because this app has no code of *either* kind:
+    // the container branch would report a missing registry (the control plane's
+    // problem, not the user's) and the node branch a missing package.json,
+    // neither of which says the app was never given any files.
+    if !workdir.join("package.json").is_file() && !workdir.join(&manifest.dockerfile).is_file() {
+        anyhow::bail!("{ERR_NO_CODE}");
+    }
     if manifest.is_container() {
         let minted = push.ok_or_else(|| anyhow::anyhow!("{ERR_NO_PUSH_TARGET}"))?;
         // `git_commit_sha` is set only when the build published work the client
@@ -784,11 +870,19 @@ mod tests {
         assert_eq!(msg, ERR_LOCKFILE_MISMATCH);
     }
 
+    /// A checkout that looks like a node app, for the cases about everything
+    /// *except* which kind of app it is.
+    fn node_checkout() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        tmp
+    }
+
     #[test]
     fn an_app_with_no_manifest_gets_the_built_in_contract() {
         // The file is optional on purpose: every app deployed before it existed
         // must keep deploying with no change.
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = node_checkout();
         assert_eq!(
             read_runtime_manifest(tmp.path()),
             AppRuntimeManifest::default()
@@ -796,10 +890,39 @@ mod tests {
     }
 
     #[test]
+    fn an_app_with_no_package_json_is_a_container_app() {
+        // Only the three built-in templates write a manifest, so an imported
+        // Django / Go / Rust repo declares nothing — and used to be read as
+        // `node`, which put `pnpm install` in front of a checkout that has no
+        // package.json to install. What it does have is a Dockerfile.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        assert!(read_runtime_manifest(tmp.path()).is_container());
+    }
+
+    #[test]
+    fn an_explicit_runtime_still_wins_over_the_checkout() {
+        // The inference is a fallback, not an override: an app that says `node`
+        // keeps meaning it, wherever its package.json lives.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILE), r#"{"runtime":"node"}"#).unwrap();
+        assert_eq!(read_runtime_manifest(tmp.path()).runtime, "node");
+    }
+
+    #[test]
+    fn a_workdir_that_is_not_there_keeps_the_historical_default() {
+        // Nothing to read means nothing to infer from — and the manifest
+        // endpoint reports `workdirExists` for callers that need to care.
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("not-cloned-here");
+        assert_eq!(read_runtime_manifest(&missing).runtime, "node");
+    }
+
+    #[test]
     fn a_manifest_names_only_what_it_changes() {
         // The failure this was written for: an app that builds to `dist/` and
         // starts `dist/index.js`. It should not have to restate the port.
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = node_checkout();
         std::fs::write(
             tmp.path().join(MANIFEST_FILE),
             r#"{"output":"dist","entry":"index.js"}"#,
@@ -818,7 +941,7 @@ mod tests {
         // Defaults still describe a deployable app. Refusing to build because a
         // hint file has a typo is a worse trade than building what the app
         // actually produced.
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = node_checkout();
         std::fs::write(tmp.path().join(MANIFEST_FILE), "{not json").unwrap();
         assert_eq!(
             read_runtime_manifest(tmp.path()),
@@ -833,6 +956,19 @@ mod tests {
         let m = read_runtime_manifest(tmp.path());
         assert_eq!(m.output, ".output", "an empty value is not a value");
         assert_eq!(m.port, 9000);
+    }
+
+    #[test]
+    fn an_app_with_neither_package_json_nor_dockerfile_says_so() {
+        // The empty-app failure. It reads as a container app (no package.json),
+        // and "no Dockerfile" would send the user to write one for an app whose
+        // real problem is that it was never given any code.
+        let tmp = tempfile::tempdir().unwrap();
+        let err = match build_artifact(tmp.path(), None, None) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("an app with no code must not build"),
+        };
+        assert_eq!(err, ERR_NO_CODE);
     }
 
     #[test]

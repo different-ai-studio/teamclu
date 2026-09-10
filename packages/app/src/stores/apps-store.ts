@@ -236,6 +236,23 @@ export function mapDeployErrorReason(raw: string): string {
       "This app has no code yet — its folder has no package.json. Ask the agent to build it, or reseed the app.",
     );
   }
+  // Distinct from the one above: that app is a node app with nothing in it,
+  // this one has nothing a build of either kind could start from.
+  if (raw.includes("neither a package.json nor a Dockerfile")) {
+    return i18n.t(
+      "apps.deployErrorReason.noCode",
+      "This app has no code yet — its folder has neither a package.json nor a Dockerfile. Ask the agent to build it, or reseed the app.",
+    );
+  }
+  // Says which file was not found. Windows resolves a bare command name by
+  // appending .exe only, so a missing pnpm used to surface as a bare "the
+  // system cannot find the file specified" with no clue what file.
+  if (raw.includes("pnpm is not installed")) {
+    return i18n.t(
+      "apps.deployErrorReason.noPnpm",
+      "pnpm was not found on this machine, and this app is built with it. Install pnpm (npm i -g pnpm), then retry.",
+    );
+  }
   if (raw.includes("origin has commits this checkout does not")) {
     return i18n.t(
       "apps.deployErrorReason.pushRejected",

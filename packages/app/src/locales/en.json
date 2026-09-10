@@ -1590,6 +1590,8 @@
       "uncommitted": "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
       "pushRejected": "The repo has commits this machine does not. Pull and resolve them, then deploy again.",
       "noPackageJson": "This app has no code yet — its folder has no package.json. Ask the agent to build it, or reseed the app.",
+      "noCode": "This app has no code yet — its folder has neither a package.json nor a Dockerfile. Ask the agent to build it, or reseed the app.",
+      "noPnpm": "pnpm was not found on this machine, and this app is built with it. Install pnpm (npm i -g pnpm), then retry.",
       "installTimeout": "Dependency install timed out after 10 minutes. Check the network or the lockfile, then retry.",
       "buildTimeout": "Build timed out after 10 minutes. Check the build script, then retry.",
       "artifactTooLarge": "Build output is over the 50 MiB limit. Trim it, then retry.",
