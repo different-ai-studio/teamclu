@@ -202,8 +202,6 @@ export interface FileTreeItemProps {
   isLoading: boolean;
   isRenaming: boolean;
   isDragOver: boolean;
-  /** Whether this is the root teamclu-team directory (for visual styling) */
-  isTeamCluTeam?: boolean;
   /**
    * What this document's sync state is, for team knowledge. `null` for
    * everything else — a workspace file has no cloud counterpart to differ from.
@@ -322,7 +320,6 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   isLoading,
   isRenaming,
   isDragOver,
-  isTeamCluTeam,
   isTeamKnowledge,
   syncStatus,
   syncIgnored = false,
@@ -503,10 +500,6 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             syncStatus ? getSyncStatusTextColor(syncStatus) : fileIconColor,
           )}
         />
-      )}
-
-      {isTeamCluTeam && (
-        <img src="/logo-64.png" alt="" className="h-3.5 w-3.5 shrink-0" />
       )}
 
       {isTeamLink && (

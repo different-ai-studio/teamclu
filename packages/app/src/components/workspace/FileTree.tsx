@@ -51,7 +51,7 @@ import {
   duplicateItem,
   readFileContent,
 } from "./file-tree-operations";
-import { TEAM_REPO_DIR, appShortName } from "@/lib/config/build-config";
+import { appShortName } from "@/lib/config/build-config";
 import { filterTree, flattenTree, type FlatTreeNode } from "./file-tree/flatten";
 import { useFileTreeKeyboard } from "./file-tree/use-file-tree-keyboard";
 import { useOsFileDrop } from "./file-tree/use-os-file-drop";
@@ -276,10 +276,9 @@ export function FileTree({
   const pushUndoRef = useRef(pushUndo);
   useEffect(() => { pushUndoRef.current = pushUndo; }, [pushUndo]);
 
-  // Drives the teamclu-team folder spinner / last-sync tooltip. Per-file status
-  // is keyed by SYNC KEY now (see `badges` above), not by a workspace-relative
-  // path — the same document is reachable through two different absolute paths
-  // and only the sync key is the same on both.
+  // Per-file sync status is keyed by SYNC KEY (see `badges` above), not by a
+  // workspace-relative path — the same document is reachable through two
+  // different absolute paths and only the sync key is the same on both.
 
   const collapseCompacted = useCallback((paths: string[]) => {
     const nextExpanded = new Set(useWorkspaceStore.getState().expandedPaths);
@@ -1041,7 +1040,6 @@ export function FileTree({
     isLoading: loadingPaths.has(node.path),
     isRenaming: renamingPath === node.path,
     isDragOver: dragOverPath === node.path,
-    isTeamCluTeam: node.name === TEAM_REPO_DIR && node.type === "directory" && level === 0,
     // Team knowledge only, and on every surface the document appears on: the
     // Knowledge column and the workspace `team-knowledge` link are two
     // spellings of the same file, and `teamSyncKeyForPath` maps both.

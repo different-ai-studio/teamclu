@@ -86,8 +86,14 @@ describe('FileTreeItem team links', () => {
     expect(screen.queryByTestId('file-tree-team-link-icon')).toBeNull()
   })
 
-  it('no longer marks teamclu-team', () => {
-    render(<FileTreeItem {...props({ node: { name: 'teamclu-team', path: '/ws/teamclu-team', type: 'directory' }, level: 0 })} />)
+  it('no longer marks teamclu-team — not as a link, and not with the logo', () => {
+    // The daemon no longer creates it; the only `teamclu-team` a tree can still
+    // show is a real directory from a very old layout, and that is just a
+    // folder. It used to carry the app logo at the workspace root.
+    const { container } = render(
+      <FileTreeItem {...props({ node: { name: 'teamclu-team', path: '/ws/teamclu-team', type: 'directory' }, level: 0 })} />,
+    )
     expect(screen.queryByTestId('file-tree-team-link-icon')).toBeNull()
+    expect(container.querySelector('img')).toBeNull()
   })
 })
