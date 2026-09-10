@@ -485,6 +485,23 @@ export interface FinalizeInput {
 // have always imported it from here.
 export { needsDatabase };
 
+// build+start declaration parsers — call sites migrate here before Task 2/3.
+export {
+  BUILD_KINDS,
+  CONTAINER_RUNTIME_FC,
+  FC_CODE_RUNTIMES,
+  defaultLayersForKind,
+  isContainerKind,
+  layerArn,
+  parseAppDeployDeclaration,
+  parseDeclaredBuildKind,
+  resolveLayers,
+  type AppBuildKind,
+  type AppBuildSpec,
+  type AppDeployDeclaration,
+  type AppStartSpec,
+} from "./app-runtime-spec.js";
+
 export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): Promise<{ fcEndpoint: string }> {
   // First, before anything is provisioned. `parseDeployedImage` has already
   // checked that an image is present iff the runtime is `container`, but not

@@ -3,6 +3,7 @@ import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
 import { imageForPull } from "./apps-registry.js";
 import { ApiError } from "../http-utils.js";
+import { layerArn as officialLayerArn } from "./app-runtime-spec.js";
 
 type FcClientInstance = InstanceType<typeof FcClient.default>;
 
@@ -331,7 +332,7 @@ function runtimeInput(cfg: FcOpsConfig, args: EnsureFunctionArgs, codeLocation: 
 }
 
 export function nodejsLayerArn(region: string): string {
-  return `acs:fc:${region}:official:layers/Nodejs20/versions/3`;
+  return officialLayerArn(region, "Nodejs20", 3);
 }
 
 function isNotFound(e: any): boolean {
