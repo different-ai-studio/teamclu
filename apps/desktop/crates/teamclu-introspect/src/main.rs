@@ -57,14 +57,14 @@ fn tool_definitions() -> Value {
     let mut tools = json!([
         {
             "name": "get_my_capabilities",
-            "description": "Query the AI agent's configured capabilities including channels, role, team members, environment variables, team info, and cron jobs.",
+            "description": "Query the AI agent's configured capabilities including channels, role, environment variables, team info, and cron jobs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "category": {
                         "type": "string",
                         "description": "Optional category filter",
-                        "enum": ["channels", "role", "team_members", "env_vars", "team_info", "cron_jobs"]
+                        "enum": ["channels", "role", "env_vars", "team_info", "cron_jobs"]
                     }
                 }
             }
@@ -268,7 +268,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_mcp",
-            "description": "Manage MCP servers for this workspace: list configured servers, get one by name, add/update a local (stdio) or remote (HTTP) server, enable/disable, or remove a custom server. Built-in servers (teamclu-introspect, playwright, chrome-control, autoui) cannot be deleted; team-shared servers under teamclu-team/.mcp cannot be edited or deleted here. Env/header secret values are redacted on list/get. Changes require an agent runtime restart to take effect.",
+            "description": "Manage MCP servers for this workspace: list configured servers, get one by name, add/update a local (stdio) or remote (HTTP) server, enable/disable, or remove a custom server. Built-in servers (teamclu-introspect, playwright, chrome-control, autoui) cannot be deleted; servers installed from the team MCP catalog cannot be edited or deleted here. Env/header secret values are redacted on list/get. Changes require an agent runtime restart to take effect.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

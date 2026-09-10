@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 pub const TEAMCLU_DIR: &str = ".teamclu";
 pub const CONFIG_FILE_NAME: &str = "teamclu.json";
-pub const TEAM_REPO_DIR: &str = "teamclu-team";
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -26,13 +25,6 @@ fn cron_runs_path(workspace: &str, job_id: &str) -> PathBuf {
     teamclu_dir(workspace)
         .join("cron-runs")
         .join(format!("{job_id}.jsonl"))
-}
-
-fn team_members_path(workspace: &str) -> PathBuf {
-    Path::new(workspace)
-        .join(TEAM_REPO_DIR)
-        .join("_team")
-        .join("members.json")
 }
 
 fn roles_dir(workspace: &str) -> PathBuf {
@@ -133,14 +125,6 @@ pub fn read_cron_runs(workspace: &str, job_id: &str, limit: usize) -> Result<Vec
         }
     }
     Ok(result)
-}
-
-/// Read `{workspace}/teamclu-team/_team/members.json`. Returns `{}` if missing.
-pub fn read_team_members(workspace: &str) -> Result<Value, String> {
-    read_json_file_or_default(
-        &team_members_path(workspace),
-        Value::Object(Default::default()),
-    )
 }
 
 // ---------------------------------------------------------------------------
