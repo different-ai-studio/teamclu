@@ -21,6 +21,9 @@ on:
     paths:
       - 'services/ai-gateway/**'
       - '.github/workflows/belayo-ai-gateway.yml'
+  # GitHub Actions cron is UTC: 16:00 UTC is 00:00 China Standard Time.
+  schedule:
+    - cron: '0 16 * * *'
   workflow_dispatch:
 
 concurrency:
