@@ -1,17 +1,14 @@
 /**
- * The Cloud API ships to three targets from one source tree: the self-host
- * container (deploy/self-host/docker-compose.yml), Alibaba Function Compute
- * (services/fc/s.yaml), and Belayo Dokploy
- * (deploy/belayo/cloud-api.env.keys). Every target's environment is an
+ * The Cloud API ships to two container targets from one source tree: self-host
+ * (deploy/self-host/docker-compose.yml) and Belayo Dokploy
+ * (deploy/belayo/cloud-api.env.keys). Both targets' environments are an
  * ALLOWLIST — a
  * variable absent from it never reaches the container, no matter what the
  * host configuration says — so a var added to only one target silently
  * disables the feature there, with no error anywhere.
  *
- * That has bitten this repo repeatedly: the $1 LiteLLM budget cap, and the
- * whole apps module (APPS_DB_ADMIN_URL / CODEUP_* declared only in s.yaml, so
- * every app deploy answered 503 `deploy_unavailable`). These tests pin the two
- * lists together.
+ * These tests pin the two lists together so a feature cannot silently exist in
+ * only one environment.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,30 +20,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const FC_DIR = path.resolve(here, "..");
 const REPO = path.resolve(FC_DIR, "../..");
 const BELAYO_ENV_FILE = path.join(REPO, "deploy/belayo/cloud-api.env.keys");
-
-/**
- * Variables that legitimately exist on one target only. Every entry needs a
- * reason — "it was already like that" is not one.
- */
-const EXPECTED_ONLY_IN_COMPOSE = new Set([
-  // The container listens on these; FC's runtime supplies its own.
-  "PORT",
-  "HOST",
-  // Function Compute reserves the `FC_` prefix: a function update that carries
-  // this key is rejected with `InvalidArgument: the environment variable name
-  // 'FC_SUPABASE_URL' is reserved by Function Compute`, which fails the WHOLE
-  // deploy. Declaring it on that target was also pointless — src/index.ts reads
-  // it as an override over SUPABASE_URL, which s.yaml sets directly. Anything
-  // else the FC target must reach compose-side has to be named without the
-  // prefix; do not "fix" a parity failure by adding an FC_* key to s.yaml.
-  "FC_SUPABASE_URL",
-]);
-const EXPECTED_ONLY_IN_S_YAML = new Set([
-  // Self-host runs behind Caddy, which is a transparent proxy that adds no
-  // CORS headers, so Hono must own CORS there. Setting this on self-host would
-  // strip CORS entirely (services/fc/src/app.ts).
-  "CORS_HANDLED_BY_PROXY",
-]);
+const BELAYO_WORKFLOW = path.join(REPO, ".github/workflows/belayo-cloud-api.yml");
 
 /**
  * Collect `KEY:` names nested under `blockHeader` in a YAML file.
@@ -73,10 +47,6 @@ function keysUnder(file: string, blockHeader: string, keyIndent: number): Set<st
   }
   assert.ok(keys.size > 0, `${path.basename(file)}: no keys under "${blockHeader.trim()}"`);
   return keys;
-}
-
-function sYamlEnvKeys(): Set<string> {
-  return keysUnder(path.join(FC_DIR, "s.yaml"), "      environmentVariables:", 8);
 }
 
 function composeFcEnvKeys(): Set<string> {
@@ -122,27 +92,6 @@ function belayoEnvKeys(): Set<string> {
   return namesOnlyEnvKeys(BELAYO_ENV_FILE);
 }
 
-test("both deploy targets declare the same environment", () => {
-  const sYaml = sYamlEnvKeys();
-  const compose = composeFcEnvKeys();
-
-  const onlyCompose = [...compose].filter((k) => !sYaml.has(k) && !EXPECTED_ONLY_IN_COMPOSE.has(k));
-  const onlySYaml = [...sYaml].filter((k) => !compose.has(k) && !EXPECTED_ONLY_IN_S_YAML.has(k));
-
-  assert.deepEqual(
-    onlySYaml.sort(),
-    [],
-    "declared in s.yaml but missing from the compose allowlist — the self-host " +
-      "container will never receive these, so the features are silently off",
-  );
-  assert.deepEqual(
-    onlyCompose.sort(),
-    [],
-    "declared in compose but missing from s.yaml — the FC target will never " +
-      "receive these",
-  );
-});
-
 test("Belayo Dokploy and self-host declare the same Cloud API environment", () => {
   const belayo = belayoEnvKeys();
   const compose = composeFcEnvKeys();
@@ -156,29 +105,6 @@ test("Belayo Dokploy and self-host declare the same Cloud API environment", () =
     [],
     "declared for Belayo Dokploy but missing from the self-host allowlist",
   );
-});
-
-test("Belayo Dokploy and Function Compute keep only runtime-specific differences", () => {
-  const belayo = belayoEnvKeys();
-  const sYaml = sYamlEnvKeys();
-  const onlyBelayo = [...belayo].filter((key) => !sYaml.has(key));
-  const onlySYaml = [...sYaml].filter((key) => !belayo.has(key));
-
-  assert.deepEqual(onlyBelayo.sort(), ["HOST", "PORT"]);
-  assert.deepEqual(onlySYaml.sort(), ["CORS_HANDLED_BY_PROXY"]);
-});
-
-test("the exception lists stay honest", () => {
-  const sYaml = sYamlEnvKeys();
-  const compose = composeFcEnvKeys();
-  for (const k of EXPECTED_ONLY_IN_COMPOSE) {
-    assert.ok(compose.has(k), `${k} is listed as compose-only but is not in compose`);
-    assert.ok(!sYaml.has(k), `${k} is now in s.yaml too — drop it from the exception list`);
-  }
-  for (const k of EXPECTED_ONLY_IN_S_YAML) {
-    assert.ok(sYaml.has(k), `${k} is listed as s.yaml-only but is not in s.yaml`);
-    assert.ok(!compose.has(k), `${k} is now in compose too — drop it from the exception list`);
-  }
 });
 
 /**
@@ -211,10 +137,10 @@ function envVarsReadBySource(): Set<string> {
 }
 
 test("no deploy target declares a variable nothing reads", () => {
-  // Catches the typo class: s.yaml shipped OTP_EMAIL_SMTP_FROM for months while
-  // the code read OTP_EMAIL_FROM, so the configured From address did nothing.
+  // Catches the typo class where a manifest key differs from what source reads,
+  // so a configured value silently does nothing.
   const read = envVarsReadBySource();
-  const declared = new Set([...sYamlEnvKeys(), ...composeFcEnvKeys(), ...belayoEnvKeys()]);
+  const declared = new Set([...composeFcEnvKeys(), ...belayoEnvKeys()]);
   // Consumed by the runtime/toolchain rather than by our own source.
   const RUNTIME_OWNED = new Set(["PORT", "HOST", "NODE_ENV"]);
   const orphans = [...declared].filter((k) => !read.has(k) && !RUNTIME_OWNED.has(k));
@@ -240,4 +166,18 @@ test("every variable compose reads is documented in .env.example", () => {
   );
   const undocumented = [...composeVarRefs()].filter((k) => !documented.has(k));
   assert.deepEqual(undocumented.sort(), [], "read by docker-compose.yml but absent from .env.example");
+});
+
+test("Belayo Cloud API deploy keeps database migrations manual", () => {
+  const workflow = fs.readFileSync(BELAYO_WORKFLOW, "utf8");
+  const executableWorkflow = workflow
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+
+  assert.match(workflow, /services\/fc\/\*\*/);
+  assert.doesNotMatch(executableWorkflow, /services\/supabase\/migrations/i);
+  assert.doesNotMatch(executableWorkflow, /apply[-_]migrations/i);
+  assert.doesNotMatch(executableWorkflow, /_selfhost\.schema_migrations/i);
+  assert.doesNotMatch(executableWorkflow, /supabase\s+(?:db\s+push|migration\s+up)/i);
 });

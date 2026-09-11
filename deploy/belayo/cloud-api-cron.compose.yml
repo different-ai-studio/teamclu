@@ -1,8 +1,7 @@
 # Belayo Cloud API scheduler heartbeat for Dokploy/Swarm.
 #
-# Scheduler ownership is explicit. Keep APP_CRON_REPLICAS=0 while Alibaba FC's
-# app-cron timer is enabled. At cutover, disable the FC timer first, then set
-# APP_CRON_REPLICAS=1 and redeploy this stack. Reverse that order for rollback.
+# The legacy Cloud API FC timer was retired on 2026-09-11. This sidecar is now
+# Belayo's sole scheduler; keep APP_CRON_REPLICAS=1. Roll back inside Dokploy.
 services:
   app-cron:
     image: curlimages/curl:8.11.1
@@ -28,7 +27,7 @@ services:
     networks:
       - dokploy-network
     deploy:
-      replicas: ${APP_CRON_REPLICAS:-0}
+      replicas: ${APP_CRON_REPLICAS:-1}
       placement:
         constraints:
           - node.hostname == dokploy-worker-2

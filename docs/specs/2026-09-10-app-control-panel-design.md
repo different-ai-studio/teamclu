@@ -134,7 +134,7 @@ update amux.app_cron_jobs
 ### 5.3 cron 表达式：自己算，不加依赖
 
 五段式（分 时 日 月 周），支持 `*`、`,`、`-`、`*/n`、`a-b/n`。不引第三方库：
-`services/fc` 要同时打包进 self-host 容器和阿里云 FC，多一个依赖就是多一处两边不一致的
+`services/fc` 要同时打包进 self-host 和 Belayo Dokploy 容器，多一个依赖就是多一处两边不一致的
 可能，而这块逻辑一百来行、纯函数、好测。
 
 时区用 IANA 名。做法是反过来算：把「用户写的当地墙上时间」换算成 UTC 时刻，再回读校验

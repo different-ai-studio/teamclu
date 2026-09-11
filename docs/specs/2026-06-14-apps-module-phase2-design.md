@@ -48,7 +48,7 @@
   指向同实例的 `teamclu_apps` 库。
 - 生产 `BACKEND_KIND=supabase`：任何新 Cloud API 域 **必须同时在 pg-repo 与
   supabase-repo 实现**（第一期 C1 教训）。
-- FC 仅走 GitHub Action 部署（`.github/workflows/fc-deploy.yml`）；新增 env 变量
+- Cloud API 通过 self-host 与 Belayo 各自的 GitHub Action 发布；新增 env 变量
   经 repo secrets/variables 注入，不在本机部署。
 - 客户端禁止直连 Supabase；走标准 OpenAPI → routes → business-api → repo →
   contract → provider 链路。

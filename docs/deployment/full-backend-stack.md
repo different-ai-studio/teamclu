@@ -4,8 +4,8 @@
 **Status:** Living document — 以仓库内脚本与 `deploy/self-host/` 为准  
 **API 契约:** [`docs/openapi/teamclu-api.v1.yaml`](../openapi/teamclu-api.v1.yaml)
 
-> **只有一个环境：self-host。** 全栈跑在一台自建 ECS（`47.112.210.217`）上，由
-> `deploy/self-host/docker-compose.yml` 编排。以下子域**全部**指向这台机器：
+> **本文主体是 self-host 测试环境。** 全栈跑在一台自建 ECS（`47.112.210.217`）上，由
+> `deploy/self-host/docker-compose.yml` 编排。以下 self-host 子域指向这台机器：
 >
 > | 用途 | 地址 |
 > |---|---|
@@ -15,12 +15,12 @@
 > | EMQX Dashboard | `https://emqx.teamclu-dev.ucar.cc` |
 > | MQTT over WSS | `wss://mqtt.teamclu-dev.ucar.cc/mqtt`（443）；明文 `47.112.210.217:1883` |
 >
-> 域名里的 `-dev` 是**历史遗留命名**，不代表这是 dev 层级 —— 它就是唯一环境。既没有
-> 单独的 "prod"，也没有单独的 "dev"。
+> 域名里的 `-dev` 是历史遗留命名。Belayo 是另一套生产环境，使用 Dokploy + Traefik，
+> 其运行架构见 [`2026-09-11-belayo-dokploy-target-architecture.md`](../specs/2026-09-11-belayo-dokploy-target-architecture.md)。
 >
 > **命名提示：** `services/fc/` 目录名同样是历史遗留 —— 它**不是**阿里云函数计算，而是
-> Cloud API 服务，由 compose 构建成容器运行。早先的阿里云 FC 部署（`teamclu-sync`）、
-> 独立 RDS 实例、`cloud.ucar.cc`、`ai.ucar.cc` 均**已下线**。
+> Cloud API 服务。self-host 由 Compose 构建，Belayo 由 Dokploy 运行不可变镜像；
+> Alibaba Function Compute 只保留给用户 Apps runtime。
 
 ---
 
@@ -83,7 +83,7 @@ cp .env.example .env
 # Docker Desktop 也可：docker compose up -d
 ```
 
-**Podman 本地访问：** Caddy `http://api.example.com:8080`，FC 直连 `http://127.0.0.1:9000`。
+**Podman 本地访问：** Caddy `http://api.example.com:8080`，Cloud API 直连 `http://127.0.0.1:9000`。
 
 ### CI 部署（夜间定时 + 手动）
 
@@ -154,7 +154,7 @@ Self-host 已打包：`db`、`auth`、`rest`、`realtime`、`storage`、`kong`�
 
 **关键配置：**
 
-- 内部 URL：`SUPABASE_URL=http://kong:8000`（FC 容器内）
+- 内部 URL：`SUPABASE_URL=http://kong:8000`（Cloud API 容器内）
 - 对外 URL：`SUPABASE_PUBLIC_URL=https://${SUPABASE_DOMAIN}`
 - GoTrue SMTP：默认 placeholder，真实邮件需配置 SMTP
 - Storage：依赖 `imgproxy`；附件 smoke 见 `deploy/self-host/smoke/image-upload.sh`
@@ -182,12 +182,11 @@ docker compose build fc && docker compose up -d fc
 | `SUPABASE_ANON_KEY` | Auth proxy |
 | `MQTT_BROKER_URL` | 发布 MQTT ping |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | 服务账号 |
-| `DATABASE_URL` | FC 直连 Postgres 的旁路：cron 任务、Apps 每应用库。`/v1` 业务 API 不用它 |
+| `DATABASE_URL` | Cloud API 直连 Postgres 的旁路：cron 任务、Apps 每应用库。`/v1` 业务 API 不用它 |
 | `AUTH_BASE_URL` | Apps 平台登录所签 JWT 的 issuer/audience；**应显式设为 `https://api.teamclu-dev.ucar.cc`** |
 
 > ⚠️ `services/fc/src/auth/base-url.ts` 对 `AUTH_BASE_URL` 是 fail-closed 的：留空
-> 会直接抛错而不是回落到默认值。但 `services/fc/s.yaml` 那一层仍带着**已下线**的
-> `https://cloud.ucar.cc` 默认值，所以走阿里云 FC 部署时必须显式配置。
+> 会直接抛错而不是回落到默认值。self-host 和 Belayo Dokploy 都必须显式配置。
 
 **运行时功能开关（feature flags）：** `/v1/config/public` 与 `/v1/config/bootstrap`
 会把一部分开关下发给客户端，客户端拿它覆盖自己 `build.config*.json` 里烘死的默认值
@@ -195,7 +194,7 @@ docker compose build fc && docker compose up -d fc
 
 | 变量 | 说明 |
 |------|------|
-| `APP_FEATURES_PROFILE` | 选用哪份 profile。compose 默认 `self-host`（那台机器就是唯一一个环境）；**`s.yaml` 故意没有默认值** |
+| `APP_FEATURES_PROFILE` | 选用哪份 profile。self-host 默认 `self-host`；Belayo Dokploy 显式使用 `belayo` |
 | `APP_FEATURES_JSON` | **应急覆盖**，逐键盖在 profile 之上。日常不要用 |
 
 现有三份 profile，一个运行中的 Cloud API 对应一份：
@@ -203,19 +202,15 @@ docker compose build fc && docker compose up -d fc
 | profile | 部署 | 服务的品牌 |
 |---|---|---|
 | `self-host` | `api.teamclu-dev.ucar.cc` | 官方 TeamClu（`build.config.production.json`） |
-| `belayo` | `teamclu-api.ucar.cc` | betly（品牌私仓 `brands/betly`） |
+| `belayo` | `teamclaw-api.ucar.cc` | betly（品牌私仓 `brands/betly`） |
 | `copilot361` | `copilot.accounting.i.test.shopee.io` | Copilot 361（品牌私仓 `brands/copilot361`） |
 
-`s.yaml` 不给默认值，是因为它同时部署 belayo 和 copilot361 两个后端——任何默认值对其中一个都是**别的品牌的开关**（copilot361 若继承了 `belayo`，会给从没提供过手机登录的用户打开手机登录）。不设 = 不覆盖，永远安全。每个 env 文件自己写 profile 名，`deploy-aliyun-fc.sh` 的确认 banner 会打印出来。
-
 **持久的值在代码里，不在环境变量里**：`services/fc/src/lib/feature-profiles.ts`。
-原因是 belayo（Alibaba FC）那边 `s deploy` 会**整体重写** function 的环境变量表，
-某个变量在这次部署所用的 env 文件里缺失不等于「保持现值」，而等于「清空」——登录
-方式一旦只配在 env 里，一次无关的常规部署就会让登录按钮消失。放代码里则跟着版本走，
-可 review、有 git 历史。
+环境变量只选择 profile 或提供应急逐键覆盖；持久配置跟随不可变镜像，因而可 review、
+有 git 历史，也不会因为某次部署遗漏变量而静默改变品牌能力。
 
 改一个开关 = 改 `feature-profiles.ts` 提 PR：self-host 等夜间部署（或手动
-`workflow_dispatch`）生效，belayo 跟着下次手工部署生效。
+`workflow_dispatch`）生效，Belayo 跟随下一次 Dokploy 镜像发布生效。
 
 两条不下发的规则，别绕：
 
@@ -224,11 +219,11 @@ docker compose build fc && docker compose up -d fc
 - **`auth.webSSO` 是 AND 不是覆盖。** 允许注入 session 的 admin console 域名烘在
   桌面端二进制里（`WEBSSO_ADMIN_HOSTS`），服务端单方面打开不会生效，也不该生效。
 
-验证（两个环境都要，belayo 没有 CI 门禁）：
+验证（两个环境都要；Belayo 发布 workflow 自带 config smoke）：
 
 ```bash
 curl -s https://api.teamclu-dev.ucar.cc/v1/config/public | jq   # self-host
-curl -s https://teamclu-api.ucar.cc/v1/config/public | jq       # belayo
+curl -s https://teamclaw-api.ucar.cc/v1/config/public | jq      # belayo
 ```
 
 三份 profile 的初始值都是**照抄各自品牌 build config 已经烘死的值**，所以开启这套机制
@@ -255,7 +250,7 @@ curl -s https://teamclu-api.ucar.cc/v1/config/public | jq       # belayo
 
 ### 4.4 阿里云 OSS（团队同步）
 
-在 FC 环境配置：
+在 Cloud API 环境配置：
 
 ```dotenv
 ACCESS_KEY_ID=...
@@ -266,7 +261,7 @@ REGION=cn-shenzhen
 ENDPOINT=https://oss-cn-shenzhen.aliyuncs.com
 ```
 
-未配置时 FC 正常启动，**团队工作区 OSS 同步不可用**。
+未配置时 Cloud API 正常启动，**团队工作区 OSS 同步不可用**。
 
 ### 4.5 团队 AI 网关
 
@@ -307,7 +302,8 @@ Daemon 需要：
 
 | 场景 | URL |
 |------|-----|
-| Self-host（唯一环境） | `https://api.teamclu-dev.ucar.cc` |
+| Self-host 测试环境 | `https://api.teamclu-dev.ucar.cc` |
+| Belayo 生产环境 | `https://teamclaw-api.ucar.cc` |
 | 自建的其他实例 | `https://${FC_DOMAIN}` |
 
 **发布桌面版前：** 若 Cloud API 有 breaking 变更，需先让 Cloud API + migration 部署完成（夜间 self-host 部署或手动 `workflow_dispatch`），再发客户端。见 [`docs/release/desktop.md`](../release/desktop.md)。
@@ -325,7 +321,7 @@ Web 开发可覆盖：`VITE_CLOUD_API_URL=...`
 2. Supabase 栈（Auth / REST / Realtime / Storage）
 3. 确认 PostgREST 已加载 amux schema
 4. EMQX + JWT 认证配置
-5. 部署 Cloud API (FC)，填入 Supabase / MQTT / OSS env
+5. 部署 Cloud API，填入 Supabase / MQTT / OSS env
 6. Caddy / 域名 / TLS
 7. Smoke：healthz → bootstrap(401) → auth → create team
 8. （可选）LiteLLM、OSS cron、daemon profile
@@ -343,7 +339,7 @@ Web 开发可覆盖：`VITE_CLOUD_API_URL=...`
 **Self-host：**
 
 ```bash
-# FC
+# Cloud API
 docker compose exec -T fc node -e "fetch('http://localhost:9000/healthz').then(r=>r.text()).then(console.log)"
 
 # 公网
@@ -383,7 +379,7 @@ curl -sS "https://${SUPABASE_DOMAIN}/rest/v1/teams?select=id&limit=1" \
   -H "Accept-Profile: amux"
 ```
 
-### 7.4 FC 单元 / 集成测试
+### 7.4 Cloud API 单元 / 集成测试
 
 ```bash
 cd services/fc && npm test
@@ -409,7 +405,8 @@ cd services/supabase && npm test   # pgTAP（若已配置）
 
 **回滚：**
 
-- 服务：回滚 `main` 上的提交，CI 会重新部署；或在机器上 `git checkout <sha> && docker compose up -d --build fc`
+- Self-host 服务：在目标机恢复已验证 commit，再执行 `docker compose up -d --build fc`；发布只由夜间或手动 workflow 触发
+- Belayo 服务：通过 Cloud API workflow/Dokploy 恢复上一不可变镜像，不恢复已删除的 Cloud API FC
 - 停栈：`docker compose down`（加 `-v` 会**清库**）
 - Schema：无自动回滚 —— 迁移只前滚，需要撤销就补一个新的 migration 文件
 
@@ -434,13 +431,13 @@ cd services/supabase && npm test   # pgTAP（若已配置）
 
 | 能力 | 最小部署 | 完整部署 |
 |------|----------|----------|
-| 登录 / 团队 / 会话 / 消息 | Supabase + FC + EMQX + migration | 同左 |
+| 登录 / 团队 / 会话 / 消息 | Supabase + Cloud API + EMQX + migration | 同左 |
 | 实时聊天 | EMQX | EMQX |
 | 附件 | + Storage | + Storage |
 | 团队文件同步 | + OSS + cron | + OSS + cron |
-| AI Gateway / 用量 | + LiteLLM（栈内） | 同左 |
+| AI Gateway / 用量 | + AI Gateway | 同左 |
 | iOS 推送 | + APNS 全套 env | 同左 |
 | 中心机房 Agent | + amuxd daemon profile | 同左 |
-| Apps 模块（per-app 部署） | + `APPS_DB_ADMIN_URL`、CodeUp 等 | 见 apps specs |
+| Apps 模块（per-app 部署） | + `APPS_DB_ADMIN_URL`、Gitea、Registry、Alibaba FC Apps runtime | 见 apps specs |
 
 **最小四步：** `.env` → `gen-secrets.sh` → `up.sh` → `curl http://127.0.0.1:9000/healthz`（或 `:8080` 经 Caddy）。

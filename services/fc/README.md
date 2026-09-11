@@ -1,16 +1,17 @@
 # teamclu-fc
 
-The TeamClu Cloud API (Hono). It can run on Alibaba Function Compute via
-`s.yaml`, and also runs as a standalone Docker container for self-hosting.
+The TeamClu Cloud API (Hono). It runs as a standalone Docker container in the
+self-host test environment and in Belayo Dokploy. Alibaba Function Compute is
+still used for user-deployed Apps, but no longer hosts the Belayo Cloud API.
 
 ## Run in Docker (self-host)
 
 The container serves the full `/v1` API plus `/healthz`.
 All backing services (Supabase, OSS, MQTT, the AI gateway) stay external and
-are configured through environment variables — the same set listed in `s.yaml`.
+are configured through the container environment allowlist.
 
 ```bash
-cp .env.example .env   # fill in the values (see s.yaml for the full list)
+cp .env.example .env   # fill in the values
 docker compose up --build
 curl http://127.0.0.1:9000/healthz   # {"ok":true}
 ```
@@ -22,9 +23,10 @@ curl http://127.0.0.1:9000/healthz   # {"ok":true}
 | `PORT` | `9000` | Listen port |
 | `HOST` | `0.0.0.0` | Bind address |
 
-All other vars (Supabase, OSS, APNs, MQTT, Apps/CodeUp) match `s.yaml`.
+All other vars (Supabase, OSS, APNs, MQTT, Apps/CodeUp) are kept in parity with
+`deploy/belayo/cloud-api.env.keys` by `test/deploy-env-parity.test.ts`.
 
-## Data access (read before changing FC data access)
+## Data access (read before changing Cloud API data access)
 
 **Supabase is the only backend.** There is no switch, no second repository, and
 no ORM. Every `/v1` read and write goes through **`lib/supabase-repo.ts`** (plus
@@ -33,7 +35,7 @@ auth semantics are preserved. Login is GoTrue, via
 `createSupabaseAuthRepository`. Set-based work lives in Postgres functions
 called with `.rpc()`, not in application SQL.
 
-**FC opens no connection of its own to the control-plane database.** No
+**The Cloud API opens no connection of its own to the control-plane database.** No
 `getDb()`, no Drizzle, no `DATABASE_URL`. The one place raw SQL survives is the
 Apps module, and it is not this database: `lib/provisioning/app-postgres.ts`
 provisions a schema + scoped login role per app (DDL PostgREST cannot express),
@@ -58,9 +60,10 @@ applied it, and a drift from the real migrations still passed.
 
 Entry wiring: `src/index.ts` (`makeBusinessRepoFactory` / `makeAuthRepoFactory`).
 
-### No scheduled work
+### No in-process scheduler
 
-FC runs nothing on a timer. The two OSS-sync cleanup tasks
+The Cloud API has no in-process timer. Belayo and self-host each run one cron
+sidecar that calls the authenticated app-cron tick endpoint. The two OSS-sync cleanup tasks
 (`oss-abandon-sessions`, `oss-gc-blobs`) and their `/internal/cron` trigger were
 removed, along with the plpgsql functions they were ported from — neither copy
 had ever run on a deployment. `amuxc_upload_sessions` and `amuxc_blobs` now grow

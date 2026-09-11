@@ -254,8 +254,8 @@ blob 是内容寻址的、历史版本全留着，所以这只是一次元数据
 > **不配 `MARKETPLACE_ADMIN_SECRET` = 这台部署没有市场。** 目录表空着、列表端点返回空、
 > 客户端隐藏入口（§10.1）。这不是错误状态，是「没开这个功能」。
 
-**新增环境变量：一个。** 必须同时进 `services/fc/s.yaml` 和
-`deploy/self-host/docker-compose.yml` 的 `environment:` 白名单，缺一个就在某一边静默丢失
+**新增环境变量：一个。** 必须同时进 `deploy/self-host/docker-compose.yml` 的
+`environment:` 白名单和 `deploy/belayo/cloud-api.env.keys`，缺一个就在某一边静默丢失
 （`CLAUDE.md` 的老规矩）。
 
 > 上一版设计（内容即代码）在这里写的是「新增环境变量：零」。换成纯 API 之后那句话不再成立，

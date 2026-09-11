@@ -44,7 +44,7 @@
 **Files:**
 - Modify: `deploy/self-host/docker-compose.yml`（新增 gitea 服务；目前只有 345-347 行三个空的透传变量）
 - Modify: `deploy/self-host/.env.example`（`GITEA_*` 已在 200-202，补说明与默认值）
-- Modify: `services/fc/s.yaml`（env 三写的另一处，已有 94-96 行）
+- Modify: `deploy/belayo/cloud-api.env.keys`（与 self-host Cloud API allowlist 对齐）
 
 **Steps:**
 1. 起 gitea 服务，建 org（`GITEA_OWNER`）、建 bot 账号与 token（`GITEA_TOKEN`）。

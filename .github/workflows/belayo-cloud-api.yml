@@ -1,0 +1,154 @@
+# Build and deploy the Belayo Cloud API to Dokploy.
+#
+# The source directory keeps its historical `services/fc` name, but this
+# workflow deploys a container to Dokploy; it does not deploy Alibaba Cloud FC.
+# The production application is pinned to the amd64 worker dokploy-worker-2.
+# Images are immutable and are pushed through the Dokploy manager's existing
+# Alibaba ACR login, so no registry password is stored in GitHub.
+#
+# IMPORTANT: this workflow never applies Belayo database migrations. Migrations
+# under services/supabase/migrations remain a separate, manual production step
+# and must be completed before releasing code that depends on them.
+name: Belayo Cloud API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/fc/**'
+      - '.github/workflows/belayo-cloud-api.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: belayo-cloud-api
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ID: AyIydhRyN4pMT0_Y0TXvq
+      SERVICE: teamclu-cloud-api-shadow-qjau6z
+      WORKER: dokploy-worker-2
+      IMAGE_REPO: registry-vpc.cn-shenzhen.aliyuncs.com/betlysaas/teamclu-cloud-api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the Cloud API
+        working-directory: services/fc
+        run: |
+          npm ci
+          npm run typecheck
+          node --import tsx --test test/deploy-env-parity.test.ts
+          npm run build
+
+      - name: Start ssh-agent
+        run: |
+          eval "$(ssh-agent -s)"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          ssh-add - <<< "${{ secrets.BELAYO_DEPLOY_SSH_KEY }}"
+          mkdir -p ~/.ssh
+          printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' > ~/.ssh/config
+
+      - name: Build amd64 and push through the Dokploy manager
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          TAG: ${{ github.sha }}
+        run: |
+          IMG="$IMAGE_REPO:${TAG::9}"
+          docker build --platform linux/amd64 -t "$IMG" services/fc
+          docker run --rm --entrypoint sh "$IMG" -c 'test -s dist/server.js'
+          docker save "$IMG" | gzip \
+            | ssh "root@$MGR" 'gunzip | docker load'
+          # IMG is intentionally expanded on the runner before ssh executes.
+          # shellcheck disable=SC2029
+          ssh "root@$MGR" docker push "$IMG"
+
+      - name: Roll the Cloud API and record the desired image
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          TAG: ${{ github.sha }}
+        run: |
+          ssh "root@$MGR" bash -s -- "$SERVICE" "$WORKER" "$IMAGE_REPO" "$TAG" "$APP_ID" <<'EOF'
+            set -Eeuo pipefail
+            SERVICE=$1
+            WORKER=$2
+            IMAGE_REPO=$3
+            TAG=$4
+            APP_ID=$5
+            IMG="$IMAGE_REPO:${TAG::9}"
+            OLD_IMAGE=$(docker service inspect "$SERVICE" --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
+            PG=$(docker ps --format '{{.Names}}' | grep dokploy-postgres | head -1)
+            OLD_DESIRED=$(docker exec -i "$PG" psql -U dokploy -d dokploy -Atc \
+              "select \"dockerImage\" from application where \"applicationId\" = '$APP_ID';")
+            test -n "$OLD_DESIRED"
+
+            rollback() {
+              echo "deployment failed; restoring $OLD_IMAGE"
+              docker exec -i "$PG" psql -U dokploy -d dokploy -v ON_ERROR_STOP=1 -c \
+                "update application set \"dockerImage\" = '$OLD_DESIRED' where \"applicationId\" = '$APP_ID';" \
+                >/dev/null || true
+              docker service update \
+                --with-registry-auth \
+                --update-order start-first \
+                --image "$OLD_IMAGE" \
+                --detach=true \
+                "$SERVICE" >/dev/null || true
+            }
+            trap rollback ERR
+
+            docker service update \
+              --with-registry-auth \
+              --update-order start-first \
+              --update-failure-action rollback \
+              --update-monitor 30s \
+              --image "$IMG" \
+              --detach=true \
+              "$SERVICE"
+
+            ok=""
+            for i in $(seq 1 45); do
+              state=$(docker service inspect "$SERVICE" --format '{{with .UpdateStatus}}{{.State}}{{end}}' 2>/dev/null || true)
+              reps=$(docker service ls --format '{{.Name}} {{.Replicas}}' | awk -v s="$SERVICE" '$1==s{print $2}')
+              node=$(docker service ps "$SERVICE" --filter desired-state=running --format '{{.Node}}' | head -1)
+              live=$(docker service ps "$SERVICE" --filter desired-state=running --format '{{.Image}}' | head -1)
+              if [ "$reps" = "1/1" ] && [ "$node" = "$WORKER" ] && [[ "$live" == "$IMG"* ]]; then
+                ok=1
+                break
+              fi
+              if [ "$state" = "paused" ] || [ "$state" = "rollback_completed" ]; then
+                echo "swarm gave up on the update: $state"
+                docker service ps "$SERVICE" --no-trunc | head -5
+                exit 1
+              fi
+              sleep 4
+            done
+            if [ -z "$ok" ]; then
+              echo "did not converge: replicas=$reps node=$node live=$live want=$IMG"
+              docker service ps "$SERVICE" --no-trunc | head -5
+              exit 1
+            fi
+
+            ports=$(docker service inspect "$SERVICE" --format '{{json .Spec.EndpointSpec.Ports}}')
+            [ "$ports" = "null" ] || [ "$ports" = "[]" ]
+            DOKPLOY=$(docker ps --format '{{.Names}}' | grep '^dokploy\.1\.' | head -1)
+            docker exec "$DOKPLOY" node -e \
+              "fetch('http://$SERVICE:9000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+            curl -fsS --max-time 20 https://teamclaw-api.ucar.cc/healthz >/dev/null
+            curl -fsS --max-time 20 https://teamclaw-api.ucar.cc/v1/config/public >/dev/null
+
+            # This updates Dokploy's control-plane desired image only. It is not
+            # a Belayo application-database migration.
+            docker exec -i "$PG" psql -U dokploy -d dokploy -v ON_ERROR_STOP=1 -c \
+              "update application set \"dockerImage\" = '$IMG' where \"applicationId\" = '$APP_ID';" \
+              >/dev/null
+            recorded=$(docker exec -i "$PG" psql -U dokploy -d dokploy -Atc \
+              "select \"dockerImage\" from application where \"applicationId\" = '$APP_ID';")
+            [ "$recorded" = "$IMG" ]
+
+            trap - ERR
+            echo "running image: $live on $node"
+          EOF

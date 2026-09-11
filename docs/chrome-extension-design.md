@@ -61,8 +61,8 @@ amuxd daemon 的 HTTP API 只绑定 `127.0.0.1` + 文件 root token，浏览器�
 
 ### 2.4 实测环境拓扑
 
-当前唯一环境是 self-host 单机（一台 ECS，以下子域全部指向它）。名字里的 `-dev` 是
-历史遗留，**不代表这是 dev 层级**。
+本节只记录扩展的 self-host 测试环境（一台 ECS，以下子域全部指向它）。Belayo 生产
+环境由 Dokploy 承载，不是这组扩展测试构建的目标。
 
 | 角色 | 地址 | 说明 |
 |---|---|---|
@@ -295,7 +295,7 @@ Chrome（用 Playwright + Chrome for Testing —— stable Chrome 149 已禁 `--
 
 ### 6.6 构建配置（`.env.web.test` / mode `web.test`）
 
-指向 self-host 的独立 env（文件名里的 `test` 是历史遗留 —— 这是唯一环境，不是测试层级）：
+指向 self-host 测试环境的独立 env：
 
 - `packages/app/.env.web.test`：`VITE_CLOUD_API_URL=https://api.teamclu-dev.ucar.cc` +
   `VITE_MQTT_WS_URL=wss://mqtt.teamclu-dev.ucar.cc/mqtt`。

@@ -55,7 +55,7 @@
 
 | 组件 | Phase 1 职责 |
 |------|----------------|
-| **TeamClaw 控制面（FC Cloud API）** | 登录/org/team；Apps CRUD；Gitea 建仓；阿里云 FC 函数 ensure/更新；RDS schema；`startDeploy` / `finalizeDeploy`；GoTrue OAuth 客户端 CRUD（`platform`） |
+| **TeamClaw 控制面（Cloud API）** | 登录/org/team；Apps CRUD；Gitea 建仓；阿里云 FC 函数 ensure/更新；RDS schema；`startDeploy` / `finalizeDeploy`；GoTrue OAuth 客户端 CRUD（`platform`） |
 | **Gitea** | per-app 私有仓；存代码与 commit；**不**跑构建 |
 | **桌面端（packages/app）** | **发布流程的编排者**：调 start → 调本机 daemon 构建 → 调 finalize；失败时回写 `fc_status=deploy_error` |
 | **amuxd daemon** | 本机构建 RPC：checkout 目标 sha、`pnpm install && pnpm build`、zip、PUT 到 presigned URL。**不与云端直接通信** |
@@ -164,7 +164,7 @@ fc_status:         not_deployed → awaiting_build → building → deploying �
 
 `GITEA_URL`、bot 凭证、默认 org 名需要**三写**，缺一不可：
 
-1. `services/fc/s.yaml` 的 `environmentVariables:`
+1. `deploy/belayo/cloud-api.env.keys` 与 Dokploy Cloud API environment
 2. `deploy/self-host/docker-compose.yml` 中 fc 服务的 `environment:`（这是个**允许列表**，不在里面的变量永远到不了容器）
 3. `deploy/self-host/.env.example`
 

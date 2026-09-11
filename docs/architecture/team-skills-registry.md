@@ -183,7 +183,10 @@
 - 目标是 **`visibility='team'` 的 agent actor** → 要求团队 owner，或该 agent 的 `owner_member_id`。沿用 `pg-repo/agents.ts` 里 visibility 切换那套 owner-gated 判断，不新造一套
 - 目标是**别人的 member actor** → 拒绝。管理员不能替成员做安装决定
 
-**别忘了 FC 的两个部署目标**：新增环境变量要同时进 `services/fc/s.yaml` 和 `deploy/self-host/docker-compose.yml` 的 `environment:` 白名单，缺一个就在某一边静默丢失。本设计不新增 env（复用两边已有的 `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`）。
+**别忘了 Cloud API 的两个容器部署目标**：新增环境变量要同时进
+`deploy/self-host/docker-compose.yml` 的 `environment:` 白名单和
+`deploy/belayo/cloud-api.env.keys`，缺一个就在某一边静默丢失。本设计不新增 env
+（复用两边已有的 `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`）。
 
 ## 6. 发布门：6 个必填字段
 

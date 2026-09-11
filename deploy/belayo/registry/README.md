@@ -42,10 +42,9 @@ htpasswd -nbB teamclu-pull '<pull 密码>'
 `docker login` 第一件事是打 `GET /v2/`，只认 pull 账号的读路由会把 push 账号
 在它推任何东西之前就挡掉，报的还是 `login attempt ... 401 Unauthorized`。
 
-## 然后配 FC
+## 然后配置 Belayo Cloud API
 
-belayo 的 FC 是手工部署的（`services/fc/deploy-aliyun-fc.sh` + `.env.belayo.local`），
-在那个 env 文件里加：
+Belayo Cloud API 运行在 Dokploy；在 Application 环境变量中配置：
 
 ```
 APPS_REGISTRY_HOST=registry.service.ucar.cc
@@ -57,10 +56,10 @@ APPS_REGISTRY_PULL_PASSWORD=<pull 密码明文>
 APPS_REGISTRY_PULL_HOST=
 ```
 
-明文密码给 FC 是必须的：它要把 push 那对发给开发者的机器去推镜像，把 pull 那对
-烘进函数配置让 FC 去拉。Traefik 那边存的是同样两个密码的 bcrypt 哈希。
+明文密码给 Cloud API 是必须的：它要把 push 那对发给开发者的机器去推镜像，把 pull
+那对烘进用户 App 的函数配置让 FC 去拉。Traefik 那边存的是同样两个密码的 bcrypt 哈希。
 
-`APPS_REGISTRY_PULL_HOST` 留空 —— FC 从公网按同一个名字拉。
+`APPS_REGISTRY_PULL_HOST` 留空 —— 用户 App 的 FC runtime 从公网按同一个名字拉。
 
 ## 验证
 

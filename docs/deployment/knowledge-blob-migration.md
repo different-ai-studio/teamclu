@@ -28,8 +28,8 @@ select id, name, public from storage.buckets where id = 'team-blobs';
 ```
 
 - **self-host**（`api.teamclu-dev.ucar.cc`）：push 到 main 自动跑 migration。
-- **belayo**：迁移是手工 + `_selfhost.schema_migrations` 账本，且只在
-  `RUN_MIGRATIONS=1` 时执行 —— 必须手动确认。
+- **belayo**：迁移是手工 + `_selfhost.schema_migrations` 账本，与 Cloud API 发布
+  workflow 分离 —— 必须手动确认并先于依赖它的镜像发布。
 - **copilot361**：同样手动确认。
 
 `public = false`。所有访问都走 FC service-role 客户端签的 signed URL

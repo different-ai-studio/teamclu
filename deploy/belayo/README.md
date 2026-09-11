@@ -2,16 +2,10 @@
 
 ## Cloud API cron heartbeat
 
-`cloud-api-cron.compose.yml` is the Dokploy/Swarm replacement for Alibaba
-FC's one-minute `app-cron` timer. It is deliberately deployed with
-`APP_CRON_REPLICAS=0` until production cutover. Scheduler handoff order is:
-
-1. Disable the Alibaba FC `app-cron` timer.
-2. Set `APP_CRON_REPLICAS=1` in the Dokploy Compose environment and redeploy.
-3. Verify one due test job creates exactly one run record in one minute.
-
-Rollback uses the reverse ownership order: scale the Dokploy stack to zero,
-then re-enable the FC timer. Never run both schedulers concurrently.
+`cloud-api-cron.compose.yml` is the single Belayo scheduler for the Cloud API.
+Keep `APP_CRON_REPLICAS=1` in Dokploy and verify one due test job creates
+exactly one run record in one minute. The retired Cloud API FC function and its
+timer no longer exist, so rollback is an image/config rollback inside Dokploy.
 
 Belayo runs hosted workloads under Dokploy while self-host remains the
 Docker Compose test environment. The reverse proxies intentionally differ:
@@ -29,29 +23,39 @@ The .env.keys files are names-only manifests. They contain no values and are
 safe to review in Git. Tests compare them with the corresponding self-host
 Compose allowlists so adding a variable to only one environment fails CI.
 
-Intentional Cloud API differences:
-
-- FC_SUPABASE_URL exists only in self-host. Function Compute reserves the FC_
-  prefix, and Belayo Dokploy sets SUPABASE_URL directly.
-- CORS_HANDLED_BY_PROXY exists only in Alibaba Function Compute. Neither Caddy
-  nor Traefik adds Cloud API CORS headers.
-- PORT and HOST are explicit in container targets; Function Compute owns its
-  runtime listener.
+Intentional Cloud API difference: `FC_SUPABASE_URL` exists only in self-host to
+select bundled versus external Supabase. Both targets are containers and expose
+`PORT` and `HOST`; neither Caddy nor Traefik adds Cloud API CORS headers.
 
 Secrets remain in the self-host .env, GitHub environments, and Dokploy. Never
 add secret values to these manifests.
+
+## Cloud API release pipeline
+
+`.github/workflows/belayo-cloud-api.yml` builds `services/fc` as an immutable
+amd64 image, pushes it to Alibaba ACR through the Dokploy manager, rolls
+`teamclu-cloud-api-shadow-qjau6z` on `dokploy-worker-2`, and verifies both the
+internal and public health endpoints before updating Dokploy's desired image.
+It runs automatically for Cloud API changes merged to `main` and can also be
+started manually.
+
+The pipeline deliberately does not watch `services/supabase/migrations` and
+contains no application-database migration step. Belayo database migrations
+continue to be reviewed and applied manually before any Cloud API release that
+depends on them. The SQL statement in the release workflow changes only the
+Dokploy control-plane application's `dockerImage` field.
 
 ## Current route parity
 
 | Capability | Self-host | Belayo | Status |
 |---|---|---|---|
-| Cloud API | Caddy to fc:9000 | Dokploy/Traefik to cloud-api:9000 | Migrated; Alibaba FC is pending decommission |
+| Cloud API | Caddy to fc:9000 | Cloudflare + Traefik to cloud-api:9000 | Aligned |
 | AI Gateway internal | ai-gateway:4001 | teamclu-ai-gateway-iiq8f3:4001 | Aligned |
 | AI Gateway public | /ai/* on the Cloud API host | ai-gateway.service.ucar.cc | Intentional |
 | MQTT WebSocket | Caddy to emqx:8083 | Traefik to emqx:8083 | Aligned |
 | Registry | Caddy method-split auth | Traefik method-split auth | Aligned |
 | Gitea HTTP | Caddy to gitea:3000 | Traefik to the managed external server | Intentional |
-| App wildcard/custom domains | Caddy on-demand TLS | Alibaba FC custom domains | Intentionally different |
+| App wildcard/custom domains | Caddy on-demand TLS | Alibaba FC custom domains for user Apps | Intentionally different |
 
 Do not change production DNS, scheduler ownership, MQTT client URLs, or
 database migrations as part of an environment-key parity change. Each needs

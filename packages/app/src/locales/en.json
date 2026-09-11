@@ -2562,8 +2562,8 @@
     },
     "team": {
       "joinedAt": "Joined",
-      "disconnectMigrationRequired": "Cloud database is missing the disable_team_share migration. Apply services/supabase/migrations/20260604120000_disable_team_share.sql and redeploy FC.",
-      "disconnectSchemaDrift": "Cloud API schema is out of date (disable_team_share). Deploy the latest FC and Supabase migration, then retry.",
+      "disconnectMigrationRequired": "Cloud database is missing the disable_team_share migration. Apply services/supabase/migrations/20260604120000_disable_team_share.sql and redeploy the Cloud API.",
+      "disconnectSchemaDrift": "Cloud API schema is out of date (disable_team_share). Deploy the latest Cloud API and Supabase migration, then retry.",
       "teamName": "Team Name",
       "defaultAgent": "Team Default Agent",
       "defaultAgentDesc": "Used for team members who have not set a personal default agent.",
