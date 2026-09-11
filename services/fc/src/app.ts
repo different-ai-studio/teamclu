@@ -101,6 +101,7 @@ export function createApp(deps: AppDeps): Hono {
       if (!isLoginHost(vanityRequestHost(c))) return next();
       const res = await handleLoginRequest(c.req.raw, {
         lookupApp,
+        createAuthRepository: deps.createAuthRepository,
         secureCookies: forwardedProto(c) === "https",
       });
       return res ?? next();

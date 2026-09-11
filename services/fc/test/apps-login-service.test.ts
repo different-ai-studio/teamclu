@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   APP_AUTH_CALLBACK_PATH,
+  LOGIN_STATE_COOKIE,
   SSO_COOKIE,
   __resetSpentCodes,
   consumeAuthCode,
@@ -59,6 +60,7 @@ function deps(
   return {
     calls,
     lookupApp: overrides.lookupApp ?? (async (id) => (id === APP_ID ? APP : null)),
+    createAuthRepository: overrides.createAuthRepository,
     rateLimited: overrides.rateLimited ?? (() => false),
     secureCookies: overrides.secureCookies ?? true,
     fetchImpl: (async (url: any, init: any) => {
@@ -80,6 +82,13 @@ const post = (path: string, form: Record<string, string>, headers: Record<string
   });
 
 const flow = { app: APP_ID, r: ORIGIN, next: "/report" };
+
+function cookieValue(response: Response, name: string): string {
+  const raw = response.headers.get("set-cookie") ?? "";
+  const match = raw.match(new RegExp(`${name}=([^;]+)`));
+  assert.ok(match, `missing ${name} cookie`);
+  return match[1];
+}
 
 // --- host routing -----------------------------------------------------------
 
@@ -448,4 +457,161 @@ test("an address containing markup cannot break out of the page", async () => {
     assert.doesNotMatch(html, /<script>alert/);
     assert.match(html, /&lt;script&gt;/);
   });
+});
+
+// --- configured login methods ---------------------------------------------
+
+test("the login page mirrors enabled FC auth methods", async () => {
+  await withEnv(
+    {
+      APP_FEATURES_JSON: JSON.stringify({ auth: { phone: true, google: true, webSSO: true } }),
+      WEBSSO_LOGIN_URL: "https://admin.example.com/sign-in",
+    },
+    async () => {
+      const res = await handleLoginRequest(get(`/?app=${APP_ID}`), deps());
+      const html = await res!.text();
+      assert.match(html, /手机号登录/);
+      assert.match(html, /Google 登录/);
+      assert.match(html, /快捷登录/);
+    },
+  );
+});
+
+test("phone login uses the existing auth repository and does not bootstrap a team", async () => {
+  await withEnv(
+    { APP_FEATURES_JSON: JSON.stringify({ auth: { phone: true } }) },
+    async () => {
+      const calls: any[] = [];
+      const d = deps({
+        createAuthRepository: () => ({
+          phoneSendCode: async (args: any) => calls.push(["send", args]),
+          phoneLogin: async (args: any) => {
+            calls.push(["login", args]);
+            return {
+              session: { user: { id: "phone-user", email: "13700000000@phone.example" } },
+            };
+          },
+        }),
+      });
+      const sent = await handleLoginRequest(
+        post("/phone", { ...flow, phone: "+8613700000000" }),
+        d,
+      );
+      assert.equal(sent?.status, 200);
+      assert.match(await sent!.text(), /action="\/phone\/verify"/);
+      assert.deepEqual(calls[0], ["send", { phone: "+8613700000000", captchaVerify: "fc-app-login" }]);
+
+      const verified = await handleLoginRequest(
+        post("/phone/verify", { ...flow, phone: "+8613700000000", code: "123456" }),
+        d,
+      );
+      assert.equal(verified?.status, 302);
+      assert.match(verified!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
+      assert.deepEqual(calls[1], ["login", { phone: "+8613700000000", code: "123456", userId: undefined }]);
+      assert.match(verified!.headers.get("set-cookie")!, new RegExp(`^${SSO_COOKIE}=`));
+    },
+  );
+});
+
+test("phone login supports the repository's multi-account picker", async () => {
+  await withEnv(
+    { APP_FEATURES_JSON: JSON.stringify({ auth: { phone: true } }) },
+    async () => {
+      const selected: any[] = [];
+      const d = deps({
+        createAuthRepository: () => ({
+          phoneSendCode: async () => {},
+          phoneLogin: async (args: any) => {
+            selected.push(args);
+            if (!args.userId) {
+              return { multiUser: true, users: [{ id: "u-2", nickname: "小王", org_name: "研发部" }] };
+            }
+            return { session: { user: { id: "u-2", email: "u-2@example.com" } } };
+          },
+        }),
+      });
+      const picker = await handleLoginRequest(
+        post("/phone/verify", { ...flow, phone: "13700000000", code: "123456" }),
+        d,
+      );
+      assert.equal(picker?.status, 200);
+      assert.match(await picker!.text(), /研发部/);
+
+      const completed = await handleLoginRequest(
+        post("/phone/select", { ...flow, phone: "13700000000", code: "123456", userId: "u-2" }),
+        d,
+      );
+      assert.equal(completed?.status, 302);
+      assert.equal(selected[1].userId, "u-2");
+    },
+  );
+});
+
+test("Google login uses the central login host as a PKCE callback", async () => {
+  await withEnv(
+    { APP_FEATURES_JSON: JSON.stringify({ auth: { google: true } }) },
+    async () => {
+      const d = deps();
+      const start = await handleLoginRequest(get(`/oauth/google?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`), d);
+      assert.equal(start?.status, 302);
+      const authorize = new URL(start!.headers.get("location")!);
+      assert.equal(authorize.searchParams.get("provider"), "google");
+      assert.equal(authorize.searchParams.get("redirect_to"), "https://login.example.com/oauth/callback");
+      assert.equal(authorize.searchParams.get("code_challenge_method"), "s256");
+      const state = authorize.searchParams.get("state")!;
+      const callback = await handleLoginRequest(
+        get(`/oauth/callback?code=provider-code&state=${encodeURIComponent(state)}`, {
+          cookie: `${LOGIN_STATE_COOKIE}=${cookieValue(start!, LOGIN_STATE_COOKIE)}`,
+        }),
+        d,
+      );
+      assert.equal(callback?.status, 302);
+      assert.match(callback!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
+      assert.match(callback!.headers.get("set-cookie")!, new RegExp(`${SSO_COOKIE}=`));
+      assert.match(callback!.headers.get("set-cookie")!, new RegExp(`${LOGIN_STATE_COOKIE}=;`));
+    },
+  );
+});
+
+test("Web SSO redirects through the configured target and supports a token bridge", async () => {
+  await withEnv(
+    {
+      APP_FEATURES_JSON: JSON.stringify({ auth: { webSSO: true } }),
+      WEBSSO_LOGIN_URL: "https://admin.example.com/sign-in?tenant=teamclu",
+    },
+    async () => {
+      const d = deps({
+        gotrue: (call) => {
+          if (call.url.endsWith("/auth/v1/token?grant_type=refresh_token")) {
+            return new Response(JSON.stringify({ user: { id: "sso-user", email: "sso@example.com" } }), { status: 200 });
+          }
+          return new Response(JSON.stringify({ user: { id: "u-1", email: "a@example.com" } }), { status: 200 });
+        },
+      });
+      const start = await handleLoginRequest(get(`/sso?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`), d);
+      assert.equal(start?.status, 302);
+      const target = new URL(start!.headers.get("location")!);
+      assert.equal(target.origin, "https://admin.example.com");
+      assert.equal(target.searchParams.get("redirect_to"), "https://login.example.com/sso/callback");
+      assert.ok(target.searchParams.get("code_challenge"));
+
+      const stateCookie = `${LOGIN_STATE_COOKIE}=${cookieValue(start!, LOGIN_STATE_COOKIE)}`;
+      const bridge = await handleLoginRequest(
+        get(`/sso/callback?state=${encodeURIComponent(target.searchParams.get("state")!)}&refresh_token=must-not-be-accepted`, {
+          cookie: stateCookie,
+        }),
+        d,
+      );
+      assert.equal(bridge?.status, 200);
+      assert.match(await bridge!.text(), /f\.action="\/sso\/exchange"/);
+      assert.equal(d.calls.length, 0, "tokens in the callback query must not reach GoTrue");
+
+      const completed = await handleLoginRequest(
+        post("/sso/exchange", { refresh_token: "external-refresh" }, { cookie: stateCookie }),
+        d,
+      );
+      assert.equal(completed?.status, 302);
+      assert.match(completed!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
+    },
+  );
 });
