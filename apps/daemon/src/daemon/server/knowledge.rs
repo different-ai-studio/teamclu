@@ -12,13 +12,19 @@
 //! - `create`        — create one page from a template (adr / runbook / domain-index / page)
 //! - `write`         — write or edit a page (overwrite, path-locked to the vault)
 //! - `salvage`       — capture a conversation conclusion into a vault page
+//!   (legacy; writes `00-salvage/` which syncs. New product path is `propose`)
+//! - `propose`       — draft a session conclusion into the local inbox (not vault)
+//! - `inbox_list` / `inbox_get` / `inbox_discard` — review-inbox bookkeeping
+//! - `publish`       — write a pending candidate into the vault (desktop only)
 //! - `search`        — substring search across the vault, no index (see `search.rs`)
 //! - `manifest_get`  — read knowledge.manifest.yaml
 //! - `manifest_set`  — update manifest fields (visibility change needs confirm:true)
 //! - `health`        — freshness / coverage stats
 //!
-//! All writes are confined to the active team's `shared/knowledge/` root;
-//! path traversal outside the vault is rejected.
+//! Vault writes (`create` / `write` / `salvage` / `publish`) stay inside the
+//! active team's `shared/knowledge/` root. `propose` writes
+//! `state/knowledge-inbox/` instead — see
+//! docs/specs/2026-09-11-session-knowledge-review-design.md.
 
 use std::path::{Path, PathBuf};
 
@@ -40,13 +46,14 @@ const MAX_SALVAGE_SUFFIX: usize = 50;
 const STALE_DAYS_RUNBOOK: i64 = 90;
 const STALE_DAYS_UPDATED: i64 = 90;
 
+pub(crate) mod inbox;
 mod search;
 
-fn err(code: &str, message: impl Into<String>) -> String {
+pub(super) fn err(code: &str, message: impl Into<String>) -> String {
     json!({ "ok": false, "error": message.into(), "errorCode": code }).to_string()
 }
 
-fn ok(result: Value) -> String {
+pub(super) fn ok(result: Value) -> String {
     json!({ "ok": true, "result": result }).to_string()
 }
 
@@ -80,7 +87,7 @@ fn stale_index_root(team_id: &str) -> PathBuf {
 
 /// Resolve a caller-supplied relative path against the vault root, rejecting
 /// anything that escapes it.
-fn resolve_in_vault(root: &Path, rel: &str) -> Result<PathBuf, String> {
+pub(super) fn resolve_in_vault(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim();
     if rel.is_empty() {
         return Err(err("invalid_path", "path is required"));
@@ -161,7 +168,7 @@ fn with_team_sync(mut body: serde_json::Map<String, Value>, note: Option<(&str, 
     Value::Object(body)
 }
 
-fn str_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
+pub(super) fn str_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
     payload
         .get(key)
         .and_then(Value::as_str)
@@ -194,14 +201,20 @@ fn handle_knowledge_inner(payload: Value) -> String {
     // only for the actions that write — `search` and `health` have nothing to
     // say about whether a page reaches the team.
     let blocked = match action {
-        "create" | "write" | "salvage" => LocalSyncState::peek_forbidden(&team_id),
+        "create" | "write" | "salvage" | "publish" => LocalSyncState::peek_forbidden(&team_id),
         _ => ForbiddenPaths::default(),
     };
+    let inbox = inbox::inbox_dir(&team_id);
     match action {
         "scaffold" => knowledge_scaffold(&root, &payload),
         "create" => knowledge_create(&root, &payload, &blocked),
         "write" => knowledge_write(&root, &payload, &blocked),
         "salvage" => knowledge_salvage(&root, &payload, &blocked),
+        "propose" => inbox::propose(&team_id, &inbox, &payload),
+        "inbox_list" => inbox::inbox_list(&inbox),
+        "inbox_get" => inbox::inbox_get(&inbox, &payload),
+        "inbox_discard" => inbox::inbox_discard(&inbox, &payload),
+        "publish" => inbox::publish(&inbox, &root, &payload, &blocked),
         "search" => search::search(&root, &stale_index_root(&team_id), &payload),
         "manifest_get" => manifest_get(&root),
         "manifest_set" => manifest_set(&root, &payload),
@@ -210,7 +223,8 @@ fn handle_knowledge_inner(payload: Value) -> String {
             "unknown_action",
             format!(
                 "unknown knowledge action '{other}'; expected \
-                 scaffold|create|write|salvage|search|manifest_get|manifest_set|health"
+                 scaffold|create|write|salvage|propose|inbox_list|inbox_get|\
+                 inbox_discard|publish|search|manifest_get|manifest_set|health"
             ),
         ),
     }
@@ -285,7 +299,7 @@ fn page_body(
     Ok(raw.replace("{{TITLE}}", title).replace("{{DATE}}", today))
 }
 
-fn create_or_write(
+pub(super) fn create_or_write(
     root: &Path,
     payload: &Value,
     overwrite: bool,

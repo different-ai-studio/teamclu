@@ -75,6 +75,7 @@ import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 import { encodeWorkspaceId, notifyDaemonSkillsChanged } from '@/lib/daemon/daemon-local-client'
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
+import { KnowledgeInboxStrip } from '@/components/teamshare/KnowledgeInboxStrip'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
 import { ObsidianIcon } from '@/components/workspace/ObsidianIcon'
 import { useObsidianStatus } from '@/hooks/use-obsidian'
@@ -1251,6 +1252,8 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             // The whole shared root, not just knowledge/ — create / rename /
             // delete / move all come from FileBrowser's existing context menu,
             // and clicking a file opens it exactly as it does in the workspace.
+            <>
+            <KnowledgeInboxStrip />
             <FileBrowser
               variant="panel"
               rootPath={syncRoot}
@@ -1265,6 +1268,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
                 void handleRootCreate(name)
               }}
             />
+            </>
           ) : (
             // The directory is missing locally. Sync is on regardless — this is
             // a repairable local state, so offer the repair.
