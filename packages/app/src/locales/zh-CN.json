@@ -579,7 +579,28 @@
     "loadEarlierMessages": "加载前 {{count}} 条消息",
     "compaction": {
       "title": "已自动压缩上下文",
-      "inProgressTitle": "正在自动压缩上下文..."
+      "inProgressTitle": "正在自动压缩上下文...",
+      "label": "compact",
+      "inProgressMeta": "{{reason}} · 进行中",
+      "completedMeta": "完成 · {{duration}}",
+      "completedShort": "完成",
+      "durationMs": "{{ms}}ms",
+      "durationSec": "{{sec}}s",
+      "tokenCount": "{{count, number}}",
+      "tokenCountApprox": "~{{count, number}}",
+      "tokenChange": "{{before}} → {{after}} tokens · {{reason}}",
+      "reason": {
+        "threshold": "阈值",
+        "overflow": "溢出",
+        "manual": "手动"
+      }
+    },
+    "processSummary": {
+      "thinking": "思考",
+      "tools": "{{count}} 工具",
+      "tools_other": "{{count}} 工具",
+      "compacts": "{{count}} 次压缩",
+      "compacts_other": "{{count}} 次压缩"
     },
     "analyzing": "助手正在分析规划...",
     "generatingComponents": "生成中... ({{count}} 个组件)",
@@ -987,6 +1008,7 @@
   },
   "fileExplorer": {
     "agentNotStarted": "Agent 尚未启动",
+    "teamLink": "链接到团队共享目录",
     "newFile": "新建文件",
     "newFolder": "新建文件夹",
     "copyPath": "复制路径",
@@ -1257,6 +1279,12 @@
     "typeDataAppDesc": "能存数据、能查能改的应用，自带一个数据库。",
     "typeImported": "导入的仓库",
     "typeImportedDesc": "代码来自本地目录或已有的 git 仓库。",
+    "typePendingRedeploy": "线上还是按原来的类型在跑，下次部署后才换过来。",
+    "typeLeaveDatabaseTitle": "改成不带数据库的类型？",
+    "typeLeaveDatabaseConfirm": "线上站点在下次部署前照常运行。下次部署后，应用不再拿到 DATABASE_URL，代码里用到数据库的地方会出错。数据不会删除：「线上数据」里暂时看不到它，改回「{{dataApp}}」就回来。",
+    "typeLeaveDatabaseAction": "改成「{{type}}」",
+    "typeFailed": "改类型失败",
+    "typeDenied": "只有对这个应用有管理权限的人可以改类型。",
     "sourceLabel": "代码从哪来",
     "sourceNew": "新建一个",
     "sourceNewDesc": "从模板起一个新目录，代码托管在我们这里。",
@@ -1276,6 +1304,9 @@
     "libraryDownload": "下载",
     "libraryDownloaded": "已在本机",
     "libraryNotHere": "未在本机",
+    "notDownloadedBadge": "未下载",
+    "notDownloadedHint": "这个应用还没下载到本机，点击下载后才能打开它的会话",
+    "sessionNotDownloaded": "「{{name}}」还没下载到本机，可以看历史，但不能在这里继续对话。",
     "gitHosted": "托管仓库",
     "gitRemote": "外部仓库",
     "gitLocal": "仅本机",
@@ -1580,6 +1611,7 @@
     "deleteFailed": "删除失败",
     "deleteDenied": "应用不存在或无权删除",
     "deleted": "应用已删除",
+    "cloneFailed": "仓库克隆失败",
     "seedErrorReason": {
       "cloneTimeout": "克隆超时。多半是这台机器的 git 凭证助手在等一个弹不出来的登录框；先在终端里 clone 一次这个仓库，再回来重试。"
     },
@@ -1587,6 +1619,8 @@
       "uncommitted": "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。",
       "pushRejected": "仓库里有本机没有的提交。请先拉取并解决冲突，然后重新部署。",
       "noPackageJson": "这个应用还没有代码——目录里没有 package.json。让 agent 先把应用做出来，或者重新播种。",
+      "noCode": "这个应用还没有代码——目录里既没有 package.json 也没有 Dockerfile。让 agent 先把应用做出来，或者重新播种。",
+      "noPnpm": "本机找不到 pnpm，而这个应用是用它构建的。装一个（npm i -g pnpm）再重试。",
       "installTimeout": "依赖安装超时（10 分钟），请检查网络或 lockfile 后重试。",
       "buildTimeout": "构建超时（10 分钟），请检查构建脚本后重试。",
       "artifactTooLarge": "构建产物超过 50 MiB 上限，请精简输出后重试。",

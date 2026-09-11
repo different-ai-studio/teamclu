@@ -16,6 +16,7 @@ beforeEach(() => {
     persistedPlansBySession: {},
     interruptedFlushPending: {},
     revisionBySession: {},
+    compactionPartsByMessageId: {},
   });
 });
 
@@ -925,5 +926,37 @@ describe("revisionBySession", () => {
       vi.unstubAllGlobals();
       vi.useRealTimers();
     }
+  });
+
+  it("records compaction rows on the live stream and attaches them to flushed replies", () => {
+    const store = useV2StreamingStore.getState();
+    store.beginCompaction("s1", "a1", {
+      auto: true,
+      overflow: true,
+      reason: "overflow",
+    });
+    flushPendingSessionRevisionsForTests();
+    let [stream] = selectStreamsForSession(useV2StreamingStore.getState(), "s1");
+    expect(stream.parts.some((part) => part.type === "compaction" && !part.completed)).toBe(
+      true,
+    );
+
+    store.completeCompaction("s1", "a1", {
+      auto: true,
+      overflow: true,
+      reason: "overflow",
+      tokensBefore: 1000,
+      tokensAfter: 100,
+    });
+    flushPendingSessionRevisionsForTests();
+    [stream] = selectStreamsForSession(useV2StreamingStore.getState(), "s1");
+    const compactionPart = stream.parts.find((part) => part.type === "compaction");
+    expect(compactionPart?.completed).toBe(true);
+    expect(compactionPart?.tokensBefore).toBe(1000);
+
+    store.attachCompactionPartsForMessage("s1", "reply-1", stream.parts.filter(
+      (part) => part.type === "compaction",
+    ));
+    expect(store.getCompactionPartsForMessage("reply-1")).toHaveLength(1);
   });
 });

@@ -339,12 +339,9 @@ fn daemon_device_name() -> String {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppManifestResponse {
-    /// What the checkout declares, or the built-in contract when it declares
-    /// nothing — the same value a build would report.
-    pub manifest: crate::sync::app_build::AppRuntimeManifest,
-    /// False when this machine holds no checkout for the app. The manifest is
-    /// then the default, which is a guess, and the caller should not deploy on
-    /// it.
+    /// The checkout's required build and start declaration.
+    pub declaration: crate::sync::app_build::AppDeclaration,
+    /// False when this machine holds no checkout for the app.
     pub workdir_exists: bool,
 }
 
@@ -364,12 +361,13 @@ pub async fn app_manifest(
     let team_id = query.team_id.as_deref().unwrap_or("");
     let path = resolve_workdir("", &app_id, team_id)?;
     let workdir_exists = path.is_dir();
-    let manifest =
-        tokio::task::spawn_blocking(move || crate::sync::app_build::read_runtime_manifest(&path))
+    let declaration =
+        tokio::task::spawn_blocking(move || crate::sync::app_build::read_app_declaration(&path))
             .await
-            .map_err(|e| HttpError::internal(format!("manifest read panicked: {e}")))?;
+            .map_err(|e| HttpError::internal(format!("declaration read panicked: {e}")))?
+            .map_err(map_build_error)?;
     Ok(Json(AppManifestResponse {
-        manifest,
+        declaration,
         workdir_exists,
     }))
 }
@@ -547,10 +545,11 @@ pub struct BuildAppBody {
     pub deploy_key_pem: String,
     /// Presigned OSS PUT URL for the build artifact. Short-lived signed-URL
     /// secret — never logged. Required for an app that builds to an archive,
-    /// which is every app that does not declare `runtime: "container"`.
+    /// which is every app whose declaration does not use `build.kind:
+    /// "container"`.
     #[serde(default)]
     pub presigned_put: String,
-    /// Where to push the image, for an app that declares `runtime:
+    /// Where to push the image, for an app that declares `build.kind:
     /// "container"`. Carries a registry password — never logged.
     #[serde(default)]
     pub image: Option<ImagePushBody>,
@@ -585,10 +584,8 @@ impl std::fmt::Debug for ImagePushBody {
 #[serde(rename_all = "camelCase")]
 pub struct BuildAppResponse {
     pub status: &'static str,
-    /// What the app declared about how it is built and run. Always present —
-    /// an app with no declaration reports the built-in contract, so the control
-    /// plane never has to know whether the file existed.
-    pub manifest: crate::sync::app_build::AppRuntimeManifest,
+    /// What the app declared about how it is built and run.
+    pub declaration: crate::sync::app_build::AppDeclaration,
     /// The commit that was actually built, when the daemon published work the
     /// caller did not know about. Absent when it built the sha it was given —
     /// the caller then finalizes with its own.
@@ -631,9 +628,9 @@ fn build_destination(
 }
 
 /// `POST /v1/apps/build` — build the app and put the result where the deploy
-/// reads it from: `pnpm build` + zip `.output` to the presigned OSS URL, or —
-/// for an app declaring `runtime: "container"` — a cross-built image pushed to
-/// the registry named in `image`.
+/// reads it from: an archive sent to the presigned OSS URL, or — for an app
+/// declaring `build.kind: "container"` — a cross-built image pushed to the
+/// registry named in `image`.
 ///
 /// Requires `workspace:write`. The workdir MUST already exist (it's the seeded
 /// checkout). Returns `{ "status": "built" }`. The presigned URL is a
@@ -709,7 +706,7 @@ pub async fn build_app(
 
     let pushed = built.product.image().map(str::to_string);
     let git_commit_sha = built.git_commit_sha;
-    let manifest = built.manifest;
+    let declaration = built.declaration;
 
     // A container build has already put its result where the deployment reads
     // it from; only an archive still has to travel.
@@ -736,7 +733,7 @@ pub async fn build_app(
     Ok(Json(BuildAppResponse {
         status: "built",
         git_commit_sha,
-        manifest,
+        declaration,
         image: pushed,
     }))
 }
@@ -823,12 +820,42 @@ pub async fn inspect_dir(
     Ok(Json(probe))
 }
 
-/// `POST /v1/apps/:appId/bind-workdir` — point an app at a checkout that is
-/// already here, without touching a single file.
+/// Make `path` something an app can be bound to: an existing directory that is
+/// a git repository, initialising one when it is not.
+///
+/// An app's directory has to be a git directory — nothing deploys from
+/// anything else. It used to be *refused* at this point, which put a 422 in
+/// front of the seed that would have made it one. `init_if_needed` is a no-op on
+/// a repo (it asks `rev-parse`, so a worktree or a submodule whose `.git` is a
+/// file counts too), and `git init` in a folder of loose files adds a `.git/`
+/// and touches nothing else.
+///
+/// Sync, and separate from the handler, so it can be tested on a tempdir
+/// without standing up the HTTP state.
+fn prepare_bind_dir(path: &std::path::Path) -> Result<(), HttpError> {
+    if !path.is_dir() {
+        return Err(HttpError::validation(format!(
+            "not a directory: {}",
+            path.display()
+        )));
+    }
+    crate::sync::app_git::init_if_needed(path)
+        .map_err(|e| HttpError::internal(format!("could not initialise a git repository: {e}")))
+}
+
+/// `POST /v1/apps/:appId/bind-workdir` — point an app at a directory that is
+/// already here, without moving it.
 ///
 /// Deliberately not [`move_app_workdir`]: that one relocates the whole tree,
-/// which is exactly wrong for "I already have this repo, use it where it is".
+/// which is exactly wrong for "I already have this folder, use it where it is".
 /// A user who picks their own project directory expects it to stay put.
+///
+/// A folder that is not yet a git repository is initialised rather than
+/// refused. The create flow promises exactly that (`sourceLocalWillInit`), and
+/// the seed that follows — [`crate::sync::app_seed::adopt_app_repo`] — already
+/// knows how to take a fresh repo from there: default `.gitignore`, first
+/// commit, push. `git init` is the only thing it cannot do from outside, because
+/// this handler runs first and used to stop the flow before seed was reached.
 pub async fn bind_app_workdir(
     principal: Principal,
     State(_state): State<HttpState>,
@@ -849,21 +876,11 @@ pub async fn bind_app_workdir(
     if !path.is_absolute() {
         return Err(HttpError::validation("workdir must be an absolute path"));
     }
-    if !path.is_dir() {
-        return Err(HttpError::validation(format!(
-            "not a directory: {}",
-            path.display()
-        )));
-    }
-    // The requirement is a *git* directory, and checking it here is what turns
-    // "nothing deploys and no one knows why" into a message at the moment of
-    // choosing. `rev-parse` rather than a `.git` stat: that also accepts a
-    // worktree or a submodule, whose `.git` is a file.
-    if !crate::sync::app_git::is_git_repo(&path) {
-        return Err(HttpError::validation(format!(
-            "not a git repository: {}",
-            path.display()
-        )));
+    {
+        let check = path.clone();
+        tokio::task::spawn_blocking(move || prepare_bind_dir(&check))
+            .await
+            .map_err(|e| HttpError::internal(format!("git init task panicked: {e}")))??;
     }
 
     let team_id = body.team_id.clone();
@@ -1108,8 +1125,12 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
         crate::sync::app_build::ERR_ARTIFACT_TOO_LARGE,
         crate::sync::app_build::ERR_LOCKFILE_MISMATCH,
         crate::sync::app_build::ERR_NO_PACKAGE_JSON,
+        crate::sync::app_build::ERR_NO_PYTHON_PROJECT,
+        crate::sync::app_build::ERR_NO_GO_MOD,
+        crate::sync::app_build::ERR_NO_JAVA_BUILD,
         crate::sync::app_build::ERR_INSTALL_TIMEOUT,
         crate::sync::app_build::ERR_BUILD_TIMEOUT,
+        crate::sync::app_build::ERR_BUILD_COMMAND_TIMEOUT,
         // Container builds: every one of these is a fact about the machine the
         // build ran on or about the app's own files, so it belongs to the
         // caller. A 500 would send them to the daemon log for something the
@@ -1121,6 +1142,7 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
         crate::sync::app_build::ERR_IMAGE_BUILD_TIMEOUT,
         crate::sync::app_build::ERR_IMAGE_PUSH_TIMEOUT,
         crate::sync::app_build::ERR_IMAGE_PUSH_DENIED,
+        "teamclu.app.json",
         "git repo URL",
         "deploy key PEM",
     ];
@@ -1137,6 +1159,57 @@ mod tests {
     // `super` here is this module, not `http` — `errors` only resolves from the
     // crate root.
     use crate::http::errors::ErrorCode;
+
+    #[test]
+    fn binding_a_plain_folder_initialises_it_instead_of_refusing() {
+        // The create flow says "we will initialise one" for a folder that is
+        // not a repo, and the seed after this knows how to publish a fresh
+        // one. This step used to 422 first, so it never got the chance.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("app.py"), "print('hi')\n").unwrap();
+        assert!(!crate::sync::app_git::is_git_repo(tmp.path()));
+
+        prepare_bind_dir(tmp.path()).expect("a plain folder must be bindable");
+
+        assert!(crate::sync::app_git::is_git_repo(tmp.path()));
+        // Initialised, not committed: the first commit is the seed's to make,
+        // after it has written a default .gitignore.
+        assert!(!crate::sync::app_git::has_commits(tmp.path()));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("app.py")).unwrap(),
+            "print('hi')\n",
+            "the user's files are left exactly as they were"
+        );
+    }
+
+    #[test]
+    fn binding_an_existing_repo_leaves_it_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::sync::app_git::init_if_needed(tmp.path()).unwrap();
+        let head_before = std::fs::read_to_string(tmp.path().join(".git/HEAD")).unwrap();
+
+        prepare_bind_dir(tmp.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(".git/HEAD")).unwrap(),
+            head_before
+        );
+    }
+
+    #[test]
+    fn binding_something_that_is_not_a_directory_is_still_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir.txt");
+        std::fs::write(&file, "x").unwrap();
+        let err = prepare_bind_dir(&file).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::ValidationFailed));
+
+        let missing = tmp.path().join("nowhere");
+        let err = prepare_bind_dir(&missing).unwrap_err();
+        assert!(matches!(err.code, ErrorCode::ValidationFailed));
+        // And nothing was created at the missing path on the way to refusing.
+        assert!(!missing.exists());
+    }
 
     #[test]
     fn body_deserializes_camel_case() {

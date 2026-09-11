@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use crate::proto::amux;
 use crate::proto::teamclu::MessageKind;
-use crate::runtime::turn_aggregator::{EmittedMessage, TurnAggregator};
+use crate::runtime::turn_aggregator::{
+    classify_acp_error, AcpErrorKind, EmittedMessage, TurnAggregator,
+};
 
 /// Extra wait after a tool's own `timeout` before the daemon treats it as stuck.
 /// Pi may still be killing the process tree when the declared second elapses.
@@ -99,6 +101,49 @@ pub fn apply_tool_deadline_unix(event: &amux::AcpEvent, deadline: &mut Option<i6
             *deadline = None;
         }
         _ => {}
+    }
+}
+
+/// What a gateway / cron wait loop should do with an ACP `Error` event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatewayErrorAction {
+    /// Host/extension noise. Keep waiting for Active→Idle.
+    Continue,
+    /// The model already produced prose; return it instead of failing empty.
+    ReturnReply(String),
+    /// Abort the wait. Payload is the error details for `agent turn failed: …`.
+    Fail(String),
+}
+
+fn acp_error_details(err: &amux::AcpError) -> String {
+    if err.details.is_empty() {
+        err.message.clone()
+    } else {
+        err.details.clone()
+    }
+}
+
+/// Classify an ACP error for the gateway / cron wait loop.
+///
+/// A `pi extension error` (stale ctx after WeCom re-spawn) must not abort the
+/// wait — the model is still running. A real provider failure salvages any
+/// accumulated text the way a timeout does. User abort still fails the turn.
+pub fn gateway_error_action(
+    err: &amux::AcpError,
+    segments: &[String],
+    live: &str,
+) -> GatewayErrorAction {
+    match classify_acp_error(err) {
+        AcpErrorKind::SideChannel => GatewayErrorAction::Continue,
+        AcpErrorKind::UserAbort => GatewayErrorAction::Fail(acp_error_details(err)),
+        AcpErrorKind::TurnFailure => {
+            let acc = compose_reply(segments, live);
+            if acc.trim().is_empty() {
+                GatewayErrorAction::Fail(acp_error_details(err))
+            } else {
+                GatewayErrorAction::ReturnReply(acc)
+            }
+        }
     }
 }
 
@@ -207,6 +252,65 @@ mod tests {
             idle_remaining_at(t0, idle, nine_min),
             Duration::from_secs(60),
             "silence from the prompt would have only a minute left"
+        );
+    }
+
+    fn acp_err(message: &str, details: &str) -> amux::AcpError {
+        amux::AcpError {
+            message: message.into(),
+            details: details.into(),
+        }
+    }
+
+    #[test]
+    fn gateway_keeps_waiting_on_extension_noise() {
+        use crate::runtime::pi_rpc::translate::EXTENSION_ERROR_MESSAGE;
+        assert_eq!(
+            gateway_error_action(
+                &acp_err(
+                    EXTENSION_ERROR_MESSAGE,
+                    "This extension ctx is stale after session replacement or reload."
+                ),
+                &[],
+                ""
+            ),
+            GatewayErrorAction::Continue
+        );
+    }
+
+    #[test]
+    fn gateway_fails_user_abort_even_when_text_exists() {
+        use crate::runtime::pi_rpc::translate::{ABORTED_ERROR_DETAILS, ABORTED_ERROR_MESSAGE};
+        let segments = vec!["partial".to_string()];
+        assert_eq!(
+            gateway_error_action(
+                &acp_err(ABORTED_ERROR_MESSAGE, ABORTED_ERROR_DETAILS),
+                &segments,
+                ""
+            ),
+            GatewayErrorAction::Fail(ABORTED_ERROR_DETAILS.to_string())
+        );
+    }
+
+    #[test]
+    fn gateway_salvages_provider_error_after_prose() {
+        use crate::runtime::pi_rpc::translate::PROVIDER_ERROR_MESSAGE;
+        let segments = vec!["今日抖音来客数据".to_string()];
+        assert_eq!(
+            gateway_error_action(
+                &acp_err(PROVIDER_ERROR_MESSAGE, "400 out of extra usage."),
+                &segments,
+                ""
+            ),
+            GatewayErrorAction::ReturnReply("今日抖音来客数据".into())
+        );
+        assert_eq!(
+            gateway_error_action(
+                &acp_err(PROVIDER_ERROR_MESSAGE, "400 out of extra usage."),
+                &[],
+                ""
+            ),
+            GatewayErrorAction::Fail("400 out of extra usage.".into())
         );
     }
 

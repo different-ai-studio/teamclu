@@ -1,10 +1,8 @@
 use serde_json::Value;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 pub const TEAMCLU_DIR: &str = ".teamclu";
 pub const CONFIG_FILE_NAME: &str = "teamclu.json";
-pub const TEAM_REPO_DIR: &str = "teamclu-team";
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -20,19 +18,6 @@ fn config_path(workspace: &str) -> PathBuf {
 
 fn cron_jobs_path(workspace: &str) -> PathBuf {
     teamclu_dir(workspace).join("cron-jobs.json")
-}
-
-fn cron_runs_path(workspace: &str, job_id: &str) -> PathBuf {
-    teamclu_dir(workspace)
-        .join("cron-runs")
-        .join(format!("{job_id}.jsonl"))
-}
-
-fn team_members_path(workspace: &str) -> PathBuf {
-    Path::new(workspace)
-        .join(TEAM_REPO_DIR)
-        .join("_team")
-        .join("members.json")
 }
 
 fn roles_dir(workspace: &str) -> PathBuf {
@@ -52,17 +37,6 @@ fn read_json_file_or_default(path: &Path, default: Value) -> Result<Value, Strin
     serde_json::from_str(&raw).map_err(|e| format!("Failed to parse {}: {e}", path.display()))
 }
 
-fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create dir {}: {e}", parent.display()))?;
-    }
-    let mut content = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize JSON: {e}"))?;
-    content.push('\n');
-    std::fs::write(path, content).map_err(|e| format!("Failed to write {}: {e}", path.display()))
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -80,11 +54,6 @@ pub fn read_cron_jobs(workspace: &str) -> Result<Value, String> {
     )
 }
 
-/// Write `{workspace}/.teamclu/cron-jobs.json`.
-pub fn write_cron_jobs(workspace: &str, data: &Value) -> Result<(), String> {
-    write_json_file(&cron_jobs_path(workspace), data)
-}
-
 /// Extract cron jobs from the native `{ jobs: [...] }` shape, while accepting the
 /// legacy bare-array shape written by older introspect versions.
 pub fn cron_jobs_from_value(data: &Value) -> Vec<Value> {
@@ -93,54 +62,6 @@ pub fn cron_jobs_from_value(data: &Value) -> Vec<Value> {
         .or_else(|| data.as_array())
         .cloned()
         .unwrap_or_default()
-}
-
-/// Read last `limit` lines from `{workspace}/.teamclu/cron-runs/{job_id}.jsonl`.
-/// Returns `[]` if file is missing.
-pub fn read_cron_runs(workspace: &str, job_id: &str, limit: usize) -> Result<Vec<Value>, String> {
-    let path = cron_runs_path(workspace, job_id);
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-
-    let file = std::fs::File::open(&path)
-        .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
-    let reader = BufReader::new(file);
-
-    // Collect all non-empty lines then take the last `limit`.
-    let lines: Vec<String> = reader
-        .lines()
-        .filter_map(|l| l.ok())
-        .filter(|l| !l.trim().is_empty())
-        .collect();
-
-    let start = if lines.len() > limit {
-        lines.len() - limit
-    } else {
-        0
-    };
-
-    let mut result = Vec::new();
-    for line in &lines[start..] {
-        match serde_json::from_str::<Value>(line) {
-            Ok(v) => result.push(v),
-            Err(e) => {
-                eprintln!(
-                    "Warning: skipping malformed JSONL line in {}: {e}",
-                    path.display()
-                );
-            }
-        }
-    }
-    Ok(result)
-}
-
-/// Read `{workspace}/teamclu-team/_team/members.json`. Returns `{}` if missing.
-pub fn read_team_members(workspace: &str) -> Result<Value, String> {
-    read_json_file_or_default(
-        &team_members_path(workspace),
-        Value::Object(Default::default()),
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -209,8 +130,7 @@ fn parse_role_md(path: &Path) -> Result<Value, String> {
     let mut working_style = String::new();
 
     // --- Parse YAML frontmatter ---
-    let rest = if content.starts_with("---") {
-        let after_open = &content[3..];
+    let rest = if let Some(after_open) = content.strip_prefix("---") {
         if let Some(close_pos) = after_open.find("\n---") {
             let frontmatter = &after_open[..close_pos];
             let rest = &after_open[close_pos + 4..]; // skip "\n---"
@@ -225,7 +145,7 @@ fn parse_role_md(path: &Path) -> Result<Value, String> {
             }
             rest
         } else {
-            &content[3..]
+            after_open
         }
     } else {
         &content

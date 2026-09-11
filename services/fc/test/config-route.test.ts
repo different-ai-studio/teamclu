@@ -420,6 +420,12 @@ test("every shipped profile survives sanitization intact — no silently dropped
   }
 });
 
+test("seatalk is on only for the copilot361 profile", () => {
+  assert.equal(FEATURE_PROFILES["self-host"].channels?.seatalk, false);
+  assert.equal(FEATURE_PROFILES.belayo.channels?.seatalk, false);
+  assert.equal(FEATURE_PROFILES.copilot361.channels?.seatalk, true);
+});
+
 test("no shipped profile tries to control the updater", () => {
   for (const [name, profile] of Object.entries(FEATURE_PROFILES)) {
     assert.equal("updater" in profile, false, `profile ${name} must not set updater`);

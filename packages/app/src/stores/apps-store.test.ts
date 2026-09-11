@@ -4,6 +4,7 @@ import { publicDeployConfirm } from "@/lib/apps/app-deploy-confirm";
 const mocks = vi.hoisted(() => ({
   listApps: vi.fn(),
   createApp: vi.fn(),
+  deleteApp: vi.fn(),
   updateAppProvisionStatus: vi.fn(),
   updateAppDeployStatus: vi.fn(),
   deployApp: vi.fn(),
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getGitCredential: vi.fn(),
   revokeGitCredential: vi.fn(),
   getGitHead: vi.fn(),
+  setAppType: vi.fn(),
   seedDaemonApp: vi.fn(),
   cloneDaemonApp: vi.fn(),
   daemonAppWorkdir: vi.fn(),
@@ -36,6 +38,7 @@ vi.mock("@/lib/backend", () => ({
     apps: {
       listApps: mocks.listApps,
       createApp: mocks.createApp,
+      deleteApp: mocks.deleteApp,
       updateAppProvisionStatus: mocks.updateAppProvisionStatus,
       updateAppDeployStatus: mocks.updateAppDeployStatus,
       deployApp: mocks.deployApp,
@@ -43,6 +46,7 @@ vi.mock("@/lib/backend", () => ({
       getGitCredential: mocks.getGitCredential,
       revokeGitCredential: mocks.revokeGitCredential,
       getGitHead: mocks.getGitHead,
+      setAppType: mocks.setAppType,
     },
   }),
 }));
@@ -86,13 +90,23 @@ const seedResult = (
   over: { workdir?: string | null; error?: string | null } = {},
 ) => ({ outcome, workdir: null, error: null, ...over });
 
+const defaultDeclaration = {
+  build: { kind: "node", output: ".output" },
+  start: {
+    fcRuntime: "custom.debian10",
+    command: ["/opt/nodejs20/bin/node"],
+    args: ["server/index.mjs"],
+    port: 9000,
+  },
+};
+
 const buildResult = (
   outcome: "built" | "failed" | "unreachable",
   error: string | null = null,
   gitCommitSha: string | null = null,
-  runtime: { runtime: string; entry: string; port: number } | null = null,
+  declaration: typeof defaultDeclaration | null = defaultDeclaration,
   image: string | null = null,
-) => ({ outcome, error, gitCommitSha, runtime, image });
+) => ({ outcome, error, gitCommitSha, declaration, image });
 
 const gitCred = {
   remoteUrl: "git@gitea:team/app-1.git",
@@ -114,6 +128,7 @@ const appRow = (over = {}) => ({
   gitAuthKind: null,
   gitCommitSha: null,
   runtime: "node" as const,
+  startSpec: null,
   authMode: "none" as const,
   oauthClientId: null,
   provisionStatus: "pending",
@@ -139,6 +154,7 @@ describe("apps-store", () => {
     mocks.workdirExists.mockResolvedValue(false);
     mocks.readDir.mockResolvedValue([]);
     mocks.getGitCredential.mockResolvedValue(gitCred);
+    mocks.deleteApp.mockResolvedValue(true);
     const { useAppsStore } = await import("./apps-store");
     useAppsStore.setState({
       items: [],
@@ -411,22 +427,31 @@ describe("apps-store", () => {
 
   it("create: a clone that timed out explains what the raw error does not", async () => {
     mocks.createApp.mockResolvedValueOnce(
-      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+      appRow({
+        id: "app-timeout",
+        provisionStatus: "pending",
+        gitRemoteUrl: "https://github.com/owner/private.git",
+      }),
     );
-    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) =>
+      appRow({ id: "app-timeout", provisionStatus: st }),
+    );
+    mocks.deleteApp.mockResolvedValueOnce(true);
     mocks.seedDaemonApp.mockResolvedValueOnce(
       seedResult("failed", { error: '{"error":{"message":"git clone timed out after 5 minutes"}}' }),
     );
     const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().create({
-      teamId: "team-1",
-      name: "N",
-      type: "static_web",
-      visibility: "team",
-      gitRemoteUrl: "https://github.com/owner/private.git",
-    });
-    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
-    expect(String((opts as any)?.description)).toMatch(/凭证助手/);
+    await expect(
+      useAppsStore.getState().create({
+        teamId: "team-1",
+        name: "N",
+        type: "static_web",
+        visibility: "team",
+        gitRemoteUrl: "https://github.com/owner/private.git",
+      }),
+    ).rejects.toThrow(/凭证助手/);
+    expect(mocks.deleteApp).toHaveBeenCalledWith("app-timeout");
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("create: repo_created fetches deploy key and seeds with push", async () => {
@@ -493,27 +518,37 @@ describe("apps-store", () => {
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["ready"]);
   });
 
-  it("create: a failed clone tells the user what git said", async () => {
+  it("create: a failed remote clone rolls the empty app back and throws", async () => {
     mocks.createApp.mockResolvedValueOnce(
-      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/nope.git" }),
+      appRow({
+        id: "app-orphan",
+        provisionStatus: "pending",
+        gitRemoteUrl: "https://github.com/owner/nope.git",
+      }),
     );
-    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) =>
+      appRow({ id: "app-orphan", provisionStatus: st }),
+    );
+    mocks.deleteApp.mockResolvedValueOnce(true);
     mocks.seedDaemonApp.mockResolvedValueOnce(
       seedResult("failed", { error: "git clone failed: repository not found" }),
     );
     const { useAppsStore } = await import("./apps-store");
-    await useAppsStore.getState().create({
-      teamId: "team-1",
-      name: "N",
-      type: "static_web",
-      visibility: "team",
-      gitRemoteUrl: "https://github.com/owner/nope.git",
-    });
+    await expect(
+      useAppsStore.getState().create({
+        teamId: "team-1",
+        name: "N",
+        type: "static_web",
+        visibility: "team",
+        gitRemoteUrl: "https://github.com/owner/nope.git",
+      }),
+    ).rejects.toThrow("git clone failed: repository not found");
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["error"]);
-    expect(mocks.toastError).toHaveBeenCalledWith(
-      "仓库克隆失败",
-      { description: "git clone failed: repository not found" },
-    );
+    expect(mocks.deleteApp).toHaveBeenCalledWith("app-orphan");
+    expect(useAppsStore.getState().items).toEqual([]);
+    // The form shows the error; no "clone failed" toast that would make the
+    // create look half-successful.
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("create: a template app that fails to seed does not toast a clone error", async () => {
@@ -528,6 +563,35 @@ describe("apps-store", () => {
       visibility: "team",
     });
     expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(mocks.deleteApp).not.toHaveBeenCalled();
+  });
+
+  it("reseed: a failed clone toasts and keeps the app row", async () => {
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(
+      seedResult("failed", { error: "git clone failed: repository not found" }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({
+      items: [
+        appRow({
+          provisionStatus: "error",
+          gitRemoteUrl: "https://github.com/owner/nope.git",
+          teamId: "team-1",
+        }),
+      ],
+      loaded: true,
+      loading: false,
+      error: null,
+      teamId: "team-1",
+    });
+    await useAppsStore.getState().reseed("app-1");
+    expect(mocks.deleteApp).not.toHaveBeenCalled();
+    expect(useAppsStore.getState().items).toHaveLength(1);
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "仓库克隆失败",
+      { description: "git clone failed: repository not found" },
+    );
   });
 
   it("create: a thrown status PATCH does not reject create", async () => {
@@ -560,6 +624,70 @@ describe("apps-store", () => {
     });
     expect(row.id).toBe("app-6");
     expect(useAppsStore.getState().items[0]).toMatchObject({ id: "app-6" });
+  });
+});
+
+describe("apps-store setType", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({
+      items: [appRow({ type: "data_app", fcStatus: "live" })],
+      loaded: true,
+      loading: false,
+      error: null,
+      teamId: "team-1",
+    });
+  });
+
+  it("merges the server's row, pending-redeploy flag included", async () => {
+    mocks.setAppType.mockResolvedValueOnce(
+      appRow({ type: "static_web", fcStatus: "live", typePendingRedeploy: true }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    const ok = await useAppsStore.getState().setType("app-1", "static_web");
+
+    expect(ok).toBe(true);
+    expect(mocks.setAppType).toHaveBeenCalledWith("app-1", "static_web");
+    expect(useAppsStore.getState().items[0]).toMatchObject({
+      type: "static_web",
+      typePendingRedeploy: true,
+    });
+  });
+
+  it("asks the panel to recount, because the data row just changed meaning", async () => {
+    // Leaving data_app has the data browser answer "no database" at once; the
+    // panel loads its counts once per app and would keep showing the tables.
+    mocks.setAppType.mockResolvedValueOnce(appRow({ type: "slides" }));
+    const { useAppsStore } = await import("./apps-store");
+    const before = useAppsStore.getState().summaryRevision;
+    await useAppsStore.getState().setType("app-1", "slides");
+    expect(useAppsStore.getState().summaryRevision).toBe(before + 1);
+  });
+
+  it("names the admin rule instead of relaying a bare 404", async () => {
+    mocks.setAppType.mockResolvedValueOnce(null);
+    const { useAppsStore } = await import("./apps-store");
+    const before = useAppsStore.getState().summaryRevision;
+    const ok = await useAppsStore.getState().setType("app-1", "slides");
+
+    expect(ok).toBe(false);
+    expect(useAppsStore.getState().items[0]).toMatchObject({ type: "data_app" });
+    expect(useAppsStore.getState().summaryRevision).toBe(before);
+    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
+    expect(String((opts as { description?: string })?.description)).toMatch(/管理权限|admin/);
+  });
+
+  it("passes a server error through as the toast's reason", async () => {
+    mocks.setAppType.mockRejectedValueOnce(new Error("type must be one of static_web, slides"));
+    const { useAppsStore } = await import("./apps-store");
+    const ok = await useAppsStore.getState().setType("app-1", "slides");
+
+    expect(ok).toBe(false);
+    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
+    expect((opts as { description?: string })?.description).toBe(
+      "type must be one of static_web, slides",
+    );
   });
 });
 
@@ -699,9 +827,7 @@ describe("apps-store deploy", () => {
     });
     mocks.getGitHead.mockResolvedValue({ sha: "abc1234567890" });
     mocks.getGitCredential.mockResolvedValue(gitCred);
-    // An app that declares nothing: the daemon reports the built-in contract,
-    // which is what every app deployed before declarations existed gets.
-    mocks.daemonAppManifest.mockResolvedValue(null);
+    mocks.daemonAppManifest.mockResolvedValue(defaultDeclaration);
     mocks.getDaemonEnvActivationDiagnostics.mockResolvedValue({
       workspace_has_active_turn: false,
     });
@@ -721,12 +847,11 @@ describe("apps-store deploy", () => {
     // The whole point of the container path: no OSS upload handle is minted,
     // the daemon is handed a registry instead, and the image it pushed is what
     // the function is pointed at.
-    mocks.daemonAppManifest.mockResolvedValue({
-      runtime: "container",
-      entry: "",
-      port: 5000,
-      healthCheckPath: "/api/health",
-    });
+    const declaration = {
+      build: { kind: "container", output: ".", dockerfile: "Dockerfile", context: "." },
+      start: { port: 5000, healthCheckPath: "/api/health" },
+    };
+    mocks.daemonAppManifest.mockResolvedValue(declaration);
     const image = {
       reference: "registry.cn-shenzhen.aliyuncs.com/tc/tc-app-app-1:abc1234567890",
       registry: "registry.cn-shenzhen.aliyuncs.com",
@@ -741,7 +866,7 @@ describe("apps-store deploy", () => {
       gitCommitSha: "abc1234567890",
     });
     mocks.buildDaemonApp.mockResolvedValueOnce(
-      buildResult("built", null, null, { runtime: "container", entry: "", port: 5000 }, image.reference),
+      buildResult("built", null, null, declaration, image.reference),
     );
     mocks.finalizeDeploy.mockResolvedValueOnce({
       ...readyApp(),
@@ -763,7 +888,7 @@ describe("apps-store deploy", () => {
     );
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
       gitCommitSha: "abc1234567890",
-      runtime: { runtime: "container", entry: "", port: 5000 },
+      declaration,
       image: image.reference,
       deployToken: "tok-1",
     });
@@ -788,7 +913,10 @@ describe("apps-store deploy", () => {
     await useAppsStore.getState().deploy("app-1");
 
     expect(mocks.getGitHead).toHaveBeenCalledWith("app-1");
-    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", { gitCommitSha: "abc1234567890" });
+    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {
+      gitCommitSha: "abc1234567890",
+      runtime: "node",
+    });
     expect(mocks.daemonAppManifest).toHaveBeenCalledWith("app-1", "team-1");
     expect(mocks.getGitCredential).toHaveBeenCalledWith("app-1");
     expect(mocks.buildDaemonApp).toHaveBeenCalledWith("app-1", "team-1", {
@@ -800,6 +928,7 @@ describe("apps-store deploy", () => {
     });
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
       gitCommitSha: "abc1234567890",
+      declaration: defaultDeclaration,
       deployToken: "tok-1",
     });
     expect(mocks.updateAppDeployStatus).not.toHaveBeenCalled();
@@ -837,6 +966,7 @@ describe("apps-store deploy", () => {
     );
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
       gitCommitSha: "def4567890123",
+      declaration: defaultDeclaration,
       deployToken: "tok-1",
     });
   });
@@ -852,16 +982,18 @@ describe("apps-store deploy", () => {
       deployToken: "tok-1",
       gitCommitSha: "abc1234567890",
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce(
-      buildResult("built", null, null, { runtime: "node", entry: "index.js", port: 8080 }),
-    );
+    const declaration = {
+      build: { kind: "node", output: "dist" },
+      start: { fcRuntime: "custom.debian12", command: ["node"], args: ["index.js"], port: 8080 },
+    };
+    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built", null, null, declaration));
     mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp(), fcStatus: "live" });
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
 
     expect(mocks.finalizeDeploy).toHaveBeenCalledWith(
       "app-1",
-      expect.objectContaining({ runtime: { runtime: "node", entry: "index.js", port: 8080 } }),
+      expect.objectContaining({ declaration }),
     );
   });
 
@@ -1041,7 +1173,7 @@ describe("apps-store deploy", () => {
 
     expect(mocks.getGitHead).not.toHaveBeenCalled();
     expect(mocks.getGitCredential).not.toHaveBeenCalled();
-    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", {});
+    expect(mocks.deployApp).toHaveBeenCalledWith("app-1", { runtime: "node" });
     expect(mocks.buildDaemonApp).toHaveBeenCalledWith("app-1", "team-1", {
       gitCommitSha: undefined,
       gitRemoteUrl: undefined,
@@ -1049,7 +1181,10 @@ describe("apps-store deploy", () => {
       presignedPut: "https://oss/put?sig=x",
       image: undefined,
     });
-    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", { deployToken: "tok-1" });
+    expect(mocks.finalizeDeploy).toHaveBeenCalledWith("app-1", {
+      declaration: defaultDeclaration,
+      deployToken: "tok-1",
+    });
     expect(useAppsStore.getState().items[0]).toMatchObject({ fcStatus: "live" });
   });
 

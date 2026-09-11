@@ -1,6 +1,6 @@
 # belayo 的镜像仓库
 
-belayo 上的容器应用（`teamclu.app.json` 里 `runtime: "container"`）要有个地方放镜像。
+belayo 上的容器应用（`teamclu.app.json` 里 `build.kind: "container"`）要有个地方放镜像。
 ACR 个人版已经无法新建、企业版按实例收费，所以跟 self-host 一样自建一个。
 
 区别只在托管方式：self-host 那份跑在盒子的 docker compose 里、由 Caddy 挡在前面

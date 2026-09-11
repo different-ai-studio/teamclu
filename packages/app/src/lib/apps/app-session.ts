@@ -109,8 +109,8 @@ async function loadContext(app: AppRow): Promise<AppSessionContext> {
 }
 
 /**
- * Write the app's local checkout path onto the app's OWN cloud workspace row,
- * and return that row's id.
+ * The workspace row that stands for THIS machine's copy of the app, creating
+ * or filling it in as needed.
  *
  * An app is created with a 1:1 workspace (`apps.workspace_id`), and the cloud
  * API — which never sees a filesystem — creates it with a name and no path. A
@@ -118,14 +118,23 @@ async function loadContext(app: AppRow): Promise<AppSessionContext> {
  * falls through to whatever `worktree` the desktop sent, and when the desktop
  * had nothing to send it used the *currently open* workspace. That is how an
  * app's files ended up in whatever folder the user happened to have open.
- *
  * Filling that row in is what makes the app directory resolvable on its own,
  * from any of the four routes runtime-start tries, and on a device whose local
- * cache is cold. It also replaces the second, path-carrying workspace row the
- * desktop used to create beside it — one app, one workspace, one directory.
+ * cache is cold.
  *
- * Falls back to the old find-by-path-or-create for an app row old enough to
- * have no `workspaceId`.
+ * But a workspace row is machine-scoped and an app row is not. `workspaces` is
+ * unique on `(team_id, agent_id, name)` and carries one absolute `path`, while
+ * the daemon's `agent_id` is per-install (`~/.amuxd/backend.toml`) — so the
+ * same account signed in on two computers has two daemons, two checkouts and
+ * two paths, against a single `apps.workspace_id`. This used to overwrite that
+ * one row with whichever machine opened the app last, which re-pointed the
+ * other machine's sessions at a directory it does not have.
+ *
+ * So the app's own row is claimed only when it is unclaimed (no path yet) or
+ * already names this machine's directory. Anything else means another machine
+ * holds it, and this machine gets a row of its own — found by path, or created.
+ * `POST /v1/workspaces` dedupes on `(team, path)` before `(team, agent, name)`
+ * and renames on a name collision, so creating one is safe.
  */
 async function ensureAppWorkspaceRow(
   app: AppRow,
@@ -139,28 +148,29 @@ async function ensureAppWorkspaceRow(
   if (app.workspaceId) {
     try {
       const [row] = await getBackend().workspaces.listWorkspacesByIds(ctx.teamId, [app.workspaceId])
+      // Already this directory — either this machine claimed it, or both
+      // machines happen to lay their amuxd home out identically, in which case
+      // the path resolves correctly on each and one row is enough.
       if (row?.path && workspacePathsMatch(row.path, appWorkdir)) return app.workspaceId
-      // Keep the row's existing name: `workspaces` is unique on
-      // (team_id, agent_id, name), and renaming it to the app's name here
-      // could collide with a workspace the user already has.
-      const saved = await createDaemonWorkspace({
-        id: app.workspaceId,
-        teamId: ctx.teamId,
-        // Bound to this machine's daemon, like every other workspace row.
-        // Opening the same app on a second machine re-points the row at that
-        // machine's daemon and its own copy of the checkout — whoever opened
-        // the app last owns the row, and the other machine takes it back the
-        // next time the app is opened there. Nothing is lost either way: the
-        // path is derived from the app, so each machine keeps its own copy at
-        // the same relative place under its own amuxd home.
-        agentId: ctx.localDaemonActorId,
-        createdByMemberId: ctx.creatorActorId,
-        name: row?.name || app.name,
-        path: appWorkdir,
-      })
-      return saved.id
+      if (row && !row.path) {
+        // Unclaimed: the row the cloud API minted with the app, which no
+        // machine has bound to a directory yet. Keep its existing name —
+        // `workspaces` is unique on (team_id, agent_id, name) and renaming it
+        // to the app's name here could collide with one the user already has.
+        const saved = await createDaemonWorkspace({
+          id: app.workspaceId,
+          teamId: ctx.teamId,
+          agentId: ctx.localDaemonActorId,
+          createdByMemberId: ctx.creatorActorId,
+          name: row.name || app.name,
+          path: appWorkdir,
+        })
+        return saved.id
+      }
+      // A row with a *different* path belongs to another machine's copy of this
+      // app. Leave it exactly as it is and fall through to this machine's own.
     } catch (e) {
-      console.warn('[app-session] could not fill in the app workspace path:', e)
+      console.warn('[app-session] could not read the app workspace row:', e)
     }
   }
 
@@ -212,8 +222,13 @@ export async function bindAppWorkdir(app: AppRow, workdir: string): Promise<stri
  * the daemon falls back to the desktop's current workspace and the agent runs
  * in the wrong directory.
  *
- * Returns the app's cloud workspace id, so the caller can hand it to
- * runtime-start directly instead of letting it be inferred.
+ * Returns this machine's cloud workspace id for the app, so the caller can hand
+ * it to runtime-start directly instead of letting it be inferred. Null when it
+ * could not be established — `apps.workspace_id` is deliberately NOT used as a
+ * fallback, because on a second machine that row names another computer's
+ * directory, and a wrong path is worse than none: runtime-start falls back to
+ * the worktree it was given, while a wrong workspace resolves to a directory
+ * that is not here.
  */
 async function bindAppWorkspace(
   app: AppRow,
@@ -221,7 +236,9 @@ async function bindAppWorkspace(
   ctx: AppSessionContext,
 ): Promise<string | null> {
   const appWorkdir = await appWorkdirPath(app.id, app.teamId || ctx.teamId)
-  if (!appWorkdir || !ctx.localDaemonActorId) return app.workspaceId ?? null
+  // No directory from the daemon means nothing to bind. `apps.workspace_id` is
+  // not a stand-in for it: see the note above.
+  if (!appWorkdir || !ctx.localDaemonActorId) return null
 
   const workspaceId = await ensureAppWorkspaceRow(app, appWorkdir, ctx)
 
@@ -233,7 +250,7 @@ async function bindAppWorkspace(
           teamId: ctx.teamId,
           viewerMemberId: ctx.viewerMemberId,
           agentId: ctx.localDaemonActorId,
-          workspaceId: workspaceId ?? app.workspaceId ?? null,
+          workspaceId: workspaceId ?? null,
           workspacePath: appWorkdir,
           updatedAt: new Date().toISOString(),
         },
@@ -243,7 +260,7 @@ async function bindAppWorkspace(
     }
   }
 
-  return workspaceId ?? app.workspaceId ?? null
+  return workspaceId
 }
 
 async function seatDaemonAndBind(

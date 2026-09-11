@@ -1073,6 +1073,12 @@ paths:
                   format: uuid
                 title:
                   type: string
+                workspaceId:
+                  type: string
+                  format: uuid
+                  description: |
+                    Cloud workspace the primary agent runs this job in.
+                    When omitted, FC stamps `agents.default_workspace_id`.
       responses:
         "200":
           description: Cron session result.
@@ -2360,7 +2366,7 @@ paths:
           description: Registry moved since the publisher loaded it (`stale_team_skill_base`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}:
     get:
       operationId: getTeamSkillVersion
@@ -2430,7 +2436,7 @@ paths:
           description: Package blob is not uploaded yet (`blob_missing`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}/revert:
     post:
       operationId: revertTeamSkillVersion
@@ -2490,7 +2496,7 @@ paths:
             latest (`conflict`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/install:
     put:
       operationId: installTeamSkill
@@ -5803,10 +5809,12 @@ paths:
           $ref: "#/components/responses/Error"
     patch:
       operationId: updateApp
-      summary: Update an app (creator only)
+      summary: Update an app (admin required)
       description: |
-        Renames, changes visibility, or reports a lifecycle status the client
-        owns. `provisionStatus` carries the repo/seed lifecycle the desktop
+        Requires `admin` permission (the creator is treated as admin); anyone
+        else receives 404 and nothing is written.
+        Renames, changes visibility or type, or reports a lifecycle status the
+        client owns. `provisionStatus` carries the repo/seed lifecycle the desktop
         drives via the local daemon; `fcStatus` carries the deploy lifecycle —
         the desktop reports `deploy_error` when the daemon build leg fails,
         since nothing server-side can observe that. Illegal transitions are
@@ -5847,6 +5855,25 @@ paths:
                     wins. Rejected with 400 when `authScope` is `paths` and no
                     rule has `auth: required` — that combination claims a login
                     wall while protecting nothing.
+                type:
+                  $ref: "#/components/schemas/AppType"
+                  description: >-
+                    What kind of app this is. The row changes at once, but the
+                    running function follows only on the next deploy — until
+                    then the app's `typePendingRedeploy` is true. Switching TO
+                    `data_app` provisions the Postgres schema and injects
+                    `DATABASE_URL` on that deploy. Switching AWAY from
+                    `data_app` removes `DATABASE_URL` from the function on the
+                    next deploy, so code that still uses the database breaks;
+                    the schema and its data are kept, and come back if the app
+                    is switched back (the schema name is derived from the slug
+                    and app id, and provisioning is idempotent). The data
+                    browser follows the stored type immediately, answering
+                    `409 app_has_no_database` for a type without a database.
+                    Only `static_web`, `slides`, `data_app` and `imported` may
+                    be written; the legacy `fullstack_tanstack_postgres`, or
+                    any other value, is rejected with 400 `validation_failed`.
+                    Requires `admin`, like the rest of this PATCH.
       responses:
         "200":
           description: The updated app.
@@ -5964,7 +5991,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [deployToken]
+              required: [deployToken, declaration]
               properties:
                 gitCommitSha:
                   type: string
@@ -5976,31 +6003,19 @@ paths:
                   type: string
                   format: uuid
                   description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
-                runtime:
+                declaration:
                   type: object
                   description: >-
-                    How the app says it starts, read by the daemon out of the
-                    app's own `teamclu.app.json` and resolved against the
-                    built-in contract. Omitted by a client that predates the
-                    declaration, and by an app that ships none — both get the
-                    contract every app had before it existed (node,
-                    `server/index.mjs`, port 9000). `runtime` here is the
-                    interpreter family, NOT the `runtime` column on the app
-                    (`node` vs `container`); a value this deployment has no
-                    layer for is a 400, because the function would otherwise be
-                    created unable to boot.
-                  required: [runtime, entry, port]
+                    The daemon-validated build and start declaration read from
+                    the app's required `teamclu.app.json`. The control plane
+                    persists `build.kind` and `start`, then configures Function
+                    Compute without deriving either from the checkout.
+                  required: [build, start]
                   properties:
-                    runtime:
-                      type: string
-                      enum: [node]
-                    entry:
-                      type: string
-                      description: Path inside the unpacked artifact.
-                    port:
-                      type: integer
-                      minimum: 1
-                      maximum: 65535
+                    build:
+                      $ref: "#/components/schemas/AppBuildSpec"
+                    start:
+                      $ref: "#/components/schemas/AppStartSpec"
       responses:
         "200":
           description: The app, now live.
@@ -7401,8 +7416,7 @@ components:
       in: path
       required: true
       schema:
-        type: string
-        pattern: "^[a-z0-9][a-z0-9-]{1,63}$"
+        $ref: "#/components/schemas/TeamSkillSlug"
     TeamMcpServerName:
       name: name
       in: path
@@ -7662,6 +7676,14 @@ components:
             Producer-supplied idempotency key, stable across retries of the
             same logical event. A permission request keys on its request id,
             not on a timestamp.
+    TeamSkillSlug:
+      type: string
+      pattern: "^[a-z0-9][a-z0-9-]{1,63}$"
+      description: >-
+        Skill identifier inside a team registry. Mirrors
+        `TEAM_SKILL_SLUG_RE` in the FC repository layer — lowercase
+        alphanumerics and hyphens, never leading with a hyphen, 2 to 64
+        characters.
     TeamSkillCategory:
       type: string
       description: >
@@ -7798,7 +7820,7 @@ components:
       type: object
       required: [slug, summary, category, changelog, contentHash]
       properties:
-        slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,63}$" }
+        slug: { $ref: "#/components/schemas/TeamSkillSlug" }
         summary: { type: string, maxLength: 200 }
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }
@@ -7959,7 +7981,8 @@ components:
         schema and the team's org on its first deploy.
 
         `fullstack_tanstack_postgres` is the legacy id for `data_app` and is
-        still stored on apps created before the split.
+        still stored on apps created before the split. `PATCH /v1/apps/{appId}`
+        refuses to write it; an app is moved off it by setting `data_app`.
       enum: [static_web, slides, data_app, imported, fullstack_tanstack_postgres]
     AppFcStatus:
       type: string
@@ -7967,13 +7990,55 @@ components:
         Deploy lifecycle, orthogonal to `provisionStatus` (which tracks the repo
         and its seeding). `null` means the app has never been deployed.
       enum: [not_deployed, awaiting_build, building, deploying, live, deploy_error]
-    AppRuntime:
+    AppBuildKind:
       type: string
       description: |
-        FC runtime for the deployed artifact. Phase 1 supports `node` only;
-        `container` is reserved for bring-your-own-image deploys.
-      enum: [node, container]
+        How the app artifact is built. This is persisted in `apps.runtime`;
+        Function Compute's runtime is declared separately in `start.fcRuntime`.
+      enum: [node, python, go, php, java, container]
       default: node
+    AppBuildSpec:
+      type: object
+      required: [kind, output]
+      properties:
+        kind:
+          $ref: "#/components/schemas/AppBuildKind"
+        output:
+          type: string
+          description: Relative artifact output path inside the checkout.
+        command:
+          type: string
+          description: Optional shell build command.
+        dockerfile:
+          type: string
+          description: Relative Dockerfile path for container builds.
+        context:
+          type: string
+          description: Relative Docker build context.
+    AppStartSpec:
+      type: object
+      required: [port]
+      properties:
+        fcRuntime:
+          type: string
+          description: Function Compute runtime for non-container builds.
+        command:
+          type: array
+          items: { type: string }
+        args:
+          type: array
+          items: { type: string }
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        layers:
+          type: array
+          items: { type: string }
+          description: Function Compute layer ARNs; an empty list disables defaults.
+        healthCheckPath:
+          type: string
+          pattern: "^/"
     AppAuthMode:
       type: string
       description: |
@@ -8030,7 +8095,13 @@ components:
             HEAD commit SHA on the app's Gitea repo at last successful deploy;
             null before the first deploy completes.
         runtime:
-          $ref: "#/components/schemas/AppRuntime"
+          $ref: "#/components/schemas/AppBuildKind"
+          description: Build kind persisted from the last successful declaration.
+        startSpec:
+          oneOf:
+            - $ref: "#/components/schemas/AppStartSpec"
+            - type: "null"
+          description: Start configuration persisted from the last successful declaration.
         authMode:
           $ref: "#/components/schemas/AppAuthMode"
         authAudience:
@@ -8072,6 +8143,16 @@ components:
             function was built. The environment is baked in at finalize, so an
             edit does nothing until the next deploy. Server-derived from
             `fc_status` and the two env timestamps; false for an app that has
+            never been live.
+        typePendingRedeploy:
+          type: boolean
+          description: >-
+            The app's `type` changed since the running function was deployed,
+            in the one way a deploy acts on — whether the function gets a
+            database — so the running app does not reflect it until the next
+            deploy. Switching among the types without a database
+            (`static_web`, `slides`, `imported`) is never pending. Server-derived
+            from `fc_status` and the deployed type; false for an app that has
             never been live.
         oauthClientId:
           type: [string, "null"]
@@ -9344,6 +9425,20 @@ components:
           items:
             type: string
             format: uuid
+        additionalActorIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        workspaceByActorId:
+          type: object
+          additionalProperties:
+            type: string
+            format: uuid
+          description: |
+            Cloud workspace UUID for each agent participant. Overrides
+            `agents.default_workspace_id` for that actor. Member seats stay
+            unbound (workspace_id is not applicable).
     SessionThreadSummary:
       type: object
       required: [threadSessionId, rootMessageId, messageCount, participantCount]
@@ -9453,6 +9548,13 @@ components:
                 - string
                 - "null"
               description: Display name of the personal agent owner.
+        appContext:
+          oneOf:
+            - $ref: "#/components/schemas/SessionAppContext"
+            - type: "null"
+          description: >-
+            Secret-free control-plane snapshot for the app linked to this
+            session. Present only for an authenticated agent participant.
         items:
           type: array
           items:
@@ -9476,6 +9578,152 @@ components:
         isSelf:
           type: boolean
           description: True when this row is the authenticated caller.
+    SessionAppContext:
+      type: object
+      required:
+        - snapshotAt
+        - id
+        - name
+        - type
+        - visibility
+        - deployment
+        - auth
+        - database
+        - storage
+        - environment
+        - cronJobs
+        - customDomain
+      description: >-
+        App metadata safe to include in an agent system prompt. Environment
+        values, secret values, cron header/body values, data rows, file names,
+        access lists and DNS verification tokens are deliberately excluded.
+      properties:
+        snapshotAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+        visibility:
+          type: string
+        canonicalUrl:
+          type:
+            - string
+            - "null"
+          format: uri
+        provisionStatus:
+          type:
+            - string
+            - "null"
+        fcStatus:
+          type:
+            - string
+            - "null"
+        deployment:
+          type: object
+          required:
+            - gitCommitSha
+            - runtime
+            - startSpec
+            - typePendingRedeploy
+            - envPendingRedeploy
+            - authModePendingRedeploy
+          properties:
+            gitCommitSha:
+              type: [string, "null"]
+            runtime:
+              type: [string, "null"]
+            startSpec:
+              type: [object, "null"]
+              additionalProperties: true
+            typePendingRedeploy:
+              type: boolean
+            envPendingRedeploy:
+              type: boolean
+            authModePendingRedeploy:
+              type: boolean
+        auth:
+          type: object
+          required: [mode, audience, scope, rules]
+          properties:
+            mode:
+              type: string
+            audience:
+              type: string
+            scope:
+              type: string
+            rules:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+        database:
+          type: object
+          required: [configured, live]
+          properties:
+            configured:
+              type: boolean
+            live:
+              type: boolean
+        storage:
+          type: object
+          required: [controlPlaneAvailable, overQuota]
+          properties:
+            controlPlaneAvailable:
+              type: boolean
+              description: >-
+                Whether this deployment supports app object storage. An older
+                live function may still require redeployment to receive its env.
+            overQuota:
+              type: boolean
+        environment:
+          type: object
+          required: [keys]
+          properties:
+            keys:
+              type: array
+              items:
+                type: object
+                required: [key, isSecret]
+                properties:
+                  key:
+                    type: string
+                  isSecret:
+                    type: boolean
+        cronJobs:
+          type: array
+          items:
+            type: object
+            required: [name, enabled, schedule, timezone, method, path, headerNames]
+            properties:
+              name:
+                type: string
+              enabled:
+                type: boolean
+              schedule:
+                type: string
+              timezone:
+                type: string
+              method:
+                type: string
+              path:
+                type: string
+              headerNames:
+                type: array
+                items:
+                  type: string
+        customDomain:
+          type: object
+          required: [domain, verified]
+          properties:
+            domain:
+              type: [string, "null"]
+            verified:
+              type: boolean
     TeamMember:
       type: object
       required: [actorId, teamId, role]

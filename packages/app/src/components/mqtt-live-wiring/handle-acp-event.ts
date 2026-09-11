@@ -15,6 +15,7 @@ import { reportSkillUsage } from "@/lib/telemetry/skill-usage";
 import { resolveOrphanSubagentParentToolId, shouldBufferUnboundChildAcpEvent, shouldRouteOrphanSubagentEvent } from "@/lib/teamclu/subagent-acp-routing";
 import { routeSubagentAcpEvent } from "@/lib/teamclu/subagent-acp-route";
 import { tryBindChildFromPermission } from "@/lib/teamclu/subagent-acp-binding";
+import { handleCompactionRawEvent } from "@/lib/stream/handle-compaction-raw-event";
 import { useSessionStore } from "@/stores/session-store";
 import type { TFunction } from "i18next";
 import type { DecodedLiveEvent } from "@/lib/daemon/teamclu-events";
@@ -442,6 +443,11 @@ export function handleAcpEvent(
             } else if (event?.case === "raw") {
               const raw = event.value as { method?: string; jsonPayload?: Uint8Array };
               const method = raw.method ?? "";
+              if (
+                handleCompactionRawEvent(sid, actorId, method, raw.jsonPayload)
+              ) {
+                return;
+              }
               if (
                 method === "question_asked" ||
                 method === "question_replied" ||

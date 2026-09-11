@@ -36,6 +36,7 @@ function assertNewOrgAllowed(): void {
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
+import { parseAppType } from "./validation/app-type.js";
 import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
 import { MAX_ENV_VARS_PER_APP, parseEnvKey, parseEnvValue } from "./app-env.js";
 import { executeAppCronJob, JOB_COLUMNS as CRON_JOB_COLUMNS } from "./app-cron-runner.js";
@@ -58,8 +59,8 @@ import {
   checkDeployInProgress,
   deployUnavailable,
   needsDatabase,
-  parseAppRuntimeSpec,
-  parseDeclaredRuntime,
+  parseAppDeployDeclaration,
+  parseDeclaredBuildKind,
   parseDeployedImage,
   parseDeployToken,
   parseOptionalGitCommitSha,
@@ -176,6 +177,49 @@ function guardedFetch(input: any, init?: any) {
     // dependency on the SDK here so unit tests and the FC target stay identical.
   }
   return fetch(input, init);
+}
+
+/**
+ * Agent seats carry a workspace (ADR-0005); member seats do not.
+ * Callers that already picked a folder pass it in `overrideByActorId`.
+ */
+async function workspaceIdByAgentActor(
+  supabase: any,
+  actorIds: string[],
+  overrideByActorId: Record<string, string> = {},
+): Promise<Map<string, string>> {
+  const ids = [...new Set(actorIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const defaults = new Map<string, string>();
+  if (ids.length > 0) {
+    const rows = await chunkedIn(ids, async (chunk: string[]) => {
+      const { data, error } = await supabase
+        .from("agents")
+        .select("id, default_workspace_id")
+        .in("id", chunk);
+      if (error) throw error;
+      return data ?? [];
+    });
+    for (const row of rows) {
+      const id = typeof row?.id === "string" ? row.id.trim() : "";
+      const workspaceId =
+        typeof row?.default_workspace_id === "string" ? row.default_workspace_id.trim() : "";
+      if (id && workspaceId) defaults.set(id, workspaceId);
+    }
+  }
+  const out = new Map<string, string>();
+  for (const actorId of ids) {
+    const override =
+      typeof overrideByActorId[actorId] === "string" ? overrideByActorId[actorId].trim() : "";
+    const workspaceId = override || defaults.get(actorId) || "";
+    if (workspaceId) out.set(actorId, workspaceId);
+  }
+  return out;
+}
+
+function participantSeedRow(sessionId: string, actorId: string, workspaceId: string | null) {
+  const row: Record<string, string> = { session_id: sessionId, actor_id: actorId };
+  if (workspaceId) row.workspace_id = workspaceId;
+  return row;
 }
 
 /**
@@ -2709,7 +2753,18 @@ export function createSupabaseBusinessRepository(options) {
         ),
       );
       if (seedActorIds.length > 0) {
-        const rows = seedActorIds.map((actorId) => ({ session_id: id, actor_id: actorId }));
+        const overrideByActorId =
+          input.workspaceByActorId && typeof input.workspaceByActorId === "object"
+            ? input.workspaceByActorId
+            : {};
+        const workspaceByActor = await workspaceIdByAgentActor(
+          supabase,
+          seedActorIds,
+          overrideByActorId,
+        );
+        const rows = seedActorIds.map((actorId) =>
+          participantSeedRow(id, actorId, workspaceByActor.get(actorId) ?? null),
+        );
         const { error: partError } = await supabase
           .from("session_participants")
           .upsert(rows, { onConflict: "session_id,actor_id" });
@@ -2870,11 +2925,28 @@ export function createSupabaseBusinessRepository(options) {
         .select(SESSION_FULL_COLUMNS)
         .single();
       if (error) throw error;
-      // Bootstrap primary agent as participant.
+      // Bootstrap primary agent as participant, with the folder it will run
+      // in. Without this the desktop file tree has nothing to adopt and shows
+      // "Agent 尚未启动" even after the cron turn has already replied.
+      const overrideByActorId: Record<string, string> = {};
+      if (typeof input.workspaceId === "string" && input.workspaceId.trim()) {
+        overrideByActorId[input.primaryAgentActorId] = input.workspaceId.trim();
+      }
+      const workspaceByActor = await workspaceIdByAgentActor(
+        supabase,
+        [input.primaryAgentActorId],
+        overrideByActorId,
+      );
       const { error: partError } = await supabase
         .from("session_participants")
         .upsert(
-          [{ session_id: id, actor_id: input.primaryAgentActorId }],
+          [
+            participantSeedRow(
+              id,
+              input.primaryAgentActorId,
+              workspaceByActor.get(input.primaryAgentActorId) ?? null,
+            ),
+          ],
           { onConflict: "session_id,actor_id" },
         );
       if (partError) throw partError;
@@ -2950,7 +3022,7 @@ export function createSupabaseBusinessRepository(options) {
     async listSessionRoster(sessionId) {
       const { data: sessionRow, error: sessionErr } = await supabase
         .from("sessions")
-        .select("id, team_id, title")
+        .select("id, team_id, title, app_id")
         .eq("id", sessionId)
         .maybeSingle();
       if (sessionErr) throw sessionErr;
@@ -3019,11 +3091,124 @@ export function createSupabaseBusinessRepository(options) {
         }
       }
 
+      // App workspaces need a small, session-scoped control-plane snapshot in
+      // the agent's system prompt. Read it only after proving that the caller
+      // is seated in this session, and only for an agent caller. The service
+      // role is intentional: personal apps are hidden from daemon actors by
+      // app RLS, even when that daemon is running the app's own session.
+      //
+      // This is a deliberately safe projection. It contains no env values,
+      // cron header/body values, data rows, file names, DNS tokens or secrets.
+      let appContext = null;
+      if (sessionRow.app_id && callerActor?.actor_type === "agent") {
+        try {
+          const admin = await serviceRoleClient("read app workspace context for a seated agent");
+          const { data: appRow, error: appErr } = await admin
+            .from("apps")
+            .select(`${APP_COLUMNS}, custom_domain, custom_domain_verified_at, storage_bytes, storage_quota_bytes`)
+            .eq("id", sessionRow.app_id)
+            .eq("team_id", sessionRow.team_id)
+            .maybeSingle();
+          if (appErr) throw appErr;
+
+          if (appRow) {
+            const [envResult, cronResult] = await Promise.all([
+              admin
+                .from("app_env_vars")
+                .select("key, is_secret")
+                .eq("app_id", appRow.id)
+                .order("key", { ascending: true }),
+              admin
+                .from("app_cron_jobs")
+                .select("name, enabled, schedule_expr, timezone, method, path, headers")
+                .eq("app_id", appRow.id)
+                .order("created_at", { ascending: true }),
+            ]);
+            if (envResult.error) throw envResult.error;
+            if (cronResult.error) throw cronResult.error;
+
+            const app = mapApp(appRow);
+            const customDomainVerified = Boolean(appRow.custom_domain_verified_at);
+            const canonicalUrl = customDomainVerified && appRow.custom_domain
+              ? `https://${appRow.custom_domain}`
+              : (app.publicUrl ?? app.fcEndpoint ?? null);
+            const deployedType = appRow.deployed_type ?? appRow.type;
+            const quotaBytes = appRow.storage_quota_bytes ?? null;
+            const storageBytes = appRow.storage_bytes ?? null;
+
+            appContext = {
+              snapshotAt: new Date().toISOString(),
+              id: app.id,
+              name: app.name,
+              type: app.type,
+              visibility: app.visibility,
+              canonicalUrl,
+              provisionStatus: app.provisionStatus,
+              fcStatus: app.fcStatus,
+              deployment: {
+                gitCommitSha: app.gitCommitSha,
+                // Unlike mapApp's compatibility fallback, null here means
+                // exactly "no successful deploy has recorded this yet".
+                runtime: appRow.runtime ?? null,
+                startSpec: appRow.start_spec ?? null,
+                typePendingRedeploy: app.typePendingRedeploy,
+                envPendingRedeploy: app.envPendingRedeploy,
+                authModePendingRedeploy: app.authModePendingRedeploy,
+              },
+              auth: {
+                mode: app.authMode,
+                audience: app.authAudience,
+                scope: app.authScope,
+                rules: app.authRules,
+              },
+              database: {
+                configured: needsDatabase(appRow.type),
+                live: app.fcStatus === "live" && needsDatabase(deployedType),
+              },
+              storage: {
+                controlPlaneAvailable: Boolean(appStorage && readAppsCloudApiUrl()),
+                overQuota:
+                  typeof quotaBytes === "number" &&
+                  typeof storageBytes === "number" &&
+                  storageBytes >= quotaBytes,
+              },
+              environment: {
+                keys: (envResult.data ?? []).map((row) => ({
+                  key: row.key,
+                  isSecret: Boolean(row.is_secret),
+                })),
+              },
+              cronJobs: (cronResult.data ?? []).map((row) => ({
+                name: row.name,
+                enabled: Boolean(row.enabled),
+                schedule: row.schedule_expr,
+                timezone: row.timezone,
+                method: row.method,
+                path: row.path,
+                headerNames:
+                  row.headers && typeof row.headers === "object" && !Array.isArray(row.headers)
+                    ? Object.keys(row.headers).sort()
+                    : [],
+              })),
+              customDomain: {
+                domain: appRow.custom_domain ?? null,
+                verified: customDomainVerified,
+              },
+            };
+          }
+        } catch (error) {
+          // App context is useful but must never take the session identity
+          // prompt down with it. The agent can still use manage_app status.
+          console.warn(`[session-roster] app context unavailable for ${sessionId}: ${String(error)}`);
+        }
+      }
+
       return {
         sessionId,
         callerActorId,
         title: sessionRow.title ?? null,
         selfAgent,
+        appContext,
         items: participantRows.map((seat) => {
           const actor = actorsById.get(seat.actor_id);
           return {
@@ -3564,6 +3749,11 @@ export function createSupabaseBusinessRepository(options) {
         authScope?: string;
         /** Raw from the client; parsed and validated before it is stored. */
         authRules?: unknown;
+        /**
+         * Raw from the client. Takes effect on the next deploy — see
+         * `typePendingRedeploy` in mapApp.
+         */
+        type?: unknown;
       },
     ) {
       // RLS apps_update_if_creator blocks non-creators: the UPDATE matches zero
@@ -3600,11 +3790,22 @@ export function createSupabaseBusinessRepository(options) {
       if (callerPermission?.level !== "admin") return null;
       const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
 
+      // Validated before the auth-mode change below, which has side effects (it
+      // writes and deletes secrets with a service-role client): a PATCH that is
+      // going to be refused for its `type` must not have done that first.
+      const nextType = parseAppType(patch.type);
+
       const set: any = { updated_at: new Date().toISOString() };
       if (typeof patch.name === "string" && patch.name.length > 0) set.name = patch.name;
       if (patch.visibility === "team" || patch.visibility === "personal") {
         set.visibility = patch.visibility;
       }
+      // Written as-is and nothing else moves: whether the function gets a
+      // database is decided at the next finalize (needsDatabase), which also
+      // stamps `deployed_type`. Switching away from data_app never drops the
+      // schema — it is named from slug + id and provisioning is idempotent, so
+      // switching back finds the data where it was.
+      if (nextType !== undefined) set.type = nextType;
 
       const nextAuthMode = parseAuthMode(patch.authMode);
       if (nextAuthMode !== undefined && cur) {
@@ -3656,7 +3857,10 @@ export function createSupabaseBusinessRepository(options) {
         const from = cur?.provision_status ?? "";
         if (isLegalStatusTransition(from, patch.provisionStatus)) {
           set.provision_status = patch.provisionStatus;
-        } else if (set.name === undefined && set.visibility === undefined) {
+        } else if (set.name === undefined && set.visibility === undefined && set.type === undefined) {
+          // A settings edit that carries a stale provisionStatus along is still
+          // a settings edit; only a PATCH that is nothing BUT the illegal
+          // transition is refused.
           throw new ApiError(400, "invalid_status_transition",
             `cannot move provision_status ${from} -> ${patch.provisionStatus}`);
         }
@@ -3831,7 +4035,7 @@ export function createSupabaseBusinessRepository(options) {
       // deploy. It decides which handle this deploy carries — an OSS upload or
       // a registry to push an image to — so it has to arrive here, not at
       // finalize where the rest of the declaration does.
-      const declaredRuntime = parseDeclaredRuntime(input?.runtime);
+      const declaredBuildKind = parseDeclaredBuildKind(input?.runtime);
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
@@ -3870,7 +4074,7 @@ export function createSupabaseBusinessRepository(options) {
         const r = await startDeploy({
           appId,
           region: process.env.REGION || "cn-hangzhou",
-          runtime: declaredRuntime,
+          buildKind: declaredBuildKind,
           gitCommitSha,
           // Only consulted when a function is first minted, so an app that has
           // already deployed keeps the name stored on its row.
@@ -3889,7 +4093,7 @@ export function createSupabaseBusinessRepository(options) {
             // The column records what this deployment is building, which until
             // now nothing ever wrote — it sat at its default while the guard
             // beside it refused every value but that default.
-            ...(declaredRuntime ? { runtime: declaredRuntime } : {}),
+            ...(declaredBuildKind ? { runtime: declaredBuildKind } : {}),
             updated_at: deployStartedAt,
           })
           .eq("id", appId)
@@ -3925,10 +4129,10 @@ export function createSupabaseBusinessRepository(options) {
 
     async finalizeDeploy(
       appId: string,
-      input: { gitCommitSha?: string; deployToken: string; runtime?: unknown; image?: unknown },
+      input: { gitCommitSha?: string; deployToken: string; declaration?: unknown; image?: unknown },
     ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
-      const runtimeSpec = parseAppRuntimeSpec(input?.runtime);
+      const declaration = parseAppDeployDeclaration(input?.declaration);
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
@@ -3990,13 +4194,12 @@ export function createSupabaseBusinessRepository(options) {
           platformAuthEnv,
           storageEnv,
           userEnv,
-          // What the daemon read out of the app's own declaration. Absent for a
-          // client that predates it, which is the contract every app had before.
-          runtime: runtimeSpec,
+          // What the daemon read out of the app's own declaration.
+          declaration,
           // The image that build pushed. A container app has no code object,
           // so without this the function would be pointed at whatever the
           // previous deploy happened to leave in OSS.
-          image: parseDeployedImage(input?.image, runtimeSpec),
+          image: parseDeployedImage(input?.image, declaration),
         });
         const { data: row, error: updErr } = await supabase
           .from("apps")
@@ -4006,12 +4209,18 @@ export function createSupabaseBusinessRepository(options) {
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
             // What is now running, as opposed to what the deploy set out to
             // build. They differ when an app's declaration changed mid-deploy.
-            ...(runtimeSpec ? { runtime: runtimeSpec.runtime } : {}),
+            runtime: declaration.build.kind,
+            start_spec: declaration.start,
             // The function that just went live carries this auth_mode's env.
             // Recording it here is what lets `authModePendingRedeploy` clear —
             // and what makes the pending state a property of the row rather
             // than of one desktop's memory.
             deployed_auth_mode: existing.auth_mode ?? "none",
+            // And the type this finalize actually built with — the value read
+            // above and handed to needsDatabase, not whatever the row says by
+            // now: a PATCH that lands while the function is being written did
+            // not reach it. Clears `typePendingRedeploy`.
+            deployed_type: existing.type,
             // Same idea for the environment: what is baked into the function
             // that just went live. Compared against env_updated_at to tell the
             // operator their last env change is not live yet.

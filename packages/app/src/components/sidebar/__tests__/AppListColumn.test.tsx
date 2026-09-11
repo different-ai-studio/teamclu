@@ -56,27 +56,56 @@ describe('AppListColumn', () => {
     })
   })
 
-  it('lists only the apps on this machine', () => {
+  it('lists the team\'s apps and marks the ones that are not here', () => {
+    // Hiding them was worse than marking them: the same account on a second
+    // computer saw an empty column and no sign the apps existed at all.
     render(<AppListColumn />)
     expect(screen.getByText('Alpha')).toBeInTheDocument()
-    expect(screen.queryByText('Beta')).not.toBeInTheDocument()
+    expect(screen.getByText('Beta')).toBeInTheDocument()
+    const marks = screen.getAllByTestId('app-row-not-downloaded')
+    expect(marks).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /Beta/ })).toContainElement(marks[0])
   })
 
-  it('lists everything while the daemon has not answered yet', () => {
-    // `null` is "unknown", not "none": an empty list here would say the user's
-    // apps are gone every time the daemon is slow to start.
+  it('marks nothing while the daemon has not answered yet', () => {
+    // `null` is "unknown", not "none": greying every row out would say the
+    // user's apps are gone every time the daemon is slow to start.
     useAppsStore.setState({ localAppIds: null })
     render(<AppListColumn />)
     expect(screen.getByText('Alpha')).toBeInTheDocument()
     expect(screen.getByText('Beta')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-row-not-downloaded')).not.toBeInTheDocument()
   })
 
-  it('picking an app is the whole of drilling in', () => {
+  it('picking an app that is here is the whole of drilling in', () => {
     // Nothing else happens — no session is opened, no dialog. `AppsColumn`
     // reads this and swaps the column for that app's sessions.
     render(<AppListColumn />)
     fireEvent.click(screen.getByRole('button', { name: /Alpha/ }))
     expect(useAppsStore.getState().selectedAppId).toBe('app-1')
+  })
+
+  it('picking an app that is not here downloads it instead of opening it', async () => {
+    // Its sessions are in the cloud, but there is nothing on this machine for
+    // an agent to run in — so the click has to fetch the code, not show a list
+    // of conversations that cannot be continued.
+    const download = vi.fn().mockResolvedValue(undefined)
+    useAppsStore.setState({ download })
+    render(<AppListColumn />)
+    fireEvent.click(screen.getByRole('button', { name: /Beta/ }))
+    expect(download).toHaveBeenCalledWith(expect.objectContaining({ id: 'app-2' }))
+    await Promise.resolve()
+    expect(useAppsStore.getState().selectedAppId).toBeNull()
+  })
+
+  it('drills in once the download has actually landed', async () => {
+    const download = vi.fn().mockImplementation(async () => {
+      useAppsStore.setState({ localAppIds: ['app-1', 'app-2'] })
+    })
+    useAppsStore.setState({ download })
+    render(<AppListColumn />)
+    fireEvent.click(screen.getByRole('button', { name: /Beta/ }))
+    await vi.waitFor(() => expect(useAppsStore.getState().selectedAppId).toBe('app-2'))
   })
 
   it('creating opens the form in column three, not a modal', () => {
@@ -124,9 +153,7 @@ describe('AppListColumn', () => {
     expect(useTabsStore.getState().activeTabId).toBe(tabs[0].id)
   })
 
-  it('offers both ways out when nothing is here', () => {
-    // Two reasons the list is empty — nothing created yet, or the team's apps
-    // are simply not on this machine — and the second is the common one.
+  it('offers both ways out when the team has no apps at all', () => {
     useAppsStore.setState({ items: [], localAppIds: [] })
     render(<AppListColumn />)
     expect(screen.getByText('还没有内容')).toBeInTheDocument()

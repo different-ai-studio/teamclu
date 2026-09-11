@@ -21,7 +21,9 @@ use crate::config::{DaemonConfig, SessionStore};
 // the bin build, which does not compile them.
 #[cfg(test)]
 use crate::config::SessionBinding;
-use crate::daemon::binding_target::parse_binding_to_target;
+use crate::daemon::binding_target::{
+    cron_delivery_target, parse_binding_to_target, resolve_mcp_send_route,
+};
 use crate::daemon::runtime_cursor::{
     compute_effective_cursor_from_messages, last_unanswered_mention_idx,
     messages_strictly_after_cursor, slice_has_actionable_inbound,
@@ -2790,6 +2792,39 @@ fn fit_available_commands_in_budget(ac: &mut crate::proto::amux::AcpAvailableCom
     }
 }
 
+/// Map a chat reply token to the `{channel, to}` pair cron announce delivery
+/// persists (`single:<userid>` / `group:<chatid>` for WeCom).
+fn resolve_reply_token_cron_json(token: &str) -> String {
+    let token = token.trim();
+    if token.is_empty() {
+        return serde_json::json!({
+            "ok": false,
+            "error": "missing reply_token"
+        })
+        .to_string();
+    }
+    let Some(binding) = crate::channels::reply_token::binding_for(token) else {
+        return serde_json::json!({
+            "ok": false,
+            "error": "unknown reply_token — use the token from this chat's prompt"
+        })
+        .to_string();
+    };
+    match cron_delivery_target(&binding) {
+        Ok((channel, to)) => serde_json::json!({
+            "ok": true,
+            "channel": channel,
+            "to": to
+        })
+        .to_string(),
+        Err(e) => serde_json::json!({
+            "ok": false,
+            "error": e.to_string()
+        })
+        .to_string(),
+    }
+}
+
 /// Handle one control connection: read a newline-terminated command (line
 /// protocol or `{`-sniffed JSON envelope) and forward it to the main loop.
 /// Generic over the transport: UnixStream on unix, NamedPipeServer on Windows.
@@ -2804,7 +2839,7 @@ where
         Ok(_) => {
             let head = first_line.trim();
 
-            // JSON envelopes (currently just `mcp-send`)
+            // JSON envelopes (mcp-send, channel-send, resolve-reply-token, …)
             // are framed differently from the legacy
             // line-based control protocol — sniff the
             // first byte and branch.
@@ -2813,7 +2848,21 @@ where
                 match parsed {
                     Ok(v) => {
                         let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
-                        if cmd == "channel-send" {
+                        if cmd == "resolve-reply-token" {
+                            // Pure registry lookup — no main-loop state. Cron
+                            // create uses this to pin `delivery.to` to the
+                            // chat that minted the token, instead of storing
+                            // an empty "this conversation" placeholder.
+                            let token = v.get("reply_token").and_then(|c| c.as_str()).unwrap_or("");
+                            let body = resolve_reply_token_cron_json(token);
+                            let mut stream = reader.into_inner();
+                            if let Err(e) = stream.write_all(body.as_bytes()).await {
+                                warn!("amuxd.sock: resolve-reply-token write failed: {e}");
+                                return;
+                            }
+                            let _ = stream.write_all(b"\n").await;
+                            let _ = stream.shutdown().await;
+                        } else if cmd == "channel-send" {
                             let (reply_tx, reply_rx) = oneshot::channel();
                             if tx
                                 .send(SockCommand::ChannelSend {
@@ -3514,13 +3563,28 @@ pub(crate) mod tests {
         let ts = test_server_with_cloud_api(mock.clone());
         ts.server.sync_team_shared_dirs_for_known_workspaces().await;
 
+        // The workspace gets the team's synced roots. `teamclu-team` is no
+        // longer one of them — nothing lives behind it any more.
         assert!(
             existing
                 .path()
-                .join(crate::config::global_team_store::TEAM_LINK_NAME)
+                .join(crate::config::workspace_link::TEAM_KNOWLEDGE_LINK_NAME)
                 .exists(),
-            "existing on-disk path should get a teamclu-team link"
+            "existing on-disk path should get a team-knowledge link"
         );
+        assert!(
+            existing
+                .path()
+                .join(crate::config::workspace_link::TEAM_DOCUMENTS_LINK_NAME)
+                .exists(),
+            "existing on-disk path should get a team-documents link"
+        );
+        assert!(std::fs::symlink_metadata(
+            existing
+                .path()
+                .join(crate::config::global_team_store::TEAM_LINK_NAME)
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -3548,23 +3612,38 @@ pub(crate) mod tests {
             "knowledge scaffold should exist under shared/, not under teamclu-team/"
         );
 
-        // Workspace exposes it via a teamclu-team symlink to that global dir.
-        let link = ws.path().join("teamclu-team");
-        let meta = std::fs::symlink_metadata(&link).unwrap();
-        assert!(
-            meta.file_type().is_symlink(),
-            "workspace entry should be a symlink"
+        // The workspace exposes the team's synced roots — and no longer a
+        // `teamclu-team` link to the empty global dir.
+        let knowledge = ws
+            .path()
+            .join(crate::config::workspace_link::TEAM_KNOWLEDGE_LINK_NAME);
+        let sync_root = crate::config::global_team_store::sync_content_root("team-ondemand");
+        assert!(std::fs::symlink_metadata(&knowledge)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_link(&knowledge).unwrap(),
+            sync_root.join("knowledge")
         );
-        assert_eq!(std::fs::read_link(&link).unwrap(), global);
+        assert!(std::fs::symlink_metadata(ws.path().join("teamclu-team")).is_err());
 
         // Idempotent: a second call must not error or change the target.
         ensure_team_link("team-ondemand", ws_path);
-        assert_eq!(std::fs::read_link(&link).unwrap(), global);
+        assert_eq!(
+            std::fs::read_link(&knowledge).unwrap(),
+            sync_root.join("knowledge")
+        );
 
         // Empty team_id is a no-op (no stray dir/link).
         let ws2 = tempfile::tempdir().unwrap();
         ensure_team_link("", ws2.path().to_str().unwrap());
         assert!(std::fs::symlink_metadata(ws2.path().join("teamclu-team")).is_err());
+        assert!(std::fs::symlink_metadata(
+            ws2.path()
+                .join(crate::config::workspace_link::TEAM_KNOWLEDGE_LINK_NAME)
+        )
+        .is_err());
     }
 
     pub(crate) struct TestServer {

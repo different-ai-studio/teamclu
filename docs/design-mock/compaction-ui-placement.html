@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>上下文压缩 · UI 放置方案 · TeamClu Editorial Calm</title>
+<style>
+  :root {
+    --font: "PingFang SC", "Noto Sans SC", -apple-system, BlinkMacSystemFont, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --bg: #fbfaf7;
+    --paper: #ffffff;
+    --panel: #efece4;
+    --ink: #1a1a14;
+    --ink-2: #3d3c34;
+    --mute: #75736a;
+    --faint: #a8a6a0;
+    --border: rgba(26, 26, 20, 0.08);
+    --border-soft: rgba(26, 26, 20, 0.05);
+    --coral: #e85a4a;
+    --success: #2eb872;
+    --pending: #e8b54a;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font);
+    background: #e8e5dd;
+    color: var(--ink);
+    padding: 28px 20px 64px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page-h { max-width: 1180px; margin: 0 auto 18px; }
+  .page-h h1 { font-size: 17px; font-weight: 700; }
+  .page-h p { margin-top: 8px; font-size: 13px; line-height: 1.65; color: var(--ink-2); max-width: 72ch; }
+
+  .legend {
+    max-width: 1180px; margin: 0 auto 16px;
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .legend span {
+    font-size: 11.5px; padding: 4px 10px; border-radius: 6px;
+    background: var(--paper); border: 1px solid var(--border);
+    color: var(--mute);
+  }
+  .legend .bad { border-color: rgba(232, 90, 74, 0.35); color: #b84336; }
+  .legend .good { border-color: rgba(46, 184, 114, 0.35); color: #1a7a4a; }
+
+  .stage {
+    max-width: 1180px; margin: 0 auto;
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px;
+  }
+  @media (max-width: 1050px) { .stage { grid-template-columns: 1fr; } }
+
+  .frame {
+    background: var(--bg);
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid var(--border-soft);
+  }
+  .frame.bad { opacity: 0.92; }
+  .frame-label {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--faint);
+    background: var(--paper);
+  }
+  .badge {
+    font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+    padding: 2px 7px; border-radius: 5px; text-transform: none;
+  }
+  .badge.bad { background: #fdecea; color: #b84336; }
+  .badge.good { background: #eaf8f0; color: #1a7a4a; }
+  .badge.live { background: var(--panel); color: var(--ink-2); }
+
+  .chat { padding: 16px 20px 18px; min-height: 420px; }
+
+  /* ── User bubble ── */
+  .user-row { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+  .user-bubble {
+    max-width: 72%; background: var(--ink); color: #fefdfa;
+    padding: 10px 14px; border-radius: 16px; border-bottom-right-radius: 6px;
+    font-size: 13.5px; line-height: 1.6;
+  }
+
+  /* ── Wrong: global divider ── */
+  .global-compact {
+    display: flex; align-items: center; gap: 10px;
+    margin: 14px 0; color: var(--mute); font-size: 13px; font-weight: 500;
+  }
+  .global-compact .line { flex: 1; height: 1px; background: var(--border); }
+  .global-compact svg { width: 16px; height: 16px; flex-shrink: 0; opacity: 0.7; }
+  .strike {
+    position: relative; opacity: 0.55;
+  }
+  .strike::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(135deg, transparent 46%, rgba(232,90,74,0.55) 48%, rgba(232,90,74,0.55) 52%, transparent 54%);
+    pointer-events: none;
+  }
+
+  /* ── Agent note header ── */
+  .agent-meta {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 6px; font-size: 12px; color: var(--mute);
+  }
+  .agent-meta .ai-pill {
+    font-size: 9.5px; font-weight: 600; font-family: var(--mono);
+    border: 1px solid rgba(232, 90, 74, 0.45); color: var(--coral);
+    padding: 1px 5px; border-radius: 4px;
+  }
+  .reply-body {
+    margin-left: 33px; font-size: 13.5px; line-height: 1.7; color: var(--ink-2);
+  }
+
+  /* ── Process collapsible ── */
+  .process-trigger {
+    margin-left: 33px; margin-top: 4px; margin-bottom: 8px;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--mute); cursor: pointer;
+  }
+  .process-trigger .mono { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .process-trigger .chev { font-size: 10px; color: var(--faint); transform: rotate(90deg); }
+
+  .process-body {
+    margin-left: 33px; padding-left: 18px;
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+
+  /* ── Tool call card (simplified) ── */
+  .tool-card {
+    background: var(--paper); border: 1px solid var(--border-soft);
+    border-radius: 8px; overflow: hidden; font-family: var(--mono); font-size: 11.5px;
+  }
+  .tool-top {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; background: #fbf9f4; color: var(--ink-2);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .dot.ok { background: var(--success); }
+  .dot.pending { background: var(--pending); }
+  .tool-bottom {
+    padding: 6px 10px; color: var(--mute); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* ── Compaction row (inside process / live panel) ── */
+  .compact-row {
+    background: var(--paper); border: 1px solid var(--border-soft);
+    border-radius: 8px; overflow: hidden;
+    font-family: var(--mono); font-size: 11.5px;
+  }
+  .compact-top {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; background: #fbf9f4; color: var(--ink-2);
+  }
+  .compact-icon {
+    width: 14px; height: 14px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--mute);
+  }
+  .compact-top .label { color: var(--ink-2); }
+  .compact-top .meta { margin-left: auto; color: var(--faint); font-size: 11px; }
+  .compact-bottom {
+    padding: 6px 10px; color: var(--mute); font-size: 11px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .spin {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid var(--border); border-top-color: var(--mute);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Live dock strip ── */
+  .live-dock {
+    margin: 12px 0 0; padding: 10px 12px;
+    background: var(--paper); border: 1px solid var(--border-soft);
+    border-radius: 14px;
+    box-shadow: 0 4px 16px -10px rgba(20, 20, 15, 0.1);
+  }
+  .live-dock-h {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 8px;
+  }
+  .agent-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--panel); padding: 4px 9px; border-radius: 7px;
+    font-size: 12px; color: var(--ink-2); margin-bottom: 10px;
+  }
+  .agent-pill .disc {
+    width: 18px; height: 18px; border-radius: 4px;
+    background: #7c6af0; color: #fff; font-size: 10px; font-weight: 700;
+    display: grid; place-items: center;
+  }
+
+  .note {
+    max-width: 1180px; margin: 18px auto 0;
+    padding: 14px 16px; background: var(--paper);
+    border: 1px solid var(--border); border-radius: 12px;
+    font-size: 12.5px; line-height: 1.65; color: var(--ink-2);
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+  .note ul { margin: 8px 0 0 18px; }
+  .note li { margin: 4px 0; }
+
+  .tabs {
+    max-width: 1180px; margin: 0 auto 12px;
+    display: flex; gap: 6px;
+  }
+  .tabs button {
+    font: inherit; border: 1px solid var(--border); cursor: pointer;
+    padding: 6px 12px; border-radius: 8px; background: var(--paper);
+    font-size: 12.5px; color: var(--ink-2);
+  }
+  .tabs button.on { background: var(--ink); color: #fefdfa; border-color: var(--ink); }
+
+  .panel { display: none; }
+  .panel.on { display: block; }
+</style>
+</head>
+<body>
+  <div class="page-h">
+    <h1>上下文压缩 · UI 放置方案</h1>
+    <p>
+      压缩状态不应作为<strong>全局 timeline 分隔线</strong>出现在会话流里；
+      应绑定在<strong>当前 agent turn 的直播面板</strong>（StreamingAgentBubble / Composer live dock），
+      turn 结束后归档进该条的<strong>处理过程</strong>（AgentProcessCollapsible），与 tool / thinking 同级。
+    </p>
+  </div>
+
+  <div class="legend">
+    <span class="bad">❌ 现状：chat 外层 divider</span>
+    <span class="good">✓ 目标：直播面板内联</span>
+    <span class="good">✓ 目标：Process 内可展开回看</span>
+  </div>
+
+  <div class="tabs">
+    <button class="on" data-tab="compare">三栏对比</button>
+    <button data-tab="live">直播 · 压缩中</button>
+    <button data-tab="done">结束 · Process 展开</button>
+  </div>
+
+  <!-- ── Tab: 三栏对比 ── -->
+  <div id="compare" class="panel on">
+    <div class="stage">
+      <!-- WRONG -->
+      <section class="frame bad">
+        <div class="frame-label">
+          <span>现状（错误）</span>
+          <span class="badge bad">全局 timeline</span>
+        </div>
+        <div class="chat">
+          <div class="user-row"><div class="user-bubble">读 10MB 文件触发压缩</div></div>
+          <div class="global-compact strike">
+            <div class="line"></div>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+            <span>已自动压缩上下文</span>
+            <div class="line"></div>
+          </div>
+          <div class="global-compact strike">
+            <div class="line"></div>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+            <span>已自动压缩上下文</span>
+            <div class="line"></div>
+          </div>
+          <div class="agent-meta"><span class="ai-pill">AI</span> MDC · shopee/gpt-5.6-luna</div>
+          <div class="reply-body">已继续读取第二轮测试文件…</div>
+        </div>
+      </section>
+
+      <!-- LIVE -->
+      <section class="frame">
+        <div class="frame-label">
+          <span>直播中</span>
+          <span class="badge live">StreamingAgentBubble</span>
+        </div>
+        <div class="chat">
+          <div class="user-row"><div class="user-bubble">读 10MB 文件触发压缩</div></div>
+          <div class="live-dock">
+            <div class="live-dock-h">Agent 直播面板</div>
+            <div class="agent-pill"><span class="disc">M</span> MDC ▾</div>
+            <div class="tool-card" style="margin-bottom:6px">
+              <div class="tool-top"><span class="dot ok"></span> read(offset=278) · 0.3s</div>
+              <div class="tool-bottom">→ [50KB truncated] ROUND2-LINE-00278…</div>
+            </div>
+            <div class="compact-row">
+              <div class="compact-top">
+                <span class="compact-icon"><span class="spin"></span></span>
+                <span class="label">compact</span>
+                <span class="meta">threshold · in progress</span>
+              </div>
+              <div class="compact-bottom">正在自动压缩上下文…</div>
+            </div>
+            <div style="height:8px"></div>
+            <div style="display:flex;gap:4px;padding-left:4px">
+              <span class="spin" style="width:6px;height:6px;border-width:1.5px"></span>
+              <span class="spin" style="width:6px;height:6px;border-width:1.5px;animation-delay:.16s"></span>
+              <span class="spin" style="width:6px;height:6px;border-width:1.5px;animation-delay:.32s"></span>
+            </div>
+          </div>
+          <p style="margin-top:12px;font-size:12px;color:var(--faint);margin-left:4px">最终回复尚未落库 — 仅 live 区显示</p>
+        </div>
+      </section>
+
+      <!-- DONE -->
+      <section class="frame">
+        <div class="frame-label">
+          <span>Turn 结束后</span>
+          <span class="badge good">Process 内归档</span>
+        </div>
+        <div class="chat">
+          <div class="user-row"><div class="user-bubble">读 10MB 文件触发压缩</div></div>
+          <div class="agent-meta"><span class="ai-pill">AI</span> MDC · 14:32</div>
+          <button type="button" class="process-trigger">
+            <span>处理过程</span>
+            <span class="mono">Thinking · 32 tool · 1 compact</span>
+            <span class="chev">▸</span>
+          </button>
+          <div class="process-body">
+            <div class="tool-card">
+              <div class="tool-top"><span class="dot ok"></span> read · 0.4s</div>
+              <div class="tool-bottom">→ [50KB truncated] …</div>
+            </div>
+            <div class="compact-row">
+              <div class="compact-top">
+                <span class="compact-icon">📜</span>
+                <span class="label">compact</span>
+                <span class="meta">ok · 4.2s</span>
+              </div>
+              <div class="compact-bottom">345,294 → ~35,160 tokens · threshold</div>
+            </div>
+            <div class="tool-card">
+              <div class="tool-top"><span class="dot ok"></span> read · 0.3s</div>
+              <div class="tool-bottom">→ 压缩后继续读取…</div>
+            </div>
+          </div>
+          <div class="reply-body" style="margin-top:10px">
+            已继续读取第二轮测试文件。目前工具结果仍无法直接证明 pi 已压缩 — 但 Process 里可回看 compact 行。
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ── Tab: 直播细节 ── -->
+  <div id="live" class="panel">
+    <div class="stage" style="grid-template-columns:1fr 1fr">
+      <section class="frame">
+        <div class="frame-label"><span>压缩中 · 主聊天区</span><span class="badge live">无全局 divider</span></div>
+        <div class="chat">
+          <div class="user-row"><div class="user-bubble">继续 read 大文件</div></div>
+          <!-- 注意：此处 intentionally 空白 — 压缩不在外层 -->
+          <div style="margin:40px 0;text-align:center;font-size:12px;color:var(--faint)">
+            （主 timeline 无「已自动压缩上下文」分隔线）
+          </div>
+        </div>
+      </section>
+      <section class="frame">
+        <div class="frame-label"><span>压缩中 · Live Dock</span><span class="badge good">内联 compact 行</span></div>
+        <div class="chat">
+          <div class="live-dock">
+            <div class="live-dock-h">正在回复 · MDC</div>
+            <div class="tool-card" style="margin-bottom:6px">
+              <div class="tool-top"><span class="dot ok"></span> read · 0.2s</div>
+              <div class="tool-bottom">→ …</div>
+            </div>
+            <div class="compact-row">
+              <div class="compact-top">
+                <span class="compact-icon"><span class="spin"></span></span>
+                <span class="label">compact</span>
+                <span class="meta">overflow · in progress</span>
+              </div>
+              <div class="compact-bottom">正在自动压缩上下文…</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ── Tab: Process 展开 ── -->
+  <div id="done" class="panel">
+    <div class="stage" style="grid-template-columns:1fr">
+      <section class="frame" style="max-width:640px;margin:0 auto">
+        <div class="frame-label"><span>完成后 · Agent 回复 note</span><span class="badge good">Process 默认折叠</span></div>
+        <div class="chat">
+          <div class="agent-meta"><span class="ai-pill">AI</span> MDC · shopee/gpt-5.6-luna · 14:32</div>
+          <button type="button" class="process-trigger">
+            <span>处理过程</span>
+            <span class="mono">32 tool · 1 compact</span>
+            <span class="chev">▸</span>
+          </button>
+          <div class="reply-body">
+            上下文压缩测试已完成。Process 内可看到 compact 发生在第 32 个 tool 之后、继续 read 之前。
+          </div>
+          <div style="margin-top:20px;padding-top:16px;border-top:1px dashed var(--border-soft)">
+            <div style="font-size:11px;color:var(--faint);margin-bottom:8px">展开后（用户点击「处理过程」）</div>
+            <div class="process-body" style="margin-left:0">
+              <div class="tool-card"><div class="tool-top"><span class="dot ok"></span> read ×32 …</div></div>
+              <div class="compact-row">
+                <div class="compact-top">
+                  <span class="compact-icon">📜</span>
+                  <span class="label">compact</span>
+                  <span class="meta">ok · 4.2s</span>
+                </div>
+                <div class="compact-bottom">345,294 → ~35,160 tokens · auto · threshold</div>
+              </div>
+              <div class="tool-card"><div class="tool-top"><span class="dot ok"></span> read · post-compact</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="note">
+    <strong>实现要点（供后续改代码）</strong>
+    <ul>
+      <li>移除 <code>mergeCompactionTimelineMessages</code> 往主 timeline 插 divider 的逻辑。</li>
+      <li>在 <code>v2-streaming-store</code> 的 <code>AgentStreamEntry</code> 增加 <code>compactionEvents[]</code>（进行中 / 已完成，含 reason、tokensBefore/After）。</li>
+      <li><code>StreamingAgentBubble</code>：在 tool 流中按时间插入 compact 行（样式对齐 ToolCallCard，mono 11.5px）。</li>
+      <li>Turn finalize 时把 compact 行写入 <code>parts[]</code> 或 process meta，供 <code>AgentProcessCollapsible</code> 展开；summary 追加 <code>· 1 compact</code>。</li>
+      <li>不持久化到 Cloud API；与 thinking/tool 一样，live + 本地 process 可见即可。</li>
+    </ul>
+  </div>
+
+  <script>
+    document.querySelectorAll('.tabs button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('on'));
+        document.querySelectorAll('.panel').forEach((p) => p.classList.remove('on'));
+        btn.classList.add('on');
+        document.getElementById(btn.dataset.tab).classList.add('on');
+      });
+    });
+  </script>
+</body>
+</html>

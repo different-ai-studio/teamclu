@@ -64,6 +64,13 @@ describe("merging", () => {
     expect(channels.discord).toBe(true);
     expect(channels.feishu).toBe(false);
     expect(channels.wecom).toBe(false);
+    expect(channels.seatalk).toBe(false);
+  });
+
+  it("honours seatalk from the server — the client allowlist used to drop it", async () => {
+    const { applyRemoteFeatures, getFeatures } = await loadModule();
+    applyRemoteFeatures("session", { channels: { seatalk: true } });
+    expect(getFeatures().channels.seatalk).toBe(true);
   });
 
   it("ignores channels sent to the public scope (auth-only endpoint)", async () => {

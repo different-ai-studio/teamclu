@@ -44,6 +44,7 @@ import { actorAvatarColor } from '@/lib/actor/actor-color'
 import { useAppsStore } from '@/stores/apps-store'
 import { useFeatures } from '@/lib/config/remote-features'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
+import { resolveAppLocality } from '@/lib/apps/app-locality'
 import { compareSessionListByRecency } from '@/lib/session/session-list-sort'
 import { buildSessionListGlassLayoutKey } from '@/lib/ui/session-list-glass-layout-key'
 import { isScheduledSession } from '@/lib/session/session-origin'
@@ -285,6 +286,8 @@ export function SessionListColumn({
   const appsEnabled = useFeatures().apps
   const appItems = useAppsStore((s) => s.items)
   const loadApps = useAppsStore((s) => s.load)
+  const localAppIds = useAppsStore((s) => s.localAppIds)
+  const refreshLocalApps = useAppsStore((s) => s.refreshLocalApps)
   const appsById = React.useMemo(
     () => new Map(appItems.map((app) => [app.id, app])),
     [appItems],
@@ -298,7 +301,11 @@ export function SessionListColumn({
   React.useEffect(() => {
     if (!appsEnabled || !hasAppSessions || !teamIdFromList) return
     void loadApps(teamIdFromList)
-  }, [appsEnabled, hasAppSessions, teamIdFromList, loadApps])
+    // Which of them are actually here: an app session whose app was downloaded
+    // on the user's other machine is readable but cannot be worked in, and the
+    // subline is where that is said.
+    void refreshLocalApps(teamIdFromList)
+  }, [appsEnabled, hasAppSessions, teamIdFromList, loadApps, refreshLocalApps])
   React.useEffect(() => {
     initPinnedSessionIds(teamIdFromList || null)
   }, [initPinnedSessionIds, teamIdFromList])
@@ -642,6 +649,7 @@ export function SessionListColumn({
      * uuid.) Nothing about a session is better said by one.
      */
     const rowApp = row.appId ? appsById.get(row.appId) ?? null : null
+    const rowAppAway = rowApp ? resolveAppLocality(localAppIds, rowApp.id) === false : false
     const actionsId = `v2-session-actions-${row.id}`
     const actionBtnClass =
       'grid h-[34px] place-items-center rounded-lg bg-black/[0.045] text-ink-2 transition-colors hover:bg-black/[0.08] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-white/[0.06] dark:hover:bg-white/10'
@@ -808,6 +816,16 @@ export function SessionListColumn({
                     className: 'h-3 w-3 shrink-0',
                   })}
                   <span className="truncate">{rowApp.name}</span>
+                  {/* The history is readable; the work is not. Saying so on the
+                      row is what stops the user opening it expecting an agent. */}
+                  {rowAppAway && (
+                    <span
+                      data-testid="v2-session-row-app-away"
+                      className="shrink-0 rounded border border-border px-1 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                    >
+                      {t('apps.notDownloadedBadge', '未下载')}
+                    </span>
+                  )}
                 </span>
               )}
               {!isRenaming && row.lastMessagePreview && (

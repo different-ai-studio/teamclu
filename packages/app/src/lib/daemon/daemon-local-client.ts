@@ -14,6 +14,7 @@ import { normalizeDaemonEnvActivationDiagnostics } from '@/lib/diagnostics/env-d
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
+import type { AppDeployDeclaration } from '@/lib/backend/types'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
 
@@ -1034,31 +1035,16 @@ export interface BuildAppResult {
    */
   gitCommitSha: string | null
   /**
-   * What the app declared about how it starts (`teamclu.app.json`), resolved by
-   * the daemon against the built-in contract. Handed to finalize so the
-   * function is started the way the app expects.
+   * The validated build and start declaration from `teamclu.app.json`. Handed
+   * to finalize so the function is built and started the way the app expects.
    */
-  runtime: AppRuntimeDeclaration | null
+  declaration: AppDeployDeclaration | null
   /**
-   * The image this build pushed, for an app that declares `runtime:
-   * "container"`. Null for every other app — that one uploaded an archive to
+   * The image this build pushed, for an app whose `build.kind` is
+   * `"container"`. Null for every other app — that one uploaded an archive to
    * the presigned URL instead.
    */
   image: string | null
-}
-
-/**
- * What an app declares about how it is built and run (`teamclu.app.json`),
- * resolved by the daemon against the built-in contract.
- *
- * `entry` is empty for a container app: the image's own ENTRYPOINT is its
- * entry, and there is nothing for us to name.
- */
-export interface AppRuntimeDeclaration {
-  runtime: string
-  entry: string
-  port: number
-  healthCheckPath?: string
 }
 
 /**
@@ -1122,23 +1108,23 @@ interface DaemonAppWorkdirInfo {
  *
  * Asked before the deploy is minted, because the answer decides which kind of
  * handle the control plane hands back: a container app pushes an image, every
- * other app uploads an archive. Null when the daemon cannot say — the deploy
- * then takes the contract every app had before declarations existed.
+ * other app uploads an archive. Null when the daemon cannot say; callers must
+ * stop before minting a deploy with the wrong destination.
  */
 export async function daemonAppManifest(
   appId: string,
   teamId?: string | null,
-): Promise<AppRuntimeDeclaration | null> {
+): Promise<AppDeployDeclaration | null> {
   try {
     const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
-    const result = await daemonFetch<{ manifest?: AppRuntimeDeclaration }>(
+    const result = await daemonFetch<{ declaration?: AppDeployDeclaration }>(
       `/v1/apps/${encodeURIComponent(appId)}/manifest${query}`,
     )
     if (!result.ok) {
       console.warn('[daemon-local-client] app manifest unavailable (non-fatal):', result.error)
       return null
     }
-    return result.data?.manifest ?? null
+    return result.data?.declaration ?? null
   } catch (err) {
     console.warn('[daemon-local-client] app manifest unavailable:', err)
     return null
@@ -1201,11 +1187,15 @@ interface BindAppWorkdirResult {
 }
 
 /**
- * Point an app at a git checkout that already exists on this machine.
+ * Point an app at a directory that already exists on this machine.
  *
- * Nothing is moved or written — unlike {@link moveDaemonAppWorkdir}, which
- * relocates the tree. Throws with the daemon's own reason so the picker can say
- * "not a git repository" at the moment of choosing rather than failing later.
+ * Nothing is moved — unlike {@link moveDaemonAppWorkdir}, which relocates the
+ * tree. A folder that is not yet a git repository gets a `git init` from the
+ * daemon; the seed that follows publishes it.
+ *
+ * Throws with the daemon's own `detail`, not the response body. The body is
+ * RFC 7807 JSON, and passing it through verbatim is how a user was once shown
+ * `{"type":"https://teamclu/errors/validation_failed","title":…}` in a toast.
  */
 export async function bindDaemonAppWorkdir(
   appId: string,
@@ -1217,7 +1207,8 @@ export async function bindDaemonAppWorkdir(
     { method: 'POST', body: JSON.stringify({ teamId, workdir }) },
   )
   if (!result.ok) {
-    throw new Error(result.error ?? 'could not bind the app to that directory')
+    const { detail } = problemDetailFromErrorBody(result.error ?? '')
+    throw new Error(detail || 'could not bind the app to that directory')
   }
   return {
     workdir: result.data.workdir,
@@ -1297,12 +1288,7 @@ export async function buildDaemonApp(
       status: string
       gitCommitSha?: string
       image?: string
-      manifest?: {
-        runtime?: string
-        entry?: string
-        port?: number
-        healthCheckPath?: string
-      }
+      declaration?: AppDeployDeclaration
     }>('/v1/apps/build', {
       method: 'POST',
       body: JSON.stringify({
@@ -1316,34 +1302,23 @@ export async function buildDaemonApp(
       }),
     })
     if (result.ok) {
-      const m = result.data?.manifest
       return {
         outcome: "built",
         error: null,
         gitCommitSha: result.data?.gitCommitSha?.trim() || null,
-        // A container app states no entry, so requiring one here would drop the
-        // whole declaration — including the port FC has to send requests to.
-        runtime:
-          m?.runtime && m.port
-            ? {
-                runtime: m.runtime,
-                entry: m.entry ?? "",
-                port: m.port,
-                ...(m.healthCheckPath ? { healthCheckPath: m.healthCheckPath } : {}),
-              }
-            : null,
+        declaration: result.data?.declaration ?? null,
         image: result.data?.image?.trim() || null,
       }
     }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null, image: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null, declaration: null, image: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null, runtime: null, image: null }
+    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null, declaration: null, image: null }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null, gitCommitSha: null, runtime: null, image: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null, declaration: null, image: null }
   }
 }
 

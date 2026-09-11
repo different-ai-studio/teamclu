@@ -151,7 +151,13 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       let groupStart = -1;
       for (let i = 0; i <= renderedMessages.length; i++) {
         const msg = renderedMessages[i];
-        const isAssistant = msg && msg.role !== "user";
+        const isAssistant =
+          msg &&
+          msg.role !== "user" &&
+          !msg.hidden &&
+          msg.displayKind !== "compaction" &&
+          msg.displayKind !== "compaction-summary" &&
+          msg.displayKind !== "synthetic";
         if (!isAssistant || i === renderedMessages.length) {
           // End of a group — finalize
           if (groupStart !== -1) {

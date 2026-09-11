@@ -1,6 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeFcOps, fcEndpoint, accountIdFromRoleArn, NODE_BIN, nodejsLayerArn, readAppsFcVpcConfig } from "../../src/lib/provisioning/fc-client.js";
+import { makeFcOps, fcEndpoint, accountIdFromRoleArn, readAppsFcVpcConfig } from "../../src/lib/provisioning/fc-client.js";
+import { defaultLayersForKind } from "../../src/lib/provisioning/app-runtime-spec.js";
+
+const NODE_DECL = {
+  build: { kind: "node" as const, output: ".output" },
+  start: {
+    fcRuntime: "custom.debian10",
+    command: ["/opt/nodejs20/bin/node"],
+    args: ["server/index.mjs"],
+    port: 9000,
+  },
+};
 
 function fakeClient(overrides: Record<string, any> = {}) {
   const calls: any[] = [];
@@ -19,7 +30,7 @@ test("ensureFunction creates when GetFunction 404s", async () => {
   const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
   const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
+  await ops.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
   assert.ok(calls.some((c) => c[0] === "createFunction"));
   assert.ok(!calls.some((c) => c[0] === "updateFunction"));
 });
@@ -27,43 +38,51 @@ test("ensureFunction creates when GetFunction 404s", async () => {
 test("ensureFunction updates code when the function already exists", async () => {
   const { client, calls } = fakeClient();
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
+  await ops.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
   assert.ok(calls.some((c) => c[0] === "updateFunction"));
   assert.ok(!calls.some((c) => c[0] === "createFunction"));
 });
 
-test("ensureFunction points the custom runtime at the artifact's own layout", async () => {
-  // The daemon zips the CONTENTS of `.output`, so the entry is `server/index.mjs`.
-  // A `.output/` prefix here names a path that never exists in the package and
-  // the function silently fails to boot.
+test("ensureFunction passes the declared FC runtime and start config through on create", async () => {
   const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
   const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
-  const create = calls.find((c) => c[0] === "createFunction");
-  const runtimeCfg = create[1].body.customRuntimeConfig;
-  assert.deepEqual(runtimeCfg.args, ["server/index.mjs"]);
-  assert.equal(runtimeCfg.port, 9000);
-});
-
-test("ensureFunction starts node from the layer, by absolute path", async () => {
-  // The custom runtime image has no node — a bare "node" (and even
-  // `/bin/sh -c 'exec node …'`) dies at instance start with exit 127. The
-  // official layer supplies one under /opt and does not touch PATH.
-  const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
-  const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
-  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
+  await ops.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
   const create = calls.find((c) => c[0] === "createFunction")[1].body;
-  assert.deepEqual(create.customRuntimeConfig.command, [NODE_BIN]);
-  assert.match(NODE_BIN, /^\//, "must be an absolute path, not a PATH lookup");
-  assert.deepEqual(create.layers, ["acs:fc:cn-shenzhen:official:layers/Nodejs20/versions/3"]);
+  assert.equal(create.runtime, NODE_DECL.start.fcRuntime);
+  assert.deepEqual(create.customRuntimeConfig.command, NODE_DECL.start.command);
+  assert.deepEqual(create.customRuntimeConfig.args, NODE_DECL.start.args);
+  assert.equal(create.customRuntimeConfig.port, NODE_DECL.start.port);
+  assert.deepEqual(create.layers, defaultLayersForKind("cn-shenzhen", "node"));
 });
 
-test("nodejsLayerArn is region-scoped", () => {
-  // A layer ARN names its region; the function's region is the apps region, so
-  // borrowing another region's ARN makes CreateFunction fail on a valid config.
-  assert.equal(nodejsLayerArn("cn-hangzhou"), "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3");
+test("an explicit empty layers list suppresses the kind's default layer", async () => {
+  const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
+  const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  await ops.ensureFunction("tc-app-1", {
+    declaration: { ...NODE_DECL, start: { ...NODE_DECL.start, layers: [] } },
+    ossObjectName: "apps/1/code.zip",
+    env: {},
+  });
+  const create = calls.find((c) => c[0] === "createFunction")[1].body;
+  assert.deepEqual(create.layers, []);
+});
+
+test("a python declaration gets the Python layer and its declared command", async () => {
+  const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
+  const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  const declaration = {
+    build: { kind: "python" as const, output: "." },
+    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080 },
+  };
+  await ops.ensureFunction("tc-app-1", { declaration, ossObjectName: "apps/1/code.zip", env: {} });
+  const create = calls.find((c) => c[0] === "createFunction")[1].body;
+  assert.equal(create.runtime, "custom.debian12");
+  assert.deepEqual(create.customRuntimeConfig.command, ["python3"]);
+  assert.deepEqual(create.customRuntimeConfig.args, ["app.py"]);
+  assert.deepEqual(create.layers, defaultLayersForKind("cn-shenzhen", "python"));
 });
 
 test("ensureFunction re-sends the layer and start command on the update path", async () => {
@@ -72,11 +91,23 @@ test("ensureFunction re-sends the layer and start command on the update path", a
   // the user tries — the update has to repair the config, not just the code.
   const { client, calls } = fakeClient();
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
+  const declaration = {
+    ...NODE_DECL,
+    start: {
+      fcRuntime: "custom.debian12",
+      command: ["/bin/sh"],
+      args: ["start-server"],
+      port: 8081,
+      layers: [],
+    },
+  };
+  await ops.ensureFunction("tc-app-1", { declaration, ossObjectName: "apps/1/code.zip", env: { PORT: "8081" } });
   const upd = calls.find((c) => c[0] === "updateFunction")[2].body;
-  assert.deepEqual(upd.customRuntimeConfig.command, [NODE_BIN]);
-  assert.deepEqual(upd.customRuntimeConfig.args, ["server/index.mjs"]);
-  assert.deepEqual(upd.layers, ["acs:fc:cn-shenzhen:official:layers/Nodejs20/versions/3"]);
+  assert.equal(upd.runtime, "custom.debian12");
+  assert.deepEqual(upd.customRuntimeConfig.command, ["/bin/sh"]);
+  assert.deepEqual(upd.customRuntimeConfig.args, ["start-server"]);
+  assert.equal(upd.customRuntimeConfig.port, 8081);
+  assert.deepEqual(upd.layers, []);
 });
 
 test("ensureFunction re-sends environmentVariables on the update path", async () => {
@@ -85,6 +116,7 @@ test("ensureFunction re-sends environmentVariables on the update path", async ()
   const { client, calls } = fakeClient();
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
   await ops.ensureFunction("tc-app-1", {
+    declaration: NODE_DECL,
     ossObjectName: "apps/1/code.zip",
     env: { PORT: "9000", DATABASE_URL: "postgres://app_x:new-pw@h/teamclu_apps" },
   });
@@ -98,7 +130,7 @@ test("ensureFunction attaches VPC config on create and update when configured", 
   const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
   const vpc = { vpcId: "vpc-apps", vSwitchIds: ["vsw-apps"], securityGroupId: "sg-apps" };
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", vpc });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
+  await ops.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
   const create = calls.find((c) => c[0] === "createFunction")[1].body;
   assert.equal(create.vpcConfig.vpcId, "vpc-apps");
   assert.deepEqual(create.vpcConfig.vSwitchIds, ["vsw-apps"]);
@@ -107,7 +139,7 @@ test("ensureFunction attaches VPC config on create and update when configured", 
 
   const { client: existing, calls: updateCalls } = fakeClient();
   const ops2 = makeFcOps(existing as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", vpc });
-  await ops2.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
+  await ops2.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: { PORT: "9000" } });
   const upd = updateCalls.find((c) => c[0] === "updateFunction")[2].body;
   assert.equal(upd.vpcConfig.vpcId, "vpc-apps");
 });
@@ -248,7 +280,7 @@ test("a new function is created with its log config", async () => {
   const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
   const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
   const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => LOGS });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  await ops.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: {} });
   const create = calls.find((c) => c[0] === "createFunction")[1].body;
   assert.equal(create.logConfig.project, "teamclu-apps-1");
   assert.equal(create.logConfig.logstore, "app-logs");
@@ -264,7 +296,7 @@ test("an existing function gets its log config re-sent on every update", async (
   // VPC config were both fixed for.
   const { client, calls } = fakeClient();
   const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => LOGS });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  await ops.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: {} });
   const update = calls.find((c) => c[0] === "updateFunction")[2].body;
   assert.equal(update.logConfig.project, "teamclu-apps-1");
   assert.equal(update.logConfig.logstore, "app-logs");
@@ -276,14 +308,17 @@ test("a deployment with no usable log store deploys without a log config", async
   // up" into "this app cannot deploy at all".
   const { client, calls } = fakeClient();
   const ops = makeFcOps(client as any, { bucket: "b", role: undefined, region: "cn-shenzhen", logs: () => undefined });
-  await ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} });
+  await ops.ensureFunction("tc-app-1", { declaration: NODE_DECL, ossObjectName: "apps/1/code.zip", env: {} });
   const update = calls.find((c) => c[0] === "updateFunction")[2].body;
   assert.equal(update.logConfig, undefined);
 });
 
 // --- Container apps
 
-const CONTAINER = { runtime: "container", entry: "", port: 5000 };
+const CONTAINER = {
+  build: { kind: "container" as const, output: ".", dockerfile: "Dockerfile", context: "." },
+  start: { port: 5000 },
+};
 
 test("a container app runs its own image, with no layer and no code object", async () => {
   // Sending either alongside customContainerConfig is how a Node layer ends up
@@ -295,13 +330,15 @@ test("a container app runs its own image, with no layer and no code object", asy
   await ops.ensureFunction("tc-app-1", {
     ossObjectName: "apps/1/code.zip",
     env: { PORT: "5000" },
-    runtime: CONTAINER,
+    declaration: CONTAINER,
     image: "registry.cn-shenzhen.aliyuncs.com/ns/tc-app-1:abc1234",
   });
   const create = calls.find((c) => c[0] === "createFunction")[1].body;
   assert.equal(create.runtime, "custom-container");
   assert.equal(create.customContainerConfig.image, "registry.cn-shenzhen.aliyuncs.com/ns/tc-app-1:abc1234");
   assert.equal(create.customContainerConfig.port, 5000);
+  assert.equal(create.customContainerConfig.command, undefined);
+  assert.equal(create.customContainerConfig.args, undefined);
   assert.equal(create.layers, undefined);
   assert.equal(create.code, undefined);
   assert.equal(create.customRuntimeConfig, undefined);
@@ -316,7 +353,7 @@ test("a redeploy re-sends the image, not just the environment", async () => {
   await ops.ensureFunction("tc-app-1", {
     ossObjectName: "apps/1/code.zip",
     env: {},
-    runtime: CONTAINER,
+    declaration: CONTAINER,
     image: "registry/ns/tc-app-1:second",
   });
   const update = calls.find((c) => c[0] === "updateFunction")[2].body;
@@ -332,7 +369,7 @@ test("a container app with a declared health path gets a check that survives a c
   await ops.ensureFunction("tc-app-1", {
     ossObjectName: "apps/1/code.zip",
     env: {},
-    runtime: { ...CONTAINER, healthCheckPath: "/api/health" },
+    declaration: { ...CONTAINER, start: { ...CONTAINER.start, healthCheckPath: "/api/health" } },
     image: "registry/ns/tc-app-1:abc",
   });
   const cfg = calls.find((c) => c[0] === "createFunction")[1].body.customContainerConfig;
@@ -347,7 +384,16 @@ test("a container app cannot be finalized without the image the build pushed", a
   const { client } = fakeClient();
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
   await assert.rejects(
-    () => ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {}, runtime: CONTAINER }),
+    () => ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {}, declaration: CONTAINER }),
     /must be finalized with the image/,
+  );
+});
+
+test("a declaration is required instead of silently defaulting to node", async () => {
+  const { client } = fakeClient();
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  await assert.rejects(
+    () => ops.ensureFunction("tc-app-1", { ossObjectName: "apps/1/code.zip", env: {} }),
+    /declaration \(build\+start\) is required/,
   );
 });

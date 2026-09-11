@@ -114,6 +114,21 @@ const TEAM_KNOWLEDGE_LINK_DIR = 'team-knowledge'
  */
 const TEAM_DOCUMENTS_LINK_DIR = 'team-documents'
 
+/**
+ * The workspace links to the team's synced roots, in the order the file tree
+ * pins them to the top of a workspace.
+ *
+ * `teamclu-team` used to be the one pinned there. Nothing lives behind it any
+ * more and the daemon no longer creates it; these two are what a workspace
+ * actually has of the team.
+ */
+export const TEAM_LINK_DIRS: ReadonlyArray<string> = [TEAM_DOCUMENTS_LINK_DIR, TEAM_KNOWLEDGE_LINK_DIR]
+
+/** Whether a workspace-root entry is one of {@link TEAM_LINK_DIRS}. */
+export function isTeamLinkDirName(name: string): boolean {
+  return TEAM_LINK_DIRS.includes(name)
+}
+
 /** The two fixed roots, paired with the workspace symlink that surfaces each. */
 const SYNC_ROOT_LINKS: ReadonlyArray<readonly [linkDir: string, prefix: string]> = [
   [TEAM_KNOWLEDGE_LINK_DIR, 'knowledge'],

@@ -10,7 +10,10 @@ pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String>
 
     match action {
         "list" => {
-            let roles = config::read_roles(workspace)?;
+            // Not for its value — `roles_with_slugs` builds the answer and
+            // swallows read errors. This call is what still turns an
+            // unreadable roles dir into an error instead of an empty list.
+            config::read_roles(workspace)?;
             let with_slugs = roles_with_slugs(workspace);
             Ok(json!({ "roles": with_slugs }))
         }
@@ -193,8 +196,7 @@ fn parse_role_fields(raw: &str) -> (String, String, String) {
     let mut description = String::new();
     let mut working_style = String::new();
 
-    let rest = if raw.starts_with("---") {
-        let after = &raw[3..];
+    let rest = if let Some(after) = raw.strip_prefix("---") {
         if let Some(close) = after.find("\n---") {
             let fm = &after[..close];
             for line in fm.lines() {

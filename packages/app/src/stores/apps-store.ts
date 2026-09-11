@@ -21,6 +21,7 @@ import { isTauri } from "@/lib/utils";
 import { getEffectiveServerConfigSync } from "@/lib/config/server-config";
 import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
+import type { AppTypeId } from "@/lib/apps/app-types";
 import type {
   AppRow,
   AppAuthPatch,
@@ -118,6 +119,8 @@ interface AppsState {
   refreshApp: (appId: string) => Promise<void>;
   /** Who on the team can see this app. True when the change stuck. */
   setVisibility: (appId: string, visibility: "personal" | "team") => Promise<boolean>;
+  /** What kind of app this is. Admin only. True when the change stuck. */
+  setType: (appId: string, type: AppTypeId) => Promise<boolean>;
   /** Change any part of the login wall in one request. True when it stuck. */
   updateAuthPolicy: (appId: string, patch: AppAuthPatch) => Promise<boolean>;
   /** Bind a domain and get back the DNS records the owner must publish. */
@@ -236,6 +239,23 @@ export function mapDeployErrorReason(raw: string): string {
       "This app has no code yet — its folder has no package.json. Ask the agent to build it, or reseed the app.",
     );
   }
+  // Distinct from the one above: that app is a node app with nothing in it,
+  // this one has nothing a build of either kind could start from.
+  if (raw.includes("neither a package.json nor a Dockerfile")) {
+    return i18n.t(
+      "apps.deployErrorReason.noCode",
+      "This app has no code yet — its folder has neither a package.json nor a Dockerfile. Ask the agent to build it, or reseed the app.",
+    );
+  }
+  // Says which file was not found. Windows resolves a bare command name by
+  // appending .exe only, so a missing pnpm used to surface as a bare "the
+  // system cannot find the file specified" with no clue what file.
+  if (raw.includes("pnpm is not installed")) {
+    return i18n.t(
+      "apps.deployErrorReason.noPnpm",
+      "pnpm was not found on this machine, and this app is built with it. Install pnpm (npm i -g pnpm), then retry.",
+    );
+  }
   if (raw.includes("origin has commits this checkout does not")) {
     return i18n.t(
       "apps.deployErrorReason.pushRejected",
@@ -336,20 +356,6 @@ function mapCloudDeployError(e: unknown): string {
 }
 
 /**
- * Kick the local daemon seed and write back the terminal status. The desktop
- * writes ONLY `ready`/`error`; `unreachable` writes nothing so the row stays
- * `pending` and a reseed remains available.
- *
- * The daemon reports the directory it wrote to, and that path is written onto
- * the app's own cloud workspace row right here — before any session exists.
- * Leaving it for the session-open path meant the app's workspace stayed
- * path-less until then, and a path-less workspace is one the daemon resolves by
- * falling back to whatever folder the desktop had open.
- *
- * A clone that fails is the one case worth interrupting the user for: they
- * typed the URL, and the app is empty until they fix it.
- */
-/**
  * Explain a seed failure the raw daemon text does not.
  *
  * A clone that ran out of time is the one failure whose cause is invisible:
@@ -369,6 +375,37 @@ function mapSeedErrorReason(raw: string | null): string | undefined {
 }
 
 /**
+ * Drop a cloud app row that was created only so a clone could run, and that
+ * clone then failed. Silent: the user is about to see the clone error on the
+ * form, not a "App deleted" success toast.
+ */
+async function discardCreatedApp(set: SetState, appId: string): Promise<void> {
+  try {
+    await getBackend().apps.deleteApp(appId);
+  } catch (e) {
+    console.warn("discard created app failed", e);
+  }
+  set((s) => ({
+    items: s.items.filter((a) => a.id !== appId),
+    selectedAppId: s.selectedAppId === appId ? null : s.selectedAppId,
+  }));
+}
+
+/**
+ * Kick the local daemon seed and write back the terminal status. The desktop
+ * writes ONLY `ready`/`error`; `unreachable` writes nothing so the row stays
+ * `pending` and a reseed remains available.
+ *
+ * The daemon reports the directory it wrote to, and that path is written onto
+ * the app's own cloud workspace row right here — before any session exists.
+ * Leaving it for the session-open path meant the app's workspace stayed
+ * path-less until then, and a path-less workspace is one the daemon resolves by
+ * falling back to whatever folder the desktop had open.
+ *
+ * Returns the seed outcome so callers can decide what to surface. A remote
+ * import that fails on create is rolled back by `create` (delete the empty
+ * cloud row + throw); a reseed leaves the row at `error` and toasts.
+ *
  * @param cloneUrl the address to clone from, when it differs from the stored
  * one. Credentials pasted into a repo URL are stripped before the row is
  * written, so the create path passes what the user actually typed — that copy
@@ -379,7 +416,7 @@ async function runSeed(
   app: AppRow,
   adoptExisting = false,
   cloneUrl?: string | null,
-): Promise<void> {
+): Promise<SeedAppResult> {
   let deployKeyPem: string | null = null;
   let deployKeyId: number | null = null;
   // Keyed on how the repo is authenticated, not on the status the row happens
@@ -396,14 +433,16 @@ async function runSeed(
       deployKeyId = cred?.deployKeyId ?? null;
       if (!deployKeyPem) {
         await patchStatus(set, app.id, "error");
-        await toastError("仓库初始化失败", "无法获取 Gitea 部署密钥");
-        return;
+        return { outcome: "failed", workdir: null, error: "无法获取 Gitea 部署密钥" };
       }
     } catch (e) {
       console.warn("getGitCredential failed (non-fatal)", e);
       await patchStatus(set, app.id, "error");
-      await toastError("仓库初始化失败", e instanceof Error ? e.message : String(e));
-      return;
+      return {
+        outcome: "failed",
+        workdir: null,
+        error: e instanceof Error ? e.message : String(e),
+      };
     }
   }
 
@@ -433,11 +472,9 @@ async function runSeed(
     await patchStatus(set, app.id, "ready");
   } else if (result.outcome === "failed") {
     await patchStatus(set, app.id, "error");
-    if (app.gitRemoteUrl) {
-      await toastError("仓库克隆失败", mapSeedErrorReason(result.error));
-    }
   }
   // unreachable → no status change; reseed remains available.
+  return result;
 }
 
 /**
@@ -640,15 +677,26 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     // would write the starter template over the user's own files. The guard is
     // the status rather than the flag so an app that somehow arrives `ready` by
     // another route is treated the same way.
+    let seedResult: SeedAppResult | null = null;
     if (row.provisionStatus === "pending" || row.provisionStatus === "repo_created") {
       // The cloud API only inserts the row; the app's files come from the local
-      // daemon, which writes its own embedded template. Non-fatal — a daemon
-      // that is down (unreachable) leaves the row `pending` so the user can
-      // reseed.
+      // daemon, which writes its own embedded template. Non-fatal when the
+      // daemon is unreachable — the row stays `pending` so the user can reseed.
+      //
       // The typed address, not the stored one: `POST /v1/apps` strips any
       // credential out of it before writing the row, and this is the one call
       // that still needs it.
-      await runSeed(set, row, !!adoptLocalDir?.trim(), input.gitRemoteUrl);
+      seedResult = await runSeed(set, row, !!adoptLocalDir?.trim(), input.gitRemoteUrl);
+    }
+    // Remote import whose clone failed: the cloud row is an empty shell. Leaving
+    // it looks like create succeeded while a toast says it failed. Roll it back
+    // and throw so CreateAppView keeps the form open with the reason.
+    if (input.gitRemoteUrl?.trim() && seedResult?.outcome === "failed") {
+      await discardCreatedApp(set, row.id);
+      throw new Error(
+        mapSeedErrorReason(seedResult.error) ??
+          i18n.t("apps.cloneFailed", "仓库克隆失败"),
+      );
     }
     await get().refreshLocalApps(input.teamId);
     // Return the row as it stands AFTER seeding — the caller decides what to do
@@ -672,7 +720,13 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   reseed: async (appId) => {
     const app = get().items.find((a) => a.id === appId);
     if (!app) return;
-    await runSeed(set, app);
+    const result = await runSeed(set, app);
+    // Reseed keeps the row: the user already owns this app and can retry. Toast
+    // only when a remote clone is what failed — template seed failures stay
+    // quiet (status is already `error`).
+    if (result.outcome === "failed" && app.gitRemoteUrl) {
+      await toastError("仓库克隆失败", mapSeedErrorReason(result.error));
+    }
   },
   deploy: async (appId) => {
     const app = get().items.find((a) => a.id === appId);
@@ -727,9 +781,12 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // presigned URL to upload to, and only the machine holding the checkout
       // can say which this is.
       const declared = await daemonAppManifest(appId, app.teamId);
+      if (!declared) {
+        throw new Error("amuxd did not return the app declaration");
+      }
       const started = await getBackend().apps.deployApp(appId, {
         ...(gitCommitSha ? { gitCommitSha } : {}),
-        ...(declared?.runtime ? { runtime: declared.runtime } : {}),
+        runtime: declared.build.kind,
       });
       mergeRow(set, started);
 
@@ -771,6 +828,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         await toastError("部署失败：构建未完成", reason);
         return;
       }
+      if (!build.declaration) {
+        throw new Error("amuxd build response did not include declaration");
+      }
 
       // No success toast. It showed `fcEndpoint` — the raw FC function URL —
       // which is not the address the product hands out (that is the app's
@@ -788,7 +848,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         // How the app says it starts. The control plane used to assume one
         // answer for every app; this is the app's own, read off its
         // declaration by the daemon that just built it.
-        ...(build.runtime ? { runtime: build.runtime } : {}),
+        declaration: build.declaration,
         // The image that build actually pushed. A container app has no code
         // object, so finalizing without it would point the function at whatever
         // the previous deploy left in OSS.
@@ -851,6 +911,34 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     } catch (e) {
       await toastError(
         i18n.t("apps.visibilityFailed", "Could not change who can see this app"),
+        e instanceof Error ? e.message : String(e),
+      );
+      return false;
+    }
+  },
+  setType: async (appId, type) => {
+    try {
+      const updated = await getBackend().apps.setAppType(appId, type);
+      if (!updated) {
+        // Same shape as visibility: admin only, and the 404 cannot say so
+        // without confirming the app exists, so the rule is named here.
+        await toastError(
+          i18n.t("apps.typeFailed", "Could not change the app type"),
+          i18n.t("apps.typeDenied", "Only people with admin access to this app can change its type."),
+        );
+        return false;
+      }
+      // The row carries `typePendingRedeploy` from the server, so the "takes
+      // effect on the next deploy" line follows it with no local flag.
+      mergeRow(set, updated);
+      // The panel's counts are loaded once per app and the data row is one of
+      // them: leaving data_app has the data browser answer "no database" from
+      // this moment, and the panel would otherwise keep saying "3 张表".
+      get().invalidateAppSummary();
+      return true;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.typeFailed", "Could not change the app type"),
         e instanceof Error ? e.message : String(e),
       );
       return false;

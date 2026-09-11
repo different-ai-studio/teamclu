@@ -579,7 +579,28 @@
     "loadEarlierMessages": "Load {{count}} earlier messages",
     "compaction": {
       "title": "Context automatically compacted",
-      "inProgressTitle": "Compacting context automatically..."
+      "inProgressTitle": "Compacting context automatically...",
+      "label": "compact",
+      "inProgressMeta": "{{reason}} · in progress",
+      "completedMeta": "ok · {{duration}}",
+      "completedShort": "ok",
+      "durationMs": "{{ms}}ms",
+      "durationSec": "{{sec}}s",
+      "tokenCount": "{{count, number}}",
+      "tokenCountApprox": "~{{count, number}}",
+      "tokenChange": "{{before}} → {{after}} tokens · {{reason}}",
+      "reason": {
+        "threshold": "threshold",
+        "overflow": "overflow",
+        "manual": "manual"
+      }
+    },
+    "processSummary": {
+      "thinking": "Thinking",
+      "tools": "{{count}} tool",
+      "tools_other": "{{count}} tools",
+      "compacts": "{{count}} compact",
+      "compacts_other": "{{count}} compacts"
     },
     "analyzing": "Agent is analyzing and planning...",
     "generatingComponents": "Generating... ({{count}} components)",
@@ -987,6 +1008,7 @@
   },
   "fileExplorer": {
     "agentNotStarted": "Agent has not started yet",
+    "teamLink": "Linked to the team's shared folder",
     "newFile": "New File",
     "newFolder": "New Folder",
     "copyPath": "Copy Path",
@@ -1257,6 +1279,12 @@
     "typeDataAppDesc": "Stores, queries and edits data. Comes with a database.",
     "typeImported": "Imported repo",
     "typeImportedDesc": "Code that came from a local directory or an existing git repo.",
+    "typePendingRedeploy": "The live site still runs as the old type until the next deploy.",
+    "typeLeaveDatabaseTitle": "Switch to a type without a database?",
+    "typeLeaveDatabaseConfirm": "The live site keeps working as it is until the next deploy. From that deploy on, the app no longer gets DATABASE_URL, so any code that uses the database will break. The data is not deleted: it drops out of Live data for now and comes back when you switch back to {{dataApp}}.",
+    "typeLeaveDatabaseAction": "Switch to {{type}}",
+    "typeFailed": "Could not change the app type",
+    "typeDenied": "Only people with admin access to this app can change its type.",
     "sourceLabel": "Where the code comes from",
     "sourceNew": "Start a new one",
     "sourceNewDesc": "A fresh directory from a template, hosted by us.",
@@ -1276,6 +1304,9 @@
     "libraryDownload": "Download",
     "libraryDownloaded": "On this machine",
     "libraryNotHere": "Not on this machine",
+    "notDownloadedBadge": "Not here",
+    "notDownloadedHint": "This app is not on this machine yet — download it to open its sessions",
+    "sessionNotDownloaded": "\"{{name}}\" is not on this machine. You can read the history, but not carry on the conversation here.",
     "gitHosted": "Hosted repo",
     "gitRemote": "External repo",
     "gitLocal": "This machine only",
@@ -1580,6 +1611,7 @@
     "deleteFailed": "Delete failed",
     "deleteDenied": "App not found, or you cannot delete it",
     "deleted": "App deleted",
+    "cloneFailed": "Repository clone failed",
     "seedErrorReason": {
       "cloneTimeout": "The clone timed out. Most often this machine's git credential helper is waiting on a sign-in window that has nowhere to appear — clone the repo once in a terminal, then try again."
     },
@@ -1587,6 +1619,8 @@
       "uncommitted": "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
       "pushRejected": "The repo has commits this machine does not. Pull and resolve them, then deploy again.",
       "noPackageJson": "This app has no code yet — its folder has no package.json. Ask the agent to build it, or reseed the app.",
+      "noCode": "This app has no code yet — its folder has neither a package.json nor a Dockerfile. Ask the agent to build it, or reseed the app.",
+      "noPnpm": "pnpm was not found on this machine, and this app is built with it. Install pnpm (npm i -g pnpm), then retry.",
       "installTimeout": "Dependency install timed out after 10 minutes. Check the network or the lockfile, then retry.",
       "buildTimeout": "Build timed out after 10 minutes. Check the build script, then retry.",
       "artifactTooLarge": "Build output is over the 50 MiB limit. Trim it, then retry.",

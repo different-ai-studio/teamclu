@@ -105,7 +105,7 @@ async fn add_server(workspace: &str, api_port: u16, arguments: &Value) -> Result
     if let Some(existing) = servers.get(name) {
         if source_of(existing) == Some("team") {
             return Err(format!(
-                "'{name}' is a team-shared MCP server (managed under teamclu-team/.mcp). Cannot overwrite from here."
+                "'{name}' is installed from the team MCP catalog. Cannot overwrite it from here — manage it in the team MCP settings."
             ));
         }
         return Err(format!(
@@ -135,7 +135,7 @@ async fn update_server(workspace: &str, api_port: u16, arguments: &Value) -> Res
 
     if source_of(&existing) == Some("team") {
         return Err(format!(
-            "'{name}' is a team-shared MCP server (managed under teamclu-team/.mcp). Edit the team file and sync instead."
+            "'{name}' is installed from the team MCP catalog. Edit it in the team catalog instead."
         ));
     }
 
@@ -168,7 +168,7 @@ async fn remove_server(workspace: &str, api_port: u16, name: &str) -> Result<Val
         .ok_or_else(|| format!("MCP server '{name}' not found"))?;
     if source_of(existing) == Some("team") {
         return Err(format!(
-            "'{name}' is a team-shared MCP server and cannot be deleted from the workspace. Remove it from teamclu-team/.mcp instead."
+            "'{name}' is installed from the team MCP catalog and cannot be deleted from the workspace. Uninstall it in the team MCP settings instead."
         ));
     }
 
@@ -197,7 +197,7 @@ async fn set_enabled(
 
     if source_of(&existing) == Some("team") {
         return Err(format!(
-            "'{name}' is a team-shared MCP server (managed under teamclu-team/.mcp). Enable/disable it there."
+            "'{name}' is installed from the team MCP catalog. Install or uninstall it in the team MCP settings instead."
         ));
     }
 

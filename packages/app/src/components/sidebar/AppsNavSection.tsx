@@ -14,15 +14,14 @@ import { NAV_ROW_TRAILING_SLOT } from '@/components/sidebar/nav-row'
  * inside a column that is otherwise fixed rows, and then made column two mean
  * two different things depending on whether a row in that list was selected.
  * Column two owns both levels now (list, then that app's sessions), so this row
- * only has to say "apps live here" and how many are on this machine.
+ * only has to say "apps live here" and how many there are.
  */
 export function AppsNavSection() {
   const { t } = useTranslation()
   const filter = useUIStore((s) => s.sidebarFilter)
   const setFilter = useUIStore((s) => s.setSidebarFilter)
   const teamId = useCurrentTeamStore((s) => s.team?.id ?? '')
-  const allItems = useAppsStore((s) => s.items)
-  const localAppIds = useAppsStore((s) => s.localAppIds)
+  const items = useAppsStore((s) => s.items)
   const load = useAppsStore((s) => s.load)
   const refreshLocalApps = useAppsStore((s) => s.refreshLocalApps)
   const selectApp = useAppsStore((s) => s.selectApp)
@@ -37,18 +36,10 @@ export function AppsNavSection() {
     void refreshLocalApps(teamId)
   }, [teamId, load, refreshLocalApps])
 
-  /**
-   * Only what is actually on this machine — the same set column two lists.
-   *
-   * `localAppIds === null` means the daemon has not answered yet, which is not
-   * the same as "nothing is local": counting zero then would tell the user
-   * their apps are gone every time the daemon is slow to start.
-   */
-  const count = React.useMemo(() => {
-    if (localAppIds === null) return allItems.length
-    const local = new Set(localAppIds)
-    return allItems.filter((app) => local.has(app.id)).length
-  }, [allItems, localAppIds])
+  // The same set column two lists — every app the team has, whether or not it
+  // is downloaded here. It used to count only local ones, which made the badge
+  // disagree with the list the moment that list stopped hiding the rest.
+  const count = items.length
 
   const openApps = React.useCallback(() => {
     // Always lands on the list. The row is the entrance to the section, and

@@ -156,37 +156,37 @@ async fn handle_event(
                 route.translate.reset_turn();
                 // A prompt sent while pi was busy is queued as `followUp`, so
                 // it starts its own run after the current one ends — and that
-                // first `agent_end` already cleared `turn_active`. Without
+                // first `agent_settled` already cleared `turn_active`. Without
                 // re-arming here the queued run would finish with `close_turn`
                 // bailing on `!turn_active`, leaving the caller without the
                 // Active→Idle for a reply it did receive.
                 route.turn_active = true;
             }
         }
-        // A pi agent run can contain multiple turns: each tool-use cycle ends
-        // one `turn_end` and begins another `turn_start`. Ending the TeamClu
-        // stream there finalizes the first partial reply, so subsequent text
-        // is rendered as a second message. Only `agent_end` completes the
-        // prompt as a whole. `turn_active` keeps the stdout-EOF fallback
-        // idempotent if pi exits immediately after this event.
+        // One low-level pi run finished. Retry, auto-compaction, and queued
+        // continuations may still follow — do not settle the TeamClu turn here.
+        "agent_end" => on_agent_end(shared, &session_id, event),
+        // Session-level run fully settled: no automatic retry/compaction retry/
+        // queued continuation remains. Only then may we emit Active→Idle and let
+        // turn_aggregator decide the turn outcome (incl. no_final_reply).
         event_type if completes_agent_run(event_type) => {
-            // The host stamps the session's leaf entry id onto `agent_end`;
-            // remembered per route as the "since" cursor for crash backfill.
-            if let Some(leaf) = event.get("leafId").and_then(|v| v.as_str()) {
-                if let Some(route) = shared.routes.lock().get_mut(&session_id) {
-                    route.last_entry_id = Some(leaf.to_string());
-                }
-            }
-            // pi is about to re-run this agent run after a transient failure:
-            // the attempt's error is not the turn's outcome, so drop it before
-            // `close_turn` would flush it. Without this a retried 429 leaves a
-            // durable error banner per attempt even when the retry succeeds.
-            if will_retry(event) {
-                if let Some(route) = shared.routes.lock().get_mut(&session_id) {
-                    route.translate.discard_turn_error();
-                }
-            }
             close_turn(shared, &session_id).await;
+        }
+        "compaction_start" | "compaction_end" => {
+            let completed = event_type == "compaction_end";
+            let payload = compaction_wire_payload(event, completed);
+            let (event_tx, reply_to) = {
+                let routes = shared.routes.lock();
+                let Some(route) = routes.get(&session_id) else {
+                    return;
+                };
+                (route.event_tx.clone(), route.turn_reply_to.clone())
+            };
+            let ev = translate::compaction_event(event_type, &payload);
+            crate::runtime::agent_trace::log_acp_event(&session_id, &ev);
+            let _ = event_tx
+                .send(AcpEventFrame::new(session_id, ev).with_reply_to(reply_to))
+                .await;
         }
         _ => {
             let (events, event_tx, reply_to) = {
@@ -219,7 +219,60 @@ async fn handle_event(
 }
 
 fn completes_agent_run(event_type: &str) -> bool {
-    event_type == "agent_end"
+    event_type == "agent_settled"
+}
+
+/// Bookkeeping for a finished low-level pi run — leaf cursor and retry error
+/// discard. Turn settlement waits for `agent_settled`.
+fn on_agent_end(shared: &Arc<Shared>, session_id: &str, event: &serde_json::Value) {
+    if let Some(leaf) = event.get("leafId").and_then(|v| v.as_str()) {
+        if let Some(route) = shared.routes.lock().get_mut(session_id) {
+            route.last_entry_id = Some(leaf.to_string());
+        }
+    }
+    if will_retry(event) {
+        if let Some(route) = shared.routes.lock().get_mut(session_id) {
+            route.translate.discard_turn_error();
+        }
+    }
+}
+
+fn compaction_wire_payload(event: &serde_json::Value, completed: bool) -> serde_json::Value {
+    let reason = event
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("threshold");
+    let result = event.get("result");
+    let tokens_before = result.and_then(|r| r.get("tokensBefore")).and_then(json_u64);
+    let tokens_after = result
+        .and_then(|r| r.get("estimatedTokensAfter"))
+        .and_then(json_u64);
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "reason".into(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    payload.insert("auto".into(), serde_json::Value::Bool(reason != "manual"));
+    payload.insert(
+        "overflow".into(),
+        serde_json::Value::Bool(reason == "overflow"),
+    );
+    payload.insert("completed".into(), serde_json::Value::Bool(completed));
+    if let Some(n) = tokens_before {
+        payload.insert("tokensBefore".into(), serde_json::json!(n));
+    }
+    if let Some(n) = tokens_after {
+        payload.insert("tokensAfter".into(), serde_json::json!(n));
+    }
+    serde_json::Value::Object(payload)
+}
+
+fn json_u64(v: &serde_json::Value) -> Option<u64> {
+    v.as_u64().or_else(|| {
+        v.as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0)
+            .map(|f| f as u64)
+    })
 }
 
 /// `agent_end.willRetry` — pi's `AgentSession` will re-run this agent run
@@ -241,7 +294,7 @@ pub(super) async fn close_turn(shared: &Arc<Shared>, session_id: &str) {
             route.turn_active = false;
             let reply_to = route.turn_reply_to.take();
             route.turn_requester = None;
-            // Every path that settles a turn funnels through here — `agent_end`,
+            // Every path that settles a turn funnels through here — `agent_settled`,
             // a user cancel, a child that died mid-turn. Flushing the held
             // error at this one point is what makes "a failed turn always
             // reports" hold no matter which path fired.
@@ -598,10 +651,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_agent_end_completes_the_prompt() {
-        assert!(completes_agent_run("agent_end"));
+    fn only_agent_settled_completes_the_prompt() {
+        assert!(completes_agent_run("agent_settled"));
+        // A low-level run may end on agent_end while compaction or retry continues.
+        assert!(!completes_agent_run("agent_end"));
         // A tool-using prompt has one turn_end for each model/tool cycle.
-        // Closing here splits a single streamed reply into separate messages.
         assert!(!completes_agent_run("turn_end"));
         assert!(!completes_agent_run("turn_start"));
         assert!(!completes_agent_run("agent_start"));
@@ -693,11 +747,11 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn agent_end_closes_only_its_own_session() {
+    async fn agent_end_records_leaf_without_settling_turn() {
         let shared = test_shared();
         let key = super::super::process::test_pool_key("/w");
         let (mut route_a, mut rx_a) = test_route(key.clone(), "/s/a.jsonl");
-        let (mut route_b, mut rx_b) = test_route(key.clone(), "/s/b.jsonl");
+        let (mut route_b, _rx_b) = test_route(key.clone(), "/s/b.jsonl");
         route_a.turn_active = true;
         route_b.turn_active = true;
         shared.routes.lock().insert("pi:/s/a.jsonl".into(), route_a);
@@ -709,17 +763,88 @@ mod tests {
         });
         handle_event(&shared, &key, &client, &end).await;
 
-        // A settled (status frame emitted, turn closed, leaf recorded)…
-        assert!(rx_a.try_recv().is_ok(), "A gets its Active→Idle");
+        assert!(rx_a.try_recv().is_err(), "agent_end alone must not settle");
         {
             let routes = shared.routes.lock();
             let a = routes.get("pi:/s/a.jsonl").unwrap();
-            assert!(!a.turn_active);
+            assert!(a.turn_active, "turn stays open until agent_settled");
             assert_eq!(a.last_entry_id.as_deref(), Some("e-42"));
-            // …while B is still mid-turn.
+            assert!(routes.get("pi:/s/b.jsonl").unwrap().turn_active);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_settled_closes_only_its_own_session() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (mut route_a, mut rx_a) = test_route(key.clone(), "/s/a.jsonl");
+        let (mut route_b, mut rx_b) = test_route(key.clone(), "/s/b.jsonl");
+        route_a.turn_active = true;
+        route_b.turn_active = true;
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route_a);
+        shared.routes.lock().insert("pi:/s/b.jsonl".into(), route_b);
+        let client = test_client();
+
+        let settled: serde_json::Value = serde_json::json!({
+            "type": "agent_settled", "sessionId": "pi:/s/a.jsonl"
+        });
+        handle_event(&shared, &key, &client, &settled).await;
+
+        assert!(rx_a.try_recv().is_ok(), "A gets its Active→Idle");
+        {
+            let routes = shared.routes.lock();
+            assert!(!routes.get("pi:/s/a.jsonl").unwrap().turn_active);
             assert!(routes.get("pi:/s/b.jsonl").unwrap().turn_active);
         }
         assert!(rx_b.try_recv().is_err(), "B keeps streaming");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn compaction_events_forward_as_raw_acp() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (route, mut rx) = test_route(key.clone(), "/s/a.jsonl");
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+        let client = test_client();
+
+        let start = serde_json::json!({
+            "type": "compaction_start", "sessionId": "pi:/s/a.jsonl", "reason": "overflow"
+        });
+        handle_event(&shared, &key, &client, &start).await;
+        let frame = rx.try_recv().expect("compaction_start forwarded");
+        match frame.event.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => {
+                assert_eq!(raw.method, "compaction_start");
+                let body: serde_json::Value = serde_json::from_slice(&raw.json_payload).unwrap();
+                assert_eq!(body["overflow"], true);
+                assert_eq!(body["completed"], false);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let end = serde_json::json!({
+            "type": "compaction_end",
+            "sessionId": "pi:/s/a.jsonl",
+            "reason": "threshold",
+            "result": {
+                "tokensBefore": 150000,
+                "estimatedTokensAfter": 32000
+            }
+        });
+        handle_event(&shared, &key, &client, &end).await;
+        let frame = rx.try_recv().expect("compaction_end forwarded");
+        match frame.event.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => {
+                assert_eq!(raw.method, "compaction_end");
+                let body: serde_json::Value = serde_json::from_slice(&raw.json_payload).unwrap();
+                assert_eq!(body["completed"], true);
+                assert_eq!(body["tokensBefore"], 150000);
+                assert_eq!(body["tokensAfter"], 32000);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[cfg(unix)]
@@ -832,8 +957,14 @@ mod tests {
             "type": "agent_end", "sessionId": "pi:/s/a.jsonl", "willRetry": true
         });
         handle_event(&shared, &key, &client, &retrying).await;
+        assert!(rx.try_recv().is_err(), "willRetry must not settle the turn");
 
-        let frame = rx.try_recv().expect("the turn still settles");
+        let settled = serde_json::json!({
+            "type": "agent_settled", "sessionId": "pi:/s/a.jsonl"
+        });
+        handle_event(&shared, &key, &client, &settled).await;
+
+        let frame = rx.try_recv().expect("the turn settles after agent_settled");
         assert!(
             is_status_change(&frame),
             "a retried attempt must not leave a durable error banner"
@@ -849,11 +980,16 @@ mod tests {
         let client = test_client();
         let mut rx = session_with_held_failure(&shared, &key, &client).await;
 
-        // No `willRetry`: this run's failure is the turn's outcome.
         let end = serde_json::json!({
             "type": "agent_end", "sessionId": "pi:/s/a.jsonl", "leafId": "e-1"
         });
         handle_event(&shared, &key, &client, &end).await;
+        assert!(rx.try_recv().is_err(), "agent_end alone must not settle");
+
+        let settled = serde_json::json!({
+            "type": "agent_settled", "sessionId": "pi:/s/a.jsonl"
+        });
+        handle_event(&shared, &key, &client, &settled).await;
 
         // Error first: turn_aggregator decides the turn's outcome from an
         // Error seen *before* Active→Idle.

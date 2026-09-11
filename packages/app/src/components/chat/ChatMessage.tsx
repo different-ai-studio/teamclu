@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Copy, Loader2, ScrollText } from "lucide-react";
+import { Check, Copy, Loader2 } from "lucide-react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { cn, copyToClipboard } from "@/lib/utils";
 import type { Message as StoreMessage } from "@/stores/session-types";
@@ -16,6 +16,7 @@ import { extractUITreeFromResponse } from "@/lib/dynamic-ui/generator";
 import { parseStreamingUITree } from "@/lib/dynamic-ui/streaming";
 import { lazyNamed } from "@/lib/lazy-component";
 import { ToolCallCard } from "./ToolCallCard";
+import { CompactionRow } from "./CompactionRow";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { AgentProcessCollapsible } from "./AgentProcessCollapsible";
@@ -27,9 +28,15 @@ import { MessageTokenSummary } from "./MessageTokenSummary";
 import { MessageFeedback } from "./MessageFeedback";
 import { MessageStarRating } from "./MessageStarRating";
 import { splitAssistantProcessAndFinalParts } from "@/lib/agent/agent-reply-transcript";
+import {
+  countCompactionParts,
+  formatAgentProcessSummary,
+  mergeProcessPartsWithCompaction,
+} from "@/lib/stream/compaction-display";
 import { hydrateDeferredProcessParts } from "@/lib/stream/lazy-process-parts";
 import type { MessagePart } from "@/stores/session-types";
 import { useSessionMessageStore } from "@/stores/session-message-store";
+import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import {
   AgentReplyQuote,
   jumpToMessageById,
@@ -44,17 +51,12 @@ const DynamicUIMessage = lazyNamed(
   "DynamicUIMessage",
 );
 
-function formatProcessMetaSummary(meta: {
-  toolCount: number;
-  hasThinking: boolean;
-}): string | undefined {
-  const bits: string[] = [];
-  if (meta.hasThinking) bits.push("Thinking");
-  if (meta.toolCount > 0) bits.push(`${meta.toolCount} tool`);
-  return bits.join(" · ") || undefined;
-}
+const EMPTY_COMPACTION_PARTS: MessagePart[] = [];
 
 function renderAgentProcessPart(part: MessagePart, basePath?: string) {
+  if (part.type === "compaction") {
+    return <CompactionRow key={part.id} part={part} />;
+  }
   if (part.type === "reasoning") {
     const reasoningText = part.text || part.content || "";
     if (!reasoningText) return null;
@@ -147,6 +149,14 @@ export const ChatMessage = React.memo(function ChatMessage({
   // (StreamingAgentBubble); a persisted ChatMessage always shows its own
   // content.
   const latestMessage = message;
+  const isSpecialTimelineRow =
+    latestMessage.hidden ||
+    latestMessage.displayKind === "synthetic" ||
+    latestMessage.displayKind === "compaction-summary";
+  const messageParts = latestMessage.parts ?? [];
+  const compactionParts = useV2StreamingStore(
+    (s) => s.compactionPartsByMessageId[latestMessage.id]?.parts ?? EMPTY_COMPACTION_PARTS,
+  );
   const textContent = latestMessage.content || "";
 
   const isDeferredProcess =
@@ -175,57 +185,80 @@ export const ChatMessage = React.memo(function ChatMessage({
   // Extract reasoning/thinking content from parts — memoized to avoid
   // re-filtering on every render during streaming.
   const { reasoningContent, hasReasoning, hasThinking } = React.useMemo(() => {
-    const rParts = latestMessage.parts.filter((p) => p.type === "reasoning");
+    if (isSpecialTimelineRow) {
+      return { reasoningContent: "", hasReasoning: false, hasThinking: false };
+    }
+    const rParts = messageParts.filter((p) => p.type === "reasoning");
     const rContent = rParts.map((p) => p.text || "").filter(Boolean).join("\n");
     return {
       reasoningContent: rContent,
       hasReasoning: rContent.length > 0,
-      hasThinking: latestMessage.parts.some(
+      hasThinking: messageParts.some(
         (p) => p.type === "step-start" || p.type === "step-finish",
       ),
     };
-  }, [latestMessage.parts]);
+  }, [isSpecialTimelineRow, messageParts]);
 
   const hasToolCalls = latestMessage.toolCalls && latestMessage.toolCalls.length > 0;
   const orderedRenderableParts = React.useMemo(
     () =>
-      latestMessage.parts.filter(
-        (p) =>
-          (p.type === "reasoning" && Boolean(p.text || p.content)) ||
-          (p.type === "text" && Boolean(p.text || p.content)) ||
-          (p.type === "tool-call" && Boolean(p.toolCall)),
-      ),
-    [latestMessage.parts],
+      isSpecialTimelineRow
+        ? []
+        : messageParts.filter(
+            (p) =>
+              (p.type === "reasoning" && Boolean(p.text || p.content)) ||
+              (p.type === "text" && Boolean(p.text || p.content)) ||
+              (p.type === "tool-call" && Boolean(p.toolCall)),
+          ),
+    [isSpecialTimelineRow, messageParts],
   );
   const hasOrderedToolParts = orderedRenderableParts.some((p) => p.type === "tool-call");
   const hasOrderedReasoningParts = orderedRenderableParts.some((p) => p.type === "reasoning");
-  const { processParts: orderedProcessParts, finalTextParts: orderedTextParts } =
+  const { processParts: rawOrderedProcessParts, finalTextParts: orderedTextParts } =
     React.useMemo(
       () => splitAssistantProcessAndFinalParts(orderedRenderableParts),
       [orderedRenderableParts],
     );
+  const orderedProcessParts = React.useMemo(
+    () => mergeProcessPartsWithCompaction(rawOrderedProcessParts, compactionParts),
+    [rawOrderedProcessParts, compactionParts],
+  );
+  const compactionCount = React.useMemo(
+    () => countCompactionParts(orderedProcessParts),
+    [orderedProcessParts],
+  );
   const shouldRenderOrderedAssistantParts =
     !isUser &&
     (hasOrderedToolParts ||
       (hasOrderedReasoningParts &&
         (orderedRenderableParts.some((p) => p.type === "text") || !textContent)));
 
-  const fallbackProcessSummary = React.useMemo(() => {
-    const bits: string[] = [];
-    if (hasReasoning) bits.push("Thinking");
-    if (hasToolCalls && !hasOrderedToolParts) {
-      bits.push(`${latestMessage.toolCalls!.length} tool`);
-    }
-    return bits.join(" · ") || undefined;
-  }, [hasReasoning, hasToolCalls, hasOrderedToolParts, latestMessage.toolCalls]);
+  const fallbackProcessSummary = React.useMemo(
+    () =>
+      formatAgentProcessSummary(t, {
+        hasThinking: hasReasoning,
+        toolCount:
+          hasToolCalls && !hasOrderedToolParts ? latestMessage.toolCalls!.length : 0,
+        compactionCount,
+      }),
+    [
+      t,
+      hasReasoning,
+      hasToolCalls,
+      hasOrderedToolParts,
+      latestMessage.toolCalls,
+      compactionCount,
+    ],
+  );
 
   const orderedProcessSummary = React.useMemo(() => {
     const toolCount = orderedProcessParts.filter((p) => p.type === "tool-call").length;
-    const bits: string[] = [];
-    if (hasOrderedReasoningParts) bits.push("Thinking");
-    if (toolCount > 0) bits.push(`${toolCount} tool`);
-    return bits.join(" · ") || undefined;
-  }, [orderedProcessParts, hasOrderedReasoningParts]);
+    return formatAgentProcessSummary(t, {
+      hasThinking: hasOrderedReasoningParts,
+      toolCount,
+      compactionCount,
+    });
+  }, [t, orderedProcessParts, hasOrderedReasoningParts, compactionCount]);
 
   const hasActiveToolCalls =
     latestMessage.toolCalls?.some(
@@ -286,38 +319,12 @@ export const ChatMessage = React.memo(function ChatMessage({
     Boolean(textContent) &&
     !(tokenGroupInfo?.hideTokenUsage ?? false);
 
-  if (latestMessage.hidden || latestMessage.displayKind === "synthetic" || latestMessage.displayKind === "compaction-summary") {
+  if (
+    latestMessage.hidden ||
+    latestMessage.displayKind === "synthetic" ||
+    latestMessage.displayKind === "compaction-summary"
+  ) {
     return null;
-  }
-
-  if (latestMessage.displayKind === "compaction") {
-    const completed = latestMessage.compaction?.completed !== false;
-    const title = completed
-      ? t("chat.compaction.title", "Context automatically compacted")
-      : t("chat.compaction.inProgressTitle", "Compacting context automatically...");
-
-    return (
-      <div
-        className="group/msg my-4 flex items-center gap-3 text-muted-foreground"
-        data-testid="chat-message"
-        data-message-id={message.id}
-        data-message-role={message.role}
-        data-message-kind="compaction"
-      >
-        <div className="h-px min-w-8 flex-1 bg-border/80" />
-        <div className="flex min-w-0 max-w-[70%] items-center gap-2 text-sm font-medium text-muted-foreground">
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-            {completed ? (
-              <ScrollText className="h-4 w-4" />
-            ) : (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )}
-          </span>
-          <span className="truncate">{title}</span>
-        </div>
-        <div className="h-px min-w-8 flex-1 bg-border/80" />
-      </div>
-    );
   }
 
   return (
@@ -347,11 +354,18 @@ export const ChatMessage = React.memo(function ChatMessage({
       {!isUser && isDeferredProcess && latestMessage.processMeta ? (
         <div className="mb-0.5 pl-1">
           <AgentProcessCollapsible
-            summary={formatProcessMetaSummary(latestMessage.processMeta)}
+            summary={formatAgentProcessSummary(t, {
+              ...latestMessage.processMeta,
+              compactionCount:
+                latestMessage.processMeta.compactionCount ?? compactionCount,
+            })}
             loading={processHydrating}
             onOpenChange={handleProcessOpenChange}
           >
-            {hydratedProcessParts?.map((part) => renderAgentProcessPart(part, basePath))}
+            {mergeProcessPartsWithCompaction(
+              hydratedProcessParts ?? [],
+              compactionParts,
+            ).map((part) => renderAgentProcessPart(part, basePath))}
           </AgentProcessCollapsible>
         </div>
       ) : null}
@@ -361,7 +375,9 @@ export const ChatMessage = React.memo(function ChatMessage({
         !isDeferredProcess &&
         !latestMessage.isStreaming &&
         !shouldRenderOrderedAssistantParts &&
-        (hasReasoning || (hasToolCalls && !hasOrderedToolParts)) && (
+        (hasReasoning ||
+          (hasToolCalls && !hasOrderedToolParts) ||
+          compactionCount > 0) && (
           <div className="mb-0.5 pl-1">
             <AgentProcessCollapsible summary={fallbackProcessSummary}>
               {hasReasoning ? (
@@ -372,6 +388,7 @@ export const ChatMessage = React.memo(function ChatMessage({
                     <ToolCallCard key={toolCall.id} toolCall={toolCall} />
                   ))
                 : null}
+              {compactionParts.map((part) => renderAgentProcessPart(part, basePath))}
             </AgentProcessCollapsible>
           </div>
         )}
@@ -461,34 +478,7 @@ export const ChatMessage = React.memo(function ChatMessage({
         <div className="mt-2 space-y-1">
           {orderedProcessParts.length > 0 && !latestMessage.isStreaming ? (
             <AgentProcessCollapsible summary={orderedProcessSummary}>
-              {orderedProcessParts.map((part) => {
-                if (part.type === "reasoning") {
-                  const reasoningText = part.text || part.content || "";
-                  if (!reasoningText) return null;
-                  return (
-                    <ThinkingBlock
-                      key={part.id}
-                      content={reasoningText}
-                      isOpen={false}
-                    />
-                  );
-                }
-                if (part.type === "tool-call" && part.toolCall) {
-                  return <ToolCallCard key={part.id} toolCall={part.toolCall} />;
-                }
-                if (part.type === "text") {
-                  const partText = part.text || part.content || "";
-                  if (!partText) return null;
-                  return (
-                    <Message key={part.id} from="assistant" basePath={basePath}>
-                      <MessageContent>
-                        <MessageResponse>{partText}</MessageResponse>
-                      </MessageContent>
-                    </Message>
-                  );
-                }
-                return null;
-              })}
+              {orderedProcessParts.map((part) => renderAgentProcessPart(part, basePath))}
             </AgentProcessCollapsible>
           ) : null}
           {(latestMessage.isStreaming

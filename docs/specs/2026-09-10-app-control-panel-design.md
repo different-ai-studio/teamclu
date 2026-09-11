@@ -157,13 +157,32 @@ update amux.app_cron_jobs
 - **阿里云 FC**：`s.yaml` 里声明一个 timer trigger（`app-cron`，六段式 `0 * * * * *`
   —— 阿里云的表达式第一段是秒）。
 
-  这里原来写的是「不用 timer trigger，因为 timer 事件不是 HTTP 请求」—— **那是猜的，
-  而且是错的**。同账号的 `banana-api` 上跑着 20 多个 timer trigger 打自己的 HTTP 路径，
-  payload 形如 `{"path":"/api/cron/…","method":"POST","body":{…}}`，其中就有每分钟一次
-  的。timer 确实能驱动 web 函数。
+  **timer 事件不是 HTTP 请求，这一段翻过两次车，两次都是同一个坑。**
 
-  它**不能**做的是加请求头：payload 只有 `path` / `method` / `body` 三个字段。所以密钥
-  走 **body**，端点两种都收（sidecar 发 bearer，timer 放 body）。没走 query 是因为
+  最初写的是「不用 timer trigger，因为 timer 事件不是 HTTP 请求」；看到同账号的
+  `banana-api` 上跑着 20 多个 timer trigger 打自己的 HTTP 路径（payload 形如
+  `{"path":"/api/cron/…","method":"POST","body":{…}}`，其中就有每分钟一次的），就改
+  成了「timer 确实能驱动 web 函数」。**后半句同样是错的**：能跑起来的是那个 payload
+  约定，而约定是**函数自己**兑现的，不是 FC 兑现的。
+
+  FC 交给函数的就是 `{triggerTime, triggerName, payload}` —— 没有 rawPath、没有
+  method、没有 header。`hono/aws-lambda` 认不出这个形状，`getProcessor` 退回 v1
+  processor，读 `event.path` / `event.httpMethod` 读到两个 undefined，拼出来的请求
+  404。**没有异常抛出**，所以 FC 记的是一次干净的成功。
+
+  2026-09-10 belayo 上的表现正是如此：`app-cron` 每分钟按时触发（`t-…` 开头的
+  requestId，`hasFunctionError: false`），一条任务都没跑；同一个 tick 走 HTTP 是通的。
+  排查时先怀疑过 `CRON_TZ=` 前缀 —— 也是错的，同一个函数上不带前缀的
+  `oss-abandon-sessions` 一样在触发。**判据只有一条：查 `FCRequestMetrics` 里
+  `invocationType: Async` 的记录，有就是在触发，问题在函数里。**
+
+  所以 `src/index.ts` 的 `handler()` 里有一步 `timerEventToHttpEvent()`：认出 timer
+  事件，把 payload 里的 `path` / `method` / `body` 翻译成 hono 认得的 v2 事件（host 固
+  定 `localhost`，免得撞上按域名路由的应用和登录服务）。不是 timer 事件、或者 payload
+  里没有可路由的 `path`，一律原样放行。
+
+  timer **不能**做的是加请求头：payload 只有 `path` / `method` / `body` 三个字段。所以
+  密钥走 **body**，端点两种都收（sidecar 发 bearer，timer 放 body）。没走 query 是因为
   query 会进 URL 和访问日志，body 不会。
 
 `APP_CRON_SECRET` 必须**两边都声明**（compose 的 `environment:` 白名单 + `s.yaml`），
@@ -411,3 +430,80 @@ HTTP/1.1 403 Forbidden
 
 **没做的**：角色（§2 非目标）。`员工/用户` 这一档就是受众，网关透传的身份里
 仍然只有 user id / email / orgId。
+
+## 13. Agent 侧：同一个控制面
+
+控制面上能做的事，agent 通过 `teamclu-introspect` sidecar 也要能做——否则 agent 做到
+一半就得停下来请人去点另一半。工具按控制面的块切，一个工具对应桌面端 loopback 上的一个
+路由（`apps/desktop/src/commands/introspect_api/apps.rs` 顶部有对照表）：
+
+| 工具 | 控制面 | 动作 |
+|---|---|---|
+| `manage_app` | 新建、应用组（含本机路径、重新播种）、下载到本机、部署、运行日志、删除 | list / status / sessions / create / update / reseed / download / move_workdir / deploy / logs / delete |
+| `manage_app_access` | 协作权限 | list / grant / revoke |
+| `manage_app_data` | 线上数据 | tables / rows / update_row / delete_row |
+| `manage_app_files` | 应用附件 | usage / list / download / upload / delete / delete_folder / purge / set_quota |
+| `manage_app_env` | 变量与密钥 | list / set / delete |
+| `manage_app_cron` | 定时任务 | list / create / update / delete / run / runs |
+| `manage_app_domain` | 自定义域名 | get / set / verify / remove |
+
+几条和 UI 不一样、但是有意为之的规则：
+
+- **`update` 一次 PATCH 改所有行上的设置**：name / type / visibility / 登录墙四个字段。
+  登录墙没有单独成工具——它和改名是同一个 PATCH，拆开只会多一份工具描述。
+  `runtime` 不给改：它是每次部署从 `teamclu.app.json` 推出来写回的，改了下次部署就被覆盖；
+  `status` 里把 checkout 的声明和行上记录的并排给出。slug / 线上地址不给改。
+- **不可逆的动作必须显式点名应用**：`delete` 和 `purge` 不接受"当前工作区就是这个应用"的
+  默认值，其它动作接受。
+- **按名字找人 / 找任务只认唯一精确匹配**，零个或多个就把候选列表还回去，什么都不做。
+- **文件字节在 sidecar 里搬**：桌面端只签 URL，读写路径用的是 agent 自己进程的权限。
+- **错误原样透出**：app 路由用 409 表达很多正常状态（没数据库、未部署、超配额、DNS 未生效），
+  而 `FcClient` 会把所有 409 折成 `conflict: remote_version=None`，所以 app 路由走自己的
+  请求封装，保留状态码、错误码和原文。
+- **agent 改完 UI 要跟上**：桌面端每次改动发 `apps:changed-by-agent`，
+  `hooks/use-agent-app-changes.ts` 合并一串事件后重读应用列表和控制面计数。
+
+### 13.1 本机那几件事：新建、重新播种、下载、移动目录
+
+这四件事不只是调 Cloud API：要签部署密钥、让 daemon 播种/克隆/移动、再把本机路径写回
+云端 workspace 行。前端的做法原样移植到了 `introspect_api/apps/checkout.rs`（文件头有逐个
+对照），而不是让桌面进程去调窗口里的 store——agent 的调用得在没人打开应用视图时也能工作。
+
+代价是两份实现，改一边要改另一边：
+
+- **播种**（`runSeed`）：是否取部署密钥看仓库怎么认证（Gitea 托管），不看行状态；密钥用完
+  立刻归还；成功写 `ready`、失败写 `error`、daemon 不在什么都不写（仍可重新播种）。克隆用
+  调用者**原样输入**的地址（服务端存行前会剥掉里面的凭证），回复里再把凭证剥一遍。
+- **新建**的三种来源和建应用对话框一致：模板 / 仓库地址（`imported`）/ 本机目录。本机目录
+  先问 daemon：带 origin 的 git 检出 → `localOnly`、原地绑定、不播种；否则 → 我们的仓库、
+  **先绑定再播种**（`adoptExisting`），否则会发布一个空的默认目录。目录不存在或 daemon 不在时
+  **在建行之前**就拒绝，不留空壳应用。
+- **workspace 行**（`ensureAppWorkspaceRow`）：应用自己的行只在无路径或已是本机目录时认领，
+  否则是另一台机器的副本，本机另起一行（按路径找或新建）。`createdByMemberId` 发 null——
+  服务端从 token 推导、忽略客户端的值。绑定失败不回滚已就位的检出，但会在回复里说出来。
+- **重新播种**只对 `pending` / `repo_created` / `error` 开放（同 `canReseed`）。
+- **下载**不会克隆到非空目录上。
+- **移动目录**不允许移动 agent 自己正在里面跑的那个检出——会把工作目录从当前会话脚下抽走；
+  这种情况让用户去控制面板移。
+
+## 14. 类型可改
+
+`apps.type` 以前只在创建时写一次，`PATCH` 会忽略它。现在可改（admin），控制面「应用」组
+有一个类型下拉框，agent 走 `manage_app update`。
+
+类型在服务端只决定一件事：finalize 时 `needsDatabase` ——要不要建 schema、注入
+`DATABASE_URL`。所以：
+
+- **改到 data_app**：下次部署才建库；代码不会自己用上它。
+- **从 data_app 改走**：下次部署起函数里没有 `DATABASE_URL`，用库的代码会挂；数据保留
+  （schema 名由 slug + id 决定、建库幂等），改回来就接上。数据浏览器立刻按新类型回答
+  「没有数据库」。UI 在这个方向上二次确认。
+- **static_web / slides / imported 之间互改**：部署产物完全一样，只影响标签和重新播种写的模板。
+
+「待重新部署」照 `deployed_auth_mode` 的做法：新列 `deployed_type`（finalize 时写入，
+迁移 `20260911000000_apps_deployed_type.sql` 回填 live 行），行上派生
+`typePendingRedeploy`——**只在两边对要不要数据库的答案不同时为 true**
+（`typeChangeNeedsRedeploy`），static_web ↔ slides 不会亮。
+
+部署顺序：`APP_COLUMNS` 现在查 `deployed_type`，所以 Cloud API 不能先于这条迁移上线。
+self-host 的 `migrate` 服务先跑；belayo 迁移是手工的，要先迁移再发 FC。

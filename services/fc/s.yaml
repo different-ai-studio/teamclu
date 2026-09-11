@@ -14,7 +14,11 @@ resources:
       functionName: ${env('FC_FUNCTION_NAME', 'teamclu-sync')}
       runtime: ${env('FC_RUNTIME', 'nodejs20')}
       handler: dist/index.handler
-      timeout: 30
+      # Must exceed the cron tick's own budget (MAX_TICK_MS in
+      # app-cron-runner.ts, 45s) — FC kills the invocation at this number, and a
+      # tick killed mid-flight leaves the run it was writing unrecorded. Every
+      # other route on this function answers in milliseconds.
+      timeout: 60
       cpu: 0.4
       memorySize: 512
       diskSize: 512
@@ -124,11 +128,15 @@ resources:
         # is the `app-cron` compose sidecar; here it is the `app-cron` timer
         # trigger declared below.
         #
-        # A timer trigger CAN drive a web function: it POSTs to the `path` in
-        # its payload. What it cannot do is attach a header, so the secret rides
-        # in the payload BODY — which the route accepts alongside the bearer the
-        # sidecar sends. Blank on either target = scheduled tasks never fire,
-        # because the endpoint refuses an unset secret.
+        # A timer trigger does not make an HTTP request — it invokes the function
+        # with `{triggerTime, triggerName, payload}`. `handler()` in src/index.ts
+        # turns the `path`/`method`/`body` in that payload into the HTTP event the
+        # hono adapter routes; without that step the event 404s and FC still
+        # records a clean success. What a timer cannot do at all is attach a
+        # header, so the secret rides in the BODY — which the route accepts
+        # alongside the bearer the sidecar sends. Blank on either target =
+        # scheduled tasks never fire, because the endpoint refuses an unset
+        # secret.
         APP_CRON_SECRET: ${env('APP_CRON_SECRET', '')}
         # Per-app git repos on Gitea. Blank disables repo provisioning (503
         # gitea_unavailable naming the empty variable).

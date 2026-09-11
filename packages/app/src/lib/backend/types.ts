@@ -4,6 +4,7 @@ import type { TeamMcpBackend } from "@/lib/backend/cloud-api/team-mcp";
 import type { KnowledgeAclBackend } from "@/lib/backend/cloud-api/knowledge-acl";
 import type { TeamEnvSecretsBackend } from "@/lib/backend/cloud-api/team-env-secrets";
 import type { OAuthProvider } from "@/lib/auth";
+import type { AppTypeId } from "@/lib/apps/app-types";
 
 export type BackendKind = "cloud_api";
 
@@ -148,6 +149,8 @@ export interface SessionCreateInput {
   additionalActorIds: string[];
   ideaId?: string | null;
   appId?: string;
+  /** Cloud workspace UUID for each agent participant (ADR-0005). */
+  workspaceByActorId?: Record<string, string>;
 }
 
 export interface SessionParticipant {
@@ -961,7 +964,29 @@ export interface WorkspacesBackend {
   }): Promise<DaemonWorkspaceBackendRow>;
 }
 
-type AppRuntime = "node" | "container";
+export type AppBuildKind = "node" | "python" | "go" | "php" | "java" | "container";
+
+export interface AppBuildSpec {
+  kind: AppBuildKind;
+  output: string;
+  command?: string;
+  dockerfile?: string;
+  context?: string;
+}
+
+export interface AppStartSpec {
+  fcRuntime?: string;
+  command?: string[];
+  args?: string[];
+  port: number;
+  layers?: string[];
+  healthCheckPath?: string;
+}
+
+export interface AppDeployDeclaration {
+  build: AppBuildSpec;
+  start: AppStartSpec;
+}
 
 export type AppAuthMode = "none" | "platform" | "third";
 
@@ -1134,7 +1159,10 @@ export interface AppRow {
   gitAuthKind: string | null;
   /** HEAD SHA at last successful deploy; null before first deploy completes. */
   gitCommitSha: string | null;
-  runtime: AppRuntime;
+  /** Build kind persisted from the last successful deploy declaration. */
+  runtime: AppBuildKind;
+  /** Start configuration persisted from the last successful deploy declaration. */
+  startSpec: AppStartSpec | null;
   authMode: AppAuthMode;
   authAudience: AppAuthAudience;
   authScope: AppAuthScope;
@@ -1149,6 +1177,12 @@ export interface AppRow {
    *  auth flag, the environment is baked in at finalize, so an edit does
    *  nothing until the next deploy. */
   envPendingRedeploy: boolean;
+  /** The app is live and its `type` changed, since that function was deployed,
+   *  in the one way a deploy acts on: whether it gets a database. Moving TO
+   *  `data_app` provisions the database on the next deploy, and moving AWAY
+   *  drops DATABASE_URL on it; static_web ↔ slides ↔ imported is never
+   *  pending. Older servers omit it; read missing as false. */
+  typePendingRedeploy: boolean;
   /** Hostname the owner bound, or null. Served only once verified. */
   customDomain: string | null;
   /** When DNS ownership was last proven; null = stored but NOT served. */
@@ -1361,6 +1395,15 @@ export interface AppsBackend {
    * creator-only, like renaming.
    */
   setAppVisibility(appId: string, visibility: "personal" | "team"): Promise<AppRow | null>;
+  /**
+   * What kind of app this is (PATCH type). Admin only; null on 404, which is
+   * also what a caller without admin gets.
+   *
+   * The row changes at once — the data browser reads "no database" for a
+   * non-data type immediately — but the running function only follows on the
+   * next deploy (see `typePendingRedeploy`). Leaving `data_app` keeps the data.
+   */
+  setAppType(appId: string, type: AppTypeId): Promise<AppRow | null>;
   /** Start FC deploy: provisions the function + returns the OSS upload handle.
    *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
   deployApp(
@@ -1374,9 +1417,8 @@ export interface AppsBackend {
     input: {
       gitCommitSha?: string;
       deployToken: string;
-      /** The app's declared start contract, from `teamclu.app.json`. A
-       *  container app declares no entry — its image's ENTRYPOINT is one. */
-      runtime?: { runtime: string; entry: string; port: number; healthCheckPath?: string };
+      /** The daemon-validated build and start contract from `teamclu.app.json`. */
+      declaration: AppDeployDeclaration;
       /** The image a container build pushed. Required for one, refused for
        *  anything else — see the control plane's parseDeployedImage. */
       image?: string;

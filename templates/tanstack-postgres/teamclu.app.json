@@ -1,0 +1,14 @@
+{
+  "title": "{{APP_NAME}}",
+  "auth": { "mode": "none" },
+  "build": {
+    "kind": "node",
+    "output": ".output"
+  },
+  "start": {
+    "fcRuntime": "custom.debian10",
+    "command": ["/opt/nodejs20/bin/node"],
+    "args": ["server/index.mjs"],
+    "port": 9000
+  }
+}

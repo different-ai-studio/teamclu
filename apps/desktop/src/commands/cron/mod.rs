@@ -260,7 +260,10 @@ pub(crate) async fn mcp_manage(
 
     match action {
         "create" => {
-            let request = parse_create_request(body)?;
+            let mut request = parse_create_request(body)?;
+            if let Some(delivery) = request.delivery.as_mut() {
+                pin_announce_delivery_target(delivery).await?;
+            }
             let job = create_job_on_instance(&instance, request).await;
             log::info!("[Cron] MCP job created: {} ({})", job.name, job.id);
             let job = serde_json::to_value(job).map_err(|e| e.to_string())?;
@@ -336,11 +339,78 @@ fn parse_create_request(body: &serde_json::Value) -> Result<CreateCronJobRequest
     obj.remove("scope");
     obj.remove("workspace_path");
     obj.remove("job_id");
+    let reply_token = obj
+        .remove("reply_token")
+        .and_then(|v| match v {
+            serde_json::Value::String(s) => Some(s),
+            _ => None,
+        })
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     if let Some(schedule) = obj.get("schedule").cloned() {
         obj.insert("schedule".into(), unwrap_stringified_schedule(schedule));
     }
-    serde_json::from_value(serde_json::Value::Object(obj))
-        .map_err(|e| format!("invalid create request: {e}"))
+    let mut request: CreateCronJobRequest = serde_json::from_value(serde_json::Value::Object(obj))
+        .map_err(|e| format!("invalid create request: {e}"))?;
+    fill_announce_delivery_to(&mut request, reply_token.as_deref())?;
+    Ok(request)
+}
+
+fn fill_announce_delivery_to(
+    request: &mut CreateCronJobRequest,
+    reply_token: Option<&str>,
+) -> Result<(), String> {
+    let Some(delivery) = request.delivery.as_mut() else {
+        return Ok(());
+    };
+    if delivery.mode != DeliveryMode::Announce {
+        return Ok(());
+    }
+    delivery.to = delivery.to.trim().to_string();
+    if delivery.to.is_empty() {
+        if let Some(token) = reply_token {
+            delivery.to = token.to_string();
+        }
+    }
+    if delivery.to.is_empty() {
+        return Err(ANNOUNCE_DELIVERY_TO_REQUIRED.to_string());
+    }
+    Ok(())
+}
+
+/// 32-char hex — the shape `reply_token::token_for_binding` mints.
+pub(crate) fn looks_like_reply_token(s: &str) -> bool {
+    let s = s.trim();
+    s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+async fn pin_announce_delivery_target(delivery: &mut CronDelivery) -> Result<(), String> {
+    if delivery.mode != DeliveryMode::Announce {
+        return Ok(());
+    }
+    let to = delivery.to.trim();
+    if to.is_empty() {
+        return Err(ANNOUNCE_DELIVERY_TO_REQUIRED.to_string());
+    }
+    if !looks_like_reply_token(to) {
+        return Ok(());
+    }
+    let resolved = amuxd_client::resolve_reply_token(to).await.map_err(|e| {
+        format!(
+            "could not pin delivery.to from reply_token: {e}. \
+             Pass wecom single:<userid> or group:<chatid> instead."
+        )
+    })?;
+    if delivery.channel.as_str() != resolved.channel {
+        return Err(format!(
+            "reply_token is a {} chat (`{}`), but delivery.channel is {}",
+            resolved.channel,
+            resolved.to,
+            delivery.channel.as_str()
+        ));
+    }
+    delivery.to = resolved.to;
+    Ok(())
 }
 
 /// Recover when a sidecar stuffed a one-time/interval object into `expr`
@@ -671,5 +741,54 @@ mod mcp_create_tests {
             Some("2026-09-09T20:10:30+08:00")
         );
         assert!(request.schedule.expr.is_none());
+    }
+
+    #[test]
+    fn parse_create_request_rejects_announce_with_empty_to() {
+        let body = serde_json::json!({
+            "action": "create",
+            "name": "日报",
+            "enabled": true,
+            "schedule": { "kind": "cron", "expr": "0 10 * * *" },
+            "payload": { "message": "hello" },
+            "delivery": {
+                "mode": "announce",
+                "channel": "wecom",
+                "to": ""
+            }
+        });
+        let err = parse_create_request(&body).unwrap_err();
+        assert!(err.contains("delivery.to is required"), "got: {err}");
+        assert!(err.contains("reply_token"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_create_request_fills_empty_to_from_reply_token() {
+        let token = "0".repeat(32);
+        let body = serde_json::json!({
+            "action": "create",
+            "name": "日报",
+            "enabled": true,
+            "schedule": { "kind": "cron", "expr": "0 10 * * *" },
+            "payload": { "message": "hello" },
+            "reply_token": token,
+            "delivery": {
+                "mode": "announce",
+                "channel": "wecom",
+                "to": "  "
+            }
+        });
+        let request = parse_create_request(&body).unwrap();
+        let delivery = request.delivery.expect("delivery");
+        assert_eq!(delivery.to, token);
+        assert_eq!(delivery.channel, DeliveryChannel::Wecom);
+    }
+
+    #[test]
+    fn looks_like_reply_token_is_32_hex() {
+        assert!(looks_like_reply_token(&"ab".repeat(16)));
+        assert!(!looks_like_reply_token("single:HuangWeiGan"));
+        assert!(!looks_like_reply_token(""));
+        assert!(!looks_like_reply_token("abcd"));
     }
 }

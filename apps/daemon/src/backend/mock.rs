@@ -528,6 +528,7 @@ impl Backend for MockBackend {
             caller_actor_id,
             title: Some(snap.session.title.clone()).filter(|t| !t.trim().is_empty()),
             self_agent: None,
+            app_context: None,
             items,
         })
     }

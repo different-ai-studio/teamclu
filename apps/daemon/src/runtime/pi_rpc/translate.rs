@@ -80,6 +80,14 @@ fn text_event(kind: BlockKind, text: String) -> amux::AcpEvent {
     }
 }
 
+/// `AcpError.message` for a pi `extension_error` event.
+///
+/// Host/extension noise (stale ctx after session replacement, title LLM
+/// side-effects). The model turn is still running. `turn_aggregator` and the
+/// gateway wait loop must *not* treat this as a provider failure — doing so
+/// is how WeCom dropped a finished reply that desktop still rendered.
+pub(crate) const EXTENSION_ERROR_MESSAGE: &str = "pi extension error";
+
 /// `AcpError.message` for a turn whose model call failed outright.
 ///
 /// The exact string is a contract with two consumers: `turn_aggregator`'s
@@ -312,7 +320,7 @@ pub fn translate_event(
                 .map(json_value_to_string)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| event.to_string());
-            vec![error_event("pi extension error", details)]
+            vec![error_event(EXTENSION_ERROR_MESSAGE, details)]
         }
         // pi reports a failed or cancelled model call as the turn's *final*
         // assistant message — `stopReason` "error" / "aborted" plus
@@ -504,6 +512,18 @@ pub fn session_title_event(title: &str) -> amux::AcpEvent {
         event: Some(amux::acp_event::Event::Raw(amux::AcpRawJson {
             method: "session_title".to_string(),
             json_payload: title.as_bytes().to_vec(),
+        })),
+        model: String::new(),
+    }
+}
+
+/// Live compaction marker for the chat thread (`compaction_start` /
+/// `compaction_end`). Payload matches the frontend compaction row contract.
+pub fn compaction_event(phase: &str, payload: &serde_json::Value) -> amux::AcpEvent {
+    amux::AcpEvent {
+        event: Some(amux::acp_event::Event::Raw(amux::AcpRawJson {
+            method: phase.to_string(),
+            json_payload: serde_json::to_vec(payload).unwrap_or_default(),
         })),
         model: String::new(),
     }
@@ -776,7 +796,7 @@ mod tests {
         );
         match e[0].event.as_ref().unwrap() {
             amux::acp_event::Event::Error(err) => {
-                assert_eq!(err.message, "pi extension error");
+                assert_eq!(err.message, EXTENSION_ERROR_MESSAGE);
                 assert_eq!(err.details, "boom in extension");
             }
             other => panic!("unexpected: {other:?}"),

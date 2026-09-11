@@ -147,6 +147,23 @@ impl TurnRunner for FakeTurns {
     }
 }
 
+struct FailingTurns;
+
+#[async_trait]
+impl TurnRunner for FailingTurns {
+    async fn run(
+        &self,
+        _acp: &str,
+        _sender_display: &str,
+        _prompt: &str,
+        _on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+    ) -> Result<String, CoreError> {
+        Err(CoreError::Turn(
+            "agent turn failed: pi extension error".into(),
+        ))
+    }
+}
+
 #[derive(Default)]
 struct FakeCommands {
     /// Commands this fake claims to handle, with their canned reply.
@@ -432,6 +449,37 @@ async fn a_turn_that_produced_nothing_closes_as_cancelled_and_writes_no_message(
     assert!(
         f.writer.replies.lock().unwrap().is_empty(),
         "nothing was said, so nothing belongs in the session"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_turn_still_closes_the_stream_bubble() {
+    // WeCom opens a progress bubble before the turn. If the wait loop
+    // returns Err, that bubble used to stay "thinking…" forever even
+    // though desktop already had the (failed) reply.
+    let writer = Arc::new(FakeWriter::default());
+    let identity = Arc::new(FakeIdentity::default());
+    let router = Arc::new(FakeRouter::default());
+    let core = Core {
+        dedup: Arc::new(FakeDedup::default()),
+        router: router.clone(),
+        identity: identity.clone(),
+        writer: writer.clone(),
+        turns: Arc::new(FailingTurns),
+        commands: Arc::new(FakeCommands::default()),
+    };
+    let d = driver(IM);
+
+    let err = core.handle(&d, inbound("今天的数据")).await.unwrap_err();
+    assert!(
+        err.to_string().contains("pi extension error"),
+        "the turn error must still surface: {err}"
+    );
+    let ends = d.ends.lock().unwrap();
+    assert_eq!(
+        ends.last().copied().flatten(),
+        Some(TurnEnd::NoAnswer),
+        "the open stream bubble must close even when the turn fails"
     );
 }
 

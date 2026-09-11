@@ -1,4 +1,4 @@
-import { parseAppRuntimeSpec } from "../src/lib/provisioning/app-deploy.js";
+import { parseAppDeployDeclaration } from "../src/lib/provisioning/app-deploy.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/app.js";
@@ -32,38 +32,34 @@ test("missing bearer on /v1/teams -> 401", async () => {
   assert.equal(res.status, 401);
 });
 
-test("parseAppRuntimeSpec: absent keeps the contract every app had before", () => {
-  assert.equal(parseAppRuntimeSpec(undefined), undefined);
-  assert.equal(parseAppRuntimeSpec(null), undefined);
+test("parseAppDeployDeclaration: a declaration is required", () => {
+  assert.throws(() => parseAppDeployDeclaration(undefined), /must be an object/);
+  assert.throws(() => parseAppDeployDeclaration(null), /must be an object/);
 });
 
-test("parseAppRuntimeSpec: a declared start is taken as declared", () => {
-  assert.deepEqual(parseAppRuntimeSpec({ runtime: "node", entry: "index.js", port: 8080 }), {
-    runtime: "node",
-    entry: "index.js",
-    port: 8080,
+test("parseAppDeployDeclaration: build and start are taken as declared", () => {
+  assert.deepEqual(parseAppDeployDeclaration({
+    build: { kind: "python", output: "." },
+    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080 },
+  }), {
+    build: { kind: "python", output: ".", command: undefined },
+    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080 },
   });
 });
 
-test("parseAppRuntimeSpec: refuses what would produce a function that cannot boot", () => {
-  // The runtime image ships no interpreter; a binary reaches the instance only
-  // if a matching layer was attached, so an unknown runtime is a 400 here
-  // rather than an opaque instance failure minutes later.
+test("parseAppDeployDeclaration: refuses the legacy runtime and entry shape", () => {
   assert.throws(
-    () => parseAppRuntimeSpec({ runtime: "python", entry: "app.py", port: 9000 }),
-    /not available on this deployment/,
+    () => parseAppDeployDeclaration({ runtime: "node", entry: "server/index.mjs", port: 9000 }),
+    /legacy runtime\/entry shape/,
   );
-  // The entry is joined against the unpacked artifact by the runtime, not by us.
+});
+
+test("parseAppDeployDeclaration: refuses invalid start configuration", () => {
   assert.throws(
-    () => parseAppRuntimeSpec({ runtime: "node", entry: "/etc/passwd", port: 9000 }),
-    /inside the artifact/,
-  );
-  assert.throws(
-    () => parseAppRuntimeSpec({ runtime: "node", entry: "../x.js", port: 9000 }),
-    /inside the artifact/,
-  );
-  assert.throws(
-    () => parseAppRuntimeSpec({ runtime: "node", entry: "index.js", port: 0 }),
+    () => parseAppDeployDeclaration({
+      build: { kind: "node" },
+      start: { fcRuntime: "custom.debian10", command: ["/opt/nodejs20/bin/node"], args: ["index.js"], port: 0 },
+    }),
     /TCP port/,
   );
 });

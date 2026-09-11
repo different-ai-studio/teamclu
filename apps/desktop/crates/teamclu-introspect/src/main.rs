@@ -24,14 +24,14 @@ use std::io::{BufRead, BufReader, Write};
 // CLI args
 // ---------------------------------------------------------------------------
 
-/// Default port of the internal TeamClu introspect HTTP API (must match
-/// `commands::introspect_api::INTROSPECT_API_PORT` in the desktop crate).
-const DEFAULT_INTROSPECT_API_PORT: u16 = 13144;
-
 #[derive(Parser, Debug)]
 #[command(
     name = "teamclu-introspect",
-    about = "TeamClu MCP introspection server"
+    about = "TeamClu MCP introspection server",
+    // ensure-*-sidecar probes `--version`; without this clap rejects the flag
+    // (exit 2), readExecutableVersion returns null, and every tauri:dev pays
+    // a cargo rebuild of a binary whose sources did not change.
+    version
 )]
 struct Args {
     /// Path to the TeamClu workspace directory
@@ -54,17 +54,17 @@ struct Args {
 // ---------------------------------------------------------------------------
 
 fn tool_definitions() -> Value {
-    json!([
+    let mut tools = json!([
         {
             "name": "get_my_capabilities",
-            "description": "Query the AI agent's configured capabilities including channels, role, team members, environment variables, team info, and cron jobs.",
+            "description": "Query the AI agent's configured capabilities including channels, role, environment variables, team info, and cron jobs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "category": {
                         "type": "string",
                         "description": "Optional category filter",
-                        "enum": ["channels", "role", "team_members", "env_vars", "team_info", "cron_jobs"]
+                        "enum": ["channels", "role", "env_vars", "team_info", "cron_jobs"]
                     }
                 }
             }
@@ -94,7 +94,7 @@ fn tool_definitions() -> Value {
                     },
                     "target": {
                         "type": "string",
-                        "description": "Target recipient within the channel. Format varies by channel: wecom: 'single:<userid>' or 'group:<chatid>' (default: single); discord: 'dm:<user_id>' or 'channel:<channel_id>'; feishu: open_id (ou_xxx), user_id (on_xxx), or chat_id (oc_xxx); kook: 'dm:<user_id>' or 'channel:<channel_id>'; wechat: user identifier. If omitted for wecom, sends to the last active conversation."
+                        "description": "Target recipient within the channel. Format varies by channel: wecom: 'single:<userid>' or 'group:<chatid>' (default: single); discord: 'dm:<user_id>' or 'channel:<channel_id>'; feishu: open_id (ou_xxx), user_id (on_xxx), or chat_id (oc_xxx); kook: 'dm:<user_id>' or 'channel:<channel_id>'; wechat: user identifier. Omit target when using reply_token to address this chat — an empty wecom target is not the current conversation."
                     },
                     "file_path": {
                         "type": "string",
@@ -106,7 +106,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_cron_job",
-            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). The TeamClu desktop app must be running.",
+            "description": "Create, pause, resume, delete, list, or inspect cron jobs. New jobs are stored as Global tasks (the default settings list). The TeamClu desktop app must be running. When announcing results to this chat, set delivery.to to this run's reply_token (from the prompt) or an explicit wecom target such as single:<userid> / group:<chatid> — an empty to is not this conversation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -153,13 +153,21 @@ fn tool_definitions() -> Value {
                         "type": "string",
                         "description": "Message or prompt to execute on each run (required for create)."
                     },
+                    "reply_token": {
+                        "type": "string",
+                        "description": "This run's reply_token from the prompt. When creating a job that should announce back to this chat, pass it here or as delivery.to; it is resolved to a stable chat id before the job is stored."
+                    },
                     "delivery": {
                         "type": "object",
-                        "description": "Optional delivery settings for cron results.",
+                        "description": "Optional delivery settings for cron results. Announce needs a real target — empty to does not mean the current conversation.",
                         "properties": {
                             "mode": { "type": "string", "enum": ["announce", "none"] },
                             "channel": { "type": "string", "enum": ["discord", "feishu", "email", "kook", "wechat", "wecom"] },
-                            "to": { "type": "string" },
+                            "to": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Where to send the run result. For the current WeCom/Feishu chat, pass this run's reply_token. WeCom also accepts single:<userid> or group:<chatid>. Do not pass an empty string."
+                            },
                             "bestEffort": { "type": "boolean" }
                         },
                         "required": ["mode", "channel", "to"]
@@ -260,7 +268,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "manage_mcp",
-            "description": "Manage MCP servers for this workspace: list configured servers, get one by name, add/update a local (stdio) or remote (HTTP) server, enable/disable, or remove a custom server. Built-in servers (teamclu-introspect, playwright, chrome-control, autoui) cannot be deleted; team-shared servers under teamclu-team/.mcp cannot be edited or deleted here. Env/header secret values are redacted on list/get. Changes require an agent runtime restart to take effect.",
+            "description": "Manage MCP servers for this workspace: list configured servers, get one by name, add/update a local (stdio) or remote (HTTP) server, enable/disable, or remove a custom server. Built-in servers (teamclu-introspect, playwright, chrome-control, autoui) cannot be deleted; servers installed from the team MCP catalog cannot be edited or deleted here. Env/header secret values are redacted on list/get. Changes require an agent runtime restart to take effect.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -507,69 +515,13 @@ fn tool_definitions() -> Value {
                     }
                 }
             }
-        },
-        {
-            "name": "manage_app",
-            "description": "Work with a TeamClu app: list this team's apps, read one's status, deploy it, or read the deployed app's logs. Omit app_id and app_name to act on the app whose checkout is the workspace you are working in — you do not need to ask the user which app this is, and `list` reports each app's local `workdir` so you can see it for yourself. `deploy` runs the full publish (build the checkout on the local machine, upload it, put it live) and PUBLISHES TO THE PUBLIC INTERNET — an app whose auth_mode is \"none\" is readable by anyone with the URL. `logs` reads what the running app printed, which is how you find out why it 500s. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (deploying needs admin on the app).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "status", "deploy", "logs"],
-                        "description": "list: this team's apps, each with its checkout path on this machine when it has one. status: one app, plus where its checkout is on this machine. deploy: build and publish. logs: the deployed app's own output."
-                    },
-                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name (not both); omit both to mean the app whose checkout is the current workspace. Not needed for list." },
-                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team. Omit it and app_id to mean the app whose checkout is the current workspace." },
-                    "since_minutes": { "type": "integer", "description": "logs: how far back to read. Default 30, max 10080 (7 days)." },
-                    "limit": { "type": "integer", "description": "logs: how many entries. Default 100, max 200." },
-                    "kind": {
-                        "type": "string",
-                        "enum": ["app", "request", "all"],
-                        "description": "logs: `app` is what the app printed (default), `request` is one line per HTTP request with status and duration, `all` is both."
-                    },
-                    "contains": { "type": "string", "description": "logs: only entries whose message contains this text." },
-                    "request_id": { "type": "string", "description": "logs: only entries from this request id — the way to see one failing request end to end." }
-                },
-                "required": ["action"]
-            }
-        },
-        {
-            "name": "manage_app_data",
-            "description": "Read and edit the rows in a deployed app's own database — its real production data. Use it to check what the app actually stored, or to fix one bad row. Reads need `prompt` permission on the app and writes need `admin`; only apps with a database (data_app) that have been deployed have one. Writes address exactly one row by primary key; there is no bulk update or delete.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["tables", "rows", "update_row", "delete_row"],
-                        "description": "tables: what tables exist, with their columns and primary key. rows: one page of rows. update_row / delete_row: change exactly one row."
-                    },
-                    "app_id": { "type": "string", "description": "The app's UUID. Give this or app_name, not both; omit both to mean the app whose checkout is the current workspace." },
-                    "app_name": { "type": "string", "description": "The app's name, when it identifies exactly one app in this team. Omit it and app_id to mean the app whose checkout is the current workspace." },
-                    "table": { "type": "string", "description": "Table name, as reported by action \"tables\". Required for everything but tables." },
-                    "limit": { "type": "integer", "description": "rows: page size. Default 50, max 100." },
-                    "after": { "type": "string", "description": "rows: the previous page's next_cursor. Omit for the first page." },
-                    "direction": { "type": "string", "enum": ["asc", "desc"], "description": "rows: order along the primary key. Default asc." },
-                    "filter_column": { "type": "string", "description": "rows: column to filter on. Give with filter_op." },
-                    "filter_op": { "type": "string", "enum": ["eq", "contains", "isNull", "notNull"], "description": "rows: how to compare." },
-                    "filter_value": { "type": "string", "description": "rows: the value to compare against. Ignored by isNull / notNull." },
-                    "key": {
-                        "type": "object",
-                        "description": "update_row / delete_row: the row's primary-key columns and values, e.g. {\"id\": 42}. Read them off the row you got from action \"rows\".",
-                        "additionalProperties": true
-                    },
-                    "row_key": { "type": "string", "description": "Alternative to `key`: the opaque row key form, if you already have one." },
-                    "patch": {
-                        "type": "object",
-                        "description": "update_row: column → new value. Primary-key columns cannot be changed here.",
-                        "additionalProperties": true
-                    }
-                },
-                "required": ["action"]
-            }
         }
-    ])
+    ]);
+    // The app control panel's tools live with their handlers.
+    if let Value::Array(list) = &mut tools {
+        list.extend(apps::tool_definitions());
+    }
+    tools
 }
 
 // ---------------------------------------------------------------------------
@@ -804,21 +756,15 @@ async fn handle_request(
                         Err(e) => tool_err(&e),
                     }
                 }
-                "manage_app" => match apps::handle_manage(workspace, api_port, &arguments).await {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
+                app_tool if apps::is_app_tool(app_tool) => {
+                    match apps::handle(app_tool, workspace, api_port, &arguments).await {
+                        Ok(v) => {
+                            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                            tool_ok(&text)
+                        }
+                        Err(e) => tool_err(&e),
                     }
-                    Err(e) => tool_err(&e),
-                },
-                "manage_app_data" => match apps::handle_data(workspace, api_port, &arguments).await
-                {
-                    Ok(v) => {
-                        let text = serde_json::to_string_pretty(&v).unwrap_or_default();
-                        tool_ok(&text)
-                    }
-                    Err(e) => tool_err(&e),
-                },
+                }
                 unknown => tool_err(&format!("Unknown tool: {unknown}")),
             };
 
@@ -900,6 +846,24 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_names_are_unique() {
+        // The app tools are spliced in from `apps`; a name defined in both
+        // places would list twice and dispatch to whichever arm matched first.
+        let tools = tool_definitions();
+        let names: Vec<&str> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(names.len(), unique.len(), "{names:?}");
+        assert!(names.contains(&"manage_app_cron"));
+    }
 
     #[test]
     fn tool_ok_leaves_small_payloads_alone() {

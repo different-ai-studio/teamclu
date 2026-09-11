@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { useSessionStore } from '@/stores/session-store';
+import { useV2StreamingStore } from '@/stores/v2-streaming-store';
 import { ChatMessage } from '../ChatMessage';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -53,6 +54,11 @@ function makeMessage(overrides: Record<string, unknown> = {}) {
 describe('ChatMessage', () => {
   beforeEach(() => {
     useSessionStore.setState({ activeSessionId: null });
+    useV2StreamingStore.setState({
+      byKey: {},
+      archived: [],
+      compactionPartsByMessageId: {},
+    });
   });
 
   afterEach(() => {
@@ -186,26 +192,42 @@ describe('ChatMessage', () => {
     expect(firstChild?.textContent).toMatch(/Thinking|analyzing/i);
   });
 
-  it('renders completed compaction messages as a divider row without copy actions', () => {
+  it('renders attached compaction rows inside the process collapsible', () => {
+    useV2StreamingStore.setState({
+      compactionPartsByMessageId: {
+        'msg-compaction': {
+          sessionId: 'sess-1',
+          parts: [
+            {
+              id: 'compaction-1',
+              type: 'compaction',
+              completed: true,
+              reason: 'overflow',
+              tokensBefore: 345294,
+              tokensAfter: 35160,
+            },
+          ],
+        },
+      },
+    });
     const message = makeMessage({
       id: 'msg-compaction',
-      role: 'user',
-      content: '',
-      displayKind: 'compaction',
-      compaction: { auto: true, overflow: true, completed: true },
+      role: 'assistant',
+      content: 'done after compact',
     });
 
     const { container } = render(<ChatMessage message={message} />);
 
-    expect(container.textContent).toContain('Context automatically compacted');
+    expect(container.textContent).toMatch(/compact/);
+    fireEvent.click(screen.getByRole('button', { name: /处理过程|Process/i }));
+    expect(container.querySelector('[data-testid="compaction-row"]')).toBeTruthy();
     expect(container.textContent).not.toContain('Copy');
-    expect(container.querySelector('[data-message-kind="compaction"]')).toBeTruthy();
   });
 
-  it('renders in-progress compaction messages with a pending title', () => {
+  it('does not render legacy timeline compaction divider rows', () => {
     const message = makeMessage({
-      id: 'msg-compaction-pending',
-      role: 'user',
+      id: 'msg-compaction-legacy',
+      role: 'assistant',
       content: '',
       displayKind: 'compaction',
       compaction: { auto: true, overflow: true, completed: false },
@@ -213,7 +235,7 @@ describe('ChatMessage', () => {
 
     const { container } = render(<ChatMessage message={message} />);
 
-    expect(container.textContent).toContain('Compacting context automatically...');
+    expect(container.querySelector('[data-message-kind="compaction"]')).toBeNull();
   });
 
   it('renders interrupted agent reply from turnStatus (scheme B)', () => {

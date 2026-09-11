@@ -28,7 +28,7 @@ exception
 end;
 $$;
 
-select plan(66);
+select plan(69);
 
 select has_schema('amux', 'amux schema exists');
 
@@ -45,6 +45,22 @@ select has_table('amux', 'idea_external_refs',  'idea_external_refs exists');
 select has_table('amux', 'sessions',            'sessions exists');
 select has_table('amux', 'session_participants','session_participants exists');
 select has_table('amux', 'messages',            'messages exists');
+
+select has_column('amux', 'apps', 'start_spec',
+                  'apps.start_spec exists');
+select col_type_is('amux', 'apps', 'start_spec', 'jsonb',
+                   'apps.start_spec is jsonb');
+select ok(
+  (
+    select pg_get_constraintdef(oid) like all (
+      array['%node%', '%python%', '%go%', '%php%', '%java%', '%container%']
+    )
+      from pg_constraint
+     where conrelid = 'amux.apps'::regclass
+       and conname = 'apps_runtime_check'
+  ),
+  'apps_runtime_check admits every supported build kind'
+);
 
 select col_type_is('amux', 'actors', 'last_active_at', 'timestamp with time zone',
                    'actors.last_active_at is timestamptz');

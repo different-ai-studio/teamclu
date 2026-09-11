@@ -5,6 +5,7 @@ import React from 'react'
 import {
   AppControlPanel,
   describeCodeVersion,
+  typeChangeNeedsConfirm,
   visibilityChangeNeedsConfirm,
 } from '../AppControlPanel'
 import type { AppRow } from '@/lib/backend/types'
@@ -42,6 +43,7 @@ const storeMocks = vi.hoisted(() => ({
   reseed: vi.fn(),
   rename: vi.fn(),
   setVisibility: vi.fn(),
+  setType: vi.fn(),
   deploy: vi.fn(),
   deleteApp: vi.fn(),
 }))
@@ -107,6 +109,7 @@ const baseApp: AppRow = {
   fcFunctionName: null,
   fcRegion: null,
   publicUrl: 'https://demo.apps.example.com',
+  typePendingRedeploy: false,
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
 } as AppRow
@@ -310,6 +313,48 @@ describe('AppControlPanel', () => {
   it('does not open a confirm before anything is asked for', async () => {
     render(<AppControlPanel app={baseApp} />)
     expect(screen.queryByTestId('app-control-visibility-confirm')).toBeNull()
+    expect(screen.queryByTestId('app-control-type-confirm')).toBeNull()
+  })
+
+  /** Let the summary requests land, so their state updates happen inside act. */
+  const summarySettled = () =>
+    waitFor(() =>
+      expect(screen.getByTestId('app-control-open-cron').textContent).toContain('3 个任务'),
+    )
+
+  it('names the app type and says what that type is', async () => {
+    const { rerender } = render(<AppControlPanel app={baseApp} />)
+    await summarySettled()
+    expect(screen.getByTestId('app-control-type').textContent).toContain('静态网页')
+    expect(screen.getByTestId('app-control-type-hint').textContent).toContain('一个网站')
+
+    rerender(<AppControlPanel app={{ ...baseApp, type: 'imported' } as AppRow} />)
+    expect(screen.getByTestId('app-control-type').textContent).toContain('导入的仓库')
+  })
+
+  it('reads a pre-split stored type as the data app it is', async () => {
+    // A raw value would match no option and leave the trigger blank for every
+    // app created before types existed.
+    render(<AppControlPanel app={{ ...baseApp, type: 'fullstack_tanstack_postgres' } as AppRow} />)
+    await summarySettled()
+    expect(screen.getByTestId('app-control-type').textContent).toContain('数据操作')
+    expect(screen.getByTestId('app-control-type-hint').textContent).toContain('自带一个数据库')
+  })
+
+  it('says a type change waits for the next deploy only while it does', async () => {
+    const { rerender } = render(<AppControlPanel app={baseApp} />)
+    await summarySettled()
+    expect(screen.queryByTestId('app-control-type-pending')).toBeNull()
+
+    rerender(<AppControlPanel app={{ ...baseApp, typePendingRedeploy: true } as AppRow} />)
+    expect(screen.getByTestId('app-control-type-pending').textContent).toContain('下次部署')
+  })
+
+  it('treats a server that does not send the pending flag as nothing pending', async () => {
+    const { typePendingRedeploy: _omitted, ...olderRow } = baseApp
+    render(<AppControlPanel app={olderRow as AppRow} />)
+    await summarySettled()
+    expect(screen.queryByTestId('app-control-type-pending')).toBeNull()
   })
 
   it('says how far behind the deployed commit is', async () => {
@@ -384,6 +429,35 @@ describe('AppControlPanel', () => {
     it('never confirms a change that changes nothing', () => {
       expect(visibilityChangeNeedsConfirm('team', 'team')).toBe(false)
       expect(visibilityChangeNeedsConfirm('personal', 'personal')).toBe(false)
+    })
+  })
+
+  describe('typeChangeNeedsConfirm', () => {
+    it('confirms leaving the data app for any type without a database', () => {
+      // The next deploy drops DATABASE_URL, and nothing about "slides" says so.
+      expect(typeChangeNeedsConfirm('data_app', 'static_web')).toBe(true)
+      expect(typeChangeNeedsConfirm('data_app', 'slides')).toBe(true)
+      expect(typeChangeNeedsConfirm('data_app', 'imported')).toBe(true)
+    })
+
+    it('treats a legacy stored type as the data app it is', () => {
+      expect(typeChangeNeedsConfirm('fullstack_tanstack_postgres', 'static_web')).toBe(true)
+      expect(typeChangeNeedsConfirm('fullstack_tanstack_postgres', 'data_app')).toBe(false)
+    })
+
+    it('does not confirm gaining a database', () => {
+      expect(typeChangeNeedsConfirm('static_web', 'data_app')).toBe(false)
+      expect(typeChangeNeedsConfirm('imported', 'data_app')).toBe(false)
+    })
+
+    it('does not confirm moving between types that never had a database', () => {
+      expect(typeChangeNeedsConfirm('static_web', 'slides')).toBe(false)
+      expect(typeChangeNeedsConfirm('slides', 'imported')).toBe(false)
+    })
+
+    it('never confirms a change that changes nothing', () => {
+      expect(typeChangeNeedsConfirm('data_app', 'data_app')).toBe(false)
+      expect(typeChangeNeedsConfirm('static_web', 'static_web')).toBe(false)
     })
   })
 

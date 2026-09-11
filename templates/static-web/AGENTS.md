@@ -61,15 +61,24 @@ async function storageCredentials() {
   `pnpm install --frozen-lockfile`；曾经有一次依赖用了 caret 范围，上游发了个新版本
   就把所有 app 的构建打挂了。
 
+## 部署声明（`teamclu.app.json`）
+
+仓根 `teamclu.app.json` 声明**怎么构建、怎么启动**，平台按其中的 `build` + `start` 部署到 FC Custom Runtime：
+
+- 改 `build.kind` / `start.command` / `start.port` 以匹配 FC Custom Runtime（本模板默认 Node：`build.kind: "node"`，`start.command: ["/opt/nodejs20/bin/node"]`，`args: ["server/index.mjs"]`，`port: 9000`）。
+- **不要用**旧字段 `runtime` / `entry` —— 缺 `build` + `start` 或仍带 legacy 字段时部署会被拒。
+- 改完 **commit + push**；用户明确要求上线后，再通过控制面或 `manage_app deploy` 部署。
+
 ## 怎么上线
 
 部署按 **Gitea 远端 commit** 构建，不是按本机未保存的文件。改完代码后：
 
 1. **commit** 到本地 git
 2. **push** 到 Gitea（未 push 的 commit 部署时会被拒绝）
-3. 让用户在 TeamClu 应用列表里点「部署」，并选中刚 push 的 commit
+3. 用户明确要求上线时，可以让用户在 TeamClu 应用列表里点「部署」，或调用
+   `manage_app` 的 `deploy` action；它会按当前登录用户的应用权限执行
 
-你不需要、也没有权限自己触发部署 —— 把改动 commit + push 好，剩下的交给用户。
+部署会发布到公网。除非用户明确要求上线，否则不要自行触发部署。
 
 本地预览：`pnpm dev`，打开 `http://localhost:9000`。
 
