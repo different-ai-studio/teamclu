@@ -80,6 +80,12 @@ const APP_AUTH_PREFIX = 'app-auth:'
 const APP_FILES_PREFIX = 'app-files:'
 const APP_CRON_PREFIX = 'app-cron:'
 const APP_ENV_PREFIX = 'app-env:'
+const APP_SETTINGS_PREFIX = 'app-settings:'
+
+export const decodeAppSettingsTarget = (target: string) =>
+  decodeAppScopedTarget(APP_SETTINGS_PREFIX, target)
+export const openAppSettings = (app: AppRow, label: string) =>
+  openAppScopedTab(APP_SETTINGS_PREFIX, app, label)
 
 function decodeAppScopedTarget(prefix: string, target: string): { appId: string } | null {
   if (!target.startsWith(prefix)) return null

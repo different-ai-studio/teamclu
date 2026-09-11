@@ -6,6 +6,8 @@ import {
   Loader2,
   RefreshCw,
   Save,
+  Pencil,
+  X,
   Trash2,
   FolderInput,
 } from 'lucide-react'
@@ -32,14 +34,10 @@ import {
 import { cn, copyToClipboard, isTauri } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
 import { appStatusMeta, canReseed } from '@/lib/apps/app-list-helpers'
-import {
-  APP_TYPES,
-  IMPORTED_APP_TYPE,
-  resolveAppType,
-  type AppTypeId,
-} from '@/lib/apps/app-types'
+import { APP_TYPES, IMPORTED_APP_TYPE, resolveAppType, type AppTypeId } from '@/lib/apps/app-types'
 import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-local-client'
 import {
+  openAppSettings,
   openAppAccess,
   openAppAuth,
   openAppCron,
@@ -112,7 +110,11 @@ function SummaryRow({
   loading,
   onOpen,
   testId,
+  disabled = false,
+  description,
 }: {
+  disabled?: boolean
+  description?: string
   label: string
   value: string | null
   loading?: boolean
@@ -123,14 +125,22 @@ function SummaryRow({
     <button
       type="button"
       onClick={onOpen}
+      disabled={disabled || loading}
       data-testid={testId}
-      className="flex w-full items-center gap-2 rounded-[7px] px-1.5 py-2 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className="flex w-full items-center gap-2 rounded-[7px] px-1.5 py-2 text-left transition-colors enabled:hover:bg-panel disabled:cursor-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
-      <span className="shrink-0 text-[13px] text-foreground">{label}</span>
+      <span className="min-w-0 text-[13px] text-foreground">
+        {label}
+        {description && (
+          <span className="mt-0.5 block text-[11px] text-muted-foreground">{description}</span>
+        )}
+      </span>
       <span className="min-w-0 flex-1 truncate text-right text-[12px] text-muted-foreground">
         {loading ? <Loader2 className="ml-auto h-3 w-3 animate-spin" /> : value}
       </span>
-      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-faint" />
+      <ChevronRight
+        className={cn('h-3.5 w-3.5 shrink-0 text-faint', (disabled || loading) && 'invisible')}
+      />
     </button>
   )
 }
@@ -204,7 +214,10 @@ export function describeCodeVersion(
     }
   }
   if (!head) {
-    return { key: 'apps.controlPanel.codeVersionUnavailable', fallback: '暂时读不到仓库' }
+    return {
+      key: 'apps.controlPanel.codeVersionUnavailable',
+      fallback: '暂时读不到仓库',
+    }
   }
   if (!head.deployedSha) {
     return {
@@ -248,7 +261,11 @@ export function describeCodeVersion(
   return {
     key: 'apps.controlPanel.codeVersionBehind',
     fallback: '线上 {{sha}} · 分支 {{branch}} 上还有 {{count}} 个提交没部署',
-    vars: { sha: shortSha(head.deployedSha), branch: head.branch, count: head.undeployedCommits },
+    vars: {
+      sha: shortSha(head.deployedSha),
+      branch: head.branch,
+      count: head.undeployedCommits,
+    },
   }
 }
 
@@ -289,7 +306,8 @@ interface Summary {
  * being unreachable (an app with no database, a storage bucket that is not
  * configured) must not blank the other three.
  */
-function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
+function useAppSummary(app: AppRow, enabled: boolean): { summary: Summary; loading: boolean } {
+  const managed = isGiteaManaged(app)
   // Re-run when a tab reports it changed something these counts describe.
   const revision = useAppsStore((s) => s.summaryRevision)
   const [summary, setSummary] = React.useState<Summary>({
@@ -303,6 +321,7 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
   const [loading, setLoading] = React.useState(true)
 
   React.useEffect(() => {
+    if (!enabled) return
     let cancelled = false
     setLoading(true)
     setSummary({
@@ -327,7 +346,7 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
         backend.listAppEnv(app.id),
         // Only for a repo we host: an imported app's branch is on someone
         // else's forge and this deployment holds no credential for it.
-        isGiteaManaged(app) ? backend.getGitHead(app.id, { compare: true }) : Promise.resolve(null),
+        managed ? backend.getGitHead(app.id, { compare: true }) : Promise.resolve(null),
       ])
       if (cancelled) return
 
@@ -369,16 +388,17 @@ function useAppSummary(app: AppRow): { summary: Summary; loading: boolean } {
     return () => {
       cancelled = true
     }
-  }, [app.id, revision])
+  }, [app.id, revision, enabled, managed])
 
   return { summary, loading }
 }
 
 interface AppControlPanelProps {
   app: AppRow
+  settings?: boolean
 }
 
-export function AppControlPanel({ app }: AppControlPanelProps) {
+export function AppControlPanel({ app, settings = false }: AppControlPanelProps) {
   const { t } = useTranslation()
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
   const reseed = useAppsStore((s) => s.reseed)
@@ -387,6 +407,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const rename = useAppsStore((s) => s.rename)
   const deleteApp = useAppsStore((s) => s.deleteApp)
 
+  const [editingName, setEditingName] = React.useState(false)
   const [nameDraft, setNameDraft] = React.useState(app.name)
   const [renaming, setRenaming] = React.useState(false)
   const [reseeding, setReseeding] = React.useState(false)
@@ -407,7 +428,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const [typeTarget, setTypeTarget] = React.useState<AppTypeId | null>(null)
   const [typeSaving, setTypeSaving] = React.useState(false)
 
-  const { summary, loading: summaryLoading } = useAppSummary(app)
+  const { summary, loading: summaryLoading } = useAppSummary(app, !settings)
   // Resolved, not raw: a legacy stored type has to land on 数据操作 in the
   // Select, or the trigger would render blank for every pre-split app.
   const appType = resolveAppType(app.type)
@@ -441,8 +462,8 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   }, [app.id, app.teamId])
 
   React.useEffect(() => {
-    void loadLocalPath()
-  }, [loadLocalPath])
+    if (settings) void loadLocalPath()
+  }, [loadLocalPath, settings])
 
   const handleRename = async () => {
     const trimmed = nameDraft.trim()
@@ -450,6 +471,9 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
     setRenaming(true)
     try {
       await rename(app.id, trimmed)
+      setEditingName(false)
+    } catch (error) {
+      toast.error(String(error))
     } finally {
       setRenaming(false)
     }
@@ -552,7 +576,9 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const membersValue =
     summary.members === null
       ? t('apps.controlPanel.summaryRestricted', '仅创建者可见')
-      : t('apps.controlPanel.summaryMembers', '{{count}} 位成员', { count: summary.members })
+      : t('apps.controlPanel.summaryMembers', '{{count}} 位成员', {
+          count: summary.members,
+        })
 
   const rulesValue = (() => {
     if (app.authMode !== 'platform') {
@@ -569,10 +595,13 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
     if (!tables) return t('apps.controlPanel.summaryUnavailable', '暂时读不到')
     if ('reason' in tables) {
       if (tables.reason === 'no_database') return t('apps.data.noDatabaseShort', '没有数据库')
-      if (tables.reason === 'not_deployed') return t('apps.controlPanel.summaryNotDeployed', '未部署')
+      if (tables.reason === 'not_deployed')
+        return t('apps.controlPanel.summaryNotDeployed', '未部署')
       return t('apps.controlPanel.summaryUnavailable', '暂时读不到')
     }
-    return t('apps.controlPanel.summaryTables', '{{count}} 张表', { count: tables.count })
+    return t('apps.controlPanel.summaryTables', '{{count}} 张表', {
+      count: tables.count,
+    })
   })()
 
   const filesValue = (() => {
@@ -596,7 +625,9 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
   const cronValue =
     summary.cronJobs === null
       ? t('apps.controlPanel.summaryUnavailable', '暂时读不到')
-      : t('apps.controlPanel.summaryCronJobs', '{{count}} 个任务', { count: summary.cronJobs })
+      : t('apps.controlPanel.summaryCronJobs', '{{count}} 个任务', {
+          count: summary.cronJobs,
+        })
 
   const envValue = (() => {
     if (!summary.env) return t('apps.controlPanel.summaryRestricted', '仅创建者可见')
@@ -630,111 +661,75 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-      <div className="shrink-0 border-b border-border-soft px-3.5 py-3">
-        <div className="flex items-center gap-2">
-          <StatusDot tone={status.dot} />
-          <h2 className="min-w-0 truncate text-[13px] font-semibold text-foreground">
-            {app.name}
-          </h2>
-        </div>
-        <p className="mt-1 font-mono text-[11px] text-faint">
-          {t(status.key, status.fallback)}
-        </p>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto px-3.5 py-3.5">
-        {/* What the app is called, and where its code sits on this machine. */}
-        <Group title={t('apps.controlPanel.appGroup', '应用')}>
-          <Field label={t('apps.rename', '重命名')}>
-            <div className="flex gap-1.5">
-              <Input
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                className="h-8 flex-1 rounded-[7px] text-[13px]"
-                disabled={renaming}
-              />
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 shrink-0 gap-1 rounded-[7px] px-2.5"
-                disabled={renaming || !nameDraft.trim() || nameDraft.trim() === app.name}
-                onClick={() => void handleRename()}
+      {!settings && (
+        <header className="shrink-0 border-b border-border-soft px-3.5 py-3">
+          <div className="flex items-center gap-2">
+            <StatusDot tone={status.dot} />
+            {editingName ? (
+              <form
+                className="flex min-w-0 flex-1 gap-1"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void handleRename()
+                }}
               >
-                {renaming ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Save className="h-3.5 w-3.5" />
-                )}
-              </Button>
-            </div>
-          </Field>
-
-          <Field label={t('apps.controlPanel.localPath', '本机路径')}>
-            {localPathLoading ? (
-              <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                {t('common.loading', 'Loading…')}
-              </div>
-            ) : !isTauri() ? (
-              <p className="text-[12.5px] text-muted-foreground">
-                {t('apps.controlPanel.localPathDesktopOnly', '本机路径仅在桌面客户端可用。')}
-              </p>
-            ) : localWorkdir ? (
-              <div className="space-y-2">
-                {localDeviceName ? (
-                  <p className="text-[12px] text-muted-foreground">
-                    {t('apps.controlPanel.localPathOnDevice', '设备：{{name}}', {
-                      name: localDeviceName,
-                    })}
-                  </p>
-                ) : null}
-                <p
-                  className="break-all font-mono text-[11.5px] text-ink-2"
-                  data-testid="app-control-local-workdir"
+                <Input
+                  autoFocus
+                  aria-label={t('apps.rename', '重命名')}
+                  value={nameDraft}
+                  disabled={renaming}
+                  onChange={(event) => setNameDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape' && !renaming) setEditingName(false)
+                  }}
+                  className="h-7 min-w-0 text-[13px]"
+                />
+                <Button
+                  type="submit"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0"
+                  aria-label={t('common.save', '保存')}
+                  disabled={renaming || !nameDraft.trim() || nameDraft.trim() === app.name}
                 >
-                  {localWorkdir}
-                </p>
-                <div className="flex gap-1.5">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 gap-1.5 rounded-[7px] text-[12px]"
-                    data-testid="app-control-copy-path"
-                    onClick={() => {
-                      void copyToClipboard(localWorkdir)
-                      toast.success(t('apps.controlPanel.pathCopied', '路径已复制'))
-                    }}
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                    {t('common.copy', '复制')}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 gap-1.5 rounded-[7px] text-[12px]"
-                    onClick={() => {
-                      setMoveDest('')
-                      setMoveOpen(true)
-                    }}
-                  >
-                    <FolderInput className="h-3.5 w-3.5" />
-                    {t('apps.controlPanel.moveDirectory', '移动目录')}
-                  </Button>
-                </div>
-              </div>
+                  {renaming ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0"
+                  disabled={renaming}
+                  aria-label={t('common.cancel', '取消')}
+                  onClick={() => setEditingName(false)}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </form>
             ) : (
-              <p className="text-[12.5px] text-muted-foreground">
-                {t(
-                  'apps.controlPanel.localPathUnavailable',
-                  '本机 daemon 未就绪，或此应用尚未在本机初始化目录。',
-                )}
-              </p>
+              <>
+                <h2 className="min-w-0 flex-1 truncate text-[13px] font-semibold">{app.name}</h2>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0"
+                  aria-label={t('apps.rename', '重命名')}
+                  onClick={() => {
+                    setNameDraft(app.name)
+                    setEditingName(true)
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+              </>
             )}
-          </Field>
-
-          <Field label={t('apps.controlPanel.codeVersion', '代码版本')}>
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t(status.key, status.fallback)}</p>
+          <div className="mt-2">
             {summaryLoading && isGiteaManaged(app) ? (
               <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -751,211 +746,313 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
                 })()}
               </p>
             )}
-          </Field>
+          </div>
+        </header>
+      )}
 
-          <Field label={t('apps.visibilityLabel', '可见性')}>
-            <Select
-              value={app.visibility}
-              onValueChange={(raw) => {
-                const next = raw as AppRow['visibility']
-                if (next === app.visibility) return
-                if (visibilityChangeNeedsConfirm(app.visibility, next)) {
-                  setVisibilityPending(next)
-                  return
-                }
-                void handleVisibility(next)
-              }}
-              disabled={visibilitySaving}
-            >
-              <SelectTrigger
-                className="h-8 rounded-[7px] text-[12.5px]"
-                data-testid="app-control-visibility"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="personal" className="text-[12.5px]">
-                  {t('apps.visibilityPersonal', '仅自己和被授权的人')}
-                </SelectItem>
-                <SelectItem value="team" className="text-[12.5px]">
-                  {t('apps.visibilityTeam', '全团队可见')}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="mt-1.5 text-[11.5px] text-faint">
-              {app.visibility === 'team'
-                ? t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')
-                : t(
-                    'apps.visibilityPersonalHint',
-                    '只有你、以及在「协作权限」里被授权的成员看得到。本机 daemon 也看不到它。',
-                  )}
-            </p>
-          </Field>
-
-          <Field label={t('apps.typeLabel', '类型')}>
-            <Select
-              value={appType.id}
-              onValueChange={(raw) => {
-                const next = resolveAppType(raw).id
-                if (next === appType.id) return
-                if (typeChangeNeedsConfirm(appType.id, next)) {
-                  setTypeTarget(next)
-                  setTypeConfirmOpen(true)
-                  return
-                }
-                void handleType(next)
-              }}
-              disabled={typeSaving}
-            >
-              <SelectTrigger
-                className="h-8 rounded-[7px] text-[12.5px]"
-                data-testid="app-control-type"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SELECTABLE_APP_TYPES.map((meta) => (
-                  <SelectItem key={meta.id} value={meta.id} className="text-[12.5px]">
-                    {t(meta.labelKey, meta.label)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="mt-1.5 text-[11.5px] text-faint" data-testid="app-control-type-hint">
-              {t(appType.descriptionKey, appType.description)}
-            </p>
-            {/* `=== true`: a server older than the flag omits it, and an
-                absent flag is "nothing pending", not "maybe". */}
-            {app.typePendingRedeploy === true && (
-              <p
-                className="mt-1 text-[11.5px] text-muted-foreground"
-                data-testid="app-control-type-pending"
-              >
-                {t(
-                  'apps.typePendingRedeploy',
-                  '线上还是按原来的类型在跑，下次部署后才换过来。',
+      <div className="min-h-0 flex-1 overflow-auto px-3.5 py-3.5">
+        {settings && (
+          <>
+            {/* What the app is called, and where its code sits on this machine. */}
+            <Group title={t('apps.controlPanel.appGroup', '应用')}>
+              <Field label={t('apps.controlPanel.localPath', '本机路径')}>
+                {localPathLoading ? (
+                  <div className="flex items-center gap-2 py-1 text-[12.5px] text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    {t('common.loading', 'Loading…')}
+                  </div>
+                ) : !isTauri() ? (
+                  <p className="text-[12.5px] text-muted-foreground">
+                    {t('apps.controlPanel.localPathDesktopOnly', '本机路径仅在桌面客户端可用。')}
+                  </p>
+                ) : localWorkdir ? (
+                  <div className="space-y-2">
+                    {localDeviceName ? (
+                      <p className="text-[12px] text-muted-foreground">
+                        {t('apps.controlPanel.localPathOnDevice', '设备：{{name}}', {
+                          name: localDeviceName,
+                        })}
+                      </p>
+                    ) : null}
+                    <details className="text-[12px]">
+                      <summary className="cursor-pointer text-ink-2">
+                        {localWorkdir.split(/[\\/]/).filter(Boolean).at(-1)}
+                      </summary>
+                      <p
+                        className="mt-2 break-all font-mono text-[11.5px] text-ink-2"
+                        data-testid="app-control-local-workdir"
+                      >
+                        {localWorkdir}
+                      </p>
+                    </details>
+                    <div className="flex gap-1.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 rounded-[7px] text-[12px]"
+                        data-testid="app-control-copy-path"
+                        onClick={async () => {
+                          try {
+                            await copyToClipboard(localWorkdir)
+                            toast.success(t('apps.controlPanel.pathCopied', '路径已复制'))
+                          } catch (error) {
+                            toast.error(String(error))
+                          }
+                        }}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        {t('common.copy', '复制')}
+                      </Button>
+                      <details>
+                        <summary className="cursor-pointer px-2 py-1.5 text-[12px] text-muted-foreground">
+                          {t('apps.controlPanel.moreActions', '更多操作')}
+                        </summary>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 gap-1.5 rounded-[7px] text-[12px]"
+                          onClick={() => {
+                            setMoveDest('')
+                            setMoveOpen(true)
+                          }}
+                        >
+                          <FolderInput className="h-3.5 w-3.5" />
+                          {t('apps.controlPanel.moveDirectory', '移动目录')}
+                        </Button>
+                      </details>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[12.5px] text-muted-foreground">
+                    {t(
+                      'apps.controlPanel.localPathUnavailable',
+                      '本机 daemon 未就绪，或此应用尚未在本机初始化目录。',
+                    )}
+                  </p>
                 )}
-              </p>
-            )}
-          </Field>
+              </Field>
 
-          {showReseed && (
-            <Field label={t('apps.reseed', '重新播种')}>
+              <Field label={t('apps.visibilityLabel', '可见性')}>
+                <Select
+                  value={app.visibility}
+                  onValueChange={(raw) => {
+                    const next = raw as AppRow['visibility']
+                    if (next === app.visibility) return
+                    if (visibilityChangeNeedsConfirm(app.visibility, next)) {
+                      setVisibilityPending(next)
+                      return
+                    }
+                    void handleVisibility(next)
+                  }}
+                  disabled={visibilitySaving}
+                >
+                  <SelectTrigger
+                    className="h-8 rounded-[7px] text-[12.5px]"
+                    data-testid="app-control-visibility"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="personal" className="text-[12.5px]">
+                      {t('apps.visibilityPersonal', '仅自己和被授权的人')}
+                    </SelectItem>
+                    <SelectItem value="team" className="text-[12.5px]">
+                      {t('apps.visibilityTeam', '全团队可见')}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="mt-1.5 text-[11.5px] text-faint">
+                  {app.visibility === 'team'
+                    ? t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')
+                    : t(
+                        'apps.visibilityPersonalHint',
+                        '只有你、以及在「协作权限」里被授权的成员看得到。本机 daemon 也看不到它。',
+                      )}
+                </p>
+              </Field>
+
+              <Field label={t('apps.typeLabel', '类型')}>
+                <Select
+                  value={appType.id}
+                  onValueChange={(raw) => {
+                    const next = resolveAppType(raw).id
+                    if (next === appType.id) return
+                    if (typeChangeNeedsConfirm(appType.id, next)) {
+                      setTypeTarget(next)
+                      setTypeConfirmOpen(true)
+                      return
+                    }
+                    void handleType(next)
+                  }}
+                  disabled={typeSaving}
+                >
+                  <SelectTrigger
+                    className="h-8 rounded-[7px] text-[12.5px]"
+                    data-testid="app-control-type"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SELECTABLE_APP_TYPES.map((meta) => (
+                      <SelectItem key={meta.id} value={meta.id} className="text-[12.5px]">
+                        {t(meta.labelKey, meta.label)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="mt-1.5 text-[11.5px] text-faint" data-testid="app-control-type-hint">
+                  {t(appType.descriptionKey, appType.description)}
+                </p>
+                {/* `=== true`: a server older than the flag omits it, and an
+                absent flag is "nothing pending", not "maybe". */}
+                {app.typePendingRedeploy === true && (
+                  <p
+                    className="mt-1 text-[11.5px] text-muted-foreground"
+                    data-testid="app-control-type-pending"
+                  >
+                    {t(
+                      'apps.typePendingRedeploy',
+                      '线上还是按原来的类型在跑，下次部署后才换过来。',
+                    )}
+                  </p>
+                )}
+              </Field>
+
+              {showReseed && (
+                <Field label={t('apps.reseed', '重新播种')}>
+                  <p className="mb-2 text-[12px] text-muted-foreground">
+                    {t(
+                      'apps.controlPanel.reseedHint',
+                      '重新写入模板或克隆仓库。仅在初始化失败或目录为空时使用。',
+                    )}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-[7px] text-[12px]"
+                    disabled={reseeding}
+                    onClick={() => void handleReseed()}
+                  >
+                    {reseeding ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    )}
+                    {t('apps.reseed', 'Reseed')}
+                  </Button>
+                </Field>
+              )}
+            </Group>
+          </>
+        )}
+        {!settings && (
+          <>
+            <Group title={t('apps.controlPanel.runtimeGroup', '运行与数据')}>
+              <SummaryRow
+                label={t('apps.data.section', '线上数据')}
+                value={tablesValue}
+                loading={summaryLoading}
+                testId="app-control-open-data"
+                disabled={!summary.tables || 'reason' in summary.tables || !summary.tables.first}
+                onOpen={openData}
+              />
+              <SummaryRow
+                label={t('apps.logs.section', '运行日志')}
+                value={logsValue}
+                testId="app-control-open-logs"
+                disabled={!deployed}
+                onOpen={() => {
+                  if (!deployed) {
+                    toast.info(
+                      t('apps.logs.notDeployed', '这个应用还没有部署过，部署之后才会有日志。'),
+                    )
+                    return
+                  }
+                  openAppLogs(app, t('apps.logs.tabLabel', '日志'))
+                }}
+              />
+              <SummaryRow
+                label={t('apps.files.tabTitle', '应用附件')}
+                value={filesValue}
+                loading={summaryLoading}
+                testId="app-control-open-files"
+                onOpen={() => openAppFiles(app, t('apps.files.tabTitle', '应用附件'))}
+              />
+              <SummaryRow
+                label={t('apps.cron.tabTitle', '定时任务')}
+                value={cronValue}
+                loading={summaryLoading}
+                testId="app-control-open-cron"
+                onOpen={() => openAppCron(app, t('apps.cron.tabTitle', '定时任务'))}
+              />
+            </Group>
+            <Group title={t('apps.controlPanel.configGroup', '访问与配置')}>
+              <SummaryRow
+                label={t('apps.access.tabTitle', '协作权限')}
+                description={t('apps.controlPanel.accessHint', '谁能管理应用')}
+                value={membersValue}
+                loading={summaryLoading}
+                testId="app-control-open-access"
+                onOpen={() => openAppAccess(app, t('apps.access.tabTitle', '协作权限'))}
+              />
+              <SummaryRow
+                label={t('apps.auth.tabTitle', '应用权限')}
+                description={t('apps.controlPanel.authHint', '谁能访问线上页面')}
+                value={rulesValue}
+                testId="app-control-open-auth"
+                onOpen={() => openAppAuth(app, t('apps.auth.tabTitle', '应用权限'))}
+              />
+              <SummaryRow
+                label={t('apps.env.tabTitle', '变量与密钥')}
+                value={envValue}
+                loading={summaryLoading}
+                testId="app-control-open-env"
+                onOpen={() => openAppEnv(app, t('apps.env.tabTitle', '变量与密钥'))}
+              />
+            </Group>
+            <div className="mt-5 border-t border-border-soft pt-3">
+              <SummaryRow
+                label={t('apps.controlPanel.settings', '应用设置')}
+                value={null}
+                testId="app-control-open-settings"
+                onOpen={() => openAppSettings(app, t('apps.controlPanel.settings', '应用设置'))}
+              />
+            </div>
+          </>
+        )}
+        {settings && (
+          <>
+            {/* The address the deployed site answers on. Unchanged. */}
+            <Group title={t('apps.controlPanel.liveGroup', '线上')}>
+              <Field label={t('apps.controlPanel.customDomain', '自定义域名')}>
+                <AppCustomDomainSection app={app} />
+              </Field>
+            </Group>
+
+            {/* Last, and on its own: the only irreversible control in the panel. */}
+            <Group title={t('apps.delete', '删除')}>
               <p className="mb-2 text-[12px] text-muted-foreground">
                 {t(
-                  'apps.controlPanel.reseedHint',
-                  '重新写入模板或克隆仓库。仅在初始化失败或目录为空时使用。',
+                  'apps.controlPanel.deleteHint',
+                  '删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
                 )}
               </p>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-8 gap-1.5 rounded-[7px] text-[12px]"
-                disabled={reseeding}
-                onClick={() => void handleReseed()}
+                className="h-8 gap-1.5 rounded-[7px] border-destructive/30 text-destructive text-[12px]"
+                onClick={() => setDeleteOpen(true)}
               >
-                {reseeding ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5" />
-                )}
-                {t('apps.reseed', 'Reseed')}
+                <Trash2 className="h-3.5 w-3.5" />
+                {t('apps.delete', 'Delete')}
               </Button>
-            </Field>
-          )}
-        </Group>
-
-        {/* Six surfaces, six lines. Each opens a tab in the main column. */}
-        <Group title={t('apps.controlPanel.manageGroup', '管理')}>
-          <div className="-mx-1.5">
-            <SummaryRow
-              label={t('apps.access.tabTitle', '协作权限')}
-              value={membersValue}
-              loading={summaryLoading}
-              testId="app-control-open-access"
-              onOpen={() => openAppAccess(app, t('apps.access.tabTitle', '协作权限'))}
-            />
-            <SummaryRow
-              label={t('apps.auth.tabTitle', '应用权限')}
-              value={rulesValue}
-              testId="app-control-open-auth"
-              onOpen={() => openAppAuth(app, t('apps.auth.tabTitle', '应用权限'))}
-            />
-            <SummaryRow
-              label={t('apps.data.section', '线上数据')}
-              value={tablesValue}
-              loading={summaryLoading}
-              testId="app-control-open-data"
-              onOpen={openData}
-            />
-            <SummaryRow
-              label={t('apps.files.tabTitle', '应用附件')}
-              value={filesValue}
-              loading={summaryLoading}
-              testId="app-control-open-files"
-              onOpen={() => openAppFiles(app, t('apps.files.tabTitle', '应用附件'))}
-            />
-            <SummaryRow
-              label={t('apps.env.tabTitle', '变量与密钥')}
-              value={envValue}
-              loading={summaryLoading}
-              testId="app-control-open-env"
-              onOpen={() => openAppEnv(app, t('apps.env.tabTitle', '变量与密钥'))}
-            />
-            <SummaryRow
-              label={t('apps.logs.section', '运行日志')}
-              value={logsValue}
-              testId="app-control-open-logs"
-              onOpen={() => {
-                if (!deployed) {
-                  toast.info(
-                    t(
-                      'apps.logs.notDeployed',
-                      '这个应用还没有部署过，部署之后才会有日志。',
-                    ),
-                  )
-                  return
-                }
-                openAppLogs(app, t('apps.logs.tabLabel', '日志'))
-              }}
-            />
-            <SummaryRow
-              label={t('apps.cron.tabTitle', '定时任务')}
-              value={cronValue}
-              loading={summaryLoading}
-              testId="app-control-open-cron"
-              onOpen={() => openAppCron(app, t('apps.cron.tabTitle', '定时任务'))}
-            />
-          </div>
-        </Group>
-
-        {/* The address the deployed site answers on. Unchanged. */}
-        <Group title={t('apps.controlPanel.liveGroup', '线上')}>
-          <Field label={t('apps.controlPanel.customDomain', '自定义域名')}>
-            <AppCustomDomainSection app={app} />
-          </Field>
-        </Group>
-
-        {/* Last, and on its own: the only irreversible control in the panel. */}
-        <Group title={t('apps.delete', '删除')}>
-          <p className="mb-2 text-[12px] text-muted-foreground">
-            {t(
-              'apps.controlPanel.deleteHint',
-              '删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
-            )}
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5 rounded-[7px] border-destructive/30 text-destructive text-[12px]"
-            onClick={() => setDeleteOpen(true)}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t('apps.delete', 'Delete')}
-          </Button>
-        </Group>
+            </Group>
+          </>
+        )}
       </div>
 
       <AlertDialog
@@ -966,9 +1063,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
       >
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              {t('apps.controlPanel.moveDirectory', '移动目录')}
-            </AlertDialogTitle>
+            <AlertDialogTitle>{t('apps.controlPanel.moveDirectory', '移动目录')}</AlertDialogTitle>
             <AlertDialogDescription>
               {t(
                 'apps.controlPanel.moveDirectoryHint',
@@ -999,9 +1094,7 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
             </div>
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={moving}>
-              {t('common.cancel', 'Cancel')}
-            </AlertDialogCancel>
+            <AlertDialogCancel disabled={moving}>{t('common.cancel', 'Cancel')}</AlertDialogCancel>
             <AlertDialogAction
               disabled={moving || !moveDest.trim()}
               onClick={() => void handleMoveConfirm()}

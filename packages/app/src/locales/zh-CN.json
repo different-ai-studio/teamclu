@@ -1533,11 +1533,15 @@
       "truncated": "结果被截断了，只显示最近的一部分。缩短时间范围可以看得更全。"
     },
     "controlPanel": {
+      "settings": "应用设置",
+      "runtimeGroup": "运行与数据",
+      "configGroup": "访问与配置",
+      "accessHint": "谁能管理应用",
+      "authHint": "谁能访问线上页面",
+      "moreActions": "更多操作",
       "title": "应用设置",
       "reseedHint": "重新写入模板或克隆仓库。仅在初始化失败或目录为空时使用。",
       "localPath": "本机路径",
-      "manageGroup": "管理",
-      "codeVersion": "代码版本",
       "codeVersionNotLive": "上次部署的是 {{sha}}，但没有成功上线 · 分支 {{branch}} 在 {{head}}",
       "summaryFilesMore": "{{count}}+ 个文件",
       "summaryFilesMore_one": "{{count}}+ 个文件",
