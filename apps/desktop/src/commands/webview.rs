@@ -739,7 +739,13 @@ pub async fn webview_create(
 
             // A navigation away from the trusted origin (redirect, link, SSO
             // hop) must not carry the identity object with it.
-            let on_trusted_origin = webview.url().ok().map(|u| origin_key(&u)) == identity_origin;
+            //
+            // Read the URL from the load event, not `webview.url()`: that live
+            // getter round-trips into WKWebView.URL, which is nil until a
+            // navigation commits, and wry 0.55.1 unwraps it instead of
+            // returning an error — panicking the whole process on the
+            // PageLoadEvent::Started for a just-created webview.
+            let on_trusted_origin = Some(origin_key(payload.url())) == identity_origin;
             if let (Some((device_no, device_name)), true) = (&identity, on_trusted_origin) {
                 let script = build_teamclu_identity_script(device_no, device_name);
                 match payload.event() {
