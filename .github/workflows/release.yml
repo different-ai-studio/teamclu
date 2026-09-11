@@ -192,6 +192,13 @@ jobs:
           ) > /tmp/amuxd.log 2>&1 &
           PID_AMUXD=$!
 
+          # 2c) Build the architecture-matched FunASR sidecar from pinned sources.
+          (
+            set -e
+            node scripts/ensure-funasr-sidecar.js --target ${{ matrix.target }}
+          ) > /tmp/funasr.log 2>&1 &
+          PID_FUNASR=$!
+
           # 3) Import Apple certificate (background, fast but independent)
           (
             if [ -z "$APPLE_CERTIFICATE" ]; then
@@ -221,6 +228,7 @@ jobs:
           wait $PID_FRONTEND   || { echo "::error::Frontend build failed:"; cat /tmp/frontend.log; FAILED=1; }
           wait $PID_INTROSPECT || { echo "::error::introspect build failed:"; cat /tmp/introspect.log; FAILED=1; }
           wait $PID_AMUXD      || { echo "::error::amuxd build failed:"; cat /tmp/amuxd.log; FAILED=1; }
+          wait $PID_FUNASR     || { echo "::error::FunASR sidecar preparation failed:"; cat /tmp/funasr.log; FAILED=1; }
           wait $PID_CERT       || { echo "::error::Certificate import failed:"; cat /tmp/cert.log; FAILED=1; }
 
           if [ "$FAILED" -ne 0 ]; then exit 1; fi

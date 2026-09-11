@@ -75,6 +75,11 @@ import {
   sessionFlowLog,
   summarizeText,
 } from "@/lib/session/session-flow-log";
+import {
+  composerPayloadForSend,
+  resolveVoiceSendAgent,
+  type VoiceSendIntent,
+} from "@/lib/messages/voice-send-intent";
 function parseSlashToken(body: string): { type: "role" | "skill" | "command"; name: string } {
   if (body.startsWith("role:")) return { type: "role", name: body.slice("role:".length) };
   if (body.startsWith("skill:")) return { type: "skill", name: body.slice("skill:".length) };
@@ -130,10 +135,15 @@ export function useChatSend({
     sid: string,
     message: PromptInputMessage,
     extraMentionAgents: AttachedAgent[] = [],
+    voiceIntent?: VoiceSendIntent,
   ) => {
     // v2: workspace-ready gate removed — the legacy sidecar flag is gone.
     // Single-window scope sends via MQTT + Supabase regardless.
     const text = message.text?.trim() || "";
+    // Dictation is an independent send source. It must not consume a typed
+    // draft or attachments that happen to be waiting in the composer.
+    const composerPayload = composerPayloadForSend(pendingFiles, voiceIntent);
+    const filesForSend = composerPayload.files;
     const humanMentions = parseMemberMentionsFromText(text);
     const mentions = humanMentions.length > 0 ? humanMentions : (message.mentions || []);
     sessionFlowLog("send.begin", {
@@ -142,14 +152,14 @@ export function useChatSend({
       mentionCount: mentions.length,
       engagedAgentCount: engagedAgents.length,
       extraMentionAgentCount: extraMentionAgents.length,
-      attachedFileCount: pendingFiles.length,
+      attachedFileCount: filesForSend.length,
       sessionAttachmentTokenCount: collectSessionAttachmentUrlsFromText(text).length,
       ...summarizeText(text),
     });
 
     if (
       !text &&
-      pendingFiles.length === 0 &&
+      filesForSend.length === 0 &&
       !textHasSessionAttachmentTokens(text) &&
       mentions.length === 0 &&
       !textHasMemberMentionTokens(text) &&
@@ -160,7 +170,7 @@ export function useChatSend({
 
     if (
       !text.trim() &&
-      pendingFiles.length === 0 &&
+      filesForSend.length === 0 &&
       !textHasSessionAttachmentTokens(text) &&
       engagedAgents.length > 0
     ) {
@@ -174,18 +184,23 @@ export function useChatSend({
     // Snapshot file state immediately so the UI clears at once, before any
     // async work. This prevents stale images from leaking into later sends
     // if the user types and submits again while the upload is in flight.
-    const currentPendingFiles = pendingFiles;
-    const draftSnapshot = clearGlobalDraft
+    const currentPendingFiles = filesForSend;
+    const shouldClearComposer = clearGlobalDraft && composerPayload.clearComposer;
+    const draftSnapshot = shouldClearComposer
       ? useSessionStore.getState().draftInput
       : "";
-    setPendingFiles([]);
-    if (clearGlobalDraft) {
+    if (composerPayload.clearComposer) {
+      setPendingFiles([]);
+    }
+    if (shouldClearComposer) {
       useSessionStore.getState().setDraftInput("");
     }
 
     const restoreComposer = () => {
-      setPendingFiles(currentPendingFiles);
-      if (clearGlobalDraft) {
+      if (composerPayload.clearComposer) {
+        setPendingFiles(currentPendingFiles);
+      }
+      if (shouldClearComposer) {
         useSessionStore.getState().setDraftInput(draftSnapshot);
       }
     };
@@ -199,8 +214,10 @@ export function useChatSend({
     // where the composer re-engages the agent as fast as it is cleared, so the
     // pill is a default rather than a decision. A pill the user engaged
     // themselves does object, and keeps the agent on the message.
-    const pillCandidate =
-      extraMentionAgents[0] ?? engagedAgents[0] ?? engagedFromStore ?? null;
+    const pillCandidate = resolveVoiceSendAgent(
+      voiceIntent,
+      extraMentionAgents[0] ?? engagedAgents[0] ?? engagedFromStore ?? null,
+    );
     const externalOnly =
       extraMentionAgents.length === 0 &&
       (pillCandidate === null || pillCandidate.auto === true) &&
@@ -230,7 +247,9 @@ export function useChatSend({
       }),
     );
 
-    const syncMentions = externalOnly
+    const syncMentions = voiceIntent?.kind === "voice-silent"
+      ? []
+      : externalOnly
       ? memberIds
       : trySyncMentionActorIds(memberIds, agentIds, text);
     const mentionsPromise: Promise<string[]> = syncMentions
@@ -383,7 +402,11 @@ export function useChatSend({
     // `route_session_message` silent-queues every message whose
     // `mention_actor_ids` does not include its own actor. Surface a
     // visible warning so the "send → no reply" UX hangs less.
-    if (engagedAgents.length > 0 && agentRuntimeIdsForSend.length === 0) {
+    if (
+      voiceIntent?.kind !== "voice-silent" &&
+      engagedAgents.length > 0 &&
+      agentRuntimeIdsForSend.length === 0
+    ) {
       sessionFlowLog("send.no_agent_mentions_despite_engagement", {
         sessionId: sid,
         engagedAgentIds: engagedAgents.map((a) => a.id),
@@ -458,6 +481,9 @@ export function useChatSend({
           }
           const outgoingMetadata = {
             mention_actor_ids: mentionActorIds,
+            ...(voiceIntent
+              ? { input_source: "voice", voice_segment_id: voiceIntent.segmentId }
+              : {}),
             ...(displayMentionActorIds.length > 0
               ? { display_mention_actor_ids: displayMentionActorIds }
               : {}),
@@ -574,7 +600,9 @@ export function useChatSend({
             markUnread: false,
           });
 
-          const noticeText = buildPostSendSessionNotice(engagedUiEntries, t);
+          const noticeText = voiceIntent?.kind === "voice-silent"
+            ? null
+            : buildPostSendSessionNotice(engagedUiEntries, t);
           if (noticeText) {
             useSessionNoticeStore.getState().append(sid, noticeText);
           }

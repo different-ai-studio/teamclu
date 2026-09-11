@@ -6,6 +6,7 @@ const path = require("path");
 const { createRustBuildEnv } = require("./rust-build-env");
 const { ensureTeamcluIntrospectSidecar } = require("./ensure-introspect-sidecar");
 const { ensureAmuxdSidecar } = require("./ensure-amuxd-sidecar");
+const { ensureFunASRSidecar } = require("./ensure-funasr-sidecar");
 const { applyDevSkipFlags } = require("./lib/dev-flags");
 const { createPhaseTimer } = require("./lib/dev-timing");
 const { platform } = process;
@@ -45,6 +46,13 @@ timing.mark("ensure-introspect");
 
 ensureAmuxdSidecar(env, { logPrefix: "[tauri-cli]" });
 timing.mark("ensure-amuxd");
+
+const targetIndex = args.indexOf("--target");
+ensureFunASRSidecar(env, {
+  logPrefix: "[tauri-cli]",
+  target: targetIndex >= 0 ? args[targetIndex + 1] : undefined,
+});
+timing.mark("ensure-funasr");
 
 const desktopDir = path.resolve(__dirname, "..", "apps", "desktop");
 const child = spawn("pnpm", ["exec", "tauri", ...args], {

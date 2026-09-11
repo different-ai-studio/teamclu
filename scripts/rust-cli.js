@@ -5,6 +5,7 @@ const { spawn } = require("child_process");
 const { createRustBuildEnv } = require("./rust-build-env");
 const { ensureTeamcluIntrospectSidecar } = require("./ensure-introspect-sidecar");
 const { ensureAmuxdSidecar } = require("./ensure-amuxd-sidecar");
+const { ensureFunASRSidecar } = require("./ensure-funasr-sidecar");
 
 const args = process.argv.slice(2);
 const env = createRustBuildEnv(process.env, __dirname);
@@ -31,6 +32,7 @@ if (isAnalysisOnly && !env.CI) {
 // Build before invoking cargo to avoid build.rs deadlock. Skipped when env.CI is set (e.g. rust:check).
 ensureTeamcluIntrospectSidecar(env);
 ensureAmuxdSidecar(env);
+ensureFunASRSidecar(env);
 
 const child = spawn("cargo", args, {
   stdio: "inherit",
