@@ -20,6 +20,7 @@ interface VoiceModelInstallDialogProps {
   installing: boolean;
   progress: number;
   selectedModel: VoiceModelVariant;
+  installed: boolean;
   installedModel?: VoiceModelVariant | null;
   onOpenChange: (open: boolean) => void;
   onSelectedModelChange: (model: VoiceModelVariant) => void;
@@ -31,13 +32,14 @@ export function VoiceModelInstallDialog({
   installing,
   progress,
   selectedModel,
+  installed,
   installedModel,
   onOpenChange,
   onSelectedModelChange,
   onInstall,
 }: VoiceModelInstallDialogProps) {
   const { t } = useTranslation();
-  const selectedIsInstalled = installedModel === selectedModel;
+  const selectedIsInstalled = installed && installedModel === selectedModel;
 
   return (
     <Dialog open={open} onOpenChange={(next) => !installing && onOpenChange(next)}>
@@ -48,14 +50,17 @@ export function VoiceModelInstallDialog({
             {t("chat.voice.installTitle", "安装本地语音模型")}
           </DialogTitle>
           <DialogDescription className="text-[12px] leading-relaxed">
-            {t("chat.voice.installDescription", "选择 SenseVoiceSmall 精度。模型仅下载一次，录音与识别均在本机完成。")}
+            {t(
+              "chat.voice.installDescription",
+              "选择 SenseVoiceSmall 精度；CAM++ 会在本机区分录音中的不同说话人。模型仅下载一次。",
+            )}
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-2 px-5 py-4">
           {VOICE_MODEL_OPTIONS.map((option) => {
             const selected = selectedModel === option.id;
-            const sizeMb = Math.round(option.modelBytes / 1_000_000);
+            const sizeMb = Math.round(option.downloadBytes / 1_000_000);
             return (
               <button
                 key={option.id}
@@ -103,7 +108,7 @@ export function VoiceModelInstallDialog({
 
           <div className="mt-1 flex items-center gap-2 text-[11px] text-faint">
             <LockKeyhole className="h-3 w-3" />
-            {t("chat.voice.localOnly", "音频不会上传；另需约 2 MB 的断句模型。")}
+            {t("chat.voice.localOnly", "音频不会上传；大小包含断句模型和 CAM++ 说话人模型。")}
           </div>
 
           {installing ? (

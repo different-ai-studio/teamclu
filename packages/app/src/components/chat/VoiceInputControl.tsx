@@ -69,6 +69,10 @@ export function VoiceInputControl({
   }, [error, setError]);
 
   React.useEffect(() => {
+    if (status?.installedModel) setSelectedModel(status.installedModel);
+  }, [status?.installedModel]);
+
+  React.useEffect(() => {
     if (!recordingId) {
       recordingSessionRef.current = null;
       return;
@@ -281,6 +285,7 @@ export function VoiceInputControl({
         installing={installing}
         progress={installProgress}
         selectedModel={selectedModel}
+        installed={installed}
         installedModel={status?.installedModel}
         onOpenChange={setInstallDialogOpen}
         onSelectedModelChange={setSelectedModel}

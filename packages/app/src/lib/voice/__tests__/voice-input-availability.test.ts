@@ -42,8 +42,18 @@ describe("isVoiceInputMainDisabled", () => {
 describe("VOICE_MODEL_OPTIONS", () => {
   it("offers the pinned Q8 and F16 downloads with Q8 recommended", () => {
     expect(VOICE_MODEL_OPTIONS).toEqual([
-      { id: "q8", modelBytes: 254_208_320, recommended: true },
-      { id: "f16", modelBytes: 470_197_600, recommended: false },
+      {
+        id: "q8",
+        modelBytes: 254_208_320,
+        downloadBytes: 284_209_970,
+        recommended: true,
+      },
+      {
+        id: "f16",
+        modelBytes: 470_197_600,
+        downloadBytes: 500_199_250,
+        recommended: false,
+      },
     ]);
   });
 });

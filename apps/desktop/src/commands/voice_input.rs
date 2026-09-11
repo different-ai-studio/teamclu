@@ -17,10 +17,14 @@ const Q8_MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c344
 const F16_MODEL_SHA256: &str = "2389039651f4574dbd674f1f1e296b8b1147b2e19a5fd9c2cd69e82669c78d8e";
 const VAD_URL: &str = "https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/6840bae4c5c92ee8c04faaf4db23dd0105098d7f/fsmn-vad.gguf";
 const VAD_SHA256: &str = "1270f2559c495f4e7b6e739541151027d360761a3fda43fc147034f5719f5479";
+const SPEAKER_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx";
+const SPEAKER_MODEL_SHA256: &str =
+    "f682b514c05d947ee3fa91cd6ec6c5c7543479a128373fa29b1faedccd21fd11";
 
 const Q8_MODEL_BYTES: u64 = 254_208_320;
 const F16_MODEL_BYTES: u64 = 470_197_600;
 const VAD_BYTES: u64 = 1_720_512;
+const SPEAKER_MODEL_BYTES: u64 = 28_281_138;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -99,11 +103,15 @@ fn vad_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("fsmn-vad.gguf")
 }
 
+fn speaker_model_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("3dspeaker-campplus-zh-common.onnx")
+}
+
 fn model_marker_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("model-variant")
 }
 
-fn installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
+fn base_installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
     if !runtime_path(root).is_file() || !vad_path(root).is_file() {
         return None;
     }
@@ -120,6 +128,13 @@ fn installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
                 .into_iter()
                 .find(|variant| model_path(root, *variant).is_file())
         })
+}
+
+fn installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
+    speaker_model_path(root)
+        .is_file()
+        .then(|| base_installed_variant(root))
+        .flatten()
 }
 
 fn is_variant_installed(root: &std::path::Path, variant: VoiceModelVariant) -> bool {
@@ -144,10 +159,14 @@ pub fn voice_input_status(
 ) -> Result<VoiceInputStatus, String> {
     let support = platform_support();
     let root = install_dir(&app)?;
-    let installed_model = support.is_ok().then(|| installed_variant(&root)).flatten();
+    let installed = support.is_ok() && installed_variant(&root).is_some();
+    let installed_model = support
+        .is_ok()
+        .then(|| base_installed_variant(&root))
+        .flatten();
     Ok(VoiceInputStatus {
         supported: support.is_ok(),
-        installed: installed_model.is_some(),
+        installed,
         installing: state.installing.load(Ordering::SeqCst),
         listening: state.listening.load(Ordering::SeqCst),
         engine_version: ENGINE_VERSION,
@@ -222,6 +241,46 @@ fn download_checked(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn stage_or_download_checked(
+    app: &AppHandle,
+    existing: &std::path::Path,
+    url: &str,
+    expected_sha256: &str,
+    expected_bytes: u64,
+    destination: &std::path::Path,
+    offset: u64,
+    total_bytes: u64,
+    stage: &'static str,
+) -> Result<(), String> {
+    let reusable = existing
+        .metadata()
+        .map(|metadata| metadata.len() == expected_bytes)
+        .unwrap_or(false);
+    if reusable {
+        std::fs::copy(existing, destination).map_err(|error| format!("copy {stage}: {error}"))?;
+        let _ = app.emit(
+            "voice:install-progress",
+            InstallProgress {
+                bytes_downloaded: offset + expected_bytes,
+                total_bytes,
+                stage,
+            },
+        );
+        return Ok(());
+    }
+    download_checked(
+        app,
+        url,
+        expected_sha256,
+        destination,
+        offset,
+        total_bytes,
+        stage,
+    )
+}
+
 #[tauri::command]
 pub fn voice_input_install(
     app: AppHandle,
@@ -263,7 +322,7 @@ fn install_engine(app: &AppHandle, model_variant: VoiceModelVariant) -> Result<(
         return Ok(());
     }
     let model = model_variant.spec();
-    let total_bytes = model.bytes + VAD_BYTES;
+    let total_bytes = model.bytes + VAD_BYTES + SPEAKER_MODEL_BYTES;
     let parent = final_dir
         .parent()
         .ok_or("invalid voice install directory")?;
@@ -278,23 +337,38 @@ fn install_engine(app: &AppHandle, model_variant: VoiceModelVariant) -> Result<(
     std::fs::copy(&bundled_runtime, runtime_path(temp.path()))
         .map_err(|error| format!("copy FunASR runtime: {error}"))?;
     let model_url = format!("{MODEL_BASE_URL}/{MODEL_REVISION}/{}", model.file_name);
-    download_checked(
+    stage_or_download_checked(
         app,
+        &model_path(&final_dir, model_variant),
         &model_url,
         model.sha256,
+        model.bytes,
         &model_path(temp.path(), model_variant),
         0,
         total_bytes,
         "model",
     )?;
-    download_checked(
+    stage_or_download_checked(
         app,
+        &vad_path(&final_dir),
         VAD_URL,
         VAD_SHA256,
+        VAD_BYTES,
         &vad_path(temp.path()),
         model.bytes,
         total_bytes,
         "vad",
+    )?;
+    stage_or_download_checked(
+        app,
+        &speaker_model_path(&final_dir),
+        SPEAKER_MODEL_URL,
+        SPEAKER_MODEL_SHA256,
+        SPEAKER_MODEL_BYTES,
+        &speaker_model_path(temp.path()),
+        model.bytes + VAD_BYTES,
+        total_bytes,
+        "speaker",
     )?;
     std::fs::write(model_marker_path(temp.path()), model_variant.id())
         .map_err(|error| format!("write model variant: {error}"))?;
@@ -321,6 +395,7 @@ pub fn voice_input_start(
     app: AppHandle,
     state: State<'_, VoiceInputState>,
     recording_id: String,
+    speaker_diarization: bool,
 ) -> Result<(), String> {
     platform_support()?;
     let root = install_dir(&app)?;
@@ -339,6 +414,7 @@ pub fn voice_input_start(
             model_variant,
             stop,
             recording_id.clone(),
+            speaker_diarization,
         );
         #[cfg(not(target_os = "macos"))]
         let result: Result<(), String> = Err("unsupported platform".to_string());
@@ -374,6 +450,7 @@ pub fn voice_input_stop(state: State<'_, VoiceInputState>) -> Result<(), String>
 mod macos {
     use super::*;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
     use std::collections::VecDeque;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -386,6 +463,115 @@ mod macos {
     const MIN_SPEECH_SAMPLES: usize = SAMPLE_RATE as usize * 4 / 10;
     const MAX_SEGMENT_SAMPLES: usize = SAMPLE_RATE as usize * 20;
     const RMS_SPEECH_THRESHOLD: f32 = 0.012;
+    const SPEAKER_MATCH_THRESHOLD: f32 = 0.5;
+    const MAX_SPEAKERS: usize = 15;
+
+    struct SpeakerCluster {
+        center: Vec<f32>,
+        updates: usize,
+    }
+
+    struct SpeakerClusterer {
+        extractor: SpeakerEmbeddingExtractor,
+        clusters: Vec<SpeakerCluster>,
+        last_speaker: usize,
+    }
+
+    impl SpeakerClusterer {
+        fn new(model: &std::path::Path) -> Result<Self, String> {
+            let extractor = SpeakerEmbeddingExtractor::create(&SpeakerEmbeddingExtractorConfig {
+                model: Some(model.to_string_lossy().into_owned()),
+                num_threads: 1,
+                debug: false,
+                provider: Some("cpu".to_string()),
+            })
+            .ok_or("initialize CAM++ speaker model")?;
+            Ok(Self {
+                extractor,
+                clusters: Vec::new(),
+                last_speaker: 0,
+            })
+        }
+
+        fn assign(&mut self, samples: &[f32]) -> Result<String, String> {
+            let stream = self
+                .extractor
+                .create_stream()
+                .ok_or("create CAM++ audio stream")?;
+            stream.accept_waveform(SAMPLE_RATE as i32, samples);
+            stream.input_finished();
+            if !self.extractor.is_ready(&stream) {
+                return Ok(self.last_label());
+            }
+            let embedding = self
+                .extractor
+                .compute(&stream)
+                .ok_or("extract CAM++ speaker embedding")?;
+            self.last_speaker = assign_speaker_embedding(&mut self.clusters, embedding);
+            Ok(self.last_label())
+        }
+
+        fn last_label(&self) -> String {
+            format!("speaker_{:02}", self.last_speaker + 1)
+        }
+    }
+
+    fn assign_speaker_embedding(clusters: &mut Vec<SpeakerCluster>, embedding: Vec<f32>) -> usize {
+        let Some(embedding) = normalize_embedding(embedding) else {
+            return 0;
+        };
+        let best = clusters
+            .iter()
+            .enumerate()
+            .filter(|(_, cluster)| cluster.center.len() == embedding.len())
+            .map(|(index, cluster)| (index, dot(&cluster.center, &embedding)))
+            .max_by(|left, right| left.1.total_cmp(&right.1));
+
+        let index = match best {
+            Some((index, similarity)) if similarity >= SPEAKER_MATCH_THRESHOLD => index,
+            Some((index, _)) if clusters.len() >= MAX_SPEAKERS => index,
+            _ => {
+                clusters.push(SpeakerCluster {
+                    center: embedding,
+                    updates: 1,
+                });
+                return clusters.len() - 1;
+            }
+        };
+
+        let cluster = &mut clusters[index];
+        let weight = 1.0 / (cluster.updates + 1).min(20) as f32;
+        for (center, sample) in cluster.center.iter_mut().zip(embedding) {
+            *center = (1.0 - weight) * *center + weight * sample;
+        }
+        if let Some(normalized) = normalize_embedding(std::mem::take(&mut cluster.center)) {
+            cluster.center = normalized;
+        }
+        cluster.updates += 1;
+        index
+    }
+
+    fn normalize_embedding(mut embedding: Vec<f32>) -> Option<Vec<f32>> {
+        let norm = embedding
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        if !norm.is_finite() || norm <= f32::EPSILON {
+            return None;
+        }
+        for value in &mut embedding {
+            *value /= norm;
+        }
+        Some(embedding)
+    }
+
+    fn dot(left: &[f32], right: &[f32]) -> f32 {
+        left.iter()
+            .zip(right)
+            .map(|(left, right)| left * right)
+            .sum()
+    }
 
     #[derive(Serialize, Clone)]
     #[serde(rename_all = "camelCase")]
@@ -405,15 +591,25 @@ mod macos {
         model_variant: VoiceModelVariant,
         stop: Arc<AtomicBool>,
         recording_id: String,
+        speaker_diarization: bool,
     ) -> Result<(), String> {
         let (audio_tx, audio_rx) = mpsc::channel::<Vec<f32>>();
         let (segment_tx, segment_rx) = mpsc::channel::<Vec<f32>>();
         let inference_app = app.clone();
         let inference_root = root.clone();
+        let mut speaker_clusterer = speaker_diarization
+            .then(|| SpeakerClusterer::new(&speaker_model_path(&root)))
+            .transpose()?;
         let inference = std::thread::spawn(move || {
             for samples in segment_rx {
                 match transcribe_segment(&inference_root, model_variant, &samples) {
                     Ok(text) if !text.is_empty() => {
+                        let speaker_cluster_id = speaker_clusterer.as_mut().map(|clusterer| {
+                            clusterer.assign(&samples).unwrap_or_else(|error| {
+                                log::warn!("CAM++ speaker assignment failed: {error}");
+                                clusterer.last_label()
+                            })
+                        });
                         let _ = inference_app.emit(
                             "voice:segment",
                             SegmentPayload {
@@ -422,7 +618,7 @@ mod macos {
                                 text,
                                 started_at_ms: 0,
                                 ended_at_ms: (samples.len() as u64 * 1000) / SAMPLE_RATE as u64,
-                                speaker_cluster_id: None,
+                                speaker_cluster_id,
                                 speaker_profile_id: None,
                             },
                         );
@@ -737,16 +933,55 @@ mod macos {
         }
 
         #[test]
-        fn installed_variant_supports_legacy_q8_and_marker_selection() {
+        fn installed_variant_requires_campplus_and_preserves_legacy_model_choice() {
             let root = tempfile::tempdir().expect("temp voice root");
             std::fs::write(runtime_path(root.path()), []).expect("runtime");
             std::fs::write(vad_path(root.path()), []).expect("vad");
             std::fs::write(model_path(root.path(), VoiceModelVariant::Q8), []).expect("q8");
+            assert_eq!(
+                base_installed_variant(root.path()),
+                Some(VoiceModelVariant::Q8)
+            );
+            assert_eq!(installed_variant(root.path()), None);
+
+            std::fs::write(speaker_model_path(root.path()), []).expect("speaker");
             assert_eq!(installed_variant(root.path()), Some(VoiceModelVariant::Q8));
 
             std::fs::write(model_path(root.path(), VoiceModelVariant::F16), []).expect("f16");
             std::fs::write(model_marker_path(root.path()), "f16").expect("marker");
             assert_eq!(installed_variant(root.path()), Some(VoiceModelVariant::F16));
+        }
+
+        #[test]
+        fn speaker_clusters_keep_similar_embeddings_stable() {
+            let mut clusters = Vec::new();
+            assert_eq!(
+                assign_speaker_embedding(&mut clusters, vec![1.0, 0.0, 0.0]),
+                0
+            );
+            assert_eq!(
+                assign_speaker_embedding(&mut clusters, vec![0.95, 0.05, 0.0]),
+                0
+            );
+            assert_eq!(clusters.len(), 1);
+        }
+
+        #[test]
+        fn speaker_clusters_create_a_new_stable_id_for_a_distinct_voice() {
+            let mut clusters = Vec::new();
+            assert_eq!(
+                assign_speaker_embedding(&mut clusters, vec![1.0, 0.0, 0.0]),
+                0
+            );
+            assert_eq!(
+                assign_speaker_embedding(&mut clusters, vec![0.0, 1.0, 0.0]),
+                1
+            );
+            assert_eq!(
+                assign_speaker_embedding(&mut clusters, vec![0.0, 0.98, 0.02]),
+                1
+            );
+            assert_eq!(clusters.len(), 2);
         }
     }
 }

@@ -7,7 +7,8 @@
       "binaries/llama-funasr-sensevoice"
     ],
     "resources": [
-      "resources/licenses/funasr-llamacpp.txt"
+      "resources/licenses/funasr-llamacpp.txt",
+      "resources/licenses/sherpa-onnx-campplus.txt"
     ]
   }
 }

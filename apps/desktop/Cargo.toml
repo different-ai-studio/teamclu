@@ -144,6 +144,7 @@ objc2-web-kit = { version = "0.3", features = ["WKWebViewConfiguration", "WKWebV
 block2 = "0.6"
 cpal = "0.17"
 hound = "3.5"
+sherpa-onnx = { version = "=1.13.7", default-features = false, features = ["static"] }
 
 # Windows native WebView2 APIs (ICoreWebView2::ExecuteScript). Versions pinned
 # to match wry's transitive deps so the controller()/ICoreWebView2 types unify.

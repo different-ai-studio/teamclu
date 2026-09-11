@@ -113,7 +113,10 @@ export async function startLocalVoiceInput(input: {
     input.route.mode === "trigger" ? input.route.agent.displayName : null,
   );
   try {
-    await invoke("voice_input_start", { recordingId });
+    await invoke("voice_input_start", {
+      recordingId,
+      speakerDiarization: input.route.mode === "silent",
+    });
     if (store.status) store.setStatus({ ...store.status, listening: true });
   } catch (error) {
     handlers.delete(recordingId);
