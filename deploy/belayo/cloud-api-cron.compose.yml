@@ -1,0 +1,41 @@
+# Belayo Cloud API scheduler heartbeat for Dokploy/Swarm.
+#
+# Scheduler ownership is explicit. Keep APP_CRON_REPLICAS=0 while Alibaba FC's
+# app-cron timer is enabled. At cutover, disable the FC timer first, then set
+# APP_CRON_REPLICAS=1 and redeploy this stack. Reverse that order for rollback.
+services:
+  app-cron:
+    image: curlimages/curl:8.11.1
+    environment:
+      APP_CRON_SECRET: "${APP_CRON_SECRET:?APP_CRON_SECRET is required}"
+      CLOUD_API_INTERNAL_URL: "${CLOUD_API_INTERNAL_URL:-http://teamclu-cloud-api-shadow-qjau6z:9000}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        align_sleep() {
+          s=$$(date +%S)
+          sleep $$(( 60 - $${s#0} ))
+        }
+        align_sleep
+        while true; do
+          curl -fsS -m 55 -X POST \
+            -H "Authorization: Bearer $$APP_CRON_SECRET" \
+            "$$CLOUD_API_INTERNAL_URL/v1/internal/app-cron/tick" >/dev/null \
+            || echo "app-cron: tick failed at $$(date -u +%FT%TZ)"
+          align_sleep
+        done
+    networks:
+      - dokploy-network
+    deploy:
+      replicas: ${APP_CRON_REPLICAS:-0}
+      placement:
+        constraints:
+          - node.hostname == dokploy-worker-2
+      restart_policy:
+        condition: any
+        delay: 5s
+
+networks:
+  dokploy-network:
+    external: true

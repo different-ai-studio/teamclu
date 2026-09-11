@@ -1,5 +1,18 @@
 # Belayo deployment contract
 
+## Cloud API cron heartbeat
+
+`cloud-api-cron.compose.yml` is the Dokploy/Swarm replacement for Alibaba
+FC's one-minute `app-cron` timer. It is deliberately deployed with
+`APP_CRON_REPLICAS=0` until production cutover. Scheduler handoff order is:
+
+1. Disable the Alibaba FC `app-cron` timer.
+2. Set `APP_CRON_REPLICAS=1` in the Dokploy Compose environment and redeploy.
+3. Verify one due test job creates exactly one run record in one minute.
+
+Rollback uses the reverse ownership order: scale the Dokploy stack to zero,
+then re-enable the FC timer. Never run both schedulers concurrently.
+
 Belayo runs hosted workloads under Dokploy while self-host remains the
 Docker Compose test environment. The reverse proxies intentionally differ:
 Traefik owns Belayo hostnames and Caddy owns self-host hostnames.
