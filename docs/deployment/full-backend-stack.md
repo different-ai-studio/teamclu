@@ -85,14 +85,12 @@ cp .env.example .env
 
 **Podman 本地访问：** Caddy `http://api.example.com:8080`，FC 直连 `http://127.0.0.1:9000`。
 
-### CI 自动部署（唯一发布路径）
+### CI 部署（夜间定时 + 手动）
 
-push 到 `main` 且改动 `deploy/self-host/**`、`services/fc/**` 或
-`services/supabase/migrations/**` 时，`.github/workflows/self-host-deploy.yml`
-自动 SSH 到 ECS：`git pull` → `docker compose build fc` → `up -d` → 等健康 →
-跑 `run-e2e.sh`。也可 `workflow_dispatch` 手动触发。
-
-> 换言之：**合入 `main` 即部署**，无需手动脚本。
+`.github/workflows/self-host-deploy.yml` 每天 00:00 Asia/Shanghai（`cron:
+0 16 * * *` UTC）跑一次，也可 `workflow_dispatch` 手动触发。合入 `main`
+不再自动部署。流程：SSH 到 ECS → `git pull` → `docker compose build fc
+ai-gateway` → `up -d` → 等健康 → 跑 `run-e2e.sh`。
 
 ---
 
@@ -216,8 +214,8 @@ docker compose build fc && docker compose up -d fc
 方式一旦只配在 env 里，一次无关的常规部署就会让登录按钮消失。放代码里则跟着版本走，
 可 review、有 git 历史。
 
-改一个开关 = 改 `feature-profiles.ts` 提 PR：self-host 合并到 main 自动部署生效，
-belayo 跟着下次手工部署生效。
+改一个开关 = 改 `feature-profiles.ts` 提 PR：self-host 等夜间部署（或手动
+`workflow_dispatch`）生效，belayo 跟着下次手工部署生效。
 
 两条不下发的规则，别绕：
 
@@ -312,7 +310,7 @@ Daemon 需要：
 | Self-host（唯一环境） | `https://api.teamclu-dev.ucar.cc` |
 | 自建的其他实例 | `https://${FC_DOMAIN}` |
 
-**发布桌面版前：** 若 Cloud API 有 breaking 变更，需先让 Cloud API + migration 部署完成（合入 `main` 即自动部署），再发客户端。见 [`docs/release/desktop.md`](../release/desktop.md)。
+**发布桌面版前：** 若 Cloud API 有 breaking 变更，需先让 Cloud API + migration 部署完成（夜间 self-host 部署或手动 `workflow_dispatch`），再发客户端。见 [`docs/release/desktop.md`](../release/desktop.md)。
 
 Web 开发可覆盖：`VITE_CLOUD_API_URL=...`
 
@@ -424,7 +422,7 @@ cd services/supabase && npm test   # pgTAP（若已配置）
 | [`deploy/self-host/README.md`](../../deploy/self-host/README.md) | Self-host 完整操作手册 |
 | [`deploy/self-host/docker-compose.yml`](../../deploy/self-host/docker-compose.yml) | 服务编排 + 环境变量权威来源 |
 | [`deploy/self-host/.env.example`](../../deploy/self-host/.env.example) | 可配置项清单 |
-| [`.github/workflows/self-host-deploy.yml`](../../.github/workflows/self-host-deploy.yml) | 自动部署流水线 |
+| [`.github/workflows/self-host-deploy.yml`](../../.github/workflows/self-host-deploy.yml) | Self-host 夜间 / 手动部署流水线 |
 | [`services/supabase/migrations/README.md`](../../services/supabase/migrations/README.md) | Migration 策略 |
 | [`docs/architecture/v2.md`](../architecture/v2.md) | 架构总览 |
 | [`docs/openapi/teamclu-api.v1.yaml`](../openapi/teamclu-api.v1.yaml) | API 契约 |
