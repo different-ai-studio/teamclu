@@ -29,6 +29,17 @@ const CLONE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// mapping cannot drift from what is thrown.
 pub const ERR_CLONE_TIMEOUT: &str = "git clone timed out after 5 minutes";
 
+/// What a clone request did to its target directory.
+///
+/// A pre-existing checkout is already usable.  Treating it as a success avoids
+/// making retry/redeploy flows fail merely because their earlier clone worked.
+/// We still never write over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloneOutcome {
+    Cloned,
+    AlreadyPresent,
+}
+
 /// Whether `dir` has anything in it (a missing directory counts as empty).
 fn is_empty_dir(dir: &Path) -> bool {
     match std::fs::read_dir(dir) {
@@ -39,22 +50,19 @@ fn is_empty_dir(dir: &Path) -> bool {
 
 /// Clone `url` into `workdir`.
 ///
-/// Refuses a non-empty `workdir`: cloning into an app that already has files
-/// would either fail halfway or bury work the agent has already done, and the
-/// caller (app creation) only ever passes a fresh directory.
+/// Leaves a non-empty `workdir` untouched and reports it as already present:
+/// cloning into an app that already has files would either fail halfway or bury
+/// work the agent has already done.
 ///
 /// Runs non-interactively. A private repo the machine has no credential for
 /// must fail with an error the user can read, not park a `git` process on a
 /// password prompt no one can see — hence `GIT_TERMINAL_PROMPT=0` and ssh's
 /// `BatchMode`, and the time limit in [`run_clone`] for the prompts those two
 /// cannot reach.
-pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<()> {
+pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<CloneOutcome> {
     let url = app_git::validate_remote_url(url)?;
     if !is_empty_dir(workdir) {
-        anyhow::bail!(
-            "refusing to clone into a non-empty directory: {}",
-            workdir.display()
-        );
+        return Ok(CloneOutcome::AlreadyPresent);
     }
     if let Some(parent) = workdir.parent() {
         std::fs::create_dir_all(parent)?;
@@ -63,11 +71,13 @@ pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<()> {
     // empty, but leaving it behind on failure would make the next attempt look
     // like a half-finished checkout.
     let _ = std::fs::remove_dir(workdir);
-    run_clone(&url, workdir, None)
+    run_clone(&url, workdir, None)?;
+    Ok(CloneOutcome::Cloned)
 }
 
 /// Clone `url` into `workdir` using a Gitea deploy key (on-demand checkout for
-/// collaborators — §5.4). Same empty-dir rule as [`clone_app_repo`].
+/// collaborators — §5.4). A pre-existing checkout is left untouched, as in
+/// [`clone_app_repo`].
 pub fn clone_app_repo_with_deploy_key(
     url: &str,
     app_id: &str,
@@ -75,13 +85,10 @@ pub fn clone_app_repo_with_deploy_key(
     deploy_key_pem: &str,
     git_user_name: Option<&str>,
     git_user_email: Option<&str>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<CloneOutcome> {
     let url = app_git::validate_remote_url(url)?;
     if !is_empty_dir(workdir) {
-        anyhow::bail!(
-            "refusing to clone into a non-empty directory: {}",
-            workdir.display()
-        );
+        return Ok(CloneOutcome::AlreadyPresent);
     }
     if let Some(parent) = workdir.parent() {
         std::fs::create_dir_all(parent)?;
@@ -101,7 +108,7 @@ pub fn clone_app_repo_with_deploy_key(
     if let Err(e) = app_git::set_repo_ssh_command(workdir, app_id) {
         tracing::warn!(app_id, error = %e, "could not point the clone at git-ssh");
     }
-    Ok(())
+    Ok(CloneOutcome::Cloned)
 }
 
 /// `git clone <remote> <workdir>`, with the environment that keeps it
@@ -177,15 +184,17 @@ mod tests {
     }
 
     #[test]
-    fn refuses_to_clone_over_existing_work() {
+    fn skips_a_clone_over_existing_work() {
         let tmp = tempfile::tempdir().unwrap();
         let work = tmp.path().join("app");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("index.html"), b"the agent wrote this").unwrap();
 
-        let err = clone_app_repo("https://example.com/repo.git", &work).unwrap_err();
-        assert!(format!("{err}").contains("non-empty"), "got {err}");
-        // and the existing file is still there
+        assert_eq!(
+            clone_app_repo("https://example.com/repo.git", &work).unwrap(),
+            CloneOutcome::AlreadyPresent
+        );
+        // The existing file is still there, and `git` was not run.
         assert!(work.join("index.html").is_file());
     }
 
