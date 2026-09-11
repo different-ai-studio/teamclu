@@ -1,6 +1,6 @@
 # Belayo Dokploy 目标部署架构
 
-- **Status**: Accepted, implementation in progress
+- **Status**: Accepted, production pre-route ready; DNS cutover pending soak
 - **Date**: 2026-09-11
 - **Scope**: Belayo 托管环境的 Cloud API、AI Gateway、MQTT、Registry、Gitea、Supabase 入口与发布流程
 - **Related**:
@@ -109,6 +109,29 @@ Swarm 节点当前均为 `Ready/Active`。Cloud API shadow 被固定在
 
 这只证明无认证公共配置对齐，不代表鉴权、MQTT、OSS、Apps provisioning、定时任务和
 推送已经完成端到端验证。
+
+### 3.4 生产预备与即时验收（2026-09-11）
+
+- Dokploy Application 已增加 `teamclaw-api.ucar.cc -> :9000` 的 HTTPS Traefik
+  route；公网 DNS 仍指向 FC，因此尚未切流。
+- Cloudflare Origin CA 已为 `teamclaw-api.ucar.cc` 单独签发并注册到 Dokploy。通过
+  `--resolve teamclaw-api.ucar.cc:443:47.107.171.43` 验证 SNI、`/healthz`、公共配置和
+  CORS preflight 均通过。
+- Cloud API shadow 运行不可变镜像 `shadow-6a9ebe3a7`，registry digest 为
+  `sha256:0cb22d51fdee9e2b52839d138482361456eb0b70db2f20b7e9131f250bb97e9d`。
+- Dokploy Application 的 env 已从字面量 `\\n` 修正为真实逐行变量，并去掉 value 的
+  外层 dotenv 引号；修复前 `/healthz` 会假绿、业务路由报缺少 `SUPABASE_URL`，且 Web
+  SSO storage key 带多余引号。
+- Dokploy Compose `Cloud API Cron` 已部署；stack service 固定在
+  `dokploy-worker-2`，当前 desired/running 为 `0/0`。FC `app-cron` timer 仍是唯一
+  scheduler。
+- `deploy/belayo/smoke/cloud-api-e2e.mjs` 已连续通过，并在最终 env 规范化后复验：登录刷新、team
+  bootstrap、session/message、跨租户 RLS、MQTT WSS roundtrip、Gitea provisioning、
+  OSS roundtrip、真实 FC App 发布、cron 单窗口单 run 及 tick 鉴权。
+- Registry 额外验证 pull 凭据可读但不能 push，push 凭据可创建并取消上传会话。
+
+即时验收通过不替代 Phase 1 的 24 小时 soak。完成 soak 前不改生产 DNS，也不交接
+scheduler；这两项在 Phase 4 同一变更窗口执行。
 
 ## 4. 目标架构
 
