@@ -31,6 +31,8 @@ jobs:
       APP_ID: AyIydhRyN4pMT0_Y0TXvq
       SERVICE: teamclu-cloud-api-shadow-qjau6z
       WORKER: dokploy-worker-2
+      # Belayo manager, worker and ACR are in one VPC. Keep this internal
+      # endpoint; `shadow-<sha>` below identifies the switched environment.
       IMAGE_REPO: registry-vpc.cn-shenzhen.aliyuncs.com/betlysaas/teamclu-cloud-api
     steps:
       - uses: actions/checkout@v4
@@ -57,28 +59,35 @@ jobs:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
           TAG: ${{ github.sha }}
         run: |
-          IMG="$IMAGE_REPO:${TAG::9}"
+          IMG="$IMAGE_REPO:shadow-${TAG::9}"
           docker build --platform linux/amd64 -t "$IMG" services/fc
           docker run --rm --entrypoint sh "$IMG" -c 'test -s dist/server.js'
+          # Keep load, inspect and push in one checked remote command.  A
+          # separate best-effort SSH invocation previously let Actions report
+          # success while the worker could not pull the tag.
           docker save "$IMG" | gzip \
-            | ssh "root@$MGR" 'gunzip | docker load'
-          # IMG is intentionally expanded on the runner before ssh executes.
-          # shellcheck disable=SC2029
-          ssh "root@$MGR" docker push "$IMG"
+            | ssh "root@$MGR" \
+                "set -eu; gunzip | docker load; docker image inspect '$IMG'; docker push '$IMG'; echo deployed-image=\"$IMG\" manager=\"\$(hostname)\""
 
       - name: Roll the Cloud API and record the desired image
         env:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
           TAG: ${{ github.sha }}
         run: |
-          ssh "root@$MGR" bash -s -- "$SERVICE" "$WORKER" "$IMAGE_REPO" "$TAG" "$APP_ID" <<'EOF'
+          IMG="$IMAGE_REPO:shadow-${TAG::9}"
+          scp .github/scripts/belayo-rollout.sh "root@$MGR:/tmp/belayo-rollout.sh"
+          ssh "root@$MGR" chmod 700 /tmp/belayo-rollout.sh
+          ssh "root@$MGR" /tmp/belayo-rollout.sh "$SERVICE" "$IMG" "$WORKER" "$APP_ID"
+          ssh "root@$MGR" rm -f /tmp/belayo-rollout.sh
+          : <<'EOF'
             set -Eeuo pipefail
             SERVICE=$1
             WORKER=$2
             IMAGE_REPO=$3
             TAG=$4
             APP_ID=$5
-            IMG="$IMAGE_REPO:${TAG::9}"
+            IMG="$IMAGE_REPO:shadow-${TAG::9}"
+            echo "deploy-manager=$(hostname) service=$SERVICE image=$IMG"
             OLD_IMAGE=$(docker service inspect "$SERVICE" --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
             PG=$(docker ps --format '{{.Names}}' | grep dokploy-postgres | head -1)
             OLD_DESIRED=$(docker exec -i "$PG" psql -U dokploy -d dokploy -Atc \
