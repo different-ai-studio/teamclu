@@ -1458,9 +1458,12 @@ function appsAuth(userId = "user-app-1") {
 function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] }: any = {}) {
   const state: any = {
     apps: [...(seed.apps ?? [])],
+    actors: [...(seed.actors ?? [])],
     workspaces: [...(seed.workspaces ?? [])],
     sessions: [...(seed.sessions ?? [])],
     app_member_access: [...(seed.app_member_access ?? [])],
+    app_env_vars: [...(seed.app_env_vars ?? [])],
+    app_cron_jobs: [...(seed.app_cron_jobs ?? [])],
     // resolveTeamOrgId reads this; unseeded it yields no row, i.e. "team has
     // no org", which is what most apps tests want.
     teams: [...(seed.teams ?? [])],
@@ -1671,6 +1674,97 @@ const GITEA_MANAGED_APP = {
   git_remote_url: "git@gitea.example:teamclaw-apps/tc-app-app-1.git",
   git_auth_kind: "gitea_deploy_key",
 };
+
+test("session roster gives a seated agent a secret-free app workspace snapshot", async () => {
+  const callerActor = {
+    id: "agent-1",
+    actor_type: "agent",
+    display_name: "Builder",
+  };
+  const caller = appsSupabase({
+    actorRow: callerActor,
+    seed: {
+      sessions: [{ id: "session-1", team_id: "team-1", title: "Build it", app_id: "app-1" }],
+      session_participants: [{ session_id: "session-1", actor_id: "agent-1" }],
+      actors: [callerActor],
+      agents: [{ id: "agent-1", visibility: "team", owner_member_id: null }],
+    },
+  });
+  const admin = appsSupabase({
+    seed: {
+      apps: [{
+        ...APP_ROW,
+        type: "data_app",
+        fc_status: "live",
+        deployed_type: "data_app",
+        git_commit_sha: "abc1234",
+        custom_domain: "app.example.test",
+        custom_domain_verified_at: "2026-09-11T08:00:00.000Z",
+        storage_bytes: 50,
+        storage_quota_bytes: 100,
+      }],
+      app_env_vars: [
+        { app_id: "app-1", key: "PUBLIC_FLAG", is_secret: false, value: "must-not-leak" },
+        { app_id: "app-1", key: "STRIPE_KEY", is_secret: true, ciphertext: "must-not-leak" },
+      ],
+      app_cron_jobs: [{
+        app_id: "app-1",
+        name: "nightly",
+        enabled: true,
+        schedule_expr: "0 2 * * *",
+        timezone: "Asia/Shanghai",
+        method: "POST",
+        path: "/api/nightly",
+        headers: { "X-Job-Secret": "must-not-leak" },
+        body: "must-not-leak",
+        created_at: "2026-09-11T08:00:00.000Z",
+      }],
+    },
+  });
+  const repo = createRepo(caller, { createServiceRoleClient: () => admin });
+
+  const roster = await repo.listSessionRoster("session-1");
+
+  assert.equal(roster.appContext.id, "app-1");
+  assert.equal(roster.appContext.canonicalUrl, "https://app.example.test");
+  assert.deepEqual(roster.appContext.environment.keys, [
+    { key: "PUBLIC_FLAG", isSecret: false },
+    { key: "STRIPE_KEY", isSecret: true },
+  ]);
+  assert.deepEqual(roster.appContext.cronJobs[0].headerNames, ["X-Job-Secret"]);
+  const serialized = JSON.stringify(roster.appContext);
+  assert.ok(!serialized.includes("must-not-leak"));
+});
+
+test("session roster does not expose app workspace context to a human participant", async () => {
+  const humanActor = {
+    id: "member-1",
+    actor_type: "member",
+    display_name: "Alice",
+  };
+  const caller = appsSupabase({
+    actorRow: humanActor,
+    seed: {
+      sessions: [{ id: "session-1", team_id: "team-1", title: "Build it", app_id: "app-1" }],
+      session_participants: [{ session_id: "session-1", actor_id: "member-1" }],
+      actors: [humanActor],
+    },
+  });
+  let serviceRoleCalls = 0;
+  const repo = createRepo(caller, {
+    createServiceRoleClient: () => {
+      serviceRoleCalls += 1;
+      return appsSupabase({ seed: { apps: [APP_ROW] } });
+    },
+  });
+
+  const roster = await repo.listSessionRoster("session-1");
+
+  assert.equal(roster.appContext, null);
+  // createRepo resolves its test admin once during setup; the roster call must
+  // not ask for it again for a human caller.
+  assert.equal(serviceRoleCalls, 1);
+});
 
 test("apps: mapApp exposes exactly the canonical keys", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }));
