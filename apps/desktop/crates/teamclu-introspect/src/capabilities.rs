@@ -47,7 +47,6 @@ pub async fn handle(workspace: &str, arguments: &Value) -> Result<Value, String>
         None => build_overview(workspace),
         Some("channels") => build_channels(workspace),
         Some("role") => build_role(workspace),
-        Some("team_members") => build_team_members(workspace),
         Some("env_vars") => build_env_vars(workspace),
         Some("team_info") => build_team_info(workspace),
         Some("cron_jobs") => build_cron_jobs(workspace),
@@ -90,9 +89,6 @@ fn build_overview(workspace: &str) -> Result<Value, String> {
     let roles = crate::config::read_roles(workspace).unwrap_or_default();
     let role_count = roles.len();
 
-    let members = crate::config::read_team_members(workspace).unwrap_or(json!({}));
-    let member_count = members.as_object().map(|m| m.len()).unwrap_or(0);
-
     let cron_jobs = crate::config::cron_jobs_from_value(&crate::config::read_cron_jobs(workspace)?);
     let cron_total = cron_jobs.len();
     let cron_enabled = cron_jobs
@@ -107,9 +103,6 @@ fn build_overview(workspace: &str) -> Result<Value, String> {
         },
         "roles": {
             "count": role_count
-        },
-        "team_members": {
-            "count": member_count
         },
         "env_vars": {
             "count": env_vars
@@ -231,54 +224,6 @@ fn build_role(workspace: &str) -> Result<Value, String> {
     let roles = crate::config::read_roles(workspace)?;
     Ok(json!({
         "available_roles": roles
-    }))
-}
-
-// ─── Team members ────────────────────────────────────────────────────────────
-
-fn build_team_members(workspace: &str) -> Result<Value, String> {
-    let raw = crate::config::read_team_members(workspace)?;
-
-    // members.json is an object keyed by member id/name
-    // Each value may have name, role, label fields
-    let members: Vec<Value> = match raw {
-        Value::Object(map) => map
-            .values()
-            .map(|m| {
-                let mut entry = serde_json::Map::new();
-                if let Some(n) = m.get("name").and_then(|v| v.as_str()) {
-                    entry.insert("name".to_string(), Value::String(n.to_string()));
-                }
-                if let Some(r) = m.get("role").and_then(|v| v.as_str()) {
-                    entry.insert("role".to_string(), Value::String(r.to_string()));
-                }
-                if let Some(l) = m.get("label") {
-                    entry.insert("label".to_string(), l.clone());
-                }
-                Value::Object(entry)
-            })
-            .collect(),
-        Value::Array(arr) => arr
-            .into_iter()
-            .map(|m| {
-                let mut entry = serde_json::Map::new();
-                if let Some(n) = m.get("name").and_then(|v| v.as_str()) {
-                    entry.insert("name".to_string(), Value::String(n.to_string()));
-                }
-                if let Some(r) = m.get("role").and_then(|v| v.as_str()) {
-                    entry.insert("role".to_string(), Value::String(r.to_string()));
-                }
-                if let Some(l) = m.get("label") {
-                    entry.insert("label".to_string(), l.clone());
-                }
-                Value::Object(entry)
-            })
-            .collect(),
-        _ => vec![],
-    };
-
-    Ok(json!({
-        "team_members": members
     }))
 }
 

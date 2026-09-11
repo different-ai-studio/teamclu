@@ -280,7 +280,7 @@ fn normalize_schedule_kind(kind: &str) -> String {
     }
 }
 
-fn require_job_id<'a>(args: &'a Value) -> Result<&'a str, String> {
+fn require_job_id(args: &Value) -> Result<&str, String> {
     args.get("job_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
