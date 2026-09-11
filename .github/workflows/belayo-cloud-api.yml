@@ -75,7 +75,12 @@ jobs:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
           TAG: ${{ github.sha }}
         run: |
-          ssh "root@$MGR" bash -s -- "$SERVICE" "$WORKER" "$IMAGE_REPO" "$TAG" "$APP_ID" <<'EOF'
+          IMG="$IMAGE_REPO:shadow-${TAG::9}"
+          scp .github/scripts/belayo-rollout.sh "root@$MGR:/tmp/belayo-rollout.sh"
+          ssh "root@$MGR" chmod 700 /tmp/belayo-rollout.sh
+          ssh "root@$MGR" /tmp/belayo-rollout.sh "$SERVICE" "$IMG" "$WORKER" "$APP_ID"
+          ssh "root@$MGR" rm -f /tmp/belayo-rollout.sh
+          : <<'EOF'
             set -Eeuo pipefail
             SERVICE=$1
             WORKER=$2
