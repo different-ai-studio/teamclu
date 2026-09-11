@@ -86,6 +86,8 @@ pub struct ProposeBody {
     pub suggested_path: Option<String>,
     pub session_id: Option<String>,
     pub source: Option<String>,
+    pub summary: Option<String>,
+    pub suggestions: Option<Value>,
 }
 
 /// `POST /v1/knowledge/inbox`
@@ -107,6 +109,12 @@ pub async fn propose_inbox(
     }
     if let Some(session_id) = body.session_id {
         payload.insert("sessionId".into(), Value::String(session_id));
+    }
+    if let Some(summary) = body.summary {
+        payload.insert("summary".into(), Value::String(summary));
+    }
+    if let Some(suggestions) = body.suggestions {
+        payload.insert("suggestions".into(), suggestions);
     }
     payload.insert(
         "source".into(),
