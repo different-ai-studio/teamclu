@@ -46,7 +46,9 @@ const MAX_SALVAGE_SUFFIX: usize = 50;
 const STALE_DAYS_RUNBOOK: i64 = 90;
 const STALE_DAYS_UPDATED: i64 = 90;
 
+#[path = "knowledge/inbox.rs"]
 pub(crate) mod inbox;
+#[path = "knowledge/search.rs"]
 mod search;
 
 pub(super) fn err(code: &str, message: impl Into<String>) -> String {

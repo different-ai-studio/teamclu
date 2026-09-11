@@ -50,7 +50,6 @@ mod app_git_credential;
 mod channels;
 mod command_executor;
 mod cron;
-pub(crate) mod knowledge;
 mod messaging;
 mod peers_workspaces;
 mod remote_tools;
@@ -1989,7 +1988,7 @@ impl DaemonServer {
                                 self.handle_app_git_credential(payload, reply_tx).await;
                             }
                             Some(SockCommand::Knowledge { payload, reply_tx }) => {
-                                knowledge::spawn_knowledge(payload, reply_tx);
+                                crate::knowledge::spawn_knowledge(payload, reply_tx);
                             }
                             Some(SockCommand::LocalRpc { payload, reply_tx }) => {
                                 let reply = self.dispatch_local_rpc(&payload).await;
@@ -2438,7 +2437,7 @@ impl DaemonServer {
                                 self.handle_app_git_credential(payload, reply_tx).await;
                             }
                             Some(SockCommand::Knowledge { payload, reply_tx }) => {
-                                knowledge::spawn_knowledge(payload, reply_tx);
+                                crate::knowledge::spawn_knowledge(payload, reply_tx);
                             }
                             Some(SockCommand::LocalRpc { payload, reply_tx }) => {
                                 let reply = self.dispatch_local_rpc(&payload).await;

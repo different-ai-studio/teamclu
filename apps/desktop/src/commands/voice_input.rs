@@ -11,19 +11,31 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const ENGINE_VERSION: &str = "1.4.15";
+#[cfg(target_os = "macos")]
 const MODEL_REVISION: &str = "90c1c61912018b70ada0fcc024ea24aca62f2e63";
+#[cfg(target_os = "macos")]
 const MODEL_BASE_URL: &str = "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve";
+#[cfg(target_os = "macos")]
 const Q8_MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5";
+#[cfg(target_os = "macos")]
 const F16_MODEL_SHA256: &str = "2389039651f4574dbd674f1f1e296b8b1147b2e19a5fd9c2cd69e82669c78d8e";
+#[cfg(target_os = "macos")]
 const VAD_URL: &str = "https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/6840bae4c5c92ee8c04faaf4db23dd0105098d7f/fsmn-vad.gguf";
+#[cfg(target_os = "macos")]
 const VAD_SHA256: &str = "1270f2559c495f4e7b6e739541151027d360761a3fda43fc147034f5719f5479";
+#[cfg(target_os = "macos")]
 const SPEAKER_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx";
+#[cfg(target_os = "macos")]
 const SPEAKER_MODEL_SHA256: &str =
     "f682b514c05d947ee3fa91cd6ec6c5c7543479a128373fa29b1faedccd21fd11";
 
+#[cfg(target_os = "macos")]
 const Q8_MODEL_BYTES: u64 = 254_208_320;
+#[cfg(target_os = "macos")]
 const F16_MODEL_BYTES: u64 = 470_197_600;
+#[cfg(target_os = "macos")]
 const VAD_BYTES: u64 = 1_720_512;
+#[cfg(target_os = "macos")]
 const SPEAKER_MODEL_BYTES: u64 = 28_281_138;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -35,7 +47,9 @@ pub enum VoiceModelVariant {
 
 struct VoiceModelSpec {
     file_name: &'static str,
+    #[cfg(target_os = "macos")]
     sha256: &'static str,
+    #[cfg(target_os = "macos")]
     bytes: u64,
 }
 
@@ -44,17 +58,22 @@ impl VoiceModelVariant {
         match self {
             Self::Q8 => VoiceModelSpec {
                 file_name: "sensevoice-small-q8.gguf",
+                #[cfg(target_os = "macos")]
                 sha256: Q8_MODEL_SHA256,
+                #[cfg(target_os = "macos")]
                 bytes: Q8_MODEL_BYTES,
             },
             Self::F16 => VoiceModelSpec {
                 file_name: "sensevoice-small-f16.gguf",
+                #[cfg(target_os = "macos")]
                 sha256: F16_MODEL_SHA256,
+                #[cfg(target_os = "macos")]
                 bytes: F16_MODEL_BYTES,
             },
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn id(self) -> &'static str {
         match self {
             Self::Q8 => "q8",
@@ -137,6 +156,7 @@ fn installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
         .flatten()
 }
 
+#[cfg(target_os = "macos")]
 fn is_variant_installed(root: &std::path::Path, variant: VoiceModelVariant) -> bool {
     installed_variant(root) == Some(variant)
 }
@@ -175,6 +195,7 @@ pub fn voice_input_status(
     })
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct InstallProgress {
@@ -427,7 +448,17 @@ pub fn voice_input_start(
             speaker_diarization,
         );
         #[cfg(not(target_os = "macos"))]
-        let result: Result<(), String> = Err("unsupported platform".to_string());
+        let result: Result<(), String> = {
+            let _ = (
+                root,
+                model_variant,
+                stop,
+                session_id,
+                workspace_path,
+                speaker_diarization,
+            );
+            Err("unsupported platform".to_string())
+        };
         if let Some(shared) = app_for_thread.try_state::<VoiceInputState>() {
             shared.listening.store(false, Ordering::SeqCst);
             if let Ok(mut guard) = shared.stop.lock() {
