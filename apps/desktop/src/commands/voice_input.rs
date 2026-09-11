@@ -453,7 +453,6 @@ pub fn voice_input_start(
                 root,
                 model_variant,
                 stop,
-                recording_id,
                 session_id,
                 workspace_path,
                 speaker_diarization,

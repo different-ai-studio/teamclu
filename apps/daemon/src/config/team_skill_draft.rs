@@ -877,7 +877,7 @@ mod tests {
             "---\nname: issue-investigator\ndescription: Demo\n---\n\n# Demo\n",
         )
         .unwrap();
-        let dump_size = 3 * 1024 * 1024;
+        let dump_size = 6 * 1024 * 1024;
         assert!(dump_size > MAX_SINGLE_FILE_BYTES);
         fs::write(skill.join("dump.txt"), vec![b'x'; dump_size]).unwrap();
         for i in 0..3 {
