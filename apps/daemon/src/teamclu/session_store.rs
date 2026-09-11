@@ -1,9 +1,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 
 use crate::proto::teamclu;
 
+/// In-memory session metadata cache for the daemon process.
+///
+/// There is no on-disk index (`index.toml` was removed): Cloud API is the source
+/// of truth; this store only holds rows the running daemon has touched.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TeamcluSessionStore {
     #[serde(default)]
@@ -39,34 +42,6 @@ pub struct StoredParticipant {
 }
 
 impl TeamcluSessionStore {
-    pub fn default_path(base_dir: &Path) -> PathBuf {
-        crate::config::layout::team_state_dir_in(base_dir, &crate::config::layout::active_team())
-            .join("sessions")
-            .join("index.toml")
-    }
-
-    pub fn load(path: &Path) -> crate::error::Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let content = std::fs::read_to_string(path).map_err(|e| {
-            crate::error::AmuxError::Config(format!("read {}: {}", path.display(), e))
-        })?;
-        toml::from_str(&content).map_err(|e| {
-            crate::error::AmuxError::Config(format!("parse {}: {}", path.display(), e))
-        })
-    }
-
-    pub fn save(&self, path: &Path) -> crate::error::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| crate::error::AmuxError::Config(e.to_string()))?;
-        std::fs::write(path, content)?;
-        Ok(())
-    }
-
     pub fn upsert(&mut self, session: StoredSession) {
         if let Some(existing) = self
             .sessions
@@ -141,7 +116,6 @@ fn actor_type_to_proto(s: &str) -> teamclu::ActorType {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use tempfile::TempDir;
 
     fn make_session(id: &str, _session_type: &str) -> StoredSession {
         StoredSession {
@@ -202,28 +176,6 @@ mod tests {
         assert!(store.remove("s1"));
         assert_eq!(store.sessions.len(), 1);
         assert!(!store.remove("s1")); // already removed
-    }
-
-    #[test]
-    fn test_save_and_load() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("sessions.toml");
-
-        let mut store = TeamcluSessionStore::default();
-        store.upsert(make_session("s1", "collab"));
-        store.save(&path).unwrap();
-
-        let loaded = TeamcluSessionStore::load(&path).unwrap();
-        assert_eq!(loaded.sessions.len(), 1);
-        assert_eq!(loaded.sessions[0].session_id, "s1");
-    }
-
-    #[test]
-    fn test_load_nonexistent_returns_default() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("nonexistent.toml");
-        let store = TeamcluSessionStore::load(&path).unwrap();
-        assert!(store.sessions.is_empty());
     }
 
     #[test]
