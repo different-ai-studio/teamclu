@@ -22,6 +22,7 @@ const backendMocks = vi.hoisted(() => ({
 }))
 
 const tabMocks = vi.hoisted(() => ({
+  openAppSettings: vi.fn(),
   openAppAccess: vi.fn(),
   openAppAuth: vi.fn(),
   openAppCron: vi.fn(),
@@ -86,7 +87,11 @@ vi.mock('react-i18next', () => ({
   }),
 }))
 
-const toastMocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }))
+const toastMocks = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+}))
 vi.mock('sonner', () => ({ toast: toastMocks }))
 
 const baseApp: AppRow = {
@@ -123,8 +128,18 @@ describe('AppControlPanel', () => {
       deviceName: 'Matt Mac',
     })
     backendMocks.listAppAccess.mockResolvedValue([
-      { memberId: 'member-1', permissionLevel: 'prompt', grantedByMemberId: 'o', createdAt: 'x' },
-      { memberId: 'member-2', permissionLevel: 'view', grantedByMemberId: 'o', createdAt: 'x' },
+      {
+        memberId: 'member-1',
+        permissionLevel: 'prompt',
+        grantedByMemberId: 'o',
+        createdAt: 'x',
+      },
+      {
+        memberId: 'member-2',
+        permissionLevel: 'view',
+        grantedByMemberId: 'o',
+        createdAt: 'x',
+      },
     ])
     backendMocks.listAppDataTables.mockResolvedValue({
       status: 'ok',
@@ -135,7 +150,10 @@ describe('AppControlPanel', () => {
       nextCursor: null,
       canWrite: true,
     })
-    backendMocks.getAppStorageUsage.mockResolvedValue({ bytes: 2048, quotaBytes: null })
+    backendMocks.getAppStorageUsage.mockResolvedValue({
+      bytes: 2048,
+      quotaBytes: null,
+    })
     backendMocks.listAppCronJobs.mockResolvedValue([{ id: 'j1' }, { id: 'j2' }, { id: 'j3' }])
     backendMocks.listAppEnv.mockResolvedValue({
       items: [
@@ -238,7 +256,11 @@ describe('AppControlPanel', () => {
     // not-yet-decided reason text as a toast — a statement about a request that
     // had not come back.
     let release: (v: unknown) => void = () => {}
-    backendMocks.listAppDataTables.mockReturnValue(new Promise((r) => { release = r }))
+    backendMocks.listAppDataTables.mockReturnValue(
+      new Promise((r) => {
+        release = r
+      }),
+    )
     render(<AppControlPanel app={baseApp} />)
 
     await userEvent.setup().click(screen.getByTestId('app-control-open-data'))
@@ -255,6 +277,11 @@ describe('AppControlPanel', () => {
     render(<AppControlPanel app={baseApp} />)
     await waitFor(() => expect(backendMocks.listAppCronJobs).toHaveBeenCalled())
     const user = userEvent.setup()
+
+    expect(screen.queryByTestId('app-control-type')).toBeNull()
+    expect(screen.queryByRole('textbox')).toBeNull()
+    await user.click(screen.getByTestId('app-control-open-settings'))
+    expect(tabMocks.openAppSettings).toHaveBeenCalledWith(baseApp, '应用设置')
 
     await user.click(screen.getByTestId('app-control-open-access'))
     expect(tabMocks.openAppAccess).toHaveBeenCalledWith(baseApp, '协作权限')
@@ -281,6 +308,22 @@ describe('AppControlPanel', () => {
     await user.click(screen.getByTestId('app-control-open-logs'))
     expect(tabMocks.openAppLogs).not.toHaveBeenCalled()
     expect(screen.getByTestId('app-control-open-logs').textContent).toContain('未部署')
+    expect((screen.getByTestId('app-control-open-logs') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('renames on Enter and discards the draft on Escape', async () => {
+    render(<AppControlPanel app={baseApp} />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '重命名' }))
+    await user.clear(screen.getByRole('textbox'))
+    await user.type(screen.getByRole('textbox'), 'New name{Escape}')
+    expect(storeMocks.rename).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '重命名' }))
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(baseApp.name)
+    await user.clear(screen.getByRole('textbox'))
+    await user.type(screen.getByRole('textbox'), 'New name{Enter}')
+    await waitFor(() => expect(storeMocks.rename).toHaveBeenCalledWith(baseApp.id, 'New name'))
+    expect(screen.queryByRole('textbox')).toBeNull()
   })
 
   it('names the app permissions row by the wall that is actually up', async () => {
@@ -289,23 +332,25 @@ describe('AppControlPanel', () => {
 
     rerender(
       <AppControlPanel
-        app={{
-          ...baseApp,
-          authMode: 'platform',
-          authRules: [{ path: '/admin', auth: 'required' }],
-        } as AppRow}
+        app={
+          {
+            ...baseApp,
+            authMode: 'platform',
+            authRules: [{ path: '/admin', auth: 'required' }],
+          } as AppRow
+        }
       />,
     )
     expect(screen.getByTestId('app-control-open-auth').textContent).toContain('1 条页面规则')
   })
 
-  it('shows what the app\'s visibility currently means, not just its name', async () => {
+  it("shows what the app's visibility currently means, not just its name", async () => {
     // "Personal" does not tell anyone that the local daemon cannot see the app.
-    const { rerender } = render(<AppControlPanel app={baseApp} />)
+    const { rerender } = render(<AppControlPanel settings app={baseApp} />)
     expect(screen.getByTestId('app-control-visibility').textContent).toContain('全团队可见')
     expect(screen.getByText(/团队里每个人都能在应用列表里看到它/)).toBeTruthy()
 
-    rerender(<AppControlPanel app={{ ...baseApp, visibility: 'personal' } as AppRow} />)
+    rerender(<AppControlPanel settings app={{ ...baseApp, visibility: 'personal' } as AppRow} />)
     expect(screen.getByTestId('app-control-visibility').textContent).toContain('仅自己和被授权的人')
     expect(screen.getByText(/本机 daemon 也看不到它/)).toBeTruthy()
   })
@@ -316,44 +361,39 @@ describe('AppControlPanel', () => {
     expect(screen.queryByTestId('app-control-type-confirm')).toBeNull()
   })
 
-  /** Let the summary requests land, so their state updates happen inside act. */
-  const summarySettled = () =>
-    waitFor(() =>
-      expect(screen.getByTestId('app-control-open-cron').textContent).toContain('3 个任务'),
-    )
-
   it('names the app type and says what that type is', async () => {
-    const { rerender } = render(<AppControlPanel app={baseApp} />)
-    await summarySettled()
+    const { rerender } = render(<AppControlPanel settings app={baseApp} />)
     expect(screen.getByTestId('app-control-type').textContent).toContain('静态网页')
     expect(screen.getByTestId('app-control-type-hint').textContent).toContain('一个网站')
 
-    rerender(<AppControlPanel app={{ ...baseApp, type: 'imported' } as AppRow} />)
+    rerender(<AppControlPanel settings app={{ ...baseApp, type: 'imported' } as AppRow} />)
     expect(screen.getByTestId('app-control-type').textContent).toContain('导入的仓库')
   })
 
   it('reads a pre-split stored type as the data app it is', async () => {
     // A raw value would match no option and leave the trigger blank for every
     // app created before types existed.
-    render(<AppControlPanel app={{ ...baseApp, type: 'fullstack_tanstack_postgres' } as AppRow} />)
-    await summarySettled()
+    render(
+      <AppControlPanel
+        settings
+        app={{ ...baseApp, type: 'fullstack_tanstack_postgres' } as AppRow}
+      />,
+    )
     expect(screen.getByTestId('app-control-type').textContent).toContain('数据操作')
     expect(screen.getByTestId('app-control-type-hint').textContent).toContain('自带一个数据库')
   })
 
   it('says a type change waits for the next deploy only while it does', async () => {
-    const { rerender } = render(<AppControlPanel app={baseApp} />)
-    await summarySettled()
+    const { rerender } = render(<AppControlPanel settings app={baseApp} />)
     expect(screen.queryByTestId('app-control-type-pending')).toBeNull()
 
-    rerender(<AppControlPanel app={{ ...baseApp, typePendingRedeploy: true } as AppRow} />)
+    rerender(<AppControlPanel settings app={{ ...baseApp, typePendingRedeploy: true } as AppRow} />)
     expect(screen.getByTestId('app-control-type-pending').textContent).toContain('下次部署')
   })
 
   it('treats a server that does not send the pending flag as nothing pending', async () => {
     const { typePendingRedeploy: _omitted, ...olderRow } = baseApp
-    render(<AppControlPanel app={olderRow as AppRow} />)
-    await summarySettled()
+    render(<AppControlPanel settings app={olderRow as AppRow} />)
     expect(screen.queryByTestId('app-control-type-pending')).toBeNull()
   })
 
@@ -365,7 +405,9 @@ describe('AppControlPanel', () => {
       expect(line).toContain('main')
       expect(line).toContain('3')
     })
-    expect(backendMocks.getGitHead).toHaveBeenCalledWith('app-1', { compare: true })
+    expect(backendMocks.getGitHead).toHaveBeenCalledWith('app-1', {
+      compare: true,
+    })
   })
 
   it('does not ask the forge about an app whose repo is not ours', async () => {
@@ -378,7 +420,10 @@ describe('AppControlPanel', () => {
 
   it('marks the file count as a floor when there is another page', async () => {
     backendMocks.listAppFiles.mockResolvedValue({
-      items: Array.from({ length: 100 }, (_, i) => ({ path: `f${i}`, size: 1 })),
+      items: Array.from({ length: 100 }, (_, i) => ({
+        path: `f${i}`,
+        size: 1,
+      })),
       nextCursor: 'more',
       canWrite: true,
     })
@@ -389,7 +434,7 @@ describe('AppControlPanel', () => {
   })
 
   it('copies the local path', async () => {
-    render(<AppControlPanel app={baseApp} />)
+    render(<AppControlPanel settings app={baseApp} />)
     await waitFor(() => expect(screen.getByTestId('app-control-copy-path')).toBeTruthy())
     await userEvent.setup().click(screen.getByTestId('app-control-copy-path'))
     expect(utilMocks.copyToClipboard).toHaveBeenCalledWith(
@@ -398,7 +443,7 @@ describe('AppControlPanel', () => {
   })
 
   it('shows local workdir and device name', async () => {
-    render(<AppControlPanel app={baseApp} />)
+    render(<AppControlPanel settings app={baseApp} />)
     await waitFor(() => {
       expect(screen.getByTestId('app-control-local-workdir').textContent).toContain(
         '/Users/me/.amuxd/teams/team-1/apps/app-1',
@@ -408,7 +453,7 @@ describe('AppControlPanel', () => {
   })
 
   it('opens delete confirmation and calls deleteApp', async () => {
-    render(<AppControlPanel app={baseApp} />)
+    render(<AppControlPanel settings app={baseApp} />)
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Delete' }))
     expect(screen.getByText('删除应用？')).toBeTruthy()
@@ -419,7 +464,7 @@ describe('AppControlPanel', () => {
   })
 
   describe('visibilityChangeNeedsConfirm', () => {
-    it('confirms only when the change takes the app off other people\'s lists', () => {
+    it("confirms only when the change takes the app off other people's lists", () => {
       // Widening adds people and can surprise nobody; narrowing removes the app
       // from every teammate's list, which "personal" does not say on its own.
       expect(visibilityChangeNeedsConfirm('team', 'personal')).toBe(true)
@@ -462,14 +507,19 @@ describe('AppControlPanel', () => {
   })
 
   describe('describeCodeVersion', () => {
-    const gitea = { gitAuthKind: 'gitea_deploy_key', gitCommitSha: null, fcStatus: 'live' } as any
-    const head = (over: Record<string, unknown> = {}) => ({
-      sha: 'a3f91c2ffff',
-      branch: 'main',
-      deployedSha: 'b7e2d10aaaa',
-      undeployedCommits: 3,
-      ...over,
-    }) as any
+    const gitea = {
+      gitAuthKind: 'gitea_deploy_key',
+      gitCommitSha: null,
+      fcStatus: 'live',
+    } as any
+    const head = (over: Record<string, unknown> = {}) =>
+      ({
+        sha: 'a3f91c2ffff',
+        branch: 'main',
+        deployedSha: 'b7e2d10aaaa',
+        undeployedCommits: 3,
+        ...over,
+      }) as any
 
     it('counts the commits when the forge could compare them', () => {
       const out = describeCodeVersion(gitea, head())
@@ -504,7 +554,7 @@ describe('AppControlPanel', () => {
       expect(out.vars).toEqual({ branch: 'main', head: 'a3f91c2' })
     })
 
-    it('says the repo is somebody else\'s before it says anything else', () => {
+    it("says the repo is somebody else's before it says anything else", () => {
       const out = describeCodeVersion(
         { gitAuthKind: null, gitCommitSha: null, fcStatus: 'live' } as any,
         head(),
@@ -517,7 +567,11 @@ describe('AppControlPanel', () => {
       // the row names the commit that was attempted, not the one serving.
       const out = describeCodeVersion({ ...gitea, fcStatus: 'deploy_error' }, head())
       expect(out.key).toBe('apps.controlPanel.codeVersionNotLive')
-      expect(out.vars).toEqual({ sha: 'b7e2d10', branch: 'main', head: 'a3f91c2' })
+      expect(out.vars).toEqual({
+        sha: 'b7e2d10',
+        branch: 'main',
+        head: 'a3f91c2',
+      })
     })
 
     it('says it cannot read the repo when the head never arrived', () => {

@@ -1533,11 +1533,15 @@
       "truncated": "Truncated — only the most recent entries are shown. A shorter window shows more of them."
     },
     "controlPanel": {
+      "settings": "App settings",
+      "runtimeGroup": "Runtime & data",
+      "configGroup": "Access & configuration",
+      "accessHint": "Who can manage this app",
+      "authHint": "Who can visit the live site",
+      "moreActions": "More actions",
       "title": "App settings",
       "reseedHint": "Rewrite the template or clone the repo again. Use only when seeding failed or the folder is empty.",
       "localPath": "Local path",
-      "manageGroup": "Manage",
-      "codeVersion": "Code version",
       "codeVersionNotLive": "Last deploy tried {{sha}} and did not go live · branch {{branch}} is at {{head}}",
       "summaryFilesMore": "{{count}}+ files",
       "summaryFilesMore_one": "{{count}}+ files",
