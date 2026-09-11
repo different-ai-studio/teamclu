@@ -11,17 +11,39 @@ import {
   isAlreadyExistsError,
   publishKnowledgeCandidate,
 } from '@/lib/knowledge/inbox-client'
-import type { KnowledgeCandidate } from '@/lib/knowledge/inbox-types'
+import type {
+  KnowledgeCandidate,
+  KnowledgeSuggestion,
+  KnowledgeSuggestionKind,
+} from '@/lib/knowledge/inbox-types'
+import { composeKnowledgeDraftFromSelection } from '@/lib/knowledge/session-knowledge-draft'
 import { encodeKnowledgeReviewTarget } from '@/lib/tabs/teamshare-target'
 import { useTabsStore } from '@/stores/tabs'
 import { useKnowledgeInboxStore } from '@/stores/knowledge-inbox'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
 import { useWorkspaceStore } from '@/stores/workspace'
 
+const KIND_LABEL: Record<KnowledgeSuggestionKind, string> = {
+  decision: '结论',
+  fact: '要点',
+  followup: '后续',
+}
+
 function vaultAbsPath(syncRoot: string | null, rel: string): string | null {
   if (!syncRoot) return null
   const clean = rel.replace(/^\/+/, '')
   return `${syncRoot.replace(/\/+$/, '')}/knowledge/${clean}`
+}
+
+function composedBody(
+  summary: string,
+  suggestions: KnowledgeSuggestion[],
+  selectedIds: ReadonlySet<string>,
+): string {
+  return (
+    composeKnowledgeDraftFromSelection(summary, suggestions, selectedIds) ||
+    '（请勾选建议，或直接改写正文。）'
+  )
 }
 
 export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
@@ -32,6 +54,10 @@ export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
   const [title, setTitle] = React.useState('')
   const [path, setPath] = React.useState('')
   const [body, setBody] = React.useState('')
+  const [summary, setSummary] = React.useState('')
+  const [suggestions, setSuggestions] = React.useState<KnowledgeSuggestion[]>([])
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
+  const [bodyDirty, setBodyDirty] = React.useState(false)
   const [overwrite, setOverwrite] = React.useState(false)
   const [busy, setBusy] = React.useState<'publish' | 'discard' | null>(null)
 
@@ -40,10 +66,16 @@ export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
     void getKnowledgeCandidate(candidateId)
       .then((row) => {
         if (cancelled) return
+        const items = row.suggestions ?? []
+        const ids = new Set(items.map((item) => item.id))
         setCandidate(row)
         setTitle(row.title)
         setPath(row.suggestedPath || '')
+        setSummary(row.summary ?? '')
+        setSuggestions(items)
+        setSelectedIds(ids)
         setBody(row.body)
+        setBodyDirty(false)
         setLoadError(null)
       })
       .catch((err) => {
@@ -59,6 +91,19 @@ export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
     const target = encodeKnowledgeReviewTarget(candidateId)
     closeWhere((tab) => tab.type === 'native' && tab.target === target)
   }, [candidateId, closeWhere])
+
+  const rewriteFromSelection = (ids: ReadonlySet<string>) => {
+    setBody(composedBody(summary, suggestions, ids))
+    setBodyDirty(false)
+  }
+
+  const onToggleSuggestion = (id: string) => {
+    const next = new Set(selectedIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setSelectedIds(next)
+    if (!bodyDirty) rewriteFromSelection(next)
+  }
 
   const onLater = () => {
     closeTab()
@@ -142,12 +187,18 @@ export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
           {t('knowledgeReview.title', '写入知识库前先看一遍')}
         </div>
         <div className="mt-1 text-[12px] text-muted-foreground">
-          {candidate.sessionId
-            ? t('knowledgeReview.fromSession', '来自会话 {{id}}', {
-                id: candidate.sessionId.slice(0, 8),
-              })
-            : t('knowledgeReview.fromUnknown', '来自本机草稿')}
+          {t(
+            'knowledgeReview.distillHint',
+            '这是从会话里提炼的建议，不是聊天全文。勾选要留下的条目，再写入。',
+          )}
         </div>
+        {candidate.sessionId ? (
+          <div className="mt-1 text-[12px] text-faint">
+            {t('knowledgeReview.fromSession', '来自会话 {{id}}', {
+              id: candidate.sessionId.slice(0, 8),
+            })}
+          </div>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
@@ -173,14 +224,53 @@ export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
               className="h-9 bg-paper font-mono text-[12px]"
             />
           </label>
+          {suggestions.length > 0 ? (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[12px] font-medium text-foreground">
+                {t('knowledgeReview.suggestions', '提炼建议')}
+              </span>
+              <div className="flex flex-col gap-1 rounded-[8px] border border-border-soft bg-paper p-1.5">
+                {suggestions.map((item) => (
+                  <label
+                    key={item.id}
+                    className="flex cursor-pointer items-start gap-2 rounded-[6px] px-2 py-1.5 hover:bg-selected"
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={selectedIds.has(item.id)}
+                      onChange={() => onToggleSuggestion(item.id)}
+                    />
+                    <span className="mt-px shrink-0 text-[10.5px] font-semibold tracking-[0.6px] text-faint">
+                      {KIND_LABEL[item.kind]}
+                    </span>
+                    <span className="min-w-0 flex-1 text-[12.5px] leading-[1.6] text-foreground">
+                      {item.text}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="self-start text-[12px] text-muted-foreground hover:text-foreground"
+                onClick={() => rewriteFromSelection(selectedIds)}
+              >
+                {t('knowledgeReview.rewriteBody', '按所选建议重写正文')}
+              </button>
+            </div>
+          ) : null}
           <label className="flex flex-col gap-1.5">
             <span className="text-[12px] font-medium text-foreground">
               {t('knowledgeReview.fieldBody', '正文')}
             </span>
             <textarea
+              aria-label={t('knowledgeReview.fieldBody', '正文')}
               value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={16}
+              onChange={(e) => {
+                setBody(e.target.value)
+                setBodyDirty(true)
+              }}
+              rows={12}
               className={cn(
                 'w-full resize-y rounded-[8px] border border-border bg-paper',
                 'px-3 py-2.5 text-[13.5px] leading-[1.7] text-foreground',
