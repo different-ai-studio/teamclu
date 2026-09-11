@@ -187,15 +187,22 @@ workflow 已绑定 Dokploy application `k6yinm2sXoijFw2rQ1OXX` 与 service
 
 ### 4.4 MQTT
 
-目标客户端入口：
+当前客户端入口：
 
 ```text
 MQTT_BROKER_URL=wss://mqtt.service.ucar.cc/mqtt
-MQTT_PUBLIC_TCP_BROKER_URL=mqtt://<mqtt-public-host>:1883
+MQTT_PUBLIC_TCP_BROKER_URL=mqtt://transport.service.ucar.cc:1883
+MQTT_USE_TLS=true
 ```
 
-Traefik 增加 `mqtt.service.ucar.cc` 的 HTTPS router，转发到 EMQX WebSocket listener
-`:8083`。EMQX 继续固定在 work1。
+2026-09-11 已在 Dokploy 为 `emqx` Compose 服务增加
+`mqtt.service.ucar.cc` HTTPS domain，Traefik 转发到 EMQX WebSocket listener
+`:8083`。EMQX 继续固定在 work1。Cloud API 影子实例和生产 FC 均已切换到上述配置。
+
+上线验证已完成 TLS、HTTP 101 WebSocket upgrade，以及使用 Cloud API 服务账号执行的
+connect、subscribe、publish、receive roundtrip。生产 bootstrap 已使用真实登录态确认返回
+WSS、native TCP 和 `useTls=true`；另以同一用户 JWT 完成 WSS connect 和 actor-scoped
+subscribe。原生 TCP 入口 `:1883` 同时保持可达。
 
 迁移验证完成后：
 
