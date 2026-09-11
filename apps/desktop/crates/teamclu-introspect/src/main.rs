@@ -27,7 +27,11 @@ use std::io::{BufRead, BufReader, Write};
 #[derive(Parser, Debug)]
 #[command(
     name = "teamclu-introspect",
-    about = "TeamClu MCP introspection server"
+    about = "TeamClu MCP introspection server",
+    // ensure-*-sidecar probes `--version`; without this clap rejects the flag
+    // (exit 2), readExecutableVersion returns null, and every tauri:dev pays
+    // a cargo rebuild of a binary whose sources did not change.
+    version
 )]
 struct Args {
     /// Path to the TeamClu workspace directory

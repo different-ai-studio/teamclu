@@ -7,7 +7,7 @@
  * Usage:
  *   pnpm tauri:dev -- --skip-setup
  *   pnpm tauri:dev -- --skip-daemon-onboarding
- *   pnpm tauri:dev -- --no-force-amuxd
+ *   pnpm tauri:dev -- --force-amuxd
  *   pnpm tauri:dev -- --force-introspect
  *   pnpm tauri:dev:daemon
  *   pnpm tauri:dev:introspect
@@ -17,8 +17,8 @@
  *          --skip-amuxd / --no-rebuild-amuxd → --no-force-amuxd
  *          --rebuild-introspect → --force-introspect
  * Env fallbacks: TEAMCLU_SKIP_SETUP=1, TEAMCLU_SKIP_DAEMON_ONBOARDING=1,
- *                TEAMCLU_FORCE_AMUXD_SIDECAR=0 (dev opts out of the forced
- *                amuxd rebuild), TEAMCLU_FORCE_INTROSPECT_SIDECAR=1
+ *                TEAMCLU_FORCE_AMUXD_SIDECAR=1 (opt in to a forced amuxd
+ *                rebuild), TEAMCLU_FORCE_INTROSPECT_SIDECAR=1
  *
  * @param {string[]} argv
  * @param {NodeJS.ProcessEnv} env mutated in place
@@ -36,13 +36,14 @@ function applyDevSkipFlags(argv, env, opts) {
   let skipDaemonOnboarding =
     env.TEAMCLU_SKIP_DAEMON_ONBOARDING === "1" ||
     env.VITE_TEAMCLU_SKIP_DAEMON_ONBOARDING === "true";
-  // Dev rebuilds amuxd every run. The bundled sidecar is a *snapshot* of
-  // target/debug/amuxd, and the version-equality check that guards the normal
-  // path never fires during development (Cargo.toml keeps the same version
-  // across daemon edits), so a daemon change stays invisible to the running app
-  // until it is re-staged. Opt out with --no-force-amuxd when iterating on the
-  // frontend and the extra cargo build is pure latency.
-  let forceAmuxd = env.TEAMCLU_FORCE_AMUXD_SIDECAR !== "0";
+  // Default off: every forced amuxd rebuild costs tens of seconds even when
+  // warm, and ensure-amuxd-sidecar already rebuilds when daemon sources /
+  // Cargo.lock are newer than the staged binary. Opt in with --force-amuxd
+  // (or `pnpm tauri:dev:daemon`) when you need a guaranteed restage — e.g.
+  // recovering a corrupted sidecar, or after a change the mtime walk missed.
+  let forceAmuxd =
+    env.TEAMCLU_FORCE_AMUXD_SIDECAR === "1" ||
+    env.TEAMCLU_FORCE_AMUXD_SIDECAR === "true";
   let forceIntrospect =
     env.TEAMCLU_FORCE_INTROSPECT_SIDECAR === "1" ||
     env.TEAMCLU_FORCE_INTROSPECT_SIDECAR === "true";
