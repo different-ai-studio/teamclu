@@ -748,6 +748,23 @@
     },
     "inputPlaceholderDescription": "添加描述...",
     "inputPlaceholderMention": "输入 @ 提及人或 agent，# 引用文件...",
+    "voice": {
+      "start": "开始录音（{{mode}}）",
+      "stop": "停止录音",
+      "chooseMode": "选择录音模式",
+      "sendMode": "自动发送方式",
+      "silent": "静默",
+      "silentHint": "不 @ 任何 Agent",
+      "silentRecording": "静默录音",
+      "trigger": "触发 Agent",
+      "triggerAgent": "触发 {{name}}",
+      "triggering": "触发 · {{name}}",
+      "noAgent": "没有可触发的 Agent",
+      "recording": "录音中",
+      "recordingElsewhere": "正在另一个对话中录音",
+      "downloading": "正在下载本地语音模型 {{progress}}%",
+      "unsupported": "本机暂不支持本地语音输入"
+    },
     "permissionMode": {
       "default": "默认权限",
       "fullAccess": "完全访问权限"

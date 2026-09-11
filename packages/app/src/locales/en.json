@@ -748,6 +748,23 @@
     },
     "inputPlaceholderDescription": "Add a description...",
     "inputPlaceholderMention": "Mention with @, reference files with #...",
+    "voice": {
+      "start": "Start recording ({{mode}})",
+      "stop": "Stop recording",
+      "chooseMode": "Choose recording mode",
+      "sendMode": "Automatic sending",
+      "silent": "Silent",
+      "silentHint": "Do not @ any agent",
+      "silentRecording": "Silent recording",
+      "trigger": "Trigger Agent",
+      "triggerAgent": "Trigger {{name}}",
+      "triggering": "Trigger · {{name}}",
+      "noAgent": "No agent available to trigger",
+      "recording": "Recording",
+      "recordingElsewhere": "Recording in another chat",
+      "downloading": "Downloading local voice model {{progress}}%",
+      "unsupported": "Local voice input is not supported on this device"
+    },
     "permissionMode": {
       "default": "Default Permissions",
       "fullAccess": "Full Access"

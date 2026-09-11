@@ -7,6 +7,8 @@ import { ChatInputArea } from "./ChatInputArea";
 import { SessionErrorAlert } from "./SessionErrorAlert";
 import { SessionNoticeList } from "./SessionNoticeList";
 import { useChatSend } from "./use-chat-send";
+import type { VoiceSendIntent } from "@/lib/messages/voice-send-intent";
+import type { VoiceRoute, VoiceSegment } from "@/lib/voice/local-voice-input";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
@@ -540,6 +542,17 @@ export function SessionChatColumn({
     [sessionId, ensureSessionBeforeSend, sendIntoSession, isolateComposerDraft],
   );
 
+  const handleVoiceSegment = React.useCallback(
+    async (segment: VoiceSegment, targetSessionId: string, route: VoiceRoute) => {
+      const intent: VoiceSendIntent =
+        route.mode === "silent"
+          ? { kind: "voice-silent", segmentId: segment.segmentId }
+          : { kind: "voice-trigger", segmentId: segment.segmentId, agent: route.agent };
+      await sendIntoSession(targetSessionId, { text: segment.text, mentions: [] }, [], intent);
+    },
+    [sendIntoSession],
+  );
+
   const handleInputHeightChange = React.useCallback((height: number) => {
     if (inputLayout === "inline") return;
     messageListRef.current?.handleInputHeightChange(height);
@@ -614,6 +627,7 @@ export function SessionChatColumn({
         activeStreamingAgents={activeStreamingAgents}
         onInterruptAgent={handleInterruptAgent}
         onSubmit={handleSubmit}
+        onVoiceSegment={handleVoiceSegment}
         isStreaming={isStreaming}
         messageQueue={messageQueue}
         onRemoveFromQueue={removeFromQueue}

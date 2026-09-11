@@ -46,6 +46,14 @@ import { useUIStore } from "@/stores/ui";
 import { isImageFile } from "@/lib/attachments/attachment-constants";
 import { textHasSessionAttachmentTokens } from "@/lib/attachments/session-attachment-token";
 import { exceedsNonImageLimit } from "@/lib/attachments/attachment-constants";
+import {
+  VoiceInputControl,
+  VoiceRecordingStatus,
+} from "./VoiceInputControl";
+import type {
+  VoiceRoute,
+  VoiceSegment,
+} from "@/lib/voice/local-voice-input";
 
 // ─── Popover wrappers (need PromptInput context for useInsertFileMention) ───
 
@@ -178,6 +186,11 @@ interface ChatInputAreaProps {
   onAppendPendingFiles: (files: File[]) => void;
   onRemovePendingFile: (index: number) => void;
   onSubmit: (message: PromptInputMessage) => void;
+  onVoiceSegment: (
+    segment: VoiceSegment,
+    sessionId: string,
+    route: VoiceRoute,
+  ) => Promise<void>;
   /** When true, placeholder suggests queuing another message while agents run. */
   isStreaming: boolean;
   messageQueue: QueuedMessage[];
@@ -263,6 +276,7 @@ export function ChatInputArea({
   onAppendPendingFiles,
   onRemovePendingFile,
   onSubmit,
+  onVoiceSegment,
   isStreaming,
   messageQueue: _messageQueue,
   onRemoveFromQueue: _onRemoveFromQueue,
@@ -640,6 +654,7 @@ export function ChatInputArea({
             />
           ) : null}
 
+          <VoiceRecordingStatus sessionId={activeSessionId} />
           <PromptInputBody>
             <PromptInputTextarea
               placeholder={
@@ -684,6 +699,11 @@ export function ChatInputArea({
           <PromptInputFooter>
             <PromptInputTools>
               <FileInputButton onFilesSelected={handleIncomingFiles} />
+              <VoiceInputControl
+                sessionId={activeSessionId}
+                engagedAgents={engagedAgents}
+                onSegment={onVoiceSegment}
+              />
               <PermissionApprovalModeSelect
                 sessionId={permissionSessionId}
                 iconOnly={inputLayout === "inline"}

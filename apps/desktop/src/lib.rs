@@ -441,6 +441,7 @@ pub fn run() {
         .manage(commands::cron::CronState::default())
         .manage(local_cache::commands::LocalCacheState::default())
         .manage(commands::amuxd_supervisor::AmuxdSupervisor::new())
+        .manage(commands::voice_input::VoiceInputState::default())
 
         .manage({
             #[allow(unused_mut)]
@@ -458,6 +459,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::os_full_name,
             commands::get_device_hostname,
+            commands::voice_input::voice_input_status,
+            commands::voice_input::voice_input_install,
+            commands::voice_input::voice_input_start,
+            commands::voice_input::voice_input_stop,
             commands::daemon_http::daemon_rpc,
             commands::daemon_http::get_daemon_http_info,
             commands::daemon_http::get_daemon_team_id,
