@@ -31,7 +31,10 @@ jobs:
       APP_ID: AyIydhRyN4pMT0_Y0TXvq
       SERVICE: teamclu-cloud-api-shadow-qjau6z
       WORKER: dokploy-worker-2
-      IMAGE_REPO: registry-vpc.cn-shenzhen.aliyuncs.com/betlysaas/teamclu-cloud-api
+      # The service is pinned to a worker outside the manager's VPC.  It must
+      # pull from the public ACR endpoint; `registry-vpc` is reachable only
+      # from the manager and makes Swarm reject the task before it starts.
+      IMAGE_REPO: registry.cn-shenzhen.aliyuncs.com/betlysaas/teamclu-cloud-api
     steps:
       - uses: actions/checkout@v4
 
