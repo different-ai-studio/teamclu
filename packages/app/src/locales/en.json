@@ -764,6 +764,7 @@
       "recordingElsewhere": "Recording in another chat",
       "downloadModel": "Download local voice model",
       "sessionRequired": "Create a chat before starting a recording",
+      "workspaceRequired": "Open a workspace before starting a recording",
       "downloading": "Downloading local voice model {{progress}}%",
       "installTitle": "Install local voice model",
       "installDescription": "Choose the SenseVoiceSmall precision; CAM++ separates speakers locally. Models download once.",

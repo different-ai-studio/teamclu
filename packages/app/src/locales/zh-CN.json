@@ -764,6 +764,7 @@
       "recordingElsewhere": "正在另一个对话中录音",
       "downloadModel": "下载本地语音模型",
       "sessionRequired": "请先创建会话，再开始录音",
+      "workspaceRequired": "请先打开 workspace，再开始录音",
       "downloading": "正在下载本地语音模型 {{progress}}%",
       "installTitle": "安装本地语音模型",
       "installDescription": "选择 SenseVoiceSmall 精度；CAM++ 会在本机区分录音中的不同说话人。模型仅下载一次。",

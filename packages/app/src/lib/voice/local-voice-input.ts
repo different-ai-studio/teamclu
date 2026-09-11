@@ -99,6 +99,7 @@ export async function installLocalVoiceInput(modelVariant: VoiceModelVariant): P
 
 export async function startLocalVoiceInput(input: {
   sessionId: string;
+  workspacePath: string;
   route: VoiceRoute;
   onSegment: RecordingHandler["onSegment"];
 }): Promise<void> {
@@ -115,6 +116,8 @@ export async function startLocalVoiceInput(input: {
   try {
     await invoke("voice_input_start", {
       recordingId,
+      sessionId: input.sessionId,
+      workspacePath: input.workspacePath,
       speakerDiarization: input.route.mode === "silent",
     });
     if (store.status) store.setStatus({ ...store.status, listening: true });

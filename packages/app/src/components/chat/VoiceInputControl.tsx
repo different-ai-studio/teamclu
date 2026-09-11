@@ -21,6 +21,7 @@ import {
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
 import { PromptInputButton } from "@/packages/ai/prompt-input-ui";
 import { useVoiceInputStore, type VoiceInputMode } from "@/stores/voice-input";
+import { useWorkspaceStore } from "@/stores/workspace";
 import { isVoiceInputMainDisabled } from "@/lib/voice/voice-input-availability";
 import type { VoiceModelVariant } from "@/lib/voice/voice-models";
 import { cn, isTauri } from "@/lib/utils";
@@ -44,6 +45,7 @@ export function VoiceInputControl({
   const recordingSessionId = useVoiceInputStore((state) => state.recordingSessionId);
   const installProgress = useVoiceInputStore((state) => state.installProgress);
   const error = useVoiceInputStore((state) => state.error);
+  const workspacePath = useWorkspaceStore((state) => state.workspacePath);
   const setMode = useVoiceInputStore((state) => state.setMode);
   const setError = useVoiceInputStore((state) => state.setError);
   const [menuOpen, setMenuOpen] = React.useState(false);
@@ -103,6 +105,11 @@ export function VoiceInputControl({
         toast.info(t("chat.voice.sessionRequired", "请先创建会话，再开始录音"));
         return;
       }
+      if (!workspacePath) {
+        const { toast } = await import("sonner");
+        toast.info(t("chat.voice.workspaceRequired", "请先打开 workspace，再开始录音"));
+        return;
+      }
       if (!selectedMode) {
         setMenuOpen(true);
         return;
@@ -120,9 +127,9 @@ export function VoiceInputControl({
         route = { mode: "trigger", agent };
       }
       recordingSessionRef.current = sessionId;
-      await startLocalVoiceInput({ sessionId, route, onSegment });
+      await startLocalVoiceInput({ sessionId, workspacePath, route, onSegment });
     },
-    [engagedAgents, onSegment, recordingId, sessionId, t],
+    [engagedAgents, onSegment, recordingId, sessionId, t, workspacePath],
   );
 
   const choose = (selectedMode: VoiceInputMode, agentId?: string) => {

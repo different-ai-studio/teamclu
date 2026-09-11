@@ -395,11 +395,19 @@ pub fn voice_input_start(
     app: AppHandle,
     state: State<'_, VoiceInputState>,
     recording_id: String,
+    session_id: String,
+    workspace_path: String,
     speaker_diarization: bool,
 ) -> Result<(), String> {
     platform_support()?;
     let root = install_dir(&app)?;
     let model_variant = installed_variant(&root).ok_or("FunASR is not installed")?;
+    let workspace_path = std::path::PathBuf::from(workspace_path)
+        .canonicalize()
+        .map_err(|error| format!("Open transcript workspace: {error}"))?;
+    if !workspace_path.is_dir() {
+        return Err("Transcript workspace is not a directory".to_string());
+    }
     if state.listening.swap(true, Ordering::SeqCst) {
         return Err("Microphone is already in use by voice input".to_string());
     }
@@ -414,6 +422,8 @@ pub fn voice_input_start(
             model_variant,
             stop,
             recording_id.clone(),
+            session_id,
+            workspace_path,
             speaker_diarization,
         );
         #[cfg(not(target_os = "macos"))]
@@ -452,6 +462,9 @@ mod macos {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
     use std::collections::VecDeque;
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -465,6 +478,155 @@ mod macos {
     const RMS_SPEECH_THRESHOLD: f32 = 0.012;
     const SPEAKER_MATCH_THRESHOLD: f32 = 0.5;
     const MAX_SPEAKERS: usize = 15;
+    const TRANSCRIPT_BACKUP_AFTER_MS: u64 = 2 * 60 * 1000;
+
+    struct CapturedSegment {
+        samples: Vec<f32>,
+        started_at_ms: u64,
+        ended_at_ms: u64,
+    }
+
+    enum InferenceInput {
+        Segment(CapturedSegment),
+        TranscriptBackupDue,
+    }
+
+    struct TranscriptEntry {
+        started_at_ms: u64,
+        speaker_cluster_id: Option<String>,
+        text: String,
+    }
+
+    struct TranscriptBackup {
+        workspace_path: PathBuf,
+        recording_id: String,
+        session_id: String,
+        started_at: chrono::DateTime<chrono::Local>,
+        speaker_diarization: bool,
+        due: bool,
+        failed: bool,
+        pending: Vec<TranscriptEntry>,
+        file: Option<File>,
+    }
+
+    impl TranscriptBackup {
+        fn new(
+            workspace_path: PathBuf,
+            recording_id: String,
+            session_id: String,
+            speaker_diarization: bool,
+        ) -> Self {
+            Self {
+                workspace_path,
+                recording_id,
+                session_id,
+                started_at: chrono::Local::now(),
+                speaker_diarization,
+                due: false,
+                failed: false,
+                pending: Vec::new(),
+                file: None,
+            }
+        }
+
+        fn mark_due(&mut self) -> Result<(), String> {
+            if self.failed {
+                return Ok(());
+            }
+            self.due = true;
+            self.ensure_file()
+        }
+
+        fn record(
+            &mut self,
+            started_at_ms: u64,
+            speaker_cluster_id: Option<String>,
+            text: String,
+        ) -> Result<(), String> {
+            if self.failed {
+                return Ok(());
+            }
+            let entry = TranscriptEntry {
+                started_at_ms,
+                speaker_cluster_id,
+                text,
+            };
+            if let Some(file) = &mut self.file {
+                Self::write_entry(file, &entry)?;
+                file.flush().map_err(|error| error.to_string())?;
+                file.sync_data().map_err(|error| error.to_string())?;
+            } else {
+                self.pending.push(entry);
+                if self.due {
+                    self.ensure_file()?;
+                }
+            }
+            Ok(())
+        }
+
+        fn ensure_file(&mut self) -> Result<(), String> {
+            if self.file.is_some() || self.pending.is_empty() {
+                return Ok(());
+            }
+            let directory = self.workspace_path.join("voice-transcripts");
+            std::fs::create_dir_all(&directory)
+                .map_err(|error| format!("Create transcript directory: {error}"))?;
+            let safe_recording_id: String = self
+                .recording_id
+                .chars()
+                .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+                .collect();
+            let path = directory.join(format!(
+                "voice-{}-{}.md",
+                self.started_at.format("%Y%m%d-%H%M%S"),
+                safe_recording_id
+            ));
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)
+                .map_err(|error| format!("Create transcript backup {}: {error}", path.display()))?;
+            writeln!(file, "# Voice transcript\n").map_err(|error| error.to_string())?;
+            writeln!(file, "- Started: {}", self.started_at.to_rfc3339())
+                .map_err(|error| error.to_string())?;
+            writeln!(file, "- Recording: `{}`", self.recording_id)
+                .map_err(|error| error.to_string())?;
+            writeln!(file, "- Session: `{}`", self.session_id)
+                .map_err(|error| error.to_string())?;
+            writeln!(
+                file,
+                "- Mode: {}\n\n## Transcript\n",
+                if self.speaker_diarization {
+                    "silent (CAM++ session-local speaker labels)"
+                } else {
+                    "trigger"
+                }
+            )
+            .map_err(|error| error.to_string())?;
+            for entry in self.pending.drain(..) {
+                Self::write_entry(&mut file, &entry)?;
+            }
+            file.flush().map_err(|error| error.to_string())?;
+            file.sync_data().map_err(|error| error.to_string())?;
+            self.file = Some(file);
+            Ok(())
+        }
+
+        fn write_entry(file: &mut File, entry: &TranscriptEntry) -> Result<(), String> {
+            let seconds = entry.started_at_ms / 1000;
+            let timestamp = format!(
+                "{:02}:{:02}:{:02}",
+                seconds / 3600,
+                (seconds / 60) % 60,
+                seconds % 60
+            );
+            match &entry.speaker_cluster_id {
+                Some(speaker) => writeln!(file, "[{timestamp}] {speaker}: {}", entry.text),
+                None => writeln!(file, "[{timestamp}] {}", entry.text),
+            }
+            .map_err(|error| error.to_string())
+        }
+    }
 
     struct SpeakerCluster {
         center: Vec<f32>,
@@ -591,33 +753,65 @@ mod macos {
         model_variant: VoiceModelVariant,
         stop: Arc<AtomicBool>,
         recording_id: String,
+        session_id: String,
+        workspace_path: PathBuf,
         speaker_diarization: bool,
     ) -> Result<(), String> {
         let (audio_tx, audio_rx) = mpsc::channel::<Vec<f32>>();
-        let (segment_tx, segment_rx) = mpsc::channel::<Vec<f32>>();
+        let (segment_tx, segment_rx) = mpsc::channel::<InferenceInput>();
         let inference_app = app.clone();
         let inference_root = root.clone();
         let mut speaker_clusterer = speaker_diarization
             .then(|| SpeakerClusterer::new(&speaker_model_path(&root)))
             .transpose()?;
+        let mut transcript_backup = TranscriptBackup::new(
+            workspace_path,
+            recording_id.clone(),
+            session_id,
+            speaker_diarization,
+        );
         let inference = std::thread::spawn(move || {
-            for samples in segment_rx {
-                match transcribe_segment(&inference_root, model_variant, &samples) {
+            for input in segment_rx {
+                let segment = match input {
+                    InferenceInput::TranscriptBackupDue => {
+                        if let Err(message) = transcript_backup.mark_due() {
+                            transcript_backup.failed = true;
+                            let _ = inference_app.emit(
+                                "voice:error",
+                                serde_json::json!({ "code": "backup_failed", "message": message }),
+                            );
+                        }
+                        continue;
+                    }
+                    InferenceInput::Segment(segment) => segment,
+                };
+                match transcribe_segment(&inference_root, model_variant, &segment.samples) {
                     Ok(text) if !text.is_empty() => {
                         let speaker_cluster_id = speaker_clusterer.as_mut().map(|clusterer| {
-                            clusterer.assign(&samples).unwrap_or_else(|error| {
+                            clusterer.assign(&segment.samples).unwrap_or_else(|error| {
                                 log::warn!("CAM++ speaker assignment failed: {error}");
                                 clusterer.last_label()
                             })
                         });
+                        if let Err(message) = transcript_backup.record(
+                            segment.started_at_ms,
+                            speaker_cluster_id.clone(),
+                            text.clone(),
+                        ) {
+                            transcript_backup.failed = true;
+                            let _ = inference_app.emit(
+                                "voice:error",
+                                serde_json::json!({ "code": "backup_failed", "message": message }),
+                            );
+                        }
                         let _ = inference_app.emit(
                             "voice:segment",
                             SegmentPayload {
                                 segment_id: uuid::Uuid::new_v4().to_string(),
                                 recording_id: recording_id.clone(),
                                 text,
-                                started_at_ms: 0,
-                                ended_at_ms: (samples.len() as u64 * 1000) / SAMPLE_RATE as u64,
+                                started_at_ms: segment.started_at_ms,
+                                ended_at_ms: segment.ended_at_ms,
                                 speaker_cluster_id,
                                 speaker_profile_id: None,
                             },
@@ -666,6 +860,7 @@ mod macos {
         let mut pre_roll = VecDeque::<Vec<f32>>::with_capacity(PRE_ROLL_STEPS);
         let mut active = Vec::<f32>::new();
         let mut silence = 0_usize;
+        let mut backup_due_sent = false;
         while !stop.load(Ordering::SeqCst) {
             let chunk = match audio_rx.recv_timeout(Duration::from_millis(150)) {
                 Ok(chunk) => chunk,
@@ -683,6 +878,12 @@ mod macos {
                     "elapsedMs": started.elapsed().as_millis() as u64,
                 }),
             );
+            if !backup_due_sent
+                && started.elapsed().as_millis() as u64 >= TRANSCRIPT_BACKUP_AFTER_MS
+            {
+                let _ = segment_tx.send(InferenceInput::TranscriptBackupDue);
+                backup_due_sent = true;
+            }
             if active.is_empty() {
                 pre_roll.push_back(chunk.clone());
                 while pre_roll.len() > PRE_ROLL_STEPS {
@@ -699,13 +900,26 @@ mod macos {
             active.extend(chunk);
             silence = if speech { 0 } else { silence + 1 };
             if silence >= SILENCE_STEPS || active.len() >= MAX_SEGMENT_SAMPLES {
-                finalize(&segment_tx, &mut active, silence);
+                finalize(
+                    &segment_tx,
+                    &mut active,
+                    silence,
+                    started.elapsed().as_millis() as u64,
+                );
                 silence = 0;
             }
         }
         drop(stream);
         let _ = pump.join();
-        finalize(&segment_tx, &mut active, silence);
+        finalize(
+            &segment_tx,
+            &mut active,
+            silence,
+            started.elapsed().as_millis() as u64,
+        );
+        if !backup_due_sent && started.elapsed().as_millis() as u64 >= TRANSCRIPT_BACKUP_AFTER_MS {
+            let _ = segment_tx.send(InferenceInput::TranscriptBackupDue);
+        }
         drop(segment_tx);
         let _ = inference.join();
         Ok(())
@@ -764,11 +978,21 @@ mod macos {
         }
     }
 
-    fn finalize(sender: &mpsc::Sender<Vec<f32>>, active: &mut Vec<f32>, silence_steps: usize) {
+    fn finalize(
+        sender: &mpsc::Sender<InferenceInput>,
+        active: &mut Vec<f32>,
+        silence_steps: usize,
+        ended_at_ms: u64,
+    ) {
         let trim_steps = silence_steps.saturating_sub(2);
         active.truncate(active.len().saturating_sub(trim_steps * STEP_SAMPLES));
         if active.len() >= MIN_SPEECH_SAMPLES {
-            let _ = sender.send(std::mem::take(active));
+            let duration_ms = active.len() as u64 * 1000 / SAMPLE_RATE as u64;
+            let _ = sender.send(InferenceInput::Segment(CapturedSegment {
+                samples: std::mem::take(active),
+                started_at_ms: ended_at_ms.saturating_sub(duration_ms),
+                ended_at_ms,
+            }));
         } else {
             active.clear();
         }
@@ -913,7 +1137,7 @@ mod macos {
         fn finalize_ignores_short_noise() {
             let (sender, receiver) = mpsc::channel();
             let mut active = vec![0.2_f32; MIN_SPEECH_SAMPLES - 1];
-            finalize(&sender, &mut active, 0);
+            finalize(&sender, &mut active, 0, 1_000);
             assert!(receiver.try_recv().is_err());
             assert!(active.is_empty());
         }
@@ -923,13 +1147,91 @@ mod macos {
             let (sender, receiver) = mpsc::channel();
             let original_len = MIN_SPEECH_SAMPLES + SILENCE_STEPS * STEP_SAMPLES;
             let mut active = vec![0.2_f32; original_len];
-            finalize(&sender, &mut active, SILENCE_STEPS);
-            let segment = receiver.try_recv().expect("final segment");
+            finalize(&sender, &mut active, SILENCE_STEPS, 2_000);
+            let InferenceInput::Segment(segment) = receiver.try_recv().expect("final segment")
+            else {
+                panic!("expected audio segment");
+            };
             assert_eq!(
-                segment.len(),
+                segment.samples.len(),
                 original_len - (SILENCE_STEPS - 2) * STEP_SAMPLES
             );
+            assert_eq!(segment.ended_at_ms, 2_000);
             assert!(active.is_empty());
+        }
+
+        #[test]
+        fn transcript_backup_is_not_created_before_two_minutes() {
+            let workspace = tempfile::tempdir().expect("temp workspace");
+            let mut backup = TranscriptBackup::new(
+                workspace.path().to_path_buf(),
+                "recording-short".to_string(),
+                "session-1".to_string(),
+                true,
+            );
+            backup
+                .record(1_000, Some("speaker_01".to_string()), "你好".to_string())
+                .expect("buffer transcript");
+            assert!(!workspace.path().join("voice-transcripts").exists());
+        }
+
+        #[test]
+        fn transcript_backup_flushes_buffered_speaker_lines_when_due() {
+            let workspace = tempfile::tempdir().expect("temp workspace");
+            let mut backup = TranscriptBackup::new(
+                workspace.path().to_path_buf(),
+                "recording-long".to_string(),
+                "session-1".to_string(),
+                true,
+            );
+            backup
+                .record(1_000, Some("speaker_01".to_string()), "你好".to_string())
+                .expect("buffer first transcript");
+            backup.mark_due().expect("create transcript backup");
+            backup
+                .record(
+                    121_000,
+                    Some("speaker_02".to_string()),
+                    "大家好".to_string(),
+                )
+                .expect("append transcript");
+
+            let directory = workspace.path().join("voice-transcripts");
+            let path = std::fs::read_dir(directory)
+                .expect("transcript directory")
+                .next()
+                .expect("transcript file")
+                .expect("transcript entry")
+                .path();
+            let transcript = std::fs::read_to_string(path).expect("read transcript");
+            assert!(transcript.contains("- Session: `session-1`"));
+            assert!(transcript.contains("[00:00:01] speaker_01: 你好"));
+            assert!(transcript.contains("[00:02:01] speaker_02: 大家好"));
+        }
+
+        #[test]
+        fn trigger_transcript_does_not_add_a_speaker_label() {
+            let workspace = tempfile::tempdir().expect("temp workspace");
+            let mut backup = TranscriptBackup::new(
+                workspace.path().to_path_buf(),
+                "recording-trigger".to_string(),
+                "session-1".to_string(),
+                false,
+            );
+            backup.mark_due().expect("mark backup due");
+            backup
+                .record(120_000, None, "执行任务".to_string())
+                .expect("write transcript");
+
+            let path = std::fs::read_dir(workspace.path().join("voice-transcripts"))
+                .expect("transcript directory")
+                .next()
+                .expect("transcript file")
+                .expect("transcript entry")
+                .path();
+            let transcript = std::fs::read_to_string(path).expect("read transcript");
+            assert!(transcript.contains("[00:02:00] 执行任务"));
+            assert!(!transcript.contains("speaker_"));
         }
 
         #[test]
