@@ -23,10 +23,12 @@ pub fn should_restart_for_probe(probe: MainWebviewProbe) -> bool {
 /// used to restart the whole app even though the main webview was healthy.
 pub fn probe_main_webview(app: &tauri::AppHandle) -> MainWebviewProbe {
     classify_main_webview_url(app.get_webview("main").map(|webview| {
-        webview.url().map(|_| ()).map_err(|err| {
-            log::error!("[WebViewRecovery] main webview URL probe failed: {err}");
-            err.to_string()
-        })
+        crate::commands::webview::webview_url_safe(&webview)
+            .map(|_| ())
+            .map_err(|err| {
+                log::error!("[WebViewRecovery] main webview URL probe failed: {err}");
+                err
+            })
     }))
 }
 
