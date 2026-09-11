@@ -5751,7 +5751,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [deployToken]
+              required: [deployToken, declaration]
               properties:
                 gitCommitSha:
                   type: string
@@ -5763,31 +5763,19 @@ paths:
                   type: string
                   format: uuid
                   description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
-                runtime:
+                declaration:
                   type: object
                   description: >-
-                    How the app says it starts, read by the daemon out of the
-                    app's own `teamclu.app.json` and resolved against the
-                    built-in contract. Omitted by a client that predates the
-                    declaration, and by an app that ships none — both get the
-                    contract every app had before it existed (node,
-                    `server/index.mjs`, port 9000). `runtime` here is the
-                    interpreter family, NOT the `runtime` column on the app
-                    (`node` vs `container`); a value this deployment has no
-                    layer for is a 400, because the function would otherwise be
-                    created unable to boot.
-                  required: [runtime, entry, port]
+                    The daemon-validated build and start declaration read from
+                    the app's required `teamclu.app.json`. The control plane
+                    persists `build.kind` and `start`, then configures Function
+                    Compute without deriving either from the checkout.
+                  required: [build, start]
                   properties:
-                    runtime:
-                      type: string
-                      enum: [node]
-                    entry:
-                      type: string
-                      description: Path inside the unpacked artifact.
-                    port:
-                      type: integer
-                      minimum: 1
-                      maximum: 65535
+                    build:
+                      $ref: "#/components/schemas/AppBuildSpec"
+                    start:
+                      $ref: "#/components/schemas/AppStartSpec"
       responses:
         "200":
           description: The app, now live.
@@ -7619,13 +7607,55 @@ components:
         Deploy lifecycle, orthogonal to `provisionStatus` (which tracks the repo
         and its seeding). `null` means the app has never been deployed.
       enum: [not_deployed, awaiting_build, building, deploying, live, deploy_error]
-    AppRuntime:
+    AppBuildKind:
       type: string
       description: |
-        FC runtime for the deployed artifact. Phase 1 supports `node` only;
-        `container` is reserved for bring-your-own-image deploys.
-      enum: [node, container]
+        How the app artifact is built. This is persisted in `apps.runtime`;
+        Function Compute's runtime is declared separately in `start.fcRuntime`.
+      enum: [node, python, go, php, java, container]
       default: node
+    AppBuildSpec:
+      type: object
+      required: [kind, output]
+      properties:
+        kind:
+          $ref: "#/components/schemas/AppBuildKind"
+        output:
+          type: string
+          description: Relative artifact output path inside the checkout.
+        command:
+          type: string
+          description: Optional shell build command.
+        dockerfile:
+          type: string
+          description: Relative Dockerfile path for container builds.
+        context:
+          type: string
+          description: Relative Docker build context.
+    AppStartSpec:
+      type: object
+      required: [port]
+      properties:
+        fcRuntime:
+          type: string
+          description: Function Compute runtime for non-container builds.
+        command:
+          type: array
+          items: { type: string }
+        args:
+          type: array
+          items: { type: string }
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        layers:
+          type: array
+          items: { type: string }
+          description: Function Compute layer ARNs; an empty list disables defaults.
+        healthCheckPath:
+          type: string
+          pattern: "^/"
     AppAuthMode:
       type: string
       description: |
@@ -7682,7 +7712,13 @@ components:
             HEAD commit SHA on the app's Gitea repo at last successful deploy;
             null before the first deploy completes.
         runtime:
-          $ref: "#/components/schemas/AppRuntime"
+          $ref: "#/components/schemas/AppBuildKind"
+          description: Build kind persisted from the last successful declaration.
+        startSpec:
+          oneOf:
+            - $ref: "#/components/schemas/AppStartSpec"
+            - type: "null"
+          description: Start configuration persisted from the last successful declaration.
         authMode:
           $ref: "#/components/schemas/AppAuthMode"
         authAudience:

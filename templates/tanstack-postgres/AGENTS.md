@@ -67,6 +67,14 @@ async function storageCredentials() {
   上游发了一版删掉了模板引用的入口，所有 app 的构建当场全挂。加依赖时也请写精确版本
   并更新锁文件。
 
+## 部署声明（`teamclu.app.json`）
+
+仓根 `teamclu.app.json` 声明**怎么构建、怎么启动**，平台按其中的 `build` + `start` 部署到 FC Custom Runtime：
+
+- 改 `build.kind` / `start.command` / `start.port` 以匹配 FC Custom Runtime（本模板默认 Node：`build.kind: "node"`，`start.command: ["/opt/nodejs20/bin/node"]`，`args: ["server/index.mjs"]`，`port: 9000`）。
+- **不要用**旧字段 `runtime` / `entry` —— 缺 `build` + `start` 或仍带 legacy 字段时部署会被拒。
+- 改完 **commit + push**，再让用户在控制面部署。
+
 ## 怎么上线
 
 部署按 **Gitea 远端 commit** 构建，不是本机未保存的文件。改完代码后：

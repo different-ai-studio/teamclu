@@ -23,10 +23,16 @@ pub const ERR_ARTIFACT_TOO_LARGE: &str = "artifact exceeds 50 MiB limit";
 /// `ERR_PNPM_NO_PKG_MANIFEST`, which is accurate and says nothing a user can
 /// act on; the desktop turns this marker into the two things they can do.
 pub const ERR_NO_PACKAGE_JSON: &str = "the app's folder has no package.json to build";
+pub const ERR_NO_PYTHON_PROJECT: &str =
+    "the app declares build.kind \"python\" but has no requirements.txt, pyproject.toml, or build output";
+pub const ERR_NO_GO_MOD: &str = "the app declares build.kind \"go\" but has no go.mod";
+pub const ERR_NO_JAVA_BUILD: &str =
+    "the app declares build.kind \"java\" but has no pom.xml, build.gradle, or build.gradle.kts";
 pub const ERR_LOCKFILE_MISMATCH: &str =
     "lockfile out of sync with package.json; commit updated pnpm-lock.yaml";
 pub const ERR_INSTALL_TIMEOUT: &str = "pnpm install timed out after 10 minutes";
 pub const ERR_BUILD_TIMEOUT: &str = "pnpm build timed out after 10 minutes";
+pub const ERR_BUILD_COMMAND_TIMEOUT: &str = "build command timed out after 10 minutes";
 /// pnpm could not be started at all. Distinct from every failure above, which
 /// are pnpm's own: this one is a fact about the machine, and on Windows it used
 /// to surface as a bare "the system cannot find the file specified" with no
@@ -40,12 +46,8 @@ pub const ERR_NO_DOCKER: &str =
 pub const ERR_DOCKER_NOT_RUNNING: &str = "Docker is installed but not running; start it and retry";
 pub const ERR_NO_BUILDX: &str =
     "this Docker has no buildx; a container app is cross-built for linux/amd64 with it";
-pub const ERR_NO_DOCKERFILE: &str = "the app declares runtime \"container\" but has no Dockerfile";
-/// Neither of the two things a build can start from. Its own message because
-/// the app is not "a container app missing a Dockerfile" — it is an app with no
-/// code at all, and the two call for different next moves.
-pub const ERR_NO_CODE: &str =
-    "the app's folder has neither a package.json nor a Dockerfile, so there is nothing to build";
+pub const ERR_NO_DOCKERFILE: &str =
+    "the app declares build.kind \"container\" but has no Dockerfile";
 pub const ERR_IMAGE_BUILD_TIMEOUT: &str = "docker build timed out after 30 minutes";
 pub const ERR_IMAGE_PUSH_TIMEOUT: &str = "docker push timed out after 15 minutes";
 pub const ERR_IMAGE_PUSH_DENIED: &str =
@@ -55,7 +57,7 @@ pub const ERR_IMAGE_PUSH_DENIED: &str =
 /// rather than anything the user can fix — but it must not read as a build
 /// failure in their app.
 pub const ERR_NO_PUSH_TARGET: &str =
-    "this deploy supplied no image registry, and the app declares runtime \"container\"";
+    "this deploy supplied no image registry, and the app declares build.kind \"container\"";
 
 /// Cap on the command output carried in a failure message.
 ///
@@ -99,7 +101,26 @@ pub fn zip_dir(dir: &Path) -> anyhow::Result<Vec<u8>> {
     let mut zip = zip::ZipWriter::new(buf);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
-    for entry in walkdir::WalkDir::new(dir) {
+    let mut excluded = vec![".git".to_string()];
+    excluded.extend(app_git::runtime_exclude_entries(
+        &teamclu_runtime_env::brand_short_name_from_env(),
+    ));
+    let excluded: Vec<_> = excluded
+        .iter()
+        .map(|entry| Path::new(entry.trim_end_matches('/')))
+        .collect();
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|entry| {
+            let Ok(relative) = entry.path().strip_prefix(dir) else {
+                return false;
+            };
+            relative.as_os_str().is_empty()
+                || !excluded
+                    .iter()
+                    .any(|excluded| relative == *excluded || relative.starts_with(excluded))
+        })
+    {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() {
@@ -197,12 +218,24 @@ fn run_with_timeout(
     timeout: Duration,
     timeout_msg: &str,
 ) -> anyhow::Result<Output> {
+    run_with_timeout_env(cmd, args, cwd, timeout, timeout_msg, &[])
+}
+
+fn run_with_timeout_env(
+    cmd: &str,
+    args: &[&str],
+    cwd: &Path,
+    timeout: Duration,
+    timeout_msg: &str,
+    env: &[(&str, &str)],
+) -> anyhow::Result<Output> {
     let mut command = Command::new(build_tool_program(cmd));
     command
         .no_window()
         .args(args)
         .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0");
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().copied());
 
     // The spawn, the pipe draining and the kill live in `bounded_proc`: the
     // clone path needs exactly the same thing, and two copies of a poll loop
@@ -221,15 +254,168 @@ fn run_with_timeout(
         }
     };
     if !out.status.success() {
-        let msg = map_pnpm_failure(
-            cmd,
-            args,
-            &String::from_utf8_lossy(&out.stdout),
-            &String::from_utf8_lossy(&out.stderr),
-        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let msg = if cmd == "pnpm" {
+            map_pnpm_failure(cmd, args, &stdout, &stderr)
+        } else {
+            let combined = [stdout.trim(), stderr.trim()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{cmd} {:?} failed: {}",
+                args,
+                tail(&combined, MAX_FAILURE_OUTPUT)
+            )
+        };
         anyhow::bail!("{msg}");
     }
     Ok(out)
+}
+
+/// The default command table. Conditional rows are selected by
+/// [`run_default_build`]; this pure view keeps the six-kind contract explicit
+/// and cheaply testable.
+pub fn default_build_plan(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "node" => Some(&["pnpm install --frozen-lockfile", "pnpm build"]),
+        "python" => Some(&["pip install -r requirements.txt -t <output> (when present)"]),
+        "go" => Some(&["CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <output>/main ."]),
+        "php" => Some(&["composer install --no-dev (when composer.json is present)"]),
+        "java" => Some(&[
+            "./mvnw package or mvn package",
+            "./gradlew build or gradle build",
+        ]),
+        "container" => Some(&["docker buildx build", "docker push"]),
+        _ => None,
+    }
+}
+
+fn run_shell_override(command: &str, workdir: &Path, image: Option<&str>) -> anyhow::Result<()> {
+    let image_env = image.map(|value| [("TEAMCLU_IMAGE", value)]);
+    run_with_timeout_env(
+        "sh",
+        &["-c", command],
+        workdir,
+        BUILD_TIMEOUT,
+        ERR_BUILD_COMMAND_TIMEOUT,
+        image_env.as_ref().map_or(&[], |env| env.as_slice()),
+    )
+    .map(|_| ())
+}
+
+fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result<()> {
+    match kind {
+        "node" => {
+            run_with_timeout(
+                "pnpm",
+                &["install", "--frozen-lockfile"],
+                workdir,
+                INSTALL_TIMEOUT,
+                ERR_INSTALL_TIMEOUT,
+            )?;
+            run_with_timeout(
+                "pnpm",
+                &["build"],
+                workdir,
+                BUILD_TIMEOUT,
+                ERR_BUILD_TIMEOUT,
+            )?;
+        }
+        "python" => {
+            if workdir.join("requirements.txt").is_file() {
+                run_with_timeout(
+                    "pip",
+                    &["install", "-r", "requirements.txt", "-t", output],
+                    workdir,
+                    INSTALL_TIMEOUT,
+                    ERR_INSTALL_TIMEOUT,
+                )?;
+            }
+        }
+        "go" => {
+            std::fs::create_dir_all(workdir.join(output))?;
+            let output_main = format!("{output}/main");
+            let mut command = Command::new(build_tool_program("go"));
+            command
+                .no_window()
+                .args(["build", "-o", &output_main, "."])
+                .current_dir(workdir)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("CGO_ENABLED", "0")
+                .env("GOOS", "linux")
+                .env("GOARCH", "amd64");
+            let out =
+                crate::sync::bounded_proc::run_bounded(
+                    command,
+                    BUILD_TIMEOUT,
+                    ERR_BUILD_COMMAND_TIMEOUT,
+                )?;
+            if !out.status.success() {
+                let combined = [
+                    String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                    String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                ]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+                anyhow::bail!("go build failed: {}", tail(&combined, MAX_FAILURE_OUTPUT));
+            }
+        }
+        "php" => {
+            if workdir.join("composer.json").is_file() {
+                run_with_timeout(
+                    "composer",
+                    &["install", "--no-dev"],
+                    workdir,
+                    INSTALL_TIMEOUT,
+                    ERR_INSTALL_TIMEOUT,
+                )?;
+            }
+        }
+        "java" => {
+            if workdir.join("pom.xml").is_file() {
+                if workdir.join("mvnw").is_file() {
+                    run_with_timeout(
+                        "./mvnw",
+                        &["package"],
+                        workdir,
+                        BUILD_TIMEOUT,
+                        ERR_BUILD_COMMAND_TIMEOUT,
+                    )?;
+                } else {
+                    run_with_timeout(
+                        "mvn",
+                        &["package"],
+                        workdir,
+                        BUILD_TIMEOUT,
+                        ERR_BUILD_COMMAND_TIMEOUT,
+                    )?;
+                }
+            } else if workdir.join("gradlew").is_file() {
+                run_with_timeout(
+                    "./gradlew",
+                    &["build"],
+                    workdir,
+                    BUILD_TIMEOUT,
+                    ERR_BUILD_COMMAND_TIMEOUT,
+                )?;
+            } else {
+                run_with_timeout(
+                    "gradle",
+                    &["build"],
+                    workdir,
+                    BUILD_TIMEOUT,
+                    ERR_BUILD_COMMAND_TIMEOUT,
+                )?;
+            }
+        }
+        other => anyhow::bail!("unsupported build.kind {other}"),
+    }
+    Ok(())
 }
 
 /// Message on the commit a deploy makes for work the agent left uncommitted.
@@ -280,65 +466,70 @@ pub fn prepare_git_build(
     Ok(None)
 }
 
-/// What an app declares about how it is built and run.
-///
-/// Every field was a constant until an app turned up that builds to `dist/` and
-/// starts `node dist/index.js`: the deploy failed on a missing `.output/`, and
-/// the only place the real contract was written down was a template file the
-/// agent had already rewritten to describe its own code. A declaration in the
-/// repo is something an app can satisfy without us guessing.
-///
-/// Absent or unparseable means the defaults, which are exactly what every app
-/// deployed before this got — so nothing that works today needs the file.
+const DEFAULT_OUTPUT: &str = ".output";
+const DEFAULT_DOCKERFILE: &str = "Dockerfile";
+const DEFAULT_CONTEXT: &str = ".";
+const VALID_BUILD_KINDS: &[&str] = &["node", "python", "go", "php", "java", "container"];
+const VALID_CODE_FC_RUNTIMES: &[&str] = &[
+    "custom",
+    "custom.debian10",
+    "custom.debian11",
+    "custom.debian12",
+];
+const CONTAINER_FC_RUNTIME: &str = "custom-container";
+
+pub const ERR_LEGACY_MANIFEST: &str = r#"teamclu.app.json uses legacy runtime/entry; replace it with build+start, e.g. {"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}} (see docs/specs/2026-09-11-fc-runtime-passthrough-design.md)"#;
+pub const ERR_MISSING_MANIFEST: &str = r#"teamclu.app.json is required; add e.g. {"build":{"kind":"node","output":".output"},"start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}} (see docs/specs/2026-09-11-fc-runtime-passthrough-design.md)"#;
+
+fn default_output() -> String {
+    DEFAULT_OUTPUT.to_string()
+}
+
+fn default_dockerfile() -> String {
+    DEFAULT_DOCKERFILE.to_string()
+}
+
+fn default_context() -> String {
+    DEFAULT_CONTEXT.to_string()
+}
+
+/// How the daemon turns an app checkout into an artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppRuntimeManifest {
-    /// Directory to package, relative to the workdir. Unused by `container`,
-    /// which ships an image rather than an archive.
+pub struct AppBuildSpec {
+    pub kind: String,
+    #[serde(default = "default_output")]
     pub output: String,
-    /// Interpreter family, or `container`. The deployment maps this to a
-    /// runtime layer and a binary; an unknown value is the control plane's to
-    /// reject, not the daemon's — it is the side that knows which layers exist.
-    pub runtime: String,
-    /// Entry path inside the packaged directory. Unused by `container`: the
-    /// image's own `CMD`/`ENTRYPOINT` is its entry.
-    pub entry: String,
-    /// Port the app listens on. For `container` this is what the deployment
-    /// tells Function Compute to send requests to, so it has to match what the
-    /// image actually listens on — the image's `EXPOSE` is documentation and
-    /// nothing reads it.
-    pub port: u16,
-    /// `container`: the Dockerfile, relative to the workdir.
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default = "default_dockerfile")]
     pub dockerfile: String,
-    /// `container`: the build context, relative to the workdir.
+    #[serde(default = "default_context")]
     pub context: String,
-    /// `container`: a path the app answers 200 on, used as the function's
-    /// health check. Absent means the deployment's default check.
-    #[serde(skip_serializing_if = "Option::is_none")]
+}
+
+/// How the control plane starts the built artifact in Function Compute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStartSpec {
+    #[serde(default)]
+    pub fc_runtime: Option<String>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    pub port: u16,
+    #[serde(default)]
+    pub layers: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_path: Option<String>,
 }
 
-/// Whether this manifest asks for an image rather than a code archive.
-pub const CONTAINER_RUNTIME: &str = "container";
-
-impl AppRuntimeManifest {
-    pub fn is_container(&self) -> bool {
-        self.runtime == CONTAINER_RUNTIME
-    }
-}
-
-impl Default for AppRuntimeManifest {
-    fn default() -> Self {
-        Self {
-            output: ".output".to_string(),
-            runtime: "node".to_string(),
-            entry: "server/index.mjs".to_string(),
-            port: 9000,
-            dockerfile: "Dockerfile".to_string(),
-            context: ".".to_string(),
-            health_check_path: None,
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppDeclaration {
+    pub build: AppBuildSpec,
+    pub start: AppStartSpec,
 }
 
 /// The declaration file, at the app's root. Named for the brand's config file
@@ -346,99 +537,107 @@ impl Default for AppRuntimeManifest {
 /// a second convention.
 const MANIFEST_FILE: &str = "teamclu.app.json";
 
-/// What an app that declares no runtime is.
-///
-/// A node build needs a `package.json` — it is the file `pnpm install` reads,
-/// and without one there is no build to run. So an app without one is not a
-/// node app that happens to be broken; it is an app built some other way, and
-/// the only other way this daemon has is an image.
-///
-/// This exists because only the three built-in templates ever write
-/// `teamclu.app.json`. An **imported** repo gets no template and therefore no
-/// declaration, so every Django / Go / Rust checkout read as `node` and had
-/// `pnpm install` run at it — the failure was then "no package.json", which is
-/// true and says nothing about the actual problem.
-///
-/// The workdir has to exist for the answer to mean anything. When it does not
-/// this cannot tell the two apart, so it keeps the historical default; callers
-/// that need to know have `workdirExists` on the manifest endpoint.
-fn inferred_runtime(workdir: &Path) -> String {
-    if !workdir.is_dir() || workdir.join("package.json").is_file() {
-        AppRuntimeManifest::default().runtime
-    } else {
-        CONTAINER_RUNTIME.to_string()
-    }
-}
-
-/// Read the app's declaration, falling back to what the checkout itself says.
-///
-/// A malformed file is a warning, not a failure: the defaults still describe a
-/// deployable app, and refusing to build because a hint file has a typo would
-/// be a worse trade than deploying what the app actually produced.
-pub fn read_runtime_manifest(workdir: &Path) -> AppRuntimeManifest {
+/// Read and validate the required app declaration. There are deliberately no
+/// checkout-derived defaults: missing, malformed, and legacy declarations stop
+/// the deploy so the repository remains the single source of truth.
+pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
     let path = workdir.join(MANIFEST_FILE);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return AppRuntimeManifest {
-            runtime: inferred_runtime(workdir),
-            ..Default::default()
-        };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("{ERR_MISSING_MANIFEST}")
+        }
+        Err(e) => anyhow::bail!("could not read {}: {e}", path.display()),
     };
-    match serde_json::from_str::<PartialManifest>(&text) {
-        Ok(partial) => partial.resolve(workdir),
-        Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "ignoring unreadable app manifest");
-            AppRuntimeManifest {
-                runtime: inferred_runtime(workdir),
-                ..Default::default()
-            }
-        }
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("invalid {MANIFEST_FILE}: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{MANIFEST_FILE} must be a JSON object with build+start"))?;
+    if object.contains_key("runtime") || object.contains_key("entry") {
+        anyhow::bail!("{ERR_LEGACY_MANIFEST}");
     }
-}
 
-/// Every field optional, so a file that names only what it changes is valid.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PartialManifest {
-    output: Option<String>,
-    runtime: Option<String>,
-    entry: Option<String>,
-    port: Option<u16>,
-    dockerfile: Option<String>,
-    context: Option<String>,
-    health_check_path: Option<String>,
-}
-
-impl PartialManifest {
-    /// `workdir` only decides the runtime, and only when the file does not: an
-    /// explicit `"runtime"` always wins, including an explicit `"node"` on an
-    /// app whose `package.json` is somewhere this cannot see.
-    fn resolve(self, workdir: &Path) -> AppRuntimeManifest {
-        let d = AppRuntimeManifest::default();
-        let pick = |v: Option<String>, fallback: String| {
-            v.map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(fallback)
+    let output_was_omitted = value
+        .get("build")
+        .and_then(|build| build.get("output"))
+        .is_none();
+    let mut declaration: AppDeclaration = serde_json::from_value(value)
+        .map_err(|e| anyhow::anyhow!("invalid {MANIFEST_FILE} build+start declaration: {e}"))?;
+    declaration.build.kind = declaration.build.kind.trim().to_string();
+    if !VALID_BUILD_KINDS.contains(&declaration.build.kind.as_str()) {
+        anyhow::bail!(
+            "{MANIFEST_FILE} has invalid build.kind {:?}; expected one of {}",
+            declaration.build.kind,
+            VALID_BUILD_KINDS.join(", ")
+        );
+    }
+    if output_was_omitted {
+        declaration.build.output = if declaration.build.kind == "node" {
+            ".output".to_string()
+        } else {
+            ".".to_string()
         };
-        AppRuntimeManifest {
-            output: pick(self.output, d.output),
-            runtime: pick(self.runtime, inferred_runtime(workdir)),
-            entry: pick(self.entry, d.entry),
-            port: self.port.filter(|p| *p > 0).unwrap_or(d.port),
-            // A path that climbs out of the workdir is dropped rather than
-            // refused: the file is a hint, and the defaults still describe a
-            // deployable app. Refusing would let a typo in an optional field
-            // stop a deploy that has nothing else wrong with it.
-            dockerfile: pick(
-                self.dockerfile.filter(|p| is_inside_workdir(p)),
-                d.dockerfile,
-            ),
-            context: pick(self.context.filter(|p| is_inside_workdir(p)), d.context),
-            health_check_path: self
-                .health_check_path
-                .map(|s| s.trim().to_string())
-                .filter(|s| s.starts_with('/')),
+    }
+    for (name, path) in [
+        ("build.output", &declaration.build.output),
+        ("build.dockerfile", &declaration.build.dockerfile),
+        ("build.context", &declaration.build.context),
+    ] {
+        if !is_inside_workdir(path) {
+            anyhow::bail!("{MANIFEST_FILE} {name} must stay inside the workdir");
         }
     }
+    if declaration.start.port == 0 {
+        anyhow::bail!("{MANIFEST_FILE} start.port must be between 1 and 65535");
+    }
+    declaration.start.fc_runtime = declaration
+        .start
+        .fc_runtime
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if declaration.build.kind == "container" {
+        if declaration
+            .start
+            .fc_runtime
+            .as_deref()
+            .is_some_and(|runtime| runtime != CONTAINER_FC_RUNTIME)
+        {
+            anyhow::bail!(
+                "{MANIFEST_FILE} start.fcRuntime for container must be {CONTAINER_FC_RUNTIME:?} when set"
+            );
+        }
+    } else {
+        let runtime = declaration.start.fc_runtime.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{MANIFEST_FILE} code apps require non-empty start.fcRuntime and start.command"
+            )
+        })?;
+        if !VALID_CODE_FC_RUNTIMES.contains(&runtime) {
+            anyhow::bail!(
+                "{MANIFEST_FILE} has invalid start.fcRuntime {runtime:?}; expected one of {}",
+                VALID_CODE_FC_RUNTIMES.join(", ")
+            );
+        }
+        let command_present = declaration.start.command.as_ref().is_some_and(|command| {
+            !command.is_empty() && command.iter().all(|part| !part.trim().is_empty())
+        });
+        if !command_present {
+            anyhow::bail!(
+                "{MANIFEST_FILE} code apps require non-empty start.fcRuntime and start.command"
+            );
+        }
+    }
+    if declaration
+        .start
+        .health_check_path
+        .as_deref()
+        .is_some_and(|path| !path.starts_with('/'))
+    {
+        anyhow::bail!("{MANIFEST_FILE} start.healthCheckPath must start with '/'");
+    }
+    Ok(declaration)
 }
 
 /// Whether a manifest-declared relative path stays under the workdir.
@@ -555,7 +754,7 @@ pub struct BuildOutput {
     /// What the app declared about how it is run. Reported so the control plane
     /// can start the function the way the app expects instead of the one way it
     /// used to assume.
-    pub manifest: AppRuntimeManifest,
+    pub declaration: AppDeclaration,
     /// Set only when the deploy published pending work and so built a commit
     /// the caller did not know about. The caller must finalize with this one:
     /// recording the sha it started with would name a commit that is not what
@@ -567,8 +766,8 @@ pub struct BuildOutput {
 ///
 /// When `git` is present the workdir is fetched, published and checked out
 /// first (see [`prepare_git_build`]). What happens after that is the app's own
-/// declaration: `container` builds and pushes an image, everything else runs
-/// `pnpm install` then `pnpm build` and zips the output directory.
+/// declaration: `container` builds and pushes an image; the five archive kinds
+/// use their row in the build table (or `build.command`) and zip `build.output`.
 ///
 /// The manifest is read **before** the build rather than after. It used to be
 /// read only to find the output directory, which a node build has already
@@ -584,16 +783,14 @@ pub fn build_artifact(
     if let Some(ctx) = git {
         git_commit_sha = prepare_git_build(workdir, ctx)?;
     }
-    let manifest = read_runtime_manifest(workdir);
-    // Neither of the two things a build can start from. Checked here rather
-    // than inside each branch because this app has no code of *either* kind:
-    // the container branch would report a missing registry (the control plane's
-    // problem, not the user's) and the node branch a missing package.json,
-    // neither of which says the app was never given any files.
-    if !workdir.join("package.json").is_file() && !workdir.join(&manifest.dockerfile).is_file() {
-        anyhow::bail!("{ERR_NO_CODE}");
-    }
-    if manifest.is_container() {
+    let declaration = read_app_declaration(workdir)?;
+    let build_override = declaration
+        .build
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|command| !command.is_empty());
+    if declaration.build.kind == "container" {
         let minted = push.ok_or_else(|| anyhow::anyhow!("{ERR_NO_PUSH_TARGET}"))?;
         // `git_commit_sha` is set only when the build published work the client
         // did not know about, which is exactly when the minted tag is stale.
@@ -607,34 +804,57 @@ pub fn build_artifact(
             username: minted.username,
             password: minted.password,
         };
-        build_image(workdir, &manifest, &target)?;
+        if let Some(command) = build_override {
+            // For containers the override must build and tag
+            // `$TEAMCLU_IMAGE`; pushing remains daemon-owned so registry
+            // credentials stay out of the app command and the user's Docker
+            // config.
+            run_shell_override(command, workdir, Some(target.image))?;
+            push_image(workdir, &target)?;
+        } else {
+            build_image(workdir, &declaration.build, &target)?;
+        }
         return Ok(BuildOutput {
             product: BuildProduct::Image(target.image.to_string()),
             git_commit_sha,
-            manifest,
+            declaration,
         });
     }
-    run_with_timeout(
-        "pnpm",
-        &["install", "--frozen-lockfile"],
-        workdir,
-        INSTALL_TIMEOUT,
-        ERR_INSTALL_TIMEOUT,
-    )?;
-    run_with_timeout(
-        "pnpm",
-        &["build"],
-        workdir,
-        BUILD_TIMEOUT,
-        ERR_BUILD_TIMEOUT,
-    )?;
 
-    let output_dir = workdir.join(&manifest.output);
+    let output_dir = workdir.join(&declaration.build.output);
+    if let Some(command) = build_override {
+        // An override is the complete build, not an extra post-build step.
+        run_shell_override(command, workdir, None)?;
+    } else {
+        match declaration.build.kind.as_str() {
+            "node" if !workdir.join("package.json").is_file() => {
+                anyhow::bail!("{ERR_NO_PACKAGE_JSON}")
+            }
+            "python"
+                if !workdir.join("requirements.txt").is_file()
+                    && !workdir.join("pyproject.toml").is_file()
+                    && (!output_dir.is_dir() || !output_dir_has_files(&output_dir)) =>
+            {
+                anyhow::bail!("{ERR_NO_PYTHON_PROJECT}")
+            }
+            "go" if !workdir.join("go.mod").is_file() => anyhow::bail!("{ERR_NO_GO_MOD}"),
+            "java"
+                if !workdir.join("pom.xml").is_file()
+                    && !workdir.join("build.gradle").is_file()
+                    && !workdir.join("build.gradle.kts").is_file() =>
+            {
+                anyhow::bail!("{ERR_NO_JAVA_BUILD}")
+            }
+            _ => {}
+        }
+        run_default_build(&declaration.build.kind, &declaration.build.output, workdir)?;
+    }
+
     if !output_dir.is_dir() || !output_dir_has_files(&output_dir) {
         // Name what was looked for. The message used to say only ".output/",
         // which is unhelpful precisely when an app builds somewhere else — the
         // case this whole manifest exists for.
-        anyhow::bail!("{ERR_OUTPUT_MISSING}: {}", manifest.output);
+        anyhow::bail!("{ERR_OUTPUT_MISSING}: {}", declaration.build.output);
     }
 
     let bytes = zip_dir(&output_dir)?;
@@ -647,7 +867,7 @@ pub fn build_artifact(
     Ok(BuildOutput {
         product: BuildProduct::Archive(bytes),
         git_commit_sha,
-        manifest,
+        declaration,
     })
 }
 
@@ -659,12 +879,12 @@ pub fn build_artifact(
 /// lets each have what it needs — see [`push_image`].
 fn build_image(
     workdir: &Path,
-    manifest: &AppRuntimeManifest,
+    build: &AppBuildSpec,
     target: &ImagePushTarget<'_>,
 ) -> anyhow::Result<()> {
-    let dockerfile = workdir.join(&manifest.dockerfile);
+    let dockerfile = workdir.join(&build.dockerfile);
     if !dockerfile.is_file() {
-        anyhow::bail!("{ERR_NO_DOCKERFILE}: {}", manifest.dockerfile);
+        anyhow::bail!("{ERR_NO_DOCKERFILE}: {}", build.dockerfile);
     }
     run_docker(
         &[
@@ -673,12 +893,12 @@ fn build_image(
             "--platform",
             FC_PLATFORM,
             "--file",
-            &manifest.dockerfile,
+            &build.dockerfile,
             "--tag",
             target.image,
             // Into the local image store, which is what `docker push` reads.
             "--load",
-            &manifest.context,
+            &build.context,
         ],
         workdir,
         None,
@@ -848,6 +1068,30 @@ mod tests {
     }
 
     #[test]
+    fn zip_dir_excludes_git_and_daemon_runtime_files_from_checkout_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("app.py"), b"print('ok')").unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git/objects")).unwrap();
+        std::fs::write(tmp.path().join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
+        let runtime_dir =
+            teamclu_runtime_env::workspace_meta_dir_name(&teamclu_runtime_env::brand_short_name_from_env());
+        std::fs::create_dir_all(tmp.path().join(&runtime_dir)).unwrap();
+        std::fs::write(tmp.path().join(&runtime_dir).join("state.json"), b"{}").unwrap();
+
+        let bytes = zip_dir(tmp.path()).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.iter().any(|name| name == "app.py"), "{names:?}");
+        assert!(!names.iter().any(|name| name.starts_with(".git/")), "{names:?}");
+        assert!(
+            !names.iter().any(|name| name.starts_with(&runtime_dir)),
+            "{names:?}"
+        );
+    }
+
+    #[test]
     fn output_dir_has_files_detects_empty_tree() {
         let tmp = tempfile::tempdir().unwrap();
         let empty = tmp.path().join("empty");
@@ -878,142 +1122,375 @@ mod tests {
         tmp
     }
 
-    #[test]
-    fn an_app_with_no_manifest_gets_the_built_in_contract() {
-        // The file is optional on purpose: every app deployed before it existed
-        // must keep deploying with no change.
-        let tmp = node_checkout();
-        assert_eq!(
-            read_runtime_manifest(tmp.path()),
-            AppRuntimeManifest::default()
-        );
+    fn write_container_declaration(
+        workdir: &Path,
+        dockerfile: &str,
+        health_check_path: Option<&str>,
+    ) {
+        std::fs::write(
+            workdir.join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {
+                    "kind": "container",
+                    "output": ".output",
+                    "dockerfile": dockerfile,
+                    "context": "."
+                },
+                "start": {
+                    "port": 5000,
+                    "healthCheckPath": health_check_path
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn write_code_declaration(workdir: &Path, kind: &str, output: &str) {
+        std::fs::write(
+            workdir.join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {"kind": kind, "output": output},
+                "start": {
+                    "fcRuntime": "custom.debian12",
+                    "command": ["run"],
+                    "port": 9000
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
     }
 
     #[test]
-    fn an_app_with_no_package_json_is_a_container_app() {
-        // Only the three built-in templates write a manifest, so an imported
-        // Django / Go / Rust repo declares nothing — and used to be read as
-        // `node`, which put `pnpm install` in front of a checkout that has no
-        // package.json to install. What it does have is a Dockerfile.
+    fn an_app_with_no_manifest_is_refused() {
+        let tmp = node_checkout();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert_eq!(err, ERR_MISSING_MANIFEST);
+        assert!(err.contains(r#""build""#) && err.contains(r#""start""#), "{err}");
+        assert!(err.contains("fc-runtime-passthrough-design.md"), "{err}");
+    }
+
+    #[test]
+    fn an_app_with_no_package_json_is_not_inferred_as_container() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
-        assert!(read_runtime_manifest(tmp.path()).is_container());
+        assert!(read_app_declaration(tmp.path()).is_err());
     }
 
     #[test]
-    fn an_explicit_runtime_still_wins_over_the_checkout() {
-        // The inference is a fallback, not an override: an app that says `node`
-        // keeps meaning it, wherever its package.json lives.
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join(MANIFEST_FILE), r#"{"runtime":"node"}"#).unwrap();
-        assert_eq!(read_runtime_manifest(tmp.path()).runtime, "node");
-    }
-
-    #[test]
-    fn a_workdir_that_is_not_there_keeps_the_historical_default() {
-        // Nothing to read means nothing to infer from — and the manifest
-        // endpoint reports `workdirExists` for callers that need to care.
-        let tmp = tempfile::tempdir().unwrap();
-        let missing = tmp.path().join("not-cloned-here");
-        assert_eq!(read_runtime_manifest(&missing).runtime, "node");
-    }
-
-    #[test]
-    fn a_manifest_names_only_what_it_changes() {
-        // The failure this was written for: an app that builds to `dist/` and
-        // starts `dist/index.js`. It should not have to restate the port.
-        let tmp = node_checkout();
-        std::fs::write(
-            tmp.path().join(MANIFEST_FILE),
-            r#"{"output":"dist","entry":"index.js"}"#,
-        )
-        .unwrap();
-
-        let m = read_runtime_manifest(tmp.path());
-        assert_eq!(m.output, "dist");
-        assert_eq!(m.entry, "index.js");
-        assert_eq!(m.runtime, "node", "unstated fields keep the default");
-        assert_eq!(m.port, 9000);
-    }
-
-    #[test]
-    fn a_broken_manifest_does_not_stop_a_deploy() {
-        // Defaults still describe a deployable app. Refusing to build because a
-        // hint file has a typo is a worse trade than building what the app
-        // actually produced.
+    fn a_broken_manifest_is_refused() {
         let tmp = node_checkout();
         std::fs::write(tmp.path().join(MANIFEST_FILE), "{not json").unwrap();
-        assert_eq!(
-            read_runtime_manifest(tmp.path()),
-            AppRuntimeManifest::default()
-        );
-
-        std::fs::write(
-            tmp.path().join(MANIFEST_FILE),
-            r#"{"output":"  ","port":0}"#,
-        )
-        .unwrap();
-        let m = read_runtime_manifest(tmp.path());
-        assert_eq!(m.output, ".output", "an empty value is not a value");
-        assert_eq!(m.port, 9000);
+        assert!(read_app_declaration(tmp.path()).is_err());
     }
 
     #[test]
-    fn an_app_with_neither_package_json_nor_dockerfile_says_so() {
-        // The empty-app failure. It reads as a container app (no package.json),
-        // and "no Dockerfile" would send the user to write one for an app whose
-        // real problem is that it was never given any code.
+    fn a_legacy_manifest_is_refused_with_migration_guidance() {
+        let tmp = node_checkout();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            r#"{"runtime":"node","entry":"server/index.mjs"}"#,
+        )
+        .unwrap();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("legacy") && err.contains("build+start"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn legacy_fields_are_refused_even_alongside_build_and_start() {
+        let tmp = node_checkout();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            r#"{
+                "runtime":"node",
+                "build":{"kind":"node","output":".output","command":null,"dockerfile":"Dockerfile","context":"."},
+                "start":{"fcRuntime":"custom.debian10","command":["node"],"args":["server/index.mjs"],"port":9000}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_app_declaration(tmp.path()).unwrap_err().to_string(),
+            ERR_LEGACY_MANIFEST
+        );
+    }
+
+    #[test]
+    fn a_valid_node_declaration_is_read_with_camel_case_fields() {
+        let tmp = node_checkout();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            r#"{
+                "build":{"kind":"node","output":"dist","command":null},
+                "start":{
+                    "fcRuntime":"custom.debian12",
+                    "command":["node"],
+                    "args":["index.js"],
+                    "port":9000,
+                    "layers":[],
+                    "healthCheckPath":"/health"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let declaration = read_app_declaration(tmp.path()).unwrap();
+        assert_eq!(declaration.build.kind, "node");
+        assert_eq!(declaration.build.output, "dist");
+        assert_eq!(declaration.build.dockerfile, "Dockerfile");
+        assert_eq!(declaration.build.context, ".");
+        assert_eq!(
+            declaration.start.fc_runtime.as_deref(),
+            Some("custom.debian12")
+        );
+        assert_eq!(declaration.start.command, Some(vec!["node".to_string()]));
+        assert_eq!(
+            declaration.start.health_check_path.as_deref(),
+            Some("/health")
+        );
+        let wire = serde_json::to_value(&declaration).unwrap();
+        assert_eq!(wire["start"]["fcRuntime"], "custom.debian12");
+        assert_eq!(wire["start"]["healthCheckPath"], "/health");
+        assert!(wire["start"].get("fc_runtime").is_none());
+    }
+
+    #[test]
+    fn omitted_build_output_defaults_by_kind() {
+        for (kind, expected) in [
+            ("node", ".output"),
+            ("python", "."),
+            ("go", "."),
+            ("php", "."),
+            ("java", "."),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(
+                tmp.path().join(MANIFEST_FILE),
+                serde_json::json!({
+                    "build": {"kind": kind},
+                    "start": {
+                        "fcRuntime": "custom.debian10",
+                        "command": ["run"],
+                        "port": 9000
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert_eq!(
+                read_app_declaration(tmp.path()).unwrap().build.output,
+                expected,
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn fc_runtime_is_validated_before_building() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = match build_artifact(tmp.path(), None, None) {
-            Err(e) => e.to_string(),
-            Ok(_) => panic!("an app with no code must not build"),
+        write_code_declaration(tmp.path(), "python", ".");
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        raw["start"]["fcRuntime"] = serde_json::json!("python3.10");
+        std::fs::write(tmp.path().join(MANIFEST_FILE), raw.to_string()).unwrap();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert!(err.contains("invalid start.fcRuntime"), "{err}");
+
+        let container = tempfile::tempdir().unwrap();
+        write_container_declaration(container.path(), "Dockerfile", None);
+        let mut raw: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(container.path().join(MANIFEST_FILE)).unwrap(),
+        )
+        .unwrap();
+        raw["start"]["fcRuntime"] = serde_json::json!("custom.debian12");
+        std::fs::write(container.path().join(MANIFEST_FILE), raw.to_string()).unwrap();
+        let err = read_app_declaration(container.path()).unwrap_err().to_string();
+        assert!(err.contains("custom-container"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_build_kind_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            r#"{
+                "build":{"kind":"ruby","output":".","command":null,"dockerfile":"Dockerfile","context":"."},
+                "start":{"fcRuntime":"custom.debian12","command":["ruby"],"args":["app.rb"],"port":9000}
+            }"#,
+        )
+        .unwrap();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert!(err.contains("ruby"), "{err}");
+    }
+
+    #[test]
+    fn default_build_table_covers_all_six_kinds() {
+        for kind in VALID_BUILD_KINDS {
+            let plan = default_build_plan(kind).unwrap_or_else(|| panic!("missing {kind} plan"));
+            assert!(!plan.is_empty(), "{kind} plan must have a default step");
+        }
+        assert_eq!(
+            default_build_plan("node").unwrap(),
+            ["pnpm install --frozen-lockfile", "pnpm build"]
+        );
+        assert!(default_build_plan("ruby").is_none());
+    }
+
+    #[test]
+    fn project_preconditions_follow_declared_kind_not_file_inference() {
+        for (kind, marker) in [
+            ("node", ERR_NO_PACKAGE_JSON),
+            ("python", ERR_NO_PYTHON_PROJECT),
+            ("go", ERR_NO_GO_MOD),
+            ("java", ERR_NO_JAVA_BUILD),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            write_code_declaration(tmp.path(), kind, ".output");
+            // A Dockerfile must not make any of these kinds pass.
+            std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+            let err = match build_artifact(tmp.path(), None, None) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{kind} app without its project marker must not build"),
+            };
+            assert_eq!(err, marker, "{kind}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_replaces_node_defaults_and_their_preconditions() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {
+                    "kind": "node",
+                    "output": "custom-out",
+                    "command": "mkdir -p custom-out && printf overridden > custom-out/result.txt"
+                },
+                "start": {
+                    "fcRuntime": "custom.debian12",
+                    "command": ["node"],
+                    "port": 9000
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let built = build_artifact(tmp.path(), None, None).unwrap();
+        let bytes = built.product.archive().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut result = String::new();
+        archive
+            .by_name("result.txt")
+            .unwrap()
+            .read_to_string(&mut result)
+            .unwrap();
+        assert_eq!(result, "overridden");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_override_replaces_dockerfile_precondition_through_build_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {
+                    "kind": "container",
+                    "command": "printf reached > override-ran && exit 23"
+                },
+                "start": {"port": 9000}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let target = ImagePushTarget {
+            image: "registry.example.com/apps/a:sha",
+            registry: "registry.example.com",
+            username: "u",
+            password: "p",
         };
-        assert_eq!(err, ERR_NO_CODE);
+
+        let err = match build_artifact(tmp.path(), None, Some(&target)) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("the intentionally failing override must stop the build"),
+        };
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("override-ran")).unwrap(),
+            "reached"
+        );
+        assert!(!err.contains(ERR_NO_DOCKERFILE), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_override_receives_the_minted_image_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        run_shell_override(
+            "printf %s \"$TEAMCLU_IMAGE\" > image.txt",
+            tmp.path(),
+            Some("registry.example.com/apps/a:sha"),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("image.txt")).unwrap(),
+            "registry.example.com/apps/a:sha"
+        );
+    }
+
+    #[test]
+    fn php_without_composer_archives_declared_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_code_declaration(tmp.path(), "php", "public");
+        std::fs::create_dir(tmp.path().join("public")).unwrap();
+        std::fs::write(tmp.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
+
+        let built = build_artifact(tmp.path(), None, None).unwrap();
+        assert!(built.product.archive().is_some());
     }
 
     #[test]
     fn a_container_app_declares_its_dockerfile_and_port() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            tmp.path().join(MANIFEST_FILE),
-            r#"{"runtime":"container","port":5000,"dockerfile":"deploy/Dockerfile","healthCheckPath":"/api/health"}"#,
-        )
-        .unwrap();
+        write_container_declaration(tmp.path(), "deploy/Dockerfile", Some("/api/health"));
 
-        let m = read_runtime_manifest(tmp.path());
-        assert!(m.is_container());
-        assert_eq!(m.port, 5000);
-        assert_eq!(m.dockerfile, "deploy/Dockerfile");
-        assert_eq!(m.context, ".", "unstated context is the checkout root");
-        assert_eq!(m.health_check_path.as_deref(), Some("/api/health"));
+        let declaration = read_app_declaration(tmp.path()).unwrap();
+        assert_eq!(declaration.build.kind, "container");
+        assert_eq!(declaration.start.port, 5000);
+        assert_eq!(declaration.build.dockerfile, "deploy/Dockerfile");
+        assert_eq!(declaration.build.context, ".");
+        assert_eq!(
+            declaration.start.health_check_path.as_deref(),
+            Some("/api/health")
+        );
     }
 
     #[test]
-    fn a_manifest_path_that_climbs_out_of_the_checkout_is_ignored() {
-        // These are handed to `docker` as `--file` and as the build context. A
-        // path out of the workdir would build a directory that is not the app;
-        // the default still describes a buildable one, so it wins.
+    fn a_declaration_path_that_climbs_out_of_the_checkout_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join(MANIFEST_FILE),
-            r#"{"runtime":"container","dockerfile":"../../etc/Dockerfile","context":"/etc"}"#,
+            r#"{
+                "build":{"kind":"container","output":".output","dockerfile":"../../etc/Dockerfile","context":"/etc"},
+                "start":{"port":9000}
+            }"#,
         )
         .unwrap();
 
-        let m = read_runtime_manifest(tmp.path());
-        assert_eq!(m.dockerfile, "Dockerfile");
-        assert_eq!(m.context, ".");
+        assert!(read_app_declaration(tmp.path()).is_err());
     }
 
     #[test]
     fn a_health_check_path_must_be_a_path() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            tmp.path().join(MANIFEST_FILE),
-            r#"{"runtime":"container","healthCheckPath":"api/health"}"#,
-        )
-        .unwrap();
-        assert_eq!(read_runtime_manifest(tmp.path()).health_check_path, None);
+        write_container_declaration(tmp.path(), "Dockerfile", Some("api/health"));
+        assert!(read_app_declaration(tmp.path()).is_err());
     }
 
     #[test]
@@ -1021,7 +1498,7 @@ mod tests {
         // Not a build failure in the app: the control plane decides which
         // handle a deploy carries, and this one carried none.
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join(MANIFEST_FILE), r#"{"runtime":"container"}"#).unwrap();
+        write_container_declaration(tmp.path(), "Dockerfile", None);
         std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
 
         // Matched rather than `unwrap_err`, which would need `BuildOutput` to
@@ -1075,12 +1552,8 @@ mod tests {
     #[test]
     fn a_container_app_without_a_dockerfile_says_which_file_is_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            tmp.path().join(MANIFEST_FILE),
-            r#"{"runtime":"container","dockerfile":"deploy/Dockerfile"}"#,
-        )
-        .unwrap();
-        let manifest = read_runtime_manifest(tmp.path());
+        write_container_declaration(tmp.path(), "deploy/Dockerfile", None);
+        let declaration = read_app_declaration(tmp.path()).unwrap();
         let target = ImagePushTarget {
             image: "registry.example.com/ns/app:sha",
             registry: "registry.example.com",
@@ -1088,7 +1561,7 @@ mod tests {
             password: "p",
         };
 
-        let err = build_image(tmp.path(), &manifest, &target)
+        let err = build_image(tmp.path(), &declaration.build, &target)
             .unwrap_err()
             .to_string();
         assert!(err.starts_with(ERR_NO_DOCKERFILE), "{err}");

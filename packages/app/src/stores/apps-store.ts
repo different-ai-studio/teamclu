@@ -781,9 +781,12 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // presigned URL to upload to, and only the machine holding the checkout
       // can say which this is.
       const declared = await daemonAppManifest(appId, app.teamId);
+      if (!declared) {
+        throw new Error("amuxd did not return the app declaration");
+      }
       const started = await getBackend().apps.deployApp(appId, {
         ...(gitCommitSha ? { gitCommitSha } : {}),
-        ...(declared?.runtime ? { runtime: declared.runtime } : {}),
+        runtime: declared.build.kind,
       });
       mergeRow(set, started);
 
@@ -825,6 +828,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         await toastError("部署失败：构建未完成", reason);
         return;
       }
+      if (!build.declaration) {
+        throw new Error("amuxd build response did not include declaration");
+      }
 
       // No success toast. It showed `fcEndpoint` — the raw FC function URL —
       // which is not the address the product hands out (that is the app's
@@ -842,7 +848,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         // How the app says it starts. The control plane used to assume one
         // answer for every app; this is the app's own, read off its
         // declaration by the daemon that just built it.
-        ...(build.runtime ? { runtime: build.runtime } : {}),
+        declaration: build.declaration,
         // The image that build actually pushed. A container app has no code
         // object, so finalizing without it would point the function at whatever
         // the previous deploy left in OSS.

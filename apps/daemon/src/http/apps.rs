@@ -339,12 +339,9 @@ fn daemon_device_name() -> String {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppManifestResponse {
-    /// What the checkout declares, or the built-in contract when it declares
-    /// nothing — the same value a build would report.
-    pub manifest: crate::sync::app_build::AppRuntimeManifest,
-    /// False when this machine holds no checkout for the app. The manifest is
-    /// then the default, which is a guess, and the caller should not deploy on
-    /// it.
+    /// The checkout's required build and start declaration.
+    pub declaration: crate::sync::app_build::AppDeclaration,
+    /// False when this machine holds no checkout for the app.
     pub workdir_exists: bool,
 }
 
@@ -364,12 +361,13 @@ pub async fn app_manifest(
     let team_id = query.team_id.as_deref().unwrap_or("");
     let path = resolve_workdir("", &app_id, team_id)?;
     let workdir_exists = path.is_dir();
-    let manifest =
-        tokio::task::spawn_blocking(move || crate::sync::app_build::read_runtime_manifest(&path))
+    let declaration =
+        tokio::task::spawn_blocking(move || crate::sync::app_build::read_app_declaration(&path))
             .await
-            .map_err(|e| HttpError::internal(format!("manifest read panicked: {e}")))?;
+            .map_err(|e| HttpError::internal(format!("declaration read panicked: {e}")))?
+            .map_err(map_build_error)?;
     Ok(Json(AppManifestResponse {
-        manifest,
+        declaration,
         workdir_exists,
     }))
 }
@@ -547,10 +545,11 @@ pub struct BuildAppBody {
     pub deploy_key_pem: String,
     /// Presigned OSS PUT URL for the build artifact. Short-lived signed-URL
     /// secret — never logged. Required for an app that builds to an archive,
-    /// which is every app that does not declare `runtime: "container"`.
+    /// which is every app whose declaration does not use `build.kind:
+    /// "container"`.
     #[serde(default)]
     pub presigned_put: String,
-    /// Where to push the image, for an app that declares `runtime:
+    /// Where to push the image, for an app that declares `build.kind:
     /// "container"`. Carries a registry password — never logged.
     #[serde(default)]
     pub image: Option<ImagePushBody>,
@@ -585,10 +584,8 @@ impl std::fmt::Debug for ImagePushBody {
 #[serde(rename_all = "camelCase")]
 pub struct BuildAppResponse {
     pub status: &'static str,
-    /// What the app declared about how it is built and run. Always present —
-    /// an app with no declaration reports the built-in contract, so the control
-    /// plane never has to know whether the file existed.
-    pub manifest: crate::sync::app_build::AppRuntimeManifest,
+    /// What the app declared about how it is built and run.
+    pub declaration: crate::sync::app_build::AppDeclaration,
     /// The commit that was actually built, when the daemon published work the
     /// caller did not know about. Absent when it built the sha it was given —
     /// the caller then finalizes with its own.
@@ -631,9 +628,9 @@ fn build_destination(
 }
 
 /// `POST /v1/apps/build` — build the app and put the result where the deploy
-/// reads it from: `pnpm build` + zip `.output` to the presigned OSS URL, or —
-/// for an app declaring `runtime: "container"` — a cross-built image pushed to
-/// the registry named in `image`.
+/// reads it from: an archive sent to the presigned OSS URL, or — for an app
+/// declaring `build.kind: "container"` — a cross-built image pushed to the
+/// registry named in `image`.
 ///
 /// Requires `workspace:write`. The workdir MUST already exist (it's the seeded
 /// checkout). Returns `{ "status": "built" }`. The presigned URL is a
@@ -709,7 +706,7 @@ pub async fn build_app(
 
     let pushed = built.product.image().map(str::to_string);
     let git_commit_sha = built.git_commit_sha;
-    let manifest = built.manifest;
+    let declaration = built.declaration;
 
     // A container build has already put its result where the deployment reads
     // it from; only an archive still has to travel.
@@ -736,7 +733,7 @@ pub async fn build_app(
     Ok(Json(BuildAppResponse {
         status: "built",
         git_commit_sha,
-        manifest,
+        declaration,
         image: pushed,
     }))
 }
@@ -1128,8 +1125,12 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
         crate::sync::app_build::ERR_ARTIFACT_TOO_LARGE,
         crate::sync::app_build::ERR_LOCKFILE_MISMATCH,
         crate::sync::app_build::ERR_NO_PACKAGE_JSON,
+        crate::sync::app_build::ERR_NO_PYTHON_PROJECT,
+        crate::sync::app_build::ERR_NO_GO_MOD,
+        crate::sync::app_build::ERR_NO_JAVA_BUILD,
         crate::sync::app_build::ERR_INSTALL_TIMEOUT,
         crate::sync::app_build::ERR_BUILD_TIMEOUT,
+        crate::sync::app_build::ERR_BUILD_COMMAND_TIMEOUT,
         // Container builds: every one of these is a fact about the machine the
         // build ran on or about the app's own files, so it belongs to the
         // caller. A 500 would send them to the daemon log for something the
@@ -1141,6 +1142,7 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
         crate::sync::app_build::ERR_IMAGE_BUILD_TIMEOUT,
         crate::sync::app_build::ERR_IMAGE_PUSH_TIMEOUT,
         crate::sync::app_build::ERR_IMAGE_PUSH_DENIED,
+        "teamclu.app.json",
         "git repo URL",
         "deploy key PEM",
     ];

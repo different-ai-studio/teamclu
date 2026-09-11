@@ -7,7 +7,7 @@ import {
   checkDeployInProgress,
   isStaleDeploy,
   parseOptionalGitCommitSha,
-  parseAppRuntimeSpec,
+  parseAppDeployDeclaration,
   parseDeployedImage,
   assertDeployAllowed,
   STALE_DEPLOY_MS,
@@ -38,6 +38,10 @@ test("startDeploy does NOT touch FC — the code object does not exist yet", asy
 test("finalizeDeploy provisions the org DB + schema, then sets code + env together", async () => {
   const calls: any[] = [];
   const orgId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const declaration = {
+    build: { kind: "python" as const, output: "." },
+    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8088 },
+  };
   const out = await finalizeDeploy(
     {
       appsAdminUrl: "postgres://host:5432/postgres",
@@ -63,6 +67,7 @@ test("finalizeDeploy provisions the org DB + schema, then sets code + env togeth
       appType: "data_app",
       fcFunctionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc",
       ossObjectName: "apps/3f1c9a2e-0000-4000-8000-000000000abc/code.zip",
+      declaration,
     },
   );
   assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
@@ -75,9 +80,10 @@ test("finalizeDeploy provisions the org DB + schema, then sets code + env togeth
   const [, name, args] = ensure;
   assert.equal(name, "tc-app-3f1c9a2e-0000-4000-8000-000000000abc");
   assert.equal(args.ossObjectName, "apps/3f1c9a2e-0000-4000-8000-000000000abc/code.zip");
-  assert.equal(args.env.PORT, "9000");
+  assert.equal(args.env.PORT, "8088");
   assert.match(args.env.DATABASE_URL, /tc_org_/);
   assert.match(args.env.DATABASE_URL, /pw-fixed/);
+  assert.deepEqual(args.declaration, declaration);
   assert.equal(calls.at(-1)[0], "trigger");
 });
 
@@ -238,7 +244,22 @@ test("a static app deploys with no database at all", async () => {
           ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
         },
       } as any,
-      { appId: "app-1", slug: "demo", appType, fcFunctionName: "tc-app-1", ossObjectName: "apps/app-1/code.zip" },
+      {
+        appId: "app-1",
+        slug: "demo",
+        appType,
+        fcFunctionName: "tc-app-1",
+        ossObjectName: "apps/app-1/code.zip",
+        declaration: {
+          build: { kind: "node", output: ".output" },
+          start: {
+            fcRuntime: "custom.debian10",
+            command: ["/opt/nodejs20/bin/node"],
+            args: ["server/index.mjs"],
+            port: 9000,
+          },
+        },
+      },
     );
     assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
   }
@@ -477,7 +498,7 @@ test("a container app is minted a registry to push to, not an upload URL", async
         };
       },
     },
-    { appId: "app-1", region: "cn-shenzhen", runtime: "container", gitCommitSha: "abc1234" },
+    { appId: "app-1", region: "cn-shenzhen", buildKind: "container", gitCommitSha: "abc1234" },
   );
   assert.deepEqual(minted, { appId: "app-1", sha: "abc1234" });
   assert.equal(out.presignedPut, undefined);
@@ -496,7 +517,7 @@ test("a container deploy on a deployment with no registry names the variable", a
           mintUploadUrl: async () => "https://oss.example/put",
           imagePushUnavailable: "APPS_REGISTRY_HOST is not set",
         },
-        { appId: "app-1", region: "cn-shenzhen", runtime: "container" },
+        { appId: "app-1", region: "cn-shenzhen", buildKind: "container" },
       ),
     (e: any) => {
       assert.equal(e.statusCode ?? e.status, 503);
@@ -516,35 +537,45 @@ test("an app that declares nothing still gets the upload handle", async () => {
   assert.equal(out.image, undefined);
 });
 
-test("a container app declares no entry, and a code app may not send an image", () => {
-  const spec = parseAppRuntimeSpec({ runtime: "container", port: 5000, healthCheckPath: "/api/health" });
-  assert.deepEqual(spec, { runtime: "container", entry: "", port: 5000, healthCheckPath: "/api/health" });
+test("a container declaration has no entry, and a code app may not send an image", () => {
+  const spec = parseAppDeployDeclaration({
+    build: { kind: "container" },
+    start: { port: 5000, healthCheckPath: "/api/health" },
+  });
+  assert.equal(spec.build.kind, "container");
+  assert.equal(spec.start.healthCheckPath, "/api/health");
 
   // The image belongs to the runtime that has one. Accepting it for an archive
   // deploy would let a client point the function at an unrelated build.
   assert.equal(parseDeployedImage("registry/ns/app:sha", spec), "registry/ns/app:sha");
   assert.throws(() => parseDeployedImage("", spec), /must finalize with its image/);
-  const node = parseAppRuntimeSpec({ runtime: "node", entry: "server/index.mjs", port: 9000 });
+  const node = parseAppDeployDeclaration({
+    build: { kind: "node", output: ".output" },
+    start: {
+      fcRuntime: "custom.debian10",
+      command: ["/opt/nodejs20/bin/node"],
+      args: ["server/index.mjs"],
+      port: 9000,
+    },
+  });
   assert.equal(parseDeployedImage(undefined, node), undefined);
   assert.throws(() => parseDeployedImage("registry/ns/app:sha", node), /only accepted for a container/);
 });
 
 test("a health check path that is not a path is refused", () => {
   assert.throws(
-    () => parseAppRuntimeSpec({ runtime: "container", port: 5000, healthCheckPath: "api/health" }),
+    () => parseAppDeployDeclaration({
+      build: { kind: "container" },
+      start: { port: 5000, healthCheckPath: "api/health" },
+    }),
     /healthCheckPath must start with/,
   );
 });
 
-test("the deploy gate no longer refuses a container app outright", () => {
-  // It used to 409 every runtime but node, which is what stood between a
-  // Python app and a deploy. Whether THIS deployment can build one is decided
-  // where the registry config is known.
+test("the deploy gate accepts every declared build kind", () => {
   assertDeployAllowed({ id: "app-1", slug: "notes", runtime: "container", authMode: "none" });
-  assert.throws(
-    () => assertDeployAllowed({ id: "app-1", slug: "notes", runtime: "python", authMode: "none" }),
-    /not available on this deployment/,
-  );
+  assertDeployAllowed({ id: "app-1", slug: "notes", runtime: "python", authMode: "none" });
+  assert.throws(() => assertDeployAllowed({ id: "app-1", slug: "notes", runtime: "ruby", authMode: "none" }), /not available/);
 });
 
 test("finalizeDeploy refuses an image outside the app's own repository", async () => {

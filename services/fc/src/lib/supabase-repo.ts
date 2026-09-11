@@ -59,8 +59,8 @@ import {
   checkDeployInProgress,
   deployUnavailable,
   needsDatabase,
-  parseAppRuntimeSpec,
-  parseDeclaredRuntime,
+  parseAppDeployDeclaration,
+  parseDeclaredBuildKind,
   parseDeployedImage,
   parseDeployToken,
   parseOptionalGitCommitSha,
@@ -3922,7 +3922,7 @@ export function createSupabaseBusinessRepository(options) {
       // deploy. It decides which handle this deploy carries — an OSS upload or
       // a registry to push an image to — so it has to arrive here, not at
       // finalize where the rest of the declaration does.
-      const declaredRuntime = parseDeclaredRuntime(input?.runtime);
+      const declaredBuildKind = parseDeclaredBuildKind(input?.runtime);
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
@@ -3961,7 +3961,7 @@ export function createSupabaseBusinessRepository(options) {
         const r = await startDeploy({
           appId,
           region: process.env.REGION || "cn-hangzhou",
-          runtime: declaredRuntime,
+          buildKind: declaredBuildKind,
           gitCommitSha,
           // Only consulted when a function is first minted, so an app that has
           // already deployed keeps the name stored on its row.
@@ -3980,7 +3980,7 @@ export function createSupabaseBusinessRepository(options) {
             // The column records what this deployment is building, which until
             // now nothing ever wrote — it sat at its default while the guard
             // beside it refused every value but that default.
-            ...(declaredRuntime ? { runtime: declaredRuntime } : {}),
+            ...(declaredBuildKind ? { runtime: declaredBuildKind } : {}),
             updated_at: deployStartedAt,
           })
           .eq("id", appId)
@@ -4016,10 +4016,10 @@ export function createSupabaseBusinessRepository(options) {
 
     async finalizeDeploy(
       appId: string,
-      input: { gitCommitSha?: string; deployToken: string; runtime?: unknown; image?: unknown },
+      input: { gitCommitSha?: string; deployToken: string; declaration?: unknown; image?: unknown },
     ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
-      const runtimeSpec = parseAppRuntimeSpec(input?.runtime);
+      const declaration = parseAppDeployDeclaration(input?.declaration);
       const deployToken = parseDeployToken(input?.deployToken);
       // Visibility gate. RLS on amux.apps returns nothing when the app is not
       // visible to the caller → surface null so the route 404s.
@@ -4081,13 +4081,12 @@ export function createSupabaseBusinessRepository(options) {
           platformAuthEnv,
           storageEnv,
           userEnv,
-          // What the daemon read out of the app's own declaration. Absent for a
-          // client that predates it, which is the contract every app had before.
-          runtime: runtimeSpec,
+          // What the daemon read out of the app's own declaration.
+          declaration,
           // The image that build pushed. A container app has no code object,
           // so without this the function would be pointed at whatever the
           // previous deploy happened to leave in OSS.
-          image: parseDeployedImage(input?.image, runtimeSpec),
+          image: parseDeployedImage(input?.image, declaration),
         });
         const { data: row, error: updErr } = await supabase
           .from("apps")
@@ -4097,7 +4096,8 @@ export function createSupabaseBusinessRepository(options) {
             ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
             // What is now running, as opposed to what the deploy set out to
             // build. They differ when an app's declaration changed mid-deploy.
-            ...(runtimeSpec ? { runtime: runtimeSpec.runtime } : {}),
+            runtime: declaration.build.kind,
+            start_spec: declaration.start,
             // The function that just went live carries this auth_mode's env.
             // Recording it here is what lets `authModePendingRedeploy` clear —
             // and what makes the pending state a property of the row rather

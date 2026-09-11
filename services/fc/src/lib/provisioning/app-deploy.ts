@@ -7,12 +7,13 @@ import {
   resolveAppConnectionString,
 } from "./app-postgres.js";
 import {
-  isContainerRuntime,
-  isSupportedRuntime,
   readAppsFcVpcConfig,
-  SUPPORTED_RUNTIMES,
-  type AppRuntimeSpec,
 } from "./fc-client.js";
+import {
+  BUILD_KINDS,
+  isContainerKind,
+  type AppDeployDeclaration,
+} from "./app-runtime-spec.js";
 import { ApiError } from "../http-utils.js";
 import { needsDatabase } from "../validation/app-type.js";
 
@@ -47,83 +48,6 @@ export function parseOptionalGitCommitSha(raw: unknown): string | null {
 }
 
 /**
- * Validate what the daemon reported the app declared about starting itself.
- *
- * Rejected rather than defaulted when a field is present but wrong: a bad entry
- * path or port produces a function that cannot boot, and an opaque instance
- * failure minutes later is a much worse answer than a 400 here. Absent means
- * the contract every app had before declarations existed.
- *
- * Note this `runtime` is the interpreter family (`node`), NOT `apps.runtime`
- * (`node` vs `container`) — different column, different question.
- */
-export function parseAppRuntimeSpec(raw: unknown): AppRuntimeSpec | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== "object") {
-    throw new ApiError(400, "validation_failed", "runtime must be an object");
-  }
-  const r = raw as Record<string, unknown>;
-  const runtime = typeof r.runtime === "string" ? r.runtime.trim() : "";
-  const entry = typeof r.entry === "string" ? r.entry.trim() : "";
-  const port = typeof r.port === "number" ? r.port : Number.NaN;
-  const container = isContainerRuntime(runtime);
-  // A container app has no entry to state: the image's own ENTRYPOINT is it.
-  if (!runtime || (!entry && !container)) {
-    throw new ApiError(400, "validation_failed", "runtime.runtime and runtime.entry are required");
-  }
-  if (!isSupportedRuntime(runtime)) {
-    throw new ApiError(
-      400,
-      "unsupported_runtime",
-      `runtime "${runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
-    );
-  }
-  // An absolute or climbing path escapes the unpacked artifact, and the entry
-  // is joined against it by the runtime, not by us.
-  if (entry && (entry.startsWith("/") || entry.split("/").includes(".."))) {
-    throw new ApiError(400, "validation_failed", "runtime.entry must be a path inside the artifact");
-  }
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new ApiError(400, "validation_failed", "runtime.port must be a TCP port");
-  }
-  const healthCheckPath =
-    typeof r.healthCheckPath === "string" ? r.healthCheckPath.trim() : "";
-  if (healthCheckPath && !healthCheckPath.startsWith("/")) {
-    throw new ApiError(400, "validation_failed", "runtime.healthCheckPath must start with /");
-  }
-  return {
-    runtime,
-    entry,
-    port,
-    ...(healthCheckPath ? { healthCheckPath } : {}),
-  };
-}
-
-/**
- * The runtime a deploy says it is building, from the client's hint.
- *
- * Only the family, not the whole spec: at this point the daemon has read the
- * declaration but built nothing, and the rest of it (entry, port) is checked
- * at finalize against what was actually produced.
- */
-export function parseDeclaredRuntime(raw: unknown): string | undefined {
-  if (raw === undefined || raw === null || raw === "") return undefined;
-  if (typeof raw !== "string") {
-    throw new ApiError(400, "validation_failed", "runtime must be a string");
-  }
-  const runtime = raw.trim();
-  if (!runtime) return undefined;
-  if (!isSupportedRuntime(runtime)) {
-    throw new ApiError(
-      400,
-      "unsupported_runtime",
-      `runtime "${runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
-    );
-  }
-  return runtime;
-}
-
-/**
  * The image reference a container deploy finished with.
  *
  * Required for a container app and refused for any other: an archive deploy
@@ -132,10 +56,10 @@ export function parseDeclaredRuntime(raw: unknown): string | undefined {
  */
 export function parseDeployedImage(
   raw: unknown,
-  spec: AppRuntimeSpec | undefined,
+  declaration: AppDeployDeclaration,
 ): string | undefined {
   const image = typeof raw === "string" ? raw.trim() : "";
-  if (!isContainerRuntime(spec?.runtime)) {
+  if (!isContainerKind(declaration.build.kind)) {
     if (image) {
       throw new ApiError(400, "validation_failed", "image is only accepted for a container runtime");
     }
@@ -181,11 +105,11 @@ function runtimeOf(row: DeployGateRow): string {
  */
 export function assertDeployAllowed(row: DeployGateRow): void {
   const runtime = runtimeOf(row);
-  if (!isSupportedRuntime(runtime)) {
+  if (!(BUILD_KINDS as readonly string[]).includes(runtime)) {
     throw new ApiError(
       409,
       "unsupported_runtime",
-      `runtime "${runtime}" is not available on this deployment (have: ${SUPPORTED_RUNTIMES.join(", ")})`,
+      `runtime "${runtime}" is not available on this deployment (have: ${BUILD_KINDS.join(", ")})`,
     );
   }
   const authMode = authModeOf(row);
@@ -346,11 +270,10 @@ export interface StartDeployInput {
    *  that predates this, which then gets the `tc-app-<uuid>` shape. */
   slug?: string | null;
   /**
-   * What the app's checkout declares, read by the daemon before the deploy is
-   * minted. Absent means the built-in contract, which is what every client
-   * older than container support sends.
+   * Build kind read by the daemon before the deploy is minted. It determines
+   * whether the build receives an archive upload or image-push handle.
    */
-  runtime?: string;
+  buildKind?: string;
   gitCommitSha?: string | null;
 }
 export interface StartDeployResult {
@@ -379,7 +302,7 @@ export async function startDeploy(deps: StartDeployDeps, input: StartDeployInput
     fcFunctionName: appFunctionName(input.appId, input.slug),
     fcRegion: input.region,
   };
-  if (isContainerRuntime(input.runtime)) {
+  if (isContainerKind(input.buildKind ?? "")) {
     if (!deps.mintImagePush) {
       throw new ApiError(
         503,
@@ -421,7 +344,7 @@ export interface FinalizeDeps {
       a: {
         ossObjectName: string;
         env: Record<string, string>;
-        runtime?: AppRuntimeSpec;
+        declaration?: AppDeployDeclaration;
         image?: string;
       },
     ) => Promise<void>;
@@ -469,10 +392,10 @@ export interface FinalizeInput {
    */
   userEnv?: Record<string, string>;
   /**
-   * What the app declared about how it starts, reported by the daemon that
-   * built it. Absent → the contract every app had before declarations existed.
+   * The daemon-validated build and start declaration. The FC client rejects an
+   * absent value rather than inventing a Node start command.
    */
-  runtime?: AppRuntimeSpec;
+  declaration?: AppDeployDeclaration;
   /**
    * The image the build pushed, for a `container` app. Required for one:
    * there is no code object for that deploy, so a finalize without it would
@@ -484,6 +407,23 @@ export interface FinalizeInput {
 // Lives with the rest of what a type means; re-exported for the callers that
 // have always imported it from here.
 export { needsDatabase };
+
+// build+start declaration parsers — call sites migrate here before Task 2/3.
+export {
+  BUILD_KINDS,
+  CONTAINER_RUNTIME_FC,
+  FC_CODE_RUNTIMES,
+  defaultLayersForKind,
+  isContainerKind,
+  layerArn,
+  parseAppDeployDeclaration,
+  parseDeclaredBuildKind,
+  resolveLayers,
+  type AppBuildKind,
+  type AppBuildSpec,
+  type AppDeployDeclaration,
+  type AppStartSpec,
+} from "./app-runtime-spec.js";
 
 export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): Promise<{ fcEndpoint: string }> {
   // First, before anything is provisioned. `parseDeployedImage` has already
@@ -500,7 +440,10 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     );
   }
 
-  const env: Record<string, string> = { PORT: "9000", NODE_ENV: "production" };
+  const env: Record<string, string> = { NODE_ENV: "production" };
+  if (input.declaration) {
+    env.PORT = String(input.declaration.start.port);
+  }
 
   if (needsDatabase(input.appType)) {
     const appsAdminUrl = deps.appsAdminUrl ?? readAppsAdminUrl();
@@ -568,7 +511,7 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
   await deps.fcOps.ensureFunction(input.fcFunctionName, {
     ossObjectName: input.ossObjectName,
     env,
-    runtime: input.runtime,
+    declaration: input.declaration,
     image: input.image,
   });
   // The trigger URL is still created: it is what the function is reachable on

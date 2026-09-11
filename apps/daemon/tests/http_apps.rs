@@ -145,7 +145,12 @@ async fn test_app_inner(backend: Option<Arc<dyn Backend>>) -> (TestApp, tempfile
 
 /// Files every compiled-in template ships (see `sync::app_templates`).
 fn assert_seeded_checkout(workdir: &std::path::Path) {
-    for rel in ["package.json", "pnpm-lock.yaml", "AGENTS.md"] {
+    for rel in [
+        "package.json",
+        "pnpm-lock.yaml",
+        "AGENTS.md",
+        "teamclu.app.json",
+    ] {
         assert!(
             workdir.join(rel).is_file(),
             "{rel} missing from seeded checkout"

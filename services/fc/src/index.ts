@@ -218,7 +218,7 @@ function makeDeployDeps() {
     startDeploy: (a: {
       appId: string;
       region: string;
-      runtime?: string;
+      buildKind?: string;
       gitCommitSha?: string | null;
     }) =>
       startDeployImpl(
