@@ -9,6 +9,7 @@ import { SessionNoticeList } from "./SessionNoticeList";
 import { useChatSend } from "./use-chat-send";
 import type { VoiceSendIntent } from "@/lib/messages/voice-send-intent";
 import type { VoiceRoute, VoiceSegment } from "@/lib/voice/local-voice-input";
+import { voiceSegmentTextForSend } from "@/lib/voice/voice-segment-text";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
@@ -548,7 +549,12 @@ export function SessionChatColumn({
         route.mode === "silent"
           ? { kind: "voice-silent", segmentId: segment.segmentId }
           : { kind: "voice-trigger", segmentId: segment.segmentId, agent: route.agent };
-      await sendIntoSession(targetSessionId, { text: segment.text, mentions: [] }, [], intent);
+      await sendIntoSession(
+        targetSessionId,
+        { text: voiceSegmentTextForSend(segment, route), mentions: [] },
+        [],
+        intent,
+      );
     },
     [sendIntoSession],
   );

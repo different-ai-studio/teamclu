@@ -50,6 +50,7 @@ import { MessageList, type MessageListHandle } from "./MessageList";
 import { useChatSend } from "./use-chat-send";
 import type { VoiceSendIntent } from "@/lib/messages/voice-send-intent";
 import type { VoiceRoute, VoiceSegment } from "@/lib/voice/local-voice-input";
+import { voiceSegmentTextForSend } from "@/lib/voice/voice-segment-text";
 import { renderChatEmptyState } from "./chat-empty-state";
 import { SessionErrorAlert } from "./SessionErrorAlert";
 import { isPersistentSessionTurnError } from "@/lib/agent/agent-turn-error";
@@ -991,7 +992,12 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
         route.mode === "silent"
           ? { kind: "voice-silent", segmentId: segment.segmentId }
           : { kind: "voice-trigger", segmentId: segment.segmentId, agent: route.agent };
-      await sendIntoSession(sessionId, { text: segment.text, mentions: [] }, [], intent);
+      await sendIntoSession(
+        sessionId,
+        { text: voiceSegmentTextForSend(segment, route), mentions: [] },
+        [],
+        intent,
+      );
     },
     [sendIntoSession],
   );

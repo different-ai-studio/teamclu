@@ -11,7 +11,7 @@ export interface VoiceSegment {
   text: string;
   startedAtMs: number;
   endedAtMs: number;
-  /** Reserved for a later CAM++ speaker resolver. */
+  /** Session-local diarizer label; absent until CAM++ speaker resolution is enabled. */
   speakerClusterId?: string | null;
   /** Reserved for enrolled voiceprint identity. Never populated in phase one. */
   speakerProfileId?: string | null;
