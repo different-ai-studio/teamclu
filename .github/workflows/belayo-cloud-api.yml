@@ -60,7 +60,7 @@ jobs:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
           TAG: ${{ github.sha }}
         run: |
-          IMG="$IMAGE_REPO:${TAG::9}"
+          IMG="$IMAGE_REPO:shadow-${TAG::9}"
           docker build --platform linux/amd64 -t "$IMG" services/fc
           docker run --rm --entrypoint sh "$IMG" -c 'test -s dist/server.js'
           # Keep load, inspect and push in one checked remote command.  A
@@ -82,7 +82,7 @@ jobs:
             IMAGE_REPO=$3
             TAG=$4
             APP_ID=$5
-            IMG="$IMAGE_REPO:${TAG::9}"
+            IMG="$IMAGE_REPO:shadow-${TAG::9}"
             echo "deploy-manager=$(hostname) service=$SERVICE image=$IMG"
             OLD_IMAGE=$(docker service inspect "$SERVICE" --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
             PG=$(docker ps --format '{{.Names}}' | grep dokploy-postgres | head -1)
