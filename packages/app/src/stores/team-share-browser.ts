@@ -1305,7 +1305,7 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     set({ subjectActorId: actorId, detailTarget: null })
     await Promise.all([
       get().loadSection('skills', { force: true }),
-      get().loadSection('mcp', { force: true }),
+      get().loadSection('mcp', { force: true, withTools: true }),
     ])
   },
 
