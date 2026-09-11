@@ -50,7 +50,7 @@ mod app_git_credential;
 mod channels;
 mod command_executor;
 mod cron;
-mod knowledge;
+pub(crate) mod knowledge;
 mod messaging;
 mod peers_workspaces;
 mod remote_tools;
@@ -357,8 +357,9 @@ pub(crate) enum SockCommand {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,
     },
-    /// Knowledge-base MCP tools (scaffold / create / search) from the
-    /// agent-facing MCP bridge. Pure vault file ops on the active team.
+    /// Knowledge-base tools (scaffold / create / search / propose / publish)
+    /// from the MCP bridge and the desktop review tab. Vault writes stay in
+    /// `shared/knowledge/`; `propose` writes the local inbox under `state/`.
     Knowledge {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,

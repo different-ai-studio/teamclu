@@ -2,6 +2,7 @@ import { useTabsStore } from '@/stores/tabs'
 import {
   encodeKnowledgeConflictTarget,
   encodeCloudVersionTarget,
+  encodeKnowledgeReviewTarget,
 } from '@/lib/tabs/teamshare-target'
 
 /**
@@ -27,6 +28,14 @@ export function openKnowledgeConflict(path: string, label: string) {
  * see", which is the document itself, not the delta from what happens to be on
  * this disk.
  */
+export function openKnowledgeReview(id: string, label: string) {
+  useTabsStore.getState().openTab({
+    type: 'native',
+    target: encodeKnowledgeReviewTarget(id),
+    label,
+  })
+}
+
 export function openCloudVersion(path: string, label: string) {
   useTabsStore.getState().openTab({
     type: 'native',

@@ -13,6 +13,7 @@ import { BookOpen, ChevronLeft, X, PanelRightClose, Loader2, RotateCw, MessageSq
 import { DiagnoseSessionButton } from "@/components/chat/DiagnoseSessionButton";
 import { SessionShareButton } from "@/components/chat/SessionShareButton";
 import { ExportPiTranscriptButton } from "@/components/chat/ExportPiTranscriptButton";
+import { SaveToKnowledgeButton } from "@/components/chat/SaveToKnowledgeButton";
 import { RefreshSkillsHeaderButton } from "@/components/chat/RefreshSkillsHeaderButton";
 import { useWorkspaceInit } from "@/hooks/use-workspace-init";
 import { useChannelGatewayInit } from "@/hooks/use-channel-gateway-init";
@@ -638,6 +639,7 @@ function AppContent() {
             )}
             {activeSession && <SessionShareButton sessionId={activeSession.id} />}
             {activeSession && <ExportPiTranscriptButton sessionId={activeSession.id} />}
+            {activeSession && <SaveToKnowledgeButton sessionId={activeSession.id} />}
             {activeSession && <DiagnoseSessionButton sessionId={activeSession.id} />}
 
             {/* Panel tabs - right side of header */}

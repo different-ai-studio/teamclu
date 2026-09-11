@@ -47,8 +47,24 @@
       "maps_to": { "action": "write" }
     },
     {
+      "name": "knowledge_propose",
+      "description": "Draft a conclusion from this conversation for human review. Writes a pending candidate on this device only — it does NOT enter the team knowledge vault. Tell the user a review tab will open; do not say the page is saved or shared. 把对话结论提交为本机审稿草稿，不会写入团队知识库。告知用户将打开审稿页，不要说已经保存或已共享。 Never call knowledge_write / knowledge_salvage / knowledge_create for this; those skip review.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["title", "content"],
+        "properties": {
+          "title": { "type": "string" },
+          "content": { "type": "string", "description": "Markdown body of the proposed page / 拟写入的正文" },
+          "suggestedPath": { "type": "string", "description": "Vault-relative path suggestion, e.g. 20-domains/payments/对账口径.md" },
+          "session_id": { "type": "string" },
+          "source": { "type": "string", "description": "Use 'agent-propose' when calling from a session" }
+        }
+      },
+      "maps_to": { "action": "propose" }
+    },
+    {
       "name": "knowledge_salvage",
-      "description": "Capture a conclusion from the current conversation into the vault as a salvage draft (00-salvage/<date>-<slug>.md with provenance frontmatter). Use when the user says something is worth keeping. 把对话中值得固化的结论存入知识库（打捞草稿）。 If the reply carries teamSync:\"not-syncing\", the page was saved on this device only and is not reaching the team — say so rather than reporting it as shared. 若返回 teamSync:\"not-syncing\"，说明只存在本机、没有同步给团队，要如实告知，不要说成已共享。",
+      "description": "Legacy: writes a page straight into knowledge/00-salvage/, which syncs to the team without review. Prefer knowledge_propose. 遗留：直接写入 knowledge/00-salvage/ 并同步，没有审稿。请改用 knowledge_propose。",
       "inputSchema": {
         "type": "object",
         "required": ["title", "content"],

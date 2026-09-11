@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { SquarePen, SlidersHorizontal, List, MoreHorizontal, Settings, Loader2, LifeBuoy, Download } from 'lucide-react'
+import { SquarePen, SlidersHorizontal, List, MoreHorizontal, Settings, Loader2, LifeBuoy, Download, BookmarkPlus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -24,6 +24,7 @@ import {
   exportTranscriptErrorMessage,
   savePiTranscript,
 } from '@/lib/session/pi-transcript-export'
+import { proposeSessionToKnowledge } from '@/lib/knowledge/propose-from-session'
 
 export function NarrowChatHeader() {
   const { t } = useTranslation()
@@ -156,6 +157,23 @@ export function NarrowChatHeader() {
                   >
                     <Download className="mr-2 h-4 w-4" />
                     {t('chat.exportTranscript', '导出完整会话记录')}
+                  </DropdownMenuItem>
+                ) : null}
+                {activeSessionId ? (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setMoreOpen(false)
+                      void proposeSessionToKnowledge(activeSessionId)
+                        .then(() => {
+                          toast.success(t('knowledgeReview.opened', '已打开审稿页，确认后才会写入知识库'))
+                        })
+                        .catch((err) => {
+                          toast.error(err instanceof Error ? err.message : String(err))
+                        })
+                    }}
+                  >
+                    <BookmarkPlus className="mr-2 h-4 w-4" />
+                    {t('knowledgeReview.headerAction', '整理到知识库')}
                   </DropdownMenuItem>
                 ) : null}
                 {activeSessionId ? (

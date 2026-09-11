@@ -31,6 +31,9 @@ const KNOWLEDGE_CONFLICT = 'knowledge-conflict'
 /** The read-only "what does the cloud hold" view for one team document. */
 const CLOUD_VERSION = 'knowledge-cloud'
 
+/** Review one session→knowledge candidate before it enters the vault. */
+const KNOWLEDGE_REVIEW = 'knowledge-review'
+
 export function encodeTeamShareTarget(t: TeamShareTarget): string {
   switch (t.kind) {
     case 'skill':
@@ -126,6 +129,16 @@ export function encodeCloudVersionTarget(path: string): string {
   return `${CLOUD_VERSION}/${path}`
 }
 
+export function encodeKnowledgeReviewTarget(id: string): string {
+  return `${KNOWLEDGE_REVIEW}/${id}`
+}
+
+/** The candidate a review tab names, `undefined` when it is not one. */
+export function decodeKnowledgeReviewTarget(target: string): string | undefined {
+  if (!target.startsWith(`${KNOWLEDGE_REVIEW}/`)) return undefined
+  return target.slice(KNOWLEDGE_REVIEW.length + 1) || undefined
+}
+
 /** The document whose cloud copy a target names, `undefined` when it is not one. */
 export function decodeCloudVersionTarget(target: string): string | undefined {
   if (!target.startsWith(`${CLOUD_VERSION}/`)) return undefined
@@ -140,7 +153,8 @@ export function isTeamShareOwnedTarget(target: string): boolean {
     // A conflict belongs to the team whose tree it is in; keeping the tab open
     // across a team switch would offer a decision about another team's file.
     decodeKnowledgeConflictTarget(target) !== undefined ||
-    decodeCloudVersionTarget(target) !== undefined
+    decodeCloudVersionTarget(target) !== undefined ||
+    decodeKnowledgeReviewTarget(target) !== undefined
   )
 }
 

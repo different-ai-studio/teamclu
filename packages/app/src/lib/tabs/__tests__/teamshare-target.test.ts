@@ -4,6 +4,8 @@ import {
   decodeTeamShareTarget,
   encodeVersionHistoryTarget,
   decodeVersionHistoryTarget,
+  encodeKnowledgeReviewTarget,
+  decodeKnowledgeReviewTarget,
   isTeamShareOwnedTarget,
   tabSelectionForSection,
   type TeamShareTabTarget,
@@ -52,6 +54,9 @@ describe('team-share tab targets', () => {
     expect(isTeamShareOwnedTarget('version-history/x.md')).toBe(true)
     expect(isTeamShareOwnedTarget('version-history')).toBe(true)
     expect(isTeamShareOwnedTarget('/Users/me/notes.md')).toBe(false)
+    expect(isTeamShareOwnedTarget('knowledge-review/abc')).toBe(true)
+    expect(decodeKnowledgeReviewTarget(encodeKnowledgeReviewTarget('abc-1'))).toBe('abc-1')
+    expect(decodeKnowledgeReviewTarget('knowledge-cloud/x.md')).toBeUndefined()
   })
 
   test('a file inside a package keeps its skill row selected', () => {
