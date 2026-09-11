@@ -67,7 +67,12 @@ CADDY_TLS_MODE="$(grep '^CADDY_TLS_MODE=' "$ENV_FILE" | cut -d= -f2- || true)"
 case "${CADDY_TLS_MODE:-acme}" in
   internal) CADDY_GLOBAL_TLS=""; CADDY_SITE_TLS="tls internal"; CADDY_SITE_SCHEME=""; CADDY_CATCHALL_SITE=":443" ;;
   off)      CADDY_GLOBAL_TLS="auto_https off"; CADDY_SITE_TLS=""; CADDY_SITE_SCHEME="http://"; CADDY_CATCHALL_SITE="http://catchall.localhost" ;;
-  *)        CADDY_GLOBAL_TLS=""; CADDY_SITE_TLS=""; CADDY_SITE_SCHEME=""; CADDY_CATCHALL_SITE=":443" ;;   # acme default
+  # Caddy 2.10+ prefers an applicable wildcard certificate over issuing an
+  # individual certificate. Our *.APPS_PUBLIC_DOMAIN site is on-demand (there
+  # is deliberately no DNS-challenge wildcard certificate), so a fixed host
+  # below that suffix — LOGIN_DOMAIN today — otherwise gets neither one. Force
+  # the explicitly configured sites into the automate loader.
+  *)        CADDY_GLOBAL_TLS=""; CADDY_SITE_TLS="tls force_automate"; CADDY_SITE_SCHEME=""; CADDY_CATCHALL_SITE=":443" ;;   # acme default
 esac
 set_kv CADDY_GLOBAL_TLS "$CADDY_GLOBAL_TLS"
 set_kv CADDY_SITE_TLS "$CADDY_SITE_TLS"

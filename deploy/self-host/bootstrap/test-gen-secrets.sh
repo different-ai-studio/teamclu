@@ -27,4 +27,14 @@ data="${tok%.*}"; sig="${tok##*.}"
 expected="$(printf '%s' "$data" | openssl dgst -sha256 -hmac "$SECRET" -binary \
   | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
 [ "$sig" = "$expected" ] || { echo "FAIL: ANON_KEY signature mismatch"; exit 1; }
+
+# Public ACME sites nested under the on-demand apps wildcard still need their
+# own certificate. Caddy 2.10+ otherwise prefers a wildcard certificate which
+# this deployment intentionally cannot issue via the HTTP challenge.
+sed 's/^CADDY_TLS_MODE=off$/CADDY_TLS_MODE=acme/' "$TMP/.env" > "$TMP/acme.env"
+ENV_FILE="$TMP/acme.env" ./gen-secrets.sh
+grep -q '^CADDY_SITE_TLS=tls force_automate$' "$TMP/acme.env" || {
+  echo "FAIL: CADDY_SITE_TLS does not force ACME automation"
+  exit 1
+}
 echo "PASS"
