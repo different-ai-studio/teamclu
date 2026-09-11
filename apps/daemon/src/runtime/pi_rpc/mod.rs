@@ -469,12 +469,13 @@ struct EstablishedSession {
 /// A successful login already fans out from its `auth_login_end` host event
 /// ([`events::broadcast_auth_refresh`]), so it is deliberately absent here.
 /// What it cannot cover: a `models.json` write (custom provider added, edited
-/// or deleted) and an explicit `auth_refresh` both change the catalog every
-/// live child serves, and pi reports them as a plain command response, never
-/// as a host event. Without this, a provider added from the settings pane is
-/// invisible to new sessions too — `attach` reuses a pooled (often prewarmed)
-/// child, so its `get_available_models` still answers from the pre-add
-/// `ModelRuntime`.
+/// or deleted), a logout, and an explicit `auth_refresh` all change the
+/// catalog every live child serves, and pi reports them as a plain command
+/// response, never as a host event. Without this, a provider added from the
+/// settings pane is invisible to new sessions too — `attach` reuses a pooled
+/// (often prewarmed) child, so its `get_available_models` still answers from
+/// the pre-add `ModelRuntime` — and a provider removed there stays selectable
+/// in every chat already open (#1391).
 fn auth_command_refresh_fanout(request: &serde_json::Value) -> Option<Option<String>> {
     match request.get("type").and_then(|v| v.as_str()) {
         // Full rebuild, never a provider scope: a brand-new provider id has
@@ -486,6 +487,22 @@ fn auth_command_refresh_fanout(request: &serde_json::Value) -> Option<Option<Str
         // rest of the device learns about it the same way a login teaches
         // them, scoped to the provider when the caller named one.
         Some("auth_refresh") => Some(
+            request
+                .get("providerId")
+                .and_then(|v| v.as_str())
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string),
+        ),
+        // A logout revokes one provider's credentials on the auth child. Every
+        // other live child's `ModelRuntime` still has that provider marked
+        // usable until told otherwise, and — unlike a login — there is no
+        // `auth_login_end` host event to carry the news, so nothing else
+        // reaches them. Scoped like `auth_refresh`: one provider disappearing,
+        // not a rebuild of the whole catalog. The request always names a
+        // provider (`pi_auth.rs`'s `logout_provider` puts it on the path), but
+        // fall through to a full refresh if that ever stops being true rather
+        // than silently dropping the fan-out.
+        Some("auth_logout") => Some(
             request
                 .get("providerId")
                 .and_then(|v| v.as_str())
@@ -1869,6 +1886,20 @@ mod tests {
     }
 
     #[test]
+    fn a_logout_fans_out_scoped_to_its_provider() {
+        let logout = serde_json::json!({"type": "auth_logout", "providerId": "kimi-coding"});
+        assert_eq!(
+            auth_command_refresh_fanout(&logout),
+            Some(Some("kimi-coding".to_string()))
+        );
+
+        // No provider named (should not happen — the HTTP handler always puts
+        // one on the path — but a full refresh is the safe fallback).
+        let bare = serde_json::json!({"type": "auth_logout"});
+        assert_eq!(auth_command_refresh_fanout(&bare), Some(None));
+    }
+
+    #[test]
     fn commands_that_do_not_change_the_catalog_do_not_fan_out() {
         // A login fans out from its `auth_login_end` host event instead.
         for ty in [
@@ -1876,7 +1907,6 @@ mod tests {
             "auth_login_cancel",
             "auth_models_get",
             "auth_list",
-            "auth_logout",
         ] {
             let req = serde_json::json!({"type": ty});
             assert_eq!(
