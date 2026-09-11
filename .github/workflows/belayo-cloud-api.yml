@@ -63,11 +63,12 @@ jobs:
           IMG="$IMAGE_REPO:${TAG::9}"
           docker build --platform linux/amd64 -t "$IMG" services/fc
           docker run --rm --entrypoint sh "$IMG" -c 'test -s dist/server.js'
+          # Keep load, inspect and push in one checked remote command.  A
+          # separate best-effort SSH invocation previously let Actions report
+          # success while the worker could not pull the tag.
           docker save "$IMG" | gzip \
-            | ssh "root@$MGR" 'gunzip | docker load'
-          # IMG is intentionally expanded on the runner before ssh executes.
-          # shellcheck disable=SC2029
-          ssh "root@$MGR" docker push "$IMG"
+            | ssh "root@$MGR" \
+                "set -eu; gunzip | docker load; docker image inspect '$IMG'; docker push '$IMG'; echo deployed-image=\"$IMG\" manager=\"\$(hostname)\""
 
       - name: Roll the Cloud API and record the desired image
         env:
@@ -82,6 +83,7 @@ jobs:
             TAG=$4
             APP_ID=$5
             IMG="$IMAGE_REPO:${TAG::9}"
+            echo "deploy-manager=$(hostname) service=$SERVICE image=$IMG"
             OLD_IMAGE=$(docker service inspect "$SERVICE" --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
             PG=$(docker ps --format '{{.Names}}' | grep dokploy-postgres | head -1)
             OLD_DESIRED=$(docker exec -i "$PG" psql -U dokploy -d dokploy -Atc \
