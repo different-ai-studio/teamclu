@@ -5,16 +5,13 @@
 //! wired, still uses the socket / MCP tool. Neither path writes the vault
 //! until `publish`.
 
-use axum::{
-    extract::Path,
-    Json,
-};
+use axum::{extract::Path, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::config::global_team_store::sync_content_root;
 use crate::config::layout;
-use crate::daemon::server::knowledge::inbox;
+use crate::knowledge::inbox;
 use crate::sync::oss::state::LocalSyncState;
 
 use super::auth::{require_scope, Principal};
@@ -49,7 +46,10 @@ fn inbox_reply(raw: String) -> Result<Json<Value>, HttpError> {
     if v.get("ok") == Some(&Value::Bool(true)) {
         return Ok(Json(v.get("result").cloned().unwrap_or(Value::Null)));
     }
-    let code = v.get("errorCode").and_then(Value::as_str).unwrap_or("internal");
+    let code = v
+        .get("errorCode")
+        .and_then(Value::as_str)
+        .unwrap_or("internal");
     let message = v
         .get("error")
         .and_then(Value::as_str)
@@ -112,7 +112,11 @@ pub async fn propose_inbox(
         "source".into(),
         Value::String(body.source.unwrap_or_else(|| "session-header".into())),
     );
-    inbox_reply(inbox::propose(&team_id, &inbox::inbox_dir(&team_id), &Value::Object(payload)))
+    inbox_reply(inbox::propose(
+        &team_id,
+        &inbox::inbox_dir(&team_id),
+        &Value::Object(payload),
+    ))
 }
 
 /// `DELETE /v1/knowledge/inbox/:id`

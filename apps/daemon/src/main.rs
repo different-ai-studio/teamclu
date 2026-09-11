@@ -9,6 +9,11 @@ mod download_progress;
 mod error;
 mod history;
 mod http;
+// Knowledge vault handlers live at crate root so `http::knowledge_inbox` (and
+// integration-test crate roots that paste `crate_modules`) can reach them
+// without pulling the full `daemon::server` tree.
+#[path = "daemon/server/knowledge.rs"]
+mod knowledge;
 mod logging;
 mod mcp_probe;
 mod mqtt;

@@ -20,6 +20,11 @@ mod download_progress;
 mod error;
 #[path = "../src/http/mod.rs"]
 mod http;
+// Same reason as `process_util` / `device_id`: `http::knowledge_inbox` reaches
+// for `crate::knowledge`, and an integration-test crate root only has what it
+// declares here.
+#[path = "../src/daemon/server/knowledge.rs"]
+mod knowledge;
 #[path = "../src/mcp_probe.rs"]
 mod mcp_probe;
 #[path = "../src/mqtt/mod.rs"]

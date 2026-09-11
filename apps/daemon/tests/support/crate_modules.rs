@@ -17,6 +17,11 @@ mod download_progress;
 mod error;
 #[path = "../../src/http/mod.rs"]
 mod http;
+// Same rule as `process_util`: `http::knowledge_inbox` reaches for
+// `crate::knowledge`, and an integration-test crate root only has what it
+// declares here. The bin declares this via `#[path]` in `main.rs`.
+#[path = "../../src/daemon/server/knowledge.rs"]
+mod knowledge;
 #[path = "../../src/mcp_probe.rs"]
 mod mcp_probe;
 #[path = "../../src/mqtt/mod.rs"]
