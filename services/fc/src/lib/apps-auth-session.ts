@@ -6,7 +6,7 @@ import { ApiError } from "./http-utils.js";
  * Session primitives for the deployed-apps login wall
  * (`docs/specs/2026-09-08-apps-login-and-custom-domain-design.md` §4.5-§4.6).
  *
- * Three ticket kinds, one signing key, told apart by JWT `aud`:
+ * Four ticket kinds, one signing key, told apart by JWT `aud`:
  *
  *   * **SSO session** — lives on the central login domain. Holding one is what
  *     lets a visitor walk into a second app without seeing the login page.
@@ -14,6 +14,8 @@ import { ApiError } from "./http-utils.js";
  *   * **Auth code** — the one-shot bearer that moves a login from the central
  *     domain to an app's hostname, because a cookie on `login.<domain>` cannot
  *     be read by `app.example.com`.
+ *   * **Login state** — a short-lived HttpOnly cookie that binds a browser
+ *     OAuth / Web SSO callback to its PKCE verifier and app return address.
  *
  * The audience separation is load-bearing, not decoration: without it an SSO
  * cookie lifted from the central domain would verify as an app session, and the
@@ -30,6 +32,7 @@ const ISSUER = "teamclu-fc";
 const AUD_SSO = "teamclu-apps-sso";
 const AUD_APP = "teamclu-apps-session";
 const AUD_CODE = "teamclu-apps-code";
+const AUD_LOGIN_STATE = "teamclu-apps-login-state";
 
 /** A visitor stays signed in to the platform for a month. */
 export const SSO_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -44,6 +47,9 @@ export const APP_RENEW_WINDOW_SECONDS = 24 * 60 * 60;
 
 export const SSO_COOKIE = "__teamclu_sso";
 export const APP_COOKIE = "__teamclu_app_session";
+/** Short-lived state for browser OAuth / Web SSO callbacks on the login host. */
+export const LOGIN_STATE_COOKIE = "__teamclu_login_state";
+export const LOGIN_STATE_TTL_SECONDS = 10 * 60;
 
 /**
  * Paths the app-domain gateway owns and never forwards to the app itself.
@@ -73,6 +79,20 @@ export type AuthCodeClaims = {
   /** Origin the code may be redeemed on, pinned when the code was minted. */
   redirect: string;
   jti: string;
+};
+
+/**
+ * State kept in an HttpOnly cookie while a browser login provider is open.
+ * The PKCE verifier never goes in the URL; the signed cookie is the only place
+ * the callback can recover it.
+ */
+export type LoginStateClaims = {
+  appId: string;
+  redirect: string;
+  next: string;
+  provider: string;
+  state: string;
+  codeVerifier: string;
 };
 
 // --- signing key ------------------------------------------------------------
@@ -185,6 +205,24 @@ export function mintAuthCode(
   );
 }
 
+export function mintLoginState(
+  claims: LoginStateClaims,
+  ttlSeconds = LOGIN_STATE_TTL_SECONDS,
+): Promise<{ token: string; expiresAt: number }> {
+  return mint(
+    AUD_LOGIN_STATE,
+    {
+      aid: claims.appId,
+      redirect: claims.redirect,
+      next: claims.next,
+      provider: claims.provider,
+      state: claims.state,
+      code_verifier: claims.codeVerifier,
+    },
+    ttlSeconds,
+  );
+}
+
 // --- verification -----------------------------------------------------------
 
 /**
@@ -283,6 +321,28 @@ export async function consumeAuthCode(
   sweepSpentCodes(now);
   if (spentCodes.has(claims.jti)) return null;
   spentCodes.set(claims.jti, now + SPENT_CODE_TTL_MS);
+  return claims;
+}
+
+export async function verifyLoginState(token: string): Promise<LoginStateClaims | null> {
+  const payload = await verify(token, AUD_LOGIN_STATE);
+  if (!payload) return null;
+  const claims: LoginStateClaims = {
+    appId: str(payload.aid),
+    redirect: str(payload.redirect),
+    next: str(payload.next),
+    provider: str(payload.provider),
+    state: str(payload.state),
+    codeVerifier: str(payload.code_verifier),
+  };
+  if (
+    !claims.appId ||
+    !claims.redirect ||
+    !claims.next ||
+    !claims.provider ||
+    !claims.state ||
+    !claims.codeVerifier
+  ) return null;
   return claims;
 }
 

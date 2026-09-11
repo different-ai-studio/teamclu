@@ -67,6 +67,26 @@ test("buildBootstrapConfig includes tcpUrl when MQTT_PUBLIC_TCP_BROKER_URL is se
   );
 });
 
+test("Belayo bootstrap advertises WSS while preserving the native TCP fallback", () => {
+  withEnv(
+    {
+      MQTT_BROKER_URL: "wss://mqtt.service.ucar.cc/mqtt",
+      MQTT_PUBLIC_TCP_BROKER_URL: "mqtt://transport.service.ucar.cc:1883",
+      MQTT_USE_TLS: "true",
+      WEBSSO_LOGIN_URL: undefined,
+    },
+    () => {
+      assert.deepEqual(buildBootstrapConfig(), {
+        mqtt: {
+          url: "wss://mqtt.service.ucar.cc/mqtt",
+          tcpUrl: "mqtt://transport.service.ucar.cc:1883",
+          useTls: true,
+        },
+      });
+    },
+  );
+});
+
 test("MQTT_BROKER_URL is the only broker source — the public override is gone", () => {
   // There used to be an MQTT_PUBLIC_BROKER_URL override in front of this. It is
   // deleted, deliberately: every deployment declared it with an empty default,

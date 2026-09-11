@@ -380,9 +380,8 @@ pub async fn app_manifest(
 ///
 /// Re-seeding an existing template checkout is safe: the template is written
 /// over the top, so a wrecked app can be repaired without losing the agent's
-/// other files. Re-seeding a *cloned* app is refused rather than made safe —
-/// `app_clone` will not clone over a non-empty directory, because the only
-/// thing it could do there is destroy the user's repo.
+/// other files. A cloned app with an existing checkout is already ready:
+/// `app_clone` skips the clone and leaves the directory untouched.
 pub async fn seed_app(
     principal: Principal,
     State(_state): State<HttpState>,

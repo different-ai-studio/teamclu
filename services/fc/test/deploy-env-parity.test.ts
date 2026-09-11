@@ -202,7 +202,7 @@ function envVarsReadBySource(): Set<string> {
         for (const m of src.matchAll(/process\.env\[["']([A-Z_0-9]+)["']\]/g)) found.add(m[1]);
         for (const m of src.matchAll(/\benv\.([A-Z_0-9]+)/g)) found.add(m[1]);
         for (const m of src.matchAll(/\benv\[["']([A-Z_0-9]+)["']\]/g)) found.add(m[1]);
-        for (const m of src.matchAll(/\benvValue\(["']([A-Z_0-9]+)["']\)/g)) found.add(m[1]);
+        for (const m of src.matchAll(/\benvValue\(["']([A-Z_0-9]+)["'](?:\s*,[^)]*)?\)/g)) found.add(m[1]);
       }
     }
   };

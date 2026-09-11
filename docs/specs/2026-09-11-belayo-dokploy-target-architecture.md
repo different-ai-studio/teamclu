@@ -1,6 +1,6 @@
 # Belayo Dokploy 目标部署架构
 
-- **Status**: Accepted, implementation in progress
+- **Status**: Accepted, production pre-route ready; accelerated cutover pending 2-hour shadow soak
 - **Date**: 2026-09-11
 - **Scope**: Belayo 托管环境的 Cloud API、AI Gateway、MQTT、Registry、Gitea、Supabase 入口与发布流程
 - **Related**:
@@ -110,6 +110,31 @@ Swarm 节点当前均为 `Ready/Active`。Cloud API shadow 被固定在
 这只证明无认证公共配置对齐，不代表鉴权、MQTT、OSS、Apps provisioning、定时任务和
 推送已经完成端到端验证。
 
+### 3.4 生产预备与即时验收（2026-09-11）
+
+- Dokploy Application 已增加 `teamclaw-api.ucar.cc -> :9000` 的 HTTPS Traefik
+  route；公网 DNS 仍指向 FC，因此尚未切流。
+- Cloudflare Origin CA 已为 `teamclaw-api.ucar.cc` 单独签发并注册到 Dokploy。通过
+  `--resolve teamclaw-api.ucar.cc:443:47.107.171.43` 验证 SNI、`/healthz`、公共配置和
+  CORS preflight 均通过。
+- Cloud API shadow 运行不可变镜像 `shadow-6a9ebe3a7`，registry digest 为
+  `sha256:0cb22d51fdee9e2b52839d138482361456eb0b70db2f20b7e9131f250bb97e9d`。
+- Dokploy Application 的 env 已从字面量 `\\n` 修正为真实逐行变量，并去掉 value 的
+  外层 dotenv 引号；修复前 `/healthz` 会假绿、业务路由报缺少 `SUPABASE_URL`，且 Web
+  SSO storage key 带多余引号。
+- Dokploy Compose `Cloud API Cron` 已部署；stack service 固定在
+  `dokploy-worker-2`，当前 desired/running 为 `0/0`。FC `app-cron` timer 仍是唯一
+  scheduler。
+- `deploy/belayo/smoke/cloud-api-e2e.mjs` 已连续通过，并在最终 env 规范化后复验：登录刷新、team
+  bootstrap、session/message、跨租户 RLS、MQTT WSS roundtrip、Gitea provisioning、
+  OSS roundtrip、真实 FC App 发布、cron 单窗口单 run 及 tick 鉴权。
+- Registry 额外验证 pull 凭据可读但不能 push，push 凭据可创建并取消上传会话。
+
+即时验收通过不替代 Phase 1 的 shadow soak。由于当前生产流量较低，2026-09-11 决定采用
+6 小时加速方案：切流前累计观察 2 小时，并以主动全链路 E2E 补足自然流量样本；完成该
+门禁前不改生产 DNS，也不交接 scheduler。DNS 与 scheduler 在 Phase 4 同一变更窗口执行。
+原 24 小时探针可继续运行作为附加证据，但不再是 FC 删除的硬等待条件。
+
 ## 4. 目标架构
 
 ```text
@@ -187,15 +212,22 @@ workflow 已绑定 Dokploy application `k6yinm2sXoijFw2rQ1OXX` 与 service
 
 ### 4.4 MQTT
 
-目标客户端入口：
+当前客户端入口：
 
 ```text
 MQTT_BROKER_URL=wss://mqtt.service.ucar.cc/mqtt
-MQTT_PUBLIC_TCP_BROKER_URL=mqtt://<mqtt-public-host>:1883
+MQTT_PUBLIC_TCP_BROKER_URL=mqtt://transport.service.ucar.cc:1883
+MQTT_USE_TLS=true
 ```
 
-Traefik 增加 `mqtt.service.ucar.cc` 的 HTTPS router，转发到 EMQX WebSocket listener
-`:8083`。EMQX 继续固定在 work1。
+2026-09-11 已在 Dokploy 为 `emqx` Compose 服务增加
+`mqtt.service.ucar.cc` HTTPS domain，Traefik 转发到 EMQX WebSocket listener
+`:8083`。EMQX 继续固定在 work1。Cloud API 影子实例和生产 FC 均已切换到上述配置。
+
+上线验证已完成 TLS、HTTP 101 WebSocket upgrade，以及使用 Cloud API 服务账号执行的
+connect、subscribe、publish、receive roundtrip。生产 bootstrap 已使用真实登录态确认返回
+WSS、native TCP 和 `useTls=true`；另以同一用户 JWT 完成 WSS connect 和 actor-scoped
+subscribe。原生 TCP 入口 `:1883` 同时保持可达。
 
 迁移验证完成后：
 
@@ -355,7 +387,8 @@ cron 验收不能只看进程存活，必须证明一个测试 job 在预期窗�
 - 保持 cron 关闭。
 - 完成公共配置、登录、authenticated CRUD、MQTT、OSS、Registry、Apps provisioning
   的端到端测试。
-- 连续观察至少 24 小时，确认无连接泄漏和异常重启。
+- 连续观察至少 2 小时，确认无连接泄漏和异常重启；低流量期间持续运行 5 分钟业务探针、
+  30 分钟控制面探针，并在切流前再执行一次完整 E2E。
 
 ### Phase 2：对齐依赖入口
 
@@ -377,16 +410,22 @@ cron 验收不能只看进程存活，必须证明一个测试 job 在预期窗�
 
 1. 确认 FC 和 Dokploy 运行相同 commit/兼容 schema。
 2. 切换 `teamclaw-api.ucar.cc` 到 Cloudflare proxied Dokploy origin。
-3. 连续验证 health、登录、authenticated read/write、MQTT publish。
-4. 停止 FC timer，开启 Dokploy cron，验证单次执行。
-5. 观察 30 分钟错误率，再观察 24 小时。
+3. 用唯一请求标识和 Traefik/Cloud API 日志确认公网请求实际进入 work2，不能只依赖
+   `/healthz` 和 DNS 结果推断。
+4. 连续验证 health、登录、authenticated read/write、MQTT publish。
+5. 先停止 FC timer 并确认 `enabled=false`，再开启 Dokploy cron，验证一个调度窗口恰好
+   执行一次；禁止两个 scheduler 短暂重叠。
+6. 前 30 分钟高频观察错误率，并在 T+30 分钟、T+2 小时和 T+6 小时执行完整 E2E。
 
-FC function 保留但不删除，作为回滚目标。
+DNS 切换且 FC timer 停止后，FC 完成逻辑下线；function 在 T+6 小时前保留为回滚目标。
 
 ### Phase 5：收尾
 
-- 稳定观察至少 7 天后移除 FC custom domain。
-- 再停止或删除 `teamclaw-belayo-live-api`；删除前保留完整配置快照。
+- T+2 小时的完整 E2E 通过且期间无回滚触发条件后，移除 FC custom domain。
+- T+6 小时再次完成完整 E2E；通过后，将 function、trigger、custom domain 和环境变量
+  配置快照保存到受控存储（secret value 不进入 Git），再删除
+  `teamclaw-belayo-live-api`。
+- 原 24 小时业务/控制面探针继续运行到期，用作删除后的 Dokploy 稳定性观察。
 - 删除 shadow hostname，或将它改为受限运维入口。
 - 更新 `full-backend-stack.md` 中与实时状态冲突的 Belayo 描述。
 - 品牌域名 `teamclu-api.ucar.cc` 如需启用，另开独立兼容性任务。
@@ -447,7 +486,8 @@ FC function 保留但不删除，作为回滚目标。
 ### 10.5 运维
 
 - running image digest 与发布 commit 对应。
-- Cloud API container health 为 healthy，24 小时无异常重启。
+- Cloud API container health 为 healthy；切流前 2 小时无异常重启，切流后至 T+6 小时无
+  异常重启，且 T+30 分钟、T+2 小时、T+6 小时完整 E2E 均通过。
 - manager 不承载业务 workload。
 - 日志进入现有 Aliyun SLS/LoongCollector，并可按 service、node、commit 查询。
 - 回滚演练在 TTL 窗口内完成。

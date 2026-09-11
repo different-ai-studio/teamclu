@@ -30,8 +30,8 @@ function parseBool(raw) {
 // s.yaml, `"${X:-}"` in docker-compose — so "not configured" reaches the process
 // as `""`, never as undefined. Any `??` chain over these therefore treats a
 // blank as a real value; this helper is what makes "leave it empty" mean absent.
-function envValue(name: string): string | undefined {
-  const value = process.env[name]?.trim();
+function envValue(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const value = env[name]?.trim();
   return value ? value : undefined;
 }
 
@@ -145,9 +145,9 @@ function mergeFeatures(base: FeatureFlags, override: FeatureFlags): FeatureFlags
 // changes, which is what the tests do.
 const featureCache = new Map<string, FeatureFlags>();
 
-export function resolveFeatures(): FeatureFlags {
-  const profileName = envValue("APP_FEATURES_PROFILE");
-  const rawJson = envValue("APP_FEATURES_JSON");
+export function resolveFeatures(env: NodeJS.ProcessEnv = process.env): FeatureFlags {
+  const profileName = envValue("APP_FEATURES_PROFILE", env);
+  const rawJson = envValue("APP_FEATURES_JSON", env);
   // NUL joins the two halves because it is the one byte neither env var can
   // contain, so no (profile, json) pair can collide with another by splitting
   // differently. Written as an escape rather than as a raw byte: a literal NUL
