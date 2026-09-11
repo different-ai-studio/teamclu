@@ -740,11 +740,18 @@ pub async fn webview_create(
             // A navigation away from the trusted origin (redirect, link, SSO
             // hop) must not carry the identity object with it.
             //
-            // Read the URL from the load event, not `webview.url()`: that live
-            // getter round-trips into WKWebView.URL, which is nil until a
-            // navigation commits, and wry 0.55.1 unwraps it instead of
-            // returning an error — panicking the whole process on the
-            // PageLoadEvent::Started for a just-created webview.
+            // Use the load event's own URL rather than `webview.url()`. Two
+            // reasons: it drops a redundant native round-trip, and it fixes the
+            // comparison itself — on `PageLoadEvent::Started` the live getter
+            // still reports the *previous* committed URL, so a hop away from
+            // the trusted origin used to pass this check.
+            //
+            // This does not make the handler panic-proof, though. On macOS wry
+            // builds the payload URL with the same nil-able `WKWebView.URL`
+            // getter (`url_from_webview`, called from the navigation delegate),
+            // so a webview with no committed navigation still panics inside wry
+            // before this closure runs. That half is upstream work (wry#1752);
+            // `webview_url_safe` below only covers the calls this file makes.
             let on_trusted_origin = Some(origin_key(payload.url())) == identity_origin;
             if let (Some((device_no, device_name)), true) = (&identity, on_trusted_origin) {
                 let script = build_teamclu_identity_script(device_no, device_name);
@@ -942,20 +949,86 @@ pub async fn webview_navigate(
     Ok(())
 }
 
-/// `webview.url()` round-trips into the native WKWebView.URL getter, which is
-/// nil until a navigation commits. wry 0.55.1's `url_from_webview` unwraps
-/// that instead of returning an error (the same panic `webview_create`'s
-/// `on_page_load` handler avoids above by reading the load event's own URL
-/// instead) — so catch it here rather than crash the process on a webview
-/// that hasn't loaded anything yet. `WebViewToolbar.tsx` polls the commands
-/// built on this every 2s starting 2s after a webview is created, which is
-/// well within the window a slow-loading page can still be uncommitted.
+thread_local! {
+    /// Set while wry's expected "URL is nil" panic is being caught on this
+    /// thread, so the hook installed by [`silence_expected_panic`] can skip it.
+    static EXPECTED_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The panic hook is global, but "this panic is expected" only holds for the
+/// thread running the query — hence the thread-local flag above. Installed once
+/// and chained behind whatever hook is already there (Sentry's, from
+/// `main.rs`), so genuine panics still report exactly as before.
+static EXPECTED_PANIC_HOOK: std::sync::Once = std::sync::Once::new();
+
+/// Silences panic output for the current thread until the returned guard drops.
+fn silence_expected_panic() -> ExpectedPanicGuard {
+    EXPECTED_PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !EXPECTED_PANIC.with(|flag| flag.get()) {
+                previous(info);
+            }
+        }));
+    });
+    EXPECTED_PANIC.with(|flag| flag.set(true));
+    ExpectedPanicGuard
+}
+
+/// Clears [`EXPECTED_PANIC`] on drop, including when the guarded block unwinds.
+struct ExpectedPanicGuard;
+
+impl Drop for ExpectedPanicGuard {
+    fn drop(&mut self) {
+        EXPECTED_PANIC.with(|flag| flag.set(false));
+    }
+}
+
+/// Read a webview's current URL, returning `Err` instead of panicking when the
+/// webview has not committed a navigation yet.
+///
+/// `tauri::Webview::url()` lands in wry's `url_from_webview`, which does
+/// `webview.URL().unwrap()` (wry 0.55.1, `wkwebview/mod.rs`). `WKWebView.URL` is
+/// nil until a navigation commits, so the getter panics rather than returning an
+/// error, and 0.55.1 gives us no way to avoid it (upstream wry#1752).
+///
+/// Catching only helps if the catch encloses the panic, and `webview.url()` does
+/// not necessarily run on the calling thread: tauri-runtime-wry's
+/// `send_user_message` runs the getter inline only when the caller is already on
+/// the main thread, and otherwise posts it to the event loop and blocks on a
+/// channel. Every `#[tauri::command] async fn` body runs on tauri's tokio
+/// runtime, so a `catch_unwind` there lets the panic unwind out of the main
+/// event loop and take the process with it. Marshal the query onto the main
+/// thread first, then catch it there.
+///
+/// `WebViewToolbar.tsx` polls `webview_get_url` / `webview_get_favicon` every 2s
+/// starting 2s after a webview is created, which is well inside the window a slow
+/// page can still have no committed navigation, so this is a live path.
 pub(crate) fn webview_url_safe<R: tauri::Runtime>(
     webview: &tauri::Webview<R>,
 ) -> Result<tauri::Url, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let query = webview.clone();
+    webview
+        .run_on_main_thread(move || {
+            let _ = tx.send(catch_url_query(&query));
+        })
+        .map_err(|error| format!("failed to reach the main thread: {error}"))?;
+
+    rx.recv()
+        .map_err(|_| "the webview URL query never ran".to_string())?
+}
+
+/// Main-thread half of [`webview_url_safe`]: the panic catcher has to share a
+/// stack frame with the getter.
+fn catch_url_query<R: tauri::Runtime>(webview: &tauri::Webview<R>) -> Result<tauri::Url, String> {
+    // Losing the URL is how we learn the navigation has not committed yet, so
+    // keep the panic out of the log and out of Sentry — otherwise a webview that
+    // never commits files an "error" every time the toolbar polls it.
+    let _silence = silence_expected_panic();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| webview.url()))
         .map_err(|_| "webview has not committed a navigation yet".to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|error| error.to_string())
 }
 
 /// Get the current URL of the webview.
@@ -1407,5 +1480,27 @@ mod identity_origin_tests {
             "https://a.b:8443"
         );
         assert_eq!(origin_key(&url("https://a.b/p")), "https://a.b");
+    }
+}
+
+#[cfg(test)]
+mod expected_panic_tests {
+    use super::*;
+
+    #[test]
+    fn guard_silences_the_panic_and_clears_the_flag() {
+        assert!(!EXPECTED_PANIC.with(|flag| flag.get()));
+
+        {
+            let _silence = silence_expected_panic();
+            assert!(EXPECTED_PANIC.with(|flag| flag.get()));
+            // The hook is supposed to swallow this one, so a clean test log is
+            // part of the assertion — if the guard stopped working, the panic
+            // message would show up here.
+            let caught = std::panic::catch_unwind(|| panic!("expected nil URL"));
+            assert!(caught.is_err());
+        }
+
+        assert!(!EXPECTED_PANIC.with(|flag| flag.get()));
     }
 }
