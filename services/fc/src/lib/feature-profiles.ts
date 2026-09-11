@@ -143,7 +143,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
   // is now the whole story — the host comes from WEBSSO_LOGIN_URL on that
   // deployment, not from anything baked into the build.
   belayo: {
-    auth: { google: false, wechat: false, phone: true, password: false, webSSO: true },
+    auth: { google: true, wechat: false, phone: true, password: false, webSSO: true },
     channels: { discord: true, feishu: true, email: true, kook: true, wecom: true, wechat: true, seatalk: false },
     // Entry point only, same as self-host. Creating an app needs GITEA_*, which
     // this deployment now has (its own Gitea, reached over the VPC). Deploying

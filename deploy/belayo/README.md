@@ -45,7 +45,7 @@ add secret values to these manifests.
 
 | Capability | Self-host | Belayo | Status |
 |---|---|---|---|
-| Cloud API | Caddy to fc:9000 | FC production; Traefik shadow to cloud-api:9000 | Migration pending |
+| Cloud API | Caddy to fc:9000 | Dokploy/Traefik to cloud-api:9000 | Migrated; Alibaba FC is pending decommission |
 | AI Gateway internal | ai-gateway:4001 | teamclu-ai-gateway-iiq8f3:4001 | Aligned |
 | AI Gateway public | /ai/* on the Cloud API host | ai-gateway.service.ucar.cc | Intentional |
 | MQTT WebSocket | Caddy to emqx:8083 | Traefik to emqx:8083 | Aligned |

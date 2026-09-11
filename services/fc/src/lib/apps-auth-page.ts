@@ -47,6 +47,12 @@ a.btn:hover{background:var(--accent);color:#fff}
 color:var(--err);border:1px solid currentColor;background:transparent}
 .foot{margin:18px 0 0;font-size:12px;color:var(--muted);text-align:center}
 .code-input{letter-spacing:.4em;font-variant-numeric:tabular-nums}
+.methods{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;justify-content:center}
+.methods a{font-size:12.5px;color:var(--accent);text-decoration:none}
+.methods a:hover{text-decoration:underline}
+.account-choices{display:grid;gap:8px}
+.account-choices button{height:auto;margin-top:0;padding:10px 12px;text-align:left;display:flex;flex-direction:column;gap:1px}
+.account-choices small{font-size:12px;font-weight:400;opacity:.8}
 `;
 
 export function page(title: string, inner: string, status = 200): Response {

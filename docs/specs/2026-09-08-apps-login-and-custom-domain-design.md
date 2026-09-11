@@ -5,6 +5,16 @@
 - 行号基线：`8aae0a060`
 - 前置文档：`docs/specs/2026-08-27-apps-self-serve-gitea-fc-design.md`（§6 `auth_mode`、§7 公开性、§8 路线图把「自定义域名」列在 Phase 2）
 
+> **2026-09-11 增补（FC app 登录）**：中心登录页复用 Tauri 的 `features.auth` 配置，
+> 同步提供邮箱 OTP、手机号 OTP、Google OAuth PKCE，以及配置了 `WEBSSO_LOGIN_URL` 时的 Web SSO。
+> 手机号登录直接复用 FC auth repository；这些登录/注册路径只创建或复用 Supabase 用户，
+> 不调用 team bootstrap。Web SSO 在 Tauri 中仍使用原生 WebView + localStorage；FC 浏览器流
+> 使用回调桥接，因此配置的登录页需要把 PKCE code 回跳到 `redirect_to`，或把 Supabase 会话
+> 放在回调 URL fragment 中。
+
+本增补 supersedes 下文关于「FC app 不支持 Google/社交登录」的非目标描述；动态 OAuth 2.1
+客户端注册、`app` 自己的登录页和独立用户池仍不在范围内。
+
 ## 0. 一句话
 
 给部署出去的 app 两样东西：一道**真正挡得住、且认得出员工**的登录墙（终端用户注册进我们
@@ -150,7 +160,7 @@ GOTRUE_URI_ALLOW_LIST=http://127.0.0.1:*/callback,teamclaw://auth-callback,teamc
 **非目标（本轮不做）**
 
 - `third`（第三方 IdP）仍然拒绝部署，行为不变。
-- Google / Apple 等社交登录进 app（需要 redirect allow list，见 §7 R3）。
+- Apple 等原生登录进 app；FC app 的 Google/WeChat 浏览器登录见本页 2026-09-11 增补。
 - app 独立用户池 / 独立 Supabase project。
 - 按 team、按 per-app 授权名单的更细粒度受众（`app_member_access` 已存在，本轮不接）。
 - 域名级访问策略（IP 白名单、地域限制）。
@@ -179,13 +189,14 @@ GOTRUE_URI_ALLOW_LIST=http://127.0.0.1:*/callback,teamclaw://auth-callback,teamc
 `data_app` 没有影响 —— 它的数据在自己的 Postgres schema（`DATABASE_URL`），本来就不
 经过 Supabase。
 
-### D2 · 用邮箱验证码（OTP），不用 OAuth 2.1，也不用 magic link
+### D2 · 邮箱验证码（OTP）是默认流程；FC 登录主机按配置支持 PKCE
 
-依据 §1.3。附带收益：不需要开 GoTrue 的 `OAUTH_SERVER`、不需要
-`APP_SECRETS_ENCRYPTION_KEY`、不需要自建 GoTrue OAuth 授权页（GoTrue 只提供
-`authorization_path` 配置项，**不提供页面本身**）。
+邮箱 OTP 仍是最兼容任意 app / 自定义域名的默认流程。FC 登录主机同时可以按
+`features.auth` 开启 Google/WeChat 的 GoTrue PKCE，以及 `WEBSSO_LOGIN_URL` 配置的 Web SSO；
+这不使用 OAuth 2.1 动态客户端注册，不需要 `APP_SECRETS_ENCRYPTION_KEY`，也不会创建 team。
 
-§1.2 的两个线上堵点因此**不需要运维介入**。
+Google/WeChat 的登录回调是固定的 `https://<LOGIN_DOMAIN>/oauth/callback`，因此启用时必须将
+它加入 GoTrue 的 `GOTRUE_URI_ALLOW_LIST`；Web SSO 则回到 `https://<LOGIN_DOMAIN>/sso/callback`。
 
 ### D3 · 会话票据由 FC 自签，密钥从 service role key 派生
 
@@ -202,7 +213,8 @@ HKDF-SHA256 派生（`info="teamclu-apps-auth-v1"`）。
 ### D4 · 复用 `auth_mode = platform`，受众用一列新字段表达
 
 不动 `apps_auth_mode_check` 约束、不动 UI 的三个选项、不动 `deployed_auth_mode` 的
-pending 机制。变的是 `platform` 的**实现**（OAuth 2.1 → 代理层 OTP 网关）。
+pending 机制。变的是 `platform` 的**实现**（OAuth 2.1 动态注册 → 代理层 OTP 网关；FC 登录
+主机另外按配置提供 GoTrue PKCE 和 Web SSO）。
 
 两档门槛用新列 `auth_audience`（`any` | `org`）表达，只在 `auth_mode = 'platform'` 时
 有意义。**默认 `org`（收紧）** —— 设计文档 §7「公开性必须显式化」那节的教训是：默认值
@@ -274,7 +286,7 @@ Postgres 和 GoTrue —— `data_app` 至今不通就是这个原因（`APPS_DB_
 ② 中心登录服务
    有中心 cookie？
      是 → 直接签 code
-     否 → 登录页 → 邮箱 → GoTrue /otp → 验证码 → GoTrue /verify → 种中心 cookie → 签 code
+     否 → 登录页 → 邮箱/手机号 OTP，或 Google PKCE / Web SSO → 种中心 cookie → 签 code
    → 302 https://app.example.com/__teamclu/auth/callback?code=<一次性>&next=%2Freport
 
 ③ app 域名网关
@@ -295,7 +307,18 @@ Postgres 和 GoTrue —— `data_app` 至今不通就是这个原因（`APPS_DB_
 | GET | `/` | 登录页；带 `app` / `next` / `r` 参数。有中心会话则直接签 code 并 302 |
 | POST | `/otp` | `{email}` → GoTrue `POST /auth/v1/otp`（`create_user: true`）发验证码 |
 | POST | `/verify` | `{email, code}` → GoTrue `POST /auth/v1/verify`（`type: "email"`）→ 种中心 cookie → 签 code → 302 |
+| POST | `/phone` | `{phone}` → 复用 FC auth repository 发送手机号验证码 |
+| POST | `/phone/verify` / `/phone/select` | 校验手机号验证码，必要时选择关联账号，再种中心 cookie → 签 code → 302 |
+| GET | `/oauth/google` / `/oauth/wechat` | 按 `features.auth` 开启对应的 GoTrue PKCE 授权 |
+| GET | `/oauth/callback` | 校验签名 state cookie，交换 PKCE code，再种中心 cookie |
+| GET | `/sso` / `/sso/callback` | 跳转配置的 Web SSO 登录页并接收 code 或会话 fragment |
+| POST | `/sso/exchange` | 同源桥接页提交 fragment 中的 token，验证后种中心 cookie |
 | POST | `/logout` | 清中心 cookie |
+
+登录方法与 Tauri 的配置保持一致：邮箱 OTP 始终存在，手机号 / Google / WeChat / Web SSO
+由 `features.auth` 和对应环境配置共同决定。浏览器端不能跨 origin 读取 Tauri 所使用的
+`WEBSSO_STORAGE_KEY` localStorage，因此 Web SSO 目标页必须支持 `redirect_to` / `return_to`
+回跳约定；FC 不接受 query string 中的 access/refresh token，避免 token 进入访问日志。
 
 GoTrue 调用走**内网** `SUPABASE_URL`（`http://kong:8000`），不走公网域名。
 
@@ -319,8 +342,8 @@ app** —— 否则 app 里一个同名路由就能伪造回调。
 | 有效期 | 30 天 | 7 天，剩余不足 1 天时滑动续期 |
 | 属性 | `HttpOnly; Secure; SameSite=Lax; Path=/`（都不设 `Domain`） | 同左 |
 
-**三种票据（含下节的 code）共用一把密钥，靠 JWT 的 `aud` 区分**：`teamclu-apps-sso` /
-`teamclu-apps-session` / `teamclu-apps-code`。audience 隔离是承重的，不是装饰：没有它，
+**登录相关票据共用一把密钥，靠 JWT 的 `aud` 区分**：`teamclu-apps-sso` /
+`teamclu-apps-session` / `teamclu-apps-code` / `teamclu-apps-login-state`。audience 隔离是承重的，不是装饰：没有它，
 从中心域偷到的 SSO cookie 会当作 app 会话验过，而下面那条 `aid` 检查根本无从失败
 （SSO 票据没有 `aid`）。
 
@@ -683,7 +706,7 @@ api/supabase/mqtt 共享）。
 |---|---|---|
 | R1 | catch-all Caddy 块吃掉所有未匹配 Host | 必须放文件最末；`ask` 闸门保证未校验域名拿不到证书 |
 | R2 | 身份 header 伪造 | 转发前无条件删除客户端的 `X-Teamclu-*` 再写入 |
-| R3 | 社交登录（Google）在 app 域名上不可用 | 本轮非目标；要做需给 allow list 加 `https://*.apps.<domain>/**`，且**自定义域名做不到**（不可预知） |
+| R3 | 社交登录回调未被 GoTrue 放行 | FC 登录统一回到固定的 `https://<LOGIN_DOMAIN>/oauth/callback`，启用 Google/WeChat 时把这个精确地址加入 `ADDITIONAL_REDIRECT_URLS`；不把任意 app / 自定义域名加入 allow list |
 | R4 | 验证邮件是 TeamClu 的模板和发信域名 | 「不隔离」的必然结果，UI 文案讲清楚 |
 | R5 | OTP 端点被刷 | §4.11 限流；GoTrue 侧本身也有发信限流 |
 | R6 | admin 授权者绑域名 404 | §5.2 必须复用 `updateApp` 的 service-role 绕法 |
@@ -705,9 +728,9 @@ api/supabase/mqtt 共享）。
 
 1. ~~**批次 1 — 会话与 code 原语**~~ ✅ **已完成**（`src/lib/apps-auth-session.ts` +
    `test/apps-auth-session.test.ts`，24 个用例）。验收全部达成，另加了两项设计断言：
-   「失败的兑换不烧 code」（校验顺序）与「三种票据不可互换」（audience 隔离）。
+   「失败的兑换不烧 code」（校验顺序）与「四种票据不可互换」（audience 隔离）。
    两处变异检验确认测试非假绿：去掉 `aid` 绑定 → 红；把 `jti` 标记提到校验之前 → 红。
-2. ~~**批次 2 — 中心登录服务**~~ ✅ **已完成**（`src/lib/apps-login-service.ts`，24 个用例）。
+2. ~~**批次 2 — 中心登录服务**~~ ✅ **已完成**（`src/lib/apps-login-service.ts`，29 个用例，覆盖邮箱/手机号 OTP、Google PKCE 与 Web SSO）。
    顺带把 `LOGIN_DOMAIN` / `APPS_AUTH_SESSION_SECRET` 在 compose、`s.yaml`、`.env.example`
    三处声明齐，并加了 Caddy 的登录站点块 —— env 少加一处会静默失效，留到批次 5 太容易漏。
    两处变异检验：放开返回地址校验 → 红；身份改用用户输入的邮箱而非 GoTrue 的回答 → 红。
@@ -717,7 +740,8 @@ api/supabase/mqtt 共享）。
 
    **实现记的一条**：`services/fc` 是 `strict: false`，**没有 `strictNullChecks` 就没有
    可辨识联合窄化** —— `if (!result.ok)` 之后访问分支独有字段会编译失败。这里改用了「所有
-   字段恒在的扁平结构」。全量测试是绿的而 typecheck 是红的，别只跑测试就下结论。
+   字段恒在的扁平结构」。登录专项测试与 typecheck 必须同时跑；全量测试还会包含需要本机
+   Supabase 的同步用例。
 3. ~~**批次 3 — app 域名网关**~~ ✅ **已完成**（`apps-auth-gate.ts` 21 个用例 +
    `auth_audience` 迁移 + `app-auth-mode.ts` 改造）。四条验收全部达成。三处变异检验：
    未设置受众读作 `any` → 红；不删客户端伪造的身份头 → 红；登录域缺失时放行 → 红。
