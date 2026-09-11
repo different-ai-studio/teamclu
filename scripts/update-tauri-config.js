@@ -4,7 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const { applyNameToTauriConf, resolveLogoPlan, applyIdentityToTauriConf } = require('./lib/branding');
 const { execFileSync } = require('child_process');
+const { createPhaseTimer } = require('./lib/dev-timing');
 
+const timing = createPhaseTimer({ prefix: '[update-tauri-config]' });
 const rootDir = path.resolve(__dirname, '..');
 const tauriConfPath = path.join(rootDir, 'apps/desktop', 'tauri.conf.json');
 
@@ -132,3 +134,5 @@ if (updated) {
 } else {
   console.log('⚠ No updater configuration found in build.config.json');
 }
+
+timing.mark('done');

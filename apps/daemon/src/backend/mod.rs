@@ -55,8 +55,8 @@ pub mod deferred;
 pub mod records;
 pub use records::{
     ActorDirectoryRow, BackendParticipantRow, BackendSessionAndParticipants, BackendSessionRow,
-    ClaimResult, GatewaySessionRow, SessionRoster, SessionRosterEntry, SessionRosterSelfAgent,
-    StoredMessage, WorkspaceRow, WorkspaceUpsert,
+    ClaimResult, GatewaySessionRow, SessionAppContext, SessionRoster, SessionRosterEntry,
+    SessionRosterSelfAgent, StoredMessage, WorkspaceRow, WorkspaceUpsert,
 };
 
 /// MQTT settings delivered by `/v1/config/bootstrap`. The full broker URL
@@ -493,6 +493,16 @@ pub trait Backend: Send + Sync {
         &self,
         session_id: &str,
     ) -> BackendResult<BackendSessionAndParticipants>;
+
+    /// Paginated session ids for the calling actor (`GET /v1/sessions?kind=regular`).
+    /// Excludes archived and cron sessions server-side; used for offline catch-up
+    /// scans instead of a local on-disk session index.
+    async fn list_actor_session_ids(
+        &self,
+        team_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> BackendResult<(Vec<String>, Option<String>)>;
 
     /// Display names for seated session participants via
     /// `GET /v1/sessions/{sessionId}/roster`.

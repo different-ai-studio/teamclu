@@ -50,7 +50,7 @@ mod app_git_credential;
 mod channels;
 mod command_executor;
 mod cron;
-mod knowledge;
+pub(crate) mod knowledge;
 mod messaging;
 mod peers_workspaces;
 mod remote_tools;
@@ -357,8 +357,9 @@ pub(crate) enum SockCommand {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,
     },
-    /// Knowledge-base MCP tools (scaffold / create / search) from the
-    /// agent-facing MCP bridge. Pure vault file ops on the active team.
+    /// Knowledge-base tools (scaffold / create / search / propose / publish)
+    /// from the MCP bridge and the desktop review tab. Vault writes stay in
+    /// `shared/knowledge/`; `propose` writes the local inbox under `state/`.
     Knowledge {
         payload: serde_json::Value,
         reply_tx: oneshot::Sender<String>,
@@ -919,14 +920,14 @@ impl DaemonServer {
                 return Err("stale MQTT generation after runtime subscription".to_string());
             }
             if let Some(tc) = &mut self.teamclu {
-                if let Err(e) = tc.subscribe_all().await {
+                if let Err(e) = tc.subscribe_team_topics().await {
                     warn!(
                         context,
                         error = %e,
-                        "teamclu subscribe failed after CONNACK, reconnecting"
+                        "teamclu team-topic subscribe failed after CONNACK, reconnecting"
                     );
                     mark_mqtt_connected(&self.mqtt_connected_flag, false);
-                    return Err(format!("teamclu subscription failed: {e}"));
+                    return Err(format!("teamclu team-topic subscription failed: {e}"));
                 }
             }
             // Optional: ACL for sync/+ may lag token rotation (Task 6). Never
@@ -1025,6 +1026,36 @@ impl DaemonServer {
             return Err("stale MQTT generation before readiness".to_string());
         }
         Ok(())
+    }
+
+    /// Phase-2 MQTT restore: team topics (when the CONNACK path skipped them)
+    /// and tracked session/live subscriptions. Failures are logged only —
+    /// they must not tear down the MQTT worker.
+    async fn restore_mqtt_session_live_subscriptions(&mut self) {
+        let Some(tc) = &mut self.teamclu else {
+            return;
+        };
+        if let Err(e) = tc.subscribe_team_topics().await {
+            warn!(
+                error = %e,
+                "MQTT phase-2: team topic subscribe failed; session live restore skipped"
+            );
+            return;
+        }
+        match tc.resubscribe_tracked_live_sessions().await {
+            Ok(()) => {
+                info!(
+                    live_session_count = tc.tracked_live_session_count(),
+                    "MQTT phase-2: restored tracked session/live subscriptions"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "MQTT phase-2: session/live subscribe failed; will retry on next reconnect"
+                );
+            }
+        }
     }
 
     /// Run the daemon. When `shutdown` resolves, the inner loop exits
@@ -1871,6 +1902,7 @@ impl DaemonServer {
 
             // ── 4. Subscribe and announce ──
             info!(actor_id = %self.config.actor.id, "MQTT connected, listening for commands");
+            self.restore_mqtt_session_live_subscriptions().await;
 
             if first_connect {
                 // Drain messages that landed in the cloud backend while the daemon
@@ -2079,6 +2111,7 @@ impl DaemonServer {
                                         .await
                                 {
                                     info!(generation, "MQTT generation readiness acknowledged");
+                                    self.restore_mqtt_session_live_subscriptions().await;
                                 } else {
                                     warn!(generation, "MQTT state restore failed; requesting generation rebuild");
                                     mqtt_supervisor
@@ -2605,17 +2638,49 @@ impl DaemonServer {
     /// branching logic (no prior row → skip, only self-authored unread →
     /// skip, already-running runtime → skip, etc.) without booting a real
     /// ACP backend.
-    pub(crate) async fn plan_auto_restart_offline_sessions(&self) -> Vec<OfflineRestartPlan> {
-        let session_ids: Vec<String> = match self.teamclu.as_ref() {
-            Some(tc) => tc.membership_session_ids(),
-            None => return Vec::new(),
+    async fn list_all_actor_session_ids(&self) -> Vec<String> {
+        let team_id = match self.config.team_id.as_deref() {
+            Some(team_id) if !team_id.is_empty() => team_id,
+            _ => return Vec::new(),
         };
+        let mut session_ids = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let (page, next) = match self
+                .backend
+                .list_actor_session_ids(team_id, cursor.as_deref(), 50)
+                .await
+            {
+                Ok(page) => page,
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        team_id,
+                        "list_all_actor_session_ids: Cloud session list failed"
+                    );
+                    break;
+                }
+            };
+            session_ids.extend(page);
+            cursor = next.filter(|c| !c.is_empty());
+            if cursor.is_none() {
+                break;
+            }
+        }
+        session_ids
+    }
+
+    pub(crate) async fn plan_auto_restart_offline_sessions(&self) -> Vec<OfflineRestartPlan> {
+        if self.teamclu.is_none() {
+            return Vec::new();
+        }
+        let session_ids = self.list_all_actor_session_ids().await;
         if session_ids.is_empty() {
             return Vec::new();
         }
         info!(
             count = session_ids.len(),
-            "plan_auto_restart_offline_sessions: scanning membership sessions for offline messages"
+            "plan_auto_restart_offline_sessions: scanning Cloud regular sessions for offline messages"
         );
 
         let mut plan = Vec::new();
@@ -4059,12 +4124,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     pub(crate) async fn auto_restart_offline_sessions_is_noop_without_membership() {
-        // The default test fixture has no teamclu memberships (no
-        // sessions.toml entries the actor is a participant in), so the
-        // method must return early before touching the Cloud API. A real
-        // request would fail because `test_cloud_api()` points at
-        // http://localhost with no server running, so a successful return
-        // here implies the early-exit guard fired.
+        // The default test fixture has no Cloud session list mock, so
+        // `list_actor_session_ids` fails and offline restart scans zero
+        // sessions without spawning runtimes.
         let mut fixture = test_server();
         fixture.server.auto_restart_offline_sessions().await;
         // No runtimes added beyond the fixture's seeded "session-1".
@@ -4618,7 +4680,45 @@ pub(crate) mod tests {
         })
     }
 
-    pub(crate) async fn add_membership(fixture: &mut TestServer, session_id: &str) {
+    pub(crate) async fn mock_actor_session_list(
+        srv: &MockServer,
+        team_id: &str,
+        session_ids: &[&str],
+    ) {
+        let items: Vec<serde_json::Value> = session_ids
+            .iter()
+            .map(|session_id| {
+                serde_json::json!({
+                    "id": session_id,
+                    "teamId": team_id,
+                    "title": session_id,
+                    "mode": "collab",
+                    "ideaId": null,
+                    "lastMessageAt": null,
+                    "lastMessagePreview": null,
+                    "hasUnread": false,
+                    "createdAt": "2026-09-10T00:00:00Z",
+                    "updatedAt": "2026-09-10T00:00:00Z",
+                })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/v1/sessions"))
+            .and(query_param("teamId", team_id))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": items,
+                "nextCursor": null,
+            })))
+            .mount(srv)
+            .await;
+    }
+
+    pub(crate) async fn add_membership(
+        srv: &MockServer,
+        fixture: &mut TestServer,
+        session_id: &str,
+    ) {
+        mock_actor_session_list(srv, "team-test", &[session_id]).await;
         let tc = fixture.server.teamclu.as_mut().expect("teamclu set");
         tc.insert_session_from_backend_for_test(
             session_id,
@@ -4644,7 +4744,7 @@ pub(crate) mod tests {
             .await;
 
         let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
-        add_membership(&mut fixture, "sess-no-row").await;
+        add_membership(&srv, &mut fixture, "sess-no-row").await;
 
         let plan = fixture.server.plan_auto_restart_offline_sessions().await;
         assert!(plan.is_empty(), "no prior row should produce empty plan");
@@ -4661,7 +4761,7 @@ pub(crate) mod tests {
         mock_messages_response(&srv, "sess-empty", serde_json::json!([])).await;
 
         let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
-        add_membership(&mut fixture, "sess-empty").await;
+        add_membership(&srv, &mut fixture, "sess-empty").await;
 
         let plan = fixture.server.plan_auto_restart_offline_sessions().await;
         assert!(
@@ -4696,7 +4796,7 @@ pub(crate) mod tests {
         .await;
 
         let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
-        add_membership(&mut fixture, "sess-self").await;
+        add_membership(&srv, &mut fixture, "sess-self").await;
 
         let plan = fixture.server.plan_auto_restart_offline_sessions().await;
         assert!(
@@ -4758,7 +4858,7 @@ pub(crate) mod tests {
         mock_session_detail(&srv, "sess-mention", serde_json::json!({})).await;
 
         let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
-        add_membership(&mut fixture, "sess-mention").await;
+        add_membership(&srv, &mut fixture, "sess-mention").await;
 
         let plan = fixture.server.plan_auto_restart_offline_sessions().await;
         assert_eq!(plan.len(), 1, "one session should need restart");
@@ -4804,7 +4904,7 @@ pub(crate) mod tests {
         .await;
 
         let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
-        add_membership(&mut fixture, "sess-thread").await;
+        add_membership(&srv, &mut fixture, "sess-thread").await;
 
         let plan = fixture.server.plan_auto_restart_offline_sessions().await;
         assert_eq!(plan.len(), 1);
@@ -4841,7 +4941,7 @@ pub(crate) mod tests {
         .await;
 
         let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
-        add_membership(&mut fixture, "session-1").await;
+        add_membership(&srv, &mut fixture, "session-1").await;
 
         let plan = fixture.server.plan_auto_restart_offline_sessions().await;
         assert!(
@@ -5081,7 +5181,7 @@ pub(crate) mod tests {
         .await;
 
         let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
-        add_membership(&mut fixture, "sess-answered").await;
+        add_membership(&srv, &mut fixture, "sess-answered").await;
 
         let plan = fixture.server.plan_auto_restart_offline_sessions().await;
         assert!(

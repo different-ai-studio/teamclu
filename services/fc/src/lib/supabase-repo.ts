@@ -3022,7 +3022,7 @@ export function createSupabaseBusinessRepository(options) {
     async listSessionRoster(sessionId) {
       const { data: sessionRow, error: sessionErr } = await supabase
         .from("sessions")
-        .select("id, team_id, title")
+        .select("id, team_id, title, app_id")
         .eq("id", sessionId)
         .maybeSingle();
       if (sessionErr) throw sessionErr;
@@ -3091,11 +3091,124 @@ export function createSupabaseBusinessRepository(options) {
         }
       }
 
+      // App workspaces need a small, session-scoped control-plane snapshot in
+      // the agent's system prompt. Read it only after proving that the caller
+      // is seated in this session, and only for an agent caller. The service
+      // role is intentional: personal apps are hidden from daemon actors by
+      // app RLS, even when that daemon is running the app's own session.
+      //
+      // This is a deliberately safe projection. It contains no env values,
+      // cron header/body values, data rows, file names, DNS tokens or secrets.
+      let appContext = null;
+      if (sessionRow.app_id && callerActor?.actor_type === "agent") {
+        try {
+          const admin = await serviceRoleClient("read app workspace context for a seated agent");
+          const { data: appRow, error: appErr } = await admin
+            .from("apps")
+            .select(`${APP_COLUMNS}, custom_domain, custom_domain_verified_at, storage_bytes, storage_quota_bytes`)
+            .eq("id", sessionRow.app_id)
+            .eq("team_id", sessionRow.team_id)
+            .maybeSingle();
+          if (appErr) throw appErr;
+
+          if (appRow) {
+            const [envResult, cronResult] = await Promise.all([
+              admin
+                .from("app_env_vars")
+                .select("key, is_secret")
+                .eq("app_id", appRow.id)
+                .order("key", { ascending: true }),
+              admin
+                .from("app_cron_jobs")
+                .select("name, enabled, schedule_expr, timezone, method, path, headers")
+                .eq("app_id", appRow.id)
+                .order("created_at", { ascending: true }),
+            ]);
+            if (envResult.error) throw envResult.error;
+            if (cronResult.error) throw cronResult.error;
+
+            const app = mapApp(appRow);
+            const customDomainVerified = Boolean(appRow.custom_domain_verified_at);
+            const canonicalUrl = customDomainVerified && appRow.custom_domain
+              ? `https://${appRow.custom_domain}`
+              : (app.publicUrl ?? app.fcEndpoint ?? null);
+            const deployedType = appRow.deployed_type ?? appRow.type;
+            const quotaBytes = appRow.storage_quota_bytes ?? null;
+            const storageBytes = appRow.storage_bytes ?? null;
+
+            appContext = {
+              snapshotAt: new Date().toISOString(),
+              id: app.id,
+              name: app.name,
+              type: app.type,
+              visibility: app.visibility,
+              canonicalUrl,
+              provisionStatus: app.provisionStatus,
+              fcStatus: app.fcStatus,
+              deployment: {
+                gitCommitSha: app.gitCommitSha,
+                // Unlike mapApp's compatibility fallback, null here means
+                // exactly "no successful deploy has recorded this yet".
+                runtime: appRow.runtime ?? null,
+                startSpec: appRow.start_spec ?? null,
+                typePendingRedeploy: app.typePendingRedeploy,
+                envPendingRedeploy: app.envPendingRedeploy,
+                authModePendingRedeploy: app.authModePendingRedeploy,
+              },
+              auth: {
+                mode: app.authMode,
+                audience: app.authAudience,
+                scope: app.authScope,
+                rules: app.authRules,
+              },
+              database: {
+                configured: needsDatabase(appRow.type),
+                live: app.fcStatus === "live" && needsDatabase(deployedType),
+              },
+              storage: {
+                controlPlaneAvailable: Boolean(appStorage && readAppsCloudApiUrl()),
+                overQuota:
+                  typeof quotaBytes === "number" &&
+                  typeof storageBytes === "number" &&
+                  storageBytes >= quotaBytes,
+              },
+              environment: {
+                keys: (envResult.data ?? []).map((row) => ({
+                  key: row.key,
+                  isSecret: Boolean(row.is_secret),
+                })),
+              },
+              cronJobs: (cronResult.data ?? []).map((row) => ({
+                name: row.name,
+                enabled: Boolean(row.enabled),
+                schedule: row.schedule_expr,
+                timezone: row.timezone,
+                method: row.method,
+                path: row.path,
+                headerNames:
+                  row.headers && typeof row.headers === "object" && !Array.isArray(row.headers)
+                    ? Object.keys(row.headers).sort()
+                    : [],
+              })),
+              customDomain: {
+                domain: appRow.custom_domain ?? null,
+                verified: customDomainVerified,
+              },
+            };
+          }
+        } catch (error) {
+          // App context is useful but must never take the session identity
+          // prompt down with it. The agent can still use manage_app status.
+          console.warn(`[session-roster] app context unavailable for ${sessionId}: ${String(error)}`);
+        }
+      }
+
       return {
         sessionId,
         callerActorId,
         title: sessionRow.title ?? null,
         selfAgent,
+        appContext,
         items: participantRows.map((seat) => {
           const actor = actorsById.get(seat.actor_id);
           return {

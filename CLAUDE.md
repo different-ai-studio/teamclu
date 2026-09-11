@@ -76,9 +76,9 @@ pnpm daemon:test            # Daemon tests
 pnpm ios:test:core          # AMUXCore SwiftPM tests
 pnpm ios:test               # iOS UI tests
 
-# Deploy — automatic: push to main touching deploy/self-host/**, services/fc/**,
-# services/ai-gateway/** or services/supabase/migrations/** triggers
-# self-host-deploy.yml. That covers SELF-HOST only; belayo is a separate path.
+# Deploy — self-host: nightly at 00:00 Asia/Shanghai (self-host-deploy.yml
+# schedule) or manual workflow_dispatch. No longer on push to main. Belayo is
+# a separate path.
 ```
 
 ## Architecture
@@ -89,8 +89,8 @@ pnpm ios:test               # iOS UI tests
 - `apps/daemon/` — amuxd daemon (pi runtime, MQTT/Supabase bridge)
 - `apps/ios/` — iOS app, Xcode project, and Swift packages
 - `services/supabase/` — Supabase migrations, seed, and database tests
-- `services/fc/` — Cloud API service (Node.js 20). Deploys two ways: as the
-  self-host container (what runs today) or to Alibaba Function Compute (`s.yaml`)
+- `services/fc/` — Cloud API service (Node.js 20). Deploys to the self-host
+  Compose stack, Alibaba Function Compute, and the Belayo Dokploy shadow
 - `crates/` — shared Rust crates (`teamclu-proto`, `teamclu-types`, `teamclu-transport`)
 - `tests/` — E2E tests (tauri-mcp): smoke, regression, performance, functional
 
@@ -251,29 +251,41 @@ handles that: after the debounce it checks whether HEAD carries an `ios-v*` tag 
 stands down if so, leaving the tag's run to publish. A main push with no tag behind
 it still releases as before.
 
-## Deployment — one environment, two deploy targets
+## Deployment — two environments, three Cloud API targets
 
-There is exactly **one** running environment: a single self-hosted ECS box. The
-old hosted endpoints (`teamclu-sync` / `cloud.ucar.cc`) and the standalone RDS
-instances are gone; do not reintroduce references to those hosts.
+There are two environments:
 
-`services/fc/` is the Cloud API service, and it supports **two deploy targets**
+- **self-host** is the Docker Compose test environment and stays on Caddy;
+- **Belayo** is the hosted environment. Its production Cloud API currently runs
+  on Alibaba Function Compute, while a Dokploy shadow is the migration target.
+  Belayo HTTP ingress on Dokploy is owned by Traefik.
+
+Do not collapse the two environments or share proxy certificate files between
+them. Align their application contract instead: environment keys, internal
+ports, URL behaviour, health checks, immutable images, and smoke tests.
+
+`services/fc/` is the Cloud API service, and it supports **three deploy targets**
 from the same source:
 
-- **self-host (what runs today)** — built as a container by
+- **self-host test** — built as a container by
   `deploy/self-host/docker-compose.yml` (`build: context: ../../services/fc`).
   Env comes from the `fc:` service's `environment:` map, which is an explicit
   allowlist: a var absent from it never reaches the container.
-- **Alibaba Function Compute** — `services/fc/s.yaml` (Serverless Devs) +
-  `services/fc/deploy-aliyun-fc.sh`. Kept deliberately; the directory name is
-  not vestigial. Deploying this way is manual, not wired to CI.
+- **Belayo Alibaba Function Compute** — `services/fc/s.yaml` (Serverless Devs)
+  + `services/fc/deploy-aliyun-fc.sh`. This remains the current production
+  runtime and rollback target.
+- **Belayo Dokploy** — container image on the main Swarm, currently exposed
+  through the shadow hostname while production migration is validated. Its
+  names-only environment contract is
+  `deploy/belayo/cloud-api.env.keys`.
 
-Both targets must keep working. When adding an FC env var, declare it in **both**
-`s.yaml` and the compose `environment:` map, or it silently goes missing on one
-of them.
+All targets must keep working. When adding a Cloud API env var, update
+`s.yaml`, the Compose `environment:` map, and the Belayo keys manifest unless
+the difference is explicitly documented and enforced by
+`services/fc/test/deploy-env-parity.test.ts`.
 
-**Host:** `47.112.210.217` (ECS `i-wz90nb0me448q3k22fxt`). Every subdomain below
-resolves to it:
+**Self-host test host:** `47.112.210.217` (ECS
+`i-wz90nb0me448q3k22fxt`). Every self-host subdomain below resolves to it:
 
 | URL | What |
 |---|---|
@@ -283,25 +295,22 @@ resolves to it:
 | `https://emqx.teamclu-dev.ucar.cc` | EMQX dashboard |
 | `wss://mqtt.teamclu-dev.ucar.cc/mqtt` | MQTT over WSS (JWT access_token as password) |
 
-The `-dev` in the hostnames is historical: **this is the only environment**, not
-a dev tier alongside a production one. `build.config.production.json` and
-`build.config.dev.json` both point here, which is correct.
+The `-dev` hostnames identify the self-host test environment. Belayo's current
+topology and migration state are tracked in
+`docs/specs/2026-09-11-belayo-dokploy-target-architecture.md`.
 
-**Deploy is automatic — for self-host.** Pushing to `main` with changes under
-`deploy/self-host/**`, `services/fc/**`, `services/ai-gateway/**` or
-`services/supabase/migrations/**` triggers
-`.github/workflows/self-host-deploy.yml`, which SSHes to the box, `git pull`s,
+**Self-host deploys on a nightly schedule**, not on every merge.
+`.github/workflows/self-host-deploy.yml` runs at 00:00 Asia/Shanghai (`cron:
+0 16 * * *` UTC) and on `workflow_dispatch`. It SSHes to the box, `git pull`s,
 `docker compose build fc ai-gateway`, `docker compose up -d`, waits for both to
 report healthy, then runs `run-e2e.sh`.
 
-**belayo does not ride that workflow**, and the difference has stranded it
-before. Self-host builds the gateway from source in compose; belayo's Dokploy
-app is `sourceType: docker`, so it pulls a pre-built image from Alibaba ACR and
-a source change reaches it only when someone builds and pushes that image.
-`.github/workflows/belayo-ai-gateway.yml` now does that on the same trigger —
-before it existed, self-host moved forward on every merge while belayo silently
-stayed on an image from weeks earlier, with nothing anywhere reporting the
-drift. Database migrations are applied by the `migrate`
+**belayo does not ride that workflow.** Self-host builds the gateway from
+source in compose; belayo's Dokploy app is `sourceType: docker`, so it pulls a
+pre-built image from Alibaba ACR and a source change reaches it only when
+someone builds and pushes that image. `.github/workflows/belayo-ai-gateway.yml`
+still triggers on push to `main` under `services/ai-gateway/**` (and on
+`workflow_dispatch`). Database migrations are applied by the `migrate`
 compose service (`deploy/self-host/init/apply-migrations.sh`, tracked in
 `_selfhost.schema_migrations`, idempotent, lexical order).
 

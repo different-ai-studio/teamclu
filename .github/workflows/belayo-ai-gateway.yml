@@ -1,25 +1,18 @@
-# Build and deploy the AI gateway to BELAYO.
+# Build and deploy the AI gateway to BELAYO's main Dokploy Swarm.
 #
-# Self-host gets the gateway for free: its compose file has `build:`, so
-# self-host-deploy.yml rebuilds it from source on every qualifying merge.
-# Belayo's Dokploy app is `sourceType: docker` — it pulls a pre-built image from
-# Alibaba ACR, so a source change reaches it only when someone builds and pushes
-# that image. Nobody did, for weeks: self-host moved forward on every merge
-# while belayo silently stayed on an image from August, and nothing anywhere
-# reported the drift. This workflow is that missing half.
+# Self-host gets the gateway from docker compose. Belayo's Dokploy application
+# pulls an immutable image from Alibaba ACR, so changes under
+# services/ai-gateway need this workflow to build, publish, and roll the Swarm
+# service explicitly.
 #
-# Why it builds over SSH on the Dokploy manager instead of on the runner:
-#   - the target hosts are aarch64, so a GitHub x86 runner would need QEMU
-#     (slow) or an ARM runner (another thing to keep working);
-#   - the manager is already logged in to the ACR, so no registry credential
-#     has to live in GitHub — the only secret here is an SSH key;
-#   - the manager can reach Docker Hub, which the gateway host CANNOT (it is
-#     behind a NAT gateway and registry-1.docker.io times out from it). Build
-#     there and the base image pull simply fails.
+# The Dokploy manager is arm64 while the application is pinned to the amd64
+# worker dokploy-worker-2. We build each architecture natively, push both via
+# the manager's existing ACR login, then publish a multi-arch manifest. No ACR
+# credential is stored in GitHub.
 #
-# Database migrations are NOT run here. Belayo's are applied by hand against its
-# RDS and recorded in `_selfhost.schema_migrations`; a migration that the new
-# image needs must land BEFORE this runs.
+# Database migrations are NOT run here. Belayo migrations are applied against
+# RDS separately and recorded in _selfhost.schema_migrations. Any migration the
+# new image needs must land before this workflow runs.
 name: Belayo AI Gateway
 
 on:
@@ -30,8 +23,6 @@ on:
       - '.github/workflows/belayo-ai-gateway.yml'
   workflow_dispatch:
 
-# Never two at once: the deploy step is a swarm rolling update against a
-# host-mode port, and two of them interleaving leaves the service wedged.
 concurrency:
   group: belayo-ai-gateway
   cancel-in-progress: false
@@ -41,16 +32,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      APP_ID: SK9twdPnBrAVqHFHJqiLs
-      SERVICE: teamclu-ai-gateway-v2-ab8ksc
+      APP_ID: k6yinm2sXoijFw2rQ1OXX
+      SERVICE: teamclu-ai-gateway-iiq8f3
+      WORKER: dokploy-worker-2
       IMAGE_REPO: registry-vpc.cn-shenzhen.aliyuncs.com/betlysaas/teamclu-ai-gateway
     steps:
       - uses: actions/checkout@v4
 
       - name: Start ssh-agent
-        # Agent forwarding, not a copied key: the gateway host has no public IP,
-        # so the manager has to make the second hop, and forwarding lets it do
-        # that without the private key ever landing on a box.
         run: |
           eval "$(ssh-agent -s)"
           echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
@@ -59,96 +48,185 @@ jobs:
           mkdir -p ~/.ssh
           printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' > ~/.ssh/config
 
-      - name: Ship source to the build host
+      - name: Ship source to the arm64 build host
         env:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
         run: |
           git archive HEAD services/ai-gateway | gzip \
-            | ssh -A "root@$MGR" \
+            | ssh "root@$MGR" \
                 'rm -rf /root/build-gw && mkdir -p /root/build-gw && tar xzf - -C /root/build-gw'
 
-      - name: Build and push
+      - name: Build and push arm64
         env:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
           TAG: ${{ github.sha }}
         run: |
-          ssh -A "root@$MGR" bash -euo pipefail <<EOF
+          ssh "root@$MGR" bash -s -- "$IMAGE_REPO" "$TAG" <<'EOF'
+            set -euo pipefail
+            IMAGE_REPO=$1
+            TAG=$2
             cd /root/build-gw/services/ai-gateway
-            IMG="$IMAGE_REPO:${TAG::9}"
-            docker build -t "\$IMG" .
-            # Prove the image is the code we just shipped, not a cache hit on an
-            # older layer set. Cheap, and it is the failure that would otherwise
-            # deploy silently.
-            docker run --rm --entrypoint sh "\$IMG" -c 'test -s dist/app.js'
-            docker push "\$IMG"
+            IMG="$IMAGE_REPO:${TAG::9}-arm64"
+            docker build --platform linux/arm64 -t "$IMG" .
+            docker run --rm --entrypoint sh "$IMG" -c 'test -s dist/app.js'
+            docker push "$IMG"
+          EOF
+
+      - name: Build amd64 and push through the manager
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          TAG: ${{ github.sha }}
+        run: |
+          IMG="$IMAGE_REPO:${TAG::9}-amd64"
+          docker build --platform linux/amd64 -t "$IMG" services/ai-gateway
+          docker run --rm --entrypoint sh "$IMG" -c 'test -s dist/app.js'
+          docker save "$IMG" | gzip \
+            | ssh "root@$MGR" 'gunzip | docker load'
+          # IMG is intentionally expanded on the runner before ssh executes.
+          # shellcheck disable=SC2029
+          ssh "root@$MGR" docker push "$IMG"
+
+      - name: Publish the multi-arch image
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          TAG: ${{ github.sha }}
+        run: |
+          ssh "root@$MGR" bash -s -- "$IMAGE_REPO" "$TAG" <<'EOF'
+            set -euo pipefail
+            IMAGE_REPO=$1
+            TAG=$2
+            TAG9="${TAG::9}"
+            docker buildx imagetools create \
+              -t "$IMAGE_REPO:$TAG9" \
+              "$IMAGE_REPO:$TAG9-arm64" \
+              "$IMAGE_REPO:$TAG9-amd64"
+            platforms=$(docker buildx imagetools inspect "$IMAGE_REPO:$TAG9" \
+              | awk '/Platform:/ {print $2}' | sort -u)
+            grep -qx linux/amd64 <<< "$platforms"
+            grep -qx linux/arm64 <<< "$platforms"
           EOF
 
       - name: Point Dokploy at the new image
-        # The running service AND Dokploy's own record. Updating only the
-        # service means the next Dokploy redeploy quietly rolls back to
-        # whatever tag its database still holds.
         env:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
           TAG: ${{ github.sha }}
         run: |
-          ssh -A "root@$MGR" bash -euo pipefail <<EOF
-            PG=\$(docker ps --format '{{.Names}}' | grep dokploy-postgres | head -1)
-            docker exec -i "\$PG" psql -U dokploy -d dokploy -v ON_ERROR_STOP=1 -c \
+          ssh "root@$MGR" bash -s -- "$IMAGE_REPO" "$TAG" "$APP_ID" <<'EOF'
+            set -euo pipefail
+            IMAGE_REPO=$1
+            TAG=$2
+            APP_ID=$3
+            PG=$(docker ps --format '{{.Names}}' | grep dokploy-postgres | head -1)
+            docker exec -i "$PG" psql -U dokploy -d dokploy -v ON_ERROR_STOP=1 -c \
               "update application set \"dockerImage\" = '$IMAGE_REPO:${TAG::9}' where \"applicationId\" = '$APP_ID';"
           EOF
 
-      - name: Roll the service
+      - name: Sync the Dokploy file mount to the worker
+        # Dokploy stores file-mount content in Postgres but materializes it on
+        # the manager only. A short-lived Swarm service carries that content as
+        # a Docker config and writes the worker-local bind source before the app
+        # rolls. This keeps a future task replacement from failing with
+        # "bind source path does not exist".
         env:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
-          GW: ${{ secrets.BELAYO_GATEWAY_HOST }}
           TAG: ${{ github.sha }}
         run: |
-          ssh -A "root@$MGR" ssh -A "root@$GW" bash -euo pipefail <<EOF
-            # stop-first is mandatory: 4001 is published in HOST mode, so
-            # start-first parks the new task in "no suitable node (host-mode
-            # port already in use)" forever and the update never converges.
-            docker service update --update-order stop-first \
-              --image "$IMAGE_REPO:${TAG::9}" --detach=true "$SERVICE"
+          ssh "root@$MGR" bash -s -- "$SERVICE" "$WORKER" "$IMAGE_REPO" "$TAG" <<'EOF'
+            set -euo pipefail
+            SERVICE=$1
+            WORKER=$2
+            IMAGE_REPO=$3
+            TAG=$4
+            source_file="/etc/dokploy/applications/$SERVICE/files"
+            test -s "$source_file"
+            digest=$(sha256sum "$source_file" | awk '{print substr($1,1,16)}')
+            config="$SERVICE-catalog-$digest"
+            helper="$SERVICE-catalog-sync"
 
-            # Poll on what actually matters — the target image is live and the
-            # service is at full replicas — not on UpdateStatus.
-            #
-            # UpdateStatus is NOT always there. Re-running this with a tag the
-            # service already carries changes nothing, swarm records no update,
-            # and `{{.UpdateStatus.State}}` then fails with "map has no entry for
-            # key UpdateStatus". Under `set -e` that killed the first poll
-            # iteration and failed a deploy that had actually succeeded. It is
-            # kept only as an early abort signal, read through `with` so a
-            # missing key is empty instead of fatal.
-            #
-            # Explicit ifs throughout: the compact `[ a ] || [ b ] && { exit 1; }`
-            # form is its own `set -e` trap, exiting non-zero in the ORDINARY
-            # case where neither test matches.
+            docker config inspect "$config" >/dev/null 2>&1 \
+              || docker config create "$config" "$source_file" >/dev/null
+            docker service rm "$helper" >/dev/null 2>&1 || true
+            while docker service inspect "$helper" >/dev/null 2>&1; do sleep 1; done
+            docker service create --detach=true --name "$helper" \
+              --constraint "node.hostname==$WORKER" \
+              --restart-condition none \
+              --with-registry-auth \
+              --user 0 \
+              --env "SERVICE=$SERVICE" \
+              --config "source=$config,target=/catalog.yaml,mode=0444" \
+              --mount "type=bind,source=/etc/dokploy/applications,target=/target" \
+              "$IMAGE_REPO:${TAG::9}" \
+              sh -c 'mkdir -p /target/$SERVICE && cp /catalog.yaml /target/$SERVICE/files && chmod 0444 /target/$SERVICE/files' \
+              >/dev/null
+
+            complete=""
+            for i in $(seq 1 30); do
+              state=$(docker service ps "$helper" --format '{{.CurrentState}}' | head -1)
+              case "$state" in
+                Complete*) complete=1; break ;;
+                Failed*|Rejected*)
+                  docker service ps "$helper" --no-trunc
+                  exit 1
+                  ;;
+              esac
+              sleep 2
+            done
+            test -n "$complete"
+            docker service rm "$helper" >/dev/null
+            while docker service inspect "$helper" >/dev/null 2>&1; do sleep 1; done
+            docker config rm "$config" >/dev/null
+          EOF
+
+      - name: Roll the main Swarm service
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+          TAG: ${{ github.sha }}
+        run: |
+          ssh "root@$MGR" bash -s -- "$SERVICE" "$WORKER" "$IMAGE_REPO" "$TAG" <<'EOF'
+            set -euo pipefail
+            SERVICE=$1
+            WORKER=$2
+            IMAGE_REPO=$3
+            TAG=$4
+            IMG="$IMAGE_REPO:${TAG::9}"
+            docker service update \
+              --with-registry-auth \
+              --update-order start-first \
+              --update-failure-action rollback \
+              --update-monitor 30s \
+              --image "$IMG" \
+              --detach=true \
+              "$SERVICE"
+
             ok=""
-            for i in \$(seq 1 45); do
-              state=\$(docker service inspect "$SERVICE" --format '{{with .UpdateStatus}}{{.State}}{{end}}' 2>/dev/null || true)
-              reps=\$(docker service ls --format '{{.Name}} {{.Replicas}}' | awk -v s="$SERVICE" '\$1==s{print \$2}')
-              # --filter status=running matters: during the swap a bare
-              # `docker ps` still lists the OLD, dying container, and reading its
-              # image reports the previous release as if it had deployed.
-              C=\$(docker ps --filter status=running --format '{{.Names}}' | grep "$SERVICE" | head -1 || true)
-              live=""
-              [ -n "\$C" ] && live=\$(docker inspect "\$C" --format '{{.Config.Image}}' 2>/dev/null || true)
-              if [ "\$reps" = "1/1" ] && [ "\$live" = "$IMAGE_REPO:${TAG::9}" ]; then ok=1; break; fi
-              if [ "\$state" = "paused" ] || [ "\$state" = "rollback_completed" ]; then
-                echo "swarm gave up on the update: \$state"
+            for i in $(seq 1 45); do
+              state=$(docker service inspect "$SERVICE" --format '{{with .UpdateStatus}}{{.State}}{{end}}' 2>/dev/null || true)
+              reps=$(docker service ls --format '{{.Name}} {{.Replicas}}' | awk -v s="$SERVICE" '$1==s{print $2}')
+              node=$(docker service ps "$SERVICE" --filter desired-state=running --format '{{.Node}}' | head -1)
+              live=$(docker service ps "$SERVICE" --filter desired-state=running --format '{{.Image}}' | head -1)
+              if [ "$reps" = "1/1" ] && [ "$node" = "$WORKER" ] && [[ "$live" == "$IMG"* ]]; then
+                ok=1
+                break
+              fi
+              if [ "$state" = "paused" ] || [ "$state" = "rollback_completed" ]; then
+                echo "swarm gave up on the update: $state"
                 docker service ps "$SERVICE" --no-trunc | head -5
                 exit 1
               fi
               sleep 4
             done
-            if [ -z "\$ok" ]; then
-              echo "did not converge: replicas=\$reps live=\$live want=$IMAGE_REPO:${TAG::9}"
+            if [ -z "$ok" ]; then
+              echo "did not converge: replicas=$reps node=$node live=$live want=$IMG"
               docker service ps "$SERVICE" --no-trunc | head -5
               exit 1
             fi
-            echo "running image: \$live"
-            docker logs --tail 3 "\$C"
+
+            ports=$(docker service inspect "$SERVICE" --format '{{json .Spec.EndpointSpec.Ports}}')
+            [ "$ports" = "null" ] || [ "$ports" = "[]" ]
+            DOKPLOY=$(docker ps --format '{{.Names}}' | grep '^dokploy\.1\.' | head -1)
+            docker exec "$DOKPLOY" node -e \
+              "fetch('http://$SERVICE:4001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+            echo "running image: $live on $node"
           EOF
 
       - name: Smoke — the gateway answers

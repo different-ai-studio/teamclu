@@ -24,6 +24,8 @@ tags:
     description: Actor directory and agent access management.
   - name: Notifications
     description: Notification preferences and session mute management.
+  - name: Inbox
+    description: Items blocked on the current user, and the badge that counts them.
   - name: Shortcuts
     description: Shortcut management and visibility control.
   - name: Config
@@ -2364,7 +2366,7 @@ paths:
           description: Registry moved since the publisher loaded it (`stale_team_skill_base`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}:
     get:
       operationId: getTeamSkillVersion
@@ -2434,7 +2436,7 @@ paths:
           description: Package blob is not uploaded yet (`blob_missing`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/versions/{version}/revert:
     post:
       operationId: revertTeamSkillVersion
@@ -2494,7 +2496,7 @@ paths:
             latest (`conflict`).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/teams/{teamId}/skills/{slug}/install:
     put:
       operationId: installTeamSkill
@@ -4058,6 +4060,244 @@ paths:
                       format: uuid
         "401":
           $ref: "#/components/responses/Error"
+  /v1/inbox:
+    get:
+      operationId: listInboxItems
+      summary: List inbox items for the current user
+      description: >-
+        The inbox holds only work that is blocked on this person — an agent
+        waiting for a permission decision, a turn that failed without
+        producing anything, a mention, a delegated task waiting to be
+        accepted, an idea waiting for review. Ordinary messages and status
+        changes never appear here.
+      tags: [Inbox]
+      parameters:
+        - name: teamId
+          in: query
+          description: >-
+            Narrow to one team. Omit to return items across every team the
+            caller belongs to, which is what the mobile client does — the
+            inbox is a personal surface and spans teams.
+          schema:
+            type: string
+            format: uuid
+        - name: state
+          in: query
+          description: >-
+            Which items to return. `unread` is the badge surface and the
+            default; `open` adds read-but-unresolved items; `all` includes
+            resolved ones.
+          schema:
+            type: string
+            enum: [unread, open, all]
+            default: unread
+        - name: kind
+          in: query
+          description: Narrow to a single item kind.
+          schema:
+            $ref: "#/components/schemas/InboxItemKind"
+        - name: maxPriority
+          in: query
+          description: >-
+            Return only items at or above this urgency, where 0 is most
+            urgent. Clients pass 1 so merely-informational items stay out of
+            the default surface.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 2
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Inbox page for the current user.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor, unreadCount]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/InboxItem"
+                  nextCursor:
+                    type:
+                      - string
+                      - "null"
+                  unreadCount:
+                    type: integer
+                    description: >-
+                      Unread items matching the same filters, ignoring the
+                      page window. Drives the tab badge so clients need no
+                      second call.
+        "401":
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: ingestInboxItem
+      summary: Report an event the server cannot observe on its own
+      description: >-
+        Called by a daemon for the two kinds that never reach the Cloud API
+        by any other route. A permission request lives only on the session
+        live topic, and a completed delegated task is indistinguishable from
+        an ordinary reply once it lands in `messages`. Every other kind is
+        derived server-side and is rejected here, so a compromised daemon
+        cannot forge a mention or an idea review.
+
+
+        Authorization deliberately departs from the usual facade rule of
+        forwarding the caller token to Supabase and letting RLS decide. The
+        row belongs to the *recipient*, not the caller, so RLS would refuse
+        it. Instead the caller is authenticated normally, this endpoint
+        checks that some actor owned by the caller and the target actor are
+        both participants of `sessionId`, and only then writes with the
+        service role. Do not "fix" this back to a token passthrough.
+
+
+        The membership check must not use `current_actor_id()` — it returns
+        the caller's oldest actor, which silently diverges from the actor a
+        daemon reports as if that account ever gains a second one. Match on
+        any actor owned by the caller instead.
+
+
+        Idempotent on `dedupKey`. Retried cron turns and redelivered MQTT
+        frames converge on one row rather than one per attempt.
+      tags: [Inbox]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InboxIngestRequest"
+      responses:
+        "201":
+          description: Item created.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxItem"
+        "200":
+          description: >-
+            An item with this `dedupKey` already existed and is returned
+            unchanged. Not an error — this is the retry path.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxItem"
+        "400":
+          description: >-
+            Malformed body, or a `kind` this endpoint refuses because the
+            server derives it itself.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          description: >-
+            The caller or the target actor is not a participant of
+            `sessionId`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/inbox/read:
+    post:
+      operationId: markInboxItemsRead
+      summary: Mark inbox items read
+      description: >-
+        Clears the badge without claiming the work is done. Pass `itemIds`
+        for an explicit set, or `before` to clear everything older than a
+        moment, which is what a pull-to-refresh "mark all read" does. Reading
+        is not resolving — see the resolve operation.
+      tags: [Inbox]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                itemIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                before:
+                  type: string
+                  format: date-time
+                  description: Mark every item created at or before this instant.
+                teamId:
+                  type: string
+                  format: uuid
+                  description: Restrict a `before` sweep to one team.
+      responses:
+        "200":
+          description: Number of items whose read state changed.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/inbox/{itemId}/resolve:
+    post:
+      operationId: resolveInboxItem
+      summary: Mark one inbox item handled
+      description: >-
+        The item leaves the `open` surface. Distinct from marking it read —
+        a person can read a permission request and still not have decided.
+        Resolving also marks it read.
+      tags: [Inbox]
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The resolved item.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxItem"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/teams/{teamId}/shortcuts:
     get:
       operationId: listShortcuts
@@ -7176,8 +7416,7 @@ components:
       in: path
       required: true
       schema:
-        type: string
-        pattern: "^[a-z0-9][a-z0-9-]{1,63}$"
+        $ref: "#/components/schemas/TeamSkillSlug"
     TeamMcpServerName:
       name: name
       in: path
@@ -7301,6 +7540,150 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    InboxItemKind:
+      type: string
+      description: >-
+        Why an item is in the inbox. The vocabulary is deliberately closed
+        and every member satisfies one test — nothing happens next until
+        this person acts.
+
+
+        `permission_request` an agent is stopped, waiting for a decision.
+        `task_failed` a turn ended with no answer at all.
+        `mention` the person was named in a session.
+        `task_completed` a delegated task finished and wants acceptance.
+        `idea_review` an idea was claimed or submitted and needs review.
+      enum:
+        - permission_request
+        - task_failed
+        - mention
+        - task_completed
+        - idea_review
+    InboxItemSource:
+      type: object
+      description: Where the item came from, so a client can navigate to it.
+      required: [sessionId]
+      properties:
+        sessionId:
+          type:
+            - string
+            - "null"
+          format: uuid
+        messageId:
+          type:
+            - string
+            - "null"
+          format: uuid
+        ideaId:
+          type:
+            - string
+            - "null"
+          format: uuid
+        actorId:
+          type:
+            - string
+            - "null"
+          format: uuid
+          description: The agent or person whose action produced the item.
+        turnId:
+          type:
+            - string
+            - "null"
+    InboxItem:
+      type: object
+      required:
+        [id, teamId, kind, priority, title, source, createdAt, readAt, resolvedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        teamId:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/InboxItemKind"
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 2
+          description: >-
+            0 is blocked on a decision, 1 is waiting for acceptance, 2 is
+            informational. Computed server-side so every client ranks the
+            same way.
+        title:
+          type: string
+          description: >-
+            One line, already localized by the producer. Clients render it
+            verbatim and never re-summarize.
+        body:
+          type:
+            - string
+            - "null"
+          description: Optional second line. Clients truncate rather than wrap far.
+        source:
+          $ref: "#/components/schemas/InboxItemSource"
+        createdAt:
+          type: string
+          format: date-time
+        readAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        resolvedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    InboxIngestRequest:
+      type: object
+      required: [kind, sessionId, targetActorId, title, dedupKey]
+      properties:
+        kind:
+          type: string
+          description: >-
+            Only the kinds no server-side signal can reconstruct. A turn
+            that failed is already visible in `messages.metadata.turn_status`
+            and is derived there, not reported here.
+          enum:
+            - permission_request
+            - task_completed
+        sessionId:
+          type: string
+          format: uuid
+        targetActorId:
+          type: string
+          format: uuid
+          description: >-
+            Who the item is for. The server resolves this to the owning user
+            and refuses an actor that is not a participant of `sessionId`.
+        title:
+          type: string
+          maxLength: 200
+        body:
+          type:
+            - string
+            - "null"
+          maxLength: 2000
+        turnId:
+          type:
+            - string
+            - "null"
+        dedupKey:
+          type: string
+          maxLength: 200
+          description: >-
+            Producer-supplied idempotency key, stable across retries of the
+            same logical event. A permission request keys on its request id,
+            not on a timestamp.
+    TeamSkillSlug:
+      type: string
+      pattern: "^[a-z0-9][a-z0-9-]{1,63}$"
+      description: >-
+        Skill identifier inside a team registry. Mirrors
+        `TEAM_SKILL_SLUG_RE` in the FC repository layer — lowercase
+        alphanumerics and hyphens, never leading with a hyphen, 2 to 64
+        characters.
     TeamSkillCategory:
       type: string
       description: >
@@ -7437,7 +7820,7 @@ components:
       type: object
       required: [slug, summary, category, changelog, contentHash]
       properties:
-        slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,63}$" }
+        slug: { $ref: "#/components/schemas/TeamSkillSlug" }
         summary: { type: string, maxLength: 200 }
         category: { $ref: "#/components/schemas/TeamSkillCategory" }
         whenToUse: { type: string }
@@ -9165,6 +9548,13 @@ components:
                 - string
                 - "null"
               description: Display name of the personal agent owner.
+        appContext:
+          oneOf:
+            - $ref: "#/components/schemas/SessionAppContext"
+            - type: "null"
+          description: >-
+            Secret-free control-plane snapshot for the app linked to this
+            session. Present only for an authenticated agent participant.
         items:
           type: array
           items:
@@ -9188,6 +9578,152 @@ components:
         isSelf:
           type: boolean
           description: True when this row is the authenticated caller.
+    SessionAppContext:
+      type: object
+      required:
+        - snapshotAt
+        - id
+        - name
+        - type
+        - visibility
+        - deployment
+        - auth
+        - database
+        - storage
+        - environment
+        - cronJobs
+        - customDomain
+      description: >-
+        App metadata safe to include in an agent system prompt. Environment
+        values, secret values, cron header/body values, data rows, file names,
+        access lists and DNS verification tokens are deliberately excluded.
+      properties:
+        snapshotAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+        visibility:
+          type: string
+        canonicalUrl:
+          type:
+            - string
+            - "null"
+          format: uri
+        provisionStatus:
+          type:
+            - string
+            - "null"
+        fcStatus:
+          type:
+            - string
+            - "null"
+        deployment:
+          type: object
+          required:
+            - gitCommitSha
+            - runtime
+            - startSpec
+            - typePendingRedeploy
+            - envPendingRedeploy
+            - authModePendingRedeploy
+          properties:
+            gitCommitSha:
+              type: [string, "null"]
+            runtime:
+              type: [string, "null"]
+            startSpec:
+              type: [object, "null"]
+              additionalProperties: true
+            typePendingRedeploy:
+              type: boolean
+            envPendingRedeploy:
+              type: boolean
+            authModePendingRedeploy:
+              type: boolean
+        auth:
+          type: object
+          required: [mode, audience, scope, rules]
+          properties:
+            mode:
+              type: string
+            audience:
+              type: string
+            scope:
+              type: string
+            rules:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+        database:
+          type: object
+          required: [configured, live]
+          properties:
+            configured:
+              type: boolean
+            live:
+              type: boolean
+        storage:
+          type: object
+          required: [controlPlaneAvailable, overQuota]
+          properties:
+            controlPlaneAvailable:
+              type: boolean
+              description: >-
+                Whether this deployment supports app object storage. An older
+                live function may still require redeployment to receive its env.
+            overQuota:
+              type: boolean
+        environment:
+          type: object
+          required: [keys]
+          properties:
+            keys:
+              type: array
+              items:
+                type: object
+                required: [key, isSecret]
+                properties:
+                  key:
+                    type: string
+                  isSecret:
+                    type: boolean
+        cronJobs:
+          type: array
+          items:
+            type: object
+            required: [name, enabled, schedule, timezone, method, path, headerNames]
+            properties:
+              name:
+                type: string
+              enabled:
+                type: boolean
+              schedule:
+                type: string
+              timezone:
+                type: string
+              method:
+                type: string
+              path:
+                type: string
+              headerNames:
+                type: array
+                items:
+                  type: string
+        customDomain:
+          type: object
+          required: [domain, verified]
+          properties:
+            domain:
+              type: [string, "null"]
+            verified:
+              type: boolean
     TeamMember:
       type: object
       required: [actorId, teamId, role]

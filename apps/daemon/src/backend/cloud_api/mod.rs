@@ -1272,6 +1272,37 @@ impl Backend for CloudApiBackend {
         })
     }
 
+    async fn list_actor_session_ids(
+        &self,
+        team_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> BackendResult<(Vec<String>, Option<String>)> {
+        #[derive(serde::Deserialize)]
+        struct ListItem {
+            id: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Page {
+            items: Vec<ListItem>,
+            #[serde(rename = "nextCursor", default)]
+            next_cursor: Option<String>,
+        }
+        let limit = limit.clamp(1, 100);
+        // Offline catch-up only needs human/collab threads — not cron job sessions.
+        let mut path = format!("/v1/sessions?teamId={team_id}&limit={limit}&kind=regular");
+        if let Some(cursor) = cursor.filter(|c| !c.is_empty()) {
+            path.push_str("&cursor=");
+            path.push_str(cursor);
+        }
+        let page: Page = self.get(&path).await?;
+        let ids = page.items.into_iter().map(|row| row.id).collect();
+        let next = page
+            .next_cursor
+            .filter(|cursor| !cursor.is_empty());
+        Ok((ids, next))
+    }
+
     async fn messages_after_cursor(
         &self,
         session_id: &str,

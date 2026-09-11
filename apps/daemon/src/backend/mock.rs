@@ -488,6 +488,23 @@ impl Backend for MockBackend {
             })
     }
 
+    async fn list_actor_session_ids(
+        &self,
+        _team_id: &str,
+        _cursor: Option<&str>,
+        _limit: u32,
+    ) -> BackendResult<(Vec<String>, Option<String>)> {
+        let ids = self
+            .state
+            .lock()
+            .unwrap()
+            .sessions
+            .keys()
+            .cloned()
+            .collect();
+        Ok((ids, None))
+    }
+
     async fn get_actors_by_ids(&self, ids: &[String]) -> BackendResult<Vec<ActorDirectoryRow>> {
         let st = self.state.lock().unwrap();
         // Unseeded ids are simply absent, matching the real directory: it
@@ -528,6 +545,7 @@ impl Backend for MockBackend {
             caller_actor_id,
             title: Some(snap.session.title.clone()).filter(|t| !t.trim().is_empty()),
             self_agent: None,
+            app_context: None,
             items,
         })
     }

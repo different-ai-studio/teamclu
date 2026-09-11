@@ -697,10 +697,12 @@ docker volume rm teamclaw-self-host_amuxd_state
 | 变量 | `off` | `internal` | `acme` |
 |------|-------|------------|--------|
 | `CADDY_GLOBAL_TLS` | `auto_https off` | （空） | （空） |
-| `CADDY_SITE_TLS` | （空） | `tls internal` | （空） |
+| `CADDY_SITE_TLS` | （空） | `tls internal` | `tls force_automate` |
 | `CADDY_SITE_SCHEME` | `http://` | （空） | （空） |
 
 Caddyfile 站点地址为 `{$CADDY_SITE_SCHEME}{$FC_DOMAIN}` 等，避免 `off` 模式下误绑 `:443`。
+ACME 模式显式使用 `force_automate`，避免 Caddy 2.10+ 因同时存在按需签发的
+`*.APPS_PUBLIC_DOMAIN` 配置而跳过嵌套静态域名（例如 `LOGIN_DOMAIN`）的单域名证书。
 
 **本地 smoke 示例：**
 

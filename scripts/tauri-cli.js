@@ -8,11 +8,13 @@ const { ensureTeamcluIntrospectSidecar } = require("./ensure-introspect-sidecar"
 const { ensureAmuxdSidecar } = require("./ensure-amuxd-sidecar");
 const { ensureFunASRSidecar } = require("./ensure-funasr-sidecar");
 const { applyDevSkipFlags } = require("./lib/dev-flags");
+const { createPhaseTimer } = require("./lib/dev-timing");
 const { platform } = process;
 
 let args = process.argv.slice(2);
 const isWindows = platform === "win32";
 const sub = args[0];
+const timing = createPhaseTimer({ prefix: "[tauri-cli]" });
 
 // On Windows, dev/build must use --no-default-features to avoid wmi/windows-core conflict (p2p/iroh).
 // Strip any --features p2p so the broken dependency is not pulled in.
@@ -37,13 +39,20 @@ if (isWindows && (sub === "dev" || sub === "build")) {
 
 const env = createRustBuildEnv(process.env, __dirname);
 args = applyDevSkipFlags(args, env);
+timing.mark("flags+env");
+
 ensureTeamcluIntrospectSidecar(env, { logPrefix: "[tauri-cli]" });
+timing.mark("ensure-introspect");
+
 ensureAmuxdSidecar(env, { logPrefix: "[tauri-cli]" });
+timing.mark("ensure-amuxd");
+
 const targetIndex = args.indexOf("--target");
 ensureFunASRSidecar(env, {
   logPrefix: "[tauri-cli]",
   target: targetIndex >= 0 ? args[targetIndex + 1] : undefined,
 });
+timing.mark("ensure-funasr");
 
 const desktopDir = path.resolve(__dirname, "..", "apps", "desktop");
 const child = spawn("pnpm", ["exec", "tauri", ...args], {
@@ -52,4 +61,5 @@ const child = spawn("pnpm", ["exec", "tauri", ...args], {
   env,
   cwd: desktopDir,
 });
+timing.mark(`spawn tauri ${sub ?? "?"} (vite+cargo follow)`);
 child.on("exit", (code) => process.exit(code ?? 0));

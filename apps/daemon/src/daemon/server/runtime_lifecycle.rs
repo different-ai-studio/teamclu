@@ -500,8 +500,8 @@ impl DaemonServer {
         }
 
         // If iOS handed us a cloud session_id, pull the row + participants
-        // so we (a) populate the teamclu cache that `agents_to_activate`
-        // reads, and (b) subscribe to `session/{sid}/live` so inbound
+        // so we (a) populate the in-memory teamclu session cache, and (b)
+        // subscribe to `session/{sid}/live` so inbound
         // `message.created` events from iOS actually reach us.
         // iOS creates these sessions directly in the cloud backend, so this is the
         // only place the daemon learns about them.
