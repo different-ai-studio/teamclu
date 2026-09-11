@@ -9165,6 +9165,13 @@ components:
                 - string
                 - "null"
               description: Display name of the personal agent owner.
+        appContext:
+          oneOf:
+            - $ref: "#/components/schemas/SessionAppContext"
+            - type: "null"
+          description: >-
+            Secret-free control-plane snapshot for the app linked to this
+            session. Present only for an authenticated agent participant.
         items:
           type: array
           items:
@@ -9188,6 +9195,152 @@ components:
         isSelf:
           type: boolean
           description: True when this row is the authenticated caller.
+    SessionAppContext:
+      type: object
+      required:
+        - snapshotAt
+        - id
+        - name
+        - type
+        - visibility
+        - deployment
+        - auth
+        - database
+        - storage
+        - environment
+        - cronJobs
+        - customDomain
+      description: >-
+        App metadata safe to include in an agent system prompt. Environment
+        values, secret values, cron header/body values, data rows, file names,
+        access lists and DNS verification tokens are deliberately excluded.
+      properties:
+        snapshotAt:
+          type: string
+          format: date-time
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+        visibility:
+          type: string
+        canonicalUrl:
+          type:
+            - string
+            - "null"
+          format: uri
+        provisionStatus:
+          type:
+            - string
+            - "null"
+        fcStatus:
+          type:
+            - string
+            - "null"
+        deployment:
+          type: object
+          required:
+            - gitCommitSha
+            - runtime
+            - startSpec
+            - typePendingRedeploy
+            - envPendingRedeploy
+            - authModePendingRedeploy
+          properties:
+            gitCommitSha:
+              type: [string, "null"]
+            runtime:
+              type: [string, "null"]
+            startSpec:
+              type: [object, "null"]
+              additionalProperties: true
+            typePendingRedeploy:
+              type: boolean
+            envPendingRedeploy:
+              type: boolean
+            authModePendingRedeploy:
+              type: boolean
+        auth:
+          type: object
+          required: [mode, audience, scope, rules]
+          properties:
+            mode:
+              type: string
+            audience:
+              type: string
+            scope:
+              type: string
+            rules:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+        database:
+          type: object
+          required: [configured, live]
+          properties:
+            configured:
+              type: boolean
+            live:
+              type: boolean
+        storage:
+          type: object
+          required: [controlPlaneAvailable, overQuota]
+          properties:
+            controlPlaneAvailable:
+              type: boolean
+              description: >-
+                Whether this deployment supports app object storage. An older
+                live function may still require redeployment to receive its env.
+            overQuota:
+              type: boolean
+        environment:
+          type: object
+          required: [keys]
+          properties:
+            keys:
+              type: array
+              items:
+                type: object
+                required: [key, isSecret]
+                properties:
+                  key:
+                    type: string
+                  isSecret:
+                    type: boolean
+        cronJobs:
+          type: array
+          items:
+            type: object
+            required: [name, enabled, schedule, timezone, method, path, headerNames]
+            properties:
+              name:
+                type: string
+              enabled:
+                type: boolean
+              schedule:
+                type: string
+              timezone:
+                type: string
+              method:
+                type: string
+              path:
+                type: string
+              headerNames:
+                type: array
+                items:
+                  type: string
+        customDomain:
+          type: object
+          required: [domain, verified]
+          properties:
+            domain:
+              type: [string, "null"]
+            verified:
+              type: boolean
     TeamMember:
       type: object
       required: [actorId, teamId, role]

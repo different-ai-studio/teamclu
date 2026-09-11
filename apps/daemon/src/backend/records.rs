@@ -147,6 +147,108 @@ pub struct SessionRosterSelfAgent {
     pub owner_display_name: Option<String>,
 }
 
+/// Secret-free control-plane snapshot for the app linked to a session.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppContext {
+    pub snapshot_at: String,
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub app_type: String,
+    pub visibility: String,
+    #[serde(default)]
+    pub canonical_url: Option<String>,
+    #[serde(default)]
+    pub provision_status: Option<String>,
+    #[serde(default)]
+    pub fc_status: Option<String>,
+    pub deployment: SessionAppDeploymentContext,
+    pub auth: SessionAppAuthContext,
+    pub database: SessionAppDatabaseContext,
+    pub storage: SessionAppStorageContext,
+    pub environment: SessionAppEnvironmentContext,
+    #[serde(default)]
+    pub cron_jobs: Vec<SessionAppCronContext>,
+    pub custom_domain: SessionAppDomainContext,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppDeploymentContext {
+    #[serde(default)]
+    pub git_commit_sha: Option<String>,
+    #[serde(default)]
+    pub runtime: Option<String>,
+    #[serde(default)]
+    pub start_spec: Option<serde_json::Value>,
+    #[serde(default)]
+    pub type_pending_redeploy: bool,
+    #[serde(default)]
+    pub env_pending_redeploy: bool,
+    #[serde(default)]
+    pub auth_mode_pending_redeploy: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppAuthContext {
+    pub mode: String,
+    pub audience: String,
+    pub scope: String,
+    #[serde(default)]
+    pub rules: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppDatabaseContext {
+    pub configured: bool,
+    pub live: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppStorageContext {
+    pub control_plane_available: bool,
+    pub over_quota: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppEnvironmentContext {
+    #[serde(default)]
+    pub keys: Vec<SessionAppEnvironmentKey>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppEnvironmentKey {
+    pub key: String,
+    pub is_secret: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppCronContext {
+    pub name: String,
+    pub enabled: bool,
+    pub schedule: String,
+    pub timezone: String,
+    pub method: String,
+    pub path: String,
+    #[serde(default)]
+    pub header_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAppDomainContext {
+    #[serde(default)]
+    pub domain: Option<String>,
+    pub verified: bool,
+}
+
 /// Session-scoped participant labels from `GET /v1/sessions/{sessionId}/roster`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -157,6 +259,8 @@ pub struct SessionRoster {
     pub title: Option<String>,
     #[serde(default)]
     pub self_agent: Option<SessionRosterSelfAgent>,
+    #[serde(default)]
+    pub app_context: Option<SessionAppContext>,
     pub items: Vec<SessionRosterEntry>,
 }
 
