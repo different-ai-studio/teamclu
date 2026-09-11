@@ -1,9 +1,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
+use std::panic::AssertUnwindSafe;
 use tokio::sync::{oneshot, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
@@ -211,6 +212,9 @@ pub struct SeaTalkGateway {
     shutdown_tx: Arc<RwLock<Option<oneshot::Sender<()>>>>,
     status: Arc<RwLock<SeaTalkGatewayStatusResponse>>,
     is_running: Arc<RwLock<bool>>,
+    /// Background gateway task. Status reporting checks liveness so a panicked
+    /// task cannot keep reporting `Connected`.
+    task_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     processed_events: Arc<RwLock<ProcessedMessageTracker>>,
     inbound_sink: Arc<RwLock<Option<Arc<dyn crate::driver::InboundSink>>>>,
 }
@@ -233,6 +237,7 @@ impl SeaTalkGateway {
             shutdown_tx: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(SeaTalkGatewayStatusResponse::default())),
             is_running: Arc::new(RwLock::new(false)),
+            task_handle: Arc::new(RwLock::new(None)),
             processed_events: Arc::new(RwLock::new(ProcessedMessageTracker::new(
                 MAX_PROCESSED_MESSAGES,
             ))),
@@ -256,7 +261,24 @@ impl SeaTalkGateway {
     }
 
     pub async fn get_status(&self) -> SeaTalkGatewayStatusResponse {
-        self.status.read().await.clone()
+        let mut status = self.status.read().await.clone();
+        let task_dead = self
+            .task_handle
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|h| h.is_finished());
+        let claims_live = matches!(
+            status.status,
+            SeaTalkGatewayStatus::Connected | SeaTalkGatewayStatus::Connecting
+        );
+        if claims_live && task_dead {
+            status.status = SeaTalkGatewayStatus::Error;
+            if status.error_message.is_none() {
+                status.error_message = Some("gateway task exited unexpectedly".to_string());
+            }
+        }
+        status
     }
 
     /// Proactive DM send for cron / MCP `send` (HTTP OpenAPI, no WS required).
@@ -315,15 +337,27 @@ impl SeaTalkGateway {
         *self.shutdown_tx.write().await = Some(shutdown_tx);
 
         let gateway = self.clone();
-        tokio::spawn(async move {
-            if let Err(e) = gateway.run_gateway_loop(shutdown_rx).await {
-                eprintln!("[SeaTalk] Gateway error: {e}");
-                let mut status = gateway.status.write().await;
-                status.status = SeaTalkGatewayStatus::Error;
-                status.error_message = Some(e);
+        let handle = tokio::spawn(async move {
+            let run = AssertUnwindSafe(gateway.run_gateway_loop(shutdown_rx));
+            match run.catch_unwind().await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    eprintln!("[SeaTalk] Gateway error: {e}");
+                    let mut status = gateway.status.write().await;
+                    status.status = SeaTalkGatewayStatus::Error;
+                    status.error_message = Some(e);
+                }
+                Err(panic_payload) => {
+                    let msg = panic_message(&panic_payload);
+                    eprintln!("[SeaTalk] Gateway task panicked: {msg}");
+                    let mut status = gateway.status.write().await;
+                    status.status = SeaTalkGatewayStatus::Error;
+                    status.error_message = Some(format!("gateway task panicked: {msg}"));
+                }
             }
             *gateway.is_running.write().await = false;
         });
+        *self.task_handle.write().await = Some(handle);
 
         Ok(())
     }
@@ -362,7 +396,20 @@ impl SeaTalkGateway {
                     println!("[SeaTalk] Gateway shutting down");
                     return Ok(());
                 }
-                result = self.connect_websocket(&ctx) => {
+                result = async {
+                    match AssertUnwindSafe(self.connect_websocket(&ctx))
+                        .catch_unwind()
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(panic_payload) => {
+                            Err(format!(
+                                "WebSocket session panicked: {}",
+                                panic_message(&panic_payload)
+                            ))
+                        }
+                    }
+                } => {
                     match result {
                         Ok(()) => {
                             backoff = INITIAL_BACKOFF_MS;
@@ -478,7 +525,10 @@ impl SeaTalkGateway {
                             if let Some(data) = env.data.clone() {
                                 let preview = data.to_string();
                                 let preview = if preview.len() > 500 {
-                                    format!("{}…", &preview[..500])
+                                    format!(
+                                        "{}…",
+                                        truncate_utf8_bytes(&preview, 500)
+                                    )
                                 } else {
                                     preview
                                 };
@@ -1043,26 +1093,81 @@ fn strip_leading_mentions(text: &str) -> String {
     rest.trim().to_string()
 }
 
+/// Largest index `<= index` that still sits on a UTF-8 character boundary.
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    let mut i = index;
+    while i > 0 && !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Truncate to at most `max_bytes` without splitting a character.
+fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        text
+    } else {
+        &text[..floor_char_boundary(text, max_bytes)]
+    }
+}
+
+/// Split SeaTalk outbound text into chunks of at most `limit` bytes, preferring
+/// to break after a `\n` inside the window.
+///
+/// `TEXT_CHUNK_LIMIT` is a byte cap and 4000 is not a multiple of 3, so a naive
+/// `&text[start..start + limit]` lands mid-character on CJK (3 bytes) or emoji
+/// (4 bytes) and panics — which used to kill the gateway task and drop the
+/// whole reply. Every cut must back off to a character boundary.
 fn chunk_text(text: &str, limit: usize) -> Vec<String> {
     if text.len() <= limit {
         return vec![text.to_string()];
     }
+
     let mut chunks = Vec::new();
     let mut start = 0;
     while start < text.len() {
-        let end = (start + limit).min(text.len());
-        let split_at = if end == text.len() {
-            end
-        } else {
-            text[start..end]
-                .rfind('\n')
-                .map(|i| start + i + 1)
-                .unwrap_or(end)
-        };
+        let remaining = text.len() - start;
+        if remaining <= limit {
+            chunks.push(text[start..].to_string());
+            break;
+        }
+
+        let hard_end = floor_char_boundary(text, start + limit);
+        if hard_end <= start {
+            // A single character is wider than the limit; emit it alone rather
+            // than looping forever.
+            let ch_end = text[start..]
+                .chars()
+                .next()
+                .map(|c| start + c.len_utf8())
+                .unwrap_or(text.len());
+            chunks.push(text[start..ch_end].to_string());
+            start = ch_end;
+            continue;
+        }
+
+        let split_at = text[start..hard_end]
+            .rfind('\n')
+            .map(|i| start + i + 1)
+            .filter(|&i| i > start)
+            .unwrap_or(hard_end);
         chunks.push(text[start..split_at].to_string());
         start = split_at;
     }
     chunks
+}
+
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 impl Clone for SeaTalkGateway {
@@ -1077,6 +1182,7 @@ impl Clone for SeaTalkGateway {
             shutdown_tx: Arc::clone(&self.shutdown_tx),
             status: Arc::clone(&self.status),
             is_running: Arc::clone(&self.is_running),
+            task_handle: Arc::clone(&self.task_handle),
             processed_events: Arc::clone(&self.processed_events),
             inbound_sink: Arc::clone(&self.inbound_sink),
         }
@@ -1422,6 +1528,46 @@ mod tests {
             let msg = build_text_message(&chunk, Some("tB"));
             assert_eq!(msg["thread_id"], json!("tB"));
         }
+    }
+
+    #[test]
+    fn outbound_chunks_survive_cjk_at_byte_limit() {
+        // TEXT_CHUNK_LIMIT=4000 is not a multiple of 3; naive byte slicing panics.
+        let long = "中".repeat(2000); // 6000 bytes
+        let chunks = chunk_text(&long, TEXT_CHUNK_LIMIT);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.len() <= TEXT_CHUNK_LIMIT));
+        assert_eq!(chunks.concat(), long);
+    }
+
+    #[test]
+    fn outbound_chunks_survive_emoji_at_byte_limit() {
+        let long = "😀".repeat(1500); // 6000 bytes, 4 bytes each
+        let chunks = chunk_text(&long, TEXT_CHUNK_LIMIT);
+        assert!(chunks.iter().all(|c| c.len() <= TEXT_CHUNK_LIMIT));
+        assert_eq!(chunks.concat(), long);
+    }
+
+    #[test]
+    fn outbound_chunks_prefer_newline_breaks() {
+        let text = format!("{}\n{}", "中".repeat(1000), "文".repeat(1000));
+        let chunks = chunk_text(&text, TEXT_CHUNK_LIMIT);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].ends_with('\n'));
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn short_outbound_text_is_not_split() {
+        assert_eq!(chunk_text("短回复", TEXT_CHUNK_LIMIT), vec!["短回复"]);
+    }
+
+    #[test]
+    fn event_preview_truncate_survives_cjk_at_500() {
+        let preview = "中".repeat(200); // 600 bytes
+        let cut = truncate_utf8_bytes(&preview, 500);
+        assert!(cut.len() <= 500);
+        assert!(preview.starts_with(cut));
     }
 
     #[test]
