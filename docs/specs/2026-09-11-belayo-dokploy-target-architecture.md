@@ -1,6 +1,6 @@
 # Belayo Dokploy 目标部署架构
 
-- **Status**: Draft
+- **Status**: Accepted, implementation in progress
 - **Date**: 2026-09-11
 - **Scope**: Belayo 托管环境的 Cloud API、AI Gateway、MQTT、Registry、Gitea、Supabase 入口与发布流程
 - **Related**:
@@ -76,7 +76,7 @@ Belayo 目前是混合部署：
 | `dokploy-work1-emqx` | EMQX | 当前直接发布多个 MQTT/管理端口 |
 | `dokploy-supabase` | Supabase/Kong | 经 manager Traefik |
 | `query-service` | Query Service | 经 manager Traefik |
-| `launch-advisor-20260908` | AI Gateway、Gitea 等主机型服务 | 经 manager 的固定私网 IP 路由 |
+| `launch-advisor-20260908` | Gitea、已缩容的 AI Gateway 回滚服务 | 经 manager 的固定私网 IP 路由 |
 
 Swarm 节点当前均为 `Ready/Active`。Cloud API shadow 被固定在
 `dokploy-worker-2`，运行副本为 `1/1`。
@@ -87,7 +87,7 @@ Swarm 节点当前均为 `Ready/Active`。Cloud API shadow 被固定在
 |---|---|---|---|
 | `teamclaw-api.ucar.cc` | Alibaba FC `teamclaw-belayo-live-api` | FC custom domain | 当前生产入口，`/healthz` 为 200 |
 | `teamclu-api-shadow.ucar.cc` | Dokploy Cloud API `:9000` | Cloudflare + Origin CA + Traefik | shadow，`/healthz` 为 200 |
-| `ai-gateway.service.ucar.cc` | `172.18.29.207:4001` | Traefik + Let's Encrypt | 固定 IP 路由，不是服务发现 |
+| `ai-gateway.service.ucar.cc` | `teamclu-ai-gateway-iiq8f3:4001` | Traefik + Let's Encrypt | overlay service discovery；work2 单副本 |
 | `supa-live.service.ucar.cc` | `172.18.29.180:8000` | Traefik + Let's Encrypt | Kong 入口 |
 | `registry.service.ucar.cc` | worker2 Registry `:5000` | Traefik + Let's Encrypt | push/pull 分权 |
 | `git.service.ucar.cc` | `172.18.29.207:3000` | Traefik + Let's Encrypt | SSH 另走 manager `:2222` |
@@ -171,7 +171,7 @@ Cloud API 不发布 host port，只加入 `dokploy-network`，由 Traefik 按服
 
 ### 4.3 AI Gateway
 
-目标是把当前 `172.18.29.207:4001` 固定 IP 路由改为 Swarm 服务：
+AI Gateway 已从 `172.18.29.207:4001` 固定 IP 路由迁入主 Swarm：
 
 - 服务加入 `dokploy-network`。
 - Traefik 通过服务名和 `4001` 访问，不直接写 ECS 私网 IP。
@@ -181,8 +181,9 @@ Cloud API 不发布 host port，只加入 `dokploy-network`，由 Traefik 按服
 - 发布 workflow 不再通过“第二跳 SSH + host-mode port”更新服务；无 host port 后使用
   `start-first` rolling update。
 
-当前 workflow 中登记的 service id 与实时 Swarm service 已发生漂移，迁移前必须先以
-Dokploy application id 为唯一标识重新建立发布绑定。
+workflow 已绑定 Dokploy application `k6yinm2sXoijFw2rQ1OXX` 与 service
+`teamclu-ai-gateway-iiq8f3`，并产出 arm64/amd64 多架构镜像。旧外部应用保留为
+0 副本回滚配置，不再接收公网流量。
 
 ### 4.4 MQTT
 
@@ -455,7 +456,9 @@ FC function 保留但不删除，作为回滚目标。
 
 1. `full-backend-stack.md` 把 Belayo FC 写成已下线，与实时状态冲突。
 2. `teamclu-api.ucar.cc` 在文档和测试中出现，但当前没有 DNS；不能把它当线上验证目标。
-3. AI Gateway workflow 中的 Dokploy application/service 标识与实时服务已漂移。
+3. Dokploy 的 file mount 只在 manager 物化；AI Gateway workflow 目前用一次性 Swarm
+   helper 在 rolling update 前将 catalog 同步到 work2。长期应改为原生 Swarm config
+   或将该能力纳入 Dokploy。
 4. `query.service.ucar.cc` 同时存在自动和手写 router，手写高优先级规则覆盖自动规则。
 5. EMQX 直接发布了 `8083/8084/18083`，入口和管理面尚未收敛。
 6. 当前只有一个通用应用 worker，Cloud API 迁移后仍不具备节点级高可用。

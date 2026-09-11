@@ -1,0 +1,45 @@
+# Belayo deployment contract
+
+Belayo runs hosted workloads under Dokploy while self-host remains the
+Docker Compose test environment. The reverse proxies intentionally differ:
+Traefik owns Belayo hostnames and Caddy owns self-host hostnames.
+
+The environments must still agree on:
+
+- application environment-variable names;
+- Cloud API port 9000 and AI Gateway port 4001;
+- image-provided /healthz checks;
+- Cloud API-to-AI-Gateway routing semantics;
+- immutable image tags and rollback-capable rolling updates.
+
+The .env.keys files are names-only manifests. They contain no values and are
+safe to review in Git. Tests compare them with the corresponding self-host
+Compose allowlists so adding a variable to only one environment fails CI.
+
+Intentional Cloud API differences:
+
+- FC_SUPABASE_URL exists only in self-host. Function Compute reserves the FC_
+  prefix, and Belayo Dokploy sets SUPABASE_URL directly.
+- CORS_HANDLED_BY_PROXY exists only in Alibaba Function Compute. Neither Caddy
+  nor Traefik adds Cloud API CORS headers.
+- PORT and HOST are explicit in container targets; Function Compute owns its
+  runtime listener.
+
+Secrets remain in the self-host .env, GitHub environments, and Dokploy. Never
+add secret values to these manifests.
+
+## Current route parity
+
+| Capability | Self-host | Belayo | Status |
+|---|---|---|---|
+| Cloud API | Caddy to fc:9000 | FC production; Traefik shadow to cloud-api:9000 | Migration pending |
+| AI Gateway internal | ai-gateway:4001 | teamclu-ai-gateway-iiq8f3:4001 | Aligned |
+| AI Gateway public | /ai/* on the Cloud API host | ai-gateway.service.ucar.cc | Intentional |
+| MQTT WebSocket | Caddy to emqx:8083 | No Traefik hostname yet | Pending |
+| Registry | Caddy method-split auth | Traefik method-split auth | Aligned |
+| Gitea HTTP | Caddy to gitea:3000 | Traefik to the managed external server | Intentional |
+| App wildcard/custom domains | Caddy on-demand TLS | Alibaba FC custom domains | Intentionally different |
+
+Do not change production DNS, scheduler ownership, MQTT client URLs, or
+database migrations as part of an environment-key parity change. Each needs
+its own smoke test and rollback.

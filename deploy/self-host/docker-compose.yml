@@ -182,6 +182,8 @@ services:
       # is only issued by POST /internal/credits/backfill, never automatically.
       # Run that backfill first, every time.
       CREDITS_ENFORCED: "${CREDITS_ENFORCED:-false}"
+      TOKEN_CACHE_TTL_MS: "${TOKEN_CACHE_TTL_MS:-60000}"
+      AI_IMAGE_TIMEOUT_MS: "${AI_IMAGE_TIMEOUT_MS:-180000}"
       # Upstream provider keys.
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
