@@ -762,6 +762,9 @@
       "noAgent": "没有可触发的 Agent",
       "recording": "录音中",
       "recordingElsewhere": "正在另一个对话中录音",
+      "downloadModel": "下载本地语音模型",
+      "downloadStarted": "正在下载本地语音模型",
+      "sessionRequired": "请先创建会话，再开始录音",
       "downloading": "正在下载本地语音模型 {{progress}}%",
       "unsupported": "本机暂不支持本地语音输入"
     },

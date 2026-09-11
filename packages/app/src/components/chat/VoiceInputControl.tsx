@@ -20,6 +20,7 @@ import {
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
 import { PromptInputButton } from "@/packages/ai/prompt-input-ui";
 import { useVoiceInputStore, type VoiceInputMode } from "@/stores/voice-input";
+import { isVoiceInputMainDisabled } from "@/lib/voice/voice-input-availability";
 import { cn, isTauri } from "@/lib/utils";
 
 interface VoiceInputControlProps {
@@ -76,8 +77,8 @@ export function VoiceInputControl({
   }, [recordingId, sessionId]);
 
   const begin = React.useCallback(
-    async (selectedMode: VoiceInputMode, selectedAgentId?: string | null) => {
-      if (!sessionId || recordingId) return;
+    async (selectedMode: VoiceInputMode | null, selectedAgentId?: string | null) => {
+      if (recordingId) return;
       const latest = await refreshVoiceInputStatus();
       if (!latest.supported) {
         const { toast } = await import("sonner");
@@ -86,6 +87,17 @@ export function VoiceInputControl({
       }
       if (!latest.installed) {
         await installLocalVoiceInput();
+        const { toast } = await import("sonner");
+        toast.info(t("chat.voice.downloadStarted", "正在下载本地语音模型"));
+        return;
+      }
+      if (!sessionId) {
+        const { toast } = await import("sonner");
+        toast.info(t("chat.voice.sessionRequired", "请先创建会话，再开始录音"));
+        return;
+      }
+      if (!selectedMode) {
+        setMenuOpen(true);
         return;
       }
       let route: VoiceRoute = { mode: "silent" };
@@ -121,10 +133,6 @@ export function VoiceInputControl({
       if (recordingSessionId === sessionId) void stopLocalVoiceInput();
       return;
     }
-    if (!mode) {
-      setMenuOpen(true);
-      return;
-    }
     void begin(mode, targetAgentId).catch(async (error) => {
       const { toast } = await import("sonner");
       toast.error(error instanceof Error ? error.message : String(error));
@@ -133,8 +141,16 @@ export function VoiceInputControl({
 
   if (!desktop) return null;
   const installing = status?.installing === true;
+  const installed = status?.installed === true;
   const recordingHere = recordingId != null && recordingSessionId === sessionId;
   const recordingElsewhere = recordingId != null && !recordingHere;
+  const mainDisabled = isVoiceInputMainDisabled({
+    hasSession: Boolean(sessionId),
+    installed,
+    installing,
+    recordingElsewhere,
+    supported: status?.supported !== false,
+  });
   const modeLabel =
     mode === "trigger"
       ? t("chat.voice.trigger", "触发 Agent")
@@ -152,7 +168,9 @@ export function VoiceInputControl({
             ? t("chat.voice.downloading", "正在下载本地语音模型 {{progress}}%", {
                 progress: Math.round(installProgress * 100),
               })
-            : t("chat.voice.start", "开始录音（{{mode}}）", { mode: modeLabel });
+            : !installed
+              ? t("chat.voice.downloadModel", "下载本地语音模型")
+              : t("chat.voice.start", "开始录音（{{mode}}）", { mode: modeLabel });
 
   return (
     <div className="flex shrink-0 items-center">
@@ -160,11 +178,10 @@ export function VoiceInputControl({
         type="button"
         className={cn(
           "h-8 w-8 px-0 text-muted-foreground hover:text-foreground",
+          !mainDisabled && "text-foreground",
           recordingHere && "bg-foreground text-background hover:bg-foreground/90 hover:text-background",
         )}
-        disabled={
-          !sessionId || installing || recordingElsewhere || status?.supported === false
-        }
+        disabled={mainDisabled}
         title={title}
         aria-label={title}
         data-testid="voice-input-toggle"

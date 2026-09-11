@@ -762,6 +762,9 @@
       "noAgent": "No agent available to trigger",
       "recording": "Recording",
       "recordingElsewhere": "Recording in another chat",
+      "downloadModel": "Download local voice model",
+      "downloadStarted": "Downloading the local voice model",
+      "sessionRequired": "Create a chat before starting a recording",
       "downloading": "Downloading local voice model {{progress}}%",
       "unsupported": "Local voice input is not supported on this device"
     },
