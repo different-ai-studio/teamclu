@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isVoiceInputMainDisabled } from "../voice-input-availability";
+import { VOICE_MODEL_OPTIONS } from "../voice-models";
 
 describe("isVoiceInputMainDisabled", () => {
   it("allows a device-level model install before a chat exists", () => {
@@ -35,5 +36,14 @@ describe("isVoiceInputMainDisabled", () => {
     };
     expect(isVoiceInputMainDisabled({ ...base, installing: true })).toBe(true);
     expect(isVoiceInputMainDisabled({ ...base, installing: false, supported: false })).toBe(true);
+  });
+});
+
+describe("VOICE_MODEL_OPTIONS", () => {
+  it("offers the pinned Q8 and F16 downloads with Q8 recommended", () => {
+    expect(VOICE_MODEL_OPTIONS).toEqual([
+      { id: "q8", modelBytes: 254_208_320, recommended: true },
+      { id: "f16", modelBytes: 470_197_600, recommended: false },
+    ]);
   });
 });

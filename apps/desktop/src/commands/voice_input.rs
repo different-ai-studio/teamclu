@@ -1,24 +1,63 @@
 //! Device-local FunASR voice input for the chat composer.
 //!
-//! Audio never leaves the machine. The first install downloads a pinned,
-//! checksummed FunASR llama.cpp runtime and GGUF models into app data. Capture
+//! Audio never leaves the machine. The first install copies the bundled FunASR
+//! runtime and downloads a pinned, checksummed GGUF model into app data. Capture
 //! is owned by the Tauri process (so macOS attributes microphone permission to
 //! the signed app); inference runs in the isolated upstream binary.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const ENGINE_VERSION: &str = "1.4.15";
-const MODEL_URL: &str = "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/90c1c61912018b70ada0fcc024ea24aca62f2e63/sensevoice-small-q8.gguf";
-const MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5";
+const MODEL_REVISION: &str = "90c1c61912018b70ada0fcc024ea24aca62f2e63";
+const MODEL_BASE_URL: &str = "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve";
+const Q8_MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5";
+const F16_MODEL_SHA256: &str = "2389039651f4574dbd674f1f1e296b8b1147b2e19a5fd9c2cd69e82669c78d8e";
 const VAD_URL: &str = "https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/6840bae4c5c92ee8c04faaf4db23dd0105098d7f/fsmn-vad.gguf";
 const VAD_SHA256: &str = "1270f2559c495f4e7b6e739541151027d360761a3fda43fc147034f5719f5479";
 
-const MODEL_BYTES: u64 = 254_208_320;
+const Q8_MODEL_BYTES: u64 = 254_208_320;
+const F16_MODEL_BYTES: u64 = 470_197_600;
 const VAD_BYTES: u64 = 1_720_512;
-const TOTAL_BYTES: u64 = MODEL_BYTES + VAD_BYTES;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VoiceModelVariant {
+    Q8,
+    F16,
+}
+
+struct VoiceModelSpec {
+    file_name: &'static str,
+    sha256: &'static str,
+    bytes: u64,
+}
+
+impl VoiceModelVariant {
+    fn spec(self) -> VoiceModelSpec {
+        match self {
+            Self::Q8 => VoiceModelSpec {
+                file_name: "sensevoice-small-q8.gguf",
+                sha256: Q8_MODEL_SHA256,
+                bytes: Q8_MODEL_BYTES,
+            },
+            Self::F16 => VoiceModelSpec {
+                file_name: "sensevoice-small-f16.gguf",
+                sha256: F16_MODEL_SHA256,
+                bytes: F16_MODEL_BYTES,
+            },
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Q8 => "q8",
+            Self::F16 => "f16",
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct VoiceInputState {
@@ -35,7 +74,7 @@ pub struct VoiceInputStatus {
     installing: bool,
     listening: bool,
     engine_version: &'static str,
-    download_bytes: u64,
+    installed_model: Option<VoiceModelVariant>,
     reason: Option<String>,
 }
 
@@ -52,16 +91,39 @@ fn runtime_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("llama-funasr-sensevoice")
 }
 
-fn model_path(root: &std::path::Path) -> std::path::PathBuf {
-    root.join("sensevoice-small-q8.gguf")
+fn model_path(root: &std::path::Path, variant: VoiceModelVariant) -> std::path::PathBuf {
+    root.join(variant.spec().file_name)
 }
 
 fn vad_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("fsmn-vad.gguf")
 }
 
-fn is_installed(root: &std::path::Path) -> bool {
-    runtime_path(root).is_file() && model_path(root).is_file() && vad_path(root).is_file()
+fn model_marker_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("model-variant")
+}
+
+fn installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
+    if !runtime_path(root).is_file() || !vad_path(root).is_file() {
+        return None;
+    }
+    let marked = std::fs::read_to_string(model_marker_path(root)).ok();
+    let preferred = match marked.as_deref().map(str::trim) {
+        Some("f16") => Some(VoiceModelVariant::F16),
+        Some("q8") => Some(VoiceModelVariant::Q8),
+        _ => None,
+    };
+    preferred
+        .filter(|variant| model_path(root, *variant).is_file())
+        .or_else(|| {
+            [VoiceModelVariant::Q8, VoiceModelVariant::F16]
+                .into_iter()
+                .find(|variant| model_path(root, *variant).is_file())
+        })
+}
+
+fn is_variant_installed(root: &std::path::Path, variant: VoiceModelVariant) -> bool {
+    installed_variant(root) == Some(variant)
 }
 
 fn platform_support() -> Result<(), String> {
@@ -82,13 +144,14 @@ pub fn voice_input_status(
 ) -> Result<VoiceInputStatus, String> {
     let support = platform_support();
     let root = install_dir(&app)?;
+    let installed_model = support.is_ok().then(|| installed_variant(&root)).flatten();
     Ok(VoiceInputStatus {
         supported: support.is_ok(),
-        installed: support.is_ok() && is_installed(&root),
+        installed: installed_model.is_some(),
         installing: state.installing.load(Ordering::SeqCst),
         listening: state.listening.load(Ordering::SeqCst),
         engine_version: ENGINE_VERSION,
-        download_bytes: TOTAL_BYTES,
+        installed_model,
         reason: support.err(),
     })
 }
@@ -108,6 +171,7 @@ fn download_checked(
     expected_sha256: &str,
     destination: &std::path::Path,
     offset: u64,
+    total_bytes: u64,
     stage: &'static str,
 ) -> Result<(), String> {
     use sha2::{Digest, Sha256};
@@ -144,7 +208,7 @@ fn download_checked(
             "voice:install-progress",
             InstallProgress {
                 bytes_downloaded: offset + downloaded,
-                total_bytes: TOTAL_BYTES,
+                total_bytes,
                 stage,
             },
         );
@@ -162,6 +226,7 @@ fn download_checked(
 pub fn voice_input_install(
     app: AppHandle,
     state: State<'_, VoiceInputState>,
+    model_variant: VoiceModelVariant,
 ) -> Result<(), String> {
     platform_support()?;
     if state.installing.swap(true, Ordering::SeqCst) {
@@ -170,7 +235,7 @@ pub fn voice_input_install(
 
     let app_for_thread = app.clone();
     std::thread::spawn(move || {
-        let result = install_engine(&app_for_thread);
+        let result = install_engine(&app_for_thread, model_variant);
         if let Some(shared) = app_for_thread.try_state::<VoiceInputState>() {
             shared.installing.store(false, Ordering::SeqCst);
         }
@@ -190,13 +255,15 @@ pub fn voice_input_install(
 }
 
 #[cfg(target_os = "macos")]
-fn install_engine(app: &AppHandle) -> Result<(), String> {
+fn install_engine(app: &AppHandle, model_variant: VoiceModelVariant) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let final_dir = install_dir(app)?;
-    if is_installed(&final_dir) {
+    if is_variant_installed(&final_dir, model_variant) {
         return Ok(());
     }
+    let model = model_variant.spec();
+    let total_bytes = model.bytes + VAD_BYTES;
     let parent = final_dir
         .parent()
         .ok_or("invalid voice install directory")?;
@@ -210,12 +277,14 @@ fn install_engine(app: &AppHandle) -> Result<(), String> {
             .ok_or("Bundled FunASR runtime is missing")?;
     std::fs::copy(&bundled_runtime, runtime_path(temp.path()))
         .map_err(|error| format!("copy FunASR runtime: {error}"))?;
+    let model_url = format!("{MODEL_BASE_URL}/{MODEL_REVISION}/{}", model.file_name);
     download_checked(
         app,
-        MODEL_URL,
-        MODEL_SHA256,
-        &model_path(temp.path()),
+        &model_url,
+        model.sha256,
+        &model_path(temp.path(), model_variant),
         0,
+        total_bytes,
         "model",
     )?;
     download_checked(
@@ -223,9 +292,12 @@ fn install_engine(app: &AppHandle) -> Result<(), String> {
         VAD_URL,
         VAD_SHA256,
         &vad_path(temp.path()),
-        MODEL_BYTES,
+        model.bytes,
+        total_bytes,
         "vad",
     )?;
+    std::fs::write(model_marker_path(temp.path()), model_variant.id())
+        .map_err(|error| format!("write model variant: {error}"))?;
     let runtime = runtime_path(temp.path());
     let mut permissions = std::fs::metadata(&runtime)
         .map_err(|error| error.to_string())?
@@ -240,7 +312,7 @@ fn install_engine(app: &AppHandle) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn install_engine(_app: &AppHandle) -> Result<(), String> {
+fn install_engine(_app: &AppHandle, _model_variant: VoiceModelVariant) -> Result<(), String> {
     platform_support()
 }
 
@@ -252,9 +324,7 @@ pub fn voice_input_start(
 ) -> Result<(), String> {
     platform_support()?;
     let root = install_dir(&app)?;
-    if !is_installed(&root) {
-        return Err("FunASR is not installed".to_string());
-    }
+    let model_variant = installed_variant(&root).ok_or("FunASR is not installed")?;
     if state.listening.swap(true, Ordering::SeqCst) {
         return Err("Microphone is already in use by voice input".to_string());
     }
@@ -263,8 +333,13 @@ pub fn voice_input_start(
     let app_for_thread = app.clone();
     std::thread::spawn(move || {
         #[cfg(target_os = "macos")]
-        let result =
-            macos::capture_and_transcribe(app_for_thread.clone(), root, stop, recording_id.clone());
+        let result = macos::capture_and_transcribe(
+            app_for_thread.clone(),
+            root,
+            model_variant,
+            stop,
+            recording_id.clone(),
+        );
         #[cfg(not(target_os = "macos"))]
         let result: Result<(), String> = Err("unsupported platform".to_string());
         if let Some(shared) = app_for_thread.try_state::<VoiceInputState>() {
@@ -327,6 +402,7 @@ mod macos {
     pub fn capture_and_transcribe(
         app: AppHandle,
         root: std::path::PathBuf,
+        model_variant: VoiceModelVariant,
         stop: Arc<AtomicBool>,
         recording_id: String,
     ) -> Result<(), String> {
@@ -336,7 +412,7 @@ mod macos {
         let inference_root = root.clone();
         let inference = std::thread::spawn(move || {
             for samples in segment_rx {
-                match transcribe_segment(&inference_root, &samples) {
+                match transcribe_segment(&inference_root, model_variant, &samples) {
                     Ok(text) if !text.is_empty() => {
                         let _ = inference_app.emit(
                             "voice:segment",
@@ -363,12 +439,7 @@ mod macos {
         });
 
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or("No default input device")?;
-        let supported = device
-            .default_input_config()
-            .map_err(|error| format!("Default input config: {error}"))?;
+        let (device, supported) = select_input_device(&host)?;
         let source_rate = supported.sample_rate();
         let channels = supported.channels() as usize;
         let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
@@ -442,6 +513,59 @@ mod macos {
         drop(segment_tx);
         let _ = inference.join();
         Ok(())
+    }
+
+    fn select_input_device(
+        host: &cpal::Host,
+    ) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+        if let Some(device) = host.default_input_device() {
+            match input_config(&device) {
+                Ok(config) => return Ok((device, config)),
+                Err(error) => log::warn!("default voice input device is unavailable: {error}"),
+            }
+        }
+
+        let devices = host
+            .input_devices()
+            .map_err(|error| microphone_unavailable(&error.to_string()))?;
+        for device in devices {
+            if let Ok(config) = input_config(&device) {
+                return Ok((device, config));
+            }
+        }
+        Err(microphone_unavailable("no usable CoreAudio input device"))
+    }
+
+    fn input_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
+        if let Ok(config) = device.default_input_config() {
+            return Ok(config);
+        }
+        let mut configs = device
+            .supported_input_configs()
+            .map_err(|error| error.to_string())?;
+        let range = configs
+            .find(|range| {
+                range.channels() > 0
+                    && matches!(
+                        range.sample_format(),
+                        cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
+                    )
+            })
+            .ok_or("no supported PCM input format")?;
+        Ok(range
+            .try_with_sample_rate(48_000)
+            .unwrap_or_else(|| range.with_max_sample_rate()))
+    }
+
+    fn microphone_unavailable(detail: &str) -> String {
+        log::warn!("voice input device unavailable: {detail}");
+        if crate::commands::prefers_zh_locale() {
+            "默认麦克风不可用。请在 macOS 系统设置 > 声音 > 输入中选择一个可用设备后重试。"
+                .to_string()
+        } else {
+            "The default microphone is unavailable. Select an input device in macOS System Settings > Sound > Input, then try again."
+                .to_string()
+        }
     }
 
     fn finalize(sender: &mpsc::Sender<Vec<f32>>, active: &mut Vec<f32>, silence_steps: usize) {
@@ -536,7 +660,11 @@ mod macos {
             .extend(input);
     }
 
-    fn transcribe_segment(root: &std::path::Path, samples: &[f32]) -> Result<String, String> {
+    fn transcribe_segment(
+        root: &std::path::Path,
+        model_variant: VoiceModelVariant,
+        samples: &[f32],
+    ) -> Result<String, String> {
         let temp = tempfile::Builder::new()
             .prefix("teamclu-voice-")
             .suffix(".wav")
@@ -559,7 +687,7 @@ mod macos {
         writer.finalize().map_err(|error| error.to_string())?;
         let output = std::process::Command::new(runtime_path(root))
             .arg("-m")
-            .arg(model_path(root))
+            .arg(model_path(root, model_variant))
             .arg("--vad")
             .arg(vad_path(root))
             .arg("-a")
@@ -606,6 +734,19 @@ mod macos {
                 original_len - (SILENCE_STEPS - 2) * STEP_SAMPLES
             );
             assert!(active.is_empty());
+        }
+
+        #[test]
+        fn installed_variant_supports_legacy_q8_and_marker_selection() {
+            let root = tempfile::tempdir().expect("temp voice root");
+            std::fs::write(runtime_path(root.path()), []).expect("runtime");
+            std::fs::write(vad_path(root.path()), []).expect("vad");
+            std::fs::write(model_path(root.path(), VoiceModelVariant::Q8), []).expect("q8");
+            assert_eq!(installed_variant(root.path()), Some(VoiceModelVariant::Q8));
+
+            std::fs::write(model_path(root.path(), VoiceModelVariant::F16), []).expect("f16");
+            std::fs::write(model_marker_path(root.path()), "f16").expect("marker");
+            assert_eq!(installed_variant(root.path()), Some(VoiceModelVariant::F16));
         }
     }
 }

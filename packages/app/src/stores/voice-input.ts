@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { VoiceModelVariant } from "@/lib/voice/voice-models";
 
 export type VoiceInputMode = "silent" | "trigger";
 
@@ -8,7 +9,7 @@ export interface VoiceInputStatus {
   installing: boolean;
   listening: boolean;
   engineVersion: string;
-  downloadBytes: number;
+  installedModel?: VoiceModelVariant | null;
   reason?: string | null;
 }
 

@@ -3,6 +3,7 @@ import {
   useVoiceInputStore,
   type VoiceInputStatus,
 } from "@/stores/voice-input";
+import type { VoiceModelVariant } from "./voice-models";
 
 export interface VoiceSegment {
   recordingId: string;
@@ -87,12 +88,12 @@ export async function refreshVoiceInputStatus(): Promise<VoiceInputStatus> {
   return status;
 }
 
-export async function installLocalVoiceInput(): Promise<void> {
+export async function installLocalVoiceInput(modelVariant: VoiceModelVariant): Promise<void> {
   await setupEvents();
   const store = useVoiceInputStore.getState();
   store.setError(null);
   store.setInstallProgress(0);
-  await invoke("voice_input_install");
+  await invoke("voice_input_install", { modelVariant });
   if (store.status) store.setStatus({ ...store.status, installing: true });
 }
 

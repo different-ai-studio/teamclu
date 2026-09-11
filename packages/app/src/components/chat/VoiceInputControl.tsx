@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Check, ChevronDown, Loader2, Mic, Square } from "lucide-react";
+import { Check, ChevronDown, Loader2, Mic, Settings2, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -7,6 +7,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -21,7 +22,9 @@ import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
 import { PromptInputButton } from "@/packages/ai/prompt-input-ui";
 import { useVoiceInputStore, type VoiceInputMode } from "@/stores/voice-input";
 import { isVoiceInputMainDisabled } from "@/lib/voice/voice-input-availability";
+import type { VoiceModelVariant } from "@/lib/voice/voice-models";
 import { cn, isTauri } from "@/lib/utils";
+import { VoiceModelInstallDialog } from "./VoiceModelInstallDialog";
 
 interface VoiceInputControlProps {
   sessionId: string | null;
@@ -44,6 +47,8 @@ export function VoiceInputControl({
   const setMode = useVoiceInputStore((state) => state.setMode);
   const setError = useVoiceInputStore((state) => state.setError);
   const [menuOpen, setMenuOpen] = React.useState(false);
+  const [installDialogOpen, setInstallDialogOpen] = React.useState(false);
+  const [selectedModel, setSelectedModel] = React.useState<VoiceModelVariant>("q8");
   const [targetAgentId, setTargetAgentId] = React.useState<string | null>(null);
   const recordingSessionRef = React.useRef<string | null>(null);
   const desktop = isTauri();
@@ -86,9 +91,7 @@ export function VoiceInputControl({
         return;
       }
       if (!latest.installed) {
-        await installLocalVoiceInput();
-        const { toast } = await import("sonner");
-        toast.info(t("chat.voice.downloadStarted", "正在下载本地语音模型"));
+        setInstallDialogOpen(true);
         return;
       }
       if (!sessionId) {
@@ -139,6 +142,13 @@ export function VoiceInputControl({
     });
   };
 
+  const handleInstall = () => {
+    void installLocalVoiceInput(selectedModel).catch(async (error) => {
+      const { toast } = await import("sonner");
+      toast.error(error instanceof Error ? error.message : String(error));
+    });
+  };
+
   if (!desktop) return null;
   const installing = status?.installing === true;
   const installed = status?.installed === true;
@@ -173,77 +183,110 @@ export function VoiceInputControl({
               : t("chat.voice.start", "开始录音（{{mode}}）", { mode: modeLabel });
 
   return (
-    <div className="flex shrink-0 items-center">
-      <PromptInputButton
-        type="button"
-        className={cn(
-          "h-8 w-8 px-0 text-muted-foreground hover:text-foreground",
-          !mainDisabled && "text-foreground",
-          recordingHere && "bg-foreground text-background hover:bg-foreground/90 hover:text-background",
-        )}
-        disabled={mainDisabled}
-        title={title}
-        aria-label={title}
-        data-testid="voice-input-toggle"
-        onClick={handleMainClick}
-      >
-        {installing ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : recordingHere ? (
-          <Square className="h-3 w-3 fill-current" />
-        ) : (
-          <Mic className="h-4 w-4" />
-        )}
-      </PromptInputButton>
-      {!recordingId ? (
-        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-5 rounded-l-none px-0 text-muted-foreground hover:text-foreground"
-              disabled={!sessionId || installing || status?.supported === false}
-              aria-label={t("chat.voice.chooseMode", "选择录音模式")}
-            >
-              <ChevronDown className="h-3 w-3" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[15rem]">
-            <DropdownMenuLabel className="text-[11px] text-faint">
-              {t("chat.voice.sendMode", "自动发送方式")}
-            </DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => choose("silent")}>
-              <span className="flex-1">
-                {t("chat.voice.silent", "静默")}
-                <span className="ml-2 text-[11px] text-muted-foreground">
-                  {t("chat.voice.silentHint", "不 @ 任何 Agent")}
-                </span>
-              </span>
-              {mode === "silent" ? <Check className="h-3.5 w-3.5" /> : null}
-            </DropdownMenuItem>
-            {engagedAgents.length === 0 ? (
-              <DropdownMenuItem disabled>
-                {t("chat.voice.noAgent", "没有可触发的 Agent")}
-              </DropdownMenuItem>
-            ) : (
-              engagedAgents.map((agent) => (
-                <DropdownMenuItem key={agent.id} onSelect={() => choose("trigger", agent.id)}>
-                  <span className="flex-1">
-                    {t("chat.voice.triggerAgent", "触发 {{name}}", {
-                      name: agent.displayName,
-                    })}
+    <>
+      <div className="flex shrink-0 items-center">
+        <PromptInputButton
+          type="button"
+          className={cn(
+            "h-8 w-8 px-0 text-muted-foreground hover:text-foreground",
+            !mainDisabled && "text-foreground",
+            recordingHere && "bg-foreground text-background hover:bg-foreground/90 hover:text-background",
+          )}
+          disabled={mainDisabled}
+          title={title}
+          aria-label={title}
+          data-testid="voice-input-toggle"
+          onClick={handleMainClick}
+        >
+          {installing ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : recordingHere ? (
+            <Square className="h-3 w-3 fill-current" />
+          ) : (
+            <Mic className="h-4 w-4" />
+          )}
+        </PromptInputButton>
+        {!recordingId ? (
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-5 rounded-l-none px-0 text-muted-foreground hover:text-foreground"
+                disabled={installing || status?.supported === false}
+                aria-label={t("chat.voice.chooseMode", "选择录音模式")}
+              >
+                <ChevronDown className="h-3 w-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-[15rem]">
+              <DropdownMenuLabel className="text-[11px] text-faint">
+                {t("chat.voice.sendMode", "自动发送方式")}
+              </DropdownMenuLabel>
+              <DropdownMenuItem disabled={!sessionId} onSelect={() => choose("silent")}>
+                <span className="flex-1">
+                  {t("chat.voice.silent", "静默")}
+                  <span className="ml-2 text-[11px] text-muted-foreground">
+                    {t("chat.voice.silentHint", "不 @ 任何 Agent")}
                   </span>
-                  {mode === "trigger" && targetAgentId === agent.id ? (
-                    <Check className="h-3.5 w-3.5" />
-                  ) : null}
+                </span>
+                {mode === "silent" ? <Check className="h-3.5 w-3.5" /> : null}
+              </DropdownMenuItem>
+              {engagedAgents.length === 0 ? (
+                <DropdownMenuItem disabled>
+                  {t("chat.voice.noAgent", "没有可触发的 Agent")}
                 </DropdownMenuItem>
-              ))
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : null}
-    </div>
+              ) : (
+                engagedAgents.map((agent) => (
+                  <DropdownMenuItem
+                    key={agent.id}
+                    disabled={!sessionId}
+                    onSelect={() => choose("trigger", agent.id)}
+                  >
+                    <span className="flex-1">
+                      {t("chat.voice.triggerAgent", "触发 {{name}}", {
+                        name: agent.displayName,
+                      })}
+                    </span>
+                    {mode === "trigger" && targetAgentId === agent.id ? (
+                      <Check className="h-3.5 w-3.5" />
+                    ) : null}
+                  </DropdownMenuItem>
+                ))
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={() => {
+                  setSelectedModel(status?.installedModel ?? "q8");
+                  setInstallDialogOpen(true);
+                }}
+              >
+                <Settings2 className="mr-2 h-3.5 w-3.5" />
+                <span className="flex-1">
+                  {t("chat.voice.modelSettings", "语音模型设置")}
+                </span>
+                {status?.installedModel ? (
+                  <span className="font-mono text-[10.5px] uppercase text-faint">
+                    {status.installedModel}
+                  </span>
+                ) : null}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </div>
+      <VoiceModelInstallDialog
+        open={installDialogOpen}
+        installing={installing}
+        progress={installProgress}
+        selectedModel={selectedModel}
+        installedModel={status?.installedModel}
+        onOpenChange={setInstallDialogOpen}
+        onSelectedModelChange={setSelectedModel}
+        onInstall={handleInstall}
+      />
+    </>
   );
 }
 
