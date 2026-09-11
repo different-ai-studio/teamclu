@@ -26,7 +26,7 @@ export function oauthUnavailable(reason?: string): ApiError {
   );
 }
 
-/** Resolve GoTrue admin credentials from env already declared in s.yaml. */
+/** Resolve GoTrue admin credentials from the deployment environment. */
 export function readGotrueOAuthConfig(env: Env = process.env): GotrueOAuthConfigResolution {
   const projectUrl = trimmed(env.GOTRUE_URL) || trimmed(env.FC_SUPABASE_URL) || trimmed(env.SUPABASE_URL);
   if (!projectUrl) return { error: "SUPABASE_URL is empty" };

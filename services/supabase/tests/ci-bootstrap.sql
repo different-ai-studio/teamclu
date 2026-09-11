@@ -29,9 +29,9 @@
 -- those services own their own migrations and this would corrupt them.
 --
 -- It lives in tests/, NOT in services/supabase/migrations/, so no deploy path
--- can pick it up: the self-host compose mount, self-host-deploy.yml, and
--- services/fc/deploy-aliyun-fc.sh (belayo) all point at the migrations
--- directory and never recurse into this one.
+-- can pick it up: the self-host compose mount and self-host-deploy.yml point at
+-- the migrations directory and never recurse into this one. Belayo migrations
+-- are applied separately from its Dokploy Cloud API rollout.
 --
 -- The guard below is the belt to that suspenders: a CI database is empty when
 -- this runs, so the presence of `amux` means someone pointed this at a real

@@ -89,8 +89,8 @@ pnpm ios:test               # iOS UI tests
 - `apps/daemon/` — amuxd daemon (pi runtime, MQTT/Supabase bridge)
 - `apps/ios/` — iOS app, Xcode project, and Swift packages
 - `services/supabase/` — Supabase migrations, seed, and database tests
-- `services/fc/` — Cloud API service (Node.js 20). Deploys to the self-host
-  Compose stack, Alibaba Function Compute, and the Belayo Dokploy shadow
+- `services/fc/` — Cloud API service (Node.js 20). Deploys as a container to
+  the self-host Compose stack and Belayo Dokploy
 - `crates/` — shared Rust crates (`teamclu-proto`, `teamclu-types`, `teamclu-transport`)
 - `tests/` — E2E tests (tauri-mcp): smoke, regression, performance, functional
 
@@ -251,37 +251,33 @@ handles that: after the debounce it checks whether HEAD carries an `ios-v*` tag 
 stands down if so, leaving the tag's run to publish. A main push with no tag behind
 it still releases as before.
 
-## Deployment — two environments, three Cloud API targets
+## Deployment — two environments, two Cloud API targets
 
 There are two environments:
 
 - **self-host** is the Docker Compose test environment and stays on Caddy;
-- **Belayo** is the hosted environment. Its production Cloud API currently runs
-  on Alibaba Function Compute, while a Dokploy shadow is the migration target.
-  Belayo HTTP ingress on Dokploy is owned by Traefik.
+- **Belayo** is the hosted environment. Its production Cloud API runs on
+  Dokploy, and its HTTP ingress is owned by Traefik.
 
 Do not collapse the two environments or share proxy certificate files between
 them. Align their application contract instead: environment keys, internal
 ports, URL behaviour, health checks, immutable images, and smoke tests.
 
-`services/fc/` is the Cloud API service, and it supports **three deploy targets**
+`services/fc/` is the Cloud API service, and it supports **two deploy targets**
 from the same source:
 
 - **self-host test** — built as a container by
   `deploy/self-host/docker-compose.yml` (`build: context: ../../services/fc`).
   Env comes from the `fc:` service's `environment:` map, which is an explicit
   allowlist: a var absent from it never reaches the container.
-- **Belayo Alibaba Function Compute** — `services/fc/s.yaml` (Serverless Devs)
-  + `services/fc/deploy-aliyun-fc.sh`. This remains the current production
-  runtime and rollback target.
-- **Belayo Dokploy** — container image on the main Swarm, currently exposed
-  through the shadow hostname while production migration is validated. Its
-  names-only environment contract is
+- **Belayo Dokploy** — immutable container image on the main Swarm, exposed
+  through `teamclaw-api.ucar.cc` via Cloudflare and Traefik. Its names-only
+  environment contract is
   `deploy/belayo/cloud-api.env.keys`.
 
-All targets must keep working. When adding a Cloud API env var, update
-`s.yaml`, the Compose `environment:` map, and the Belayo keys manifest unless
-the difference is explicitly documented and enforced by
+Both targets must keep working. When adding a Cloud API env var, update the
+Compose `environment:` map and the Belayo keys manifest unless the difference
+is explicitly documented and enforced by
 `services/fc/test/deploy-env-parity.test.ts`.
 
 **Self-host test host:** `47.112.210.217` (ECS

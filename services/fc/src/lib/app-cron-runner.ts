@@ -4,11 +4,9 @@ import { appPublicUrl } from "./apps-public-host.js";
 /**
  * The tick: claim every job that is due, send its request, record what happened.
  *
- * Driven from outside on a one-minute heartbeat — a compose sidecar on
- * self-host, a timer trigger on Alibaba FC — because neither target offers a
- * scheduler we could rely on from inside the request path: the container is
- * long-lived but restarts, and the function only exists while a request is in
- * flight. One endpoint with two callers keeps the behaviour identical on both.
+ * Driven from outside on a one-minute heartbeat by compose sidecars in
+ * self-host and Belayo Dokploy. A request-serving container can restart at any
+ * time, so the scheduler stays outside the request process.
  *
  * Nothing here is transactional. It does not need to be: the only state that
  * must not be applied twice is the claim, and that is a compare-and-set on
@@ -38,8 +36,7 @@ const TICK_CONCURRENCY = 8;
  *
  * A job already running is bounded by what remains of this budget too (see
  * executeJob), so the whole tick lands within about a second of it. Both deploy
- * targets must allow at least that much: the FC function timeout in s.yaml, and
- * the sidecar's curl budget in docker-compose.yml.
+ * targets must allow at least that much in the sidecar curl budget.
  */
 const MAX_TICK_MS = 45_000;
 /** Execution rows kept per job. Trimmed on write; there is no sweeper. */

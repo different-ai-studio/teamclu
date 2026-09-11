@@ -105,7 +105,7 @@ git add services/supabase/migrations/20260827000000_apps_self_serve_gitea.sql \
 ### Task 2: Env 三写 — Gitea + secrets key
 
 **Files:**
-- Modify: `services/fc/s.yaml` (`environmentVariables:`)
+- Modify: `deploy/belayo/cloud-api.env.keys` and the self-host Cloud API environment allowlist
 - Modify: `deploy/self-host/docker-compose.yml` (`fc:` → `environment:`)
 - Modify: `deploy/self-host/.env.example`
 - Modify: `services/fc/src/lib/feature-profiles.ts` / `index.ts` if needed for unavailable reasons

@@ -1,23 +1,16 @@
 // Per-deployment feature flags handed to clients at runtime.
 //
 // These live in the repo, not in an env var, because they must survive a
-// deploy. On Alibaba FC `s deploy` REWRITES the function's whole environment
-// map, so a var missing from the deploying machine's env file is not "keep the
-// current value" — it is "wipe it". That is how belayo shipped a bootstrap with
-// no broker twice (see the MQTT_BROKER_URL guard in deploy-aliyun-fc.sh). A
-// login method that vanishes on the next unrelated deploy is the same failure
-// with a worse blast radius, so the durable copy is here, in git, reviewable.
+// deploy. A login method that vanishes during an unrelated rollout has a wide
+// blast radius, so the durable copy is here, in git, reviewable.
 //
-// They are a TypeScript module rather than JSON files on purpose: the container
-// image only copies `dist/` (services/fc/Dockerfile), while the FC package ships
-// the whole directory (`code: ./` in s.yaml). A data file would therefore work
-// on one target and silently vanish on the other — the worst shape of bug,
-// since a missing profile is indistinguishable from an empty one at the client.
-// Compiled into dist/, both targets get it for free.
+// They are a TypeScript module rather than JSON files because the container
+// image only copies `dist/` (services/fc/Dockerfile). Compiling the profiles
+// guarantees both container targets receive them.
 //
 // `APP_FEATURES_JSON` still overrides these at runtime for emergencies. On
-// belayo that override is lost at the next deploy; on self-host it lives in the
-// box's .env and persists. Neither is the place for a durable decision.
+// Belayo and self-host both treat that as an emergency override, not the place
+// for a durable decision.
 
 export interface AuthFeatureFlags {
   google?: boolean;
@@ -56,8 +49,7 @@ export interface FeatureFlags {
    * Locks a build out of changing or leaving the team LLM config. Kept at
    * DEPLOYMENT scope, matching what it already meant as a build-config flag
    * (`team.lockLlmConfig`, i.e. per brand). Making it per-team is a product
-   * change and a schema change, not a config move — see the follow-up note
-   * in docs/plans/2026-08-05-remote-feature-flags.md.
+   * change and a schema change, not a config move.
    */
   lockLlmConfig?: boolean;
   /**
@@ -96,15 +88,13 @@ export interface FeatureFlags {
  *
  *   self-host   api.teamclu-dev.ucar.cc     official TeamClu
  *                                            (build.config.production.json)
- *   belayo      teamclu-api.ucar.cc         betly
+ *   belayo      teamclaw-api.ucar.cc        betly
  *                                            (branding repo brands/betly)
  *   copilot361  copilot.accounting.i.test.shopee.io
  *                                            (branding repo brands/copilot361)
  *
- * Only docker-compose.yml defaults the name (`self-host` — that box is exactly
- * one environment). s.yaml deliberately has NO default, because it deploys both
- * belayo and copilot361 and a default would be the wrong brand's flags for one
- * of them. Unset means "no overrides", which is always safe.
+ * Self-host defaults the name to `self-host`; each hosted container deployment
+ * sets its own profile explicitly. Unset means "no overrides".
  *
  * Each profile below RESTATES what that brand's build config already bakes, so
  * turning this on changes nothing: the server tells every client exactly what

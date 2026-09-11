@@ -387,7 +387,7 @@ token rotation guarantees one within 1h. No dedicated timer.
 - Repository: `sum(size)` over live files on both backends — pg-repo via drizzle,
   Supabase via a new RPC `amux.amuxc_team_live_bytes(team_id)` (migration)
 - Env: declare in `deploy/self-host/docker-compose.yml` (fc `environment:`, indent 6),
-  `services/fc/s.yaml` (`environmentVariables:`, indent 8), `.env.example` —
+  `deploy/belayo/cloud-api.env.keys`, self-host Cloud API environment allowlist, `.env.example` —
   `deploy-env-parity.test.ts` also requires the source to actually read it
 - Test: `services/fc/test/sync-guards.test.ts` + handler test for the batch running total
 

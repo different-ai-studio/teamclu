@@ -4,7 +4,7 @@
 - **Status**: DESIGN — 待评审后分期实现
 - **Scope**: `services/ai-gateway/`（新建）、`services/fc/`（业务 API + 充值/限额管理面）、`apps/daemon/`（本地转发）、`crates/teamclu-runtime-env/`、`apps/desktop/`（`sk-tc-` 派生逻辑）、`packages/app/`（设置页）、`services/supabase/migrations/`、`deploy/self-host/`、`docs/openapi/teamclu-api.v1.yaml`
 - **Replaces**: LiteLLM 容器、`/v1/teams/:id/litellm/*`、`_litellm` 数据库、`sk-tc-*` virtual key 体系
-- **Related**: `docs/specs/2026-06-15-litellm-token-usage-rds-design.md`（本设计落地后作废）、`docs/architecture/personal-env-and-runtime-env.md`（`TC_ACCESS_TOKEN_FILE`）、`docs/adr/0007-amuxd-holds-model-capability-not-preference.md`
+- **Related**: `docs/architecture/personal-env-and-runtime-env.md`（`TC_ACCESS_TOKEN_FILE`）、`docs/adr/0007-amuxd-holds-model-capability-not-preference.md`
 
 ---
 
@@ -89,7 +89,8 @@
 
 ### 3.1 多部署目标
 
-`services/fc/` 有两个部署目标（见 CLAUDE.md「Deployment — one environment, two deploy targets」），且线上不止 self-host 一套：`services/fc/s.yaml` 那条手工部署路径上还跑着独立环境，用的是独立数据库。
+`services/fc/` 有两个容器部署目标：self-host Compose 测试环境和 Belayo Dokploy
+生产环境。两边使用独立数据库。
 
 **决定：每个部署目标各跑一个 `ai-gateway` 实例，绑自己的数据库。** 理由：credits 账本必须和 `amux.actors` / `amux.teams` 在同一个库里（§5.1），跨环境共用一个网关就意味着跨库查成员资格，做不到。
 
@@ -97,7 +98,7 @@
 
 - catalog.yaml 是 **per-deployment** 的运维配置，不是仓库里的单一真相；仓库只提供 `catalog.example.yaml`。
 - 上游 provider key 也是 per-deployment 的。
-- **Phase 3 删 LiteLLM 时必须两套都已经切完**，否则会打挂另一套。这条进 §11 的 gate 条件。
+- 两个环境的 gateway 必须分别发布和验收，不能用一个环境的成功替代另一个。
 
 ---
 
@@ -852,147 +853,23 @@ daemon 侧同样必须逐 chunk 转发、不 buffer。已有的 `/v1/sessions/:i
 | `AI_GATEWAY_INTERNAL_URL` | FC → 网关，容器网络内 | `http://ai-gateway:4001` |
 | `AI_GATEWAY_SERVICE_TOKEN` | FC ↔ 网关 `/internal/*` 鉴权 | 由 `bootstrap/gen-secrets.sh` 生成 |
 
-**⚠️ 三个都必须同时声明在 `services/fc/s.yaml` 和 `deploy/self-host/docker-compose.yml` 的 `fc:` `environment:` 映射里。** compose 的 environment 是显式白名单，漏一个就在那个目标上静默丢失；而且 `services/fc/test/deploy-env-parity.test.ts` 和 `scripts/lib/env-manifest.test.js` 会红。
+三个变量都必须同时声明在 `deploy/self-host/docker-compose.yml` 的 `fc:` environment
+allowlist 和 `deploy/belayo/cloud-api.env.keys`。漏一个就在对应目标上静默丢失，
+`services/fc/test/deploy-env-parity.test.ts` 会失败。
 
-**Phase 4 追加（Stripe，见 §4.9）**：`STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、`STRIPE_PRICE_IDS`（允许的 Price 白名单）。同样是**两个目标都要声明**。
+Stripe 相关的 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、`STRIPE_PRICE_IDS` 同样在
+两个目标声明，值分别保存在各环境的 secret store。
 
 ⚠️ 两个部署目标用的是**独立数据库**，所以要么两个 Stripe 账号，要么一个账号配两个 webhook endpoint —— 一笔支付绝不能记到另一套环境的团队头上。团队不存在时网关返回 404，FC 必须把它当失败告警，不能吞掉。
 
 网关自己的 env：`DATABASE_URL`（`ai_gateway` role）、`AI_GATEWAY_SERVICE_TOKEN`、`BACKEND_KIND` + 对应的 token 校验配置（`supabase` 路径用 `SUPABASE_URL` / anon key，与 FC 同源，见 §6.2.1）、各 provider key（`DEEPSEEK_API_KEY` 等，从 litellm 服务移过来）。**没有签名密钥。** 同样要在 `.env.example` 里补文档。
 
-### 10.2 compose
+### 10.2 当前发布方式
 
-**Phase 0 只增不删**：加 `ai-gateway` 服务（build context `../../services/fc` 同级的 `../../services/ai-gateway`），healthcheck 打 `/healthz`，`depends_on: db healthy`。`litellm` / `litellm-init` 原样保留。
-
-**Phase 3 才删**：`litellm`、`litellm-init` 两个服务，以及 `fc:` 环境里的 `LITELLM_URL` / `LITELLM_MASTER_KEY` / `LITELLM_DEFAULT_TEAM_MAX_BUDGET_USD` / `LITELLM_DB_NAME`。`_litellm` 数据库**保留到 Phase 3 之后至少一个月**再手工 drop —— 里面是历史用量数据，见 §11.4。
-
-`docker-compose.podman.yml` 有同样的服务定义，两份都要改。
-
-### 10.3 Caddy
-
-`deploy/self-host/caddy/Caddyfile` 今天有三段 litellm 反代：`/litellm-asset-prefix/*`、`/ui/*`、`/llm/*`（:37-45）。
-
-- **Phase 0**：新增 `handle_path /ai/* { reverse_proxy ai-gateway:4001 }`。三段旧的保留。
-- **Phase 3**：删掉那三段。注意 `/ui/*` 挂的是 LiteLLM 的 admin UI，删掉即失去后台 —— 新网关**没有 admin UI**（catalog 是文件、余额管理在 TeamClu 设置页里），这是有意的，要在 Phase 3 的 checklist 里跟运营确认。
-
-### 10.4 CI（`.github/workflows/self-host-deploy.yml`）
-
-删 litellm 会连带炸部署流水线，逐条列出：
-
-| 行 | 内容 | 动作 |
-|----|------|------|
-| :213 | `upsert_env LITELLM_URL "http://litellm:4000"` | Phase 0 旁边加三条 `upsert_env AI_GATEWAY_*`；Phase 3 删这条 |
-| :263-276 | 拉 litellm 镜像（5 次重试） | Phase 3 删；`ai-gateway` 是本地 build，不需要对应逻辑 |
-| :308-310 | `until docker compose ps litellm \| grep -q healthy` | Phase 0 旁边加 `ai-gateway` 的同款等待；Phase 3 删 litellm 那条 |
-| :321-322 | `sh .../smoke/litellm-smoke.sh` | Phase 0 新增 `smoke/ai-gateway-smoke.sh` 并列跑；Phase 3 删旧的 |
-
-新的 `deploy/self-host/smoke/ai-gateway-smoke.sh` 至少覆盖：`/healthz`、无 JWT → 401、错误 teamId 的 JWT → 403、`GET /models` 返回非空、一次非流式 `chat/completions` 打通并落一行 `ai_usage_logs`。
-
-`tests/e2e/smoke-team-share-onboarding.test.ts` 也引用了 litellm 流程，Phase 3 一起改。
-
----
-
-## 11. 分期实施
-
-**核心原则：新旧并存，客户端灰度切完再删旧的。** 原方案里 Phase 0 就「compose 替换 litellm」而 Phase 1 才切客户端 —— 那会在 Phase 0 上线的瞬间打挂全部已安装桌面端（它们的 `provider.team.baseURL` 指向 LiteLLM），并且要等到 Phase 1 才恢复。
-
-| Phase | 内容 | 完成判据（gate） |
-|-------|------|-----------------|
-| **0** | 网关 MVP：JWT + 成员校验 + catalog 路由 + SSE 直通 + `ai_usage_logs`（**只记账不扣费**）。compose/Caddy/CI **只增不删**。migration 建 5 张表 + 改 pgTAP 断言。 | smoke 全绿；LiteLLM 路径完全未受影响 |
-| **1** | amuxd `/v1/ai/teams/:teamId/*` 代理（含 §9.3 的三项限制放宽）+ `${tc_gateway_token}`；桌面端/crate 侧 `sk-tc-` 清理。**按团队灰度**改 `llm_base_url`。 | 灰度团队正常出字；`ai_usage_logs` 有数据且 token 数与上游对得上 |
-| **2** | Credits 闭环：预留 + 结算 + quota 强制；FC credits 端点；设置页；openapi 的 `litellmTeamId` 松绑；保留策略 + 对账任务。**打开强制之前先给存量团队补发起始额度（§4.8.1）。** 设置页：新建账单页 + 现有 Token 用量页迁移数据源（§12）。 | 存量团队补发完成且余额行齐全；并发压测不超发；对账连续 7 天零差异 |
-| **3** | 全部团队切完 + **两个部署目标都切完** + 观察期 ≥ 2 周后：删 LiteLLM 容器 / FC 代码 / openapi 条目 / Caddy 三段 / CI 四处 / smoke。 | 见 §11.5 |
-| **4** | **Stripe 充值**（§4.9）：FC 的 checkout-session + webhook 路由、Price metadata 换算表、`stripe.checkout.sessions.list` 补账任务、桌面端走系统浏览器。**不动任何表结构** —— 幂等键从 Phase 2 起就在表里，余额表也从 Phase 0 起就没有非负约束（§4.9.5）。 | 跨境 webhook 投递实测通过；断开 webhook 后补账任务能独立把额度发对；重复投递同一 Session 不重复入账；退款能把余额打成负数而不报错 |
-| | ⚠️ 代码已完成（路由 / webhook / 对账 / 充值卡 / env 三处声明 / openapi）。**卡在 Stripe 账号侧**：Price（带 `metadata.credits`）与 webhook endpoint 都还没建，`STRIPE_PRICE_IDS` 和 `STRIPE_WEBHOOK_SECRET` 因此为空 —— 三个变量全空时充值卡显示「未开通」，计量与手工充值不受影响 | 定价决策（附录 F）落地后才能建 Price |
-
-### 11.1 Phase 1 的灰度开关
-
-切换不需要新开关：daemon 读的是 `team_workspace_config.llm_base_url`（`cloud_api/mod.rs:718`），**按团队 UPDATE 这一列就是天然的灰度粒度**。回滚同样是一条 UPDATE。
-
-⚠️ **客户端写死之后这条杠杆依然成立，但读它的人变了**：客户端的 baseURL 恒指向本地 amuxd（附录 B），由 **amuxd** 读 `llm_base_url` 决定把请求转发到新网关还是老 LiteLLM。灰度粒度、回滚方式都不变，只是解析点后移了一跳。这也是为什么 P1 的 amuxd 代理必须支持转发到**两种**上游，而不只是新网关。
-
-### 11.2 数据迁移：`llm_base_url`
-
-这是切换的真正动作，不是代码发布：
-
-```sql
--- 灰度：单个团队
-UPDATE amux.team_workspace_config
-   SET llm_base_url = 'https://api.<domain>/ai/v1/teams/' || team_id::text
- WHERE team_id = '<uuid>';
-
--- 全量（Phase 1 末尾）
-UPDATE amux.team_workspace_config
-   SET llm_base_url = 'https://api.<domain>/ai/v1/teams/' || team_id::text
- WHERE llm_base_url IS NULL OR llm_base_url LIKE '%/llm/v1%';
-```
-
-同时 `AI_GATEWAY_ENDPOINT` 改指向新网关，这样**没有显式 `llm_base_url` 的团队**（走 fallback 分支）也自动切过去。
-
-### 11.3 残留 `sk-tc-*` 的清洗
-
-`team_provider.rs:118-129` 是**刻意**保住已解析 key 不被占位符覆盖的。这意味着切到 JWT 之后，老 key 会一直赖在设备的 `opencode.json` 里，`ensure_global_team_provider` 不会自己清掉它。
-
-**要求**：Phase 1 的 reconcile 逻辑里加一条一次性清洗 —— 若 `options.apiKey` 匹配 `^sk-tc-`，视同「未解析」，用新占位符覆盖。没有这一步，老设备升级后会拿着一个作废的 key 打新网关，表现为持续 401，而且用户没有任何自愈手段。
-
-### 11.4 历史用量数据
-
-`/litellm/usage` 今天直连 `_litellm` 库聚合 `LiteLLM_SpendLogs`（`litellm-usage.ts`）。新的 `ai_usage_logs` 从 Phase 0 起才有数据。
-
-**决定：不迁移历史数据。** 理由：口径不同（LiteLLM 记的是 USD spend，新表记的是 credits，两者没有确定的换算 —— credits 定价是 Phase 2 才定的），强行换算会造出假的历史账。
-
-**做法**：Phase 2 的设置页在用量图表上标一条「统计起始日」分界；`_litellm` 库在 Phase 3 后保留至少一个月供人工查旧账，之后手工 drop。这条必须提前跟运营讲，别让人以为数据丢了。
-
-### 11.5 Phase 3 的 gate
-
-删任何东西之前，全部满足：
-
-- [x] 两个部署目标（self-host + `s.yaml` 那套）都已完成 Phase 1 全量切换
-- [x] 所有团队的 `llm_base_url` 都已指向新网关（`SELECT count(*) ... WHERE llm_base_url LIKE '%/llm/%'` 为 0）
-- [x] 观察期 ≥ 2 周，`ai_usage_logs` 有持续流量，LiteLLM 侧流量归零（查 `LiteLLM_SpendLogs` 最近 14 天无新行）
-- [~] 最低支持的桌面端 / iOS 版本已不读 `litellmTeamId` —— **未验证，改为中和**：
-      `litellmTeamId` 继续从 `GET /workspace-config` 返回（缺省 null），所以老客户端
-      解析不到会炸的前提不成立。真正从 payload 里拿掉它仍是后续独立一步。
-- [x] 运营已确认不再需要 LiteLLM admin UI（§10.3）—— 产品决定，非实测
-
-#### 实跑记录（2026-09-01，self-host 生产）
-
-`phase3-gate.sh`（PR #1138）对生产的实测结果，退役决定的依据：
-
-| 检查 | 结果 |
-|---|---|
-| ai-gateway 容器 up + healthy | PASS |
-| 指向 `/llm/` 的团队数 | **0** |
-| `llm_enabled` 且无显式 `llm_base_url` 的团队数 | **0** |
-| 新网关 14 天内请求数 | 3 |
-| LiteLLM 最近一次请求 | **2026-08-25**（8/22 五次、8/25 四次，此后为零；全时段 9409 次） |
-
-两条**在跑门禁时才发现的事**，比清单本身更值得记住：
-
-1. **第二条检查曾是假阳性。** 它只匹配 `llm_base_url LIKE '%/llm/%'`，而当时几乎所有团队那一列是 NULL，靠 `AI_GATEWAY_ENDPOINT` 回退。照字面读会在**一个团队都没切**的情况下报告"可以删"。真正的判据是"`llm_enabled` 且无显式 baseUrl 的团队数为 0"——回退没有对象了，那个 env 才可以删。
-2. **`Curious Cougar` 指向的 `api.teamclaw-dev.ucar.cc` 早已没有 DNS 解析。** 它不是"还在用 LiteLLM"，是从那批旧 `-dev` 域名被删起就一直坏着。字符串匹配看不出域名已经不存在——切换时按 `FC_DOMAIN` 重写，而不是保留原 host。
-
-切换动作：三个 `llm_enabled` 团队的 `llm_base_url` 统一改为
-`https://<FC_DOMAIN>/ai/v1/teams/<teamId>`；25 行残留的 `ai_gateway_endpoint`
-一并清空（已无任何读者）。`litellm_team_id` 列和 `_litellm` 库保留：老客户端仍
-解析前者，而删库删列都是对生产数据的单向门。
-
-#### 落地结果（PR #1186，合并 2026-09-01 10:56，self-host 自动部署成功）
-
-| 验证项 | 结果 |
-|---|---|
-| `litellm` / `litellm-init` 容器 | 已消失（`docker ps -a` 无残留） |
-| `ai-gateway` / `fc` / `caddy` / `kong` | 全部 healthy |
-| 三个团队的 `/ai/v1/teams/<id>/models` | 401（路由活、要 token，未带凭证时的正确响应） |
-| `/llm/health/liveliness` | 404（FC 兜底 —— Caddy 那三段确实没了） |
-| `/healthz`、`/v1/config/public` | 200 / 200 |
-
-**仍待验证的一件事**：切换之后 `ai_usage_logs` 没有新增记录（最后一条停在
-2026-09-01 08:39）。三个团队都指对了、路由也通，但**运行层面还没有真实流量
-走过新路径**——目前只有配置层面的证据。找一个团队实际跑一次会话，才算端到端
-验证完成。
-
----
+- self-host 由 `deploy/self-host/docker-compose.yml` 构建，并通过 Caddy `/ai/*` 转发。
+- Belayo 由 `.github/workflows/belayo-ai-gateway.yml` 构建不可变多架构镜像，发布到
+  Dokploy 主 Swarm，并由 Traefik 暴露公网入口。
+- 两边都必须验证 `/healthz`、鉴权、models catalog 和一次真实 completion。
 
 ## 12. 设置页：账单与用量
 

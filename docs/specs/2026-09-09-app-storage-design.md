@@ -383,11 +383,9 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
 
 **新增 env**（`APPS_STS_ROLE_ARN`、`APPS_STORAGE_QUOTA_BYTES`）：
 
-按 CLAUDE.md 的部署约定，**必须同时**声明在 `services/fc/s.yaml` 和
-`deploy/self-host/docker-compose.yml` 的 `fc:` 服务 `environment:` 白名单里，
-漏一边会在其中一个 target 上静默缺失。`services/fc/test/deploy-env-parity.test.ts`
-会守住这一点；**注意不要引入 `FC_` 前缀的变量名**，那是 Alibaba FC 的保留前缀，
-会让整个 deploy 被 400 拒。
+按当前部署约定，必须同时声明在 `deploy/self-host/docker-compose.yml` 的 `fc:`
+environment allowlist 和 `deploy/belayo/cloud-api.env.keys`。漏一边会在对应容器目标上
+静默缺失，`services/fc/test/deploy-env-parity.test.ts` 会守住这一点。
 
 **新增依赖**：`@alicloud/sts20150401`（与已有的 `@alicloud/fc20230330`、
 `@alicloud/dysmsapi20170525` 同一套 SDK 约定）。仅 §4.1 阶段需要，阶段一不引入。
@@ -531,97 +529,3 @@ CI 的 `supabase_admin`，`add column if not exists` 在非 owner 下即使无�
 因为"有个 auth 模式"很容易被下一个人读成"这条路由已经被鉴权了"。
 
 ---
-
-## 14. 实施记录（2026-09-09）
-
-**云侧**（一次性，人工）：
-
-- RAM 角色 `teamclu-app-storage`，`MaxSessionDuration=43200`，信任策略只允许
-  `acs:ram::1457752404144823:user/teamclu-selfhost` assume。
-- 角色策略 `teamclu-app-storage-oss`：OSS 对象操作限 `<apps bucket>/app-files/*`，
-  ListObjects 限该桶且带 `oss:Prefix` 条件。这是**上限**，每次请求的 session
-  policy 在此之上再收窄到单个 app。
-- 用户策略 `teamclu-selfhost-fc-oss` 加了一条 `sts:AssumeRole`（新版本并设为默认，
-  没有新加一条策略——每用户可附加策略上限是 10）。
-- 盒子 `.env` 写入 `APPS_STS_ROLE_ARN` 与 `APPS_CLOUD_API_URL`。**代码尚未部署**，
-  这两个值要到下次 self-host 部署才会真正生效。
-
-**§12 验收标准的实测结果**（用 app A 的 session policy 打真实 OSS）：
-
-| 动作 | 期望 | 实测 |
-|---|---|---|
-| A 写自己前缀 | 200 | 200 |
-| A 读自己对象 | 200 | 200 |
-| A 写 B 的前缀 | 403 | 403 AccessDenied |
-| A 读 B 的前缀 | 403 | 403 AccessDenied |
-| A 写 `apps/<id>/code.zip` | 403 | 403 AccessDenied |
-| A 列整个 bucket | 403 | 403 AccessDenied |
-| A 删自己对象 | 204 | 204 |
-| 12 小时会话 | 接受 | 接受 |
-
-倒数第三条值得单独说：它证明拿到存储凭证的 app **改不了自己的构建产物**——
-`code.zip` 在 `apps/` 前缀下，而 session policy 只覆盖 `app-files/`。这是 §3.1
-把两个前缀分开的一个额外好处，当时没想到。
-
-### belayo（阿里云 FC，账号 1317424610922997）
-
-同一套东西在 belayo 也建好了（2026-09-09），因为它是独立账号、独立 bucket：
-
-- 角色 `acs:ram::1317424610922997:role/teamclu-app-storage`，同样 43200；信任
-  `user/sre`——belayo 的 FC 函数 `teamclaw-belayo-live-api` 用的就是这把 key。
-- 角色策略 `teamclu-app-storage-oss` 限 `belayo-teamclu-apps/app-files/*`。
-- 另加 `teamclu-app-storage-assume` 附到 `sre` 上：这个用户原本只有
-  `AliyunOSSFullAccess` 等三条系统策略，没有任何 STS 权限。
-- 八条验收全部复现（跨 app 读写、写 `apps/` 下的 code.zip、列整桶都是 403
-  AccessDenied）。
-
-**belayo 的变量写在部署 env 文件里，不是写在函数上**：`s deploy` 会重写整张环境
-变量表（`deploy-aliyun-fc.sh:151-153` 的横幅就是提醒这件事），所以直接改线上函数
-会在下一次部署被抹掉。值加在 `services/fc/.env.belayo.local`（那台机器上的
-gitignore 文件，已备份为 `.bak-before-app-storage-sts`），下次部署自然带上。
-
-#### belayo 的 FC key 也收敛了（同日）
-
-原先 belayo 的 Cloud API 用的是共享 RAM 用户 `sre`，挂着 `AliyunOSSFullAccess`
-——能读写该账号全部 25 个 bucket。
-
-**没有动 `sre` 的任何策略**。它同时被 betly、banana、NAT 网关、PrivateZone 以及本机
-的 CLI profile 使用，摘它的权限会波及一堆不相干的系统。改成和 self-host 同一个形状：
-新建专用用户，只把 teamclu 这一份切过去。
-
-- 用户 `teamclu-belayo` + 策略 `teamclu-belayo-fc-oss`，五条语句：
-  两个桶的对象操作与列举、`fc:*` 限 cn-shenzhen、`ram:PassRole` 限
-  `teamclaw-sync-role`（belayo 设了 `ROLE_ARN`，建 app 函数时要用，self-host 那边
-  为空所以不需要）、`sts:AssumeRole` 限 `teamclu-app-storage`。
-- 新 key 写进 `.env.belayo.local`（备份 `.bak-before-scoped-key`），**没有改线上函数**
-  ——理由同上，`s deploy` 会重写整张表。所以**下次部署才生效**，在那之前 belayo 仍跑在
-  `sre` 的 key 上。
-- `teamclu-app-storage` 的信任策略暂时同时允许 `teamclu-belayo` 和 `sre`，这样切换
-  前后都能 assume。**部署切换完成后要做两件收尾**：把 `teamclu-app-storage-assume`
-  从 `sre` 上摘掉，并把信任策略收回到只剩 `teamclu-belayo`。
-
-用新 key 实测（都走产品自己用的 SDK）：两个桶的 presign 上传 / 列举 / 删除都通、
-FC ListFunctions 与 GetFunction 通、AssumeRole 通；而同区的
-`betly-backup` / `teamclaw-releases` / `banana-image` / `teamclu-self-host` 四个桶
-读和写**全部 AccessDenied**——`sre` 的旧 key 是四个都能读写的。
-
-> 第一次负面对照挑了 `betly-private`，返回的是 `PermanentRedirect`（跨区）而不是
-> 拒绝，证明不了任何事。同区的桶才是有效对照。
-
-⚠️ **`ram:PassRole` 是唯一没能实测的一条**：验证它要真的建一个 FC 函数。它会在下次
-真实的 app 部署时得到验证——如果那次报 `Forbidden.RAM`，就是这一条写错了。
-
-**上线状态（2026-09-09 收尾）**：
-
-- self-host：随 main 自动部署上线，路由实测 401（存在且在校验），容器已带
-  `APPS_STS_ROLE_ARN` / `APPS_CLOUD_API_URL`。
-- belayo：手工部署完成（`RUN_MIGRATIONS=1`，5 条待办迁移全部落库，含另外 4 条别人
-  的）。函数已换到受限 key `teamclu-belayo`，env 73 → 83 无一被清空。
-- 收尾已完成：`teamclu-app-storage-assume` 从 `sre` 摘除、信任策略收回到只剩
-  `teamclu-belayo`；实测新 key 能 assume、`sre` 已 `NoPermission`。
-
-**仍留在人工手上的一件事**：self-host 的主账号旧 AK 未禁用（控制台操作，无 OpenAPI）。
-
-**尚未实测的一条**：`ram:PassRole`。要等 belayo 上一次真实的 app 部署才验得到；
-若报 `Forbidden.RAM`，就是 `teamclu-belayo-fc-oss` 里那条写错了。
-

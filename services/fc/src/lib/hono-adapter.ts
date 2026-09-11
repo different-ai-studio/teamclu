@@ -137,14 +137,15 @@ export function createHonoRouterAdapter(app: Hono, deps: Deps) {
           repository = await deps.createSystemRepository();
         } else if (auth === "cron-tick") {
           // The heartbeat that drives scheduled tasks. Not a person and not an
-          // app: a compose sidecar on self-host, a timer trigger on Alibaba FC,
+          // app: a compose sidecar in each current container deployment; the
+          // legacy adapter also accepts the retired Alibaba FC timer shape,
           // both presenting APP_CRON_SECRET. `sharedSecretMatches` fails closed
           // on an unset secret, so a deployment that never configured one has
           // no scheduler rather than an open one.
           // Two ways in, because the two heartbeats cannot both use a header.
           //
           // The compose sidecar curls it and sends `Authorization: Bearer`.
-          // An Alibaba FC timer trigger drives a web function by POSTing to a
+          // The legacy Alibaba FC timer shape drove a web function by POSTing to a
           // path from its payload, and that payload carries only `path`,
           // `method` and `body` — there is no way to attach a header. So the
           // secret may also arrive in the body, which (unlike a query string)

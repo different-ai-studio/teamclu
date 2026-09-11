@@ -24,7 +24,7 @@
 | `services/fc/src/lib/provisioning/pg-name.ts` | Sanitize app slug/id → safe Postgres identifiers | T3 |
 | `services/fc/test/provisioning/pg-name.test.ts` | Identifier-sanitization tests | T3 |
 | `services/fc/test/provisioning/app-postgres.test.ts` | SQL-builder + pglite-execution + idempotency tests | T4–T8 |
-| `services/fc/s.yaml` + `.github/workflows/fc-deploy.yml` (modify) | Wire new `APPS_DB_ADMIN_URL` into the function env + deploy secrets | T9 |
+| `deploy/belayo/cloud-api.env.keys` + `.github/workflows/belayo-cloud-api.yml` (modify) | Wire new `APPS_DB_ADMIN_URL` into the Cloud API deployment contract | T9 |
 
 ---
 
@@ -525,11 +525,11 @@ git commit -m "feat(apps): teamclu_apps admin connection factory for provisionin
 
 > There is no `.env.example` in `services/fc`; env vars reach the function via
 > `s.yaml`'s `environmentVariables` block (mapped from process env at deploy) and
-> are sourced from repo secrets in `.github/workflows/fc-deploy.yml`. Wire both.
+> are stored in each deployment's secret store. Wire both container targets.
 
 **Files:**
-- Modify: `services/fc/s.yaml` (the `environmentVariables:` block, ~line 27)
-- Modify: `.github/workflows/fc-deploy.yml` (the `env:` block, ~line 27)
+- Modify: `deploy/belayo/cloud-api.env.keys`
+- Modify: `.github/workflows/belayo-cloud-api.yml` only if the deployment contract changes
 
 - [ ] **Step 1: Map the var into the function in `s.yaml`**
 
@@ -564,7 +564,7 @@ Expected: no parse error (prints `s.yaml OK` or the linter passes). If neither y
 - [ ] **Step 5: Commit**
 
 ```bash
-git add services/fc/s.yaml .github/workflows/fc-deploy.yml
+git add deploy/belayo/cloud-api.env.keys .github/workflows/belayo-cloud-api.yml
 git commit -m "chore(apps): wire APPS_DB_ADMIN_URL into FC function env + deploy"
 ```
 

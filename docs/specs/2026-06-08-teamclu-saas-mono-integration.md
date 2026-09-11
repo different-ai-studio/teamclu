@@ -3,9 +3,10 @@
 > **状态（2026-07-15）：已过时，保留为历史记录。** 本文的落地目标环境
 > （独立 RDS `supabase_db`、其 Supabase 网关、`services/supabase/s4/` 下的
 > live 克隆 runbook）已整体下线，S4「切流」一节不再可执行，所引脚本亦已删除。
-> 登录/租户模型本身仍在 FC 代码中沿用（见 `services/fc/src/lib/supabase-repo/`），
-> 但当前唯一环境是 self-host 单机栈，部署现状见
-> [`docs/deployment/full-backend-stack.md`](../deployment/full-backend-stack.md)。
+> 登录/租户模型本身仍在 Cloud API 代码中沿用（见 `services/fc/src/lib/supabase-repo/`）。
+> 当前部署分为 self-host Compose 测试环境和 Belayo Dokploy 生产环境，见
+> [`docs/deployment/full-backend-stack.md`](../deployment/full-backend-stack.md) 与
+> [`docs/specs/2026-09-11-belayo-dokploy-target-architecture.md`](./2026-09-11-belayo-dokploy-target-architecture.md)。
 
 **单一事实来源**。状态：实施中。最后更新 2026-06-08。
 **分支**：`agent/saasmono-integration`（worktree `.worktrees/saasmono-integration`）。

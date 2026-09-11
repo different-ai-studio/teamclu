@@ -26,9 +26,9 @@ function parseBool(raw) {
 
 // Read an env var, treating blank as absent.
 //
-// Deployments declare optional vars with an empty default — `${env('X', '')}` in
-// s.yaml, `"${X:-}"` in docker-compose — so "not configured" reaches the process
-// as `""`, never as undefined. Any `??` chain over these therefore treats a
+// Container deployments declare optional vars with an empty default using
+// `"${X:-}"`, so "not configured" reaches the process as `""`, never as
+// undefined. Any `??` chain over these therefore treats a
 // blank as a real value; this helper is what makes "leave it empty" mean absent.
 function envValue(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const value = env[name]?.trim();

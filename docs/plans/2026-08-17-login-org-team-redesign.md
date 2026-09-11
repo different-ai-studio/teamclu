@@ -174,7 +174,7 @@ teams，无调用点），返回类型不同会直接建不出来。遗留那个
 
 1. push 到 `main` 且触碰 `services/fc/**` 或 `services/supabase/migrations/**` 会**自动部署到线上**。本计划几乎每个 CS 都触碰 —— 分支上做完一次性合，不要边改边合
 2. FC `src/` 的类型错误会让整个 self-host 部署 + migration 一起挂（镜像构建用 `tsconfig.json`，不是 typecheck 那份 test 配置）
-3. belayo 手工部署 + 手工迁移（`RUN_MIGRATIONS=1` 才跑）。CS-3 的排除项未落地前不要往那边部署
+3. belayo Cloud API 由 Dokploy workflow 发布，数据库迁移保持独立人工执行。CS-3 的排除项未落地前不要往那边部署
 4. 本 checkout 可能有其它 session 在用，开分支前先 `git branch --show-current`
 
 ## 建议顺序

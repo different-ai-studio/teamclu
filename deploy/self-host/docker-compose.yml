@@ -306,7 +306,7 @@ services:
       MQTT_BROKER_URL: "${MQTT_BROKER_URL:-mqtt://${MQTT_DOMAIN}:1883}"
       # Raw-TCP address for clients whose MQTT stack can't do WebSocket (iOS
       # CocoaMQTT, Expo). Must be declared in BOTH this allowlist and
-      # services/fc/s.yaml — a var missing from one target silently drops
+      # deploy/belayo/cloud-api.env.keys — a var missing from one target silently drops
       # `mqtt.tcpUrl` from /v1/config/bootstrap on that target only.
       MQTT_PUBLIC_TCP_BROKER_URL: "${MQTT_PUBLIC_TCP_BROKER_URL:-}"
       MQTT_USERNAME: "fc-service"
@@ -332,8 +332,8 @@ services:
       # MinIO addresses buckets by path; virtual-host style would need per-bucket
       # DNS. Alibaba OSS works either way, so this stays blank there.
       S3_FORCE_PATH_STYLE: "${S3_FORCE_PATH_STYLE:-}"
-      # Apps module. These were declared in services/fc/s.yaml but never in this
-      # allowlist, so the container saw none of them: creating an app failed at
+      # Apps module. These were historically absent from this allowlist, so the
+      # container saw none of them: creating an app failed at
       # the managed-git repo step (CODEUP_*), and "deploy" 503'd with an opaque
       # `deploy_unavailable` because makeDeployDeps() bails without
       # APPS_DB_ADMIN_URL. Keep both targets in step when adding more.
@@ -484,12 +484,12 @@ services:
       # Runtime feature flags served by /v1/config/{public,bootstrap}. The
       # durable values live in services/fc/src/lib/feature-profiles.ts, in git;
       # APP_FEATURES_JSON here is an emergency override only. Keep both vars in
-      # step with s.yaml — one declared on only one target silently drops the
+      # step with deploy/belayo/cloud-api.env.keys — one declared on only one target silently drops the
       # whole features block there.
       APP_FEATURES_PROFILE: "${APP_FEATURES_PROFILE:-self-host}"
       APP_FEATURES_JSON: "${APP_FEATURES_JSON:-}"
       # FC -> gateway, for the credits/quota routes. Never handed to a client.
-      # Keep in step with services/fc/s.yaml: a var declared on one target only
+      # Keep in step with deploy/belayo/cloud-api.env.keys: a var declared on one target only
       # silently goes missing on the other.
       AI_GATEWAY_INTERNAL_URL: "${AI_GATEWAY_INTERNAL_URL:-http://ai-gateway:4001}"
       AI_GATEWAY_SERVICE_TOKEN: "${AI_GATEWAY_SERVICE_TOKEN:-}"
@@ -506,7 +506,7 @@ services:
       # Its own variable on purpose: API_EXTERNAL_URL belongs to GoTrue.
       STRIPE_RETURN_URL_BASE: "${STRIPE_RETURN_URL_BASE:-}"
 
-      # ── Declared in services/fc/s.yaml but historically absent here, so the
+      # ── Historically absent here despite being required by Belayo, so the
       # container never received them and the features were silently off on the
       # box. This map is an allowlist; the two deploy targets must stay in step
       # (test/deploy-env-parity.test.ts pins that).

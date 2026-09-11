@@ -6,7 +6,5 @@ dist/
 node_modules
 node_modules/
 
-# Local-only manual test-deploy tooling (never committed; FC deploys go via GHA)
-deploy-local.sh
 .env*.local
 .env

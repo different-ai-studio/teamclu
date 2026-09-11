@@ -95,7 +95,7 @@ test("the heartbeat is admitted by a bearer — what the compose sidecar sends",
   } finally { restore(); }
 });
 
-test("the heartbeat is admitted by a body secret — what an FC timer sends", async () => {
+test("the legacy FC timer body-secret shape remains parseable", async () => {
   // A timer payload carries only path/method/body, so there is no header to put
   // the secret in. The body is the only place left that stays out of URLs and
   // access logs.
@@ -141,4 +141,3 @@ test("an UNSET secret refuses everything, including an empty one", async () => {
     }
   } finally { restore(); }
 });
-

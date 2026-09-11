@@ -185,7 +185,7 @@ git commit -m "fix(sync): stop advancing the high-water mark past a failed pull"
 - Create: `services/fc/src/lib/team-blob-storage.ts`（从 skills-storage 抽出通用 signed URL）
 - Modify: `services/fc/src/lib/sync-handlers.ts`（prepare/download 改调新 helper，不再 `getS3Client`）
 - Modify: `services/fc/src/lib/skills-storage.ts`（薄封装调同一 helper，避免两套）
-- Modify: **`services/fc/s.yaml` 和 `deploy/self-host/docker-compose.yml` 的 `environment:` 两处都要加** `TEAM_BLOBS_STORAGE_BUCKET`；顺手补上今天缺失的 `SKILLS_STORAGE_BUCKET`
+- Modify: **`deploy/belayo/cloud-api.env.keys` 和 `deploy/self-host/docker-compose.yml` 的 `environment:` 两处都要加** `TEAM_BLOBS_STORAGE_BUCKET`；顺手补上今天缺失的 `SKILLS_STORAGE_BUCKET`
 - Test: `services/fc/test/` 新增或扩展 sync prepare/download 单测（mock storage）
 
 > **两个部署目标都要声明。** `s.yaml:103-113` 明写 `s deploy` 会**整个覆写 environment map**——没声明的 env 到不了生产。`SKILLS_STORAGE_BUCKET` 今天两边都没声明，靠 default 活着，已经违反了 CLAUDE.md 的要求。

@@ -513,7 +513,8 @@ blob 是内容寻址的、历史版本全留着，所以这只是一次元数据
 
 那个函数**在密钥未配置时全部拒绝**。`provided !== secret` 的朴素写法会让未配置的部署把空头当成匹配，「看起来有守卫，实际全开」。对本设计这正好是想要的默认值：**不配 `MARKETPLACE_ADMIN_SECRET` = 这台部署没有市场。** 目录表空着、列表端点返回空、客户端隐藏入口。这不是错误状态，是「没开这个功能」。
 
-新增环境变量一个，必须同时进 `services/fc/s.yaml` 和 `deploy/self-host/docker-compose.yml` 的 `environment:` 白名单。
+新增环境变量一个，必须同时进 `deploy/self-host/docker-compose.yml` 的 `environment:`
+白名单和 `deploy/belayo/cloud-api.env.keys`。
 
 ---
 

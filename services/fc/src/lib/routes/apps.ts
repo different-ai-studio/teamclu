@@ -505,9 +505,9 @@ export function registerApps(router) {
     return { body: { items } };
   });
 
-  // The one-minute heartbeat. Both deploy targets drive this same path — a
-  // compose sidecar on self-host, a timer trigger on Alibaba FC — so a job
-  // behaves identically wherever it runs. `auth: "cron-tick"` is the whole
+  // The one-minute heartbeat. Both container targets drive this same path from
+  // a compose sidecar, so a job behaves identically wherever it runs.
+  // `auth: "cron-tick"` is the whole
   // authentication: a constant-time compare against APP_CRON_SECRET, which
   // fails closed when the variable is unset.
   router.post("/v1/internal/app-cron/tick", { auth: "cron-tick" }, async () => {
