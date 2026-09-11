@@ -61,10 +61,22 @@ impl RuntimeManager {
     /// covers the checkout path used by HTTP/gateway/cron turn drivers; while
     /// checked out, the owner is awaiting the turn and `poll_events` must not
     /// drain that channel.
+    ///
+    /// An open turn aggregator (`current_turn_id`) counts too: the Active→Idle
+    /// handler emits turn-final `message.created` before flipping `handle.status`
+    /// to Idle, and workspace refresh must not stop the runtime in that window.
     pub fn workspace_has_active_turn(&self, workspace_path: &str, workspace_id: &str) -> bool {
-        self.agents.iter().any(|(_, handle)| {
-            Self::workspace_runtime_matches(handle, workspace_path, workspace_id)
-                && (matches!(handle.status, amux::AgentStatus::Active) || handle.event_rx.is_none())
+        self.agents.iter().any(|(agent_id, handle)| {
+            if !Self::workspace_runtime_matches(handle, workspace_path, workspace_id) {
+                return false;
+            }
+            if matches!(handle.status, amux::AgentStatus::Active) || handle.event_rx.is_none() {
+                return true;
+            }
+            self.aggregators
+                .get(agent_id)
+                .and_then(|agg| agg.current_turn_id())
+                .is_some()
         })
     }
 

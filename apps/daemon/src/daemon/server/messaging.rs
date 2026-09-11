@@ -337,29 +337,28 @@ impl DaemonServer {
             }
         }
 
+        // Active→Idle must not flip `handle.status` until turn-final messages
+        // are emitted (below). Skills refresh keys off workspace occupancy;
+        // publishing Idle first opened a window where the runtime was stopped
+        // before `TurnAggregator` could ingest this StatusChange.
+        let defer_idle_status_update = matches!(
+            acp_event.event.as_ref(),
+            Some(amux::acp_event::Event::StatusChange(sc))
+                if sc.old_status == amux::AgentStatus::Active as i32
+                    && sc.new_status == amux::AgentStatus::Idle as i32
+        );
+
         // Update agent status if this is a status change event
         if let Some(amux::acp_event::Event::StatusChange(ref sc)) = acp_event.event {
-            let became_idle = sc.old_status == amux::AgentStatus::Active as i32
-                && sc.new_status == amux::AgentStatus::Idle as i32;
-            {
-                let mut agents = self.agents.lock().await;
-                if let Some(handle) = agents.get_handle_mut(agent_id) {
-                    handle.status = amux::AgentStatus::try_from(sc.new_status)
-                        .unwrap_or(amux::AgentStatus::Unknown);
+            if !defer_idle_status_update {
+                {
+                    let mut agents = self.agents.lock().await;
+                    if let Some(handle) = agents.get_handle_mut(agent_id) {
+                        handle.status = amux::AgentStatus::try_from(sc.new_status)
+                            .unwrap_or(amux::AgentStatus::Unknown);
+                    }
                 }
-            }
-            self.publish_runtime_state_by_id(agent_id).await;
-            if became_idle {
-                self.remote_tool_turn_contexts
-                    .lock()
-                    .await
-                    .clear_runtime(agent_id);
-                self.flush_pending_remote_tools_mcp_refresh(agent_id).await;
-                // No `learn_session_model` here any more. It existed to give a
-                // fresh install's device MRU a first entry by asking the backend
-                // what an unpinned start had settled on — and ADR-0007 removes
-                // both the MRU and unpinned starts, since every entry point now
-                // pins a model when it is created.
+                self.publish_runtime_state_by_id(agent_id).await;
             }
 
             // Status transitions used to upsert `agent_runtimes` here. The
@@ -517,6 +516,21 @@ impl DaemonServer {
             if let Some(handle) = self.agents.lock().await.get_handle_mut(agent_id) {
                 handle.pending_reply_to_message_id = None;
             }
+        }
+
+        if defer_idle_status_update {
+            {
+                let mut agents = self.agents.lock().await;
+                if let Some(handle) = agents.get_handle_mut(agent_id) {
+                    handle.status = amux::AgentStatus::Idle;
+                }
+            }
+            self.publish_runtime_state_by_id(agent_id).await;
+            self.remote_tool_turn_contexts
+                .lock()
+                .await
+                .clear_runtime(agent_id);
+            self.flush_pending_remote_tools_mcp_refresh(agent_id).await;
         }
 
         // Ambient state variants (replaced wholesale on each push) should not
