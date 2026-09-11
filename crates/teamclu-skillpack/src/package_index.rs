@@ -26,8 +26,10 @@ use crate::origin::ORIGIN_DIR;
 /// New-publish caps. Historical versions stay downloadable; these only bind
 /// the pack we are about to upload.
 pub const MAX_PACK_FILES: usize = 500;
-pub const MAX_SINGLE_FILE_BYTES: u64 = 1024 * 1024;
-pub const MAX_PACK_TOTAL_BYTES: u64 = 5 * 1024 * 1024;
+/// Publish cap: 5 MiB per file.
+pub const MAX_SINGLE_FILE_BYTES: u64 = 5 * 1024 * 1024;
+/// Publish cap: 25 MiB per skill pack.
+pub const MAX_PACK_TOTAL_BYTES: u64 = 25 * 1024 * 1024;
 
 /// Declares files that are not part of the published pack.
 pub const IGNORE_FILE: &str = ".teamcluignore";

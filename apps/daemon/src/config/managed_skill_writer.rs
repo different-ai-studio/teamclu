@@ -19,10 +19,10 @@ use super::roles_skills::is_inherent_skill;
 const GLOBAL_SKILLS_REL: &str = ".agents/skills";
 pub(crate) const SKILL_MD: &str = "SKILL.md";
 pub(crate) const MAX_PACK_FILES: usize = 500;
-/// Publish/write cap: 0.5 MiB per file. Distinct from the get_draft JSON budget.
-pub(crate) const MAX_SINGLE_FILE_BYTES: usize = 512 * 1024;
-/// Publish/write cap: 2.5 MiB pack total.
-pub(crate) const MAX_PACK_TOTAL_BYTES: usize = 2560 * 1024;
+/// Publish/write cap: 5 MiB per file. Distinct from the get_draft JSON budget.
+pub(crate) const MAX_SINGLE_FILE_BYTES: usize = 5 * 1024 * 1024;
+/// Publish/write cap: 25 MiB pack total.
+pub(crate) const MAX_PACK_TOTAL_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
