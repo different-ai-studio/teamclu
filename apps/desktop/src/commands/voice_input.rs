@@ -11,17 +11,14 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const ENGINE_VERSION: &str = "1.4.15";
-const RUNTIME_URL: &str = "https://github.com/modelscope/FunASR/releases/download/v1.4.15/funasr-llamacpp-macos-arm64.tar.gz";
-const RUNTIME_SHA256: &str = "bda59474202b887190f59d25b7b42c714469efae71276072c12fa0a38de68792";
 const MODEL_URL: &str = "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/90c1c61912018b70ada0fcc024ea24aca62f2e63/sensevoice-small-q8.gguf";
 const MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5";
 const VAD_URL: &str = "https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/6840bae4c5c92ee8c04faaf4db23dd0105098d7f/fsmn-vad.gguf";
 const VAD_SHA256: &str = "1270f2559c495f4e7b6e739541151027d360761a3fda43fc147034f5719f5479";
 
-const RUNTIME_BYTES: u64 = 7_357_524;
 const MODEL_BYTES: u64 = 254_208_320;
 const VAD_BYTES: u64 = 1_720_512;
-const TOTAL_BYTES: u64 = RUNTIME_BYTES + MODEL_BYTES + VAD_BYTES;
+const TOTAL_BYTES: u64 = MODEL_BYTES + VAD_BYTES;
 
 #[derive(Default)]
 pub struct VoiceInputState {
@@ -68,13 +65,13 @@ fn is_installed(root: &std::path::Path) -> bool {
 }
 
 fn platform_support() -> Result<(), String> {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(target_os = "macos")]
     {
         Ok(())
     }
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(target_os = "macos"))]
     {
-        Err("Local FunASR currently requires macOS on Apple silicon".to_string())
+        Err("Local FunASR currently requires macOS".to_string())
     }
 }
 
@@ -104,7 +101,7 @@ struct InstallProgress {
     stage: &'static str,
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(target_os = "macos")]
 fn download_checked(
     app: &AppHandle,
     url: &str,
@@ -192,7 +189,7 @@ pub fn voice_input_install(
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(target_os = "macos")]
 fn install_engine(app: &AppHandle) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -208,21 +205,17 @@ fn install_engine(app: &AppHandle) -> Result<(), String> {
         .prefix("funasr-install-")
         .tempdir_in(parent)
         .map_err(|error| error.to_string())?;
-    let archive = temp.path().join("runtime.tar.gz");
-    download_checked(app, RUNTIME_URL, RUNTIME_SHA256, &archive, 0, "runtime")?;
-    let decoder = flate2::read::GzDecoder::new(
-        std::fs::File::open(&archive).map_err(|error| error.to_string())?,
-    );
-    tar::Archive::new(decoder)
-        .unpack(temp.path())
-        .map_err(|error| format!("extract runtime: {error}"))?;
-    std::fs::remove_file(&archive).map_err(|error| error.to_string())?;
+    let bundled_runtime =
+        crate::commands::amuxd_supervisor::locate_bundled_sidecar("llama-funasr-sensevoice")
+            .ok_or("Bundled FunASR runtime is missing")?;
+    std::fs::copy(&bundled_runtime, runtime_path(temp.path()))
+        .map_err(|error| format!("copy FunASR runtime: {error}"))?;
     download_checked(
         app,
         MODEL_URL,
         MODEL_SHA256,
         &model_path(temp.path()),
-        RUNTIME_BYTES,
+        0,
         "model",
     )?;
     download_checked(
@@ -230,7 +223,7 @@ fn install_engine(app: &AppHandle) -> Result<(), String> {
         VAD_URL,
         VAD_SHA256,
         &vad_path(temp.path()),
-        RUNTIME_BYTES + MODEL_BYTES,
+        MODEL_BYTES,
         "vad",
     )?;
     let runtime = runtime_path(temp.path());
@@ -246,7 +239,7 @@ fn install_engine(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(target_os = "macos"))]
 fn install_engine(_app: &AppHandle) -> Result<(), String> {
     platform_support()
 }
@@ -269,10 +262,10 @@ pub fn voice_input_start(
     *state.stop.lock().map_err(|error| error.to_string())? = Some(stop.clone());
     let app_for_thread = app.clone();
     std::thread::spawn(move || {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(target_os = "macos")]
         let result =
             macos::capture_and_transcribe(app_for_thread.clone(), root, stop, recording_id.clone());
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(target_os = "macos"))]
         let result: Result<(), String> = Err("unsupported platform".to_string());
         if let Some(shared) = app_for_thread.try_state::<VoiceInputState>() {
             shared.listening.store(false, Ordering::SeqCst);
@@ -302,7 +295,7 @@ pub fn voice_input_stop(state: State<'_, VoiceInputState>) -> Result<(), String>
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(target_os = "macos")]
 mod macos {
     use super::*;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

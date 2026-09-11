@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": [
+      "binaries/teamclu-introspect",
+      "binaries/amuxd",
+      "binaries/llama-funasr-sensevoice"
+    ],
+    "resources": [
+      "resources/licenses/funasr-llamacpp.txt"
+    ]
+  }
+}
