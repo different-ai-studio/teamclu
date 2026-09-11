@@ -48,6 +48,9 @@ import {
 import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { MessageList, type MessageListHandle } from "./MessageList";
 import { useChatSend } from "./use-chat-send";
+import type { VoiceSendIntent } from "@/lib/messages/voice-send-intent";
+import type { VoiceRoute, VoiceSegment } from "@/lib/voice/local-voice-input";
+import { voiceSegmentTextForSend } from "@/lib/voice/voice-segment-text";
 import { renderChatEmptyState } from "./chat-empty-state";
 import { SessionErrorAlert } from "./SessionErrorAlert";
 import { isPersistentSessionTurnError } from "@/lib/agent/agent-turn-error";
@@ -965,7 +968,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
 
   // ── Submit handler ────────────────────────────────────────────────────
 
-  const { handleSubmit, createSessionAndSendFirst } = useChatSend({
+  const { handleSubmit, createSessionAndSendFirst, sendIntoSession } = useChatSend({
     t,
     activeSessionId,
     displaySessionId,
@@ -982,6 +985,22 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     setWelcomeSessionStarting,
     messageListRef,
   });
+
+  const handleVoiceSegment = React.useCallback(
+    async (segment: VoiceSegment, sessionId: string, route: VoiceRoute) => {
+      const intent: VoiceSendIntent =
+        route.mode === "silent"
+          ? { kind: "voice-silent", segmentId: segment.segmentId }
+          : { kind: "voice-trigger", segmentId: segment.segmentId, agent: route.agent };
+      await sendIntoSession(
+        sessionId,
+        { text: voiceSegmentTextForSend(segment, route), mentions: [] },
+        [],
+        intent,
+      );
+    },
+    [sendIntoSession],
+  );
 
   const handleStartLocalAgentSession = React.useCallback(async () => {
     if (welcomeSessionStarting || quickChatState.kind !== 'ready') return;
@@ -1265,6 +1284,7 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
             activeStreamingAgents={activeStreamingAgents}
             onInterruptAgent={handleInterruptAgent}
             onSubmit={handleSubmit}
+            onVoiceSegment={handleVoiceSegment}
             isStreaming={isStreaming}
             messageQueue={messageQueue}
             onRemoveFromQueue={removeFromQueue}

@@ -35,6 +35,7 @@ pub mod team_sync_proxy;
 pub mod terminal;
 pub mod tray_menu;
 pub mod updater;
+pub mod voice_input;
 pub mod webview;
 pub mod window;
 pub mod window_chrome;

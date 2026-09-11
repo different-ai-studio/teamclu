@@ -6,6 +6,7 @@ import { PaneLoading } from "@/components/ui/pane-loading"
 import {
   decodeCloudVersionTarget,
   decodeKnowledgeConflictTarget,
+  decodeKnowledgeReviewTarget,
   decodeTeamShareTarget,
   decodeVersionHistoryTarget,
 } from "@/lib/tabs/teamshare-target"
@@ -39,6 +40,10 @@ const KnowledgeConflictResolver = lazyNamed(
 const KnowledgeCloudVersion = lazyNamed(
   () => import("@/components/teamshare/KnowledgeCloudVersion"),
   "KnowledgeCloudVersion",
+)
+const KnowledgeReviewTab = lazyNamed(
+  () => import("@/components/teamshare/KnowledgeReviewTab"),
+  "KnowledgeReviewTab",
 )
 const TeamShareTabContent = lazyNamed(
   () => import("@/components/teamshare/TeamShareTabContent"),
@@ -144,6 +149,9 @@ function resolveNativeBody(target: string) {
 
   const cloudPath = decodeCloudVersionTarget(target)
   if (cloudPath) return <KnowledgeCloudVersion path={cloudPath} />
+
+  const reviewId = decodeKnowledgeReviewTarget(target)
+  if (reviewId) return <KnowledgeReviewTab candidateId={reviewId} />
 
   const versionPath = decodeVersionHistoryTarget(target)
   if (versionPath !== undefined) {

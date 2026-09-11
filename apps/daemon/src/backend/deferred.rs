@@ -341,6 +341,17 @@ impl Backend for DeferredBackend {
             .await
     }
 
+    async fn list_actor_session_ids(
+        &self,
+        team_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> BackendResult<(Vec<String>, Option<String>)> {
+        self.inner()?
+            .list_actor_session_ids(team_id, cursor, limit)
+            .await
+    }
+
     async fn get_session_roster(
         &self,
         session_id: &str,

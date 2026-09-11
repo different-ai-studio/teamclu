@@ -8,7 +8,7 @@ dist/
 !apps/daemon/tests/fixtures/pi-host-stub/dist/
 target/
 .cargo-target/
-.cargo-target-fix/
+.cargo-target-*/
 *.tsbuildinfo
 
 # IDE
