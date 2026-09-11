@@ -739,7 +739,13 @@ pub async fn webview_create(
 
             // A navigation away from the trusted origin (redirect, link, SSO
             // hop) must not carry the identity object with it.
-            let on_trusted_origin = webview.url().ok().map(|u| origin_key(&u)) == identity_origin;
+            //
+            // Read the URL from the load event, not `webview.url()`: that live
+            // getter round-trips into WKWebView.URL, which is nil until a
+            // navigation commits, and wry 0.55.1 unwraps it instead of
+            // returning an error — panicking the whole process on the
+            // PageLoadEvent::Started for a just-created webview.
+            let on_trusted_origin = Some(origin_key(payload.url())) == identity_origin;
             if let (Some((device_no, device_name)), true) = (&identity, on_trusted_origin) {
                 let script = build_teamclu_identity_script(device_no, device_name);
                 match payload.event() {
@@ -936,14 +942,27 @@ pub async fn webview_navigate(
     Ok(())
 }
 
+/// `webview.url()` round-trips into the native WKWebView.URL getter, which is
+/// nil until a navigation commits. wry 0.55.1's `url_from_webview` unwraps
+/// that instead of returning an error (the same panic `webview_create`'s
+/// `on_page_load` handler avoids above by reading the load event's own URL
+/// instead) — so catch it here rather than crash the process on a webview
+/// that hasn't loaded anything yet. `WebViewToolbar.tsx` polls the commands
+/// built on this every 2s starting 2s after a webview is created, which is
+/// well within the window a slow-loading page can still be uncommitted.
+pub(crate) fn webview_url_safe<R: tauri::Runtime>(
+    webview: &tauri::Webview<R>,
+) -> Result<tauri::Url, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| webview.url()))
+        .map_err(|_| "webview has not committed a navigation yet".to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// Get the current URL of the webview.
 #[tauri::command]
 pub async fn webview_get_url(app: tauri::AppHandle, label: String) -> Result<String, String> {
     if let Some(webview) = app.get_webview(&label) {
-        return webview
-            .url()
-            .map(|u| u.to_string())
-            .map_err(|e| format!("{}", e));
+        return webview_url_safe(&webview).map(|u| u.to_string());
     }
     Err("Webview not found".to_string())
 }
@@ -1027,7 +1046,7 @@ pub async fn webview_read_local_storage(
 
     // Only harvest when the webview is actually on the caller-declared host.
     let allowed = expected_host.as_deref().filter(|h| !h.is_empty());
-    match (allowed, webview.url()) {
+    match (allowed, webview_url_safe(&webview)) {
         (Some(host), Ok(url)) if url.host_str() == Some(host) => {}
         _ => return Ok(None),
     }
@@ -1141,7 +1160,7 @@ pub async fn webview_read_local_storage(
 #[tauri::command]
 pub async fn webview_get_favicon(app: tauri::AppHandle, label: String) -> Result<String, String> {
     if let Some(webview) = app.get_webview(&label) {
-        let url = webview.url().map_err(|e| format!("{}", e))?;
+        let url = webview_url_safe(&webview)?;
         if let Some(host) = url.host_str() {
             let scheme = url.scheme();
             let port = url.port().map(|p| format!(":{}", p)).unwrap_or_default();
