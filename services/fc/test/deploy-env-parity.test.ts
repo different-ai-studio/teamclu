@@ -1,10 +1,12 @@
 /**
- * The Cloud API ships to two targets from one source tree: the self-host
- * container (deploy/self-host/docker-compose.yml) and Alibaba Function Compute
- * (services/fc/s.yaml). Compose's `environment:` map is an ALLOWLIST — a
+ * The Cloud API ships to three targets from one source tree: the self-host
+ * container (deploy/self-host/docker-compose.yml), Alibaba Function Compute
+ * (services/fc/s.yaml), and Belayo Dokploy
+ * (deploy/belayo/cloud-api.env.keys). Every target's environment is an
+ * ALLOWLIST — a
  * variable absent from it never reaches the container, no matter what the
- * box's .env says — so a var added to only one target silently disables the
- * feature on the other, with no error anywhere.
+ * host configuration says — so a var added to only one target silently
+ * disables the feature there, with no error anywhere.
  *
  * That has bitten this repo repeatedly: the $1 LiteLLM budget cap, and the
  * whole apps module (APPS_DB_ADMIN_URL / CODEUP_* declared only in s.yaml, so
@@ -20,6 +22,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FC_DIR = path.resolve(here, "..");
 const REPO = path.resolve(FC_DIR, "../..");
+const BELAYO_ENV_FILE = path.join(REPO, "deploy/belayo/cloud-api.env.keys");
 
 /**
  * Variables that legitimately exist on one target only. Every entry needs a
@@ -101,6 +104,24 @@ function composeFcEnvKeys(): Set<string> {
   return keys;
 }
 
+function namesOnlyEnvKeys(file: string): Set<string> {
+  const rows = fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  for (const row of rows) {
+    assert.match(row, /^[A-Z][A-Z_0-9]*$/, `${path.basename(file)}: invalid key ${row}`);
+  }
+  assert.equal(new Set(rows).size, rows.length, `${path.basename(file)}: duplicate keys`);
+  assert.deepEqual(rows, [...rows].sort(), `${path.basename(file)}: keys must stay sorted`);
+  return new Set(rows);
+}
+
+function belayoEnvKeys(): Set<string> {
+  return namesOnlyEnvKeys(BELAYO_ENV_FILE);
+}
+
 test("both deploy targets declare the same environment", () => {
   const sYaml = sYamlEnvKeys();
   const compose = composeFcEnvKeys();
@@ -120,6 +141,31 @@ test("both deploy targets declare the same environment", () => {
     "declared in compose but missing from s.yaml — the FC target will never " +
       "receive these",
   );
+});
+
+test("Belayo Dokploy and self-host declare the same Cloud API environment", () => {
+  const belayo = belayoEnvKeys();
+  const compose = composeFcEnvKeys();
+  const onlyCompose = [...compose].filter((key) => !belayo.has(key));
+  const onlyBelayo = [...belayo].filter((key) => !compose.has(key));
+
+  // Self-host uses this selector to choose bundled vs external Supabase.
+  assert.deepEqual(onlyCompose.sort(), ["FC_SUPABASE_URL"]);
+  assert.deepEqual(
+    onlyBelayo.sort(),
+    [],
+    "declared for Belayo Dokploy but missing from the self-host allowlist",
+  );
+});
+
+test("Belayo Dokploy and Function Compute keep only runtime-specific differences", () => {
+  const belayo = belayoEnvKeys();
+  const sYaml = sYamlEnvKeys();
+  const onlyBelayo = [...belayo].filter((key) => !sYaml.has(key));
+  const onlySYaml = [...sYaml].filter((key) => !belayo.has(key));
+
+  assert.deepEqual(onlyBelayo.sort(), ["HOST", "PORT"]);
+  assert.deepEqual(onlySYaml.sort(), ["CORS_HANDLED_BY_PROXY"]);
 });
 
 test("the exception lists stay honest", () => {
@@ -168,7 +214,7 @@ test("no deploy target declares a variable nothing reads", () => {
   // Catches the typo class: s.yaml shipped OTP_EMAIL_SMTP_FROM for months while
   // the code read OTP_EMAIL_FROM, so the configured From address did nothing.
   const read = envVarsReadBySource();
-  const declared = new Set([...sYamlEnvKeys(), ...composeFcEnvKeys()]);
+  const declared = new Set([...sYamlEnvKeys(), ...composeFcEnvKeys(), ...belayoEnvKeys()]);
   // Consumed by the runtime/toolchain rather than by our own source.
   const RUNTIME_OWNED = new Set(["PORT", "HOST", "NODE_ENV"]);
   const orphans = [...declared].filter((k) => !read.has(k) && !RUNTIME_OWNED.has(k));
