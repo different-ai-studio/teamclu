@@ -1,14 +1,13 @@
 name: Self-Host Deploy
 
+# Self-host ECS no longer deploys on every merge to main. Schedule matches
+# nightly-release-oss.yml: 16:00 UTC = 00:00 Asia/Shanghai. Manual runs stay
+# available via workflow_dispatch.
+
 on:
+  schedule:
+    - cron: "0 16 * * *" # 16:00 UTC = 00:00 Asia/Shanghai
   workflow_dispatch: {}
-  push:
-    branches: [main]
-    paths:
-      - 'deploy/self-host/**'
-      - 'services/fc/**'
-      - 'services/ai-gateway/**'
-      - 'services/supabase/migrations/**'
 
 # Shared with daemon-deploy.yml deploy job — both reset /opt/teamclaw on the
 # same ECS box. Never cancel mid compose build / up.

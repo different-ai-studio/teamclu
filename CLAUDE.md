@@ -76,9 +76,9 @@ pnpm daemon:test            # Daemon tests
 pnpm ios:test:core          # AMUXCore SwiftPM tests
 pnpm ios:test               # iOS UI tests
 
-# Deploy — automatic: push to main touching deploy/self-host/**, services/fc/**,
-# services/ai-gateway/** or services/supabase/migrations/** triggers
-# self-host-deploy.yml. That covers SELF-HOST only; belayo is a separate path.
+# Deploy — self-host: nightly at 00:00 Asia/Shanghai (self-host-deploy.yml
+# schedule) or manual workflow_dispatch. No longer on push to main. Belayo is
+# a separate path.
 ```
 
 ## Architecture
@@ -299,21 +299,18 @@ The `-dev` hostnames identify the self-host test environment. Belayo's current
 topology and migration state are tracked in
 `docs/specs/2026-09-11-belayo-dokploy-target-architecture.md`.
 
-**Deploy is automatic — for self-host.** Pushing to `main` with changes under
-`deploy/self-host/**`, `services/fc/**`, `services/ai-gateway/**` or
-`services/supabase/migrations/**` triggers
-`.github/workflows/self-host-deploy.yml`, which SSHes to the box, `git pull`s,
+**Self-host deploys on a nightly schedule**, not on every merge.
+`.github/workflows/self-host-deploy.yml` runs at 00:00 Asia/Shanghai (`cron:
+0 16 * * *` UTC) and on `workflow_dispatch`. It SSHes to the box, `git pull`s,
 `docker compose build fc ai-gateway`, `docker compose up -d`, waits for both to
 report healthy, then runs `run-e2e.sh`.
 
-**belayo does not ride that workflow**, and the difference has stranded it
-before. Self-host builds the gateway from source in compose; belayo's Dokploy
-app is `sourceType: docker`, so it pulls a pre-built image from Alibaba ACR and
-a source change reaches it only when someone builds and pushes that image.
-`.github/workflows/belayo-ai-gateway.yml` now does that on the same trigger —
-before it existed, self-host moved forward on every merge while belayo silently
-stayed on an image from weeks earlier, with nothing anywhere reporting the
-drift. Database migrations are applied by the `migrate`
+**belayo does not ride that workflow.** Self-host builds the gateway from
+source in compose; belayo's Dokploy app is `sourceType: docker`, so it pulls a
+pre-built image from Alibaba ACR and a source change reaches it only when
+someone builds and pushes that image. `.github/workflows/belayo-ai-gateway.yml`
+still triggers on push to `main` under `services/ai-gateway/**` (and on
+`workflow_dispatch`). Database migrations are applied by the `migrate`
 compose service (`deploy/self-host/init/apply-migrations.sh`, tracked in
 `_selfhost.schema_migrations`, idempotent, lexical order).
 
