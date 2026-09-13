@@ -2,6 +2,7 @@ use chrono::{DateTime, Local, Utc};
 use chrono_tz::Tz;
 use cron::Schedule as CronScheduleParser;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
@@ -26,6 +27,16 @@ pub struct CronScheduler {
     app_handle: Arc<std::sync::Mutex<Option<AppHandle>>>,
     /// Project cwd for workspace-scoped jobs. `None` for global scope — amuxd uses daemon default.
     execution_workspace: Arc<RwLock<Option<String>>>,
+    /// In-memory count of jobs currently mid-`execute_job` on THIS process.
+    /// Deliberately not derived from persisted `RunStatus::Running` — that
+    /// survives a crash and can be orphaned; this cannot, since a fresh
+    /// process always starts it at zero. Used by the auto-restart update mode
+    /// to decide whether it is safe to tear this process down.
+    running_count: Arc<AtomicUsize>,
+    /// Set just before an auto-restart countdown fires so `execute_job` can
+    /// decline to start new work in the last few seconds before the process
+    /// exits. Cooperative, not a lock: a run already in flight is not aborted.
+    restart_imminent: Arc<AtomicBool>,
 }
 
 impl Clone for CronScheduler {
@@ -36,7 +47,29 @@ impl Clone for CronScheduler {
             generation: Arc::clone(&self.generation),
             app_handle: Arc::clone(&self.app_handle),
             execution_workspace: Arc::clone(&self.execution_workspace),
+            running_count: Arc::clone(&self.running_count),
+            restart_imminent: Arc::clone(&self.restart_imminent),
         }
+    }
+}
+
+/// RAII guard: increments on creation, decrements on drop. Held for the whole
+/// body of `execute_job` so every exit path — an early `return` from
+/// `check_generation!()`, the normal success/failure/timeout fall-through, or
+/// a panic unwinding through it — decrements exactly once without having to
+/// patch each exit site individually.
+struct RunningGuard(Arc<AtomicUsize>);
+
+impl RunningGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -48,7 +81,19 @@ impl CronScheduler {
             generation: Arc::new(RwLock::new(0)),
             app_handle: Arc::new(std::sync::Mutex::new(None)),
             execution_workspace: Arc::new(RwLock::new(None)),
+            running_count: Arc::new(AtomicUsize::new(0)),
+            restart_imminent: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// True if a job is currently mid-execution on this process.
+    pub fn is_running(&self) -> bool {
+        self.running_count.load(Ordering::SeqCst) > 0
+    }
+
+    /// Arm/disarm the cooperative new-job-start refusal ahead of a restart.
+    pub fn set_restart_imminent(&self, imminent: bool) {
+        self.restart_imminent.store(imminent, Ordering::SeqCst);
     }
 
     pub async fn set_execution_workspace(&self, path: Option<String>) {
@@ -246,6 +291,16 @@ impl CronScheduler {
 
     /// Execute a single cron job
     pub async fn execute_job(&self, job: CronJob) {
+        // The auto-restart update mode arms this right before its countdown
+        // fires. Refuse new work rather than racing a process teardown that
+        // could land mid-run — no run record is created, so this leaves no
+        // trace to reconcile later.
+        if self.restart_imminent.load(Ordering::SeqCst) {
+            log::info!("[Cron] Job '{}' skipped: restart imminent", job.name);
+            return;
+        }
+        let _running_guard = RunningGuard::new(Arc::clone(&self.running_count));
+
         let run_id = uuid::Uuid::new_v4().to_string();
         let started_at = Utc::now();
 
@@ -776,6 +831,39 @@ mod tests {
         assert_eq!(reconciled.finished_at, Some(now));
         assert_eq!(reconciled.session_id.as_deref(), Some("session-1"));
         assert!(reconciled.error.unwrap().contains("interrupted"));
+    }
+
+    // ── auto-restart safety signals ──────────────────────────────────────────
+
+    #[test]
+    fn running_guard_tracks_concurrent_executions() {
+        let scheduler = make_scheduler();
+        assert!(!scheduler.is_running());
+        {
+            let _guard = RunningGuard::new(Arc::clone(&scheduler.running_count));
+            assert!(scheduler.is_running());
+        }
+        assert!(!scheduler.is_running(), "guard must decrement on drop");
+    }
+
+    #[tokio::test]
+    async fn restart_imminent_skips_new_job_before_any_run_record_is_created() {
+        let scheduler = make_scheduler();
+        scheduler.set_restart_imminent(true);
+        let job = make_job(CronSchedule {
+            kind: ScheduleKind::Every,
+            at: None,
+            every_ms: Some(1000),
+            expr: None,
+            tz: None,
+        });
+
+        scheduler.execute_job(job).await;
+
+        // The function must have returned before instantiating the running
+        // guard at all — otherwise a crash mid-run would be indistinguishable
+        // from "never started" and `is_running()` would wrongly report busy.
+        assert!(!scheduler.is_running());
     }
 
     #[test]

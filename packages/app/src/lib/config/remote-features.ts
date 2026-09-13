@@ -48,6 +48,14 @@ interface ResolvedFeatures {
   channels: ChannelsFeatureConfig;
   apps: boolean;
   lockLlmConfig: boolean;
+  /**
+   * Kill switch for the auto-restart update mode's *action*, not the updater
+   * itself (`updater` above stays build-time for that reason). A bad release
+   * already auto-restarting a fleet needs a way to pause just the restart
+   * without a new client build; tripping this makes auto-restart behave like
+   * auto-download (dialog shows, manual click required).
+   */
+  autoRestartPaused: boolean;
 }
 
 // What the server is allowed to influence, restated on the client. The server
@@ -60,13 +68,14 @@ interface ResolvedFeatures {
 // update out of it. It stays build-time.
 const AUTH_KEYS = ["google", "wechat", "phone", "password", "webSSO"] as const;
 const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat", "seatalk"] as const;
-const BOOL_KEYS = ["apps", "lockLlmConfig"] as const;
+const BOOL_KEYS = ["apps", "lockLlmConfig", "autoRestartPaused"] as const;
 
 interface RemoteFeaturePatch {
   auth?: Partial<AuthFeatures>;
   channels?: Partial<ChannelsFeatureConfig>;
   apps?: boolean;
   lockLlmConfig?: boolean;
+  autoRestartPaused?: boolean;
 }
 
 function pickBooleans<K extends string>(
@@ -203,6 +212,7 @@ function resolveFrom(patches: RemoteFeaturePatch[]): ResolvedFeatures {
     },
     apps: merged.apps ?? false,
     lockLlmConfig: merged.lockLlmConfig ?? false,
+    autoRestartPaused: merged.autoRestartPaused ?? false,
   };
 }
 

@@ -656,6 +656,31 @@ pub async fn cron_refresh_delivery() -> Result<(), String> {
     Ok(())
 }
 
+/// True if any cron job, in any workspace (global included), is currently
+/// mid-execution on this process. Used by the desktop auto-restart update
+/// mode as one of its "safe to restart" signals.
+#[tauri::command]
+pub async fn cron_any_job_running(cron_state: State<'_, CronState>) -> Result<bool, String> {
+    let instances = cron_state.instances.lock().await;
+    Ok(instances.values().any(|i| i.scheduler.is_running()))
+}
+
+/// Arm/disarm the cooperative "refuse new cron work" flag ahead of an
+/// auto-restart. Applies to every live instance (global + all workspaces) —
+/// a restart tears down the whole process regardless of which workspace's
+/// cron would have fired.
+#[tauri::command]
+pub async fn cron_set_restart_imminent(
+    imminent: bool,
+    cron_state: State<'_, CronState>,
+) -> Result<(), String> {
+    let instances = cron_state.instances.lock().await;
+    for instance in instances.values() {
+        instance.scheduler.set_restart_imminent(imminent);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod mcp_create_tests {
     use super::*;

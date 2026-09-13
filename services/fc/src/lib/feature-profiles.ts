@@ -74,6 +74,14 @@ export interface FeatureFlags {
    * Unset means allowed, which is what every deployment does today.
    */
   allowNewOrg?: boolean;
+  /**
+   * Kill switch for the desktop auto-restart update mode's *action* only (not
+   * the updater itself, which stays build-time — see `updater` note below).
+   * Trip this to pause auto-restart fleet-wide without a new client release;
+   * tripped clients behave like auto-download (dialog shows, manual click
+   * required) instead of erroring.
+   */
+  autoRestartPaused?: boolean;
 }
 
 /**
@@ -127,6 +135,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
     apps: true,
     lockLlmConfig: false,
     allowNewOrg: true,
+    autoRestartPaused: false,
   },
 
   // Mirrors the branding repo's brands/betly/build.config.json. `webSSO: true`
@@ -144,6 +153,7 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
     apps: true,
     lockLlmConfig: false,
     allowNewOrg: true,
+    autoRestartPaused: false,
   },
 
   // Mirrors the branding repo's brands/copilot361/build.config.json, which
@@ -158,5 +168,6 @@ export const FEATURE_PROFILES: Record<string, FeatureFlags> = {
     apps: false,
     lockLlmConfig: false,
     allowNewOrg: true,
+    autoRestartPaused: false,
   },
 };

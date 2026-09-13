@@ -166,8 +166,8 @@ export const GeneralSection = React.memo(function GeneralSection() {
   const setShowChangesTab = useHeaderPreferencesStore((s) => s.setShowChangesTab)
   const showSkillsRefresh = useHeaderPreferencesStore((s) => s.showSkillsRefresh)
   const setShowSkillsRefresh = useHeaderPreferencesStore((s) => s.setShowSkillsRefresh)
-  const autoUpdateEnabled = useAutoUpdatePreferenceStore((s) => s.autoUpdateEnabled)
-  const setAutoUpdateEnabled = useAutoUpdatePreferenceStore((s) => s.setAutoUpdateEnabled)
+  const updateMode = useAutoUpdatePreferenceStore((s) => s.mode)
+  const setUpdateMode = useAutoUpdatePreferenceStore((s) => s.setUpdateMode)
   const updaterAvailable = getFeatures().updater && !import.meta.env.DEV
   const [closePref, setClosePref] = React.useState<'ask' | 'tray' | 'quit'>('ask')
   React.useEffect(() => {
@@ -404,23 +404,31 @@ export const GeneralSection = React.memo(function GeneralSection() {
 
       {isTauri() && updaterAvailable ? (
         <SettingCard>
-          <div className="flex items-center justify-between gap-4">
-            <div className="space-y-1">
-              <label className="text-[13px] font-medium flex items-center gap-2">
-                <RefreshCw className="h-4 w-4 text-muted-foreground" />
-                {t('settings.general.autoUpdate', 'Automatic updates')}
-              </label>
-              <p className="text-xs text-muted-foreground">
-                {t(
-                  'settings.general.autoUpdateDesc',
-                  'Check for updates in the background on startup and every few hours. You can still check manually from the settings footer.',
-                )}
-              </p>
-            </div>
-            <ToggleSwitch
-              enabled={autoUpdateEnabled}
-              onChange={setAutoUpdateEnabled}
-            />
+          <div className="space-y-2">
+            <label className="text-[13px] font-medium flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 text-muted-foreground" />
+              {t('settings.general.autoUpdate', 'Updates')}
+            </label>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                'settings.general.autoUpdateDesc',
+                'Choose how TeamClu applies updates. You can still check manually from the settings footer.',
+              )}
+            </p>
+            <Select value={updateMode} onValueChange={(v) => setUpdateMode(v as typeof updateMode)}>
+              <SelectTrigger className="h-11" data-testid="update-mode-select">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="manual">{t('settings.general.updateModeManual', "Manual — I'll check myself")}</SelectItem>
+                <SelectItem value="auto-download">
+                  {t('settings.general.updateModeAutoDownload', 'Automatic download — ask before restarting')}
+                </SelectItem>
+                <SelectItem value="auto-restart">
+                  {t('settings.general.updateModeAutoRestart', 'Fully automatic — download and restart on their own')}
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </SettingCard>
       ) : null}

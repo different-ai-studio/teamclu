@@ -91,7 +91,7 @@ function buildWebSsoConfig() {
 // APP_FEATURES_JSON gets it dropped here — see the note on `updater` below.
 const AUTH_KEYS = ["google", "wechat", "phone", "password", "webSSO"] as const;
 const CHANNEL_KEYS = ["discord", "feishu", "email", "kook", "wecom", "wechat", "seatalk"] as const;
-const BOOTSTRAP_BOOL_KEYS = ["apps", "lockLlmConfig", "allowNewOrg"] as const;
+const BOOTSTRAP_BOOL_KEYS = ["apps", "lockLlmConfig", "allowNewOrg", "autoRestartPaused"] as const;
 
 // `updater` is deliberately absent from every list above and must stay that
 // way. It gates the startup auto-check as well as the About UI, so a wrong
