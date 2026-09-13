@@ -243,11 +243,13 @@ const V1_ROOT_FILES: &[&str] = &[
 /// Directories the v1 layout left at the root.
 ///
 /// `teams/` is absent on purpose: v2 keeps it, and the per-team subtree is
-/// reshaped in place rather than thrown away.
+/// reshaped in place rather than thrown away. So is `bin/`: a standalone
+/// install keeps the amuxd binary there (`install-amuxd.sh`,
+/// `amuxd install-service`, `amuxd update`), and purging it deleted the binary
+/// the service runs on the daemon's first boot.
 const V1_ROOT_DIRS: &[&str] = &[
     "apps",
     "attachments",
-    "bin",
     "history",
     "mcp-configs",
     "pi-sessions",
@@ -417,6 +419,14 @@ mod tests {
                 "{dir}/ is not in ROOT_ALLOWLIST — update the spec and the constant together"
             );
         }
+    }
+
+    /// A standalone install runs its service from `bin/amuxd`; the one-shot
+    /// purge used to delete that directory on the first boot.
+    #[test]
+    fn a_standalone_install_binary_survives_the_purge() {
+        assert!(!V1_ROOT_DIRS.contains(&"bin"));
+        assert!(ROOT_ALLOWLIST.contains(&"bin"));
     }
 
     /// The acceptance criterion from the spec, executable: after a full
