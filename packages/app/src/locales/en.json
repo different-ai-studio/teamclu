@@ -1968,6 +1968,8 @@
       "currentTeam": "Current team",
       "noTeam": "Join or create a team before configuring daemon agent settings.",
       "noAgent": "No daemon agent is associated with this machine yet.",
+      "offlineTitle": "Can't reach the server",
+      "offlineDesc": "Check your network connection. This page reloads on its own once you're back online.",
       "quickChatBlockedTitle": "Quick new chat is unavailable",
       "quickChatBlockedDesc": "This machine's agent is not joined to the current team yet. Complete the binding below, then use New Chat in the sidebar to start a solo session with your local agent.",
       "bindLocalAgent": "Bind local agent",

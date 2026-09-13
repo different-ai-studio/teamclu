@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertCircle, AlertTriangle, Bot, Copy, ExternalLink, Loader2, RefreshCw, RotateCcw, Save, Trash2, UserPlus } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Bot, Copy, ExternalLink, Loader2, RefreshCw, RotateCcw, Save, Trash2, UserPlus, WifiOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -33,6 +33,7 @@ import { useUIStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useDaemonMqttConnected } from '@/stores/daemon-mqtt-status'
 import { cn, isTauri } from '@/lib/utils'
+import { isNetworkError } from '@/lib/network-error'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -77,6 +78,14 @@ export function DaemonGeneralSection() {
   const [loading, setLoading] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  // A request that never reached the server. Kept apart from `error`: its raw
+  // message ("Failed to fetch", "Load failed") tells the user nothing, and
+  // nothing on this page can fix it — only the network coming back can.
+  const [offline, setOffline] = React.useState(false)
+  const reportError = React.useCallback((err: unknown) => {
+    if (isNetworkError(err)) setOffline(true)
+    else setError(err instanceof Error ? err.message : String(err))
+  }, [])
   const [daemonTeamId, setDaemonTeamId] = React.useState<string | null>(null)
   // Shared with the sidebar status dot — one poll, one value (#522).
   const daemonMqttConnected = useDaemonMqttConnected()
@@ -141,6 +150,7 @@ export function DaemonGeneralSection() {
     if (!team?.id) return
     setLoading(true)
     setError(null)
+    setOffline(false)
     try {
       const nextAgent = await getLocalDaemonAgent(team.id)
       setAgent(nextAgent)
@@ -155,15 +165,24 @@ export function DaemonGeneralSection() {
       setAccessRows(nextAccessRows)
       setMemberId((current) => nextMembers.some((member) => member.id === current) ? current : nextMembers[0]?.id ?? '')
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      reportError(err)
     } finally {
       setLoading(false)
     }
-  }, [team?.id, clearDaemonGeneralPrompt, loadEndpoint])
+  }, [team?.id, clearDaemonGeneralPrompt, loadEndpoint, reportError])
 
   React.useEffect(() => {
     void load()
   }, [load])
+
+  // Nothing on this page loads without the network. Pick it back up when the
+  // connection returns instead of leaving the notice until someone hits Refresh.
+  React.useEffect(() => {
+    if (!offline) return
+    const onOnline = () => void load()
+    window.addEventListener('online', onOnline)
+    return () => window.removeEventListener('online', onOnline)
+  }, [offline, load])
 
   // The running daemon's own version (from GET /v1/info). Fetched once — it only
   // changes across a daemon restart/upgrade, which reopens this section anyway.
@@ -190,7 +209,7 @@ export function DaemonGeneralSection() {
       })
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      reportError(err)
     } finally {
       setSaving(false)
     }
@@ -209,7 +228,7 @@ export function DaemonGeneralSection() {
       })
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      reportError(err)
     } finally {
       setSaving(false)
     }
@@ -227,7 +246,7 @@ export function DaemonGeneralSection() {
       })
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      reportError(err)
     } finally {
       setSaving(false)
     }
@@ -240,7 +259,7 @@ export function DaemonGeneralSection() {
       await removeAgentAccess(row.id)
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      reportError(err)
     } finally {
       setSaving(false)
     }
@@ -292,7 +311,28 @@ export function DaemonGeneralSection() {
         </SettingCard>
       )}
 
-      {daemonGeneralPrompt === 'quick_chat' && !agent && !loading && (
+      {offline && (
+        <SettingCard>
+          <div className="flex items-start gap-3" data-testid="daemon-general-offline">
+            <WifiOff className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 space-y-1">
+              <p className="text-[13px] font-medium text-foreground">
+                {t('settings.daemonGeneral.offlineTitle', "Can't reach the server")}
+              </p>
+              <p className="text-[12px] leading-5 text-muted-foreground">
+                {t(
+                  'settings.daemonGeneral.offlineDesc',
+                  "Check your network connection. This page reloads on its own once you're back online.",
+                )}
+              </p>
+            </div>
+          </div>
+        </SettingCard>
+      )}
+
+      {/* Offline, a missing agent means "not loaded", not "not bound" — don't
+          push the user into binding a machine that is already bound. */}
+      {daemonGeneralPrompt === 'quick_chat' && !agent && !loading && !offline && (
         <SettingCard className="border-coral/25 bg-coral-soft/40">
           <div className="flex items-start gap-3">
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-coral" />
@@ -436,7 +476,7 @@ export function DaemonGeneralSection() {
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         </SettingCard>
-      ) : !agent ? (
+      ) : offline && !agent ? null : !agent ? (
         <SettingCard>
           <p className="text-[13px] text-muted-foreground">
             {t('settings.daemonGeneral.noAgent', 'No daemon agent is associated with this machine yet.')}
