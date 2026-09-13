@@ -453,7 +453,7 @@ async fn a_turn_that_produced_nothing_closes_as_cancelled_and_writes_no_message(
 }
 
 #[tokio::test]
-async fn a_failed_turn_still_closes_the_stream_bubble() {
+async fn a_failed_turn_closes_the_stream_bubble_with_the_real_error() {
     // WeCom opens a progress bubble before the turn. If the wait loop
     // returns Err, that bubble used to stay "thinking…" forever even
     // though desktop already had the (failed) reply.
@@ -478,8 +478,39 @@ async fn a_failed_turn_still_closes_the_stream_bubble() {
     let ends = d.ends.lock().unwrap();
     assert_eq!(
         ends.last().copied().flatten(),
-        Some(TurnEnd::NoAnswer),
-        "the open stream bubble must close even when the turn fails"
+        Some(TurnEnd::Answered),
+        "a failure is an answer to the sender, not a cancellation"
+    );
+    assert!(
+        d.updates
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .0
+            .contains("pi extension error"),
+        "the sender receives the actual turn error"
+    );
+}
+
+#[tokio::test]
+async fn a_buffered_gateway_receives_the_real_turn_error() {
+    let core = Core {
+        dedup: Arc::new(FakeDedup::default()),
+        router: Arc::new(FakeRouter::default()),
+        identity: Arc::new(FakeIdentity::default()),
+        writer: Arc::new(FakeWriter::default()),
+        turns: Arc::new(FailingTurns),
+        commands: Arc::new(FakeCommands::default()),
+    };
+    let d = driver(MAIL);
+
+    let err = core.handle(&d, inbound("今天的数据")).await.unwrap_err();
+    assert!(err.to_string().contains("pi extension error"));
+    assert_eq!(d.delivered.lock().unwrap().len(), 1);
+    assert!(
+        d.delivered.lock().unwrap()[0].0.contains("pi extension error"),
+        "non-streaming gateways receive the actual turn error too"
     );
 }
 
