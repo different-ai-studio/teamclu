@@ -2528,6 +2528,53 @@ mod tests {
     }
 
     #[test]
+    fn runtime_workspace_busy_while_aggregator_turn_open() {
+        use crate::proto::amux;
+        use crate::runtime::turn_aggregator::TurnAggregator;
+
+        let mut mgr = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        let mut handle = RuntimeHandle::new(
+            "rt-settling".to_string(),
+            amux::AgentType::Pi,
+            "/tmp/ws-settling".to_string(),
+            "ws-settling".to_string(),
+        );
+        handle.status = amux::AgentStatus::Idle;
+        mgr.agents.insert(handle.agent_id.clone(), handle);
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&amux::AcpEvent {
+            event: Some(amux::acp_event::Event::Output(amux::AcpOutput {
+                text: "partial".into(),
+                is_complete: false,
+            })),
+            model: String::new(),
+        });
+        mgr.aggregators.insert("rt-settling".to_string(), agg);
+
+        assert!(
+            mgr.workspace_has_active_turn("/tmp/ws-settling", "ws-settling"),
+            "open aggregator counts as active even when handle.status is Idle"
+        );
+
+        mgr.aggregators
+            .get_mut("rt-settling")
+            .unwrap()
+            .ingest(&amux::AcpEvent {
+                event: Some(amux::acp_event::Event::StatusChange(
+                    amux::AcpStatusChange {
+                        old_status: amux::AgentStatus::Active as i32,
+                        new_status: amux::AgentStatus::Idle as i32,
+                    },
+                )),
+                model: String::new(),
+            });
+        assert!(
+            !mgr.workspace_has_active_turn("/tmp/ws-settling", "ws-settling"),
+            "turn closed after Idle ingest clears current_turn_id"
+        );
+    }
+
+    #[test]
     fn find_active_runtime_for_matches_full_tuple() {
         let mut mgr = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
         let mut h = RuntimeHandle::new(
