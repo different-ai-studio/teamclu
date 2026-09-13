@@ -346,7 +346,7 @@ impl Core {
             self.run_buffered(driver, &msg, &session, &display, &prompt)
                 .await
         };
-        if result.is_err() {
+        if let Err(error) = &result {
             let orphaned = turn_attachments::close(&session.session_id);
             if !orphaned.is_empty() {
                 tracing::warn!(
@@ -354,6 +354,24 @@ impl Core {
                     count = orphaned.len(),
                     "gateway: turn failed with files attached; they were not delivered"
                 );
+            }
+
+            // A streamed gateway has an in-place progress card, which
+            // `run_streamed` has already closed with this same message. Other
+            // gateways have no such card: explicitly return the real turn
+            // failure instead of silently leaving the sender with nothing.
+            if !driver.caps().streaming_edit {
+                let notice = gateway_turn_failure_notice(error);
+                if let Err(delivery_error) = self
+                    .say(driver, &msg.conversation, reply_ctx.as_deref(), &notice)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session.session_id,
+                        error = %delivery_error,
+                        "gateway: failed to deliver turn failure notice"
+                    );
+                }
             }
         }
 
@@ -490,9 +508,15 @@ impl Core {
             Ok(reply) => reply,
             Err(e) => {
                 // The progress bubble is already on the channel. Close it even
-                // when the wait loop fails, otherwise WeCom stays on
-                // "thinking…" after desktop already has the (failed) row.
-                let _ = driver.update(&handle, "", Some(TurnEnd::NoAnswer)).await;
+                // when the wait loop fails, otherwise the sender sees either
+                // a permanent "thinking…" state or a misleading cancellation.
+                // Keep the actual cause: it is often directly actionable
+                // (such as an unavailable model credential), and this core is
+                // shared by every gateway, not just WeCom.
+                let notice = gateway_turn_failure_notice(&e);
+                let _ = driver
+                    .update(&handle, &notice, Some(TurnEnd::Answered))
+                    .await;
                 return Err(e);
             }
         };
@@ -556,6 +580,25 @@ impl Core {
         // any file delivery.
         Ok(1 + updates + 1 + file_deliveries)
     }
+}
+
+/// Render a runtime failure for a channel recipient.
+///
+/// The first sentence is the useful runtime error. pi appends local help paths
+/// after a blank line for interactive CLI users; forwarding that tail would
+/// expose a device path without helping a gateway user resolve the failure.
+fn gateway_turn_failure_notice(error: &CoreError) -> String {
+    let rendered = error.to_string();
+    let detail = rendered
+        .strip_prefix("turn: ")
+        .unwrap_or(&rendered)
+        .split_once("\n\n")
+        .map(|(head, _)| head)
+        .unwrap_or_else(|| rendered.strip_prefix("turn: ").unwrap_or(&rendered));
+    teamclu_gateway::i18n::t(
+        teamclu_gateway::i18n::MsgKey::TurnFailed(detail),
+        teamclu_gateway::i18n::locale(),
+    )
 }
 
 /// Shape the turn's result for one channel.

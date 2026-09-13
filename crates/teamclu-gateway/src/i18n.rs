@@ -107,6 +107,10 @@ pub enum MsgKey<'a> {
 
     // === Error fallback ===
     ModelEmptyResponse,
+    /// A runtime turn failed before it produced a reply. The detail is the
+    /// daemon's user-actionable cause (for example, a missing model key), not
+    /// a generic transport status.
+    TurnFailed(&'a str),
 
     // === Unknown command ===
     UnknownCommand(&'a str),
@@ -322,6 +326,9 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
         // === Error fallback ===
         (ModelEmptyResponse, En) => "The model returned no text content. Please try again or rephrase.".into(),
         (ModelEmptyResponse, ZhCN) => "模型未返回文字内容，请稍后重试或换种说法。".into(),
+
+        (TurnFailed(detail), En) => format!("Request failed: {detail}"),
+        (TurnFailed(detail), ZhCN) => format!("请求失败：{detail}"),
 
         // === Unknown command ===
         (UnknownCommand(cmd), En) => format!("Unknown command: {}\nType /help for available commands.", cmd),
