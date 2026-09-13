@@ -1,15 +1,16 @@
-//! `{"cmd":"app-git-credential","appId":...}` — mint a JIT Gitea deploy key.
+//! `{"cmd":"app-git-credential","appId":...}` — the credential for an app's repo.
 //!
-//! Asked for by `amuxd git-ssh`, the `core.sshCommand` shim git runs for every
-//! ssh connection it opens inside an app checkout. The daemon is the only
-//! process on the machine holding a cloud identity, so it is the one that can
-//! ask; the shim itself carries no credential of any kind.
+//! Asked for by the two helpers git runs inside an app checkout: `amuxd git-ssh`
+//! (`core.sshCommand`, a JIT Gitea deploy key) and `amuxd git-credential`
+//! (`credential.helper`, the token stored for an imported http(s) repo). The
+//! daemon is the only process on the machine holding a cloud identity, so it is
+//! the one that can ask; the helpers themselves carry no credential of any kind.
 //!
 //! Reply shape mirrors the other JSON sock commands:
-//! `{"ok":true,"result":{"remoteUrl":…,"privateKeyPem":…}}` or
+//! `{"ok":true,"result":{"remoteUrl":…,"authKind":…,…}}` or
 //! `{"ok":false,"error":"…"}`. The error string is written to the agent's
-//! stderr by the shim, so it has to read as a reason a human can act on — an
-//! `ssh` failure alone looks like a network problem.
+//! stderr by the helper, so it has to read as a reason a human can act on — an
+//! `ssh` or HTTP 401 failure alone looks like a network or forge problem.
 
 use std::sync::Arc;
 
@@ -70,8 +71,11 @@ async fn app_git_credential_reply(backend: Arc<dyn Backend>, payload: &Value) ->
             "ok": true,
             "result": {
                 "remoteUrl": cred.remote_url,
+                "authKind": cred.auth_kind,
                 "privateKeyPem": cred.private_key_pem,
                 "deployKeyId": cred.deploy_key_id,
+                "username": cred.username,
+                "token": cred.token,
             },
         })
         .to_string(),

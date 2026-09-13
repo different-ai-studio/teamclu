@@ -108,13 +108,23 @@ export function makeGiteaClient(opts: GiteaClientOptions) {
       return { cloneUrl: data.clone_url, sshUrl: data.ssh_url };
     },
 
-    async createDeployKey(appId: string, title: string, key: string): Promise<{ id: number }> {
+    /**
+     * Register a deploy key on the app repo. Write access unless `readOnly`: a
+     * key handed out only so someone can download the code must not also be
+     * able to push to it.
+     */
+    async createDeployKey(
+      appId: string,
+      title: string,
+      key: string,
+      { readOnly = false }: { readOnly?: boolean } = {},
+    ): Promise<{ id: number }> {
       const repo = appRepoName(appId);
       const res = await giteaFetch(
         `/api/v1/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(repo)}/keys`,
         {
           method: "POST",
-          body: JSON.stringify({ title, key, read_only: false }),
+          body: JSON.stringify({ title, key, read_only: readOnly }),
         },
       );
       const data = (await res.json()) as { id?: number };

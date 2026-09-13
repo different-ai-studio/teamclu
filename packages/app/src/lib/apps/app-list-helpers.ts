@@ -71,3 +71,13 @@ export function appGitKind(
   }
   return { kind: 'local', key: 'apps.gitLocal', fallback: '仅本机' }
 }
+
+/**
+ * Whether the app's admin stored a token for its imported http(s) repo.
+ *
+ * Such an app is still `remote` to `appGitKind` and still deploys its local
+ * folder; the token is what lets another machine clone it and an agent pull.
+ */
+export function usesStoredHttpsCredential(app: Pick<AppRow, 'gitAuthKind'>): boolean {
+  return app.gitAuthKind === 'https_token'
+}

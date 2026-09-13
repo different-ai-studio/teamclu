@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   finalizeDeploy: vi.fn(),
   getGitCredential: vi.fn(),
   revokeGitCredential: vi.fn(),
+  setGitHttpsCredential: vi.fn(),
+  clearGitHttpsCredential: vi.fn(),
   getGitHead: vi.fn(),
   setAppType: vi.fn(),
   seedDaemonApp: vi.fn(),
@@ -45,6 +47,8 @@ vi.mock("@/lib/backend", () => ({
       finalizeDeploy: mocks.finalizeDeploy,
       getGitCredential: mocks.getGitCredential,
       revokeGitCredential: mocks.revokeGitCredential,
+      setGitHttpsCredential: mocks.setGitHttpsCredential,
+      clearGitHttpsCredential: mocks.clearGitHttpsCredential,
       getGitHead: mocks.getGitHead,
       setAppType: mocks.setAppType,
     },
@@ -1232,5 +1236,191 @@ describe("mapDeployErrorReason", () => {
     expect(mapDeployErrorReason("amuxd daemon is not connected")).toContain("未连接");
     expect(mapDeployErrorReason("Cannot reach amuxd daemon at http://127.0.0.1:1234"))
       .toContain("未连接");
+  });
+});
+
+describe("apps-store: private repo credentials", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mocks.seedDaemonApp.mockResolvedValue(seedResult("unreachable"));
+    mocks.cloneDaemonApp.mockResolvedValue(seedResult("unreachable"));
+    mocks.daemonAppWorkdir.mockResolvedValue({
+      workdir: "/home/.amuxd/teams/team-1/apps/app-1",
+      deviceName: "test-host",
+    });
+    mocks.workdirExists.mockResolvedValue(false);
+    mocks.readDir.mockResolvedValue([]);
+    mocks.deleteApp.mockResolvedValue(true);
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({
+      items: [],
+      loaded: false,
+      loadedKey: null,
+      loading: false,
+      error: null,
+      teamId: null,
+    });
+  });
+
+  it("create: a private https import stores its token first, then clones with it", async () => {
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+    );
+    mocks.setGitHttpsCredential.mockResolvedValueOnce(
+      appRow({
+        provisionStatus: "pending",
+        gitRemoteUrl: "https://github.com/owner/private.git",
+        gitAuthKind: "https_token",
+      }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
+    mocks.seedDaemonApp.mockResolvedValueOnce(seedResult("seeded"));
+    const { useAppsStore } = await import("./apps-store");
+    await useAppsStore.getState().create({
+      teamId: "team-1",
+      name: "N",
+      type: "imported",
+      visibility: "team",
+      gitRemoteUrl: "https://github.com/owner/private.git",
+      gitCredential: { username: "me", token: "ghp_abc" },
+    });
+    expect(mocks.createApp.mock.calls[0][0]).not.toHaveProperty("gitCredential");
+    expect(mocks.setGitHttpsCredential).toHaveBeenCalledWith("app-1", { username: "me", token: "ghp_abc" });
+    expect(mocks.setGitHttpsCredential.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.seedDaemonApp.mock.invocationCallOrder[0],
+    );
+    expect(mocks.seedDaemonApp.mock.calls.at(-1)?.[7]).toEqual({ username: "me", token: "ghp_abc" });
+    // The token typed a moment ago is the one used, not read back from the cloud.
+    expect(mocks.getGitCredential).not.toHaveBeenCalled();
+  });
+
+  it("create: a token that cannot be stored drops the app before any clone", async () => {
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ id: "app-tok", provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+    );
+    mocks.setGitHttpsCredential.mockRejectedValueOnce(new Error("app secrets not configured"));
+    const { useAppsStore } = await import("./apps-store");
+    await expect(
+      useAppsStore.getState().create({
+        teamId: "team-1",
+        name: "N",
+        type: "imported",
+        visibility: "team",
+        gitRemoteUrl: "https://github.com/owner/private.git",
+        gitCredential: { username: "", token: "ghp_abc" },
+      }),
+    ).rejects.toThrow(/app secrets not configured/);
+    expect(mocks.deleteApp).toHaveBeenCalledWith("app-tok");
+    expect(mocks.seedDaemonApp).not.toHaveBeenCalled();
+    expect(useAppsStore.getState().items.some((a) => a.id === "app-tok")).toBe(false);
+  });
+
+  it("create: a clone refused for want of a login says the repo needs one", async () => {
+    mocks.createApp.mockResolvedValueOnce(
+      appRow({ id: "app-auth", provisionStatus: "pending", gitRemoteUrl: "https://github.com/owner/private.git" }),
+    );
+    mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) =>
+      appRow({ id: "app-auth", provisionStatus: st }),
+    );
+    mocks.seedDaemonApp.mockResolvedValueOnce(
+      seedResult("failed", {
+        error:
+          "git clone failed: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    await expect(
+      useAppsStore.getState().create({
+        teamId: "team-1",
+        name: "N",
+        type: "imported",
+        visibility: "team",
+        gitRemoteUrl: "https://github.com/owner/private.git",
+      }),
+    ).rejects.toThrow(/需要登录/);
+  });
+
+  it("download: an import with a stored token clones with it", async () => {
+    mocks.getGitCredential.mockResolvedValueOnce({
+      remoteUrl: "https://github.com/owner/private.git",
+      authKind: "https_token",
+      username: "me",
+      token: "tok",
+    });
+    mocks.cloneDaemonApp.mockResolvedValueOnce(seedResult("seeded", { workdir: "/w/app-1" }));
+    const { ensureAppCheckout } = await import("./apps-store");
+    const workdir = await ensureAppCheckout(
+      appRow({
+        provisionStatus: "ready",
+        gitRemoteUrl: "https://github.com/owner/private.git",
+        gitAuthKind: "https_token",
+      }),
+    );
+    expect(workdir).toBe("/w/app-1");
+    expect(mocks.cloneDaemonApp).toHaveBeenCalledWith(
+      "app-1",
+      "team-1",
+      "https://github.com/owner/private.git",
+      null,
+      { username: "me", token: "tok" },
+    );
+    expect(mocks.revokeGitCredential).not.toHaveBeenCalled();
+  });
+
+  it("download: an import with no stored token never asks for one", async () => {
+    mocks.cloneDaemonApp.mockResolvedValueOnce(seedResult("seeded", { workdir: "/w/app-1" }));
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(
+      appRow({ provisionStatus: "ready", gitRemoteUrl: "https://github.com/owner/public.git" }),
+    );
+    expect(mocks.getGitCredential).not.toHaveBeenCalled();
+    expect(mocks.cloneDaemonApp).toHaveBeenCalledWith(
+      "app-1",
+      "team-1",
+      "https://github.com/owner/public.git",
+      null,
+    );
+  });
+
+  it("saveGitCredential: a 404 is explained as the admin rule", async () => {
+    mocks.setGitHttpsCredential.mockRejectedValueOnce(
+      Object.assign(new Error("app not found"), { status: 404 }),
+    );
+    const { useAppsStore } = await import("./apps-store");
+    expect(await useAppsStore.getState().saveGitCredential("app-1", { token: "t" })).toBe(false);
+    expect(JSON.stringify(mocks.toastError.mock.calls)).toContain("管理员");
+  });
+
+  it("download: an import whose first clone failed can still be downloaded, and becomes ready", async () => {
+    // Its status only says the creator's clone failed; the repository is there.
+    mocks.cloneDaemonApp.mockResolvedValueOnce(seedResult("seeded", { workdir: "/w/app-1" }));
+    mocks.updateAppProvisionStatus.mockResolvedValueOnce(
+      appRow({ provisionStatus: "ready", gitRemoteUrl: "https://github.com/owner/site.git" }),
+    );
+    const { ensureAppCheckout } = await import("./apps-store");
+    const workdir = await ensureAppCheckout(
+      appRow({ provisionStatus: "error", gitRemoteUrl: "https://github.com/owner/site.git" }),
+      { surfaceErrors: true },
+    );
+    expect(workdir).toBe("/w/app-1");
+    expect(mocks.cloneDaemonApp).toHaveBeenCalled();
+    expect(mocks.updateAppProvisionStatus).toHaveBeenCalledWith("app-1", "ready");
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("download: a hosted app that was never seeded is still refused", async () => {
+    // Its repository would clone empty.
+    const { ensureAppCheckout } = await import("./apps-store");
+    const workdir = await ensureAppCheckout(
+      appRow({
+        provisionStatus: "error",
+        gitRemoteUrl: "git@gitea:team/app-1.git",
+        gitAuthKind: "gitea_deploy_key",
+      }),
+      { surfaceErrors: true },
+    );
+    expect(workdir).toBeNull();
+    expect(mocks.cloneDaemonApp).not.toHaveBeenCalled();
+    expect(JSON.stringify(mocks.toastError.mock.calls)).toContain("尚未就绪");
   });
 });

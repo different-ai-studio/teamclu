@@ -2,6 +2,7 @@ pub mod channel;
 pub mod clear;
 pub mod config_cmd;
 pub mod doctor;
+pub mod git_credential;
 pub mod git_ssh;
 pub mod manage;
 pub mod process;
@@ -112,6 +113,11 @@ pub enum Commands {
     /// seed/clone; fetches a JIT Gitea deploy key from the daemon per
     /// connection so an agent's plain `git push` works with nothing persisted.
     GitSsh(GitSshArgs),
+    /// The credential helper git runs inside an app checkout reached over
+    /// http(s). Set as `credential.helper` by clone; answers git's `get` with
+    /// the token stored for the app, so an agent's plain `git pull` works with
+    /// nothing persisted.
+    GitCredential(GitCredentialArgs),
 }
 
 #[derive(Args, Debug)]
@@ -214,6 +220,17 @@ pub struct GitSshArgs {
     /// parsed as ours.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct GitCredentialArgs {
+    /// App whose repo git is asking about. Baked into `credential.helper`.
+    #[arg(long)]
+    pub app: String,
+    #[arg(long)]
+    pub sock: Option<std::path::PathBuf>,
+    /// `get`, `store` or `erase` — appended by git.
+    pub operation: String,
 }
 
 #[derive(Args, Debug)]

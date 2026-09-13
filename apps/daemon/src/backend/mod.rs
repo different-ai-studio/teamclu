@@ -137,22 +137,49 @@ pub struct TeamSkillDownload {
     pub size: u64,
 }
 
-/// A just-in-time Gitea deploy key for one app's repo
-/// (`GET /v1/apps/:id/git-credential`).
+/// The credential for one app's repo (`GET /v1/apps/:id/git-credential`), in
+/// one of the two shapes `auth_kind` names.
 ///
-/// Minted per request and never persisted: the daemon writes the PEM to a
-/// `0600` temp file for the length of one `ssh` invocation and deletes it. The
-/// cloud advertises a ~15 minute lifetime and revokes the public half on a
-/// later sweep, so a key held past its use is worthless rather than dangerous.
-#[derive(Debug, Clone, serde::Deserialize)]
+/// - `deploy_key` — a just-in-time Gitea deploy key. Minted per request and
+///   never persisted: the daemon writes the PEM to a `0600` temp file for the
+///   length of one `ssh` invocation and deletes it. The cloud advertises a ~15
+///   minute lifetime and revokes the public half on a later sweep, so a key
+///   held past its use is worthless rather than dangerous.
+/// - `https_token` — the token an app's admin stored for a repo imported from
+///   someone else's forge. Handed to `amuxd git-credential` on stdout and
+///   written nowhere.
+#[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppGitCredential {
     pub remote_url: String,
+    /// `deploy_key` or `https_token`.
+    #[serde(default)]
+    pub auth_kind: Option<String>,
+    /// The deploy key. Empty for `https_token`.
+    #[serde(default)]
     pub private_key_pem: String,
     /// Gitea's id for the registered public half, so the holder can hand the
     /// key back the moment it is done (see `Backend::revoke_app_git_credential`).
     #[serde(default)]
     pub deploy_key_id: Option<i64>,
+    /// Set for `https_token`.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Set for `https_token`.
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+/// Written by hand so neither secret can reach a log through `{:?}`.
+impl std::fmt::Debug for AppGitCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppGitCredential")
+            .field("remote_url", &self.remote_url)
+            .field("auth_kind", &self.auth_kind)
+            .field("deploy_key_id", &self.deploy_key_id)
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The team's managed (shared) LLM, as sourced from

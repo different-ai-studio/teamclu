@@ -59,11 +59,42 @@ fn is_empty_dir(dir: &Path) -> bool {
 /// password prompt no one can see — hence `GIT_TERMINAL_PROMPT=0` and ssh's
 /// `BatchMode`, and the time limit in [`run_clone`] for the prompts those two
 /// cannot reach.
-pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<CloneOutcome> {
+///
+/// An http(s) clone runs with `amuxd git-credential` as its credential helper,
+/// and the checkout keeps that helper for every later fetch. With `https` — a
+/// token the desktop read from the app, or one typed on the create form a
+/// moment ago — the helper answers from the clone's environment, and every
+/// other helper is switched off for this one command, so a stale keychain
+/// entry for the same host cannot be tried first and fail. Without it the
+/// machine's own helpers run as before, and ours asks the cloud last.
+pub fn clone_app_repo(
+    url: &str,
+    app_id: &str,
+    workdir: &Path,
+    https: Option<&app_git::HttpsCredential>,
+) -> anyhow::Result<CloneOutcome> {
     let url = app_git::validate_remote_url(url)?;
     if !is_empty_dir(workdir) {
         return Ok(CloneOutcome::AlreadyPresent);
     }
+    // Resolved before anything touches the disk: a clone that was handed a
+    // token and cannot pass it on would only fail later, with a worse reason.
+    let helper = if app_git::is_http_remote(&url) {
+        match app_git::credential_helper_command(app_id) {
+            Ok(command) => Some(CloneHelper {
+                command,
+                remote: &url,
+                https,
+            }),
+            Err(e) if https.is_some() => return Err(e),
+            Err(e) => {
+                tracing::warn!(app_id, error = %e, "cloning without the git-credential helper");
+                None
+            }
+        }
+    } else {
+        None
+    };
     if let Some(parent) = workdir.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -71,8 +102,24 @@ pub fn clone_app_repo(url: &str, workdir: &Path) -> anyhow::Result<CloneOutcome>
     // empty, but leaving it behind on failure would make the next attempt look
     // like a half-finished checkout.
     let _ = std::fs::remove_dir(workdir);
-    run_clone(&url, workdir, None)?;
+    run_clone(&url, workdir, None, helper.as_ref())?;
+    if helper.is_some() {
+        // The clone's helper lived on its command line and ended with it.
+        // Best-effort, like `set_repo_ssh_command`: the clone is done, and a
+        // later `git pull` without it fails with git's own reason.
+        if let Err(e) = app_git::set_repo_credential_helper(workdir, app_id, https.is_some()) {
+            tracing::warn!(app_id, error = %e, "could not point the clone at git-credential");
+        }
+    }
     Ok(CloneOutcome::Cloned)
+}
+
+/// The credential helper one http(s) clone runs with. See [`clone_app_repo`].
+struct CloneHelper<'a> {
+    /// The `credential.helper` value, from [`app_git::credential_helper_command`].
+    command: String,
+    remote: &'a str,
+    https: Option<&'a app_git::HttpsCredential>,
 }
 
 /// Clone `url` into `workdir` using a Gitea deploy key (on-demand checkout for
@@ -95,7 +142,7 @@ pub fn clone_app_repo_with_deploy_key(
     }
     let _ = std::fs::remove_dir(workdir);
     let ssh = app_git::SshEnv::from_deploy_key_pem(deploy_key_pem)?;
-    run_clone(&url, workdir, Some(&ssh))?;
+    run_clone(&url, workdir, Some(&ssh), None)?;
     // Same identity the seed path writes. Without it a collaborator's checkout
     // has no repo-local `user.name` / `user.email`, so their commits either
     // take that machine's global git config or fail outright with "Please tell
@@ -114,11 +161,28 @@ pub fn clone_app_repo_with_deploy_key(
 /// `git clone <remote> <workdir>`, with the environment that keeps it
 /// non-interactive. Split out so tests can drive a real clone from a local
 /// path — which [`validate_remote_url`] rejects, by design.
-fn run_clone(remote: &str, workdir: &Path, ssh: Option<&app_git::SshEnv>) -> anyhow::Result<()> {
+fn run_clone(
+    remote: &str,
+    workdir: &Path,
+    ssh: Option<&app_git::SshEnv>,
+    helper: Option<&CloneHelper<'_>>,
+) -> anyhow::Result<()> {
     let git = crate::runtime::well_known_bin::resolve_binary("git", None, &[]);
     let mut cmd = Command::new(&git);
-    cmd.no_window()
-        .arg("clone")
+    cmd.no_window();
+    if let Some(helper) = helper {
+        if let Some(https) = helper.https {
+            // An empty value clears every helper configured before it — the
+            // system's, the user's, the keychain — for this one command.
+            cmd.arg("-c").arg("credential.helper=");
+            cmd.env(app_git::ENV_GIT_HTTPS_REMOTE, helper.remote)
+                .env(app_git::ENV_GIT_HTTPS_USERNAME, &https.username)
+                .env(app_git::ENV_GIT_HTTPS_TOKEN, &https.token);
+        }
+        cmd.arg("-c")
+            .arg(format!("credential.helper={}", helper.command));
+    }
+    cmd.arg("clone")
         .arg("--")
         .arg(remote)
         .arg(workdir)
@@ -191,7 +255,7 @@ mod tests {
         std::fs::write(work.join("index.html"), b"the agent wrote this").unwrap();
 
         assert_eq!(
-            clone_app_repo("https://example.com/repo.git", &work).unwrap(),
+            clone_app_repo("https://example.com/repo.git", "app-1", &work, None).unwrap(),
             CloneOutcome::AlreadyPresent
         );
         // The existing file is still there, and `git` was not run.
@@ -238,10 +302,39 @@ mod tests {
             return;
         };
         let work = tmp.path().join("app");
-        run_clone(&origin.to_string_lossy(), &work, None).unwrap();
+        run_clone(&origin.to_string_lossy(), &work, None, None).unwrap();
 
         assert!(work.join("README.md").is_file());
         assert!(work.join(".git").exists(), "history comes with it");
+    }
+
+    #[test]
+    fn a_clone_with_a_credential_leaves_it_out_of_the_checkout() {
+        // The token reaches git through the helper's environment for this one
+        // command. Nothing the checkout keeps may carry it.
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(origin) = local_origin(tmp.path()) else {
+            eprintln!("git not usable here; skipping");
+            return;
+        };
+        let work = tmp.path().join("app");
+        let https = app_git::HttpsCredential::new(Some("me"), "tok-do-not-persist").unwrap();
+        let helper = CloneHelper {
+            command: "!true".to_string(),
+            remote: "https://example.com/o/r.git",
+            https: Some(&https),
+        };
+        run_clone(&origin.to_string_lossy(), &work, None, Some(&helper)).unwrap();
+
+        let config = std::fs::read_to_string(work.join(".git").join("config")).unwrap();
+        assert!(
+            !config.contains("tok-do-not-persist"),
+            "token leaked into .git/config"
+        );
+        assert!(
+            !config.contains("credential"),
+            "the clone's -c helper is not persisted by git"
+        );
     }
 
     #[test]
@@ -249,7 +342,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("no-such-repo");
         let work = tmp.path().join("app");
-        let err = run_clone(&missing.to_string_lossy(), &work, None)
+        let err = run_clone(&missing.to_string_lossy(), &work, None, None)
             .expect_err("cloning a repo that is not there must fail");
         let msg = format!("{err}");
         if msg.contains("could not run git") {

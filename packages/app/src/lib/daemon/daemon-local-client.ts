@@ -931,11 +931,31 @@ function resolveSeedGitUserIdentity(): { gitUserName?: string; gitUserEmail?: st
   }
 }
 
+/** A token for an http(s) repo, handed to the daemon for one clone. */
+export interface DaemonGitHttpsCredential {
+  username?: string | null
+  token: string
+}
+
+/**
+ * The seed body's credential fields. The daemon passes them to git through the
+ * clone's credential helper and writes neither into the checkout.
+ */
+function httpsCredentialBody(
+  credential: DaemonGitHttpsCredential | null | undefined,
+): { gitHttpsToken?: string; gitHttpsUsername?: string } {
+  const token = credential?.token?.trim()
+  if (!token) return {}
+  const username = credential?.username?.trim()
+  return { gitHttpsToken: token, ...(username ? { gitHttpsUsername: username } : {}) }
+}
+
 export async function cloneDaemonApp(
   appId: string,
   teamId: string,
   gitRemoteUrl: string,
   deployKeyPem?: string | null,
+  httpsCredential?: DaemonGitHttpsCredential | null,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -946,6 +966,7 @@ export async function cloneDaemonApp(
         gitRemoteUrl: gitRemoteUrl.trim(),
         cloneOnly: true,
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
+        ...httpsCredentialBody(httpsCredential),
         ...resolveSeedGitUserIdentity(),
       }),
     })
@@ -979,6 +1000,8 @@ export async function seedDaemonApp(
    * is the one thing that must not happen.
    */
   adoptExisting?: boolean,
+  /** The token for an http(s) `gitRemoteUrl` that needs a login. */
+  httpsCredential?: DaemonGitHttpsCredential | null,
 ): Promise<SeedAppResult> {
   try {
     const result = await daemonFetch<{ status: string; workdir?: string }>('/v1/apps/seed', {
@@ -991,6 +1014,7 @@ export async function seedDaemonApp(
         ...(gitRemoteUrl?.trim() ? { gitRemoteUrl: gitRemoteUrl.trim() } : {}),
         ...(deployKeyPem?.trim() ? { deployKeyPem: deployKeyPem.trim() } : {}),
         ...(adoptExisting ? { adoptExisting: true } : {}),
+        ...httpsCredentialBody(httpsCredential),
         ...resolveSeedGitUserIdentity(),
       }),
     })

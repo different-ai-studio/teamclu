@@ -338,20 +338,30 @@ export async function revokeActorDeployKeys(
   return removed;
 }
 
-/** Sweep expired keys, then register a fresh one and return its private half. */
+/**
+ * Sweep expired keys, then register a fresh one and return its private half.
+ * A `readOnly` key can clone and fetch but not push.
+ */
 export async function issueJitDeployKey(
   gitea: GiteaClient,
   appId: string,
   actorId: string,
   now = Date.now(),
-): Promise<{ privateKeyPem: string; deployKeyId: number; expiresAt: string }> {
+  { readOnly = false }: { readOnly?: boolean } = {},
+): Promise<{ privateKeyPem: string; deployKeyId: number; expiresAt: string; readOnly: boolean }> {
   await sweepExpiredDeployKeys(gitea, appId, now);
   const { publicKeyOpenSSH, privateKeyPem } = generateDeployKeyPair();
-  const { id } = await gitea.createDeployKey(appId, jitDeployKeyTitle(actorId, now), publicKeyOpenSSH);
+  const { id } = await gitea.createDeployKey(
+    appId,
+    jitDeployKeyTitle(actorId, now),
+    publicKeyOpenSSH,
+    { readOnly },
+  );
   return {
     privateKeyPem,
     deployKeyId: id,
     expiresAt: new Date(now + JIT_DEPLOY_KEY_TTL_MS).toISOString(),
+    readOnly,
   };
 }
 

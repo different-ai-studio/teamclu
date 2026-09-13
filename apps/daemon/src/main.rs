@@ -258,6 +258,14 @@ fn main() -> anyhow::Result<()> {
             // 1 that git reports as an unrelated failure.
             std::process::exit(cli::git_ssh::run(&sock, &args.app, &args.args));
         }
+        Commands::GitCredential(args) => {
+            let sock = args
+                .sock
+                .clone()
+                .unwrap_or_else(config::DaemonConfig::sock_path);
+            // stdout is git's to read, so nothing else may print there.
+            std::process::exit(cli::git_credential::run(&sock, &args.app, &args.operation));
+        }
         Commands::TestClient { config, action } => {
             tracing_subscriber::fmt()
                 .with_env_filter(

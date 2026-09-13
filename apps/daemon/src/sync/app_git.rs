@@ -384,6 +384,163 @@ pub fn set_repo_ssh_command(dir: &Path, app_id: &str) -> anyhow::Result<()> {
     ensure_success(&out, "git config ssh.variant")
 }
 
+/// `authKind` the cloud gives a token stored for an imported http(s) repo.
+pub const HTTPS_TOKEN_AUTH_KIND: &str = "https_token";
+
+/// Username sent when none was given. The cloud applies the same default, so a
+/// token typed on the create form and the stored copy authenticate identically.
+pub const DEFAULT_GIT_HTTPS_USERNAME: &str = "x-access-token";
+
+/// Environment the daemon's own clone hands `amuxd git-credential`: the
+/// credential the desktop passed in, and the repo it belongs to.
+pub const ENV_GIT_HTTPS_REMOTE: &str = "AMUXD_GIT_HTTPS_REMOTE";
+pub const ENV_GIT_HTTPS_USERNAME: &str = "AMUXD_GIT_HTTPS_USERNAME";
+pub const ENV_GIT_HTTPS_TOKEN: &str = "AMUXD_GIT_HTTPS_TOKEN";
+
+/// A username and token for an http(s) remote, as handed to one clone.
+#[derive(Clone)]
+pub struct HttpsCredential {
+    pub username: String,
+    pub token: String,
+}
+
+impl std::fmt::Debug for HttpsCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpsCredential")
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HttpsCredential {
+    /// Blank username → [`DEFAULT_GIT_HTTPS_USERNAME`]. Refuses what git's
+    /// line-based credential protocol cannot carry.
+    pub fn new(username: Option<&str>, token: &str) -> anyhow::Result<Self> {
+        let token = token.trim();
+        if token.is_empty() {
+            anyhow::bail!("git credential token must not be empty");
+        }
+        let username = username
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .unwrap_or(DEFAULT_GIT_HTTPS_USERNAME);
+        if [username, token]
+            .iter()
+            .any(|v| v.contains(['\n', '\r', '\0']))
+        {
+            anyhow::bail!("git credential must not contain newlines or NUL");
+        }
+        Ok(Self {
+            username: username.to_string(),
+            token: token.to_string(),
+        })
+    }
+}
+
+/// `(scheme, host[:port])` of an http(s) remote — lowercased, without userinfo —
+/// which are the two attributes git's credential protocol names a request by.
+/// None for any other kind of address.
+pub fn http_remote_authority(url: &str) -> Option<(String, String)> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if host.is_empty() {
+        return None;
+    }
+    Some((scheme, host.to_ascii_lowercase()))
+}
+
+/// Whether `url` is reached over http(s), where a credential helper applies.
+pub fn is_http_remote(url: &str) -> bool {
+    http_remote_authority(url).is_some()
+}
+
+/// What marks a `credential.helper` entry as ours.
+const CREDENTIAL_HELPER_MARKER: &str = " git-credential --app ";
+
+/// The `credential.helper` value that runs `amuxd git-credential` for this app.
+///
+/// The leading `!` makes git run it through the shell as written. Without it
+/// git decides by the first character, and a quoted path — which any amuxd
+/// under "Application Support" is — does not look absolute to git, so it
+/// prepends `git credential-` and runs a command that does not exist.
+pub fn credential_helper_command(app_id: &str) -> anyhow::Result<String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("could not resolve the amuxd binary: {e}"))?;
+    Ok(format!(
+        "!{}{}{}",
+        shell_quote(&exe.to_string_lossy()),
+        CREDENTIAL_HELPER_MARKER,
+        shell_quote(app_id)
+    ))
+}
+
+/// Point the checkout's git at `amuxd git-credential`, so an agent's own
+/// `git pull` / `git push` over http(s) gets the app's stored token.
+///
+/// `exclusive` writes an empty `credential.helper` first, which git reads as
+/// "forget every helper configured before this one" — for this repo only. Set
+/// when the app has a stored token: otherwise a stale keychain entry for the
+/// same host is tried first, fails, and git gives up before it reaches ours.
+/// Left off when there is none, so a repo that authenticates through the
+/// machine's own helper keeps doing so and ours is asked last.
+///
+/// Repo-local, and best-effort for the reasons [`set_repo_ssh_command`] gives.
+pub fn set_repo_credential_helper(dir: &Path, app_id: &str, exclusive: bool) -> anyhow::Result<()> {
+    let helper = credential_helper_command(app_id)?;
+    let out = run_git_config_write(
+        dir,
+        None,
+        &["config", "--local", "--unset-all", "credential.helper"],
+    )?;
+    // Exit 5 is "there was nothing to unset".
+    if out.status.code() != Some(5) {
+        ensure_success(&out, "git config --unset-all credential.helper")?;
+    }
+    if exclusive {
+        let out = run_git_config_write(
+            dir,
+            None,
+            &["config", "--local", "--add", "credential.helper", ""],
+        )?;
+        ensure_success(&out, "git config credential.helper")?;
+    }
+    let out = run_git_config_write(
+        dir,
+        None,
+        &["config", "--local", "--add", "credential.helper", &helper],
+    )?;
+    ensure_success(&out, "git config credential.helper")
+}
+
+/// Re-point an existing `amuxd git-credential` entry at the current binary,
+/// keeping whether it was exclusive. A checkout without one is left alone.
+///
+/// Returns whether anything was rewritten.
+pub fn refresh_repo_credential_helper(dir: &Path, app_id: &str) -> anyhow::Result<bool> {
+    let out = run_git(
+        dir,
+        None,
+        &["config", "--local", "--get-all", "credential.helper"],
+    )?;
+    if !out.status.success() {
+        return Ok(false);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let entries: Vec<&str> = stdout.lines().collect();
+    if !entries.iter().any(|e| e.contains(CREDENTIAL_HELPER_MARKER)) {
+        return Ok(false);
+    }
+    let exclusive = entries.iter().any(|e| e.trim().is_empty());
+    set_repo_credential_helper(dir, app_id, exclusive)?;
+    Ok(true)
+}
+
 /// Create a commit when there are staged changes; no-op when the tree is clean.
 ///
 /// Expects repo-local identity to already be set (see [`set_repo_user_identity`]).
@@ -1547,5 +1704,106 @@ mod tests {
         assert!(validate_branch_name("a..b").is_err());
         assert!(validate_branch_name("").is_err());
         assert!(validate_branch_name("bad name").is_err());
+    }
+
+    #[test]
+    fn reads_the_scheme_and_host_git_names_a_request_by() {
+        let pair = |s: &str, h: &str| Some((s.to_string(), h.to_string()));
+        assert_eq!(
+            http_remote_authority("https://GitHub.com/o/r.git"),
+            pair("https", "github.com")
+        );
+        assert_eq!(
+            http_remote_authority("http://me:tok@git.internal:8443/o/r"),
+            pair("http", "git.internal:8443")
+        );
+        assert_eq!(
+            http_remote_authority("https://example.com"),
+            pair("https", "example.com")
+        );
+        assert_eq!(http_remote_authority("git@github.com:o/r.git"), None);
+        assert_eq!(http_remote_authority("ssh://git@github.com/o/r.git"), None);
+        assert_eq!(http_remote_authority("https:///o/r"), None);
+    }
+
+    #[test]
+    fn an_https_credential_defaults_its_username_and_refuses_line_breaks() {
+        let credential = HttpsCredential::new(None, " secret-value ").unwrap();
+        assert_eq!(credential.username, DEFAULT_GIT_HTTPS_USERNAME);
+        assert_eq!(credential.token, "secret-value");
+        assert_eq!(
+            HttpsCredential::new(Some(" me "), "t").unwrap().username,
+            "me"
+        );
+        assert!(HttpsCredential::new(None, "  ").is_err());
+        assert!(HttpsCredential::new(None, "a\nb").is_err());
+        assert!(HttpsCredential::new(Some("a\rb"), "t").is_err());
+        assert!(
+            !format!("{credential:?}").contains("secret-value"),
+            "Debug must not print the token"
+        );
+    }
+
+    fn credential_helpers(dir: &Path) -> Vec<String> {
+        let out = run_git(
+            dir,
+            None,
+            &["config", "--local", "--get-all", "credential.helper"],
+        )
+        .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_credential_helper_is_stamped_once_and_refresh_keeps_its_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        init_if_needed(&work).unwrap();
+
+        set_repo_credential_helper(&work, "app-42", true).unwrap();
+        // Stamping again replaces rather than piling up entries.
+        set_repo_credential_helper(&work, "app-42", true).unwrap();
+        let exclusive = credential_helpers(&work);
+        assert_eq!(exclusive.len(), 2, "got {exclusive:?}");
+        assert_eq!(
+            exclusive[0], "",
+            "exclusive starts by clearing inherited helpers"
+        );
+        assert!(
+            exclusive[1].starts_with('!') && exclusive[1].contains("git-credential --app app-42"),
+            "got {exclusive:?}"
+        );
+        assert!(refresh_repo_credential_helper(&work, "app-42").unwrap());
+        assert_eq!(credential_helpers(&work), exclusive);
+
+        set_repo_credential_helper(&work, "app-42", false).unwrap();
+        assert_eq!(credential_helpers(&work).len(), 1);
+        assert!(refresh_repo_credential_helper(&work, "app-42").unwrap());
+        assert_eq!(
+            credential_helpers(&work).len(),
+            1,
+            "refresh must not add the reset"
+        );
+    }
+
+    #[test]
+    fn refresh_leaves_a_checkout_without_our_helper_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        init_if_needed(&work).unwrap();
+        assert!(!refresh_repo_credential_helper(&work, "app-42").unwrap());
+
+        let out = run_git(
+            &work,
+            None,
+            &["config", "--local", "credential.helper", "osxkeychain"],
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert!(!refresh_repo_credential_helper(&work, "app-42").unwrap());
+        assert_eq!(credential_helpers(&work), vec!["osxkeychain".to_string()]);
     }
 }

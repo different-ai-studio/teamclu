@@ -137,6 +137,11 @@ pub fn refresh_app_ssh_commands() {
                     tracing::debug!(app_id, error = %e, "apps: could not stamp core.sshCommand")
                 }
             }
+            // The http(s) helper bakes in the same amuxd path. Only a checkout
+            // that already has one is rewritten.
+            if let Err(e) = crate::sync::app_git::refresh_repo_credential_helper(&dir, &app_id) {
+                tracing::debug!(app_id, error = %e, "apps: could not refresh credential.helper");
+            }
         }
     }
     if refreshed > 0 {
@@ -248,6 +253,14 @@ pub struct SeedAppBody {
     /// `gitRemoteUrl` on the Gitea seed path; optional for import-only clone.
     #[serde(default)]
     pub deploy_key_pem: Option<String>,
+    /// Username for an http(s) `gitRemoteUrl` that needs a login — a private
+    /// imported repo. Ignored without `gitHttpsToken`, and on the Gitea paths.
+    #[serde(default)]
+    pub git_https_username: Option<String>,
+    /// Token for that repo. Reaches git through the clone's credential helper
+    /// environment; never written into the checkout.
+    #[serde(default)]
+    pub git_https_token: Option<String>,
     /// Team id — names the app's directory (`teams/<teamId>/apps/<appId>`).
     #[serde(default)]
     pub team_id: String,
@@ -430,6 +443,20 @@ pub async fn seed_app(
         .map(str::trim)
         .filter(|e| !e.is_empty())
         .map(str::to_string);
+    // Checked here rather than inside the clone, so a token git could not carry
+    // is a 400 on this request instead of a clone that fails for no clear reason.
+    let https_credential = match body
+        .git_https_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        Some(token) => Some(
+            crate::sync::app_git::HttpsCredential::new(body.git_https_username.as_deref(), token)
+                .map_err(map_seed_error)?,
+        ),
+        None => None,
+    };
 
     let seed_result = tokio::task::spawn_blocking(move || {
         let vars = crate::sync::app_templates::TemplateVars {
@@ -474,7 +501,12 @@ pub async fn seed_app(
                 Ok(("seeded", out.git_commit_sha))
             }
             (Some(url), None) => {
-                crate::sync::app_clone::clone_app_repo(url, &workdir_path)?;
+                crate::sync::app_clone::clone_app_repo(
+                    url,
+                    &app_id,
+                    &workdir_path,
+                    https_credential.as_ref(),
+                )?;
                 Ok(("ready", None))
             }
             (None, Some(_)) => {
@@ -507,6 +539,8 @@ fn map_seed_error(err: anyhow::Error) -> HttpError {
         // looking at logs instead of at their credentials.
         || msg.starts_with(crate::sync::app_clone::ERR_CLONE_TIMEOUT)
         || msg.contains("refusing to clone")
+        // A token git's credential protocol could not carry — the caller's input.
+        || msg.starts_with("git credential")
     {
         HttpError::validation(msg)
     } else {

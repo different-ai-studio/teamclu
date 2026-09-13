@@ -594,10 +594,31 @@ async fn post_app(api: &AppApi, body: &Value) -> Result<Value, String> {
     .await
 }
 
+/// Drop a row that was created only so a clone could run, after that clone
+/// failed. Best-effort: the clone's reason is what the caller needs, and a row
+/// a failed delete leaves behind can still be removed from the app list.
+async fn discard_created_app(api: &AppApi, row: &Value) {
+    let Ok(app_id) = row_id(row) else {
+        return;
+    };
+    let _ = api
+        .call(
+            reqwest::Method::DELETE,
+            &app_path(&app_id, ""),
+            None,
+            Some(Duration::from_secs(120)),
+            "Removing the app whose clone failed",
+        )
+        .await;
+}
+
 /// `create` — a new app, and its code on this machine.
 ///
-/// The row is created first and stays even when the checkout step fails, as it
-/// does from the dialog; the reply says which step failed and how to finish.
+/// The row is created first. A template or local-folder app keeps it even
+/// when the checkout step fails, as the dialog does, and the reply says which
+/// step failed and how to finish. An import whose clone fails is removed
+/// instead, again as the dialog does: a row with no code and a repository this
+/// machine could not reach is an empty shell that looks like a created app.
 pub(super) async fn create_app(app: &AppHandle, api: &AppApi, v: &Value) -> Result<Value, String> {
     let source = create_source(v)?;
     let team_id = introspect_current_team(app).await?;
@@ -625,6 +646,14 @@ pub(super) async fn create_app(app: &AppHandle, api: &AppApi, v: &Value) -> Resu
             create_body["gitRemoteUrl"] = json!(url);
             let row = post_app(api, &create_body).await?;
             let checkout = seed_if_needed(api, &row, false, Some(url)).await;
+            if row_str(&checkout, "outcome") == Some("failed") {
+                discard_created_app(api, &row).await;
+                notify_app_changed(app, &row);
+                return Err(format!(
+                    "Cloning {url} failed, so the app was not kept: {}",
+                    row_str(&checkout, "error").unwrap_or("unknown failure")
+                ));
+            }
             (row, checkout)
         }
         CreateSource::LocalDir(dir) => {
@@ -731,6 +760,25 @@ pub(super) async fn reseed_app(
     }))
 }
 
+/// Whether an app in `provision_status` has anything to download.
+///
+/// A hosted repo short of `ready` was never seeded, so a clone would fetch an
+/// empty repository. An imported one is not ours to be unready: its status
+/// only says whether the creator's own clone worked, and the repository is
+/// there to fetch either way. Same rule as `ensureAppCheckout`.
+fn download_allowed(
+    provision_status: &str,
+    gitea_managed: bool,
+    has_remote: bool,
+) -> Result<(), String> {
+    if provision_status == "ready" || (!gitea_managed && has_remote) {
+        return Ok(());
+    }
+    Err(format!(
+        "This app's code has not been written anywhere yet (provision_status {provision_status:?}), so there is nothing to download. Run reseed on it first."
+    ))
+}
+
 /// `download` — put a team app's code on this machine.
 ///
 /// A port of `ensureAppCheckout`: nothing is cloned over a directory that
@@ -743,11 +791,11 @@ pub(super) async fn download_app(
 ) -> Result<Value, String> {
     let app_id = row_id(row)?;
     let status = row_str(row, "provisionStatus").unwrap_or("");
-    if status != "ready" {
-        return Err(format!(
-            "This app's code has not been written anywhere yet (provision_status {status:?}), so there is nothing to download. Run reseed on it first."
-        ));
-    }
+    download_allowed(
+        status,
+        is_gitea_managed(row),
+        row_str(row, "gitRemoteUrl").is_some(),
+    )?;
     let (workdir, device) = app_workdir_on_this_machine(row).await.ok_or(DAEMON_DOWN)?;
     if dir_has_files(&workdir) {
         return Ok(json!({
@@ -812,6 +860,12 @@ pub(super) async fn download_app(
     })?;
 
     let workdir = row_str(&out, "workdir").unwrap_or(&workdir).to_string();
+    // An import whose first clone failed elsewhere now has its code here, which
+    // is what `ready` means. The server lets only an admin write it; for anyone
+    // else the write is refused and the download still stands.
+    if status != "ready" {
+        write_provision_status(api, row, "ready").await;
+    }
     let mut report = json!({
         "ok": true,
         "action": "download",
@@ -927,6 +981,19 @@ mod tests {
         }
         let err = reseed_allowed("ready").unwrap_err();
         assert!(err.contains("over it"), "{err}");
+    }
+
+    #[test]
+    fn an_import_downloads_whatever_its_status_but_a_hosted_repo_must_be_ready() {
+        assert!(download_allowed("ready", true, true).is_ok());
+        for status in ["pending", "repo_created", "error"] {
+            // A hosted repo short of ready was never seeded and would clone empty.
+            assert!(download_allowed(status, true, true).is_err(), "{status}");
+            // An import's status is the creator's own clone; the repo is still there.
+            assert!(download_allowed(status, false, true).is_ok(), "{status}");
+        }
+        // With no remote there is nothing to fetch from, whatever the status.
+        assert!(download_allowed("error", false, false).is_err());
     }
 
     #[test]

@@ -103,6 +103,25 @@ test("issuing a credential revokes the expired keys it left behind", async () =>
   assert.match(out.privateKeyPem, /BEGIN OPENSSH PRIVATE KEY/);
 });
 
+test("a read-only credential registers a key that cannot push, and says so", async () => {
+  let seen: unknown = null;
+  const gitea: any = {
+    listDeployKeys: async () => [],
+    deleteDeployKey: async () => {},
+    createDeployKey: async (_appId: string, _title: string, _key: string, opts: unknown) => {
+      seen = opts;
+      return { id: 5 };
+    },
+  };
+  const readOnly = await issueJitDeployKey(gitea, "app-1", "member-1", Date.now(), { readOnly: true });
+  assert.deepEqual(seen, { readOnly: true });
+  assert.equal(readOnly.readOnly, true);
+
+  const write = await issueJitDeployKey(gitea, "app-1", "member-1");
+  assert.deepEqual(seen, { readOnly: false }, "a key is a write key unless asked otherwise");
+  assert.equal(write.readOnly, false);
+});
+
 test("a sweep that cannot reach Gitea never fails the caller", async () => {
   const gitea: any = {
     listDeployKeys: async () => { throw new Error("gitea down"); },

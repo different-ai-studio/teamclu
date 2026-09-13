@@ -1227,12 +1227,34 @@ export interface DeployAppResult extends AppRow {
   gitCommitSha: string | null;
 }
 
-export interface AppGitCredential {
+/** A JIT deploy key for a Gitea-managed app's repo. */
+export interface AppGitDeployKeyCredential {
   remoteUrl: string;
   authKind: "deploy_key";
   privateKeyPem: string;
   deployKeyId: number;
   expiresAt: string;
+}
+
+/**
+ * The token an admin stored for an imported repo reached over http(s). Handed
+ * to the daemon for a clone, and through `amuxd git-credential` to every later
+ * fetch in that checkout.
+ */
+export interface AppGitHttpsCredential {
+  remoteUrl: string;
+  authKind: "https_token";
+  username: string;
+  token: string;
+}
+
+export type AppGitCredential = AppGitDeployKeyCredential | AppGitHttpsCredential;
+
+/** What the create form and the settings page send to store a repo token. */
+export interface AppGitHttpsCredentialInput {
+  /** Blank when the forge reads only the token (GitHub, GitLab). */
+  username?: string;
+  token: string;
 }
 
 export interface AppGitHead {
@@ -1427,9 +1449,20 @@ export interface AppsBackend {
       image?: string;
     },
   ): Promise<AppRow>;
-  /** Mint a JIT Gitea deploy key for git push (creator only). Returns null on
-   *  404, and for an app that is not Gitea-managed. */
+  /** The credential for the app's repo: a JIT Gitea deploy key for a
+   *  Gitea-managed app, or the stored token for an imported http(s) repo
+   *  (`authKind` says which). Returns null on 404, and for an app that has
+   *  neither. */
   getGitCredential(appId: string): Promise<AppGitCredential | null>;
+  /**
+   * Store the token git uses for an imported app's http(s) repo (admin only).
+   * The row comes back with `gitAuthKind: "https_token"`. The token itself is
+   * never returned to a person — only through `getGitCredential`, to the
+   * machines that clone.
+   */
+  setGitHttpsCredential(appId: string, input: AppGitHttpsCredentialInput): Promise<AppRow>;
+  /** Forget it. Null on 404, which is also what a caller without admin gets. */
+  clearGitHttpsCredential(appId: string): Promise<AppRow | null>;
   /** Return a minted key once the operation that needed it has finished. The
    *  server's expiry sweep only runs when something asks the same repo for
    *  another key, so a repo nobody comes back to keeps whatever it was left

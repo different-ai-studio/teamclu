@@ -6064,46 +6064,138 @@ paths:
   /v1/apps/{appId}/git-credential:
     get:
       operationId: getAppGitCredential
-      summary: Mint a short-lived Gitea deploy key for the app repo
+      summary: The credential git uses for the app's repo
       description: |
-        Generates an ed25519 deploy key, registers the public half on the app's
-        Gitea repo (`tc-app-{appId}`), and returns the private key for one-time
-        use by the local daemon. The private key is never persisted, and is in
-        OpenSSH format (`BEGIN OPENSSH PRIVATE KEY`) — OpenSSH cannot load an
-        ed25519 key from a PKCS#8 block. Secret — never log the response body.
+        One of two kinds, named by `authKind`.
 
-        Two kinds of caller are authorised:
+        **`deploy_key`**, for a Gitea-managed app (`gitAuthKind` is
+        `gitea_deploy_key`). Generates an ed25519 deploy key, registers the
+        public half on the app's Gitea repo (`tc-app-{appId}`), and returns the
+        private key for one-time use by the local daemon. The private key is
+        never persisted, and is in OpenSSH format (`BEGIN OPENSSH PRIVATE KEY`)
+        — OpenSSH cannot load an ed25519 key from a PKCS#8 block.
 
-        - A **member** needs `prompt` or `admin` permission on the app (the
-          creator is treated as admin); `view` receives 404.
-        - An **agent actor** in the app's team is authorised for any
-          Gitea-managed app in that team. This is how a daemon credentials the
-          `git push` an agent runs in an app checkout: a daemon holds its own
-          cloud account, so it never resolves to a member, and
-          `app_member_access` is keyed on members and cannot carry a per-app
-          grant for it. The key's title names the agent actor.
+        **`https_token`**, for an app imported from an http(s) repo whose admin
+        stored a token (`gitAuthKind` is `https_token`, see `PUT`). Returns the
+        token as stored. Nothing is minted and nothing needs handing back: the
+        daemon passes it to git through `amuxd git-credential` and writes it
+        nowhere.
 
-        Each call also revokes the keys it minted more than 15 minutes ago. That
-        sweep is a backstop, not the primary bound: it only runs when something
-        asks the same repo for another key, so a repo nobody returns to keeps
-        whatever it was left holding. Holders that can say "done with it" should
-        instead `DELETE` the key (see below) — `amuxd git-ssh` does this as soon
-        as ssh exits.
+        Secret — never log the response body.
 
-        The response carries `deployKeyId` for exactly that purpose.
+        Two kinds of caller are authorised, for either kind:
 
-        404 when the app is not Gitea-managed (`gitAuthKind` is null): there is
-        no repo of ours to register a key on.
+        - A **member** with `prompt` or `admin` permission on the app (the
+          creator is treated as admin) gets a key that can push. A member who
+          can only see the app — a `view` grant, or no grant on a team-visible
+          app — gets a deploy key with `readOnly` set (or the stored token), so
+          a download works for everyone the app list shows the app to. A
+          member who cannot see the app receives 404.
+        - An **agent actor** in the app's team is authorised for any app in
+          that team. This is how a daemon credentials the `git push` an agent
+          runs in an app checkout: a daemon holds its own cloud account, so it
+          never resolves to a member, and `app_member_access` is keyed on
+          members and cannot carry a per-app grant for it. A deploy key's title
+          names the agent actor.
+
+        Each deploy-key call also revokes the keys it minted more than 15
+        minutes ago. That sweep is a backstop, not the primary bound: it only
+        runs when something asks the same repo for another key, so a repo
+        nobody returns to keeps whatever it was left holding. Holders that can
+        say "done with it" should instead `DELETE` the key (see below) —
+        `amuxd git-ssh` does this as soon as ssh exits.
+
+        A deploy-key response carries `deployKeyId` for exactly that purpose.
+
+        404 when the app has neither: an imported app with no stored token
+        (`gitAuthKind` is null) has no credential this deployment holds.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
       responses:
         "200":
-          description: JIT deploy-key credential for git push/pull.
+          description: The credential for git push and pull.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AppGitCredential" }
         "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: setAppGitHttpsCredential
+      summary: Store the token for an imported app's http(s) repo
+      description: |
+        Seals `{ username, token }` in `amux.app_secrets` and sets the app's
+        `gitAuthKind` to `https_token`, replacing any token already stored.
+        Admin only (the creator is treated as admin); anyone else receives 404.
+
+        Write-only here. The token comes back out only through `GET`, to the
+        callers listed there — every machine that clones the app and every
+        agent that pulls it — so a read-only token scoped to this one repo is
+        the thing to store.
+
+        `username` is optional and defaults to `x-access-token`, which GitHub
+        and GitLab accept with a personal access token. Forges that check the
+        name (Gitee, Bitbucket) need it given.
+
+        400 when the app's repo address is not http(s), or a field is blank,
+        oversized, or holds a line break git's credential protocol cannot
+        carry. 409 for a Gitea-managed app, which has deploy keys instead.
+        Secret — never log the request body.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                username:
+                  type: string
+                  maxLength: 256
+                  description: Blank or absent means `x-access-token`.
+                token:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+      responses:
+        "200":
+          description: The app, with `gitAuthKind` set to `https_token`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/App" }
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: clearAppGitHttpsCredential
+      summary: Forget the token stored for an imported app's repo
+      description: |
+        Sets `gitAuthKind` back to null, then deletes the sealed token — in that
+        order, so a row that names a token always has one behind it.
+        Idempotent. Admin only; anyone else receives 404. 409 for a
+        Gitea-managed app.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: The app, with `gitAuthKind` null.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/App" }
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
@@ -8082,12 +8174,14 @@ components:
             repository it was imported from. Set at creation and not editable.
         gitAuthKind:
           type: [string, "null"]
-          enum: [gitea_deploy_key, null]
+          enum: [gitea_deploy_key, https_token, null]
           description: >-
-            `gitea_deploy_key` when this deployment provisioned the app's repo
-            and holds a deploy key for it — `/git-head` and `/git-credential`
-            answer only for those. Null for an app imported from a remote we
-            have no credential for; those deploy the local checkout instead.
+            How git authenticates to the app's repo. `gitea_deploy_key` when
+            this deployment provisioned the repo and issues deploy keys for it
+            — `/git-head` answers only for those. `https_token` for an app
+            imported from an http(s) repo whose admin stored a token (see
+            `setAppGitHttpsCredential`). Null for an import with neither. Every
+            app that is not `gitea_deploy_key` deploys its local checkout.
         gitCommitSha:
           type: [string, "null"]
           pattern: "^[0-9a-f]{7,40}$"
@@ -8185,10 +8279,34 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     AppGitCredential:
+      description: >-
+        The credential git uses for an app's repo, by `authKind`. Secret — never log.
+      oneOf:
+        - $ref: "#/components/schemas/AppGitDeployKeyCredential"
+        - $ref: "#/components/schemas/AppGitHttpsCredential"
+      discriminator:
+        propertyName: authKind
+        mapping:
+          deploy_key: "#/components/schemas/AppGitDeployKeyCredential"
+          https_token: "#/components/schemas/AppGitHttpsCredential"
+    AppGitHttpsCredential:
+      type: object
+      required: [remoteUrl, authKind, username, token]
+      description: >-
+        The token an admin stored for an imported http(s) repo. The daemon hands
+        it to git through a credential helper and writes it nowhere.
+      properties:
+        remoteUrl: { type: string }
+        authKind: { type: string, enum: [https_token] }
+        username:
+          type: string
+          description: "`x-access-token` when the admin gave none."
+        token: { type: string }
+    AppGitDeployKeyCredential:
       type: object
       required: [remoteUrl, authKind, privateKeyPem, deployKeyId, expiresAt]
       description: >-
-        One-time deploy-key credential for the app's Gitea repo. Secret — never log.
+        One-time deploy-key credential for a Gitea-managed app's repo.
       properties:
         remoteUrl: { type: string }
         authKind: { type: string, enum: [deploy_key] }
@@ -8198,6 +8316,11 @@ components:
         deployKeyId:
           type: integer
           description: Gitea deploy key id (for optional cleanup after push).
+        readOnly:
+          type: boolean
+          description: >-
+            True when the key can fetch but not push. Issued to a member who
+            can see the app but holds no `prompt` or `admin` permission on it.
         expiresAt:
           type: string
           format: date-time
