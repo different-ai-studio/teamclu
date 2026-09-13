@@ -328,6 +328,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rumqttc",
  "rustls 0.22.4",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

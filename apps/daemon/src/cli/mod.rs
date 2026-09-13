@@ -11,6 +11,7 @@ pub mod setup;
 pub mod sock;
 pub mod team_secrets;
 pub mod test_client;
+pub mod update;
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -90,6 +91,20 @@ pub enum Commands {
     InstallService,
     /// Stop and remove the amuxd background service.
     UninstallService,
+    /// Replace the standalone amuxd (`<amuxd home>/bin/amuxd`) with the latest
+    /// build on its release channel, then restart the service. A running
+    /// daemon also checks by itself; `[update] auto = false` turns that off.
+    Update {
+        /// Only report the current and the latest version.
+        #[arg(long)]
+        check: bool,
+        /// Reinstall even when already on the channel's version.
+        #[arg(long)]
+        force: bool,
+        /// Replace the binary but leave the running daemon alone.
+        #[arg(long)]
+        no_restart: bool,
+    },
     /// Run the remote-tools MCP server on stdio. Proxies browser/client tools
     /// to the bound TeamClu client over MQTT RPC.
     RemoteToolsMcp(RemoteToolsMcpArgs),

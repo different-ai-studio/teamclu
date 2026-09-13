@@ -93,6 +93,7 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+semver = "1"
 urlencoding = "2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -296,6 +296,28 @@ def main() -> int:
     }
     manifest_str = json.dumps(manifest, indent=2) + "\n"
 
+    # The pointer a standalone amuxd polls: `amuxd update` and its background
+    # check (apps/daemon/src/self_update.rs). Platform keys are "<os>-<arch>"
+    # spelled the way Rust's std::env::consts spells them, which is already how
+    # the fragments name them. Only binaries uploaded under this release's
+    # version are listed; with none, the previous pointer is left in place.
+    amuxd_platforms = {}
+    for d in amuxd_downloads:
+        if f"/amuxd/{version}/" not in d.get("url", ""):
+            print(f"::warning::amuxd fragment {d.get('filename')} is not from {version}; left out of amuxd/latest.json")
+            continue
+        amuxd_platforms[f'{d["os"]}-{d["arch"]}'] = {
+            "url": d["url"],
+            "sha256": d["sha256"],
+            "size": d["size"],
+        }
+    amuxd_manifest_str = None
+    if amuxd_platforms:
+        amuxd_manifest_str = json.dumps(
+            {"version": version, "pub_date": pub_date, "platforms": amuxd_platforms},
+            indent=2,
+        ) + "\n"
+
     def find(o, a=None):
         return next((d["url"] for d in downloads if d.get("os") == o and (a is None or d.get("arch") == a)), "")
 
@@ -357,12 +379,19 @@ case "$OS-$ARCH" in
   *) echo "Unsupported platform: $OS-$ARCH"; exit 1;;
 esac
 [ -z "$URL" ] && { echo "No amuxd build for $OS-$ARCH"; exit 1; }
-BIN_DIR="$HOME/.amuxd/bin"
+AMUXD_DIR="$HOME/.amuxd"
+BIN_DIR="$AMUXD_DIR/bin"
 mkdir -p "$BIN_DIR"
 echo "Downloading amuxd ($OS-$ARCH)..."
-curl -L --progress-bar -o "$BIN_DIR/amuxd" "$URL"
-chmod +x "$BIN_DIR/amuxd"
-[ "$OS" = "Darwin" ] && xattr -dr com.apple.quarantine "$BIN_DIR/amuxd" 2>/dev/null || true
+# Download beside the binary, then rename over it: writing into a running amuxd
+# fails on Linux (ETXTBSY), and a failed download must not leave a truncated
+# binary where the service expects one.
+TMP="$BIN_DIR/amuxd.download.$$"
+trap 'rm -f "$TMP"' EXIT
+curl -fL --progress-bar -o "$TMP" "$URL"
+chmod +x "$TMP"
+[ "$OS" = "Darwin" ] && xattr -d com.apple.quarantine "$TMP" 2>/dev/null || true
+mv -f "$TMP" "$BIN_DIR/amuxd"
 # Put amuxd on PATH (best-effort; falls back to ~/.amuxd/bin note).
 for d in /usr/local/bin "$HOME/.local/bin"; do
   if [ -w "$d" ] || mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; then
@@ -372,8 +401,19 @@ done
 AMUXD="${LINKED:-$BIN_DIR/amuxd}"
 echo "Installed amuxd -> $AMUXD"
 "$AMUXD" --version || true
-# Onboard if not already configured, then register the OS service.
-if [ ! -f "$HOME/.amuxd/backend.toml" ]; then
+# Onboard unless a team has already claimed this daemon, then register the OS
+# service (which also restarts a running daemon onto the new binary). The
+# credentials live in teams/<id>/state/backend.toml; the v2 layout deletes the
+# old root backend.toml, so checking for that onboarded again on every re-run.
+claimed() {
+  for f in "$AMUXD_DIR"/teams/*/state/backend.toml; do
+    [ -f "$f" ] || continue
+    case "$f" in "$AMUXD_DIR"/teams/_unclaimed/*) continue;; esac
+    return 0
+  done
+  return 1
+}
+if ! claimed; then
   echo; echo "Onboarding this daemon (paste your __SCHEME__://invite deeplink)..."
   "$AMUXD" init || { echo "Onboarding skipped — run: amuxd init && amuxd install-service"; exit 0; }
 fi
@@ -390,13 +430,30 @@ echo "Done. amuxd is running as a background service. Check: amuxd status"
     install_amuxd_ps1 = '''$ErrorActionPreference = 'Stop'
 $url = '__WIN_X64__'
 if (-not $url) { Write-Error 'No amuxd build available'; exit 1 }
-$binDir = Join-Path $env:USERPROFILE '.amuxd\\bin'
+$amuxdHome = Join-Path $env:USERPROFILE '.amuxd'
+$binDir = Join-Path $amuxdHome 'bin'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 $exe = Join-Path $binDir 'amuxd.exe'
+$download = "$exe.download"
 Write-Host 'Downloading amuxd...'
-Invoke-WebRequest -Uri $url -OutFile $exe
+Invoke-WebRequest -Uri $url -OutFile $download
+# A running amuxd.exe cannot be overwritten, only renamed. Stop it (so
+# install-service below starts the new one), move it aside, then move the
+# download into place.
+if (Test-Path $exe) {
+  try { & $exe stop | Out-Null } catch {}
+  $old = "$exe.old"
+  Remove-Item $old -Force -ErrorAction SilentlyContinue
+  if (Test-Path $old) { $old = "$exe.old-" + (Get-Date -Format 'yyyyMMddHHmmss') }
+  Move-Item $exe $old -Force
+}
+Move-Item $download $exe -Force
 & $exe --version
-if (-not (Test-Path (Join-Path $env:USERPROFILE '.amuxd\\backend.toml'))) {
+# The credentials live in teams\\<id>\\state\\backend.toml; the v2 layout deletes
+# the old root backend.toml, so checking for that onboarded again on every re-run.
+$claimed = Get-ChildItem (Join-Path $amuxdHome 'teams') -Directory -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -ne '_unclaimed' -and (Test-Path (Join-Path $_.FullName 'state\\backend.toml')) }
+if (-not $claimed) {
   Write-Host 'Onboarding this daemon (paste your __SCHEME__://invite deeplink)...'
   & $exe init
 }
@@ -514,6 +571,9 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
                       headers={**short_cache, "Content-Type": "text/x-shellscript; charset=utf-8"})
     bucket.put_object(f"{prefix}/install-amuxd.ps1", install_amuxd_ps1.encode(),
                       headers={**short_cache, "Content-Type": "text/plain; charset=utf-8"})
+    if amuxd_manifest_str:
+        bucket.put_object(f"{prefix}/amuxd/latest.json", amuxd_manifest_str.encode(),
+                          headers={**short_cache, **json_ct})
 
     # Privacy policy — brand-generic template with {{APP_NAME}} substituted.
     # Published at {cdn}/{prefix}/privacy.html so the Chrome Web Store listing can
@@ -559,6 +619,8 @@ Write-Host 'Done. amuxd is running as a background service. Check: amuxd status'
     print(f"✅ {cdn}/{prefix}/latest.json  |  latest.txt -> {version}")
     print(f"✅ {cdn}/{prefix}/install.sh  |  install.ps1  |  logo.png")
     print(f"✅ {cdn}/{prefix}/install-amuxd.sh  |  install-amuxd.ps1  ({len(amuxd_downloads)} amuxd binaries)")
+    if amuxd_manifest_str:
+        print(f"✅ {cdn}/{prefix}/amuxd/latest.json  ({len(amuxd_platforms)} platforms)")
     return 0
 
 

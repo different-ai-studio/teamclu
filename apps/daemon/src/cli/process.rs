@@ -62,8 +62,18 @@ pub(crate) fn connect_control(sock_path: &Path) -> std::io::Result<File> {
 const LOCK_WAIT: Duration = Duration::from_secs(10);
 const LOCK_POLL: Duration = Duration::from_millis(100);
 
+/// Seconds to wait for the lock instead of [`LOCK_WAIT`], capped at ten
+/// minutes. Set on the daemon a Windows self-update starts before the old one
+/// has finished shutting down.
+pub(crate) const LOCK_WAIT_ENV: &str = "AMUXD_LOCK_WAIT_SECS";
+
 pub fn acquire_daemon_lock() -> anyhow::Result<DaemonLockGuard> {
-    acquire_daemon_lock_at(&DaemonConfig::lock_path(), LOCK_WAIT)
+    let wait = std::env::var(LOCK_WAIT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|secs| Duration::from_secs(secs.min(600)))
+        .unwrap_or(LOCK_WAIT);
+    acquire_daemon_lock_at(&DaemonConfig::lock_path(), wait)
 }
 
 pub(crate) fn acquire_daemon_lock_at(

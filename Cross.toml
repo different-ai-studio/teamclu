@@ -17,5 +17,7 @@ pre-build = [
 [target.aarch64-unknown-linux-gnu.env]
 passthrough = [
     "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu",
+    # The release channel apps/daemon/build.rs bakes into amuxd.
+    "AMUXD_UPDATE_BASE_URL",
     "OPENSSL_INCLUDE_DIR=/usr/include",
 ]

@@ -84,6 +84,9 @@ runs:
             'CDN_REFRESH_REGION': os.environ.get('CDN_REFRESH_REGION_DEFAULT', ''),
             'BRAND_MAC_EXTRA_ARGS': '',
         }
+        # The channel a standalone amuxd built in this job updates itself from
+        # (apps/daemon/build.rs bakes it in).
+        out['AMUXD_UPDATE_BASE_URL'] = f"{out['CDN_BASE']}/{out['OSS_PREFIX']}"
         with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
             for key, value in out.items():
                 f.write(f'{key}={value}\n')
@@ -228,6 +231,9 @@ runs:
             ),
             'BRAND_MAC_EXTRA_ARGS': (meta.get('build') or {}).get('macExtraArgs') or '',
         }
+        # The channel a standalone amuxd built in this job updates itself from
+        # (apps/daemon/build.rs bakes it in).
+        out['AMUXD_UPDATE_BASE_URL'] = f"{out['CDN_BASE']}/{out['OSS_PREFIX']}"
         with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
             for k, v in out.items():
                 f.write(f'{k}={v}\n')

@@ -1327,6 +1327,27 @@ impl DaemonServer {
         let sock_path = DaemonConfig::sock_path();
         spawn_sock_listener(sock_path.clone(), sock_tx.clone());
 
+        // A standalone install keeps itself current: check the release channel,
+        // swap the binary, and exit through the service manager once no turn is
+        // running. `self_update` decides whether this daemon is one — the
+        // desktop sidecar and containers are not.
+        {
+            let update = self.config.update.clone().unwrap_or_default();
+            let agents = self.agents.clone();
+            let shutdown_tx = sock_tx.clone();
+            crate::self_update::spawn_background(
+                update.auto,
+                update.check_interval_minutes,
+                move || {
+                    let agents = agents.clone();
+                    async move { agents.lock().await.has_any_active_turn() }
+                },
+                move || async move {
+                    let _ = shutdown_tx.send(SockCommand::Shutdown).await;
+                },
+            );
+        }
+
         // Bridge the supervisor's "provider hosts evicted" notifications into
         // the command loop, where `kick_prewarm_for_workspace` re-warms the
         // evicted hosts in the background. Same shape as register-workspace.
@@ -3769,6 +3790,7 @@ pub(crate) mod tests {
             http: None,
             team_share: crate::config::TeamShareConfig::default(),
             log: None,
+            update: None,
             locale: None,
             app_scheme: None,
         }
