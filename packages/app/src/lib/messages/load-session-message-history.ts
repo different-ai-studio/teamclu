@@ -7,7 +7,7 @@ import { messageRowsToProto } from "@/lib/session-export/collect";
 import { syncMessagesForSession } from "@/lib/sync/message-sync";
 import { logExtMsgDiag, summarizeProtosForExtDiag } from "@/lib/diagnostics/extension-msg-diag";
 import { create as createMessage } from "@bufbuild/protobuf";
-import { MessageSchema, MessageKind } from "@/lib/proto/teamclu_pb";
+import { MessageSchema, MessageKind, type Message } from "@/lib/proto/teamclu_pb";
 import { useSessionMessageStore } from "@/stores/session-message-store";
 
 const kindMap: Record<string, MessageKind> = {
@@ -59,6 +59,45 @@ export function selectRowsNewerThanLocal(
   });
 }
 
+function partsJsonOf(message: Message): string {
+  return (message as unknown as { partsJson?: string | null }).partsJson ?? "";
+}
+
+/** Same fields `messageRowsToProto` sets, parts included. */
+export function sameMessageList(
+  current: readonly Message[] | undefined,
+  next: readonly Message[],
+): boolean {
+  if (!current || current.length !== next.length) return false;
+  for (let i = 0; i < next.length; i++) {
+    const a = current[i];
+    const b = next[i];
+    if (a === b) continue;
+    if (
+      a.messageId !== b.messageId ||
+      a.kind !== b.kind ||
+      a.content !== b.content ||
+      a.metadataJson !== b.metadataJson ||
+      a.senderActorId !== b.senderActorId ||
+      a.turnId !== b.turnId ||
+      a.replyToMessageId !== b.replyToMessageId ||
+      a.model !== b.model ||
+      a.createdAt !== b.createdAt ||
+      partsJsonOf(a) !== partsJsonOf(b)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// An identical replacement re-runs the adapter and re-renders the whole thread.
+function setMessagesIfChanged(sessionId: string, next: Message[]): void {
+  const store = useSessionMessageStore.getState();
+  if (sameMessageList(store.messages[sessionId], next)) return;
+  store.setMessages(sessionId, next);
+}
+
 /** Hydrate session-message store from local cache + cloud (same paths as main session). */
 export async function loadSessionMessageHistory(
   options: LoadSessionMessageHistoryOptions,
@@ -75,10 +114,7 @@ export async function loadSessionMessageHistory(
     );
     if (signal?.aborted) return;
     if (localMsgs.length > 0) {
-      useSessionMessageStore.getState().setMessages(
-        sessionId,
-        messageRowsToProto(localMsgs),
-      );
+      setMessagesIfChanged(sessionId, messageRowsToProto(localMsgs));
     }
 
     const synced = await syncMessagesForSession(sessionId, teamId, { full: forceFull });
@@ -96,10 +132,7 @@ export async function loadSessionMessageHistory(
         workspacePath ?? undefined,
       );
       if (!signal?.aborted) {
-        useSessionMessageStore.getState().setMessages(
-          sessionId,
-          messageRowsToProto(fresh),
-        );
+        setMessagesIfChanged(sessionId, messageRowsToProto(fresh));
       }
     }
     return;

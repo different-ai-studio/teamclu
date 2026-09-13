@@ -81,7 +81,7 @@ export async function authorizeRemoteToolRequest(
   let participants =
     useSessionParticipantStore.getState().participantsBySession[sessionId]
   if (!participants || participants.length === 0) {
-    const apiRows = await getBackend().sessionMembers.listParticipants(sessionId)
+    const apiRows = await getBackend().sessionMembers.listParticipants(sessionId, { fresh: true })
     participants = apiRows.map((actor) => ({
       actorId: actor.id,
       displayName: actor.display_name ?? actor.id,

@@ -811,7 +811,10 @@ export interface SessionMemberCandidate extends ActorDirectoryEntry {
 }
 
 export interface SessionMembersBackend {
-  listParticipants(sessionId: string): Promise<ActorDirectoryEntry[]>;
+  /** `fresh` skips the short-lived shared read; use it when the roster is known to have changed. */
+  listParticipants(sessionId: string, options?: { fresh?: boolean }): Promise<ActorDirectoryEntry[]>;
+  /** Drop the shared roster read for a session whose participants changed elsewhere. */
+  forgetParticipants?(sessionId: string): void;
   listSessionIdsForActor(actorId: string): Promise<string[]>;
   listCandidateActors(teamId: string, presentActorIds: string[]): Promise<SessionMemberCandidate[]>;
   addParticipant(sessionId: string, actorId: string): Promise<void>;

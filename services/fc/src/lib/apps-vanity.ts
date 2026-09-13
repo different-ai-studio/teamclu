@@ -1,4 +1,4 @@
-import { parseAppPublicHost } from "./apps-public-host.js";
+import { appPublicLabel, appsPublicDomain, parseAppPublicHost } from "./apps-public-host.js";
 
 /**
  * Serving deployed apps on `<slug>-<id8>.<APPS_PUBLIC_DOMAIN>`.
@@ -151,6 +151,17 @@ const cacheKey = (host: string) => host.split(":")[0].trim().toLowerCase();
 /** Drop a hostname's cached answer after its binding changed. */
 export function invalidateVanityHost(host: string | null | undefined): void {
   if (host) hostCache.delete(cacheKey(host));
+}
+
+/** Drop every hostname an app answers on. Never throws: callers run it after a write already landed. */
+export function invalidateAppHosts(
+  app: { id: string; slug: string | null | undefined; customDomain?: string | null },
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const domain = appsPublicDomain(env);
+  const label = app.slug ? appPublicLabel(app.slug, app.id) : null;
+  if (domain && label) invalidateVanityHost(`${label}.${domain}`);
+  invalidateVanityHost(app.customDomain);
 }
 
 /** Test seam — the cache is process-local and would leak between tests. */

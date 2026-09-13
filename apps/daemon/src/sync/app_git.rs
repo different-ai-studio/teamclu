@@ -8,6 +8,7 @@ use crate::process_util::CommandNoWindow;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 /// English messages the HTTP layer maps to user-facing copy.
 /// No longer raised by a deploy — [`publish_pending_work`] publishes that state
@@ -109,13 +110,15 @@ fn base_command(cwd: &Path, ssh: Option<&SshEnv>) -> Command {
 }
 
 fn run_git(cwd: &Path, ssh: Option<&SshEnv>, args: &[&str]) -> anyhow::Result<Output> {
-    let out = base_command(cwd, ssh)
-        .args(args)
+    output_of(base_command(cwd, ssh), args)
+}
+
+fn output_of(mut cmd: Command, args: &[&str]) -> anyhow::Result<Output> {
+    cmd.args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| anyhow::anyhow!("could not run git: {e}"))?;
-    Ok(out)
+        .map_err(|e| anyhow::anyhow!("could not run git: {e}"))
 }
 
 fn ensure_success(out: &Output, context: &str) -> anyhow::Result<()> {
@@ -129,6 +132,44 @@ fn ensure_success(out: &Output, context: &str) -> anyhow::Result<()> {
         .unwrap_or(context)
         .trim();
     anyhow::bail!("{context}: {reason}");
+}
+
+/// Whether `out` failed because another `git` process held `.git/config.lock`
+/// at the same moment, rather than because the write itself was invalid.
+fn is_config_lock_contention(out: &Output) -> bool {
+    !out.status.success()
+        && String::from_utf8_lossy(&out.stderr).contains("could not lock config file")
+}
+
+const CONFIG_LOCK_RETRIES: u32 = 5;
+const CONFIG_LOCK_RETRY_DELAY: Duration = Duration::from_millis(150);
+
+/// A `.git/config` write, retried while another git process holds the config lock.
+/// `LC_ALL=C` keeps that lock message matchable on a translated git.
+fn run_git_config_write(cwd: &Path, ssh: Option<&SshEnv>, args: &[&str]) -> anyhow::Result<Output> {
+    retry_on_config_lock(
+        || {
+            let mut cmd = base_command(cwd, ssh);
+            cmd.env("LC_ALL", "C");
+            output_of(cmd, args)
+        },
+        CONFIG_LOCK_RETRY_DELAY,
+    )
+}
+
+fn retry_on_config_lock(
+    mut attempt: impl FnMut() -> anyhow::Result<Output>,
+    delay: Duration,
+) -> anyhow::Result<Output> {
+    let mut out = attempt()?;
+    for _ in 1..CONFIG_LOCK_RETRIES {
+        if !is_config_lock_contention(&out) {
+            break;
+        }
+        std::thread::sleep(delay);
+        out = attempt()?;
+    }
+    Ok(out)
 }
 
 /// SSH environment for a deploy-key-backed remote.
@@ -233,20 +274,48 @@ pub fn init_if_needed(dir: &Path) -> anyhow::Result<()> {
     ensure_success(&out, "git init")
 }
 
+fn origin_exists(dir: &Path, ssh: Option<&SshEnv>) -> bool {
+    run_git(dir, ssh, &["remote", "get-url", "origin"])
+        .ok()
+        .is_some_and(|o| o.status.success())
+}
+
 /// Set `origin` to `url`, replacing any existing origin remote.
 pub fn set_remote_origin(dir: &Path, url: &str, ssh: Option<&SshEnv>) -> anyhow::Result<()> {
     let url = validate_remote_url(url)?;
-    if run_git(dir, ssh, &["remote", "get-url", "origin"])
-        .ok()
-        .is_some_and(|o| o.status.success())
-    {
-        let out = run_git(dir, ssh, &["remote", "set-url", "origin", &url])?;
-        ensure_success(&out, "git remote set-url")?;
-    } else {
-        let out = run_git(dir, ssh, &["remote", "add", "origin", &url])?;
-        ensure_success(&out, "git remote add")?;
+    if !origin_exists(dir, ssh) {
+        let out = run_git_config_write(dir, ssh, &["remote", "add", "origin", &url])?;
+        if out.status.success() {
+            return Ok(());
+        }
+        // `remote add` writes url and fetch separately: a concurrent writer, or our own
+        // half-landed attempt, can leave origin in place while this call reports failure.
+        if !origin_exists(dir, ssh) {
+            return ensure_success(&out, "git remote add");
+        }
     }
-    Ok(())
+    let out = run_git_config_write(dir, ssh, &["remote", "set-url", "origin", &url])?;
+    ensure_success(&out, "git remote set-url")?;
+    ensure_origin_fetch_refspec(dir)
+}
+
+fn ensure_origin_fetch_refspec(dir: &Path) -> anyhow::Result<()> {
+    let present = run_git(dir, None, &["config", "--get", "remote.origin.fetch"])
+        .ok()
+        .is_some_and(|o| o.status.success());
+    if present {
+        return Ok(());
+    }
+    let out = run_git_config_write(
+        dir,
+        None,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    )?;
+    ensure_success(&out, "git config remote.origin.fetch")
 }
 
 /// Stage all changes (`git add -A`).
@@ -272,9 +341,9 @@ pub fn set_repo_user_identity(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(GIT_USER_EMAIL);
-    let out = run_git(dir, None, &["config", "user.name", name])?;
+    let out = run_git_config_write(dir, None, &["config", "user.name", name])?;
     ensure_success(&out, "git config user.name")?;
-    let out = run_git(dir, None, &["config", "user.email", email])?;
+    let out = run_git_config_write(dir, None, &["config", "user.email", email])?;
     ensure_success(&out, "git config user.email")?;
     Ok(())
 }
@@ -303,7 +372,7 @@ pub fn set_repo_ssh_command(dir: &Path, app_id: &str) -> anyhow::Result<()> {
         shell_quote(&exe.to_string_lossy()),
         shell_quote(app_id)
     );
-    let out = run_git(dir, None, &["config", "core.sshCommand", &command])?;
+    let out = run_git_config_write(dir, None, &["config", "core.sshCommand", &command])?;
     ensure_success(&out, "git config core.sshCommand")?;
 
     // Git guesses how to call `core.sshCommand` from its basename, and an
@@ -311,7 +380,7 @@ pub fn set_repo_ssh_command(dir: &Path, app_id: &str) -> anyhow::Result<()> {
     // believes cannot take `-p`. The app remotes are on port 2222, so without
     // this every push died before the shim was even executed, with
     // "ssh variant 'simple' does not support setting port".
-    let out = run_git(dir, None, &["config", "ssh.variant", "ssh"])?;
+    let out = run_git_config_write(dir, None, &["config", "ssh.variant", "ssh"])?;
     ensure_success(&out, "git config ssh.variant")
 }
 
@@ -955,6 +1024,124 @@ mod tests {
         )
         .unwrap();
         assert!(out.status.success(), "core.sshCommand must be repo-local");
+    }
+
+    #[cfg(unix)]
+    fn fake_output(code: i32, stderr: &str) -> Output {
+        use std::os::unix::process::ExitStatusExt;
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    const LOCK_HELD: &str = "error: could not lock config file .git/config: File exists\n";
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_write_is_retried_while_the_lock_is_held() {
+        let mut outcomes = vec![
+            fake_output(0, ""),
+            fake_output(255, LOCK_HELD),
+            fake_output(255, LOCK_HELD),
+        ];
+        let mut attempts = 0;
+        let out = retry_on_config_lock(
+            || {
+                attempts += 1;
+                Ok(outcomes.pop().unwrap())
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(attempts, 3);
+        assert!(out.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_write_that_fails_for_another_reason_is_not_retried() {
+        let mut attempts = 0;
+        let out = retry_on_config_lock(
+            || {
+                attempts += 1;
+                Ok(fake_output(3, "error: remote origin already exists.\n"))
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(attempts, 1);
+        assert!(!out.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_write_stops_retrying_after_its_budget() {
+        let mut attempts = 0;
+        let out = retry_on_config_lock(
+            || {
+                attempts += 1;
+                Ok(fake_output(255, LOCK_HELD))
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(attempts, CONFIG_LOCK_RETRIES);
+        assert!(is_config_lock_contention(&out));
+    }
+
+    #[test]
+    fn set_remote_origin_repairs_an_origin_left_without_a_fetch_refspec() {
+        // What a `remote add` that lost the lock between its two writes leaves behind.
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        if init_if_needed(&work).is_err() {
+            eprintln!("git not usable; skipping");
+            return;
+        }
+        let out = run_git(
+            &work,
+            None,
+            &["config", "remote.origin.url", "https://example.com/old.git"],
+        )
+        .unwrap();
+        assert!(out.status.success());
+
+        set_remote_origin(&work, "https://example.com/app.git", None).unwrap();
+
+        let url = run_git(&work, None, &["remote", "get-url", "origin"]).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&url.stdout).trim(),
+            "https://example.com/app.git"
+        );
+        let fetch = run_git(&work, None, &["config", "--get", "remote.origin.fetch"]).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&fetch.stdout).trim(),
+            "+refs/heads/*:refs/remotes/origin/*"
+        );
+    }
+
+    #[test]
+    fn a_config_write_gives_up_on_a_lock_that_never_clears() {
+        // The other side of the same fix: a lock file left behind by a crashed
+        // git process (not a live writer) must still fail — retrying forever
+        // would hang the deploy instead of reporting a stale lock.
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        if init_if_needed(&work).is_err() {
+            eprintln!("git not usable; skipping");
+            return;
+        }
+        std::fs::write(work.join(".git").join("config.lock"), b"stale").unwrap();
+        let err = set_repo_ssh_command(&work, "app-42").unwrap_err();
+        assert!(
+            err.to_string().contains("could not lock config file"),
+            "got {err}"
+        );
     }
 
     #[test]

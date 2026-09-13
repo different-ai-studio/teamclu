@@ -14,7 +14,7 @@ import { createApp } from "../src/app.js";
 import { appPublicUrl, appPublicLabel, parseAppPublicHost } from "../src/lib/apps-public-host.js";
 import {
   isServable, proxyToApp, httpsRedirect, selectByIdPrefix, makeSupabaseVanityLookup, makeVanityLookup,
-  invalidateVanityHost, __resetVanityCache,
+  invalidateAppHosts, invalidateVanityHost, __resetVanityCache,
 } from "../src/lib/apps-vanity.js";
 
 const DOMAIN = "apps.teamclu-dev.ucar.cc";
@@ -352,6 +352,51 @@ test("a binding change drops the cached answer immediately", async () => {
     await lookup("shop.example.com");
     assert.equal(calls, 2, "the next request must re-ask");
   });
+});
+
+test("an app write drops both of the app's hostnames", async () => {
+  // Auth rules, endpoint and existence are all read off the cached row, on the
+  // vanity host and on a bound custom domain alike.
+  let calls = 0;
+  const lookup = makeVanityLookup({
+    getServiceRoleClient: () => {
+      calls++;
+      return {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              limit: async () => ({ data: [], error: null }),
+              not: () => ({ limit: async () => ({ data: [], error: null }) }),
+            }),
+          }),
+        }),
+      };
+    },
+  });
+  await withDomain(async () => {
+    __resetVanityCache();
+    const vanity = `${appPublicLabel("shop", APP_ID)}.${DOMAIN}`;
+    await lookup(vanity);
+    await lookup("shop.example.com");
+    await lookup(vanity);
+    await lookup("shop.example.com");
+    assert.equal(calls, 2);
+
+    invalidateAppHosts({ id: APP_ID, slug: "shop", customDomain: "shop.example.com" });
+    await lookup(vanity);
+    await lookup("shop.example.com");
+    assert.equal(calls, 4, "both hosts must re-ask");
+  });
+});
+
+test("dropping an app's hostnames never throws, whatever the slug or domain", async () => {
+  await withDomain(async () => {
+    assert.doesNotThrow(() => invalidateAppHosts({ id: APP_ID, slug: "x".repeat(80), customDomain: null }));
+    assert.doesNotThrow(() => invalidateAppHosts({ id: APP_ID, slug: null }));
+  });
+  assert.doesNotThrow(() =>
+    invalidateAppHosts({ id: APP_ID, slug: "shop" }, { APPS_PUBLIC_DOMAIN: "not a domain:99999" } as NodeJS.ProcessEnv),
+  );
 });
 
 // --- the proxy itself ------------------------------------------------------

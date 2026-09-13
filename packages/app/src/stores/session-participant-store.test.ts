@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionParticipantStore } from "./session-participant-store";
 
-const { mockListParticipants, mockIsTauri } = vi.hoisted(() => ({
+const { mockListParticipants, mockIsTauri, mockForgetParticipants } = vi.hoisted(() => ({
   mockListParticipants: vi.fn(async () => [] as Array<{
     id: string;
     actor_type: string | null;
@@ -9,6 +9,7 @@ const { mockListParticipants, mockIsTauri } = vi.hoisted(() => ({
     avatar_url: string | null;
   }>),
   mockIsTauri: vi.fn(() => true),
+  mockForgetParticipants: vi.fn(),
 }));
 
 vi.mock("@/lib/utils", () => ({
@@ -19,6 +20,7 @@ vi.mock("@/lib/backend", () => ({
   getBackend: () => ({
     sessionMembers: {
       listParticipants: mockListParticipants,
+      forgetParticipants: mockForgetParticipants,
     },
   }),
 }));
@@ -95,7 +97,7 @@ describe("session-participant-store", () => {
 
     await useSessionParticipantStore.getState().ensureParticipants(["s1"]);
 
-    expect(mockListParticipants).toHaveBeenCalledWith("s1");
+    expect(mockListParticipants).toHaveBeenCalledWith("s1", { fresh: false });
     expect(useSessionParticipantStore.getState().participantsBySession.s1).toEqual([
       {
         actorId: "member-1",
@@ -149,7 +151,7 @@ describe("session-participant-store", () => {
 
     await useSessionParticipantStore.getState().ensureParticipants(["cron-session"]);
 
-    expect(mockListParticipants).toHaveBeenCalledWith("cron-session");
+    expect(mockListParticipants).toHaveBeenCalledWith("cron-session", { fresh: false });
     expect(useSessionParticipantStore.getState().participantsBySession["cron-session"]).toEqual([
       {
         actorId: "daemon-1",
@@ -186,7 +188,7 @@ describe("session-participant-store", () => {
 
     await useSessionParticipantStore.getState().ensureParticipants(["s1"]);
 
-    expect(mockListParticipants).toHaveBeenCalledWith("s1");
+    expect(mockListParticipants).toHaveBeenCalledWith("s1", { fresh: false });
     expect(useSessionParticipantStore.getState().participantsBySession.s1).toEqual([
       {
         actorId: "daemon-1",
@@ -299,6 +301,13 @@ describe("session-participant-store", () => {
     expect(useSessionParticipantStore.getState().participantsBySession.s1).toHaveLength(2);
   });
 
+  it("refreshSession forgets the backend's shared roster read", async () => {
+    // Refreshes follow changes made elsewhere; a reused roster would hide who just joined.
+    await useSessionParticipantStore.getState().refreshSession("s1", "team-1");
+
+    expect(mockForgetParticipants).toHaveBeenCalledWith("s1");
+  });
+
   it("loads participants from Cloud API in extension/web mode", async () => {
     mockIsTauri.mockReturnValue(false);
     mockListParticipants.mockResolvedValue([
@@ -318,7 +327,7 @@ describe("session-participant-store", () => {
 
     await useSessionParticipantStore.getState().ensureParticipants(["s1"]);
 
-    expect(mockListParticipants).toHaveBeenCalledWith("s1");
+    expect(mockListParticipants).toHaveBeenCalledWith("s1", { fresh: false });
     expect(useSessionParticipantStore.getState().participantsBySession.s1).toEqual([
       {
         actorId: "member-1",
