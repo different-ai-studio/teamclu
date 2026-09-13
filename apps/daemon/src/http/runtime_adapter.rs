@@ -44,6 +44,10 @@ use super::events::SessionEvent;
 /// Parameters accepted by [`RuntimeAdapter::create_session`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateSessionParams {
+    /// Optional: every session runs the daemon's one local runtime (pi,
+    /// ADR-0014), and a legacy name (`claude`, `opencode`, …) is rerouted to
+    /// it. Still parsed when sent, so an unknown name is a 400.
+    #[serde(default = "local_agent_type")]
     pub agent_type: String,
     #[serde(default)]
     pub workspace_id: Option<String>,
@@ -55,6 +59,10 @@ pub struct CreateSessionParams {
     #[serde(default)]
     #[allow(dead_code)]
     pub metadata: Option<serde_json::Value>,
+}
+
+fn local_agent_type() -> String {
+    crate::runtime::local_agent_type_name().to_string()
 }
 
 /// Snapshot a created or fetched session — returned by both

@@ -5,6 +5,11 @@
   plain JS driving this same daemon's /v1/sessions API so every endpoint and
   every SSE frame is visible for debugging.
 
+  Every session runs pi, the daemon's only runtime (ADR-0014), so the page
+  sends no agent type. A pi session needs a working directory: the picker lists
+  this daemon's workspaces (GET /v1/workspaces, cloud-backed, so empty until the
+  daemon is onboarded) and preselects the default one.
+
   Auth: reads a session token from the `access_token` URL query param (the
   desktop mints one via /v1/auth/exchange and opens this URL); the token can
   also be pasted into the header field. SSE uses the documented
@@ -68,6 +73,7 @@
     #controls .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
     #model-id, #perm-request-id, #perm-option-id { width: 130px; font-family: var(--mono); font-size: 11px; }
     #session-pick { max-width: 230px; font-family: var(--mono); font-size: 11px; }
+    #workspace-pick { max-width: 200px; }
 
     main { flex: 1; display: flex; min-height: 0; }
     #log-pane { flex: 3; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); }
@@ -113,12 +119,8 @@
     <span class="dot" id="dot"></span>
     <span id="status">初始化…</span>
     <input id="token" placeholder="access_token" spellcheck="false" />
-    <select id="agent-type">
-      <option value="claude">claude</option>
-      <option value="opencode">opencode</option>
-      <option value="codex">codex</option>
-    </select>
-    <button id="btn-create" class="primary">新建会话</button>
+    <select id="workspace-pick" title="GET /v1/workspaces"><option value="">加载 workspace…</option></select>
+    <button id="btn-create" class="primary" title="POST /v1/sessions">新建 pi 会话</button>
     <select id="session-pick"><option value="">— 选择已有会话 —</option></select>
     <button id="btn-refresh-sessions" title="GET /v1/sessions">刷新列表</button>
   </header>
@@ -166,7 +168,6 @@
     const $ = (id) => document.getElementById(id);
     const params = new URLSearchParams(location.search);
     $('token').value = params.get('access_token') || '';
-    if (params.get('agent')) $('agent-type').value = params.get('agent');
     const base = location.origin; // same daemon that served this page
 
     // event: 名与 http/events.rs EventKind::as_str() 一一对应
@@ -177,6 +178,7 @@
     ];
 
     let sessionId = null;
+    let workspaces = []; // GET /v1/workspaces rows, for labels
     let es = null;       // active EventSource
     let lastSeq = null;  // gap detection
     let streamBody = null; // current streaming transcript node
@@ -331,18 +333,40 @@
 
     $('btn-create').onclick = async () => {
       try {
-        const snap = await api('POST', '/v1/sessions', { agent_type: $('agent-type').value });
+        const workspace_id = $('workspace-pick').value;
+        const snap = await api('POST', '/v1/sessions', workspace_id ? { workspace_id } : {});
         attach(snap.session_id);
         await refreshSessions();
       } catch (e) { setStatus('创建失败: ' + e.message, 'err'); }
     };
+
+    // Empty value = let the daemon use its default workspace.
+    async function refreshWorkspaces() {
+      const body = await api('GET', '/v1/workspaces');
+      workspaces = body?.workspaces ?? [];
+      const pick = $('workspace-pick');
+      if (!workspaces.length) {
+        pick.replaceChildren(new Option('无 workspace（daemon 未接入团队？）', ''));
+        return;
+      }
+      pick.replaceChildren(...workspaces.map((w) => {
+        const opt = new Option(w.display_name + (w.is_default ? '（默认）' : ''), w.workspace_id);
+        opt.title = w.path;
+        return opt;
+      }));
+      const wanted = params.get('workspace');
+      const preferred = workspaces.find((w) => w.workspace_id === wanted)
+        ?? workspaces.find((w) => w.is_default);
+      if (preferred) pick.value = preferred.workspace_id;
+    }
+    const workspaceName = (id) => workspaces.find((w) => w.workspace_id === id)?.display_name ?? (id ? id.slice(0, 8) : '默认');
 
     async function refreshSessions() {
       const list = await api('GET', '/v1/sessions');
       const pick = $('session-pick');
       pick.replaceChildren(new Option('— 选择已有会话 —', ''));
       for (const s of list) {
-        const label = `${s.session_id.slice(0, 8)} · ${s.agent_type} · ${s.state}`;
+        const label = `${s.session_id.slice(0, 8)} · ${workspaceName(s.workspace_id)} · ${s.state}`;
         pick.appendChild(new Option(label, s.session_id));
       }
       if (sessionId) pick.value = sessionId;
@@ -405,7 +429,13 @@
       setStatus('缺少 access_token — 粘贴到右侧输入框，或由桌面端带 ?access_token= 打开', 'err');
     } else {
       setStatus('就绪 — 新建会话或从列表选择');
-      refreshSessions().catch((e) => setStatus('无法列出会话: ' + e.message, 'err'));
+      refreshWorkspaces()
+        .catch((e) => {
+          $('workspace-pick').replaceChildren(new Option('workspace 列表加载失败', ''));
+          setStatus('无法列出 workspace: ' + e.message, 'err');
+        })
+        .then(() => refreshSessions())
+        .catch((e) => setStatus('无法列出会话: ' + e.message, 'err'));
       // ?session=<uuid> 直接附着已有会话（backlog 会经 SSE 回放进事件流）
       if (params.get('session')) attach(params.get('session'));
     }

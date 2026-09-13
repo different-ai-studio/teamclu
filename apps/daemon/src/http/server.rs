@@ -572,6 +572,25 @@ mod tests {
         panic!("expected 429 within 10 requests; last status was {last_status}");
     }
 
+    /// pi is the only runtime, so a client need not name one: an empty body
+    /// creates a session reported as `pi`.
+    #[tokio::test]
+    async fn create_session_without_agent_type_runs_pi() {
+        let (handle, client, base, session_token) = boot().await;
+
+        let resp = client
+            .post(format!("{base}/v1/sessions"))
+            .bearer_auth(&session_token)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 201);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["agent_type"], "pi");
+        handle.shutdown().await;
+    }
+
     #[tokio::test]
     async fn create_session_and_stream_tokens() {
         let (handle, client, base, session_token) = boot().await;
