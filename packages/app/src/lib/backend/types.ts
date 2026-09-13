@@ -470,7 +470,12 @@ interface CreditUsageByModel extends CreditUsageSummary {
 }
 
 interface CreditUsageByActor extends CreditUsageSummary {
-  /** null = the unattributed bucket; render a localized label, never a raw id. */
+  /**
+   * Attributed actor for the leaderboard. Agent usage is rolled up to
+   * `agents.owner_member_id` (the human owner); member usage stays on the
+   * member. null = the unattributed bucket; render a localized label, never a
+   * raw id.
+   */
   actorId: string | null;
   displayName: string | null;
 }

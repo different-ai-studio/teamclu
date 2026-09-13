@@ -22,7 +22,7 @@ export type UsageReport = {
   endUtc: string;
   summary: UsageSummary;
   byModel: Array<{ publicModelId: string } & UsageSummary>;
-  byActor: Array<{ actorId: string | null } & UsageSummary>;
+  byActor: Array<{ actorId: string | null; displayName: string | null } & UsageSummary>;
 };
 
 const CST_OFFSET_MS = 8 * 60 * 60 * 1000;
@@ -95,17 +95,24 @@ export async function usageReport(
      group by public_model_id
      order by sum(credits) desc`;
 
+  // Attribute usage to humans on the leaderboard: agent spend rolls up to
+  // agents.owner_member_id via ai_gateway_usage_bill_to (security definer —
+  // the ai_gateway role cannot read actors/agents under RLS). Members stay
+  // themselves. Null actor_id sorts last (UI leaves that bucket unranked).
   const byActor = await sql<any[]>`
-    select actor_id,
-           coalesce(sum(credits),0)::text as credits,
-           coalesce(sum(input_tokens),0)::text as input_tokens,
-           coalesce(sum(cached_input_tokens),0)::text as cached_input_tokens,
-           coalesce(sum(output_tokens),0)::text as output_tokens,
+    select b.bill_to_actor_id as actor_id,
+           max(b.display_name) as display_name,
+           coalesce(sum(l.credits),0)::text as credits,
+           coalesce(sum(l.input_tokens),0)::text as input_tokens,
+           coalesce(sum(l.cached_input_tokens),0)::text as cached_input_tokens,
+           coalesce(sum(l.output_tokens),0)::text as output_tokens,
            count(*)::text as requests
-      from amux.ai_usage_logs
-     where team_id = ${teamId}::uuid and created_at >= ${start} and created_at < ${end}
-     group by actor_id
-     order by sum(credits) desc`;
+      from amux.ai_usage_logs l
+      left join amux.ai_gateway_usage_bill_to(${teamId}::uuid) b
+        on b.usage_actor_id = l.actor_id
+     where l.team_id = ${teamId}::uuid and l.created_at >= ${start} and l.created_at < ${end}
+     group by b.bill_to_actor_id
+     order by (b.bill_to_actor_id is null) asc, sum(l.credits) desc`;
 
   return {
     range,
@@ -113,7 +120,11 @@ export async function usageReport(
     endUtc: end.toISOString(),
     summary: summarize(total),
     byModel: byModel.map((r) => ({ publicModelId: r.public_model_id, ...summarize(r) })),
-    byActor: byActor.map((r) => ({ actorId: r.actor_id, ...summarize(r) })),
+    byActor: byActor.map((r) => ({
+      actorId: r.actor_id,
+      displayName: r.display_name ?? null,
+      ...summarize(r),
+    })),
   };
 }
 
