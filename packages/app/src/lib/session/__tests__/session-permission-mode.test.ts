@@ -38,7 +38,6 @@ import {
   isUnattendedSessionSource,
   resetSessionPermissionModesForTests,
   setSessionPermissionMode,
-  shouldAutoAllowSessionPermissions,
   subscribeSessionPermissionModes,
 } from "@/lib/session/session-permission-mode";
 
@@ -52,7 +51,6 @@ describe("session-permission-mode", () => {
 
   it("defaults to default for unknown session", () => {
     expect(getSessionPermissionMode("sess-1")).toBe("default");
-    expect(shouldAutoAllowSessionPermissions("sess-1")).toBe(false);
   });
 
   it("defaults gateway and cron sessions to fullAccess", () => {
@@ -62,11 +60,9 @@ describe("session-permission-mode", () => {
 
     expect(getSessionPermissionMode("gw-1", "gateway")).toBe("fullAccess");
     expect(getSessionPermissionMode("cron-1", "cron")).toBe("fullAccess");
-    expect(shouldAutoAllowSessionPermissions("gw-1")).toBe(false);
 
     listRows.push({ id: "gw-1", source: "gateway" });
     expect(getSessionPermissionMode("gw-1")).toBe("fullAccess");
-    expect(shouldAutoAllowSessionPermissions("gw-1")).toBe(true);
   });
 
   it("persists fullAccess per session", () => {
@@ -75,7 +71,6 @@ describe("session-permission-mode", () => {
 
     expect(getSessionPermissionMode("sess-a")).toBe("fullAccess");
     expect(getSessionPermissionMode("sess-b")).toBe("default");
-    expect(shouldAutoAllowSessionPermissions("sess-a")).toBe(true);
   });
 
   it("removes key when set back to default", () => {
@@ -93,7 +88,6 @@ describe("session-permission-mode", () => {
 
     setSessionPermissionMode("gw-1", "default");
     expect(getSessionPermissionMode("gw-1")).toBe("default");
-    expect(shouldAutoAllowSessionPermissions("gw-1")).toBe(false);
 
     setSessionPermissionMode("gw-1", "fullAccess");
     expect(getSessionPermissionMode("gw-1")).toBe("fullAccess");

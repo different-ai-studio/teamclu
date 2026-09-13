@@ -2,6 +2,8 @@ import { create as createProtoMessage, toBinary } from '@bufbuild/protobuf'
 import { runtimeHintsForAgents } from '@/lib/agent/runtime-state-resolve'
 import { getBackend } from '@/lib/backend'
 import { runtimeStart, setModel } from '@/lib/daemon/teamclu-rpc'
+import { getSessionPermissionMode } from '@/lib/session/session-permission-mode'
+import { sessionPermissionModeToWire } from '@/lib/session/session-permission-mode-wire'
 import { resolveAmuxAgentType } from '@/lib/agent/amux-agent-type'
 import { seedRuntimeStateAfterStart } from '@/lib/agent/seed-runtime-state'
 import { runtimeForkFromForSession } from '@/lib/session/thread-fork'
@@ -799,12 +801,16 @@ export async function startAgentRuntimesAsync(
       // RPC topic is amux/{team}/{agentActorId}/rpc/req — the routing segment
       // is the agent's actor_id.
       const forkFrom = runtimeForkFromForSession(args.sessionId);
+      const permissionMode = sessionPermissionModeToWire(
+        getSessionPermissionMode(args.sessionId),
+      );
       const runtimeStartArgs = {
         targetActorId: agentActorId,
         ...runtimeStartWorkspaceArgs(runtimeWorkspaceId, isLocalDaemonAgent ? localWorktree : ''),
         sessionId: args.sessionId,
         agentType,
         initialPrompt: '',
+        permissionMode,
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         ...(forkFrom ? { forkFrom } : {}),
         timeoutMs: rpcTimeoutMs,

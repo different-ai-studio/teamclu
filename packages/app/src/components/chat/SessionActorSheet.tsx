@@ -38,6 +38,8 @@ import {
   resolveAgentRuntimeWorkspaceId,
   runtimeStartWorkspaceArgs,
 } from '@/lib/teamclu/resolve-runtime-start-workspace'
+import { getSessionPermissionMode } from '@/lib/session/session-permission-mode'
+import { sessionPermissionModeToWire } from '@/lib/session/session-permission-mode-wire'
 
 /** Temporarily disabled — re-enable when session kick/remove is ready to ship. */
 const SESSION_REMOVE_PARTICIPANT_ENABLED = false
@@ -749,6 +751,7 @@ export function SessionActorPanel({ sessionId, teamId }: SessionActorPanelProps)
           sessionId,
           agentType,
           initialPrompt: '',
+          permissionMode: sessionPermissionModeToWire(getSessionPermissionMode(sessionId)),
         })
         if (!result.accepted) {
           // Tolerate "already running"-style rejections — log and proceed.

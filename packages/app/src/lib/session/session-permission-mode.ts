@@ -80,10 +80,9 @@ function touchOrder(payload: StoredPayload, id: string): void {
 }
 
 function lookupSessionSource(sessionId: string): string | null {
-  return (
-    useSessionListStore.getState().rows.find((r) => r.id === sessionId)?.source ??
-    null
-  );
+  const rows = useSessionListStore.getState().rows;
+  if (!rows?.length) return null;
+  return rows.find((r) => r.id === sessionId)?.source ?? null;
 }
 
 export function subscribeSessionPermissionModes(cb: () => void): () => void {
@@ -135,10 +134,6 @@ export function setSessionPermissionMode(
   }
 
   writePayload(payload);
-}
-
-export function shouldAutoAllowSessionPermissions(sessionId: string): boolean {
-  return getSessionPermissionMode(sessionId) === "fullAccess";
 }
 
 export function useSessionPermissionMode(

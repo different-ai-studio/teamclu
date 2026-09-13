@@ -2643,6 +2643,7 @@ impl DaemonServer {
                     "",
                     false,
                     entry.fork_from,
+                    "",
                 )
                 .await
             {
@@ -4188,6 +4189,7 @@ pub(crate) mod tests {
                 "",
                 false,
                 None,
+                "",
             )
             .await;
         let err = match result {
@@ -4233,6 +4235,7 @@ pub(crate) mod tests {
                 "",
                 false,
                 None,
+                "",
             )
             .await;
 
@@ -4274,6 +4277,7 @@ pub(crate) mod tests {
                 "",
                 false,
                 None,
+                "",
             )
             .await;
 
@@ -4339,6 +4343,7 @@ pub(crate) mod tests {
                 "",
                 false,
                 None,
+                "",
             )
             .await;
 
@@ -4419,6 +4424,7 @@ pub(crate) mod tests {
                 "",
                 false,
                 None,
+                "",
             )
             .await
             .unwrap_or_else(|error| panic!("desktop spawn failed: {}", error.error_message));
@@ -4499,6 +4505,7 @@ pub(crate) mod tests {
                 "",
                 false,
                 None,
+                "",
             )
             .await
             .unwrap_or_else(|error| panic!("desktop spawn failed: {}", error.error_message));

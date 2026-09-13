@@ -3,10 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useSessionStore } from '@/stores/session-store';
 import { useSessionSelectionStore } from '@/stores/session-selection-store';
 import { useV2StreamingStore } from '@/stores/v2-streaming-store';
-import {
-  resetSessionPermissionModesForTests,
-  setSessionPermissionMode,
-} from '@/lib/session/session-permission-mode';
+import { resetSessionPermissionModesForTests } from '@/lib/session/session-permission-mode';
 import { PendingPermissionInline } from '../PendingPermissionInline';
 
 vi.mock('react-i18next', () => ({
@@ -49,28 +46,6 @@ describe('PendingPermissionInline', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStores();
-  });
-
-  it('does not render when session is in fullAccess mode', async () => {
-    setSessionPermissionMode('sess-full', 'fullAccess');
-    seedActiveSession('sess-full');
-    useSessionStore.setState({
-      pendingPermissions: [
-        {
-          permission: {
-            id: 'perm-1',
-            permission: 'bash',
-            patterns: ['ls'],
-          },
-          childSessionId: null,
-          ownerSessionId: 'sess-full',
-        },
-      ],
-    });
-
-    render(<PendingPermissionInline />);
-
-    expect(screen.queryByTestId('streaming-agents-dock')).toBeNull();
   });
 
   it('renders permission request details', async () => {

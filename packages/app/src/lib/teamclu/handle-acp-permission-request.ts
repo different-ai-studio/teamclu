@@ -1,8 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appDisplayName } from "@/lib/config/build-config";
 import { notificationService } from "@/lib/ui/notification-service";
-import { shouldAutoAllowSessionPermissions } from "@/lib/session/session-permission-mode";
-import { replyAcpPermission } from "@/lib/teamclu/reply-acp-permission";
 import { wasPermissionRecentlyResolved } from "@/lib/teamclu/handle-session-event-permission-resolved";
 import type { StreamingPermissionRequest } from "@/stores/v2-streaming-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
@@ -10,7 +8,6 @@ import { useCurrentTeamStore } from "@/stores/current-team";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useSessionSelectionStore } from "@/stores/session-selection-store";
 
-const inFlightRequestIds = new Set<string>();
 const osNotifiedRequestIds = new Set<string>();
 
 function requesterActorIdFromRequest(request: StreamingPermissionRequest): string {
@@ -21,7 +18,7 @@ function requesterActorIdFromRequest(request: StreamingPermissionRequest): strin
   );
 }
 
-/** Interactive / auto-allow allowed when legacy (empty) or current member is requester. */
+/** Interactive Allow/Deny when legacy (empty) or current member is requester. */
 export function canCurrentMemberActOnPermission(
   request: StreamingPermissionRequest,
   currentMemberId?: string | null,
@@ -97,11 +94,6 @@ export async function handleAcpPermissionRequest(args: {
     return;
   }
 
-  if (inFlightRequestIds.has(requestId)) {
-    console.info("[notify-diag] acp-permission:skipped", { reason: "in_flight", requestId });
-    return;
-  }
-
   const store = useV2StreamingStore.getState();
   const normalized: StreamingPermissionRequest = {
     ...args.request,
@@ -128,7 +120,7 @@ export async function handleAcpPermissionRequest(args: {
   const canAct = canCurrentMemberActOnPermission(normalized);
 
   // Bystander with stamped requester: still store pending for waiting banner,
-  // but never auto-allow or show interactive controls (UI filters separately).
+  // but never show interactive controls (UI filters separately).
   if (!canAct) {
     console.info("[notify-diag] acp-permission:skipped", {
       reason: "bystander",
@@ -139,31 +131,10 @@ export async function handleAcpPermissionRequest(args: {
     return;
   }
 
-  if (!shouldAutoAllowSessionPermissions(args.sessionId)) {
-    writePending(true);
-    return;
-  }
-
-  console.info("[notify-diag] acp-permission:auto-allow", { sessionId: args.sessionId, requestId });
-  inFlightRequestIds.add(requestId);
-  try {
-    await replyAcpPermission({
-      sessionId: args.sessionId,
-      agentActorId: args.agentActorId,
-      requestId,
-      decision: "allow",
-    });
-  } catch (err) {
-    console.error("[notify-diag] acp-permission:auto-allow-failed", { requestId, err });
-    console.error("[permission] session auto-allow failed", err);
-    writePending(true);
-  } finally {
-    inFlightRequestIds.delete(requestId);
-  }
+  writePending(true);
 }
 
 /** Test helper */
 export function resetAcpPermissionInFlightForTests(): void {
-  inFlightRequestIds.clear();
   osNotifiedRequestIds.clear();
 }

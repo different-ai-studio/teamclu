@@ -7,7 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { flushSessionPendingPermissions } from "@/lib/teamclu/flush-session-pending-permissions";
+import { syncSessionPermissionModeToDaemon } from "@/lib/teamclu/sync-session-permission-mode";
 import {
   setSessionPermissionMode,
   useSessionPermissionMode,
@@ -35,10 +35,17 @@ export function PermissionApprovalModeSelect({
 
   const handleSelect = (next: SessionPermissionMode) => {
     if (next === mode) return;
+    const previous = mode;
     setSessionPermissionMode(sessionId, next);
-    if (next === "fullAccess") {
-      void flushSessionPendingPermissions(sessionId);
-    }
+    void syncSessionPermissionModeToDaemon(sessionId, next).then(({ accepted }) => {
+      if (!accepted) {
+        setSessionPermissionMode(sessionId, previous);
+        console.warn("[permission] daemon did not apply permission mode change", {
+          sessionId,
+          mode: next,
+        });
+      }
+    });
   };
 
   const label =

@@ -169,7 +169,7 @@ TeamClu 的方案：随 daemon 分发一个 **TeamClu pi extension**（TS 单文
 
 「始终允许」语义在 extension 内记忆（per session / workspace 规则文件）。
 
-前端侧对应的是 `PermissionCard`、`PermissionApprovalPanel`、`PermissionApprovalModeSelect`、`PendingPermissionInline`、`PermissionWaitingBanner`，以及 `lib/teamclu/reply-acp-permission.ts`、`handle-acp-permission-request.ts`、`flush-session-pending-permissions.ts`。
+前端侧对应的是 `PermissionCard`、`PermissionApprovalPanel`、`PermissionApprovalModeSelect`、`PendingPermissionInline`、`PermissionWaitingBanner`，以及 `lib/teamclu/reply-acp-permission.ts`、`handle-acp-permission-request.ts`（完全访问由 daemon 本地放行，客户端不再自动 reply ACP）。会话切到完全访问时，daemon 在 pi 侧 auto-grant 后会广播 `SessionEvent.PermissionResolved`，各端据此收掉已展示的权限卡片。
 
 一个产品层面的设计：**权限卡片的呈现由 `permission-presentation.ts` 决定**，而不是每个调用点自己拼。这样「同样的权限请求在任何入口看起来一样」是有保证的。
 

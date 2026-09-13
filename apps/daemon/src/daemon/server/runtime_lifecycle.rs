@@ -162,6 +162,24 @@ impl DaemonServer {
         Ok(())
     }
 
+    pub(crate) async fn session_has_gateway_binding(&self, session_id: &str) -> bool {
+        if session_id.is_empty() {
+            return false;
+        }
+        match self.backend.get_session_binding(session_id).await {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(e) => {
+                warn!(
+                    session_id,
+                    error = %e,
+                    "session gateway binding lookup failed; defaulting to interactive permission"
+                );
+                false
+            }
+        }
+    }
+
     pub(crate) async fn apply_start_runtime(
         &mut self,
         agent_type: amux::AgentType,
@@ -173,6 +191,7 @@ impl DaemonServer {
         requester_actor_id: &str,
         reset_backend_binding: bool,
         fork_from: Option<(String, String)>,
+        client_permission_mode: &str,
     ) -> Result<StartRuntimeOutcome, StartRuntimeError> {
         info!(workspace_id, worktree, session_id, "apply_start_runtime");
 
@@ -493,6 +512,35 @@ impl DaemonServer {
             // initial attach catchup (e.g. client dedup runtimeStart on send).
             // Replay from the cursor so @-mentioned rows still reach send_prompt.
             self.catchup_runtime(&existing).await;
+            // Dedup runtimeStart often omits permission_mode; do not treat that as
+            // "switch back to Ask" — the live pi route may already be Full from RPC.
+            if !client_permission_mode.trim().is_empty() {
+                let is_gateway = self.session_has_gateway_binding(session_id).await;
+                let permission = crate::runtime::PermissionPolicy::resolve_for_session(
+                    is_gateway,
+                    client_permission_mode,
+                );
+                let cleared_result = {
+                    let mut agents = self.agents.lock().await;
+                    agents
+                        .set_session_permission_policy(session_id, permission)
+                        .await
+                };
+                match cleared_result {
+                    Ok(cleared) => {
+                        self.publish_auto_granted_permissions(session_id, &cleared, "")
+                            .await;
+                    }
+                    Err(e) => {
+                        warn!(
+                            session_id,
+                            error = %e,
+                            effective = %permission,
+                            "apply_start_runtime: dedup reuse permission sync failed"
+                        );
+                    }
+                }
+            }
             return Ok(StartRuntimeOutcome {
                 runtime_id: existing,
                 session_id: session_id.to_string(),
@@ -604,29 +652,18 @@ impl DaemonServer {
         // or the durable `gateway_key`, so RuntimeStart from the desktop keeps
         // the same full-access policy the gateway spawn path already uses
         // (`is_gateway` ⇒ `PermissionPolicy::Full`).
-        let is_gateway = if session_id.is_empty() {
-            false
-        } else {
-            match self.backend.get_session_binding(session_id).await {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
-                Err(e) => {
-                    warn!(
-                        session_id,
-                        error = %e,
-                        "apply_start_runtime: session binding lookup failed; defaulting to ask"
-                    );
-                    false
-                }
-            }
-        };
+        let is_gateway = self.session_has_gateway_binding(session_id).await;
+        let permission = crate::runtime::PermissionPolicy::resolve_for_session(
+            is_gateway,
+            client_permission_mode,
+        );
         let context = self
             .assemble_execution_context(
                 &resolved_worktree,
                 None,
                 Some(&ws_id),
                 is_gateway,
-                None,
+                Some(permission),
             )
             .await
             .map_err(|e| StartRuntimeError {
@@ -952,6 +989,7 @@ impl DaemonServer {
                 &request.requester_actor_id,
                 start.reset_backend_binding,
                 fork_from.clone(),
+                &start.permission_mode,
             )
             .await;
 
@@ -983,6 +1021,7 @@ impl DaemonServer {
                             &request.requester_actor_id,
                             start.reset_backend_binding,
                             fork_from,
+                            &start.permission_mode,
                         )
                         .await
                     }
@@ -1100,6 +1139,115 @@ impl DaemonServer {
                 success,
                 error,
             })),
+        }
+    }
+
+    /// Broadcast [`PermissionResolved`] for pi-side auto-grants (full-access policy).
+    pub(crate) async fn publish_auto_granted_permissions(
+        &mut self,
+        session_id: &str,
+        cleared_request_ids: &[String],
+        resolved_by_peer_id: &str,
+    ) {
+        for request_id in cleared_request_ids {
+            self.permissions.try_resolve_permission(request_id);
+            self.publish_session_event(
+                session_id,
+                amux::SessionEvent {
+                    event: Some(amux::session_event::Event::PermissionResolved(
+                        amux::PermissionResolved {
+                            request_id: request_id.clone(),
+                            resolved_by_peer_id: resolved_by_peer_id.to_string(),
+                            granted: true,
+                        },
+                    )),
+                },
+            )
+            .await;
+        }
+    }
+
+    pub(crate) async fn handle_session_permission_mode(
+        &mut self,
+        request: &crate::proto::teamclu::RpcRequest,
+        body: &crate::proto::teamclu::SessionPermissionModeRequest,
+    ) -> crate::proto::teamclu::RpcResponse {
+        use crate::proto::teamclu::{
+            rpc_response, RpcResponse, SessionPermissionModeResult,
+        };
+
+        let session_id = body.session_id.trim();
+        if session_id.is_empty() {
+            return RpcResponse {
+                request_id: request.request_id.clone(),
+                success: false,
+                error: "session_id required".to_string(),
+                requester_client_id: request.requester_client_id.clone(),
+                requester_actor_id: request.requester_actor_id.clone(),
+                result: Some(rpc_response::Result::SessionPermissionModeResult(
+                    SessionPermissionModeResult {
+                        accepted: false,
+                        effective_mode: String::new(),
+                        rejected_reason: "session_id required".to_string(),
+                    },
+                )),
+            };
+        }
+
+        let is_gateway = self.session_has_gateway_binding(session_id).await;
+        let permission = crate::runtime::PermissionPolicy::resolve_for_session(
+            is_gateway,
+            &body.permission_mode,
+        );
+        let effective_mode = permission.as_wire_str().to_string();
+
+        let sync_result = {
+            let mut agents = self.agents.lock().await;
+            agents
+                .set_session_permission_policy(session_id, permission)
+                .await
+        };
+
+        match sync_result {
+            Ok(cleared) => {
+                self.publish_auto_granted_permissions(
+                    session_id,
+                    &cleared,
+                    &request.requester_actor_id,
+                )
+                .await;
+                RpcResponse {
+                    request_id: request.request_id.clone(),
+                    success: true,
+                    error: String::new(),
+                    requester_client_id: request.requester_client_id.clone(),
+                    requester_actor_id: request.requester_actor_id.clone(),
+                    result: Some(rpc_response::Result::SessionPermissionModeResult(
+                        SessionPermissionModeResult {
+                            accepted: true,
+                            effective_mode,
+                            rejected_reason: String::new(),
+                        },
+                    )),
+                }
+            }
+            Err(e) => {
+                let reason = e.to_string();
+                RpcResponse {
+                    request_id: request.request_id.clone(),
+                    success: false,
+                    error: reason.clone(),
+                    requester_client_id: request.requester_client_id.clone(),
+                    requester_actor_id: request.requester_actor_id.clone(),
+                    result: Some(rpc_response::Result::SessionPermissionModeResult(
+                        SessionPermissionModeResult {
+                            accepted: false,
+                            effective_mode,
+                            rejected_reason: reason,
+                        },
+                    )),
+                }
+            }
         }
     }
 }

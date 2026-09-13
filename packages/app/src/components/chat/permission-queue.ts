@@ -1,5 +1,4 @@
 import { resolvePendingPermissionActivityOwner } from "@/lib/session/session-list-activity";
-import type { SessionPermissionMode } from "@/lib/session/session-permission-mode";
 import type {
   PendingPermissionEntry,
   Session,
@@ -87,11 +86,7 @@ export function hasVisiblePendingPermissions(
   sessions: Session[],
   pendingPermissions: PendingPermissionEntry[],
   acpStreamingPermissions: PendingPermissionEntry[] = [],
-  sessionPermissionMode: SessionPermissionMode = "default",
 ) {
-  if (sessionPermissionMode === "fullAccess") {
-    return false;
-  }
   return (
     collectVisiblePermissions(
       activeSessionId,

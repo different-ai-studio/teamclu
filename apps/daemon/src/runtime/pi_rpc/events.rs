@@ -847,6 +847,102 @@ mod tests {
         }
     }
 
+    /// Issue #1332: interactive sessions default to Ask — tool confirm must
+    /// surface an ACP permission_request (the round-trip the issue describes).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn issue_1332_confirm_ask_forwards_acp_permission_request() {
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (route, mut rx) = test_route(key.clone(), "/s/a.jsonl");
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+        let client = test_client();
+
+        let ev = serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "perm_ask_1",
+            "sessionId": "pi:/s/a.jsonl",
+            "method": "confirm",
+            "message": "teamclu.always-pattern=bash:*"
+        });
+        handle_event(&shared, &key, &client, &ev).await;
+
+        assert!(
+            shared.permissions.lock().contains_key("perm_ask_1"),
+            "Ask mode must register a pending permission for ACP grant/deny"
+        );
+        let frame = rx.try_recv().expect("Ask mode must emit AcpPermissionRequest");
+        match frame.event.event.as_ref().unwrap() {
+            amux::acp_event::Event::PermissionRequest(pr) => {
+                assert_eq!(pr.request_id, "perm_ask_1");
+            }
+            other => panic!("expected permission_request, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "no duplicate permission events");
+    }
+
+    /// Issue #1332 fix: Full route auto-allows without ACP (no client round-trip).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn issue_1332_confirm_full_access_skips_acp_permission_request() {
+        use crate::runtime::permission_policy::PermissionPolicy;
+
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (mut route, mut rx) = test_route(key.clone(), "/s/a.jsonl");
+        route.permission = PermissionPolicy::Full;
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+        let client = test_client();
+
+        let ev = serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "perm_full_1",
+            "sessionId": "pi:/s/a.jsonl",
+            "method": "confirm",
+            "message": "teamclu.always-pattern=bash:*"
+        });
+        handle_event(&shared, &key, &client, &ev).await;
+
+        assert!(
+            !shared.permissions.lock().contains_key("perm_full_1"),
+            "Full mode must not register pending ACP permission"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "Full mode must not emit permission_request to clients"
+        );
+    }
+
+    /// Switching a session to Full auto-grants pi pending confirms and returns their ids
+    /// (daemon publishes PermissionResolved for these upstream).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn apply_full_access_policy_returns_cleared_pending_ids() {
+        use crate::runtime::permission_policy::PermissionPolicy;
+
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (route, _rx) = test_route(key.clone(), "/s/a.jsonl");
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+        shared.permissions.lock().insert(
+            "perm_pending".into(),
+            super::super::PendingPermission {
+                session_id: "pi:/s/a.jsonl".into(),
+                always_pattern: None,
+            },
+        );
+
+        let cleared = super::super::apply_session_permission_policy(
+            &shared,
+            "pi:/s/a.jsonl",
+            PermissionPolicy::Full,
+        )
+        .await;
+
+        assert_eq!(cleared, vec!["perm_pending".to_string()]);
+        assert!(!shared.permissions.lock().contains_key("perm_pending"));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn question_select_becomes_question_asked_event() {

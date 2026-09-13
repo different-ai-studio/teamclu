@@ -5,7 +5,9 @@ import userEvent from "@testing-library/user-event";
 const mocks = vi.hoisted(() => ({
   getMode: vi.fn(() => "default" as "default" | "fullAccess"),
   setSessionPermissionMode: vi.fn(),
-  flushSessionPendingPermissions: vi.fn(() => Promise.resolve()),
+  syncSessionPermissionModeToDaemon: vi.fn(() =>
+    Promise.resolve({ accepted: true, effectiveMode: "full_access" }),
+  ),
   subscribe: vi.fn((cb: () => void) => {
     mocks.listener = cb;
     return () => {};
@@ -25,8 +27,8 @@ vi.mock("@/lib/session/session-permission-mode", () => ({
   setSessionPermissionMode: mocks.setSessionPermissionMode,
 }));
 
-vi.mock("@/lib/teamclu/flush-session-pending-permissions", () => ({
-  flushSessionPendingPermissions: mocks.flushSessionPendingPermissions,
+vi.mock("@/lib/teamclu/sync-session-permission-mode", () => ({
+  syncSessionPermissionModeToDaemon: mocks.syncSessionPermissionModeToDaemon,
 }));
 
 vi.mock("@/lib/config/solo-build", () => ({
@@ -60,13 +62,43 @@ describe("PermissionApprovalModeSelect", () => {
     );
   });
 
-  it("sets fullAccess only for the active session and flushes pending", async () => {
+  it("sets fullAccess and syncs to daemon", async () => {
     const user = userEvent.setup();
     render(<PermissionApprovalModeSelect sessionId="sess-a" />);
     await user.click(screen.getByTestId("permission-approval-mode-trigger"));
     await user.click(screen.getByTestId("permission-mode-full-access"));
 
     expect(mocks.setSessionPermissionMode).toHaveBeenCalledWith("sess-a", "fullAccess");
-    expect(mocks.flushSessionPendingPermissions).toHaveBeenCalledWith("sess-a");
+    expect(mocks.syncSessionPermissionModeToDaemon).toHaveBeenCalledWith(
+      "sess-a",
+      "fullAccess",
+    );
+  });
+
+  it("rolls back local mode when daemon rejects the change", async () => {
+    mocks.syncSessionPermissionModeToDaemon.mockResolvedValueOnce({
+      accepted: false,
+      effectiveMode: "",
+    });
+    const user = userEvent.setup();
+    render(<PermissionApprovalModeSelect sessionId="sess-a" />);
+    await user.click(screen.getByTestId("permission-approval-mode-trigger"));
+    await user.click(screen.getByTestId("permission-mode-full-access"));
+
+    expect(mocks.setSessionPermissionMode).toHaveBeenCalledWith("sess-a", "fullAccess");
+    await vi.waitFor(() => {
+      expect(mocks.setSessionPermissionMode).toHaveBeenCalledWith("sess-a", "default");
+    });
+  });
+
+  it("syncs default mode to daemon when switching back", async () => {
+    mocks.getMode.mockReturnValue("fullAccess");
+    const user = userEvent.setup();
+    render(<PermissionApprovalModeSelect sessionId="sess-a" />);
+    await user.click(screen.getByTestId("permission-approval-mode-trigger"));
+    await user.click(screen.getByTestId("permission-mode-default"));
+
+    expect(mocks.setSessionPermissionMode).toHaveBeenCalledWith("sess-a", "default");
+    expect(mocks.syncSessionPermissionModeToDaemon).toHaveBeenCalledWith("sess-a", "default");
   });
 });
