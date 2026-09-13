@@ -1968,6 +1968,8 @@
       "currentTeam": "当前团队",
       "noTeam": "加入或创建团队后再配置 Daemon Agent。",
       "noAgent": "本机暂未关联 Daemon Agent。",
+      "offlineTitle": "无法连接服务器",
+      "offlineDesc": "请检查网络连接，网络恢复后会自动重新加载。",
       "quickChatBlockedTitle": "无法一键开聊",
       "quickChatBlockedDesc": "本机 Agent 尚未加入当前团队。完成下方绑定后，即可使用侧边栏的「新聊天」与本机 Agent 开聊。",
       "bindLocalAgent": "绑定本机 Agent",
