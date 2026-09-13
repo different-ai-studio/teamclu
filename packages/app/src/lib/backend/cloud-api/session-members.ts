@@ -1,5 +1,6 @@
 import type { ActorDirectoryEntry, SessionMemberCandidate, SessionMembersBackend } from "@/lib/backend/types";
 import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import { createCoalescedRead } from "@/lib/backend/cloud-api/coalesced-read";
 
 type CloudSessionParticipant = {
   sessionId: string;
@@ -71,10 +72,26 @@ function mapActor(row: CloudActorEntry): ActorDirectoryEntry {
 }
 
 export function createSessionMembersModule(client: CloudApiClient): SessionMembersBackend {
+  // A session always has its creator: an empty roster is a transient answer, never one to reuse.
+  const participantsRead = createCoalescedRead<CloudSessionParticipant[]>({
+    cacheable: (rows) => rows.length > 0,
+  });
   return {
-    async listParticipants(sessionId) {
-      const out = await client.get<{ items: CloudSessionParticipant[] }>(`/v1/sessions/${encodeURIComponent(sessionId)}/participants`);
-      return out.items.map(mapParticipant);
+    async listParticipants(sessionId, listOptions) {
+      const items = await participantsRead.get(
+        sessionId,
+        async () =>
+          (
+            await client.get<{ items: CloudSessionParticipant[] }>(
+              `/v1/sessions/${encodeURIComponent(sessionId)}/participants`,
+            )
+          ).items,
+        { fresh: listOptions?.fresh },
+      );
+      return items.map(mapParticipant);
+    },
+    forgetParticipants(sessionId) {
+      participantsRead.invalidate(sessionId);
     },
     async listSessionIdsForActor(actorId) {
       const out = await client.get<{ items: string[] }>(
@@ -96,10 +113,18 @@ export function createSessionMembersModule(client: CloudApiClient): SessionMembe
         .map((row): SessionMemberCandidate => ({ ...row, is_present: false }));
     },
     async addParticipant(sessionId, actorId) {
-      await client.post<CloudSessionParticipant>(`/v1/sessions/${encodeURIComponent(sessionId)}/participants`, { actorId, role: "member" });
+      try {
+        await client.post<CloudSessionParticipant>(`/v1/sessions/${encodeURIComponent(sessionId)}/participants`, { actorId, role: "member" });
+      } finally {
+        participantsRead.invalidate(sessionId);
+      }
     },
     async removeParticipant(sessionId, actorId) {
-      await client.delete<void>(`/v1/sessions/${encodeURIComponent(sessionId)}/participants/${encodeURIComponent(actorId)}`);
+      try {
+        await client.delete<void>(`/v1/sessions/${encodeURIComponent(sessionId)}/participants/${encodeURIComponent(actorId)}`);
+      } finally {
+        participantsRead.invalidate(sessionId);
+      }
     },
   };
 }

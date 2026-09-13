@@ -7,6 +7,7 @@ import type {
   TeamMemberOptionBackendRow,
 } from "@/lib/backend/types";
 import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
+import { createCoalescedRead } from "@/lib/backend/cloud-api/coalesced-read";
 
 type CloudActor = {
   id: string;
@@ -107,6 +108,13 @@ function mapAgentAccess(row: CloudAgentAccess): AgentAccessBackendRow {
 }
 
 export function createActorsModule(client: CloudApiClient): ActorsBackend {
+  // No connected agent usually means one is still registering: ask again rather than reuse it.
+  const connectedAgentsRead = createCoalescedRead<CloudConnectedAgent[]>({
+    cacheable: (rows) => rows.length > 0,
+  });
+  // Ownership, visibility and names in the connected list can all move with a write here.
+  const afterWrite = <T>(request: Promise<T>): Promise<T> =>
+    request.finally(() => connectedAgentsRead.invalidate());
   return {
     async listActorDirectory(teamId) {
       const page = await client.get<Page<CloudActor>>(`/v1/teams/${encodeURIComponent(teamId)}/actors?limit=500`);
@@ -132,8 +140,16 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       }
     },
     async listConnectedAgents(teamId) {
-      const out = await client.get<{ items: CloudConnectedAgent[] }>(`/v1/teams/${encodeURIComponent(teamId)}/agents/connected`);
-      return out.items.map((row) => mapConnectedAgent(row, teamId));
+      const items = await connectedAgentsRead.get(
+        teamId,
+        async () =>
+          (
+            await client.get<{ items: CloudConnectedAgent[] }>(
+              `/v1/teams/${encodeURIComponent(teamId)}/agents/connected`,
+            )
+          ).items,
+      );
+      return items.map((row) => mapConnectedAgent(row, teamId));
     },
     async createAgentManagementGrant(agentId, teamId, scopes) {
       return client.post<{
@@ -151,28 +167,34 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       );
     },
     async ensureAgentForDevice(input) {
-      return await client.post<{
-        agentId: string;
-        token: string;
-        expiresAt: string | null;
-        created: boolean;
-      }>(`/v1/teams/${encodeURIComponent(input.teamId)}/agents/ensure-for-device`, {
-        deviceId: input.deviceId,
-        displayName: input.displayName,
-      });
+      return await afterWrite(
+        client.post<{
+          agentId: string;
+          token: string;
+          expiresAt: string | null;
+          created: boolean;
+        }>(`/v1/teams/${encodeURIComponent(input.teamId)}/agents/ensure-for-device`, {
+          deviceId: input.deviceId,
+          displayName: input.displayName,
+        }),
+      );
     },
     async updateOwnedAgentProfile(input) {
-      await client.patch<void>(`/v1/agents/${encodeURIComponent(input.agentId)}`, {
-        displayName: input.displayName ?? null,
-        visibility: input.visibility ?? null,
-      });
+      await afterWrite(
+        client.patch<void>(`/v1/agents/${encodeURIComponent(input.agentId)}`, {
+          displayName: input.displayName ?? null,
+          visibility: input.visibility ?? null,
+        }),
+      );
     },
     async updateCurrentActorProfile(input) {
       return mapActor(
-        await client.patch<CloudActor>(`/v1/actors/${encodeURIComponent(input.actorId)}/profile`, {
-          displayName: input.displayName,
-          avatarUrl: input.avatarUrl ?? null,
-        }),
+        await afterWrite(
+          client.patch<CloudActor>(`/v1/actors/${encodeURIComponent(input.actorId)}/profile`, {
+            displayName: input.displayName,
+            avatarUrl: input.avatarUrl ?? null,
+          }),
+        ),
       );
     },
     async updateAgentDefaults(input) {
@@ -181,7 +203,7 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       if (input.agentTypes !== undefined) body.supportedAgentTypes = input.agentTypes;
       if (input.agentKind !== undefined) body.agentKind = input.agentKind;
       if (input.defaultWorkspaceId !== undefined) body.defaultWorkspaceId = input.defaultWorkspaceId;
-      await client.patch<void>(`/v1/agents/${encodeURIComponent(input.agentId)}/defaults`, body);
+      await afterWrite(client.patch<void>(`/v1/agents/${encodeURIComponent(input.agentId)}/defaults`, body));
     },
     async listAgentAccess(agentId) {
       const out = await client.get<{ items: CloudAgentAccess[] }>(`/v1/agents/${encodeURIComponent(agentId)}/access`);
@@ -199,18 +221,22 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       }));
     },
     async upsertAgentAccess(input) {
-      await client.post<CloudAgentAccess>(`/v1/agents/${encodeURIComponent(input.agentId)}/access`, {
-        actorId: input.memberId,
-        role: input.permissionLevel,
-      });
+      await afterWrite(
+        client.post<CloudAgentAccess>(`/v1/agents/${encodeURIComponent(input.agentId)}/access`, {
+          actorId: input.memberId,
+          role: input.permissionLevel,
+        }),
+      );
     },
     async removeAgentAccess(accessId) {
-      await client.delete<void>(`/v1/actors/access/${encodeURIComponent(accessId)}`);
+      await afterWrite(client.delete<void>(`/v1/actors/access/${encodeURIComponent(accessId)}`));
     },
     async makeAgentPersonal(agentActorId: string): Promise<void> {
-      await client.post<void>(
-        `/v1/agents/${encodeURIComponent(agentActorId)}/make-personal`,
-        {},
+      await afterWrite(
+        client.post<void>(
+          `/v1/agents/${encodeURIComponent(agentActorId)}/make-personal`,
+          {},
+        ),
       );
     },
     async getMemberDefaultAgent(teamId: string): Promise<string | null> {
@@ -220,9 +246,11 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       return out.defaultAgentId ?? null;
     },
     async setMemberDefaultAgent(teamId: string, agentId: string | null): Promise<string | null> {
-      const out = await client.put<{ defaultAgentId: string | null }>(
-        `/v1/teams/${encodeURIComponent(teamId)}/members/me/default-agent`,
-        { agentId: agentId ?? null },
+      const out = await afterWrite(
+        client.put<{ defaultAgentId: string | null }>(
+          `/v1/teams/${encodeURIComponent(teamId)}/members/me/default-agent`,
+          { agentId: agentId ?? null },
+        ),
       );
       return out.defaultAgentId ?? null;
     },
@@ -233,9 +261,11 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       return out.defaultAgentId ?? null;
     },
     async setTeamDefaultAgent(teamId: string, agentId: string | null): Promise<string | null> {
-      const out = await client.put<{ defaultAgentId: string | null }>(
-        `/v1/teams/${encodeURIComponent(teamId)}/default-agent`,
-        { agentId: agentId ?? null },
+      const out = await afterWrite(
+        client.put<{ defaultAgentId: string | null }>(
+          `/v1/teams/${encodeURIComponent(teamId)}/default-agent`,
+          { agentId: agentId ?? null },
+        ),
       );
       return out.defaultAgentId ?? null;
     },

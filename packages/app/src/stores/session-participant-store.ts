@@ -60,8 +60,9 @@ type State = {
 
 async function loadParticipantInfoFromCloud(
   sessionId: string,
+  fresh: boolean,
 ): Promise<SessionParticipantInfo[]> {
-  const actors = await getBackend().sessionMembers.listParticipants(sessionId);
+  const actors = await getBackend().sessionMembers.listParticipants(sessionId, { fresh });
   return actors
     .filter((a) => isMentionableParticipant(a.actor_type))
     .map((actor) => ({
@@ -113,13 +114,16 @@ async function loadParticipantInfoFromLocalCache(
  * So an empty local read means "unknown", and we ask the cloud. A cloud answer
  * of zero participants is the only empty this store will publish.
  */
-async function loadParticipantInfo(sessionId: string): Promise<SessionParticipantInfo[]> {
+async function loadParticipantInfo(
+  sessionId: string,
+  fresh: boolean,
+): Promise<SessionParticipantInfo[]> {
   if (!isTauri()) {
-    return loadParticipantInfoFromCloud(sessionId);
+    return loadParticipantInfoFromCloud(sessionId, fresh);
   }
   const local = await loadParticipantInfoFromLocalCache(sessionId);
   if (local.length > 0) return local;
-  return loadParticipantInfoFromCloud(sessionId);
+  return loadParticipantInfoFromCloud(sessionId, fresh);
 }
 
 export const useSessionParticipantStore = create<State>((set, get) => ({
@@ -157,7 +161,7 @@ export const useSessionParticipantStore = create<State>((set, get) => ({
     await Promise.all(
       missing.map(async (sessionId) => {
         try {
-          const participants = await loadParticipantInfo(sessionId);
+          const participants = await loadParticipantInfo(sessionId, force);
           set((state) => ({
             participantsBySession: {
               ...state.participantsBySession,
@@ -184,6 +188,8 @@ export const useSessionParticipantStore = create<State>((set, get) => ({
     );
   },
   refreshSession: async (sessionId, teamId = null) => {
+    // Refreshes follow roster changes made elsewhere (MQTT, other clients), which never touch the backend's shared read.
+    getBackend().sessionMembers.forgetParticipants?.(sessionId);
     set((state) => ({
       loadingBySession: {
         ...state.loadingBySession,

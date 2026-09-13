@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   ),
   bumpSessionListLastMessage: vi.fn(),
   markSessionViewed: vi.fn().mockResolvedValue(undefined),
+  listParticipants: vi.fn(),
 }))
 
 vi.mock('@/lib/mqtt/mqtt-bridge', () => ({
@@ -81,10 +82,7 @@ vi.mock('@/lib/backend', () => {
         insertOutgoingMessage: mocks.insertOutgoingMessage,
       },
       sessionMembers: {
-        listParticipants: vi.fn().mockResolvedValue([
-          { id: 'agent-1', actor_type: 'agent' },
-          { id: 'agent-local', actor_type: 'agent' },
-        ]),
+        listParticipants: (...args: unknown[]) => mocks.listParticipants(...args),
       },
     }),
   }
@@ -127,6 +125,10 @@ describe('outbox sender', () => {
     mocks.runtimeStart.mockResolvedValue({})
     mocks.getDaemonLocalAgent.mockResolvedValue('opencode')
     mocks.cachedSessionWorkspaceForLocalDaemon.mockResolvedValue(null)
+    mocks.listParticipants.mockResolvedValue([
+      { id: 'agent-1', actor_type: 'agent' },
+      { id: 'agent-local', actor_type: 'agent' },
+    ])
   })
 
   afterEach(async () => {
@@ -216,6 +218,39 @@ describe('outbox sender', () => {
         }),
       )
     })
+  })
+
+  it('re-reads the roster when a mentioned agent is missing from the shared one', async () => {
+    // An agent added from another client can be absent from a roster read a
+    // moment earlier; dropping the mention there means its runtime never starts.
+    mocks.listParticipants.mockImplementation(async (_sessionId: unknown, options?: unknown) =>
+      (options as { fresh?: boolean } | undefined)?.fresh
+        ? [{ id: 'agent-new', actor_type: 'agent' }]
+        : [{ id: 'agent-1', actor_type: 'agent' }],
+    )
+    const { ensureAgentRuntimesForSession } = await import('@/lib/teamclu/ensure-agent-runtime')
+    const { useOutboxStore } = await import('@/stores/outbox-store')
+    const { startOutboxSender } = await import('../outbox-sender')
+
+    await useOutboxStore.getState().enqueue({
+      messageId: 'msg-new-agent',
+      teamId: 'team-1',
+      sessionId: 'sess-new',
+      senderActorId: 'member-1',
+      content: '@New agent please look',
+      model: null,
+      mentionActorIds: ['agent-new'],
+      attachmentUrls: [],
+    })
+
+    startOutboxSender()
+
+    await vi.waitFor(() => {
+      expect(ensureAgentRuntimesForSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'sess-new', agentActorIds: ['agent-new'] }),
+      )
+    })
+    expect(mocks.listParticipants).toHaveBeenCalledWith('sess-new', { fresh: true })
   })
 
   it('fans out to members even when the mentioned daemon runtime cannot be ensured', async () => {

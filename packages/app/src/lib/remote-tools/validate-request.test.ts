@@ -270,7 +270,7 @@ describe('authorizeRemoteToolRequest', () => {
     await expect(
       authorizeRemoteToolRequest('team-1', request, request.method.value!),
     ).resolves.toBe(true)
-    expect(mockListParticipants).toHaveBeenCalledWith('sess-1')
+    expect(mockListParticipants).toHaveBeenCalledWith('sess-1', { fresh: false })
   })
 
   it('falls back to actor directory API when store is cold', async () => {

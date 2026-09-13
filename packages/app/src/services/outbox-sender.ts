@@ -289,9 +289,12 @@ function kickRemoteRuntimeEnsure(
 ): void {
   if (entry.mentionActorIds.length === 0) return;
   void (async () => {
-    const participants = await getBackend().sessionMembers.listParticipants(
-      entry.sessionId,
-    );
+    const sessionMembers = getBackend().sessionMembers;
+    let participants = await sessionMembers.listParticipants(entry.sessionId);
+    // The shared roster read can predate someone who just joined; never drop a mention on it.
+    if (!entry.mentionActorIds.every((id) => participants.some((p) => p.id === id))) {
+      participants = await sessionMembers.listParticipants(entry.sessionId, { fresh: true });
+    }
     const agentActorIds = entry.mentionActorIds.filter((id) => {
       const row = participants.find((p) => p.id === id);
       return row ? isAgentActorType(row.actor_type) : false;
