@@ -16,36 +16,9 @@ import { Button } from "@/components/ui/button"
 import { getFeatures } from "@/lib/config/remote-features"
 import { useAutoUpdatePreferenceStore } from "@/stores/auto-update-preference-store"
 import { useUpdaterStore } from "@/stores/updater"
+import { useAutoRestartOrchestration } from "./use-auto-restart"
+import { isWindowsPlatform as isWindows } from "@/lib/platform"
 import { useShallow } from "zustand/react/shallow"
-
-/**
- * Windows applies the update on restart, not before it.
- *
- * macOS swaps the bundle during the install step, so by the time this dialog
- * appears the new version is already on disk and a restart merely picks it up.
- * An NSIS installer cannot patch a running install, so on Windows the download
- * is only staged — the installer runs while the app is closed. Same dialog,
- * materially different promise, so the copy has to say which one it is.
- */
-function isWindows(): boolean {
-  // Three sources, because the first one is going away: `navigator.platform` is
-  // a User-Agent-reduction target and a future WebView2 may freeze or empty it.
-  // Getting this wrong is not cosmetic — an emptied value would fall through to
-  // the macOS copy, and a Windows user told "the update has been installed"
-  // clicks "Restart later" and loses the staged installer.
-  const uaPlatform = (
-    navigator as Navigator & { userAgentData?: { platform?: string } }
-  ).userAgentData?.platform
-  // `startsWith`, not `includes`: platform strings are "Win32" / "Windows", and
-  // a substring test matches "darwin" — which is how the first version of this
-  // told every macOS user they were on Windows.
-  const platforms = [uaPlatform, navigator.platform]
-    .filter((p): p is string => !!p)
-    .map((p) => p.toLowerCase())
-  if (platforms.some((p) => p.startsWith('win'))) return true
-  // The UA spells it out in full ("Windows NT 10.0"), so it needs no such care.
-  return (navigator.userAgent ?? '').toLowerCase().includes('windows')
-}
 
 const releaseNotesMarkdownPlugins = [remarkGfm]
 
@@ -118,14 +91,15 @@ export function UpdateDialogContainer() {
   )
   const [dismissed, setDismissed] = useState(false)
   const [restarting, setRestarting] = useState(false)
-  const autoUpdateEnabled = useAutoUpdatePreferenceStore((s) => s.autoUpdateEnabled)
+  const mode = useAutoUpdatePreferenceStore((s) => s.mode)
+  const { restartCountdown, cancelAutoRestart } = useAutoRestartOrchestration()
 
-  // Background checks only when the user opted in (Settings → General).
+  // Background checks whenever the user is not on manual (Settings → General).
   useEffect(() => {
     if (
       !getFeatures().updater
       || import.meta.env.DEV
-      || !autoUpdateEnabled
+      || mode === "manual"
       || typeof window === "undefined"
       || !(window as unknown as { __TAURI__: unknown }).__TAURI__
     ) {
@@ -144,7 +118,7 @@ export function UpdateDialogContainer() {
       clearTimeout(timer)
       clearInterval(interval)
     }
-  }, [autoUpdateEnabled, checkForUpdates])
+  }, [mode, checkForUpdates])
 
   // Reset dismissed state when a new check starts
   useEffect(() => {
@@ -162,6 +136,11 @@ export function UpdateDialogContainer() {
     void restart()
   }, [restart])
 
+  const handleCancelAutoRestart = useCallback(() => {
+    cancelAutoRestart()
+    setDismissed(true)
+  }, [cancelAutoRestart])
+
   // A failed restart flips the store to `error`; let the user try again.
   useEffect(() => {
     if (update.state !== "ready") {
@@ -169,9 +148,11 @@ export function UpdateDialogContainer() {
     }
   }, [update.state])
 
-  // Updates download/install in the background; only prompt the user to restart (or report failure).
+  // Updates download/install in the background; only prompt the user to restart
+  // (or report failure) — and always resurface once an auto-restart countdown
+  // starts, even if the user dismissed an earlier "ready" notice.
   const showDialog =
-    !dismissed && (update.state === "ready" || update.state === "error")
+    (restartCountdown !== null || !dismissed) && (update.state === "ready" || update.state === "error")
 
   return (
     <Dialog open={showDialog} onOpenChange={() => handleDismiss()}>
@@ -249,17 +230,21 @@ export function UpdateDialogContainer() {
             <>
               <Button
                 variant="outline"
-                onClick={handleDismiss}
+                onClick={restartCountdown !== null ? handleCancelAutoRestart : handleDismiss}
                 disabled={restarting}
                 className="w-full sm:w-auto"
               >
-                {t('updater.restartLater', 'Restart later')}
+                {restartCountdown !== null
+                  ? t('updater.cancelAutoRestart', 'Cancel')
+                  : t('updater.restartLater', 'Restart later')}
               </Button>
               <Button onClick={handleRestart} disabled={restarting} className="w-full sm:w-auto">
                 <RefreshCw className={`h-4 w-4 mr-2${restarting ? " animate-spin" : ""}`} />
                 {restarting
                   ? t('updater.restarting', 'Restarting…')
-                  : t('updater.restartNow', 'Restart Now')}
+                  : restartCountdown !== null
+                    ? t('updater.restartingIn', 'Restarting in {{s}}s', { s: restartCountdown })
+                    : t('updater.restartNow', 'Restart Now')}
               </Button>
             </>
           )}

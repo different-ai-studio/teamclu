@@ -21,6 +21,9 @@ interface UpdateInfo {
   notes?: string
   progress?: number
   errorMessage?: string
+  /** Set when `state` first becomes "ready" — the auto-restart mode's 24h
+   * force-through ceiling is measured from here. */
+  readySince?: number
 }
 
 interface PendingUpdate {
@@ -159,7 +162,13 @@ export const useUpdaterStore = create<UpdaterStore>((set, get) => ({
         })
         const cur = get().update
         set({
-          update: { ...cur, state: "ready", progress: undefined, errorMessage: undefined },
+          update: {
+            ...cur,
+            state: "ready",
+            progress: undefined,
+            errorMessage: undefined,
+            readySince: Date.now(),
+          },
           pendingUpdate: null,
         })
       } finally {

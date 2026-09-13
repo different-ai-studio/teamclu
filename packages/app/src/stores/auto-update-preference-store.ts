@@ -3,29 +3,62 @@ import { loadFromStorage, saveToStorage } from '@/lib/config/storage'
 import { appStoragePrefix } from '@/lib/config/build-config'
 
 /**
- * User preference for background update checks (startup + periodic).
- *
- * Default is off — users opt in via Settings → General. Manual "Check for
- * updates" in the settings footer still works regardless of this flag.
+ * User preference for how updates are applied:
+ *  - manual: no background checks; only the settings-footer "Check for updates" works
+ *  - auto-download: background checks + silent download/install, user clicks Restart
+ *  - auto-restart: same as auto-download, but restarts on its own once it finds a
+ *    safe window (no active stream/cron/terminal), or after a 24h ceiling
  */
+export type UpdateMode = 'manual' | 'auto-download' | 'auto-restart'
+
 interface AutoUpdatePreferenceState {
-  autoUpdateEnabled: boolean
-  setAutoUpdateEnabled: (enabled: boolean) => void
+  mode: UpdateMode
+  setUpdateMode: (mode: UpdateMode) => void
 }
 
 const STORAGE_KEY = `${appStoragePrefix}-auto-update-pref`
 
-const persisted = loadFromStorage<Partial<AutoUpdatePreferenceState>>(STORAGE_KEY, {})
-
-function persist(state: AutoUpdatePreferenceState) {
-  saveToStorage(STORAGE_KEY, { autoUpdateEnabled: state.autoUpdateEnabled })
+interface PersistedShape {
+  mode?: UpdateMode
+  /** Pre-tri-state value. Migrated once below, never written again. */
+  autoUpdateEnabled?: boolean
 }
 
-export const useAutoUpdatePreferenceStore = create<AutoUpdatePreferenceState>((set, get) => ({
-  autoUpdateEnabled: persisted.autoUpdateEnabled ?? false,
+function isUpdateMode(value: unknown): value is UpdateMode {
+  return value === 'manual' || value === 'auto-download' || value === 'auto-restart'
+}
 
-  setAutoUpdateEnabled: (enabled) => {
-    set({ autoUpdateEnabled: enabled })
-    persist(get())
+/**
+ * One-time migration from the old boolean to the new tri-state mode.
+ *  - A valid `mode` already on disk wins as-is.
+ *  - An old explicit boolean maps 1:1 (true → auto-download, false → manual) —
+ *    never silently upgraded into auto-restart.
+ *  - No stored key at all (brand-new install) defaults to auto-download.
+ */
+function resolveInitialMode(persisted: PersistedShape): UpdateMode {
+  if (isUpdateMode(persisted.mode)) return persisted.mode
+  if (typeof persisted.autoUpdateEnabled === 'boolean') {
+    return persisted.autoUpdateEnabled ? 'auto-download' : 'manual'
+  }
+  return 'auto-download'
+}
+
+const persisted = loadFromStorage<PersistedShape>(STORAGE_KEY, {})
+const initialMode = resolveInitialMode(persisted)
+
+function persist(mode: UpdateMode) {
+  saveToStorage(STORAGE_KEY, { mode })
+}
+
+// Normalize storage immediately so the old `autoUpdateEnabled` shape never
+// has to be re-read after this module loads once.
+persist(initialMode)
+
+export const useAutoUpdatePreferenceStore = create<AutoUpdatePreferenceState>((set) => ({
+  mode: initialMode,
+
+  setUpdateMode: (mode) => {
+    set({ mode })
+    persist(mode)
   },
 }))

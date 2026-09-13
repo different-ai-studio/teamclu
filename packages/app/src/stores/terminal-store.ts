@@ -23,6 +23,14 @@ export interface TerminalTab {
   lastCommandExit?: number;
   /** Wall-clock timestamp when the last command finished. */
   lastCommandAt?: number;
+  /**
+   * True between an OSC 633 ; E (command started) and the next ; D (command
+   * finished), regardless of whether that D's exit code parses. Deliberately
+   * separate from `lastCommandExit`, which is ambiguous between "still
+   * running" and "finished with an unparsable exit code" — restart-gating
+   * logic needs an unambiguous signal.
+   */
+  busy?: boolean;
 }
 
 interface OpenOpts {
@@ -213,7 +221,12 @@ export const useTerminalStore = create<TerminalState & TerminalActions>((set, ge
     const trimmed = command.trim();
     if (!trimmed) return;
     set(state =>
-      patchTab(state, id, t => ({ ...t, lastCommand: trimmed, lastCommandExit: undefined })),
+      patchTab(state, id, t => ({
+        ...t,
+        lastCommand: trimmed,
+        lastCommandExit: undefined,
+        busy: true,
+      })),
     );
   },
 
@@ -223,10 +236,19 @@ export const useTerminalStore = create<TerminalState & TerminalActions>((set, ge
         ...t,
         lastCommandExit: exitCode ?? undefined,
         lastCommandAt: Date.now(),
+        busy: false,
       })),
     );
   },
 }));
+
+/** True if any terminal tab, in any workspace, currently has a foreground
+ * command running (per the OSC 633 heuristic — see `TerminalTab.busy`). */
+export function useAnyTerminalBusy(): boolean {
+  return useTerminalStore((state) =>
+    Object.values(state.tabsByWorkspace).some((tabs) => tabs.some((t) => t.busy)),
+  );
+}
 
 function patchTab(
   state: TerminalState,

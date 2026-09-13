@@ -523,6 +523,8 @@ pub fn run() {
             commands::cron::cron_run_job,
             commands::cron::cron_get_runs,
             commands::cron::cron_refresh_delivery,
+            commands::cron::cron_any_job_running,
+            commands::cron::cron_set_restart_imminent,
             commands::daemon_onboarding::daemon_init,
             commands::daemon_onboarding::daemon_clear,
             commands::amuxd_supervisor::daemon_ensure_running,
