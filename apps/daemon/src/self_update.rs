@@ -654,13 +654,25 @@ pub fn spawn_successor(binary: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-struct Plan {
+/// What the background check does, decided once at startup.
+pub struct Plan {
     target: PathBuf,
-    base: String,
-    interval: Duration,
+    pub base: String,
+    pub interval: Duration,
 }
 
-fn background_plan(auto: Option<bool>, interval_minutes: Option<u64>) -> Result<Plan, String> {
+/// Whether this binary can update itself at all: a standalone install with a
+/// release channel. Config and environment only decide whether it does.
+pub fn supported() -> bool {
+    channel_base().is_some() && managed_binary().is_ok()
+}
+
+/// The background check's plan, or why it does not run. Reasons this daemon
+/// cannot update itself come before reasons it was turned off, so a desktop
+/// sidecar reports the former whatever its config says.
+pub fn background_plan(auto: Option<bool>, interval_minutes: Option<u64>) -> Result<Plan, String> {
+    let base = channel_base().ok_or("this build has no release channel")?;
+    let target = managed_binary()?;
     let disabled_by_env = std::env::var(DISABLE_ENV).is_ok_and(|v| {
         let v = v.trim();
         !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
@@ -671,8 +683,6 @@ fn background_plan(auto: Option<bool>, interval_minutes: Option<u64>) -> Result<
     if auto == Some(false) {
         return Err("[update] auto = false in daemon.toml".into());
     }
-    let base = channel_base().ok_or("this build has no release channel")?;
-    let target = managed_binary()?;
     let minutes = interval_minutes
         .unwrap_or(DEFAULT_CHECK_INTERVAL_MINUTES)
         .max(MIN_CHECK_INTERVAL_MINUTES);
@@ -684,15 +694,10 @@ fn background_plan(auto: Option<bool>, interval_minutes: Option<u64>) -> Result<
 }
 
 /// Start the daemon's update tasks: confirming a fresh install stayed up, and —
-/// when this daemon is a standalone install with a channel — the periodic check.
-/// `is_busy` reports whether a turn is running; `request_shutdown` asks the
-/// daemon to exit gracefully.
-pub fn spawn_background<B, BF, S, SF>(
-    auto: Option<bool>,
-    check_interval_minutes: Option<u64>,
-    is_busy: B,
-    request_shutdown: S,
-) where
+/// when `plan` is one — the periodic check. `is_busy` reports whether a turn is
+/// running; `request_shutdown` asks the daemon to exit gracefully.
+pub fn spawn_background<B, BF, S, SF>(plan: Result<Plan, String>, is_busy: B, request_shutdown: S)
+where
     B: Fn() -> BF + Send + Sync + 'static,
     BF: Future<Output = bool> + Send + 'static,
     S: FnOnce() -> SF + Send + 'static,
@@ -702,7 +707,7 @@ pub fn spawn_background<B, BF, S, SF>(
         tokio::time::sleep(HEALTHY_AFTER).await;
         let _ = tokio::task::spawn_blocking(mark_boot_healthy).await;
     });
-    match background_plan(auto, check_interval_minutes) {
+    match plan {
         Ok(plan) => {
             info!(
                 channel = %plan.base,

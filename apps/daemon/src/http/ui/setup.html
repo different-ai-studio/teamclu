@@ -87,6 +87,9 @@
       .secret { color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
       .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
       .row { display: flex; gap: 8px; align-items: center; }
+      label.check { display: flex; gap: 8px; align-items: center; margin: 14px 0 0; font-size: 13px; color: var(--ink); cursor: pointer; }
+      label.check input { width: auto; margin: 0; accent-color: var(--accent); }
+      input:disabled { opacity: 0.5; }
     </style>
   </head>
   <body>
@@ -134,6 +137,33 @@
         <div id="secretsMsg" class="msg"></div>
       </section>
 
+      <!--
+        Self-update of a standalone install (`[update]` in daemon.toml). The
+        status line is what the running daemon decided at startup (/v1/info);
+        the controls edit daemon.toml, so they apply after a restart.
+      -->
+      <section id="updatePanel">
+        <h2>Auto-update</h2>
+        <div class="row">
+          <span id="updatePill" class="pill warn">checking…</span>
+          <span id="updateText" class="sub" style="margin:0"></span>
+        </div>
+        <label class="check">
+          <input id="updateAuto" type="checkbox" />
+          Check for new versions and install them automatically
+        </label>
+        <label for="updateInterval">Check every (minutes)</label>
+        <input id="updateInterval" type="number" min="10" step="1" placeholder="360" />
+        <p class="hint">
+          A new version is verified before it replaces this one. The daemon waits
+          until no turn is running to restart into it, and goes back to the
+          previous version if the new one keeps failing to start. Changes here
+          apply after a restart. To update right away, run <code>amuxd update</code>.
+        </p>
+        <button id="saveUpdateBtn">Save</button>
+        <div id="updateMsg" class="msg"></div>
+      </section>
+
       <section id="configPanel">
         <h2>Daemon config</h2>
         <p class="hint">
@@ -157,6 +187,8 @@
       let sessionToken = null;
       // Team id from /v1/setup/status; null while unclaimed.
       let currentTeamId = null;
+      // /v1/info, fetched once: what the running daemon decided at startup.
+      let daemonInfo = null;
 
       const $ = (id) => document.getElementById(id);
       const show = (el, cls, text) => { el.className = "msg " + cls; el.textContent = text; };
@@ -337,6 +369,71 @@
         }
       };
 
+      // The pill and text are what the running daemon decided at startup; the
+      // controls show what daemon.toml says now, which is what it does after
+      // its next restart.
+      function renderUpdate(cfg) {
+        const s = daemonInfo?.auto_update || {};
+        const saved = (key) => cfg.entries.find((e) => e.key === key)?.value;
+        const pill = $("updatePill");
+        if (!s.supported) {
+          pill.className = "pill warn";
+          pill.textContent = "not available";
+        } else {
+          pill.className = s.enabled ? "pill ok" : "pill warn";
+          pill.textContent = s.enabled ? "on" : "off";
+        }
+        const parts = [`amuxd ${daemonInfo?.version ?? "?"}`];
+        if (s.enabled) parts.push(`checks every ${s.checkIntervalMinutes} min`);
+        else if (s.reason) parts.push(s.reason);
+        $("updateText").textContent = parts.join(" · ");
+
+        $("updateAuto").checked = saved("update.auto") !== false;
+        const interval = saved("update.check_interval_minutes");
+        $("updateInterval").value = interval == null ? "" : String(interval);
+        // A daemon that cannot update itself ignores these settings.
+        for (const id of ["updateAuto", "updateInterval", "saveUpdateBtn"]) {
+          $(id).disabled = !s.supported;
+        }
+      }
+
+      $("saveUpdateBtn").onclick = async () => {
+        const msg = $("updateMsg");
+        const btn = $("saveUpdateBtn");
+        clear(msg);
+        const raw = $("updateInterval").value.trim();
+        const minutes = Number(raw);
+        if (raw && (!Number.isInteger(minutes) || minutes < 10)) {
+          return show(msg, "err", "The check interval must be a whole number of minutes, at least 10.");
+        }
+        const path = (key) => "/v1/config/" + encodeURIComponent(key);
+        btn.disabled = true;
+        try {
+          const before = await api("/v1/config");
+          await api(path("update.auto"), {
+            method: "PUT",
+            body: JSON.stringify({ value: $("updateAuto").checked }),
+          });
+          if (raw) {
+            await api(path("update.check_interval_minutes"), {
+              method: "PUT",
+              body: JSON.stringify({ value: minutes }),
+            });
+          } else if (before.entries.some((e) => e.key === "update.check_interval_minutes")) {
+            // Blank means the default: drop the key instead of writing a number.
+            await api(path("update.check_interval_minutes"), { method: "DELETE" });
+          }
+          const after = await api("/v1/config");
+          renderConfig(after);
+          renderUpdate(after);
+          show(msg, "warn", "Saved. Restart the daemon to apply.");
+        } catch (e) {
+          show(msg, "err", String(e.message || e));
+        } finally {
+          btn.disabled = !daemonInfo?.auto_update?.supported;
+        }
+      };
+
       $("reloadBtn").onclick = async () => {
         const msg = $("cfgMsg");
         clear(msg);
@@ -351,8 +448,11 @@
       (async () => {
         try {
           await refreshStatus();
+          daemonInfo = await api("/v1/info", {}, null);
           await ensureSessionToken();
-          renderConfig(await api("/v1/config"));
+          const cfg = await api("/v1/config");
+          renderConfig(cfg);
+          renderUpdate(cfg);
           await renderSecrets(currentTeamId);
         } catch (e) {
           show($("cfgMsg"), "err", String(e.message || e));

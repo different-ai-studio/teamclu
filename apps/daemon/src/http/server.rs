@@ -396,6 +396,7 @@ pub fn metadata(actor_id: String, backend_kind: impl Into<String>) -> DaemonMeta
         mqtt_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
             crate::mqtt::MqttSnapshot::default(),
         )),
+        auto_update: Default::default(),
     }
 }
 
@@ -921,6 +922,9 @@ mod tests {
         assert_eq!(body["actor_id"], "actor-abc");
         assert_eq!(body["backend_kind"], "cloud_api");
         assert!(body["uptime_seconds"].as_i64().unwrap() >= 0);
+        // No standalone install behind a focused test.
+        assert_eq!(body["auto_update"]["supported"], false);
+        assert_eq!(body["auto_update"]["enabled"], false);
         handle.shutdown().await;
     }
 

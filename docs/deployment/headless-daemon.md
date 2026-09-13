@@ -147,6 +147,8 @@ auto = false
 
 或者在服务的环境变量里设 `AMUXD_NO_AUTO_UPDATE=1`。
 
+也可以在 `amuxd setup` 打开的配置页里改（Auto-update 区块）。页面同时显示这台 daemon 现在是否在自动更新；没在更新时显示原因，比如桌面端自带的 daemon 会显示为不可用。
+
 发布渠道在构建时写进二进制（发版流水线的 `CDN_BASE/OSS_PREFIX`），要临时换一个就设
 `AMUXD_UPDATE_BASE_URL`。更新记录在 `~/.amuxd/bin/update-state.json`，过程写进
 `~/.amuxd/logs/amuxd.log`。

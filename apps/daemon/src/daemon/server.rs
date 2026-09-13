@@ -1123,8 +1123,23 @@ impl DaemonServer {
         // once the sock command channel exists (below).
         let mut supervisor_for_prewarm: Option<Arc<crate::runtime::RuntimeSupervisor>> = None;
         let team_skill_reconciler = self.team_skill_reconciler.clone();
+        // Decided once: `/v1/info` reports it, and the update task below runs it.
+        let update_plan = {
+            let update = self.config.update.clone().unwrap_or_default();
+            crate::self_update::background_plan(update.auto, update.check_interval_minutes)
+        };
         self.http_handle = {
             let mut meta = crate::http::server::metadata(self.actor_id.clone(), "amuxd");
+            meta.auto_update = crate::http::state::AutoUpdateStatus {
+                supported: crate::self_update::supported(),
+                enabled: update_plan.is_ok(),
+                reason: update_plan.as_ref().err().cloned(),
+                channel: crate::self_update::channel_base(),
+                check_interval_minutes: update_plan
+                    .as_ref()
+                    .ok()
+                    .map(|plan| plan.interval.as_secs() / 60),
+            };
             // Expose configured backends so the model-catalog endpoint can
             // group models per backend (opencode / pi / cursor / claude-code).
             meta.configured_agent_types = supported_agent_type_names();
@@ -1332,12 +1347,10 @@ impl DaemonServer {
         // running. `self_update` decides whether this daemon is one — the
         // desktop sidecar and containers are not.
         {
-            let update = self.config.update.clone().unwrap_or_default();
             let agents = self.agents.clone();
             let shutdown_tx = sock_tx.clone();
             crate::self_update::spawn_background(
-                update.auto,
-                update.check_interval_minutes,
+                update_plan,
                 move || {
                     let agents = agents.clone();
                     async move { agents.lock().await.has_any_active_turn() }
