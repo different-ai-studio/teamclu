@@ -75,6 +75,22 @@ describe("PermissionApprovalModeSelect", () => {
     );
   });
 
+  it("rolls back local mode when daemon rejects the change", async () => {
+    mocks.syncSessionPermissionModeToDaemon.mockResolvedValueOnce({
+      accepted: false,
+      effectiveMode: "",
+    });
+    const user = userEvent.setup();
+    render(<PermissionApprovalModeSelect sessionId="sess-a" />);
+    await user.click(screen.getByTestId("permission-approval-mode-trigger"));
+    await user.click(screen.getByTestId("permission-mode-full-access"));
+
+    expect(mocks.setSessionPermissionMode).toHaveBeenCalledWith("sess-a", "fullAccess");
+    await vi.waitFor(() => {
+      expect(mocks.setSessionPermissionMode).toHaveBeenCalledWith("sess-a", "default");
+    });
+  });
+
   it("syncs default mode to daemon when switching back", async () => {
     mocks.getMode.mockReturnValue("fullAccess");
     const user = userEvent.setup();

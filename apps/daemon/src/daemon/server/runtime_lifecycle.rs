@@ -512,29 +512,33 @@ impl DaemonServer {
             // initial attach catchup (e.g. client dedup runtimeStart on send).
             // Replay from the cursor so @-mentioned rows still reach send_prompt.
             self.catchup_runtime(&existing).await;
-            let is_gateway = self.session_has_gateway_binding(session_id).await;
-            let permission = crate::runtime::PermissionPolicy::resolve_for_session(
-                is_gateway,
-                client_permission_mode,
-            );
-            let cleared_result = {
-                let mut agents = self.agents.lock().await;
-                agents
-                    .set_session_permission_policy(session_id, permission)
-                    .await
-            };
-            match cleared_result {
-                Ok(cleared) => {
-                    self.publish_auto_granted_permissions(session_id, &cleared, "")
-                        .await;
-                }
-                Err(e) => {
-                    warn!(
-                        session_id,
-                        error = %e,
-                        effective = %permission,
-                        "apply_start_runtime: dedup reuse permission sync failed"
-                    );
+            // Dedup runtimeStart often omits permission_mode; do not treat that as
+            // "switch back to Ask" — the live pi route may already be Full from RPC.
+            if !client_permission_mode.trim().is_empty() {
+                let is_gateway = self.session_has_gateway_binding(session_id).await;
+                let permission = crate::runtime::PermissionPolicy::resolve_for_session(
+                    is_gateway,
+                    client_permission_mode,
+                );
+                let cleared_result = {
+                    let mut agents = self.agents.lock().await;
+                    agents
+                        .set_session_permission_policy(session_id, permission)
+                        .await
+                };
+                match cleared_result {
+                    Ok(cleared) => {
+                        self.publish_auto_granted_permissions(session_id, &cleared, "")
+                            .await;
+                    }
+                    Err(e) => {
+                        warn!(
+                            session_id,
+                            error = %e,
+                            effective = %permission,
+                            "apply_start_runtime: dedup reuse permission sync failed"
+                        );
+                    }
                 }
             }
             return Ok(StartRuntimeOutcome {

@@ -35,9 +35,11 @@ export function PermissionApprovalModeSelect({
 
   const handleSelect = (next: SessionPermissionMode) => {
     if (next === mode) return;
+    const previous = mode;
     setSessionPermissionMode(sessionId, next);
     void syncSessionPermissionModeToDaemon(sessionId, next).then(({ accepted }) => {
       if (!accepted) {
+        setSessionPermissionMode(sessionId, previous);
         console.warn("[permission] daemon did not apply permission mode change", {
           sessionId,
           mode: next,
