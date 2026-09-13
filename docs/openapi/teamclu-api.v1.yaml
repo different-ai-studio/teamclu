@@ -9165,7 +9165,10 @@ components:
               - $ref: '#/components/schemas/UsageSummary'
               - type: object
                 properties:
-                  actorId: { type: ["string", "null"] }
+                  actorId: { type: ["string", "null"], description: null = unattributed bucket }
+                  displayName:
+                    type: ["string", "null"]
+                    description: Actor display name; null when actorId is null or the actor row is gone. UI falls back to a localized Unattributed label.
     CreditLedgerEntry:
       type: object
       required: [id, kind, amountCredits, createdAt]

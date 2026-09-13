@@ -4,7 +4,7 @@
 -- shape of the DDL: getting any of them wrong produces wrong money, silently.
 begin;
 
-select plan(13);
+select plan(14);
 
 -- The reservation path takes `select ... for update` on this row, so it has to
 -- be one row per team.
@@ -59,6 +59,11 @@ select has_index('amux', 'ai_usage_logs', 'ai_usage_logs_team_actor_created_idx'
 -- the first time the e2e suite ran against the least-privilege role.
 select has_function('amux', 'ai_gateway_resolve_actor', array['uuid','uuid'],
   'gateway can resolve membership past RLS on amux.actors');
+
+-- Same RLS trap for the usage leaderboard: without this helper every byActor
+-- row ships displayName=null and Settings labels them all 「未归属」.
+select has_function('amux', 'ai_gateway_actor_display_names', array['uuid'],
+  'gateway can label usage rows past RLS on amux.actors');
 
 -- Billing rows carry no RLS, so a grant to `authenticated` would let any
 -- logged-in user read every team's spend.

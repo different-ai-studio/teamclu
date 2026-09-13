@@ -11,6 +11,7 @@ import {
   backfillSignupGrants, pruneUsage, reconcile, release, reserve, settle,
   SIGNUP_GRANT_CREDITS, sweepExpired, topUp,
 } from "../src/credits.js";
+import { usageReport } from "../src/report.js";
 
 const DB = process.env.DATABASE_URL;
 const ADMIN_DB = process.env.ADMIN_DATABASE_URL ?? DB;
@@ -565,4 +566,30 @@ test("retention deletes only rows past the window", { skip: !DB }, async () => {
   const [{ n }] = await sql<{ n: number }[]>`
     select count(*)::int as n from amux.ai_usage_logs where team_id = ${teamId}::uuid`;
   assert.equal(n, 2, "12-month-old and current rows survive a 13-month window");
+});
+
+test("usage report joins actor display names onto byActor", { skip: !DB }, async () => {
+  // Settings → Token Usage renders `displayName ?? "未归属"`. The gateway used
+  // to return only actorId, so every named member showed up as Unattributed.
+  await admin`
+    insert into amux.ai_usage_logs
+      (team_id, actor_id, public_model_id, backend_model_id, provider_id, credits)
+    values
+      (${teamId}::uuid, ${memberId}::uuid, 'default', 'ds-v4-flash', 'deepseek', 100),
+      (${teamId}::uuid, ${agentId}::uuid, 'pro', 'ds-v4-pro', 'deepseek', 50),
+      (${teamId}::uuid, null, 'default', 'ds-v4-flash', 'deepseek', 10)`;
+
+  const report = await usageReport(sql, teamId, "month");
+  const byId = new Map(report.byActor.map((r) => [r.actorId, r]));
+
+  assert.equal(byId.get(memberId)?.displayName, "Member");
+  assert.equal(byId.get(agentId)?.displayName, "Agent");
+  const unattributed = byId.get(null);
+  assert.ok(unattributed, "null actor_id bucket is still present");
+  assert.equal(unattributed.displayName, null);
+  assert.equal(
+    report.byActor[report.byActor.length - 1].actorId,
+    null,
+    "unattributed sorts last so the UI can leave it unranked",
+  );
 });
