@@ -298,6 +298,16 @@ impl AmuxdAgentHandle {
         ))
         .map_err(|e| AgentError::Create(format!("materialize inherent gateway MCP config: {e}")))?;
 
+        // This resolver is also what the desktop spawn path uses. Pi consumes
+        // the provider descriptor from `TEAMCLU_TEAM_PROVIDER`, whose
+        // `apiKeyEnv` is `tc_gateway_token`; without this binding Pi lists no
+        // usable models and falls back to its `unknown/unknown` placeholder.
+        // Keep the channel runtime on the daemon's loopback proxy too: that
+        // proxy owns cloud-token refresh and accepts the daemon-minted token.
+        let gateway_token = self.spawn_env.managed_llm.gateway_token();
+        let ai_proxy_base =
+            env_team_id.and_then(|team_id| self.spawn_env.managed_llm.ai_proxy_base(team_id));
+
         let spawn_env = crate::runtime::env_assembly::assemble_spawn_runtime_env_for_execution(
             &workspace.workspace_root,
             std::path::Path::new(worktree),
@@ -306,12 +316,8 @@ impl AmuxdAgentHandle {
             &self.spawn_env.actor_name,
             cloud_token_file.as_deref(),
             &managed_llm,
-            // Channels spawn the same runtimes as everything else, so the team
-            // provider needs its credential binding here too. None until this
-            // path has a token source of its own — the gateway runtime does not
-            // hold one, and a wrong token is worse than an absent provider.
-            None,
-            None,
+            gateway_token.as_deref(),
+            ai_proxy_base.as_deref(),
         )
         .map(|env| SpawnRuntimeEnv {
             is_gateway: true,
@@ -1511,7 +1517,7 @@ impl AgentHandle for AmuxdAgentHandle {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::backend::mock::MockBackend;
+    use crate::backend::{mock::MockBackend, ManagedLlmConfig, ManagedLlmModelInfo, WorkspaceRow};
     use crate::runtime::RuntimeManager;
 
     fn make_handle() -> AmuxdAgentHandle {
@@ -1622,8 +1628,6 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn gateway_with_workspace_uses_workspace_domain_and_full_env() {
-        use crate::backend::WorkspaceRow;
-
         let workspace = tempfile::tempdir().unwrap();
         let backend = Arc::new(MockBackend::default());
         backend.state().workspaces_by_id.insert(
@@ -1657,6 +1661,80 @@ pub(crate) mod tests {
             Some(&"actor-test".to_string())
         );
         assert!(context.spawn_env.is_gateway);
+    }
+
+    #[tokio::test]
+    async fn gateway_with_managed_llm_gets_the_desktop_token_and_loopback_proxy() {
+        // Team-provider materialization writes the active team's global config;
+        // isolate it from a developer's real amuxd home.
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        std::fs::write(
+            home.path().join("daemon.toml"),
+            "active_team = \"team-test\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(home.path().join("teams/team-test/state")).unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let backend = Arc::new(MockBackend::default());
+        backend.state().workspaces_by_id.insert(
+            "ws-a".into(),
+            WorkspaceRow {
+                id: "ws-a".into(),
+                team_id: "team-test".into(),
+                path: Some(workspace.path().to_string_lossy().into_owned()),
+                archived: false,
+                agent_id: None,
+            },
+        );
+        backend.state().managed_llm_configs.insert(
+            "team-test".into(),
+            ManagedLlmConfig {
+                enabled: true,
+                base_url: Some("https://cloud.example/v1".into()),
+                name: Some("Team".into()),
+                models: vec![ManagedLlmModelInfo {
+                    id: "default".into(),
+                    name: "Default".into(),
+                }],
+            },
+        );
+        let handle = make_handle_with_backend(backend);
+        let token_file = tempfile::tempdir().unwrap();
+        let tokens =
+            crate::http::tokens::TokenStore::load_or_init(&token_file.path().join("token"))
+                .unwrap();
+        handle.spawn_env.managed_llm.set_tokens(
+            crate::runtime::gateway_token::GatewayTokenSource::new(tokens),
+        );
+        handle
+            .spawn_env
+            .managed_llm
+            .set_local_http_base("http://127.0.0.1:43123".into());
+
+        let context = handle
+            .assemble_execution_context(Some(workspace.path().to_string_lossy().as_ref()))
+            .await
+            .unwrap();
+
+        assert!(
+            context.spawn_env.extra_env.contains_key("tc_gateway_token"),
+            "Gateway Pi must receive the daemon-minted ai:invoke token"
+        );
+        let provider: serde_json::Value = serde_json::from_str(
+            context
+                .spawn_env
+                .extra_env
+                .get("TEAMCLU_TEAM_PROVIDER")
+                .expect("managed provider payload"),
+        )
+        .unwrap();
+        assert_eq!(
+            provider["baseUrl"],
+            "http://127.0.0.1:43123/v1/ai/teams/team-test"
+        );
+        assert_eq!(provider["apiKeyEnv"], "tc_gateway_token");
     }
 
     #[tokio::test]
