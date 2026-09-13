@@ -14,6 +14,7 @@ import { useCurrentTeamStore } from '@/stores/current-team'
 import { useAuthStore } from '@/stores/auth-store'
 import { isTauri } from '@/lib/utils'
 import { resolveAppType } from '@/lib/apps/app-types'
+import { recordAppSessionSetup, runAppSessionSetupOnce } from '@/lib/apps/app-session-setup'
 import type { AppRow, AppSessionRow } from '@/lib/backend/types'
 
 /**
@@ -234,8 +235,10 @@ async function bindAppWorkspace(
   app: AppRow,
   sessionId: string,
   ctx: AppSessionContext,
+  /** The checkout directory when the caller already has it, so the daemon is not asked twice. */
+  knownWorkdir?: string | null,
 ): Promise<string | null> {
-  const appWorkdir = await appWorkdirPath(app.id, app.teamId || ctx.teamId)
+  const appWorkdir = knownWorkdir ?? (await appWorkdirPath(app.id, app.teamId || ctx.teamId))
   // No directory from the daemon means nothing to bind. `apps.workspace_id` is
   // not a stand-in for it: see the note above.
   if (!appWorkdir || !ctx.localDaemonActorId) return null
@@ -263,29 +266,48 @@ async function bindAppWorkspace(
   return workspaceId
 }
 
+/**
+ * Seat the local daemon in the session and bind the session to the checkout.
+ *
+ * True only when both landed. Anything less — no daemon, a failed seat, no
+ * directory — is worth retrying on the next open, so it must not count as done.
+ */
 async function seatDaemonAndBind(
   app: AppRow,
   sessionId: string,
   ctx: AppSessionContext,
-): Promise<void> {
+  knownWorkdir?: string | null,
+): Promise<boolean> {
+  let seated = false
   if (ctx.localDaemonActorId) {
     try {
       await getBackend().sessionMembers.addParticipant(sessionId, ctx.localDaemonActorId)
+      seated = true
     } catch (e) {
       console.warn('[app-session] could not seat the local daemon (non-fatal):', e)
     }
   }
-  await bindAppWorkspace(app, sessionId, ctx)
+  const workspaceId = await bindAppWorkspace(app, sessionId, ctx, knownWorkdir)
+  return seated && workspaceId !== null
 }
 
 /**
  * Open an existing app session: seat the daemon and bind the checkout.
+ *
+ * Once per session per launch — both halves are idempotent, and the session
+ * list calls this on every switch. Callers need not await it before showing the
+ * session: a runtime start for it waits on the setup in flight (see
+ * `app-session-setup`).
  */
-export async function openAppSession(app: AppRow, sessionId: string): Promise<void> {
-  const ctx = await loadContext(app)
-  const { ensureAppCheckout } = await import('@/stores/apps-store')
-  await ensureAppCheckout(app)
-  await seatDaemonAndBind(app, sessionId, ctx)
+export function openAppSession(app: AppRow, sessionId: string): Promise<void> {
+  return runAppSessionSetupOnce(app.id, sessionId, async () => {
+    // Independent: one asks who we are, the other makes sure the code is here.
+    const [ctx, workdir] = await Promise.all([
+      loadContext(app),
+      import('@/stores/apps-store').then(({ ensureAppCheckout }) => ensureAppCheckout(app)),
+    ])
+    return seatDaemonAndBind(app, sessionId, ctx, workdir)
+  })
 }
 
 /**
@@ -299,13 +321,13 @@ export async function ensureAppSession(app: AppRow): Promise<string | null> {
   const ctx = await loadContext(app)
 
   const { ensureAppCheckout } = await import('@/stores/apps-store')
-  await ensureAppCheckout(app)
+  const workdir = await ensureAppCheckout(app)
 
   const sessions = await getBackend().apps.listAppSessions(app.id)
   const recent = pickMostRecentSession(sessions)
   if (!recent) return null
 
-  await seatDaemonAndBind(app, recent.id, ctx)
+  await seatDaemonAndBind(app, recent.id, ctx, workdir)
   return recent.id
 }
 
@@ -320,7 +342,7 @@ export async function createAppSessionShell(app: AppRow): Promise<string | null>
   }
 
   const { ensureAppCheckout } = await import('@/stores/apps-store')
-  await ensureAppCheckout(app)
+  const workdir = await ensureAppCheckout(app)
 
   const { sessionId } = await createSessionShell({
     teamId: ctx.teamId,
@@ -329,7 +351,10 @@ export async function createAppSessionShell(app: AppRow): Promise<string | null>
     additionalActorIds: ctx.localDaemonActorId ? [ctx.localDaemonActorId] : [],
     appId: app.id,
   })
-  await seatDaemonAndBind(app, sessionId, ctx)
+  // Recorded here so the first switch to the new session does not repeat it.
+  if (await seatDaemonAndBind(app, sessionId, ctx, workdir)) {
+    recordAppSessionSetup(app.id, sessionId)
+  }
   return sessionId
 }
 
