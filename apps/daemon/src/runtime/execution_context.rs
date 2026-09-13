@@ -3,6 +3,12 @@ use std::path::PathBuf;
 
 use super::SpawnRuntimeEnv;
 
+/// Why no execution context can be assembled when the caller names no
+/// workspace and the agent has no default one. Shared so the HTTP layer can
+/// tell this caller-fixable case (422) from a daemon fault (500).
+pub const NO_WORKING_DIRECTORY: &str =
+    "no working directory: configure a default workspace in Daemon > Workspace settings";
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum IsolationDomainKey {
     Workspace(String),

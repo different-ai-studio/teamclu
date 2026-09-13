@@ -506,8 +506,7 @@ impl ExecutionContextAssembler {
                 .resolve_default_workspace(team_id, &self.actor_id)
                 .await
                 .ok_or_else(|| {
-                    "no working directory: configure a default workspace in Daemon > Workspace settings"
-                        .to_string()
+                    crate::runtime::execution_context::NO_WORKING_DIRECTORY.to_string()
                 })?
         };
 
