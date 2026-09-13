@@ -410,6 +410,9 @@ struct InfoBody {
     /// Whether the daemon's MQTT connection is currently established.
     mqtt_connected: bool,
     mqtt: crate::mqtt::MqttSnapshot,
+    /// Whether this daemon keeps itself updated, and why not when it does not.
+    /// The setup page reads it.
+    auto_update: crate::http::state::AutoUpdateStatus,
 }
 
 #[derive(serde::Serialize)]
@@ -443,6 +446,7 @@ async fn info_handler(State(state): State<HttpState>) -> Json<InfoBody> {
         agent_types_advertise: state.meta.agent_types_advertise.lock().clone(),
         mqtt_connected: mqtt.connected,
         mqtt,
+        auto_update: state.meta.auto_update.clone(),
     })
 }
 

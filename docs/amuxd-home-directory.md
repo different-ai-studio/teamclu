@@ -14,16 +14,18 @@
 
 ---
 
-## 根目录只有六项
+## 根目录只有这八项
 
 ```text
 ~/.amuxd/
 ├── daemon.toml     # 这台机器的配置 + 当前属于哪个团队
 ├── device-id       # 这台机器的身份（见下）
+├── mcp.json        # 设备级 MCP server
 ├── run/            # 进程运行时：pid / 锁 / socket / HTTP 端口与令牌
 ├── logs/           # 日志
 ├── cache/          # 机器级缓存，删了只影响性能
-└── teams/          # 每个团队一个目录，团队相关的一切都在里面
+├── teams/          # 每个团队一个目录，团队相关的一切都在里面
+└── bin/            # 仅独立安装：amuxd 本体和自更新记录（见下）
 ```
 
 新增东西之前先问一句：**换一个团队，这个值该不该跟着变？** 该变就放
@@ -76,6 +78,12 @@ daemon 停着的时候整个目录都可以安全删除，下次启动会重建�
 `model-catalog.toml`（模型探测缓存，按 backend → worktree 键控）和
 `model-mru.toml`（各 backend 最近用过的模型）。删掉只会多做一次冷探测。
 
+### `bin/` —— 独立安装的程序本体
+
+只有用 `install-amuxd.sh` / `install-amuxd.ps1` 装的 daemon 才有这个目录：服务跑的就是
+`bin/amuxd`，自更新替换下来的旧版本留作 `amuxd.old`，更新记录在 `update-state.json`。
+桌面端自带的 daemon 从 app 包里运行，没有这个目录。
+
 ### `teams/<team_id>/` —— 团队的一切
 
 ```text
@@ -127,7 +135,7 @@ MCP 配置、附件、app 检出。
 ## 从 v1 升上来会发生什么
 
 新版**不迁移旧数据**。首次启动时按固定清单删掉 v1 留下的东西（根目录那堆散
-文件、`history/`、`mcp-configs/`、`team-secrets/`、`bin/`、以及旧的
+文件、`history/`、`mcp-configs/`、`team-secrets/`、以及旧的
 `<config_dir>/amux/` 目录），然后**需要重新 onboard 一次**。
 
 这么做是因为旧的 `backend.toml` 里的 `refresh_token` 仍然能换到 access token，

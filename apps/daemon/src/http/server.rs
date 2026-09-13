@@ -396,6 +396,7 @@ pub fn metadata(actor_id: String, backend_kind: impl Into<String>) -> DaemonMeta
         mqtt_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
             crate::mqtt::MqttSnapshot::default(),
         )),
+        auto_update: Default::default(),
     }
 }
 
@@ -569,6 +570,25 @@ mod tests {
             }
         }
         panic!("expected 429 within 10 requests; last status was {last_status}");
+    }
+
+    /// pi is the only runtime, so a client need not name one: an empty body
+    /// creates a session reported as `pi`.
+    #[tokio::test]
+    async fn create_session_without_agent_type_runs_pi() {
+        let (handle, client, base, session_token) = boot().await;
+
+        let resp = client
+            .post(format!("{base}/v1/sessions"))
+            .bearer_auth(&session_token)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 201);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["agent_type"], "pi");
+        handle.shutdown().await;
     }
 
     #[tokio::test]
@@ -921,6 +941,9 @@ mod tests {
         assert_eq!(body["actor_id"], "actor-abc");
         assert_eq!(body["backend_kind"], "cloud_api");
         assert!(body["uptime_seconds"].as_i64().unwrap() >= 0);
+        // No standalone install behind a focused test.
+        assert_eq!(body["auto_update"]["supported"], false);
+        assert_eq!(body["auto_update"]["enabled"], false);
         handle.shutdown().await;
     }
 

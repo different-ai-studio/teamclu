@@ -250,6 +250,7 @@ fn key_requires_restart(key: &str) -> bool {
         || key.starts_with("http.")
         || key.starts_with("actor.")
         || key.starts_with("agents.")
+        || key.starts_with("update.")
 }
 
 #[cfg(test)]
@@ -264,6 +265,7 @@ mod tests {
         assert!(key_requires_restart("mqtt.broker_url"));
         assert!(key_requires_restart("agents.claude_code.binary"));
         assert!(key_requires_restart("http.bind"));
+        assert!(key_requires_restart("update.auto"));
         assert!(!key_requires_restart("channels.discord.bot_token"));
 
         // A key we make no claim about must not assert either.

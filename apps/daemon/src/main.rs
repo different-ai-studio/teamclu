@@ -27,6 +27,7 @@ mod provider_config;
 mod remote_tools;
 mod route_probe;
 mod runtime;
+mod self_update;
 mod service;
 mod sync;
 mod team_link;
@@ -143,6 +144,22 @@ fn main() -> anyhow::Result<()> {
             // one does, so the purge has to happen before anything loads it or
             // it would delete a config that had just been bootstrapped.
             let _daemon_lock = cli::process::acquire_daemon_lock()?;
+            // First, before anything else can fail: a self-updated binary that
+            // never stays up is swapped back for the one it replaced.
+            if let self_update::BootCheck::RolledBack {
+                failed,
+                restored,
+                binary,
+            } = self_update::on_boot()
+            {
+                tracing::error!(%failed, %restored, "amuxd {failed} never stayed up after an update; restored {restored}");
+                if self_update::restart_mode() == self_update::RestartMode::SpawnSuccessor {
+                    if let Err(e) = self_update::spawn_successor(&binary) {
+                        tracing::warn!(error = %format!("{e:#}"), "start the restored amuxd");
+                    }
+                }
+                anyhow::bail!("amuxd {failed} never stayed up after an update; restored {restored}");
+            }
             cli::process::prepare_daemon_start()?;
             config::layout::purge_v1_layout();
             config::layout::ensure();
@@ -195,6 +212,13 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::UninstallService => {
             cli::service::uninstall()?;
+        }
+        Commands::Update {
+            check,
+            force,
+            no_restart,
+        } => {
+            cli::update::run(check, force, no_restart)?;
         }
         Commands::Stop => {
             cli::process::run_stop()?;

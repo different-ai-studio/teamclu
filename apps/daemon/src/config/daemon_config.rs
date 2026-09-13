@@ -82,6 +82,11 @@ pub struct DaemonConfig {
     /// `daemon.toml` — the MCP tool then falls back to `teamclu`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_scheme: Option<String>,
+    /// `[update]` — the standalone binary's self-update (`crate::self_update`).
+    /// Absent means on. Only a binary installed at `<amuxd home>/bin` ever
+    /// updates itself, so this is inert for the desktop sidecar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<UpdateConfig>,
 }
 
 /// `[log]` — caps for the daemon's own rotating log file.
@@ -93,6 +98,18 @@ pub struct LogConfig {
     /// Rotated files kept beside the active one. Default 2.
     #[serde(default)]
     pub keep: Option<u32>,
+}
+
+/// `[update]` — how a standalone amuxd keeps itself current.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateConfig {
+    /// `false` stops the background check; `amuxd update` still works.
+    /// Default on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
+    /// Minutes between background checks. Default 360; raised to at least 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_interval_minutes: Option<u64>,
 }
 
 /// Per-daemon team-share behavior. Distinct from the cloud team's `share_mode`.
@@ -817,6 +834,7 @@ impl DaemonConfig {
             http: Some(HttpConfig::default()),
             team_share: TeamShareConfig::default(),
             log: None,
+            update: None,
             locale: None,
             app_scheme: None,
         }

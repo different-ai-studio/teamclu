@@ -883,7 +883,8 @@ jobs:
           $BASE/install.sh
           $BASE/install.ps1
           $BASE/install-amuxd.sh
-          $BASE/install-amuxd.ps1"
+          $BASE/install-amuxd.ps1
+          $BASE/amuxd/latest.json"
           echo "Refreshing CDN paths:"; echo "$PATHS"
           aliyun cdn RefreshObjectCaches --profile cdn --ObjectType File --ObjectPath "$PATHS"
           echo "✅ CDN refresh submitted for mutable manifest files"

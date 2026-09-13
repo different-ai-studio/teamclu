@@ -211,6 +211,7 @@ mod tests {
             http: None,
             team_share: crate::config::TeamShareConfig::default(),
             log: None,
+            update: None,
             locale: None,
             app_scheme: None,
         }

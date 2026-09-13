@@ -56,11 +56,15 @@
 | `~/.{brand}/` | 桌面端 | daemon 只读（个人密钥），**不写** |
 | `<workspace>/` | 双方 | 各写各的文件，见 §5 |
 
-**规则二：`~/.amuxd` 根目录只允许出现这七项。**
+**规则二：`~/.amuxd` 根目录只允许出现这八项。**
 
 ```text
-daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/
+daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/  bin/
 ```
+
+`bin/` 只在独立安装（`install-amuxd.sh` / `.ps1`）时出现，放服务运行的 amuxd 本体、
+自更新留下的 `amuxd.old` 和 `update-state.json`。桌面端自带的 daemon 从 app 包里运行，
+不用它。
 
 新增任何东西之前，先回答一个问题：**换一个团队，这个值该不该跟着变？**
 该变 → `teams/<id>/state/`；不该变且是缓存 → `cache/`；不该变且是进程运行时 →
@@ -78,6 +82,7 @@ daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/
 ├── daemon.toml                        # 机器级配置 + 活跃团队指针（§3.1）
 ├── device-id                          # daemon 安装 id，仅用于版本上报（§3.2）
 ├── mcp.json                           # 设备级 MCP server（§3.4）
+├── bin/                               # 仅独立安装：amuxd 本体 + amuxd.old + update-state.json
 │
 ├── run/                               # 进程运行时，随进程生灭，可安全删除
 │   ├── amuxd.pid
@@ -382,11 +387,15 @@ betly 的家目录因此被劈成两半。
 ~/.amuxd/{backend.toml, daemon.toml, members.toml, sessions.toml,
           workspaces.toml, secret.key, supabase.toml}
 ~/.amuxd/{team-secrets, history, mcp-configs, attachments, teamclu,
-          pi-sessions, bin, apps}/
+          pi-sessions, apps}/
 ~/.amuxd/teams/<id>/{teamclu-team, cloud, sync}/        # 旧的团队内布局
 ~/.amuxd/*.log  ~/.amuxd/*.bak.*  ~/.amuxd/*.pid …      # 根目录残留
 <config_dir>/amux/                                       # 旧家目录
 ```
+
+`bin/` 起初也在这份清单里，但独立安装的 amuxd 就装在那里（`install-amuxd.sh`、
+`amuxd install-service`、`amuxd update` 都认这个路径），首次启动会把服务正在用的
+二进制删掉，所以已移出清单并加入根目录白名单。
 
 删 `backend.toml` 和 `daemon.toml` 不是为了整洁：前者的 `refresh_token` 是一把
 仍能换取 access token 的活钥匙，后者的 `[channels].bot_token` 与

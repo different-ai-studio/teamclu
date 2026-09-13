@@ -97,6 +97,9 @@ pub struct DaemonMetadata {
     pub mqtt_recovery: Option<crate::mqtt::MqttRecoveryHandle>,
     /// A single coherent MQTT status snapshot for `/v1/info`.
     pub mqtt_snapshot: crate::mqtt::MqttSnapshotHandle,
+    /// Self-update of a standalone install, as decided at startup. The default
+    /// (not supported) in focused tests.
+    pub auto_update: AutoUpdateStatus,
 }
 
 /// Outcome of the cloud `agents.agent_types` advertise. Surfaced via
@@ -110,6 +113,24 @@ pub struct AgentTypesAdvertise {
     /// The last advertise error (cleared on success). `None` while pending or
     /// after a success.
     pub last_error: Option<String>,
+}
+
+/// Whether this daemon keeps itself updated (`crate::self_update`). Surfaced
+/// via `/v1/info` for the setup page. Fixed at startup, like the check itself:
+/// edits to `[update]` show here after a restart.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoUpdateStatus {
+    /// The binary can update itself: a standalone install with a release
+    /// channel. The desktop sidecar, containers and source builds cannot.
+    pub supported: bool,
+    /// The background check is running.
+    pub enabled: bool,
+    /// Why it is not running, when it is not.
+    pub reason: Option<String>,
+    /// The release channel baked into (or configured for) this build.
+    pub channel: Option<String>,
+    pub check_interval_minutes: Option<u64>,
 }
 
 #[derive(Clone)]

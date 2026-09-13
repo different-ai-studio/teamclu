@@ -44,6 +44,10 @@ use super::events::SessionEvent;
 /// Parameters accepted by [`RuntimeAdapter::create_session`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateSessionParams {
+    /// Optional: every session runs the daemon's one local runtime (pi,
+    /// ADR-0014), and a legacy name (`claude`, `opencode`, …) is rerouted to
+    /// it. Still parsed when sent, so an unknown name is a 400.
+    #[serde(default = "local_agent_type")]
     pub agent_type: String,
     #[serde(default)]
     pub workspace_id: Option<String>,
@@ -55,6 +59,10 @@ pub struct CreateSessionParams {
     #[serde(default)]
     #[allow(dead_code)]
     pub metadata: Option<serde_json::Value>,
+}
+
+fn local_agent_type() -> String {
+    crate::runtime::local_agent_type_name().to_string()
 }
 
 /// Snapshot a created or fetched session — returned by both
@@ -673,7 +681,15 @@ impl RuntimeManagerAdapter {
         context_assembler
             .assemble(worktree, workspace_id_hint)
             .await
-            .map_err(|e| HttpError::internal(format!("assemble runtime context: {e}")))
+            .map_err(|e| {
+                // Naming no workspace on an agent without a default one is the
+                // caller's to fix; any other assembly failure is the daemon's.
+                if e == crate::runtime::execution_context::NO_WORKING_DIRECTORY {
+                    HttpError::validation(format!("{e}, or pass workspace_id"))
+                } else {
+                    HttpError::internal(format!("assemble runtime context: {e}"))
+                }
+            })
     }
 
     async fn spawn_runtime(
@@ -883,6 +899,12 @@ impl RuntimeManagerAdapter {
             let Some(session) = sessions.get_mut(&session_id) else {
                 return;
             };
+            // Several sources report the same transition: accepting a prompt
+            // and the runtime's Active status both mean running, a finished
+            // turn and its Idle status both mean idle. Emit it once.
+            if session.snapshot.state == new_state {
+                return;
+            }
             session.snapshot.state = new_state;
             session.next_seq += 1;
             let mut data = serde_json::json!({ "state": new_state });
@@ -2058,6 +2080,95 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    struct NoDefaultWorkspaceAssembler;
+
+    #[async_trait]
+    impl RuntimeExecutionContextAssembler for NoDefaultWorkspaceAssembler {
+        async fn assemble(
+            &self,
+            _working_directory: &str,
+            _workspace_id: Option<&str>,
+        ) -> Result<crate::runtime::execution_context::ExecutionContext, String> {
+            Err(crate::runtime::execution_context::NO_WORKING_DIRECTORY.to_string())
+        }
+    }
+
+    /// Creating a session with no workspace on an agent without a default one
+    /// is fixable by the caller, so it is a 422 rather than a 500.
+    #[tokio::test]
+    async fn a_missing_working_directory_is_the_callers_error() {
+        let adapter = RuntimeManagerAdapter::new_with_execution_context_assembler(
+            Arc::new(tokio::sync::Mutex::new(RuntimeManager::new(
+                std::collections::HashMap::new(),
+                None,
+            ))),
+            16,
+            None,
+            Some(Arc::new(NoDefaultWorkspaceAssembler)),
+        );
+
+        let err = adapter
+            .assemble_execution_context("", None)
+            .await
+            .err()
+            .expect("assembly must fail without a working directory");
+
+        assert_eq!(err.code, ErrorCode::ValidationFailed);
+        assert!(err.detail.contains("workspace_id"), "{}", err.detail);
+    }
+
+    /// Accepting a prompt and pi's Active status both mean running; a turn's
+    /// end and its Idle status both mean idle. Each transition is emitted once.
+    #[tokio::test]
+    async fn a_repeated_state_is_emitted_once() {
+        let adapter = test_manager_adapter(256);
+        let snap = adapter
+            .create_session(
+                Uuid::new_v4(),
+                CreateSessionParams {
+                    agent_type: "pi".into(),
+                    workspace_id: Some("ws-1".into()),
+                    model: None,
+                    initial_prompt: None,
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+        let status = |old: amux::AgentStatus, new: amux::AgentStatus| amux::AcpEvent {
+            event: Some(amux::acp_event::Event::StatusChange(
+                amux::AcpStatusChange {
+                    old_status: old as i32,
+                    new_status: new as i32,
+                },
+            )),
+            model: String::new(),
+        };
+
+        adapter.set_state(snap.session_id, SessionState::Running, None);
+        adapter.process_runtime_event(
+            &snap.runtime_id,
+            status(amux::AgentStatus::Idle, amux::AgentStatus::Active),
+        );
+        adapter.process_runtime_event(
+            &snap.runtime_id,
+            status(amux::AgentStatus::Active, amux::AgentStatus::Idle),
+        );
+        adapter.process_runtime_event(
+            &snap.runtime_id,
+            status(amux::AgentStatus::Active, amux::AgentStatus::Idle),
+        );
+
+        let page = adapter.replay(snap.session_id, 0, 100).await.unwrap();
+        let states: Vec<&str> = page
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::SessionState)
+            .filter_map(|event| event.data["state"].as_str())
+            .collect();
+        assert_eq!(states, ["running", "idle"]);
     }
 
     #[test]

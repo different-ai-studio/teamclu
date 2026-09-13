@@ -35,9 +35,21 @@ pub const AMUXD_HOME_ENV: &str = "AMUXD_HOME";
 /// `cache/`. No, and it belongs to the process → `run/`. Otherwise it very
 /// likely does not belong in the daemon home at all.
 ///
+/// `bin` is the exception to that question: it only exists on a standalone
+/// install, where it holds the amuxd binary the service runs, its `.old`
+/// backup, and the self-update record.
+///
 /// Sorted, so the layout test can compare against a sorted directory listing.
-pub const ROOT_ALLOWLIST: &[&str] =
-    &["cache", "daemon.toml", "device-id", "logs", "mcp.json", "run", "teams"];
+pub const ROOT_ALLOWLIST: &[&str] = &[
+    "bin",
+    "cache",
+    "daemon.toml",
+    "device-id",
+    "logs",
+    "mcp.json",
+    "run",
+    "teams",
+];
 
 /// Folder name under `$HOME` for official amuxd state (`~/.amuxd`).
 pub const OFFICIAL_AMUXD_DIR_NAME: &str = "amuxd";

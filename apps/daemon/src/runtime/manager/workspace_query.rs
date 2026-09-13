@@ -67,17 +67,27 @@ impl RuntimeManager {
     /// to Idle, and workspace refresh must not stop the runtime in that window.
     pub fn workspace_has_active_turn(&self, workspace_path: &str, workspace_id: &str) -> bool {
         self.agents.iter().any(|(agent_id, handle)| {
-            if !Self::workspace_runtime_matches(handle, workspace_path, workspace_id) {
-                return false;
-            }
-            if matches!(handle.status, amux::AgentStatus::Active) || handle.event_rx.is_none() {
-                return true;
-            }
-            self.aggregators
+            Self::workspace_runtime_matches(handle, workspace_path, workspace_id)
+                && self.runtime_has_active_turn(agent_id, handle)
+        })
+    }
+
+    /// True while any runtime at all is executing a turn. A self-update waits
+    /// for this to clear before restarting the daemon.
+    pub fn has_any_active_turn(&self) -> bool {
+        self.agents
+            .iter()
+            .any(|(agent_id, handle)| self.runtime_has_active_turn(agent_id, handle))
+    }
+
+    fn runtime_has_active_turn(&self, agent_id: &str, handle: &RuntimeHandle) -> bool {
+        matches!(handle.status, amux::AgentStatus::Active)
+            || handle.event_rx.is_none()
+            || self
+                .aggregators
                 .get(agent_id)
                 .and_then(|agg| agg.current_turn_id())
                 .is_some()
-        })
     }
 
     pub fn workspace_occupancy(

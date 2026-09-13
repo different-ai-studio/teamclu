@@ -111,7 +111,52 @@ POST /v1/team/skills/reconcile        # 立刻对账一次
 那份优先** —— 解析顺序上它排在 `~/.agents/skills` 之前，免得某个人的私人改动决定
 团队 agent 执行什么。
 
-## 4. 排查
+## 4. 升级
+
+用 `install-amuxd.sh` / `install-amuxd.ps1` 装的 daemon（二进制在 `~/.amuxd/bin/amuxd`）会自己更新：
+
+- **后台检查**：daemon 启动 10 分钟后查一次发布渠道的 `amuxd/latest.json`，之后每 6 小时
+  一次。有新版本就下载，核对大小和 SHA-256，用 `--version` 试跑，再替换二进制；旧的留作
+  `~/.amuxd/bin/amuxd.old`。
+- **重启时机**：等到没有进行中的 turn（间隔 30 秒连续两次空闲）才退出，由 launchd / systemd
+  拉起新版本；Windows 上 daemon 先启动新版本再退出。一直不空闲的话，24 小时后照样重启。
+  不是由服务管理器启动的 daemon（比如在终端里手动 `amuxd start`）只换二进制，不自己重启，
+  日志里会提示。
+- **回滚**：新版本连续 3 次启动都没撑过 2 分钟，第 4 次启动时自动换回 `amuxd.old`，之后的
+  后台检查跳过这个版本，直到渠道发布更新的版本。
+- **不会自己更新的**：桌面端自带的 daemon（跟着桌面端更新）、容器里的 daemon（换镜像）、
+  源码构建（没有发布渠道）。
+
+手动更新（不看回滚跳过记录）：
+
+```bash
+amuxd update --check       # 只看当前版本和渠道上的最新版本
+amuxd update               # 装最新版并重启服务
+amuxd update --force       # 已是最新也重装
+amuxd update --no-restart  # 只换二进制
+```
+
+关闭后台检查（`amuxd update` 不受影响），改完重启 daemon：
+
+```toml
+# ~/.amuxd/daemon.toml
+[update]
+auto = false
+# check_interval_minutes = 360   # 检查间隔，最小 10
+```
+
+或者在服务的环境变量里设 `AMUXD_NO_AUTO_UPDATE=1`。
+
+也可以在 `amuxd setup` 打开的配置页里改（Auto-update 区块）。页面同时显示这台 daemon 现在是否在自动更新；没在更新时显示原因，比如桌面端自带的 daemon 会显示为不可用。
+
+发布渠道在构建时写进二进制（发版流水线的 `CDN_BASE/OSS_PREFIX`），要临时换一个就设
+`AMUXD_UPDATE_BASE_URL`。更新记录在 `~/.amuxd/bin/update-state.json`，过程写进
+`~/.amuxd/logs/amuxd.log`。
+
+还没有 `amuxd update` 的旧版本，重跑一次安装脚本就能升上来；已接入团队的机器不会被再要求
+`amuxd init`。
+
+## 5. 排查
 
 ```bash
 amuxd doctor      # JSON：amuxd / node（托管）/ pi（托管）/ git 各自装没装

@@ -53,10 +53,85 @@ WantedBy=default.target
 
 use crate::config::DaemonConfig;
 
-fn amuxd_exe_path() -> std::path::PathBuf {
+pub(crate) fn amuxd_exe_path() -> std::path::PathBuf {
     DaemonConfig::config_dir()
         .join("bin")
         .join(if cfg!(windows) { "amuxd.exe" } else { "amuxd" })
+}
+
+/// What [`restart_installed`] did.
+pub enum RestartOutcome {
+    Restarted,
+    NotRunning,
+    /// A daemon is running, but not under the service — it was started by hand.
+    Unsupervised,
+}
+
+fn daemon_running() -> bool {
+    matches!(
+        crate::cli::process::read_pidfile_for_service(),
+        Ok(Some((pid, _))) if crate::cli::process::pid_is_alive(pid)
+    )
+}
+
+/// Restart the service so a running daemon picks up the binary now at
+/// [`amuxd_exe_path`]. Used by `amuxd update`.
+#[cfg(target_os = "macos")]
+pub fn restart_installed() -> anyhow::Result<RestartOutcome> {
+    let target = format!("gui/{}/{LAUNCHD_LABEL}", nix_uid());
+    let loaded = std::process::Command::new("launchctl")
+        .args(["print", &target])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if loaded {
+        let status = std::process::Command::new("launchctl")
+            .args(["kickstart", "-k", &target])
+            .status()?;
+        anyhow::ensure!(status.success(), "launchctl kickstart failed");
+        return Ok(RestartOutcome::Restarted);
+    }
+    Ok(if daemon_running() {
+        RestartOutcome::Unsupervised
+    } else {
+        RestartOutcome::NotRunning
+    })
+}
+
+/// Restart the service so a running daemon picks up the binary now at
+/// [`amuxd_exe_path`]. Used by `amuxd update`.
+#[cfg(target_os = "linux")]
+pub fn restart_installed() -> anyhow::Result<RestartOutcome> {
+    let active = std::process::Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", "amuxd.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if active {
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "restart", "amuxd.service"])
+            .status()?;
+        anyhow::ensure!(status.success(), "systemctl --user restart failed");
+        return Ok(RestartOutcome::Restarted);
+    }
+    Ok(if daemon_running() {
+        RestartOutcome::Unsupervised
+    } else {
+        RestartOutcome::NotRunning
+    })
+}
+
+/// Restart the service so a running daemon picks up the binary now at
+/// [`amuxd_exe_path`]. Used by `amuxd update`. The logon task does not relaunch
+/// a daemon that exits, so stop it and start it again.
+#[cfg(target_os = "windows")]
+pub fn restart_installed() -> anyhow::Result<RestartOutcome> {
+    if !daemon_running() {
+        return Ok(RestartOutcome::NotRunning);
+    }
+    crate::cli::process::run_stop()?;
+    install_service()?;
+    Ok(RestartOutcome::Restarted)
 }
 
 #[cfg(target_os = "macos")]
