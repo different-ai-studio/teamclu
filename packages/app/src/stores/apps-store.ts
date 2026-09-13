@@ -514,11 +514,15 @@ async function localWorkdirHasCheckout(workdir: string): Promise<boolean> {
  * local checkout yet, fetch the repo with a prompt+ deploy key and bind the
  * workdir. Skips when the directory already has files; dirty trees are left
  * alone (deploy/build reuse ERR_DIRTY — we never clone over them).
+ *
+ * Resolves to the checkout directory when this machine has one afterwards, so
+ * a caller that needs the path next does not ask the daemon for it again; null
+ * otherwise.
  */
 export async function ensureAppCheckout(
   app: AppRow,
   opts: { surfaceErrors?: boolean } = {},
-): Promise<void> {
+): Promise<string | null> {
   // Every early return below is silent on the automatic path — it fires on
   // selection, where a toast about a daemon that is still starting would be
   // noise. A download the user clicked is the opposite: saying nothing looks
@@ -528,19 +532,19 @@ export async function ensureAppCheckout(
     if (surfaceErrors) await toastError("下载失败", reason);
   };
 
-  if (!isTauri()) return;
+  if (!isTauri()) return null;
   if (app.provisionStatus !== "ready") {
     await bail("应用尚未就绪");
-    return;
+    return null;
   }
 
   const workdirInfo = await daemonAppWorkdir(app.id, app.teamId);
   if (!workdirInfo) {
     await bail(mapDeployErrorReason("amuxd daemon is not connected"));
-    return;
+    return null;
   }
   const workdir = workdirInfo.workdir;
-  if (await localWorkdirHasCheckout(workdir)) return;
+  if (await localWorkdirHasCheckout(workdir)) return workdir;
 
   let gitRemoteUrl: string | null = app.gitRemoteUrl?.trim() || null;
   let deployKeyPem: string | null = null;
@@ -551,7 +555,7 @@ export async function ensureAppCheckout(
       const cred = await getBackend().apps.getGitCredential(app.id);
       if (!cred?.privateKeyPem || !cred.remoteUrl) {
         await bail("没有这个应用仓库的访问权限");
-        return;
+        return null;
       }
       gitRemoteUrl = cred.remoteUrl;
       deployKeyPem = cred.privateKeyPem;
@@ -559,13 +563,13 @@ export async function ensureAppCheckout(
     } catch (e) {
       console.warn("getGitCredential failed during checkout (non-fatal)", e);
       await bail(e instanceof Error ? e.message : String(e));
-      return;
+      return null;
     }
   } else if (!gitRemoteUrl) {
     // An app with no remote of any kind has nothing to fetch — its code only
     // ever existed on the machine that made it.
     await bail("这个应用没有可下载的仓库地址");
-    return;
+    return null;
   }
 
   let result: SeedAppResult = { outcome: "unreachable", workdir: null, error: null };
@@ -580,9 +584,12 @@ export async function ensureAppCheckout(
   if (result.outcome === "seeded" && result.workdir) {
     const { bindAppWorkdir } = await import("@/lib/apps/app-session");
     await bindAppWorkdir(app, result.workdir);
-  } else if (result.outcome === "failed") {
+    return result.workdir;
+  }
+  if (result.outcome === "failed") {
     await toastError("仓库克隆失败", result.error ?? undefined);
   }
+  return null;
 }
 
 /**

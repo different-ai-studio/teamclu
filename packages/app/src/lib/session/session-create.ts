@@ -604,9 +604,18 @@ export async function startAgentRuntimesAsync(
   const localWorkspacePath = useWorkspaceStore.getState().workspacePath?.trim() || ''
   // The workspace store lags a freshly-opened session — switchToSession
   // resolves the workspace in the background so the view flip stays instant —
-  // so prefer the session's own binding, which is written before the session
-  // is opened. Without this the first prompt in a just-opened app ran in
-  // whatever folder the previous session happened to be using.
+  // so prefer the session's own binding. Without this the first prompt in a
+  // just-opened app ran in whatever folder the previous session happened to be
+  // using.
+  //
+  // An app session is switched to BEFORE its binding is written (the setup runs
+  // behind the switch so the session list stays responsive), so wait for any
+  // setup still in flight for this session first; reading the binding early
+  // finds none and falls back to that same wrong folder.
+  if (args.sessionId?.trim()) {
+    const { waitForAppSessionSetup } = await import('@/lib/apps/app-session-setup')
+    await waitForAppSessionSetup(args.sessionId)
+  }
   const sessionWorkspacePath = args.sessionId?.trim()
     ? (await resolveSessionWorkspacePath(args.teamId, args.sessionId).catch(() => null))?.trim() ||
       ''

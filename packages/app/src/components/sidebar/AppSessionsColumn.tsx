@@ -14,6 +14,7 @@ import { AppDeployFooter } from '@/components/apps/AppDeployFooter'
 import { useUIStore } from '@/stores/ui'
 import { useAppsStore } from '@/stores/apps-store'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
+import { useCurrentTeamStore } from '@/stores/current-team'
 import { getBackend } from '@/lib/backend'
 import { createAppSessionShell, openAppSession } from '@/lib/apps/app-session'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
@@ -95,12 +96,37 @@ export function AppSessionsColumn({ app }: { app: AppRow }) {
 
   const openSession = React.useCallback(
     async (targetApp: AppRow, sessionId: string) => {
+      // Started first, awaited last. The setup seats the daemon and binds the
+      // checkout — daemon calls and Cloud API round trips on a first open — and
+      // awaiting it before the switch left every click in this list sitting
+      // still until they came back. It registers before its first await, so a
+      // runtime start triggered by the switch waits for it (app-session-setup);
+      // after a first open it costs nothing.
+      const setup = openAppSession(targetApp, sessionId).then(
+        () => true,
+        (e: unknown) => {
+          console.error('[AppSessionsColumn] failed to open session', e)
+          return false
+        },
+      )
+      useAppsStore.getState().recordAppSession(targetApp.id, sessionId)
       try {
-        await openAppSession(targetApp, sessionId)
-        useAppsStore.getState().recordAppSession(targetApp.id, sessionId)
         await useUIStore.getState().switchToSession(sessionId, { keepSidebarFilter: true })
       } catch (e) {
-        console.error('[AppSessionsColumn] failed to open session', e)
+        console.error('[AppSessionsColumn] failed to switch session', e)
+      }
+      if (!(await setup)) return
+
+      // The switch resolved the session's workspace before the binding landed,
+      // so a session opened for the first time on this machine found none.
+      // Resolve it again — unless the user has already moved on.
+      const teamId = useCurrentTeamStore.getState().team?.id
+      if (!teamId || useSessionSelectionStore.getState().activeSessionId !== sessionId) return
+      try {
+        const { switchToSessionWorkspaceIfNeeded } = await import('@/lib/session/session-by-workspace')
+        await switchToSessionWorkspaceIfNeeded(teamId, sessionId)
+      } catch (e) {
+        console.warn('[AppSessionsColumn] could not switch to the session workspace', e)
       }
     },
     [],
