@@ -9165,10 +9165,18 @@ components:
               - $ref: '#/components/schemas/UsageSummary'
               - type: object
                 properties:
-                  actorId: { type: ["string", "null"], description: null = unattributed bucket }
+                  actorId:
+                    type: ["string", "null"]
+                    description: >
+                      Attributed actor for the leaderboard. Agent usage is rolled
+                      up to agents.owner_member_id (the human owner); member usage
+                      stays on the member. null = unattributed bucket.
                   displayName:
                     type: ["string", "null"]
-                    description: Actor display name; null when actorId is null or the actor row is gone. UI falls back to a localized Unattributed label.
+                    description: >
+                      Display name of the attributed human (or the actor itself when
+                      there is no owner). null when actorId is null. UI falls back
+                      to a localized Unattributed label.
     CreditLedgerEntry:
       type: object
       required: [id, kind, amountCredits, createdAt]

@@ -95,27 +95,24 @@ export async function usageReport(
      group by public_model_id
      order by sum(credits) desc`;
 
-  // Join display_name via the security-definer helper: amux.actors has RLS that
-  // returns zero rows to the ai_gateway role (same reason as
-  // ai_gateway_resolve_actor). A plain left join left every named member labeled
-  // "Unattributed" on the billing screen.
-  //
-  // Null actor_id sorts last (UI leaves that bucket unranked). Within the
-  // named set, highest spend first.
+  // Attribute usage to humans on the leaderboard: agent spend rolls up to
+  // agents.owner_member_id via ai_gateway_usage_bill_to (security definer —
+  // the ai_gateway role cannot read actors/agents under RLS). Members stay
+  // themselves. Null actor_id sorts last (UI leaves that bucket unranked).
   const byActor = await sql<any[]>`
-    select l.actor_id,
-           max(n.display_name) as display_name,
+    select b.bill_to_actor_id as actor_id,
+           max(b.display_name) as display_name,
            coalesce(sum(l.credits),0)::text as credits,
            coalesce(sum(l.input_tokens),0)::text as input_tokens,
            coalesce(sum(l.cached_input_tokens),0)::text as cached_input_tokens,
            coalesce(sum(l.output_tokens),0)::text as output_tokens,
            count(*)::text as requests
       from amux.ai_usage_logs l
-      left join amux.ai_gateway_actor_display_names(${teamId}::uuid) n
-        on n.id = l.actor_id
+      left join amux.ai_gateway_usage_bill_to(${teamId}::uuid) b
+        on b.usage_actor_id = l.actor_id
      where l.team_id = ${teamId}::uuid and l.created_at >= ${start} and l.created_at < ${end}
-     group by l.actor_id
-     order by (l.actor_id is null) asc, sum(l.credits) desc`;
+     group by b.bill_to_actor_id
+     order by (b.bill_to_actor_id is null) asc, sum(l.credits) desc`;
 
   return {
     range,

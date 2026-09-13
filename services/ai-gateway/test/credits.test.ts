@@ -568,9 +568,15 @@ test("retention deletes only rows past the window", { skip: !DB }, async () => {
   assert.equal(n, 2, "12-month-old and current rows survive a 13-month window");
 });
 
-test("usage report joins actor display names onto byActor", { skip: !DB }, async () => {
-  // Settings → Token Usage renders `displayName ?? "未归属"`. The gateway used
-  // to return only actorId, so every named member showed up as Unattributed.
+test("usage report attributes agent spend to the owning human", { skip: !DB }, async () => {
+  // Settings leaderboard should show people, not device agents. Agent rows in
+  // ai_usage_logs roll up to agents.owner_member_id.
+  await admin`insert into amux.members (id) values (${memberId}::uuid)
+              on conflict (id) do nothing`;
+  await admin`
+    insert into amux.agents (id, owner_member_id, status, visibility)
+    values (${agentId}::uuid, ${memberId}::uuid, 'active', 'team')
+    on conflict (id) do update set owner_member_id = excluded.owner_member_id`;
   await admin`
     insert into amux.ai_usage_logs
       (team_id, actor_id, public_model_id, backend_model_id, provider_id, credits)
@@ -582,8 +588,13 @@ test("usage report joins actor display names onto byActor", { skip: !DB }, async
   const report = await usageReport(sql, teamId, "month");
   const byId = new Map(report.byActor.map((r) => [r.actorId, r]));
 
-  assert.equal(byId.get(memberId)?.displayName, "Member");
-  assert.equal(byId.get(agentId)?.displayName, "Agent");
+  const human = byId.get(memberId);
+  assert.ok(human, "member + owned-agent usage share one row");
+  assert.equal(human.displayName, "Member");
+  assert.equal(human.credits, 150);
+  assert.equal(human.requests, 2);
+  assert.equal(byId.has(agentId), false, "agent id must not appear once rolled up");
+
   const unattributed = byId.get(null);
   assert.ok(unattributed, "null actor_id bucket is still present");
   assert.equal(unattributed.displayName, null);
