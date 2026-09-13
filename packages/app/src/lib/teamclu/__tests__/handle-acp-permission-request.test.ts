@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  shouldAutoAllow: vi.fn(() => false),
   replyAcpPermission: vi.fn(() => Promise.resolve()),
   setPermissionRequest: vi.fn(),
   notificationSend: vi.fn(() => Promise.resolve("sent" as const)),
@@ -28,10 +27,6 @@ vi.mock("@/stores/session-selection-store", () => ({
   useSessionSelectionStore: {
     getState: () => ({ setActiveSession: vi.fn(async () => {}) }),
   },
-}));
-
-vi.mock("@/lib/session/session-permission-mode", () => ({
-  shouldAutoAllowSessionPermissions: mocks.shouldAutoAllow,
 }));
 
 vi.mock("@/lib/teamclu/reply-acp-permission", () => ({
@@ -72,10 +67,9 @@ describe("handleAcpPermissionRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetAcpPermissionInFlightForTests();
-    mocks.shouldAutoAllow.mockReturnValue(false);
   });
 
-  it("writes pending permission in default mode", async () => {
+  it("writes pending permission for interactive member", async () => {
     await handleAcpPermissionRequest({
       sessionId: "sess-1",
       agentActorId: "agent-1",
@@ -88,43 +82,6 @@ describe("handleAcpPermissionRequest", () => {
       sampleRequest,
     );
     expect(mocks.replyAcpPermission).not.toHaveBeenCalled();
-    expect(mocks.notificationSend).toHaveBeenCalledOnce();
-  });
-
-  it("auto-replies without writing store in fullAccess mode", async () => {
-    mocks.shouldAutoAllow.mockReturnValue(true);
-
-    await handleAcpPermissionRequest({
-      sessionId: "sess-1",
-      agentActorId: "agent-1",
-      request: sampleRequest,
-    });
-
-    expect(mocks.replyAcpPermission).toHaveBeenCalledWith({
-      sessionId: "sess-1",
-      agentActorId: "agent-1",
-      requestId: "perm-1",
-      decision: "allow",
-    });
-    expect(mocks.setPermissionRequest).not.toHaveBeenCalled();
-    expect(mocks.notificationSend).not.toHaveBeenCalled();
-  });
-
-  it("falls back to pending on auto-reply failure", async () => {
-    mocks.shouldAutoAllow.mockReturnValue(true);
-    mocks.replyAcpPermission.mockRejectedValueOnce(new Error("mqtt down"));
-
-    await handleAcpPermissionRequest({
-      sessionId: "sess-1",
-      agentActorId: "agent-1",
-      request: sampleRequest,
-    });
-
-    expect(mocks.setPermissionRequest).toHaveBeenCalledWith(
-      "sess-1",
-      "agent-1",
-      sampleRequest,
-    );
     expect(mocks.notificationSend).toHaveBeenCalledOnce();
   });
 
@@ -173,32 +130,5 @@ describe("handleAcpPermissionRequest", () => {
     });
 
     expect(mocks.notificationSend).toHaveBeenCalledTimes(2);
-  });
-
-  it("dedupes in-flight requestId", async () => {
-    mocks.shouldAutoAllow.mockReturnValue(true);
-    let resolveReply!: () => void;
-    mocks.replyAcpPermission.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveReply = resolve;
-        }),
-    );
-
-    const first = handleAcpPermissionRequest({
-      sessionId: "sess-1",
-      agentActorId: "agent-1",
-      request: sampleRequest,
-    });
-    const second = handleAcpPermissionRequest({
-      sessionId: "sess-1",
-      agentActorId: "agent-1",
-      request: sampleRequest,
-    });
-
-    resolveReply();
-    await Promise.all([first, second]);
-
-    expect(mocks.replyAcpPermission).toHaveBeenCalledTimes(1);
   });
 });

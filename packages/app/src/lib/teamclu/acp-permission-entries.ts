@@ -1,6 +1,5 @@
 import type { PendingPermissionEntry } from "@/stores/session-types";
 import type { StreamingPermissionRequest } from "@/stores/v2-streaming-store";
-import { shouldAutoAllowSessionPermissions } from "@/lib/session/session-permission-mode";
 import { canCurrentMemberActOnPermission } from "@/lib/teamclu/handle-acp-permission-request";
 import { useCurrentTeamStore } from "@/stores/current-team";
 
@@ -94,7 +93,6 @@ export function collectAcpStreamingPermissionsForList(
 ): PendingPermissionEntry[] {
   const out: PendingPermissionEntry[] = [];
   for (const entry of Object.values(byKey)) {
-    if (shouldAutoAllowSessionPermissions(entry.sessionId)) continue;
     for (const pending of Object.values(entry.pendingPermissionsByRequestId)) {
       if (!pending.requestId?.trim()) continue;
       out.push(buildPendingEntryFromAcpPermission(entry.sessionId, entry.actorId, pending));
@@ -109,7 +107,6 @@ export function collectAcpStreamingPermissions(
   byKey: Record<string, StreamKeyEntry>,
 ): PendingPermissionEntry[] {
   if (!activeSessionId) return [];
-  if (shouldAutoAllowSessionPermissions(activeSessionId)) return [];
   const me = useCurrentTeamStore.getState().currentMember?.id ?? null;
   const out: PendingPermissionEntry[] = [];
   forEachPendingInSession(activeSessionId, byKey, (entry, pending) => {

@@ -28,6 +28,29 @@ impl PermissionPolicy {
         matches!(self, Self::Full)
     }
 
+    /// Stable wire string for RPC replies (`default` / `full_access`).
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Ask => "default",
+            Self::Full => "full_access",
+        }
+    }
+
+    /// Merge a client-supplied mode with gateway/cron defaults.
+    ///
+    /// Gateway-bound sessions default to [`Full`] when the client omits a mode
+    /// (unattended). Interactive sessions default to [`Ask`]. An explicit
+    /// client value always wins via [`from_wire`].
+    pub fn resolve_for_session(is_gateway: bool, client_mode: &str) -> Self {
+        let fallback = if is_gateway {
+            Self::Full
+        } else {
+            Self::Ask
+        };
+        let wire = client_mode.trim();
+        Self::from_wire((!wire.is_empty()).then_some(wire), fallback)
+    }
+
     /// Parse the wire value used by cron payloads (`"default"` /
     /// `"full_access"`). Unknown and absent values fall back to `fallback`,
     /// so an old client that omits the field keeps its previous behavior.
@@ -86,6 +109,26 @@ mod tests {
         );
         assert_eq!(
             PermissionPolicy::from_wire(Some("nonsense"), PermissionPolicy::Full),
+            PermissionPolicy::Full
+        );
+    }
+
+    #[test]
+    fn resolve_for_session_gateway_and_interactive() {
+        assert_eq!(
+            PermissionPolicy::resolve_for_session(true, ""),
+            PermissionPolicy::Full
+        );
+        assert_eq!(
+            PermissionPolicy::resolve_for_session(true, "default"),
+            PermissionPolicy::Ask
+        );
+        assert_eq!(
+            PermissionPolicy::resolve_for_session(false, ""),
+            PermissionPolicy::Ask
+        );
+        assert_eq!(
+            PermissionPolicy::resolve_for_session(false, "full_access"),
             PermissionPolicy::Full
         );
     }

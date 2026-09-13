@@ -81,6 +81,13 @@ pub enum AcpCommand {
         acp_session_id: String,
         model_id: String,
     },
+    /// Update permission handling for a bound session without respawning.
+    SetSessionPermission {
+        acp_session_id: String,
+        permission: PermissionPolicy,
+        /// Pi-side pending permission ids auto-granted when switching to Full.
+        cleared_tx: Option<oneshot::Sender<Vec<String>>>,
+    },
     /// Shut down the backend process (it respawns lazily on next use).
     #[allow(dead_code)]
     Shutdown,

@@ -56,7 +56,6 @@ import { SessionErrorAlert } from "./SessionErrorAlert";
 import { isPersistentSessionTurnError } from "@/lib/agent/agent-turn-error";
 import { hasVisiblePendingPermissions } from "./PermissionCard";
 import { collectAcpStreamingPermissions } from "@/lib/teamclu/acp-permission-entries";
-import { useSessionPermissionMode } from "@/lib/session/session-permission-mode";
 import { interruptAgentActor } from "@/lib/teamclu/interrupt-agent";
 import { toast } from "sonner";
 import { AcpStreamDebugPanel } from "./AcpStreamDebugPanel";
@@ -111,7 +110,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
   // ── Session store selectors (reactive state only) ────────────────────
   const activeSessionId = useSessionSelectionStore(s => s.activeSessionId);
   const ensureParticipants = useSessionParticipantStore(s => s.ensureParticipants);
-  const sessionPermissionMode = useSessionPermissionMode(activeSessionId);
   // The app this session belongs to, if any, and whether its checkout is here.
   // `null` locality is "the daemon has not said" and leaves the composer alone.
   const { app: activeSessionApp, local: activeSessionAppLocal } =
@@ -218,7 +216,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
       useSessionStore.getState().sessions,
       pendingPermissions,
       acpPendingForTodo,
-      sessionPermissionMode,
     );
     // sessionParentLinks is the change signal for the getState() read above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -227,7 +224,6 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
     acpPendingForTodo,
     messageQueue.length,
     pendingPermissions,
-    sessionPermissionMode,
     sessionParentLinks,
     planTodos.length,
   ]);

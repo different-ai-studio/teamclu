@@ -54,7 +54,6 @@ import {
 import { useSessionNoticeStore } from "@/stores/session-notice-store";
 import { hasVisiblePendingPermissions } from "./PermissionCard";
 import { collectAcpStreamingPermissions } from "@/lib/teamclu/acp-permission-entries";
-import { useSessionPermissionMode } from "@/lib/session/session-permission-mode";
 import { interruptAgentActor } from "@/lib/teamclu/interrupt-agent";
 import { toast } from "sonner";
 import type { AttachedAgent } from "@/packages/ai/prompt-input-insert-hooks";
@@ -106,7 +105,6 @@ export function SessionChatColumn({
   const noopSetBool = React.useCallback((_value: React.SetStateAction<boolean>) => {}, []);
 
   const ensureParticipants = useSessionParticipantStore((s) => s.ensureParticipants);
-  const sessionPermissionMode = useSessionPermissionMode(sessionId);
   const messageQueue = useSessionStore((s) => s.messageQueue);
   const removeFromQueue = useSessionStore.getState().removeFromQueue;
   const clearSessionError = useSessionStore.getState().clearSessionError;
@@ -161,14 +159,12 @@ export function SessionChatColumn({
       useSessionStore.getState().sessions,
       pendingPermissions,
       acpPendingForTodo,
-      sessionPermissionMode,
     );
   }, [
     sessionId,
     acpPendingForTodo,
     messageQueue.length,
     pendingPermissions,
-    sessionPermissionMode,
     planTodos.length,
   ]);
 

@@ -3,14 +3,12 @@ import {
   collectAcpBystanderWaitingPermissions,
   collectAcpStreamingPermissions,
 } from "@/lib/teamclu/acp-permission-entries";
-import { useSessionPermissionMode } from "@/lib/session/session-permission-mode";
 import { useSessionStore } from "@/stores/session-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { collectVisiblePermissions } from "./permission-queue";
 
 /** Permission / approval queue for a composer surface (main session or thread). */
 export function usePendingPermissionsQueue(permissionSessionId: string | null) {
-  const sessionPermissionMode = useSessionPermissionMode(permissionSessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const pendingPermissions = useSessionStore((s) => s.pendingPermissions);
   const streamRevision = useV2StreamingStore((s) =>
@@ -74,7 +72,6 @@ export function usePendingPermissionsQueue(permissionSessionId: string | null) {
 
   return {
     permissionSessionId,
-    sessionPermissionMode,
     visiblePermissions,
     currentEntry,
     queuedCount,

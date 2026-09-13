@@ -1182,6 +1182,47 @@ async fn do_prompt(
     }
 }
 
+async fn clear_pending_permissions_for_session(
+    shared: &Arc<Shared>,
+    acp_session_id: &str,
+    granted: bool,
+) -> Vec<String> {
+    let ids: Vec<String> = shared
+        .permissions
+        .lock()
+        .iter()
+        .filter(|(_, pending)| pending.session_id == acp_session_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in &ids {
+        resolve_permission(shared, id, granted, None).await;
+    }
+    ids
+}
+
+pub(crate) async fn apply_session_permission_policy(
+    shared: &Arc<Shared>,
+    acp_session_id: &str,
+    permission: PermissionPolicy,
+) -> Vec<String> {
+    {
+        let mut routes = shared.routes.lock();
+        let Some(route) = routes.get_mut(acp_session_id) else {
+            warn!(
+                acp_session_id,
+                "set session permission: no route for acp session"
+            );
+            return Vec::new();
+        };
+        route.permission = permission;
+    }
+    if permission.is_full_access() {
+        clear_pending_permissions_for_session(shared, acp_session_id, true).await
+    } else {
+        Vec::new()
+    }
+}
+
 async fn resolve_permission(
     shared: &Arc<Shared>,
     request_id: &str,
@@ -1297,6 +1338,7 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 .await;
             }
             AcpCommand::Cancel { acp_session_id } => {
+                clear_pending_permissions_for_session(&shared, &acp_session_id, false).await;
                 if let Some(route) = shared.routes.lock().get_mut(&acp_session_id) {
                     route.user_cancel_requested = true;
                 }
@@ -1365,6 +1407,17 @@ async fn command_loop(shared: Arc<Shared>, mut cmd_rx: mpsc::Receiver<AcpCommand
                 // interrupt. close_turn is idempotent (guards on turn_active) so
                 // a later lifecycle event is a harmless no-op.
                 events::close_turn(&shared, &acp_session_id).await;
+            }
+            AcpCommand::SetSessionPermission {
+                acp_session_id,
+                permission,
+                cleared_tx,
+            } => {
+                let cleared =
+                    apply_session_permission_policy(&shared, &acp_session_id, permission).await;
+                if let Some(tx) = cleared_tx {
+                    let _ = tx.send(cleared);
+                }
             }
             AcpCommand::ResolvePermission {
                 request_id,

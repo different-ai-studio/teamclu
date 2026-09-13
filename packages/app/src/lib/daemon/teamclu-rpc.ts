@@ -6,6 +6,7 @@ import {
   RuntimeStartRequestSchema,
   RuntimeStopRequestSchema,
   RuntimeCommandRequestSchema,
+  SessionPermissionModeRequestSchema,
   SetModelRequestSchema,
   AgentCapabilityManagementRequestSchema,
   AgentCapabilityAction,
@@ -16,6 +17,7 @@ import {
   type RpcResponse,
   type RuntimeStartResult,
   type RuntimeStopResult,
+  type SessionPermissionModeResult,
   type SetModelResult,
 } from '@/lib/proto/teamclu_pb'
 import type { RuntimeCommandEnvelope } from '@/lib/proto/amux_pb'
@@ -511,6 +513,8 @@ export interface RuntimeStartArgs {
   resetBackendBinding?: boolean
   /** Lazy thread fork from parent session at anchor agent_reply. */
   forkFrom?: { parentSessionId: string; rootMessageId: string }
+  /** `default` | `full_access` — empty lets daemon derive from session kind. */
+  permissionMode?: string
   timeoutMs?: number
 }
 
@@ -531,6 +535,7 @@ export async function runtimeStart(args: RuntimeStartArgs): Promise<RuntimeStart
             rootMessageId: args.forkFrom.rootMessageId,
           }
         : undefined,
+      permissionMode: args.permissionMode ?? '',
     })
     req.method = { case: 'runtimeStart', value: start }
   }, args.targetActorId, args.timeoutMs)
@@ -617,6 +622,37 @@ export async function runtimeCommand(args: RuntimeCommandArgs): Promise<boolean>
     throw new Error(`unexpected result variant: ${response.result.case}`)
   }
   return response.result.value.dispatched
+}
+
+// ---------------------------------------------------------------------------
+// Public helper: sessionPermissionMode
+// ---------------------------------------------------------------------------
+
+export interface SessionPermissionModeArgs {
+  targetActorId: string
+  sessionId: string
+  permissionMode: string
+  timeoutMs?: number
+}
+
+export async function sessionPermissionMode(
+  args: SessionPermissionModeArgs,
+): Promise<SessionPermissionModeResult> {
+  const response = await sendRequest((req) => {
+    const body = create(SessionPermissionModeRequestSchema, {
+      sessionId: args.sessionId,
+      permissionMode: args.permissionMode,
+    })
+    req.method = { case: 'sessionPermissionMode', value: body }
+  }, args.targetActorId, args.timeoutMs)
+
+  if (!response.success) {
+    throw new Error(response.error || 'sessionPermissionMode rejected')
+  }
+  if (response.result.case !== 'sessionPermissionModeResult') {
+    throw new Error(`unexpected result variant: ${response.result.case}`)
+  }
+  return response.result.value
 }
 
 // ---------------------------------------------------------------------------

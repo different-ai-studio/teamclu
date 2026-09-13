@@ -527,7 +527,6 @@ export function ComposerStack({
   const activeSessionId = useSessionSelectionStore((s) => s.activeSessionId);
   const resolvedPermissionSessionId = permissionSessionId ?? activeSessionId;
   const {
-    sessionPermissionMode,
     currentEntry,
     queuedCount,
     waitingRequesterActorId,
@@ -639,10 +638,7 @@ export function ComposerStack({
   );
 
   const showApprovalOnly =
-    currentEntry !== null &&
-    agents.length === 0 &&
-    sessionPermissionMode !== "fullAccess" &&
-    !hasPendingQuestion;
+    currentEntry !== null && agents.length === 0 && !hasPendingQuestion;
 
   const showWaitingOnly =
     currentEntry === null &&

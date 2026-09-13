@@ -137,10 +137,6 @@ export function setSessionPermissionMode(
   writePayload(payload);
 }
 
-export function shouldAutoAllowSessionPermissions(sessionId: string): boolean {
-  return getSessionPermissionMode(sessionId) === "fullAccess";
-}
-
 export function useSessionPermissionMode(
   sessionId: string | null,
 ): SessionPermissionMode {

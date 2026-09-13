@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AgentType } from '@/lib/proto/amux_pb'
+import {
+  resetSessionPermissionModesForTests,
+  setSessionPermissionMode,
+} from '@/lib/session/session-permission-mode'
 
 const mockRuntimeStart = vi.fn().mockResolvedValue({
   accepted: true,
@@ -102,6 +106,7 @@ vi.mock('@/lib/mqtt/mqtt-bridge', () => ({
 
 describe('startAgentRuntimesAsync', () => {
   beforeEach(() => {
+    resetSessionPermissionModesForTests()
     mockRuntimeStart.mockClear()
     mockSetModel.mockClear()
     backendMocks.createSessionShell.mockReset()
@@ -433,6 +438,27 @@ describe('startAgentRuntimesAsync', () => {
       expect.objectContaining({
         targetActorId: 'agent-4',
         modelId: 'claude-opus-4-7',
+      }),
+    )
+  })
+
+  it('passes session permission mode to runtimeStart', async () => {
+    mockTables({
+      actors: [{ id: 'agent-4', agent_types: [], default_agent_type: 'claude' }],
+    })
+    setSessionPermissionMode('sess-1', 'fullAccess')
+
+    const { startAgentRuntimesAsync } = await import('@/lib/session/session-create')
+    await startAgentRuntimesAsync({
+      sessionId: 'sess-1',
+      teamId: 'team-1',
+      agentActorIds: ['agent-4'],
+    })
+
+    expect(mockRuntimeStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'sess-1',
+        permissionMode: 'full_access',
       }),
     )
   })

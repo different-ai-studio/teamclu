@@ -185,6 +185,7 @@ message RpcRequest {
     RemoteToolInvokeRequest remote_tool_invoke = 47;
     RuntimeCommandRequest runtime_command = 48;
     AgentCapabilityManagementRequest agent_capability_management = 49;
+    SessionPermissionModeRequest session_permission_mode = 50;
   }
 }
 
@@ -250,6 +251,7 @@ message RpcResponse {
     RemoteToolInvokeResult remote_tool_invoke_result = 37;
     RuntimeCommandResult runtime_command_result = 38;
     AgentCapabilityManagementResult agent_capability_management_result = 39;
+    SessionPermissionModeResult session_permission_mode_result = 50;
   }
 }
 
@@ -437,6 +439,25 @@ message RuntimeStartRequest {
   // and create a fresh backend session on this cloud session.
   bool reset_backend_binding = 8;
   RuntimeForkFrom fork_from = 9;
+  // Optional. Wire values match cron payloads: "default" | "full_access"
+  // (also accepts "fullAccess" / "full"). Empty = daemon derives from
+  // gateway/cron binding (full access) or interactive default (ask).
+  string permission_mode = 10;
+}
+
+// Live update for a session already attached on this daemon. Does not respawn
+// the pi host or interrupt an in-flight turn — only changes how future tool
+// permission confirms are handled, and optionally resolves pending ones.
+message SessionPermissionModeRequest {
+  string session_id = 1;       // TeamClu cloud session id
+  string permission_mode = 2;  // "default" | "full_access" (+ aliases)
+}
+
+message SessionPermissionModeResult {
+  bool accepted = 1;
+  // Effective policy after gateway/cron merge rules ("default" | "full_access").
+  string effective_mode = 2;
+  string rejected_reason = 3;
 }
 
 // Accepted-only reply to RuntimeStartRequest.

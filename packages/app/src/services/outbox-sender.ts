@@ -167,6 +167,10 @@ async function ensureLocalRuntimeForFastPath(
     workspaceId: workspaceId || null,
     forkFrom: forkFrom ?? null,
   });
+  const { getSessionPermissionMode } = await import("@/lib/session/session-permission-mode");
+  const { sessionPermissionModeToWire } = await import(
+    "@/lib/session/session-permission-mode-wire"
+  );
   await runtimeStart({
     targetActorId: localDaemonActorId,
     workspaceId,
@@ -174,6 +178,7 @@ async function ensureLocalRuntimeForFastPath(
     sessionId: entry.sessionId,
     agentType,
     modelId: entry.model ?? "",
+    permissionMode: sessionPermissionModeToWire(getSessionPermissionMode(entry.sessionId)),
     ...(forkFrom ? { forkFrom } : {}),
   });
   sessionFlowLog("outbox_sender.local_runtime_start.ok", {

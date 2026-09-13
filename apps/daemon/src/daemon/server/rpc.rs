@@ -526,6 +526,9 @@ impl DaemonServer {
             Some(Method::RemoveMember(r)) => self.handle_remove_member(&request, r).await,
             Some(Method::RuntimeStop(s)) => self.handle_stop_runtime(&request, s).await,
             Some(Method::RuntimeStart(s)) => self.handle_start_runtime(&request, s).await,
+            Some(Method::SessionPermissionMode(s)) => {
+                self.handle_session_permission_mode(&request, s).await
+            }
             Some(Method::SetModel(s)) => self.handle_set_model(&request, s).await,
             Some(Method::RuntimeCommand(c)) => {
                 self.handle_runtime_command_rpc(&request, c.clone()).await
@@ -1299,6 +1302,7 @@ impl DaemonServer {
                         &sender_actor_id,
                         false,
                         None,
+                        "",
                     )
                     .await;
 

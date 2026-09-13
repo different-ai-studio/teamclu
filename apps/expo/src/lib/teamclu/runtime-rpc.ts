@@ -28,6 +28,7 @@ export type RuntimeStartArgs = {
   initialPrompt?: string;
   modelId?: string;
   resetBackendBinding?: boolean;
+  permissionMode?: string;
   timeoutMs?: number;
 };
 
@@ -181,6 +182,7 @@ export function createRuntimeRpcClient(deps: RuntimeRpcClientDeps): RuntimeRpcCl
         initialPrompt: args.initialPrompt ?? "",
         modelId: args.modelId ?? "",
         resetBackendBinding: args.resetBackendBinding ?? false,
+        permissionMode: args.permissionMode ?? "",
       });
       const request = create(RpcRequestSchema, {
         requestId,

@@ -177,6 +177,7 @@ mod poll;
 mod cancel;
 // Model switching (set_model / maybe_apply_model / send_set_model).
 mod model_apply;
+mod permission_apply;
 
 impl RuntimeManager {
     pub fn attach_refresh_coordinator(&mut self, coordinator: Arc<RuntimeRefreshCoordinator>) {
