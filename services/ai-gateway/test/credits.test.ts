@@ -571,7 +571,7 @@ test("retention deletes only rows past the window", { skip: !DB }, async () => {
 test("usage report attributes agent spend to the owning human", { skip: !DB }, async () => {
   // Settings leaderboard should show people, not device agents. Agent rows in
   // ai_usage_logs roll up to agents.owner_member_id.
-  await admin`insert into amux.members (id) values (${memberId}::uuid)
+  await admin`insert into amux.members (id, status) values (${memberId}::uuid, 'active')
               on conflict (id) do nothing`;
   await admin`
     insert into amux.agents (id, owner_member_id, status, visibility)
