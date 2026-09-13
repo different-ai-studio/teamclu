@@ -2,12 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
-import {
-  AppControlPanel,
-  describeCodeVersion,
-  typeChangeNeedsConfirm,
-  visibilityChangeNeedsConfirm,
-} from '../AppControlPanel'
+import { AppControlPanel, describeCodeVersion } from '../AppControlPanel'
 import type { AppRow } from '@/lib/backend/types'
 
 const backendMocks = vi.hoisted(() => ({
@@ -18,7 +13,6 @@ const backendMocks = vi.hoisted(() => ({
   listAppCronJobs: vi.fn(),
   listAppEnv: vi.fn(),
   getGitHead: vi.fn(),
-  deleteApp: vi.fn(),
 }))
 
 const tabMocks = vi.hoisted(() => ({
@@ -32,21 +26,9 @@ const tabMocks = vi.hoisted(() => ({
   openAppLogs: vi.fn(),
 }))
 
-const daemonMocks = vi.hoisted(() => ({
-  daemonAppWorkdir: vi.fn(),
-  moveDaemonAppWorkdir: vi.fn(),
-}))
-
-const utilMocks = vi.hoisted(() => ({ copyToClipboard: vi.fn() }))
-
 const storeMocks = vi.hoisted(() => ({
   deployingIds: [] as string[],
-  reseed: vi.fn(),
   rename: vi.fn(),
-  setVisibility: vi.fn(),
-  setType: vi.fn(),
-  deploy: vi.fn(),
-  deleteApp: vi.fn(),
 }))
 
 vi.mock('@/lib/backend', () => ({
@@ -55,15 +37,8 @@ vi.mock('@/lib/backend', () => ({
 
 vi.mock('@/lib/tabs/app-tabs', () => tabMocks)
 
-vi.mock('@/lib/daemon/daemon-local-client', () => ({
-  daemonAppWorkdir: (...args: unknown[]) => daemonMocks.daemonAppWorkdir(...args),
-  moveDaemonAppWorkdir: (...args: unknown[]) => daemonMocks.moveDaemonAppWorkdir(...args),
-}))
-
 vi.mock('@/lib/utils', () => ({
-  isTauri: () => true,
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
-  copyToClipboard: (...args: unknown[]) => utilMocks.copyToClipboard(...args),
 }))
 
 vi.mock('@/stores/apps-store', () => ({
@@ -123,10 +98,6 @@ describe('AppControlPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     storeMocks.deployingIds = []
-    daemonMocks.daemonAppWorkdir.mockResolvedValue({
-      workdir: '/Users/me/.amuxd/teams/team-1/apps/app-1',
-      deviceName: 'Matt Mac',
-    })
     backendMocks.listAppAccess.mockResolvedValue([
       {
         memberId: 'member-1',
@@ -162,8 +133,6 @@ describe('AppControlPanel', () => {
       ],
       canWrite: true,
     })
-    storeMocks.deleteApp.mockResolvedValue(true)
-    storeMocks.setVisibility.mockResolvedValue(true)
     backendMocks.getGitHead.mockResolvedValue({
       sha: 'a3f91c2ffff',
       branch: 'main',
@@ -278,6 +247,7 @@ describe('AppControlPanel', () => {
     await waitFor(() => expect(backendMocks.listAppCronJobs).toHaveBeenCalled())
     const user = userEvent.setup()
 
+    // Settings live on their own tab now; the panel carries none of the controls.
     expect(screen.queryByTestId('app-control-type')).toBeNull()
     expect(screen.queryByRole('textbox')).toBeNull()
     await user.click(screen.getByTestId('app-control-open-settings'))
@@ -344,59 +314,6 @@ describe('AppControlPanel', () => {
     expect(screen.getByTestId('app-control-open-auth').textContent).toContain('1 条页面规则')
   })
 
-  it("shows what the app's visibility currently means, not just its name", async () => {
-    // "Personal" does not tell anyone that the local daemon cannot see the app.
-    const { rerender } = render(<AppControlPanel settings app={baseApp} />)
-    expect(screen.getByTestId('app-control-visibility').textContent).toContain('全团队可见')
-    expect(screen.getByText(/团队里每个人都能在应用列表里看到它/)).toBeTruthy()
-
-    rerender(<AppControlPanel settings app={{ ...baseApp, visibility: 'personal' } as AppRow} />)
-    expect(screen.getByTestId('app-control-visibility').textContent).toContain('仅自己和被授权的人')
-    expect(screen.getByText(/本机 daemon 也看不到它/)).toBeTruthy()
-  })
-
-  it('does not open a confirm before anything is asked for', async () => {
-    render(<AppControlPanel app={baseApp} />)
-    expect(screen.queryByTestId('app-control-visibility-confirm')).toBeNull()
-    expect(screen.queryByTestId('app-control-type-confirm')).toBeNull()
-  })
-
-  it('names the app type and says what that type is', async () => {
-    const { rerender } = render(<AppControlPanel settings app={baseApp} />)
-    expect(screen.getByTestId('app-control-type').textContent).toContain('静态网页')
-    expect(screen.getByTestId('app-control-type-hint').textContent).toContain('一个网站')
-
-    rerender(<AppControlPanel settings app={{ ...baseApp, type: 'imported' } as AppRow} />)
-    expect(screen.getByTestId('app-control-type').textContent).toContain('导入的仓库')
-  })
-
-  it('reads a pre-split stored type as the data app it is', async () => {
-    // A raw value would match no option and leave the trigger blank for every
-    // app created before types existed.
-    render(
-      <AppControlPanel
-        settings
-        app={{ ...baseApp, type: 'fullstack_tanstack_postgres' } as AppRow}
-      />,
-    )
-    expect(screen.getByTestId('app-control-type').textContent).toContain('数据操作')
-    expect(screen.getByTestId('app-control-type-hint').textContent).toContain('自带一个数据库')
-  })
-
-  it('says a type change waits for the next deploy only while it does', async () => {
-    const { rerender } = render(<AppControlPanel settings app={baseApp} />)
-    expect(screen.queryByTestId('app-control-type-pending')).toBeNull()
-
-    rerender(<AppControlPanel settings app={{ ...baseApp, typePendingRedeploy: true } as AppRow} />)
-    expect(screen.getByTestId('app-control-type-pending').textContent).toContain('下次部署')
-  })
-
-  it('treats a server that does not send the pending flag as nothing pending', async () => {
-    const { typePendingRedeploy: _omitted, ...olderRow } = baseApp
-    render(<AppControlPanel settings app={olderRow as AppRow} />)
-    expect(screen.queryByTestId('app-control-type-pending')).toBeNull()
-  })
-
   it('says how far behind the deployed commit is', async () => {
     render(<AppControlPanel app={baseApp} />)
     await waitFor(() => {
@@ -431,79 +348,6 @@ describe('AppControlPanel', () => {
     await waitFor(() =>
       expect(screen.getByTestId('app-control-open-files').textContent).toContain('100+'),
     )
-  })
-
-  it('copies the local path', async () => {
-    render(<AppControlPanel settings app={baseApp} />)
-    await waitFor(() => expect(screen.getByTestId('app-control-copy-path')).toBeTruthy())
-    await userEvent.setup().click(screen.getByTestId('app-control-copy-path'))
-    expect(utilMocks.copyToClipboard).toHaveBeenCalledWith(
-      '/Users/me/.amuxd/teams/team-1/apps/app-1',
-    )
-  })
-
-  it('shows local workdir and device name', async () => {
-    render(<AppControlPanel settings app={baseApp} />)
-    await waitFor(() => {
-      expect(screen.getByTestId('app-control-local-workdir').textContent).toContain(
-        '/Users/me/.amuxd/teams/team-1/apps/app-1',
-      )
-      expect(screen.getByText('设备：Matt Mac')).toBeTruthy()
-    })
-  })
-
-  it('opens delete confirmation and calls deleteApp', async () => {
-    render(<AppControlPanel settings app={baseApp} />)
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Delete' }))
-    expect(screen.getByText('删除应用？')).toBeTruthy()
-    await user.click(screen.getAllByRole('button', { name: 'Delete' }).at(-1)!)
-    await waitFor(() => {
-      expect(storeMocks.deleteApp).toHaveBeenCalledWith('app-1')
-    })
-  })
-
-  describe('visibilityChangeNeedsConfirm', () => {
-    it("confirms only when the change takes the app off other people's lists", () => {
-      // Widening adds people and can surprise nobody; narrowing removes the app
-      // from every teammate's list, which "personal" does not say on its own.
-      expect(visibilityChangeNeedsConfirm('team', 'personal')).toBe(true)
-      expect(visibilityChangeNeedsConfirm('personal', 'team')).toBe(false)
-    })
-
-    it('never confirms a change that changes nothing', () => {
-      expect(visibilityChangeNeedsConfirm('team', 'team')).toBe(false)
-      expect(visibilityChangeNeedsConfirm('personal', 'personal')).toBe(false)
-    })
-  })
-
-  describe('typeChangeNeedsConfirm', () => {
-    it('confirms leaving the data app for any type without a database', () => {
-      // The next deploy drops DATABASE_URL, and nothing about "slides" says so.
-      expect(typeChangeNeedsConfirm('data_app', 'static_web')).toBe(true)
-      expect(typeChangeNeedsConfirm('data_app', 'slides')).toBe(true)
-      expect(typeChangeNeedsConfirm('data_app', 'imported')).toBe(true)
-    })
-
-    it('treats a legacy stored type as the data app it is', () => {
-      expect(typeChangeNeedsConfirm('fullstack_tanstack_postgres', 'static_web')).toBe(true)
-      expect(typeChangeNeedsConfirm('fullstack_tanstack_postgres', 'data_app')).toBe(false)
-    })
-
-    it('does not confirm gaining a database', () => {
-      expect(typeChangeNeedsConfirm('static_web', 'data_app')).toBe(false)
-      expect(typeChangeNeedsConfirm('imported', 'data_app')).toBe(false)
-    })
-
-    it('does not confirm moving between types that never had a database', () => {
-      expect(typeChangeNeedsConfirm('static_web', 'slides')).toBe(false)
-      expect(typeChangeNeedsConfirm('slides', 'imported')).toBe(false)
-    })
-
-    it('never confirms a change that changes nothing', () => {
-      expect(typeChangeNeedsConfirm('data_app', 'data_app')).toBe(false)
-      expect(typeChangeNeedsConfirm('static_web', 'static_web')).toBe(false)
-    })
   })
 
   describe('describeCodeVersion', () => {
