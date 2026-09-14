@@ -2,13 +2,14 @@
 //!
 //! Reads the two files `http::spawn` writes at startup: the actually-bound
 //! port (`amuxd.http.port`, needed because the default bind is an ephemeral
-//! `127.0.0.1:0`) and the 0600 root token (`amuxd.http.token`). Both are
+//! `0.0.0.0:0`) and the 0600 root token (`amuxd.http.token`). Both are
 //! readable only by the user who owns the daemon, so being able to run this
 //! command *is* the authorization.
 //!
-//! The token rides in the query string. That is safe here in a way it would
-//! not be on a public origin: the URL never leaves loopback, and the page
-//! immediately exchanges the root token for a scoped session token.
+//! The printed URL still uses `http://127.0.0.1` so a local browser opens the
+//! loopback path. The token rides in the query string and the page immediately
+//! exchanges it for a scoped session token — do not paste that URL onto an
+//! untrusted network; prefer SSH tunneling or a short-lived session token.
 
 use crate::config::DaemonConfig;
 
