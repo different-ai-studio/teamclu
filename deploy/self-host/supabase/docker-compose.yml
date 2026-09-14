@@ -190,13 +190,21 @@ services:
       # Keep everything inside the compose network off the proxy. Go already
       # exempts localhost and loopback, but not sibling service names.
       #
+      # templates-server MUST be here. GoTrue fetches every mailer template over
+      # HTTP at send time (internal/mailer/templatemailer), and Go's default
+      # transport honours HTTP_PROXY/NO_PROXY. Without the exemption the fetch
+      # goes out to the egress proxy, which cannot resolve the Docker-internal
+      # name — the request fails and GoTrue silently falls back to its embedded
+      # "Your Magic Link" email instead of erroring. That is the whole bug: the
+      # template files are correct, they were just never fetched.
+      #
       # appleid.apple.com is exempted for the opposite reason: it is directly
       # reachable from mainland China (~0.7s), while the egress proxy above is a
       # tinyproxy with a destination allowlist built for Google — sending Apple
       # through it returns tinyproxy's "Filtered" page, which surfaces as a bare
       # 500 unexpected_failure on the id_token grant. Routing Apple direct also
       # keeps Sign in with Apple working if that proxy box ever goes away.
-      NO_PROXY: localhost,127.0.0.1,::1,db,kong,rest,realtime,storage,imgproxy,meta,analytics,functions,supavisor,fc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,appleid.apple.com
+      NO_PROXY: localhost,127.0.0.1,::1,db,kong,rest,realtime,storage,imgproxy,meta,analytics,functions,supavisor,fc,templates-server,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,appleid.apple.com
 
       GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
       GOTRUE_SMTP_HOST: ${SMTP_HOST}
