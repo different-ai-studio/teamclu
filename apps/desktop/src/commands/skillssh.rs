@@ -27,22 +27,18 @@ const SOURCE_IMPORT: &str = "import";
 /// This is not a content rule — `teamclu_skillpack::build_package_index` decides
 /// what the pack is, and the pack's own `.teamcluignore` is part of that. This
 /// is the import entry point's guard, and it exists because a zip is untrusted
-/// input: VCS metadata is never skill content and can be arbitrarily large, and
-/// `metadata.json` belongs to the retired skills.sh marketplace.
+/// input: VCS metadata and Python bytecode caches are never skill content, can
+/// be arbitrarily large, and the built-in ignore layer does not cover them yet.
+/// When it does, these move there and this list goes away.
+///
+/// An entry belongs here only if it stops a harm the index does not already
+/// stop. `__MACOSX/` is deliberately absent for that reason — it is already a
+/// built-in rule. `metadata.json` is absent because nothing in this repo writes
+/// or reads it; excluding it would only mean silently dropping a file from a zip
+/// that happened to carry one.
 ///
 /// Directory entries end in `/` and match by prefix; file entries match exactly.
-/// The Python and `__MACOSX` entries are the ones the hand-rolled walk used to
-/// drop; they move into the built-in ignore layer once that layer grows, which
-/// is a separate change. Import is not allowed to regress on them first.
-const IMPORT_NEVER_COPY: &[&str] = &[
-    ".git/",
-    ".svn/",
-    ".hg/",
-    "__MACOSX/",
-    "__pycache__/",
-    "__pypackages__/",
-    "metadata.json",
-];
+const IMPORT_NEVER_COPY: &[&str] = &[".git/", ".svn/", ".hg/", "__pycache__/", "__pypackages__/"];
 
 fn import_never_copies(rel: &str) -> bool {
     IMPORT_NEVER_COPY
@@ -389,6 +385,9 @@ mod tests {
                 ("deploy-check/scripts/check.sh", b"#!/bin/sh\necho hi\n"),
                 ("deploy-check/results/run-1.json", b"{}\n"),
                 ("deploy-check/.DS_Store", b"finder\n"),
+                // Not `._*`: that pattern already covers macOS litter on its own, and
+                // using it here would hide whether the `__MACOSX/` rule works.
+                ("deploy-check/__MACOSX/plain.txt", b"x\n"),
             ],
         );
 
@@ -404,7 +403,10 @@ mod tests {
         // The arrived rules apply to the import itself, so the pack starts life
         // without the files it just declared as non-content.
         assert!(!installed.join("results").exists());
+        // OS junk comes from the built-in layer, which is why the import guard
+        // does not need its own `__MACOSX/` / `.DS_Store` / `Thumbs.db` entries.
         assert!(!installed.join(".DS_Store").exists());
+        assert!(!installed.join("__MACOSX").exists());
 
         let origin = teamclu_skillpack::read_origin(&installed).expect("origin");
         let baseline = origin.files.expect("baseline");
@@ -416,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn import_never_adopts_vcs_metadata_or_legacy_sidecars() {
+    fn import_never_adopts_vcs_metadata_or_python_caches() {
         let home = tempfile::tempdir().expect("tempdir");
         let _home = HomeGuard::set(home.path());
 
@@ -429,7 +431,6 @@ mod tests {
                 ("vendored/.git/HEAD", b"ref: refs/heads/main\n"),
                 ("vendored/.git/objects/ab/cdef", b"x\n"),
                 ("vendored/__pycache__/mod.cpython-312.pyc", b"x\n"),
-                ("vendored/metadata.json", b"{\"legacy\":true}\n"),
             ],
         );
 
@@ -441,7 +442,34 @@ mod tests {
             "VCS metadata is not content"
         );
         assert!(!installed.join("__pycache__").exists());
-        assert!(!installed.join("metadata.json").exists());
         assert!(installed.join("SKILL.md").is_file());
+    }
+
+    /// `metadata.json` used to be excluded here by a rule inherited from the
+    /// pre-migration codebase. Nothing in the repo writes or reads it, so the
+    /// exclusion only meant dropping a file the zip deliberately carried.
+    /// Pinned as ordinary content so it cannot be re-added as a "fix".
+    #[test]
+    fn import_keeps_a_metadata_json_the_zip_actually_carries() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home.path());
+
+        let zip_dir = tempfile::tempdir().expect("tempdir");
+        let zip_path = zip_dir.path().join("described.zip");
+        write_zip(
+            &zip_path,
+            &[
+                ("described/SKILL.md", b"---\nname: described\n---\nbody\n"),
+                ("described/metadata.json", b"{\"version\":1}\n"),
+            ],
+        );
+
+        import(&zip_path, None).expect("import");
+
+        let installed = home.path().join(".agents/skills/described");
+        assert_eq!(
+            std::fs::read_to_string(installed.join("metadata.json")).unwrap(),
+            "{\"version\":1}\n"
+        );
     }
 }
