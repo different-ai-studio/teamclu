@@ -700,7 +700,11 @@ jobs:
           if-no-files-found: error
 
   build-amuxd-linux:
-    runs-on: ubuntu-latest
+    # Pin 22.04 (glibc 2.35). `ubuntu-latest` is 24.04 (glibc 2.39); a binary
+    # linked there fails on Debian bookworm / Armbian (glibc 2.36) with
+    # `GLIBC_2.38` / `GLIBC_2.39` not found. Same for the old `cross` path:
+    # `ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main` is now Ubuntu 24.04.
+    runs-on: ubuntu-22.04
     # Backstop: a hung step must not squat the 360-minute default and
     # starve publish-manifest. Healthy peak over the last 6 releases was
     # 10.2 min.
@@ -742,6 +746,15 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # aarch64: host cross-gcc + vendored OpenSSL (see apps/daemon/Cargo.toml).
+      # Avoids `cross` + :main (Ubuntu 24.04 sysroot → glibc 2.39).
+      - name: Install aarch64 cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
       # This job has no Setup Rust step: it relies on the runner's rustup, which
       # reads rust-toolchain.toml. Install that channel explicitly (a rustup
       # without implicit installs would otherwise fail on the first cargo call)
@@ -757,28 +770,49 @@ jobs:
           # apps/daemon is a member of the root workspace, so its output lands
           # under the root target/, not apps/daemon/target/.
           workspaces: . -> target
-          key: amuxd-${{ matrix.target }}
+          key: amuxd-${{ matrix.target }}-ubuntu-22.04
 
       - name: Build amuxd
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
         run: |
           mkdir -p apps/desktop/binaries
           TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/daemon/Cargo.toml | jq -r .target_directory)"
           # NB: no --locked — the repo's Cargo.lock drifts slightly from
           # Cargo.toml and the desktop build (tauri-action) tolerates it by
           # updating the lock; match that here rather than hard-failing.
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            # Cross-compiling amuxd for arm64 drags in openssl-sys (+ other C
-            # deps) which needs an arm64 sysroot the host runner doesn't have.
-            # `cross` runs the build in a Debian container with working multiarch;
-            # Cross.toml's pre-build installs libssl-dev:arm64 + protoc there and
-            # points openssl-sys at the arm64 multiarch lib/include dirs.
-            cargo install cross --locked --version 0.2.5
-            cross build --release --manifest-path apps/daemon/Cargo.toml -p amuxd --target ${{ matrix.target }}
-          else
-            cargo build --release --manifest-path apps/daemon/Cargo.toml -p amuxd --target ${{ matrix.target }}
-          fi
+          cargo build --release --manifest-path apps/daemon/Cargo.toml -p amuxd --target ${{ matrix.target }}
           cp "$TARGET_DIR/${{ matrix.target }}/release/amuxd" apps/desktop/binaries/amuxd-${{ matrix.target }}
           chmod +x apps/desktop/binaries/amuxd-${{ matrix.target }}
+
+      # Guardrail: refuse to publish a binary that needs newer than Ubuntu
+      # 22.04 glibc (2.35). Bookworm / Armbian ship 2.36 and accept ≤2.35.
+      - name: Assert glibc requirement ≤ 2.35
+        run: |
+          BIN="apps/desktop/binaries/amuxd-${{ matrix.target }}"
+          MAX="$(
+            if command -v readelf >/dev/null 2>&1; then
+              readelf -V "$BIN" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' || true
+            else
+              strings "$BIN" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' || true
+            fi | sort -Vu | tail -1
+          )"
+          echo "max GLIBC symbol: ${MAX:-none}"
+          if [ -z "$MAX" ]; then
+            echo "::error::no GLIBC_* symbols found in $BIN"
+            exit 1
+          fi
+          VER="${MAX#GLIBC_}"
+          CAP=2.35
+          HIGHEST="$(printf '%s\n' "$VER" "$CAP" | sort -V | tail -1)"
+          if [ "$HIGHEST" != "$CAP" ]; then
+            echo "::error::amuxd requires GLIBC_$VER > $CAP; rebuild on older glibc"
+            exit 1
+          fi
+          echo "ok: requires glibc >= $VER (cap $CAP)"
 
       - name: Upload standalone amuxd to OSS + emit amuxd fragment
         env:
@@ -791,7 +825,10 @@ jobs:
             echo "::error::OSS secrets not configured — cannot publish amuxd"
             exit 1
           fi
-          python3 -m pip install oss2 --quiet --break-system-packages 2>/dev/null || pip3 install oss2 --quiet --break-system-packages
+          # 22.04 pip may not know --break-system-packages (24.04+).
+          python3 -m pip install oss2 --quiet --break-system-packages 2>/dev/null \
+            || python3 -m pip install oss2 --quiet \
+            || pip3 install oss2 --quiet
           BIN="apps/desktop/binaries/amuxd-${{ matrix.target }}" \
           AMUXD_OS=linux \
           python3 scripts/publish-amuxd-fragment.py
