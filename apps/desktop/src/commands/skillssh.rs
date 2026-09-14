@@ -8,16 +8,50 @@
 //! screen could reach any more, so they are gone (#1049 follow-up).
 //!
 //! What survives is the one command that was never part of that: manual zip
-//! import. It keeps the parallel (rayon) directory walk, because a zip can
-//! carry its `SKILL.md` at any depth.
+//! import. It walks the whole archive rather than just the root, because a zip
+//! can carry its `SKILL.md` at any depth.
 
 use std::path::{Path, PathBuf};
 
-use teamclu_skillpack::{build_manifest, write_origin, SkillOrigin, ORIGIN_VERSION};
+use teamclu_skillpack::{
+    build_manifest, build_package_index, write_origin, SkillOrigin, ORIGIN_VERSION,
+};
 
 use super::clawhub::{extract_zip_to_dir, now_millis};
 
 const SOURCE_IMPORT: &str = "import";
+
+/// Paths manual zip import refuses to adopt, on top of what the pack's own
+/// selector already excludes.
+///
+/// This is not a content rule — `teamclu_skillpack::build_package_index` decides
+/// what the pack is, and the pack's own `.teamcluignore` is part of that. This
+/// is the import entry point's guard, and it exists because a zip is untrusted
+/// input: VCS metadata is never skill content and can be arbitrarily large, and
+/// `metadata.json` belongs to the retired skills.sh marketplace.
+///
+/// Directory entries end in `/` and match by prefix; file entries match exactly.
+/// The Python and `__MACOSX` entries are the ones the hand-rolled walk used to
+/// drop; they move into the built-in ignore layer once that layer grows, which
+/// is a separate change. Import is not allowed to regress on them first.
+const IMPORT_NEVER_COPY: &[&str] = &[
+    ".git/",
+    ".svn/",
+    ".hg/",
+    "__MACOSX/",
+    "__pycache__/",
+    "__pypackages__/",
+    "metadata.json",
+];
+
+fn import_never_copies(rel: &str) -> bool {
+    IMPORT_NEVER_COPY
+        .iter()
+        .any(|rule| match rule.strip_suffix('/') {
+            Some(dir) => rel == dir || rel.starts_with(&format!("{dir}/")),
+            None => rel == *rule,
+        })
+}
 
 // ─── Import skill from local .zip (manual upload) ─────────────────────────────
 
@@ -207,49 +241,53 @@ fn import_skill_from_zip_blocking(
     import_result
 }
 
-// ─── Legacy helpers (still used by import_skill_from_zip) ───────────────────
+// ─── Import helpers ─────────────────────────────────────────────────────────
 
-/// Copy skill directory excluding .git and other metadata
+/// Copy a skill tree as the pack defines it.
+///
+/// The file set comes from `teamclu_skillpack::build_package_index` — the same
+/// selector dirty detection, packing and the content digest use — so an
+/// imported pack starts life clean against the baseline `build_manifest` is
+/// about to record for it.
+///
+/// This used to walk the tree by hand and skip every entry whose name began
+/// with a dot. That is how `.teamcluignore` was lost on import: the one file
+/// that tells every other member what must not be published vanished at exactly
+/// the moment it arrived, so a skill's ignore rules survived the round trip
+/// through the registry but not the round trip through a zip. OS junk and
+/// symlinks are already out of the index, and the pack's own rules apply here
+/// too — which is the point, not a side effect.
+///
+/// `.clawhub/` needs no special case: the index excludes it at the pack root,
+/// and this import writes its own origin record.
 fn copy_skill_directory(src: &Path, dst: &Path) -> Result<(), String> {
     use std::fs;
 
-    let exclude_files = ["metadata.json"];
-    let exclude_dirs = [".git", "__pycache__", "__pypackages__"];
+    let index = build_package_index(src)
+        .map_err(|e| format!("Failed to list skill files in {}: {}", src.display(), e))?;
 
-    let mut copy_dirs = vec![(src.to_path_buf(), dst.to_path_buf())];
-
-    while let Some((src_dir, dst_dir)) = copy_dirs.pop() {
-        if let Ok(entries) = fs::read_dir(&src_dir) {
-            for entry in entries.flatten() {
-                let src_path = entry.path();
-                let file_name = entry.file_name();
-                let name = file_name.to_string_lossy();
-
-                // Skip excluded files and directories
-                if exclude_files.contains(&name.as_ref()) {
-                    continue;
-                }
-
-                if src_path.is_dir() {
-                    if exclude_dirs.contains(&name.as_ref()) || name.starts_with('.') {
-                        continue;
-                    }
-
-                    let dst_path = dst_dir.join(&file_name);
-                    if fs::create_dir_all(&dst_path).is_ok() {
-                        copy_dirs.push((src_path, dst_path));
-                    }
-                } else {
-                    // Skip hidden files (starting with .)
-                    if name.starts_with('.') {
-                        continue;
-                    }
-
-                    let dst_path = dst_dir.join(&file_name);
-                    let _ = fs::copy(&src_path, &dst_path);
-                }
-            }
+    for rel in &index.included {
+        if import_never_copies(rel) {
+            continue;
         }
+        // `included` is `/`-separated on every platform; the filesystem is not.
+        let from = src.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let to = dst.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+        }
+        // `fs::copy` carries the permission bits across, which is what keeps a
+        // shipped script executable after the import. Errors used to be
+        // swallowed here, so a half-copied skill still reported success.
+        fs::copy(&from, &to).map_err(|e| {
+            format!(
+                "Failed to copy {} to {}: {}",
+                from.display(),
+                to.display(),
+                e
+            )
+        })?;
     }
 
     Ok(())
@@ -331,5 +369,79 @@ mod tests {
         let installed = home.path().join(".agents/skills/safe-skill/SKILL.md");
         assert!(installed.is_file(), "skill should still install");
         assert!(!home.path().join(".agents/skills/outside.txt").exists());
+    }
+
+    #[test]
+    fn import_keeps_the_ignore_file_and_starts_clean() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home.path());
+
+        let zip_dir = tempfile::tempdir().expect("tempdir");
+        let zip_path = zip_dir.path().join("deploy-check.zip");
+        write_zip(
+            &zip_path,
+            &[
+                (
+                    "deploy-check/SKILL.md",
+                    b"---\nname: deploy-check\n---\nbody\n",
+                ),
+                ("deploy-check/.teamcluignore", b"results/\n"),
+                ("deploy-check/scripts/check.sh", b"#!/bin/sh\necho hi\n"),
+                ("deploy-check/results/run-1.json", b"{}\n"),
+                ("deploy-check/.DS_Store", b"finder\n"),
+            ],
+        );
+
+        import(&zip_path, None).expect("import");
+
+        let installed = home.path().join(".agents/skills/deploy-check");
+        assert_eq!(
+            std::fs::read_to_string(installed.join(".teamcluignore")).unwrap(),
+            "results/\n",
+            "the ignore file is the whole point of importing the pack as-is"
+        );
+        assert!(installed.join("scripts/check.sh").is_file());
+        // The arrived rules apply to the import itself, so the pack starts life
+        // without the files it just declared as non-content.
+        assert!(!installed.join("results").exists());
+        assert!(!installed.join(".DS_Store").exists());
+
+        let origin = teamclu_skillpack::read_origin(&installed).expect("origin");
+        let baseline = origin.files.expect("baseline");
+        assert_eq!(
+            teamclu_skillpack::inspect(&installed, Some(&baseline)),
+            teamclu_skillpack::DirtyState::Clean,
+            "an imported pack must not be born dirty"
+        );
+    }
+
+    #[test]
+    fn import_never_adopts_vcs_metadata_or_legacy_sidecars() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home.path());
+
+        let zip_dir = tempfile::tempdir().expect("tempdir");
+        let zip_path = zip_dir.path().join("vendored.zip");
+        write_zip(
+            &zip_path,
+            &[
+                ("vendored/SKILL.md", b"---\nname: vendored\n---\nbody\n"),
+                ("vendored/.git/HEAD", b"ref: refs/heads/main\n"),
+                ("vendored/.git/objects/ab/cdef", b"x\n"),
+                ("vendored/__pycache__/mod.cpython-312.pyc", b"x\n"),
+                ("vendored/metadata.json", b"{\"legacy\":true}\n"),
+            ],
+        );
+
+        import(&zip_path, None).expect("import");
+
+        let installed = home.path().join(".agents/skills/vendored");
+        assert!(
+            !installed.join(".git").exists(),
+            "VCS metadata is not content"
+        );
+        assert!(!installed.join("__pycache__").exists());
+        assert!(!installed.join("metadata.json").exists());
+        assert!(installed.join("SKILL.md").is_file());
     }
 }
