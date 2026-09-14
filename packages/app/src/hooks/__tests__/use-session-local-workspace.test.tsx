@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 
 const mocks = vi.hoisted(() => ({
   currentSessionId: 'sess-a' as string | null,
@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   workspacePath: '/tmp/a' as string | null,
   participantsBySession: {} as Record<string, Array<{ actorId: string; displayName: string }>>,
   ensureParticipants: vi.fn(),
-  knownLocalDaemonActorId: 'agent-local' as string | null,
+  getLocalDaemonActorId: vi.fn(),
   resolveSessionWorkspacePath: vi.fn(),
 }))
 
@@ -34,18 +34,18 @@ vi.mock('@/stores/session-participant-store', () => ({
     }),
 }))
 
-vi.mock('@/lib/daemon/local-daemon-identity', () => ({
-  getKnownLocalDaemonActorId: () => mocks.knownLocalDaemonActorId,
-}))
-
 vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
-  getLocalDaemonActorId: vi.fn().mockResolvedValue(null),
+  getLocalDaemonActorId: () => mocks.getLocalDaemonActorId(),
 }))
 
 vi.mock('@/lib/session/session-by-workspace', () => ({
   resolveSessionWorkspacePath: (...args: unknown[]) => mocks.resolveSessionWorkspacePath(...args),
 }))
 
+import {
+  __resetLocalDaemonIdentityForTest,
+  noteLocalDaemonActorId,
+} from '@/lib/daemon/local-daemon-identity'
 import { useSessionLocalWorkspace } from '../use-session-local-workspace'
 
 describe('useSessionLocalWorkspace', () => {
@@ -54,7 +54,9 @@ describe('useSessionLocalWorkspace', () => {
     mocks.currentSessionId = 'sess-a'
     mocks.teamId = 'team-1'
     mocks.workspacePath = '/tmp/a'
-    mocks.knownLocalDaemonActorId = 'agent-local'
+    __resetLocalDaemonIdentityForTest()
+    noteLocalDaemonActorId('agent-local')
+    mocks.getLocalDaemonActorId.mockResolvedValue(null)
     mocks.participantsBySession = {
       'sess-a': [{ actorId: 'agent-local', displayName: 'Mac-mini-3' }],
       'sess-b': [{ actorId: 'agent-local', displayName: 'Mac-mini-3' }],
@@ -98,6 +100,30 @@ describe('useSessionLocalWorkspace', () => {
     await waitFor(() => expect(mocks.resolveSessionWorkspacePath).toHaveBeenCalled())
     expect(result.current.hasLocalAgent).toBe(false)
     expect(result.current.path).toBeNull()
+  })
+
+  // amuxd takes a different actor id under each team. The id seen at mount
+  // belongs to the team the app started in; after a switch the session roster
+  // names the new one, and a copy held in state hid the tree and terminal for
+  // every session until the app was reloaded.
+  it('follows the local actor id when the daemon re-inits under another team', async () => {
+    noteLocalDaemonActorId('agent-previous-team')
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(mocks.resolveSessionWorkspacePath).toHaveBeenCalled())
+    expect(result.current.hasLocalAgent).toBe(false)
+
+    act(() => noteLocalDaemonActorId('agent-local'))
+
+    await waitFor(() => expect(result.current.hasLocalAgent).toBe(true))
+    expect(result.current.path).toBe('/tmp/a')
+  })
+
+  it('asks the daemon when no local actor id has been observed yet', async () => {
+    __resetLocalDaemonIdentityForTest()
+    mocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.hasLocalAgent).toBe(true))
+    expect(mocks.getLocalDaemonActorId).toHaveBeenCalled()
   })
 
   // Two instances render this hook (app header, files pane) and each resolve is

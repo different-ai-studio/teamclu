@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   __resetLocalDaemonIdentityForTest,
   isSupersededLocalAgent,
   noteLocalDaemonActorId,
+  subscribeLocalDaemonActorId,
   wasEverLocalDaemonIdentity,
 } from '@/lib/daemon/local-daemon-identity'
 import { appShortName } from '@/lib/config/build-config'
@@ -59,5 +60,32 @@ describe('local-daemon-identity', () => {
     expect(isSupersededLocalAgent('kfc')).toBe(false)
     expect(wasEverLocalDaemonIdentity('kfc')).toBe(false)
     expect(isSupersededLocalAgent('other-team')).toBe(true)
+  })
+
+  it('notifies subscribers when the known id changes, and only then', () => {
+    const listener = vi.fn()
+    const unsubscribe = subscribeLocalDaemonActorId(listener)
+    noteLocalDaemonActorId('old-team')
+    noteLocalDaemonActorId('old-team')
+    noteLocalDaemonActorId(null)
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    noteLocalDaemonActorId('new-team')
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    unsubscribe()
+    noteLocalDaemonActorId('third-team')
+    expect(listener).toHaveBeenCalledTimes(2)
+  })
+
+  // On app start the known id is the persisted one; the first probe that merely
+  // confirms it is not a change.
+  it('does not notify when a probe confirms the persisted id', () => {
+    localStorage.setItem(STORAGE_KEY, 'same-local')
+    const listener = vi.fn()
+    const unsubscribe = subscribeLocalDaemonActorId(listener)
+    noteLocalDaemonActorId('same-local')
+    expect(listener).not.toHaveBeenCalled()
+    unsubscribe()
   })
 })

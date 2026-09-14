@@ -1,5 +1,9 @@
 import * as React from 'react'
-import { getKnownLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
+import {
+  getKnownLocalDaemonActorId,
+  noteLocalDaemonActorId,
+  subscribeLocalDaemonActorId,
+} from '@/lib/daemon/local-daemon-identity'
 import { resolveSessionWorkspacePath } from '@/lib/session/session-by-workspace'
 import { workspacePathsMatch } from '@/stores/session-utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -74,11 +78,13 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
 
   // The local actor id arrives from the daemon's `/v1/info` and is cached in a
-  // module + localStorage. A bare read inside a memo can never observe it
-  // landing (nothing in the dep list changes), which on a fresh install left
-  // the tree and terminal hidden with no way back.
-  const [localAgentId, setLocalAgentId] = React.useState<string | null>(() =>
-    getKnownLocalDaemonActorId(),
+  // module + localStorage. Subscribe to it rather than copying it: a bare read
+  // inside a memo never saw it land on a fresh install, and a copy taken at
+  // mount kept the previous team's id after a team switch (amuxd re-inits under
+  // a new actor id), hiding the tree and terminal for every session.
+  const localAgentId = React.useSyncExternalStore(
+    subscribeLocalDaemonActorId,
+    getKnownLocalDaemonActorId,
   )
   React.useEffect(() => {
     if (localAgentId) return
@@ -87,7 +93,7 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
       try {
         const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
         const id = await getLocalDaemonActorId()
-        if (!cancelled && id?.trim()) setLocalAgentId(id.trim())
+        if (!cancelled) noteLocalDaemonActorId(id)
       } catch {
         /* offline — the sidebar's own probe will note it later */
       }
