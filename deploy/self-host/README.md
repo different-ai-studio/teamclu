@@ -269,6 +269,8 @@ curl -s -X POST http://127.0.0.1:9000/v1/auth/signin-password \
 
 登录/升级账号的邮件模板已改为**仅发送 6 位验证码**（无 Magic Link），模板在 `supabase/email-templates/`，由 `templates-server` 容器供 GoTrue 拉取。部署后需重启 `auth` 与 `templates-server` 容器生效。
 
+设了 `AUTH_EGRESS_PROXY` 时，`templates-server` **必须**留在 `NO_PROXY` 里。GoTrue 是在发信时现拉模板的（Go 默认 transport 认 `HTTP_PROXY`/`NO_PROXY`）；一旦被送去出网代理，代理解析不了这个 compose 内部名字，拉取失败，GoTrue 就**静默**退回内置的 “Your Magic Link” 模板——模板文件本身没问题，只是从来没被读到。
+
 **方式 4 — Google 登录**
 
 三端（桌面 loopback、iOS `ASWebAuthenticationSession`、Expo）都走同一条链路：
