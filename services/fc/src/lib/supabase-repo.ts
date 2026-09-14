@@ -272,9 +272,87 @@ function applySyncKeyset(query, cursor, limit) {
 
 function normalizeWorkspacePath(path: string | null | undefined): string | null {
   if (path == null) return null;
-  const trimmed = path.trim();
+  const trimmed = path.trim().replace(/\\/g, "/");
   if (!trimmed) return null;
-  return trimmed.replace(/\/+$/, "") || trimmed;
+  const isAbs = trimmed.startsWith("/");
+  const parts: string[] = [];
+  for (const seg of trimmed.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length > 0) parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  const joined = parts.join("/");
+  if (isAbs) return joined ? `/${joined}` : "/";
+  return joined || null;
+}
+
+async function assertExplicitWorkspaceBindings(
+  supabase: any,
+  teamId: string,
+  overrideByActorId: Record<string, string>,
+): Promise<void> {
+  const entries = Object.entries(overrideByActorId).filter(
+    ([actorId, workspaceId]) => actorId.trim() && workspaceId.trim(),
+  );
+  if (entries.length === 0) return;
+  const ids = [...new Set(entries.map(([, workspaceId]) => workspaceId.trim()))];
+  const rows = await chunkedIn(ids, async (chunk: string[]) => {
+    const { data, error } = await supabase
+      .from("workspaces")
+      .select("id, team_id, agent_id, archived, path")
+      .in("id", chunk);
+    if (error) throw error;
+    return data ?? [];
+  });
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  for (const [actorId, workspaceId] of entries) {
+    const ws = byId.get(workspaceId.trim());
+    if (!ws) {
+      throw new ApiError(400, "validation_failed", "workspace not found");
+    }
+    if (String(ws.team_id) !== teamId) {
+      throw new ApiError(400, "validation_failed", "workspace team mismatch");
+    }
+    if (ws.archived === true) {
+      throw new ApiError(400, "validation_failed", "workspace archived");
+    }
+    if (String(ws.agent_id ?? "").trim() !== actorId.trim()) {
+      throw new ApiError(400, "validation_failed", "workspace agent mismatch");
+    }
+    if (!normalizeWorkspacePath(ws.path)) {
+      throw new ApiError(400, "validation_failed", "workspace path empty");
+    }
+  }
+}
+
+async function participantWorkspacesFromBindings(
+  supabase: any,
+  workspaceByActor: Map<string, string>,
+): Promise<Record<string, { workspaceId: string; workspacePath: string | null }>> {
+  const ids = [...new Set([...workspaceByActor.values()].filter(Boolean))];
+  if (ids.length === 0) return {};
+  const rows = await chunkedIn(ids, async (chunk: string[]) => {
+    const { data, error } = await supabase
+      .from("workspaces")
+      .select("id, path")
+      .in("id", chunk);
+    if (error) throw error;
+    return data ?? [];
+  });
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  const out: Record<string, { workspaceId: string; workspacePath: string | null }> = {};
+  for (const [actorId, workspaceId] of workspaceByActor) {
+    const row = byId.get(workspaceId);
+    if (!row) continue;
+    out[actorId] = {
+      workspaceId,
+      workspacePath: typeof row.path === "string" ? row.path : null,
+    };
+  }
+  return out;
 }
 
 async function findUniqueWorkspaceName(
@@ -1555,6 +1633,17 @@ export function createSupabaseBusinessRepository(options) {
       let resolvedName = input.name;
 
       if (!targetId && normalizedPath) {
+        const { data: byKey, error: keyErr } = await supabase
+          .from("workspaces")
+          .select("id")
+          .eq("team_id", input.teamId)
+          .eq("path_key", normalizedPath)
+          .limit(1);
+        if (keyErr) throw keyErr;
+        if (byKey?.[0]?.id) targetId = byKey[0].id;
+      }
+
+      if (!targetId && normalizedPath) {
         const { data: byPath, error: pathErr } = await supabase
           .from("workspaces")
           .select("id")
@@ -1594,17 +1683,17 @@ export function createSupabaseBusinessRepository(options) {
         }
       }
 
-      // Agent callers re-upserting an existing row (path/id dedup) must not
-      // wipe member attribution that Desktop registration wrote first.
       let createdByMemberIdForRow = createdByMemberId;
-      if (targetId && createdByMemberId === null) {
+      let agentIdForRow = agentId;
+      if (targetId) {
         const { data: existing, error: existingErr } = await supabase
           .from("workspaces")
-          .select("created_by_member_id")
+          .select("agent_id, created_by_member_id")
           .eq("id", targetId)
           .maybeSingle();
         if (existingErr) throw existingErr;
-        if (existing?.created_by_member_id) {
+        if (existing?.agent_id) agentIdForRow = existing.agent_id;
+        if (createdByMemberId === null && existing?.created_by_member_id) {
           createdByMemberIdForRow = existing.created_by_member_id;
         }
       }
@@ -1613,7 +1702,8 @@ export function createSupabaseBusinessRepository(options) {
         team_id: input.teamId,
         name: resolvedName,
         path: normalizedPath,
-        agent_id: agentId,
+        path_key: normalizedPath,
+        agent_id: agentIdForRow,
         created_by_member_id: createdByMemberIdForRow,
         archived: input.archived ?? false,
       };
@@ -2733,6 +2823,13 @@ export function createSupabaseBusinessRepository(options) {
       const resolved = await this.resolveCurrentMemberActor(input.teamId, userId);
       if (!resolved?.id) throw new ApiError(403, "forbidden", "not a member of this team");
       const createdByActorId = resolved.id;
+      const additionalIds = Array.isArray(input.additionalActorIds) ? input.additionalActorIds : [];
+      const participantIds = Array.isArray(input.participantActorIds) ? input.participantActorIds : [];
+      const overrideByActorId =
+        input.workspaceByActorId && typeof input.workspaceByActorId === "object"
+          ? input.workspaceByActorId
+          : {};
+      await assertExplicitWorkspaceBindings(supabase, input.teamId, overrideByActorId);
       const insertRow: any = {
         id,
         team_id: input.teamId,
@@ -2753,8 +2850,6 @@ export function createSupabaseBusinessRepository(options) {
         .single();
       if (error) throw error;
 
-      const additionalIds = Array.isArray(input.additionalActorIds) ? input.additionalActorIds : [];
-      const participantIds = Array.isArray(input.participantActorIds) ? input.participantActorIds : [];
       const seedActorIds = Array.from(
         new Set(
           [
@@ -2765,10 +2860,6 @@ export function createSupabaseBusinessRepository(options) {
         ),
       );
       if (seedActorIds.length > 0) {
-        const overrideByActorId =
-          input.workspaceByActorId && typeof input.workspaceByActorId === "object"
-            ? input.workspaceByActorId
-            : {};
         const workspaceByActor = await workspaceIdByAgentActor(
           supabase,
           seedActorIds,
@@ -2779,10 +2870,19 @@ export function createSupabaseBusinessRepository(options) {
         );
         const { error: partError } = await supabase
           .from("session_participants")
-          .upsert(rows, { onConflict: "session_id,actor_id" });
+          .upsert(rows, { onConflict: "session_id,actor_id", ignoreDuplicates: true });
         if (partError) throw partError;
+        const participantWorkspaces = await participantWorkspacesFromBindings(
+          supabase,
+          workspaceByActor,
+        );
+        return {
+          ...mapSessionFull(data),
+          sessionId: id,
+          participantWorkspaces,
+        };
       }
-      return mapSessionFull(data);
+      return { ...mapSessionFull(data), sessionId: id, participantWorkspaces: {} };
     },
 
     async patchSession(sessionId, patch) {

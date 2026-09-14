@@ -3595,10 +3595,17 @@ test("createSession honors workspaceByActorId over the agent default", async () 
     calls,
     seed: {
       agents: [{ id: "agent-1", default_workspace_id: "ws-default" }],
+      workspaces: [{
+        id: "ws-picked",
+        team_id: "team-1",
+        agent_id: "agent-1",
+        path: "/Users/me/copilot",
+        archived: false,
+      }],
     },
   });
   const repo = appsRepo(supabase);
-  await repo.createSession({
+  const created = await repo.createSession({
     id: "sess-ws-2",
     teamId: "team-1",
     title: "Chat",
@@ -3608,6 +3615,122 @@ test("createSession honors workspaceByActorId over the agent default", async () 
   const rows = participantUpsertRows(calls);
   const agentRow = rows.find((r) => r.actor_id === "agent-1");
   assert.equal(agentRow?.workspace_id, "ws-picked");
+  assert.deepEqual(created.participantWorkspaces, {
+    "agent-1": { workspaceId: "ws-picked", workspacePath: "/Users/me/copilot" },
+  });
+});
+
+test("createSession rejects workspaceByActorId that belongs to another agent", async () => {
+  const supabase = appsSupabase({
+    actorRow: { id: "actor-app-1", actor_type: "member" },
+    seed: {
+      agents: [{ id: "agent-1", default_workspace_id: "ws-default" }],
+      workspaces: [{
+        id: "ws-other-agent",
+        team_id: "team-1",
+        agent_id: "agent-other",
+        path: "/Users/me/copilot",
+        archived: false,
+      }],
+    },
+  });
+  const repo = appsRepo(supabase);
+  await assert.rejects(
+    () => repo.createSession({
+      id: "sess-ws-bad",
+      teamId: "team-1",
+      title: "Chat",
+      additionalActorIds: ["agent-1"],
+      workspaceByActorId: { "agent-1": "ws-other-agent" },
+    }),
+    (err: any) => err?.statusCode === 400,
+  );
+});
+
+test("upsertWorkspace reuse of the same path_key does not steal agent_id", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    calls,
+    seed: {
+      workspaces: [{
+        id: "ws-existing",
+        team_id: "team-b",
+        name: "Alpha",
+        path: "/tmp/alpha",
+        path_key: "/tmp/alpha",
+        agent_id: "agent-1",
+        archived: false,
+      }],
+    },
+  }));
+
+  await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "Alpha",
+    path: "/tmp/alpha",
+    agentId: "agent-2",
+  });
+
+  const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+  assert.equal(upsert?.row.id, "ws-existing");
+  assert.equal(upsert?.row.agent_id, "agent-1");
+});
+
+test("createSession rejects an explicit workspace whose path is empty", async () => {
+  const repo = appsRepo(appsSupabase({
+    actorRow: { id: "actor-app-1", actor_type: "member" },
+    seed: {
+      agents: [{ id: "agent-1", default_workspace_id: "ws-default" }],
+      workspaces: [{
+        id: "ws-placeholder",
+        team_id: "team-1",
+        agent_id: "agent-1",
+        path: null,
+        archived: false,
+      }],
+    },
+  }));
+  await assert.rejects(
+    () => repo.createSession({
+      id: "sess-ws-empty",
+      teamId: "team-1",
+      title: "Chat",
+      additionalActorIds: ["agent-1"],
+      workspaceByActorId: { "agent-1": "ws-placeholder" },
+    }),
+    (err: any) => err?.statusCode === 400,
+  );
+});
+
+test("upsertWorkspace writes path_key and treats trailing slash plus .. as the same path", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    calls,
+    seed: {
+      workspaces: [{
+        id: "ws-existing",
+        team_id: "team-b",
+        name: "Alpha",
+        path: "/tmp/alpha",
+        path_key: "/tmp/alpha",
+        agent_id: "agent-1",
+        archived: false,
+      }],
+    },
+  }));
+
+  const out = await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "Alpha",
+    path: "/tmp/alpha/foo/../",
+    agentId: "agent-1",
+  });
+
+  const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+  assert.equal(upsert?.row.id, "ws-existing");
+  assert.equal(upsert?.row.path, "/tmp/alpha");
+  assert.equal(upsert?.row.path_key, "/tmp/alpha");
+  assert.equal(out.id, "ws-existing");
 });
 
 test("createCronSession stamps the primary agent's default_workspace_id", async () => {

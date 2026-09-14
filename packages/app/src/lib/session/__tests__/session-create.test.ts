@@ -197,7 +197,12 @@ describe('startAgentRuntimesAsync', () => {
   })
 
   it('forwards localWorkspace as workspaceByActorId and binds the local cache', async () => {
-    backendMocks.createSessionShell.mockResolvedValueOnce({ sessionId: 'sess-ws' })
+    backendMocks.createSessionShell.mockResolvedValueOnce({
+      sessionId: 'sess-ws',
+      participantWorkspaces: {
+        'agent-local': { workspaceId: 'ws-picked', workspacePath: '/Users/me/copilot' },
+      },
+    })
 
     const { createSessionShell } = await import('@/lib/session/session-create')
     await createSessionShell({
@@ -223,6 +228,54 @@ describe('startAgentRuntimesAsync', () => {
         agentId: 'agent-local',
         workspaceId: 'ws-picked',
         workspacePath: '/Users/me/copilot',
+      }),
+    ])
+  })
+
+  it('does not cache a request-param binding when Cloud omits participantWorkspaces', async () => {
+    backendMocks.createSessionShell.mockResolvedValueOnce({ sessionId: 'sess-ws' })
+
+    const { createSessionShell } = await import('@/lib/session/session-create')
+    await createSessionShell({
+      teamId: 'team-1',
+      creatorActorId: 'member-1',
+      title: 'hello',
+      additionalActorIds: ['agent-local'],
+      localWorkspace: {
+        agentId: 'agent-local',
+        workspaceId: 'ws-picked',
+        path: '/Users/me/copilot',
+      },
+    })
+
+    expect(localCacheMocks.upsertSessionWorkspacesBatch).not.toHaveBeenCalled()
+  })
+
+  it('caches Cloud response values even when they differ from the request', async () => {
+    backendMocks.createSessionShell.mockResolvedValueOnce({
+      sessionId: 'sess-ws',
+      participantWorkspaces: {
+        'agent-local': { workspaceId: 'ws-server', workspacePath: '/Users/me/server-path' },
+      },
+    })
+
+    const { createSessionShell } = await import('@/lib/session/session-create')
+    await createSessionShell({
+      teamId: 'team-1',
+      creatorActorId: 'member-1',
+      title: 'hello',
+      additionalActorIds: ['agent-local'],
+      localWorkspace: {
+        agentId: 'agent-local',
+        workspaceId: 'ws-picked',
+        path: '/Users/me/copilot',
+      },
+    })
+
+    expect(localCacheMocks.upsertSessionWorkspacesBatch).toHaveBeenCalledWith([
+      expect.objectContaining({
+        workspaceId: 'ws-server',
+        workspacePath: '/Users/me/server-path',
       }),
     ])
   })
@@ -359,6 +412,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('falls back to opencode runtimeStart requests without runtime history', async () => {
     mockTables({
+      participants: [{ agent_id: 'agent-2', workspace_id: 'ws-1' }],
       actors: [{ id: 'agent-2', agent_types: [], default_agent_type: null }],
     })
 
@@ -372,7 +426,7 @@ describe('startAgentRuntimesAsync', () => {
     expect(mockRuntimeStart).toHaveBeenCalledWith(
       expect.objectContaining({
         targetActorId: 'agent-2',
-        workspaceId: '',
+        workspaceId: 'ws-1',
         worktree: '',
         agentType: AgentType.PI,
       }),
@@ -381,6 +435,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('uses the first supported agent type without runtime history', async () => {
     mockTables({
+      participants: [{ agent_id: 'agent-daemon', workspace_id: 'ws-1' }],
       actors: [{ id: 'agent-daemon', agent_types: ['opencode', 'claude'], default_agent_type: null }],
     })
 
@@ -394,7 +449,7 @@ describe('startAgentRuntimesAsync', () => {
     expect(mockRuntimeStart).toHaveBeenCalledWith(
       expect.objectContaining({
         targetActorId: 'agent-daemon',
-        workspaceId: '',
+        workspaceId: 'ws-1',
         worktree: '',
         agentType: AgentType.PI,
       }),
@@ -403,6 +458,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('always starts pi even when actor default_agent_type is cursor', async () => {
     mockTables({
+      participants: [{ agent_id: 'agent-3', workspace_id: 'ws-1' }],
       actors: [{ id: 'agent-3', agent_types: ['claude', 'cursor'], default_agent_type: 'cursor' }],
     })
 
@@ -423,6 +479,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('passes the selected model to runtimeStart', async () => {
     mockTables({
+      participants: [{ agent_id: 'agent-4', workspace_id: 'ws-1' }],
       actors: [{ id: 'agent-4', agent_types: [], default_agent_type: 'claude' }],
     })
 
@@ -444,6 +501,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('passes session permission mode to runtimeStart', async () => {
     mockTables({
+      participants: [{ agent_id: 'agent-4', workspace_id: 'ws-1' }],
       actors: [{ id: 'agent-4', agent_types: [], default_agent_type: 'claude' }],
     })
     setSessionPermissionMode('sess-1', 'fullAccess')
@@ -465,6 +523,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('applies the selected model after runtimeStart accepts the runtime', async () => {
     mockTables({
+      participants: [{ agent_id: 'agent-6', workspace_id: 'ws-1' }],
       actors: [{ id: 'agent-6', agent_types: [], default_agent_type: 'opencode' }],
     })
 
@@ -486,6 +545,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('uses the selected backend instead of prior runtime backend_type', async () => {
     mockTables({
+      participants: [{ agent_id: 'agent-5', workspace_id: 'ws-1' }],
       actors: [{ id: 'agent-5', agent_types: [], default_agent_type: 'opencode' }],
     })
 
@@ -507,45 +567,24 @@ describe('startAgentRuntimesAsync', () => {
     )
   })
 
-  it('creates a cloud workspace when the workspace lookup fails but the local path is known', async () => {
+  it('does not create a workspace on existing-session start when participant lookup fails', async () => {
     daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue('agent-7')
     backendMocks.getSessionParticipants.mockRejectedValue(new Error('participants unavailable'))
     backendMocks.listAgentDefaults.mockResolvedValue([
       { id: 'agent-7', agent_types: [], default_agent_type: null },
     ])
     workspaceStoreMocks.workspacePath = '/Users/me/TeamClu'
-    backendMocks.createDaemonWorkspace.mockResolvedValue({
-      id: 'ws-created',
-      team_id: 'team-1',
-      agent_id: 'agent-7',
-      name: 'TeamClu',
-      path: '/Users/me/TeamClu',
-      archived: false,
-      created_at: '',
-      updated_at: '',
-    })
 
     const { startAgentRuntimesAsync } = await import('@/lib/session/session-create')
-    await startAgentRuntimesAsync({
+    const result = await startAgentRuntimesAsync({
       sessionId: 'sess-1',
       teamId: 'team-1',
       agentActorIds: ['agent-7'],
     })
 
-    expect(backendMocks.createDaemonWorkspace).toHaveBeenCalledWith(
-      expect.objectContaining({
-        teamId: 'team-1',
-        agentId: 'agent-7',
-        path: '/Users/me/TeamClu',
-      }),
-    )
-    expect(mockRuntimeStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        targetActorId: 'agent-7',
-        workspaceId: 'ws-created',
-        agentType: AgentType.PI,
-      }),
-    )
+    expect(backendMocks.createDaemonWorkspace).not.toHaveBeenCalled()
+    expect(mockRuntimeStart).not.toHaveBeenCalled()
+    expect(result.failures[0]?.code).toBe('session_workspace_unbound')
   })
 
   it('takes the workspace from the participant row, not the actor default', async () => {
@@ -576,7 +615,7 @@ describe('startAgentRuntimesAsync', () => {
     )
   })
 
-  it('uses the selected local workspace path for the local daemon agent', async () => {
+  it('does not start a runtime when the session participant has no workspace binding', async () => {
     daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
     workspaceStoreMocks.workspacePath = '/Users/me/copilot-ws-v2'
     mockTables({
@@ -593,71 +632,40 @@ describe('startAgentRuntimesAsync', () => {
         { id: 'ws-copilot', agent_id: 'agent-local' },
       ],
     })
-    backendMocks.listDaemonWorkspaces.mockResolvedValue([
-      {
-        id: 'ws-accounting',
-        team_id: 'team-1',
-        agent_id: 'agent-local',
-        created_by_member_id: null,
-        name: 'accounting-scripts',
-        path: '/Users/me/accounting-scripts',
-        archived: false,
-        created_at: '2026-05-18T00:00:00.000Z',
-        updated_at: '2026-05-18T00:00:00.000Z',
-      },
-      {
-        id: 'ws-copilot',
-        team_id: 'team-1',
-        agent_id: 'agent-local',
-        created_by_member_id: null,
-        name: 'copilot-ws-v2',
-        path: '/Users/me/copilot-ws-v2',
-        archived: false,
-        created_at: '2026-05-18T00:00:00.000Z',
-        updated_at: '2026-05-18T00:00:00.000Z',
-      },
-    ])
 
     const { startAgentRuntimesAsync } = await import('@/lib/session/session-create')
-    await startAgentRuntimesAsync({
+    const result = await startAgentRuntimesAsync({
       sessionId: 'sess-new',
       teamId: 'team-1',
       agentActorIds: ['agent-local'],
     })
 
-    expect(mockRuntimeStart).toHaveBeenCalledWith(
+    expect(mockRuntimeStart).not.toHaveBeenCalled()
+    expect(result.failures).toEqual([
       expect.objectContaining({
-        targetActorId: 'agent-local',
-        workspaceId: 'ws-copilot',
-        // The local daemon also gets the path, so a workspace row without one
-        // (every app's workspace) cannot silently spawn in the default folder.
-        worktree: '/Users/me/copilot-ws-v2',
+        agentActorId: 'agent-local',
+        code: 'session_workspace_unbound',
       }),
-    )
+    ])
   })
 
-  it('uses agent default_workspace_id when runtime history is empty', async () => {
+  it('does not fall back to agent default_workspace_id for an existing session', async () => {
     mockTables({
       actors: [{ id: 'agent-9', agent_types: [], default_agent_type: null, default_workspace_id: 'ws-default' }],
     })
 
     const { startAgentRuntimesAsync } = await import('@/lib/session/session-create')
-    await startAgentRuntimesAsync({
+    const result = await startAgentRuntimesAsync({
       sessionId: 'sess-1',
       teamId: 'team-1',
       agentActorIds: ['agent-9'],
     })
 
-    expect(mockRuntimeStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        targetActorId: 'agent-9',
-        workspaceId: 'ws-default',
-        worktree: '',
-      }),
-    )
+    expect(mockRuntimeStart).not.toHaveBeenCalled()
+    expect(result.failures[0]?.code).toBe('session_workspace_unbound')
   })
 
-  it('prefers workspaceIdHint from send/outbox for the local daemon agent', async () => {
+  it('ignores workspaceIdHint and uses the participant binding for the local daemon', async () => {
     daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue('agent-10')
     mockTables({
       participants: [{ agent_id: 'agent-10', workspace_id: 'ws-session' }],
@@ -675,7 +683,7 @@ describe('startAgentRuntimesAsync', () => {
     expect(mockRuntimeStart).toHaveBeenCalledWith(
       expect.objectContaining({
         targetActorId: 'agent-10',
-        workspaceId: 'ws-from-send',
+        workspaceId: 'ws-session',
         worktree: '',
       }),
     )
@@ -742,7 +750,7 @@ describe('startAgentRuntimesAsync', () => {
     expect(mockRuntimeStart).toHaveBeenCalledWith(
       expect.objectContaining({
         targetActorId: 'local-agent',
-        workspaceId: 'ws-from-desktop-local',
+        workspaceId: 'ws-local-participant',
       }),
     )
     expect(mockRuntimeStart).toHaveBeenCalledWith(
@@ -779,6 +787,7 @@ describe('startAgentRuntimesAsync', () => {
   it('sends the cloud workspace id for remote agents without any daemon pre-registration', async () => {
     daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue('local-agent')
     mockTables({
+      participants: [{ agent_id: 'remote-agent', workspace_id: 'ws-remote' }],
       actors: [
         {
           id: 'remote-agent',
@@ -807,6 +816,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('returns failures when runtimeStart is rejected', async () => {
     mockTables({
+      participants: [{ agent_id: 'remote-agent', workspace_id: 'ws-1' }],
       actors: [{ id: 'remote-agent', agent_types: ['opencode'], default_agent_type: 'opencode' }],
     })
     mockRuntimeStart.mockResolvedValueOnce({
@@ -830,6 +840,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('returns failures when runtimeStart throws (e.g. RPC timeout)', async () => {
     mockTables({
+      participants: [{ agent_id: 'remote-agent', workspace_id: 'ws-1' }],
       actors: [{ id: 'remote-agent', agent_types: ['opencode'], default_agent_type: 'opencode' }],
     })
     mockRuntimeStart.mockRejectedValueOnce(new Error('RPC timeout'))
@@ -848,6 +859,7 @@ describe('startAgentRuntimesAsync', () => {
 
   it('returns accepted runtime ids and can skip post-start setModel', async () => {
     mockTables({
+      participants: [{ agent_id: 'remote-agent', workspace_id: 'ws-1' }],
       actors: [{ id: 'remote-agent', agent_types: ['opencode'], default_agent_type: 'opencode' }],
     })
     mockRuntimeStart.mockResolvedValueOnce({
