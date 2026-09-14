@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -1020,16 +1021,38 @@ impl RuntimeManager {
     /// Live-probe a workspace catalog without holding the outer `agents`
     /// mutex across slow backend I/O (attach/detach only contend on the
     /// backend lock, not the whole manager).
+    ///
+    /// Bounded so RuntimeStart can publish actor state without waiting out a
+    /// busy default-workspace pi host's 30s `get_available_models` timeout.
+    pub const DEFAULT_WORKSPACE_CATALOG_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
     pub async fn probe_default_workspace_catalog(
         agents: Arc<AsyncMutex<Self>>,
         context: crate::runtime::execution_context::ExecutionContext,
     ) -> Vec<amux::ModelInfo> {
+        Self::probe_default_workspace_catalog_with_timeout(
+            agents,
+            context,
+            Self::DEFAULT_WORKSPACE_CATALOG_PROBE_TIMEOUT,
+        )
+        .await
+    }
+
+    pub(crate) async fn probe_default_workspace_catalog_with_timeout(
+        agents: Arc<AsyncMutex<Self>>,
+        context: crate::runtime::execution_context::ExecutionContext,
+        timeout: Duration,
+    ) -> Vec<amux::ModelInfo> {
         let workspace_path = context.working_directory.clone();
+        let persisted = {
+            let guard = agents.lock().await;
+            guard.catalog_for_worktree(&workspace_path.to_string_lossy())
+        };
         let backend = {
             let guard = agents.lock().await;
             guard.agent_backend_handle()
         };
-        let probe_result = {
+        let probe_result = tokio::time::timeout(timeout, async {
             let mut backend_guard = backend.lock().await;
             let revision = ProcessEnvRevision::from_bindings(&context.spawn_env.extra_env);
             backend_guard
@@ -1040,20 +1063,30 @@ impl RuntimeManager {
                     context.spawn_env.extra_env,
                 )
                 .await
-        };
+        })
+        .await;
         match probe_result {
-            Ok(models) => {
+            Ok(Ok(models)) if !models.is_empty() => {
                 let mut guard = agents.lock().await;
                 guard.record_catalog(&workspace_path.to_string_lossy(), &models);
                 models
             }
-            Err(e) => {
+            Ok(Ok(_)) => persisted,
+            Ok(Err(e)) => {
                 tracing::warn!(
                     worktree = %workspace_path.display(),
                     error = %e,
-                    "default workspace catalog probe failed; publishing empty list"
+                    "default workspace catalog probe failed; publishing persisted list"
                 );
-                Vec::new()
+                persisted
+            }
+            Err(_) => {
+                tracing::warn!(
+                    worktree = %workspace_path.display(),
+                    timeout_ms = timeout.as_millis() as u64,
+                    "default workspace catalog probe timed out; publishing persisted list"
+                );
+                persisted
             }
         }
     }
@@ -2141,6 +2174,7 @@ mod tests {
     struct StubBackend {
         shutdown_called: Arc<std::sync::atomic::AtomicBool>,
         catalog_domain: Arc<std::sync::Mutex<Option<IsolationDomainKey>>>,
+        hang_catalog: bool,
     }
 
     #[async_trait::async_trait]
@@ -2208,6 +2242,9 @@ mod tests {
             _process_env_revision: ProcessEnvRevision,
             _extra_env: HashMap<String, String>,
         ) -> crate::error::Result<Vec<amux::ModelInfo>> {
+            if self.hang_catalog {
+                std::future::pending::<()>().await;
+            }
             *self.catalog_domain.lock().unwrap() = Some(isolation_domain);
             Ok(vec![catalog_model("provider/model")])
         }
@@ -2220,6 +2257,7 @@ mod tests {
         mgr.agent_backend = Arc::new(AsyncMutex::new(Box::new(StubBackend {
             shutdown_called: Arc::clone(&shutdown_called),
             catalog_domain: Arc::new(std::sync::Mutex::new(None)),
+            hang_catalog: false,
         })));
 
         mgr.shutdown_for_exit().await;
@@ -2235,6 +2273,7 @@ mod tests {
         manager.agent_backend = Arc::new(AsyncMutex::new(Box::new(StubBackend {
             shutdown_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             catalog_domain: Arc::clone(&catalog_domain),
+            hang_catalog: false,
         })));
 
         let models = RuntimeManager::probe_default_workspace_catalog(
@@ -2248,6 +2287,42 @@ mod tests {
             *catalog_domain.lock().unwrap(),
             Some(IsolationDomainKey::Workspace("ws-a".into()))
         );
+    }
+
+    /// RuntimeStart awaits this probe. A busy default-workspace pi host makes
+    /// `get_available_models` sit until the 30s pi RPC timeout, so the desktop
+    /// client reports `rpc timeout after 20000ms` even though attach already
+    /// succeeded. The probe must give up quickly and keep the persisted list.
+    #[tokio::test]
+    async fn default_workspace_catalog_probe_does_not_block_on_hung_backend() {
+        use std::time::{Duration, Instant};
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut manager = RuntimeManager::new(RuntimeManager::test_launch_configs(), None);
+        manager.record_catalog(
+            &workspace.path().to_string_lossy(),
+            &[catalog_model("cached/model")],
+        );
+        manager.agent_backend = Arc::new(AsyncMutex::new(Box::new(StubBackend {
+            shutdown_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            catalog_domain: Arc::new(std::sync::Mutex::new(None)),
+            hang_catalog: true,
+        })));
+
+        let started = Instant::now();
+        let models = RuntimeManager::probe_default_workspace_catalog_with_timeout(
+            Arc::new(AsyncMutex::new(manager)),
+            workspace_context(workspace.path()),
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "hung catalog probe blocked for {:?}",
+            started.elapsed()
+        );
+        assert_eq!(models, vec![catalog_model("cached/model")]);
     }
 
     #[test]
