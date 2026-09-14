@@ -19,7 +19,7 @@
     "@teamclu/app": "workspace:*",
     "buffer": "^6.0.3",
     "expo": "~57.0.11",
-    "expo-audio": "^57.0.3",
+    "expo-audio": "^57.0.5",
     "expo-blur": "~57.0.2",
     "expo-clipboard": "^57.0.1",
     "expo-constants": "~57.0.9",
