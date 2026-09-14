@@ -615,10 +615,11 @@ describe('startAgentRuntimesAsync', () => {
     )
   })
 
-  it('does not start a runtime when the session participant has no workspace binding', async () => {
+  it('legacy unbound participant uses the agent default, not the current window or owned[0]', async () => {
     daemonAdminMocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
     workspaceStoreMocks.workspacePath = '/Users/me/copilot-ws-v2'
     mockTables({
+      participants: [{ agent_id: 'agent-local', workspace_id: null }],
       actors: [
         {
           id: 'agent-local',
@@ -634,31 +635,35 @@ describe('startAgentRuntimesAsync', () => {
     })
 
     const { startAgentRuntimesAsync } = await import('@/lib/session/session-create')
-    const result = await startAgentRuntimesAsync({
+    await startAgentRuntimesAsync({
       sessionId: 'sess-new',
       teamId: 'team-1',
       agentActorIds: ['agent-local'],
     })
 
-    expect(mockRuntimeStart).not.toHaveBeenCalled()
-    expect(result.failures).toEqual([
+    expect(mockRuntimeStart).toHaveBeenCalledWith(
       expect.objectContaining({
-        agentActorId: 'agent-local',
-        code: 'session_workspace_unbound',
+        targetActorId: 'agent-local',
+        workspaceId: 'ws-accounting',
       }),
-    ])
+    )
   })
 
-  it('does not fall back to agent default_workspace_id for an existing session', async () => {
+  it('does not use owned[0] when a legacy participant has no default workspace', async () => {
     mockTables({
-      actors: [{ id: 'agent-9', agent_types: [], default_agent_type: null, default_workspace_id: 'ws-default' }],
+      participants: [{ agent_id: 'agent-local', workspace_id: null }],
+      actors: [{ id: 'agent-local', agent_types: [], default_agent_type: null }],
+      workspaces: [
+        { id: 'ws-accounting', agent_id: 'agent-local' },
+        { id: 'ws-copilot', agent_id: 'agent-local' },
+      ],
     })
 
     const { startAgentRuntimesAsync } = await import('@/lib/session/session-create')
     const result = await startAgentRuntimesAsync({
-      sessionId: 'sess-1',
+      sessionId: 'sess-new',
       teamId: 'team-1',
-      agentActorIds: ['agent-9'],
+      agentActorIds: ['agent-local'],
     })
 
     expect(mockRuntimeStart).not.toHaveBeenCalled()

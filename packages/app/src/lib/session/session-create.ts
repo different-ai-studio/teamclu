@@ -723,7 +723,13 @@ export async function startAgentRuntimesAsync(
     const baseLookup = workspaceLookups.get(agentActorId) ?? {}
     const callerHint =
       isLocalDaemonAgent ? args.workspaceIdHint?.trim() || undefined : undefined
-    const workspaceId = baseLookup.sessionWorkspaceId?.trim() || ''
+    // Existing sessions prefer the participant stamp. Historical rows were
+    // created before that column was written, so a seen-but-null binding
+    // falls back to the agent's default — the same value pathless create
+    // would have used. Never the current window, never owned[0].
+    const workspaceId =
+      baseLookup.sessionWorkspaceId?.trim() ||
+      (baseLookup.participantSeen ? baseLookup.defaultWorkspaceId?.trim() || '' : '')
     if (callerHint && workspaceId && callerHint !== workspaceId) {
       sessionFlowLog('runtime_start.workspace_hint_mismatch', {
         sessionId: args.sessionId,
