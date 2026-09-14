@@ -12,16 +12,35 @@ import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appStatusMeta, showsPublicBadge } from '@/lib/apps/app-list-helpers'
 import { resolveAppLocality } from '@/lib/apps/app-locality'
+import {
+  appRelationship,
+  countAppsByRelationship,
+  filterAppsByRelationship,
+  type AppRelationshipFilter,
+} from '@/lib/apps/app-relationship'
+import { AppRelationshipChips } from '@/components/apps/AppRelationshipChips'
+import { useActorDirectory } from '@/stores/actor-directory-store'
+import { useAppRelationshipFilter, useMyMemberActorId } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
+
+/** What an empty filter says — "you have none of these", not "you have no apps". */
+const EMPTY_FILTER: Record<Exclude<AppRelationshipFilter, 'all'>, { key: string; fallback: string }> = {
+  owner: { key: 'apps.relationshipEmptyOwner', fallback: '没有我的应用' },
+  invited: { key: 'apps.relationshipEmptyInvited', fallback: '没有受邀的应用' },
+  team: { key: 'apps.relationshipEmptyTeam', fallback: '没有团队应用' },
+}
 
 function AppRowButton({
   app,
+  relationLabel,
   local,
   downloading,
   onSelect,
   onDownload,
 }: {
   app: AppRow
+  /** Mine / Team / "<name> 邀请", already resolved by the list. */
+  relationLabel: string
   /** `null` while the daemon has not answered — treated as "here". */
   local: boolean | null
   downloading: boolean
@@ -94,6 +113,8 @@ function AppRowButton({
             )}
           />
           <span className="truncate">{t(meta.key, meta.fallback)}</span>
+          <span>·</span>
+          <span className="max-w-[12ch] shrink-0 truncate" data-testid="app-row-relationship">{relationLabel}</span>
         </span>
       </span>
       {/* The row drills one level deeper into this same column, which is not
@@ -136,6 +157,30 @@ export function AppListColumn() {
   const selectApp = useAppsStore((s) => s.selectApp)
   const download = useAppsStore((s) => s.download)
   const [downloadingId, setDownloadingId] = React.useState<string | null>(null)
+  const [filter, setFilter] = useAppRelationshipFilter(teamId)
+  const myActorId = useMyMemberActorId()
+  const { actors } = useActorDirectory()
+
+  const counts = React.useMemo(() => countAppsByRelationship(items, myActorId), [items, myActorId])
+  const visibleItems = React.useMemo(
+    () => filterAppsByRelationship(items, filter, myActorId),
+    [items, filter, myActorId],
+  )
+
+  const relationLabelFor = React.useCallback(
+    (app: AppRow) => {
+      const relationship = appRelationship(app, myActorId)
+      if (relationship === 'owner') return t('apps.relationshipOwner', '我的')
+      if (relationship === 'team') return t('apps.relationshipTeam', '团队')
+      const inviter = app.invitedByActorId
+        ? actors.find((a) => a.id === app.invitedByActorId)?.display_name
+        : null
+      return inviter
+        ? t('apps.relationshipInvitedBy', '{{name}} 邀请', { name: inviter })
+        : t('apps.relationshipInvited', '受邀')
+    },
+    [actors, myActorId, t],
+  )
 
   const createLabel = t('apps.createTitle', '新建')
   const libraryLabel = t('apps.libraryTitle', '所有应用')
@@ -211,6 +256,15 @@ export function AppListColumn() {
         </div>
       </div>
 
+      {items.length > 0 && (
+        <AppRelationshipChips
+          value={filter}
+          counts={counts}
+          onChange={setFilter}
+          className="border-b border-border px-3 py-2"
+        />
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         {loading && items.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-muted-foreground">
@@ -239,11 +293,25 @@ export function AppListColumn() {
               </button>
             </div>
           </div>
+        ) : visibleItems.length === 0 && filter !== 'all' ? (
+          <div className="flex flex-col items-center gap-2 px-6 py-10 text-center">
+            <p className="text-[13px] text-muted-foreground">
+              {t(EMPTY_FILTER[filter].key, EMPTY_FILTER[filter].fallback)}
+            </p>
+            <button
+              type="button"
+              onClick={() => setFilter('all')}
+              className="rounded-[8px] border border-border px-3 py-1.5 text-[13px] text-foreground hover:bg-selected/40"
+            >
+              {t('apps.relationshipShowAll', '查看全部')}
+            </button>
+          </div>
         ) : (
-          items.map((app) => (
+          visibleItems.map((app) => (
             <AppRowButton
               key={app.id}
               app={app}
+              relationLabel={relationLabelFor(app)}
               local={resolveAppLocality(localAppIds, app.id)}
               downloading={downloadingId === app.id}
               onSelect={() => selectApp(app.id)}

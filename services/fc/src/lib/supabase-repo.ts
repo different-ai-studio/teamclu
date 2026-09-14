@@ -148,7 +148,7 @@ import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
-  APP_COLUMNS, slugify, appIso, mapApp, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
+  APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
   mapActor, mapTeamMember, mapIdeaRow, mapShortcutRow, mapIdeaActivityRow,
@@ -3617,7 +3617,12 @@ export function createSupabaseBusinessRepository(options) {
         .order("created_at", { ascending: false })
         .limit(limit);
       if (error) throw error;
-      return (data ?? []).map(mapApp);
+      const rows = data ?? [];
+      const viewer = await this.resolveAppViewer(teamId, rows.map((r: any) => r.id));
+      return rows.map((r: any) => ({
+        ...mapApp(r),
+        ...appRelationshipFor(r, viewer.actorId, viewer.grants),
+      }));
     },
 
     async getApp(appId: string) {
@@ -3629,7 +3634,54 @@ export function createSupabaseBusinessRepository(options) {
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
-      return data ? mapApp(data) : null;
+      if (!data) return null;
+      const viewer = await this.resolveAppViewer(data.team_id, [data.id]);
+      return { ...mapApp(data), ...appRelationshipFor(data, viewer.actorId, viewer.grants) };
+    },
+
+    /**
+     * The caller's member actor in this team, and which of `appIds` they hold a
+     * grant on (app id → who granted it).
+     *
+     * The grants are read with the service role, filtered to that actor and to
+     * apps RLS already showed the caller — so nothing the caller could not see
+     * leaves. The caller's own token cannot do this: `app_member_access_select`
+     * matches `current_member_id()`, the user's oldest actor, which hides their
+     * grants in every team after the first.
+     *
+     * Never fails the list. Without the grants every app still gets a
+     * relationship; only a team app the caller was also invited to reads as
+     * `team`, and an invited app loses the inviter's name.
+     */
+    async resolveAppViewer(
+      teamId: string,
+      appIds: string[],
+    ): Promise<{ actorId: string | null; grants: Map<string, string | null> | null }> {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+      const actorId = (await this.resolveCurrentMemberActor(teamId, userId))?.id ?? null;
+      if (!actorId || appIds.length === 0) return { actorId, grants: null };
+      try {
+        const admin = await serviceRoleClient("read the caller's app grants");
+        const rows = await chunkedIn(appIds, async (chunk) => {
+          const { data, error } = await admin
+            .from("app_member_access")
+            .select("app_id, granted_by_member_id")
+            .eq("member_id", actorId)
+            .in("app_id", chunk);
+          if (error) throw error;
+          return data ?? [];
+        });
+        return {
+          actorId,
+          grants: new Map(rows.map((g: any) => [g.app_id, g.granted_by_member_id ?? null])),
+        };
+      } catch (e) {
+        console.warn(`[apps] app grants unavailable for the list: ${String(e)}`);
+        return { actorId, grants: null };
+      }
     },
 
     async createApp(input: {

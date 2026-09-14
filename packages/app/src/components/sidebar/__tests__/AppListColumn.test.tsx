@@ -5,12 +5,19 @@ import { AppListColumn } from '../AppListColumn'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTabsStore } from '@/stores/tabs'
+import { useAppRelationshipFilterStore } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string) => fallback ?? _key,
+    t: (_key: string, fallback?: string, values?: Record<string, string>) =>
+      (fallback ?? _key).replace(/\{\{(\w+)\}\}/g, (_m, name) => values?.[name] ?? ''),
   }),
+}))
+
+// Real one would reach the cache and the network on mount.
+vi.mock('@/stores/actor-directory-store', () => ({
+  useActorDirectory: () => ({ actors: [{ id: 'actor-lin', display_name: 'Lin' }] }),
 }))
 
 // Sidebar UI primitives call useSidebar() which requires a SidebarProvider.
@@ -46,6 +53,7 @@ describe('AppListColumn', () => {
     vi.clearAllMocks()
     useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
     useTabsStore.setState({ tabs: [], activeTabId: null })
+    useAppRelationshipFilterStore.setState({ byTeam: {} })
     useAppsStore.setState({
       items: [mkApp('app-1', 'Alpha'), mkApp('app-2', 'Beta')],
       loading: false,
@@ -161,6 +169,56 @@ describe('AppListColumn', () => {
     // header icon and the empty state's own button).
     expect(screen.getAllByRole('button', { name: '新建' })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: '所有应用' })).toHaveLength(2)
+  })
+
+  describe('relationship', () => {
+    beforeEach(() => {
+      useAppsStore.setState({
+        items: [
+          mkApp('a', 'Own', { relationship: 'owner' }),
+          mkApp('b', 'Shared', { relationship: 'invited', invitedByActorId: 'actor-lin' }),
+          mkApp('c', 'Common', { relationship: 'team', visibility: 'team' }),
+          mkApp('d', 'Common Two', { relationship: 'team', visibility: 'team' }),
+        ],
+        localAppIds: null,
+      })
+    })
+
+    it('counts the apps under each quick filter', () => {
+      render(<AppListColumn />)
+      expect(screen.getByTestId('app-relationship-chip-all')).toHaveTextContent('全部4')
+      expect(screen.getByTestId('app-relationship-chip-owner')).toHaveTextContent('我的1')
+      expect(screen.getByTestId('app-relationship-chip-invited')).toHaveTextContent('受邀1')
+      expect(screen.getByTestId('app-relationship-chip-team')).toHaveTextContent('团队2')
+      expect(screen.getByTestId('app-relationship-chip-all')).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('narrows the list to one relationship, and remembers it for the team', () => {
+      render(<AppListColumn />)
+      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+      expect(screen.queryByText('Own')).not.toBeInTheDocument()
+      expect(screen.queryByText('Shared')).not.toBeInTheDocument()
+      expect(screen.getByText('Common')).toBeInTheDocument()
+      expect(screen.getByText('Common Two')).toBeInTheDocument()
+      expect(screen.getByTestId('app-relationship-chip-team')).toHaveAttribute('aria-pressed', 'true')
+      expect(useAppRelationshipFilterStore.getState().byTeam['team-1']).toBe('team')
+    })
+
+    it('says on each row how I am related to it, naming who invited me', () => {
+      render(<AppListColumn />)
+      expect(screen.getByRole('button', { name: /Own/ })).toHaveTextContent('我的')
+      expect(screen.getByRole('button', { name: /Shared/ })).toHaveTextContent('Lin 邀请')
+      expect(screen.getByRole('button', { name: /Common Two/ })).toHaveTextContent('团队')
+    })
+
+    it('a filter with nothing under it says so and offers the whole list back', () => {
+      useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'invited' } })
+      useAppsStore.setState({ items: [mkApp('a', 'Own', { relationship: 'owner' })] })
+      render(<AppListColumn />)
+      expect(screen.getByText('没有受邀的应用')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: '查看全部' }))
+      expect(screen.getByText('Own')).toBeInTheDocument()
+    })
   })
 
   it('refreshes the local half on mount', () => {

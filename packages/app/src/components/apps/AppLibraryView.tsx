@@ -12,6 +12,9 @@ import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appGitKind } from '@/lib/apps/app-list-helpers'
 import { openCreateApp } from '@/lib/tabs/app-tabs'
+import { countAppsByRelationship, filterAppsByRelationship } from '@/lib/apps/app-relationship'
+import { AppRelationshipChips } from '@/components/apps/AppRelationshipChips'
+import { useAppRelationshipFilter, useMyMemberActorId } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
 
 /** Column widths are shared by the header and the list so the two line up. */
@@ -198,6 +201,9 @@ export function AppLibraryView() {
   const [downloading, setDownloading] = React.useState<string | null>(null)
   const [query, setQuery] = React.useState('')
   const { actors } = useActorDirectory()
+  const [filter, setFilter] = useAppRelationshipFilter(teamId)
+  const myActorId = useMyMemberActorId()
+  const counts = React.useMemo(() => countAppsByRelationship(items, myActorId), [items, myActorId])
 
   const creatorById = React.useMemo(() => {
     const byId = new Map<string, string>()
@@ -220,15 +226,19 @@ export function AppLibraryView() {
 
   // Name, creator and type all match: in a team list the thing you remember is
   // as often "the one 海港 made" as it is the app's own name.
+  //
+  // The relationship filter goes first and search narrows what it left, so the
+  // chip counts stay the team's totals while the query changes.
   const visible = React.useMemo(() => {
+    const related = filterAppsByRelationship(items, filter, myActorId)
     const needle = query.trim().toLowerCase()
-    if (!needle) return items
-    return items.filter((app) => {
+    if (!needle) return related
+    return related.filter((app) => {
       const typeMeta = resolveAppType(app.type)
       const haystack = [app.name, creatorFor(app) ?? '', typeMeta.label]
       return haystack.some((field) => field.toLowerCase().includes(needle))
     })
-  }, [items, query, creatorFor])
+  }, [items, filter, myActorId, query, creatorFor])
 
   /**
    * Not here first. This view exists to reach apps that are not on this
@@ -300,6 +310,9 @@ export function AppLibraryView() {
           <p className="mt-1 text-[12px] text-muted-foreground">
             {t('apps.libraryDescription', '本人与团队的全部应用，可下载到本机。')}
           </p>
+          {items.length > 0 && (
+            <AppRelationshipChips value={filter} counts={counts} onChange={setFilter} className="-ml-2 mt-2" />
+          )}
         </div>
       </div>
 

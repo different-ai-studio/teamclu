@@ -230,6 +230,8 @@ describe("apps-store", () => {
     });
     expect(row.id).toBe("app-2");
     expect(useAppsStore.getState().items[0]).toMatchObject({ id: "app-2" });
+    // The create response has no relationship; whoever created it owns it.
+    expect(useAppsStore.getState().items[0].relationship).toBe("owner");
   });
 
   it("kicks the daemon seed for a freshly created (pending) app", async () => {
@@ -656,6 +658,22 @@ describe("apps-store setType", () => {
     expect(useAppsStore.getState().items[0]).toMatchObject({
       type: "static_web",
       typePendingRedeploy: true,
+    });
+  });
+
+  it("keeps the relationship the list gave the row, which a mutation response omits", async () => {
+    const { useAppsStore } = await import("./apps-store");
+    useAppsStore.setState({
+      items: [appRow({ type: "data_app", relationship: "invited", invitedByActorId: "actor-lin" })],
+    });
+    mocks.setAppType.mockResolvedValueOnce(appRow({ type: "static_web" }));
+
+    await useAppsStore.getState().setType("app-1", "static_web");
+
+    expect(useAppsStore.getState().items[0]).toMatchObject({
+      type: "static_web",
+      relationship: "invited",
+      invitedByActorId: "actor-lin",
     });
   });
 

@@ -8153,6 +8153,22 @@ components:
             Actor that created the app. Clients resolve it to a name through the
             team's actor directory; a team app list without it is a list of
             names nobody can place.
+        relationship:
+          type: string
+          enum: [owner, invited, team]
+          description: >-
+            How the caller came to see this app, one answer in priority order:
+            `owner` (they created it), `invited` (they hold an access grant on
+            it), `team` (a team app). A team app the caller was also granted
+            access to is `invited` — the grant is what gives them rights beyond
+            reading it. Returned by `listApps` and `getApp`; other app responses
+            omit it.
+        invitedByActorId:
+          type: [string, "null"]
+          format: uuid
+          description: >-
+            Who granted the caller access, when `relationship` is `invited` and
+            the grant records it. Null otherwise.
         name: { type: string }
         slug: { type: string }
         type:

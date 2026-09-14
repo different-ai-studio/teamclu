@@ -998,6 +998,9 @@ export interface AppDeployDeclaration {
 
 export type AppAuthMode = "none" | "platform" | "third";
 
+/** The caller's relationship to an app: created it, was granted access, or it is a team app. */
+export type AppRelationship = "owner" | "invited" | "team";
+
 /** Who may pass an app's login wall. Only read when `authMode` is `platform`. */
 export type AppAuthAudience = "any" | "org";
 
@@ -1160,6 +1163,11 @@ export interface AppRow {
   workspaceId: string | null;
   /** Actor that created the app; resolved to a name via the actor directory. */
   createdByActorId: string | null;
+  /** How the caller came to see the app — `owner` > `invited` > `team`. Sent by
+   *  the list and get endpoints only; older servers omit it. */
+  relationship?: AppRelationship;
+  /** Who granted the caller access, on an `invited` app whose grant records it. */
+  invitedByActorId?: string | null;
   gitRemoteUrl: string | null;
   /** `"gitea_deploy_key"` when this deployment provisioned the app's repo and
    *  holds a deploy key for it; null when the app was imported from a remote we
