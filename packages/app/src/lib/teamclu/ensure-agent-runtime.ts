@@ -102,6 +102,8 @@ function failureDescription(failure: RuntimeStartFailure): string {
         shortId,
         reason: trimmed || i18n.t("errors.unknownError", "Unknown error"),
       });
+    case "session_workspace_unbound":
+      return trimmed || i18n.t("daemon.agentRuntime.workspaceEnsureFailedDesc", { shortId });
     case "runtime_rejected":
       return trimmed || i18n.t("daemon.agentRuntime.notStartedDesc", { shortId });
     case "runtime_rpc_failed":

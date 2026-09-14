@@ -212,7 +212,10 @@ export interface SessionsBackend {
     kind?: "all" | "regular" | "cron";
   }): Promise<SessionListPage>;
   markCurrentActorSessionViewed(sessionId: string, lastReadMessageId?: string | null): Promise<void>;
-  createSessionShell(input: SessionCreateInput): Promise<{ sessionId: string }>;
+  createSessionShell(input: SessionCreateInput): Promise<{
+    sessionId: string;
+    participantWorkspaces?: Record<string, { workspaceId: string; workspacePath: string | null }>;
+  }>;
   addParticipants(sessionId: string, actorIds: string[]): Promise<void>;
   updateSessionTitle(sessionId: string, title: string): Promise<void>;
   archiveSession(sessionId: string, archivedAt: string): Promise<void>;

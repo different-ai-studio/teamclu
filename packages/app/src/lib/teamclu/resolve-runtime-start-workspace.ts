@@ -1,7 +1,6 @@
 import { getBackend } from '@/lib/backend'
 import { workspacePathsMatch } from '@/stores/session-utils'
 import {
-  cachedDefaultWorkspaceId,
   rememberDefaultWorkspaceId,
 } from '@/stores/agent-default-workspace-store'
 
@@ -123,6 +122,26 @@ export async function loadAgentWorkspaceLookups(
   return out
 }
 
+/** Path key used for exact window-root matching (no realpath). */
+export function workspacePathKey(path: string | null | undefined): string | null {
+  if (path == null) return null
+  const trimmed = path.trim().replace(/\\/g, '/')
+  if (!trimmed) return null
+  const isAbs = trimmed.startsWith('/')
+  const parts: string[] = []
+  for (const seg of trimmed.split('/')) {
+    if (!seg || seg === '.') continue
+    if (seg === '..') {
+      if (parts.length > 0) parts.pop()
+      continue
+    }
+    parts.push(seg)
+  }
+  const joined = parts.join('/')
+  if (isAbs) return joined ? `/${joined}` : '/'
+  return joined || null
+}
+
 /**
  * Map the desktop user's local workspace folder to a cloud workspace UUID by
  * matching `workspaces.path` on the team.
@@ -137,36 +156,63 @@ export async function resolveCloudWorkspaceIdForLocalPath(
   const agentFilter = opts?.agentActorId?.trim() || null
   if (!trimmedTeam || !trimmedPath) return null
 
+  const wanted = workspacePathKey(trimmedPath)
+  if (!wanted) return null
+
   const rows = await getBackend().workspaces.listDaemonWorkspaces(trimmedTeam).catch(() => [])
+  const matches: { id: string; agentId: string }[] = []
   for (const row of rows) {
     if (row.archived) continue
-    if (agentFilter && row.agent_id?.trim() !== agentFilter) continue
     const cloudId = row.id?.trim()
     const daemonPath = row.path?.trim()
     if (!cloudId || !daemonPath) continue
-    if (workspacePathsMatch(trimmedPath, daemonPath)) return cloudId
-  }
-  return null
-}
-
-/** Prefer the sole cloud workspace row bound to an agent when path matching fails. */
-async function resolveCloudWorkspaceIdForAgents(
-  teamId: string,
-  agentActorIds: string[],
-): Promise<string | null> {
-  const trimmedTeam = teamId.trim()
-  const ids = [...new Set(agentActorIds.map((id) => id.trim()).filter(Boolean))]
-  if (!trimmedTeam || ids.length === 0) return null
-
-  const rows = await getBackend().workspaces.listDaemonWorkspaces(trimmedTeam).catch(() => [])
-  for (const agentId of ids) {
-    const bound = rows.filter((row) => !row.archived && row.agent_id?.trim() === agentId)
-    if (bound.length >= 1) {
-      const cloudId = bound[0].id?.trim()
-      if (cloudId) return cloudId
+    const key = workspacePathKey(daemonPath)
+    if (key === wanted || workspacePathsMatch(trimmedPath, daemonPath)) {
+      matches.push({ id: cloudId, agentId: row.agent_id?.trim() || '' })
     }
   }
-  return null
+  if (matches.length === 0) return null
+  if (agentFilter) {
+    const owned = matches.find((row) => row.agentId === agentFilter)
+    if (owned) return owned.id
+  }
+  return matches[0]!.id
+}
+
+/**
+ * Create-time only: exact path match, or create. An explicit window path must
+ * never fall through to the agent's first owned workspace (`bound[0]`).
+ */
+export async function ensureWorkspaceForNewSessionContext(args: {
+  teamId: string
+  agentActorId: string
+  localWorkspacePath: string
+  createdByMemberId?: string | null
+}): Promise<string> {
+  return ensureCloudWorkspaceIdForAgentRuntime({
+    teamId: args.teamId,
+    agentActorId: args.agentActorId,
+    localWorkspacePath: args.localWorkspacePath,
+    createdByMemberId: args.createdByMemberId,
+  })
+}
+
+/**
+ * Existing-session only: `session_participants.workspace_id`. Never creates,
+ * never reads the window path, never uses the device default cache.
+ */
+export async function resolveBoundWorkspaceForExistingSession(args: {
+  teamId: string
+  sessionId: string
+  agentActorId: string
+}): Promise<string> {
+  const agentActorId = args.agentActorId.trim()
+  const sessionId = args.sessionId.trim()
+  if (!agentActorId || !sessionId || !args.teamId.trim()) return ''
+  const lookups = await loadAgentWorkspaceLookups(args.teamId, sessionId, [agentActorId]).catch(
+    () => new Map<string, AgentWorkspaceLookup>(),
+  )
+  return lookups.get(agentActorId)?.sessionWorkspaceId?.trim() || ''
 }
 
 /**
@@ -192,22 +238,18 @@ export async function ensureCloudWorkspaceIdForAgentRuntime(args: {
   const agentActorId = args.agentActorId.trim()
   if (!agentActorId || !args.teamId.trim()) return ''
 
-  const fromLive = await resolveLiveWorkspaceHint(
-    {
-      teamId: args.teamId,
-      localWorkspacePath: args.localWorkspacePath,
-      sessionId: args.sessionId,
-      localDaemonActorId: args.localWorkspacePath?.trim() ? agentActorId : null,
-    },
-    [agentActorId],
-  )
-  if (fromLive) {
-    rememberDefaultWorkspaceId([agentActorId], fromLive)
-    return fromLive
-  }
-
   const path = args.localWorkspacePath?.trim()
-  if (!path) return ''
+  if (path) {
+    const exact = await resolveCloudWorkspaceIdForLocalPath(args.teamId, path, {
+      agentActorId,
+    })
+    if (exact) {
+      rememberDefaultWorkspaceId([agentActorId], exact)
+      return exact
+    }
+  } else {
+    return ''
+  }
 
   const name = path.split('/').filter(Boolean).pop() || 'workspace'
   try {
@@ -242,19 +284,24 @@ export async function resolveSessionWorkspaceHintForRuntimeStart(args: {
   localDaemonActorId?: string | null
 }): Promise<string> {
   const agentActorIds = [...new Set((args.agentActorIds ?? []).map((id) => id.trim()).filter(Boolean))]
+  const sessionId = args.sessionId?.trim() ?? ''
+  const localDaemonActorId = args.localDaemonActorId?.trim()
+  if (sessionId) {
+    const agentId = localDaemonActorId || agentActorIds[0] || ''
+    if (!agentId) return ''
+    return resolveBoundWorkspaceForExistingSession({
+      teamId: args.teamId,
+      sessionId,
+      agentActorId: agentId,
+    })
+  }
+
   const live = await resolveLiveWorkspaceHint(args, agentActorIds)
   if (live) {
-    // Live value wins and refreshes the cache. This is server-owned config, so
-    // the cache must never get ahead of it (see the store's ordering note).
     rememberDefaultWorkspaceId(agentActorIds, live)
     return live
   }
-  // Nothing live. An empty hint makes the daemon skip its workspace resolver
-  // and start in whatever worktree the client passed — measured cost is a full
-  // backend cold start in the wrong directory, superseded seconds later when
-  // the real id lands. A remembered default from a previous run is a far better
-  // guess than none.
-  return cachedDefaultWorkspaceId(agentActorIds)
+  return ''
 }
 
 /**
@@ -336,6 +383,7 @@ async function resolveLiveWorkspaceHint(
       agentActorId: localDaemonActorId,
     })
     if (fromPath) return fromPath
+    return ''
   }
 
   const sessionId = args.sessionId?.trim() ?? ''
@@ -344,14 +392,9 @@ async function resolveLiveWorkspaceHint(
       () => new Map<string, AgentWorkspaceLookup>(),
     )
     for (const agentId of agentActorIds) {
-      const resolved = resolveAgentRuntimeWorkspaceId(lookups.get(agentId) ?? {})
-      if (resolved) return resolved
+      const bound = lookups.get(agentId)?.sessionWorkspaceId?.trim()
+      if (bound) return bound
     }
-  }
-
-  if (agentActorIds.length > 0) {
-    const fromAgentBinding = await resolveCloudWorkspaceIdForAgents(args.teamId, agentActorIds)
-    if (fromAgentBinding) return fromAgentBinding
   }
 
   return ''

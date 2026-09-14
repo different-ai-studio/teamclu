@@ -117,7 +117,10 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
       await client.post<void>(`/v1/sessions/${encodeURIComponent(sessionId)}/mark-viewed`, { lastReadMessageId: lastReadMessageId ?? null });
     },
     async createSessionShell(input: SessionCreateInput) {
-      await client.post<CloudSession>("/v1/sessions", {
+      const created = await client.post<CloudSession & {
+        sessionId?: string
+        participantWorkspaces?: Record<string, { workspaceId: string; workspacePath: string | null }>
+      }>("/v1/sessions", {
         id: input.id,
         teamId: input.teamId,
         title: input.title,
@@ -130,7 +133,10 @@ export function createSessionsModule(client: CloudApiClient): SessionsBackend {
           ? { workspaceByActorId: input.workspaceByActorId }
           : {}),
       });
-      return { sessionId: input.id };
+      return {
+        sessionId: created.sessionId?.trim() || created.id || input.id,
+        participantWorkspaces: created.participantWorkspaces,
+      };
     },
     async addParticipants(sessionId, actorIds) {
       const unique = Array.from(new Set(actorIds));
