@@ -38,7 +38,7 @@ Agent 只能起草。人改完、选好路径、点写入，这篇东西才进�
    knowledge_propose → state/knowledge-inbox/<id>.json
         │
         ▼
-   审稿 native tab（改标题 / 正文 / 落点）
+   审稿 native tab（勾选提炼建议 / 改标题 / 正文 / 落点）
         │
         ├── 丢弃 → 删 candidate
         ├── 稍后 → 留在 inbox；知识库列「待写入 · N」
@@ -55,6 +55,12 @@ type KnowledgeCandidate = {
   title: string
   body: string
   suggestedPath: string     // vault 相对，可空
+  summary?: string          // 一句话共识
+  suggestions?: Array<{     // 提炼条目；审稿页勾选后重写正文
+    id: string
+    kind: "decision" | "fact" | "followup"
+    text: string
+  }>
   source: "session-header" | "agent-propose" | "message" | "unknown"
   createdAt: string         // ISO-8601
   status: "pending" | "published" | "discarded"
@@ -90,7 +96,8 @@ reviewed: YYYY-MM-DD
 ## 6. UI（后续切片）
 
 - 会话顶栏，和「导出完整会话记录」并排：「整理到知识库」
-- 新 native tab `knowledge-review:<id>`：来源会话、标题、知识库路径选择器、Markdown 正文、写入 / 稍后 / 丢弃
+- 新 native tab `knowledge-review:<id>`：来源会话、标题、知识库路径、**提炼建议勾选**、由建议组成的 Markdown 正文、写入 / 稍后 / 丢弃
+- 顶栏入口必须提炼（结论 / 要点 / 后续），**禁止把聊天全文写入草稿**
 - 知识库第二列「待写入 · N」
 - 不在文件树里画草稿
 
@@ -98,7 +105,7 @@ reviewed: YYYY-MM-DD
 
 1. inbox + `propose` / `inbox_*` / `publish` ——确认前 vault 无新文件
 2. 审稿 tab + 「待写入」
-3. 会话顶栏入口（本机从消息拼草稿；模型摘要仍可走 `knowledge_propose`）
+3. 会话顶栏入口（本机提炼建议，不是全文；有团队模型时走 chat/completions，失败回退启发式）
 4. 接上 `knowledge_propose`，并拦住对 `team-knowledge/` 的 write
 
 ## 8. 验收
@@ -107,4 +114,5 @@ reviewed: YYYY-MM-DD
 - publish 后指定路径出现带 `session-id` + `reviewed` 的 `.md`
 - 目标已存在且未覆盖 → 不写
 - discard / 稍后 → vault 无变化
+- 顶栏「整理到知识库」的草稿正文不含聊天全文，审稿页能勾选提炼建议
 - agent 对 `team-knowledge/foo.md` 调用 write → 失败或变成 propose（切片 4）

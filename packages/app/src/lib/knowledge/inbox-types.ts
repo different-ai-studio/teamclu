@@ -1,3 +1,11 @@
+export type KnowledgeSuggestionKind = 'decision' | 'fact' | 'followup'
+
+export type KnowledgeSuggestion = {
+  id: string
+  kind: KnowledgeSuggestionKind
+  text: string
+}
+
 export type KnowledgeCandidateSource =
   | 'session-header'
   | 'agent-propose'
@@ -17,6 +25,8 @@ export type KnowledgeCandidate = {
   createdAt: string
   status: KnowledgeCandidateStatus
   publishedPath?: string
+  summary?: string
+  suggestions?: KnowledgeSuggestion[]
 }
 
 export type KnowledgePublishResult = {

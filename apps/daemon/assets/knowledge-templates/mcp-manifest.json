@@ -48,16 +48,29 @@
     },
     {
       "name": "knowledge_propose",
-      "description": "Draft a conclusion from this conversation for human review. Writes a pending candidate on this device only — it does NOT enter the team knowledge vault. Tell the user a review tab will open; do not say the page is saved or shared. 把对话结论提交为本机审稿草稿，不会写入团队知识库。告知用户将打开审稿页，不要说已经保存或已共享。 Never call knowledge_write / knowledge_salvage / knowledge_create for this; those skip review.",
+      "description": "Draft distilled conclusions from this conversation for human review. Write pending suggestions only — never paste the chat transcript, and do not say the page is saved or shared. The candidate stays on this device until a human publishes it. 把对话结论提炼成本机审稿草稿（条目/建议，不要贴聊天全文），不会写入团队知识库。告知用户将打开审稿页。 Never call knowledge_write / knowledge_salvage / knowledge_create for this; those skip review.",
       "inputSchema": {
         "type": "object",
         "required": ["title", "content"],
         "properties": {
           "title": { "type": "string" },
-          "content": { "type": "string", "description": "Markdown body of the proposed page / 拟写入的正文" },
+          "content": { "type": "string", "description": "Markdown composed from distilled suggestions, not the transcript / 由提炼建议组成的正文，不是聊天记录" },
           "suggestedPath": { "type": "string", "description": "Vault-relative path suggestion, e.g. 20-domains/payments/对账口径.md" },
           "session_id": { "type": "string" },
-          "source": { "type": "string", "description": "Use 'agent-propose' when calling from a session" }
+          "source": { "type": "string", "description": "Use 'agent-propose' when calling from a session" },
+          "summary": { "type": "string", "description": "One-sentence consensus / 一句话共识" },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind", "text"],
+              "properties": {
+                "id": { "type": "string" },
+                "kind": { "type": "string", "enum": ["decision", "fact", "followup"] },
+                "text": { "type": "string" }
+              }
+            }
+          }
         }
       },
       "maps_to": { "action": "propose" }
