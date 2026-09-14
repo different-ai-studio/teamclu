@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  findingsForSessionFocus,
   findingsForSymptom,
   primaryFinding,
   sendStageStrip,
+  scopeDiagnosticContext,
   tracesForSession,
   tracesForSymptom,
 } from '../view'
@@ -58,6 +60,56 @@ describe('diagnostics view helpers', () => {
     ]
     expect(tracesForSession(traces, 's1')).toHaveLength(2)
     expect(tracesForSymptom(traces, 'send').map((e) => e.sessionId)).toEqual(['s1', 's2'])
+  })
+
+  it('scopes traces and outbox to one session', () => {
+    const scoped = scopeDiagnosticContext(
+      {
+        traces: [
+          trace({ sessionId: 's1' }),
+          trace({ sessionId: 's2', traceId: 'm2' }),
+        ],
+        outbox: [
+          { sessionId: 's1', messageId: 'a' },
+          { sessionId: 's2', messageId: 'b' },
+        ],
+      },
+      's1',
+    )
+    expect(scoped.traces.map((event) => event.sessionId)).toEqual(['s1'])
+    expect(scoped.outbox.map((entry) => entry.messageId)).toEqual(['a'])
+  })
+
+  it('drops send findings that belong to another session', () => {
+    const findings = [
+      finding({
+        code: 'send.outbox_failed',
+        symptom: 'send',
+        message: 'other session boom',
+        evidence: [{ source: 'outbox', summary: 'm2 failed', data: { sessionId: 's2' } }],
+      }),
+      finding({
+        code: 'send.mqtt_publish_failed',
+        symptom: 'send',
+        message: 'this session mqtt',
+        evidence: [{ source: 'trace', summary: 'outbox_sender.mqtt_publish.failed' }],
+      }),
+      finding({
+        code: 'model.catalog_ok',
+        message: 'env is fine',
+      }),
+    ]
+    const traces = [
+      trace({ sessionId: 's1', stage: 'mqtt.publish', rawStage: 'outbox_sender.mqtt_publish.failed' }),
+      trace({
+        sessionId: 's2',
+        traceId: 'm2',
+        stage: 'mqtt.publish',
+        rawStage: 'other.mqtt.failed',
+      }),
+    ]
+    const scoped = findingsForSessionFocus(findings, traces, 's1')
+    expect(scoped.map((item) => item.message)).toEqual(['this session mqtt', 'env is fine'])
   })
 
   it('builds a send stage strip that marks the failed hop', () => {

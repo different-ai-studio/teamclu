@@ -8,6 +8,7 @@ import { DiagnosticsSection } from '../DiagnosticsSection'
 const diagnosticsState = vi.hoisted(() => ({
   report: null as DiagnosticReport | null,
   focusSessionId: null as string | null,
+  preferredTab: null as 'model' | 'send' | 'realtime' | null,
 }))
 
 function finding(overrides: Partial<DiagnosticFinding>): DiagnosticFinding {
@@ -129,12 +130,14 @@ vi.mock('@/stores/diagnostics-store', () => ({
       report: DiagnosticReport | null
       setReport: (r: DiagnosticReport) => void
       focusSessionId: string | null
+      preferredTab: 'model' | 'send' | 'realtime' | null
     }) => unknown,
   ) =>
     selector({
       report: diagnosticsState.report,
       setReport: vi.fn(),
       focusSessionId: diagnosticsState.focusSessionId,
+      preferredTab: diagnosticsState.preferredTab,
     }),
 }))
 
@@ -185,6 +188,7 @@ describe('DiagnosticsSection symptom tabs', () => {
   beforeEach(() => {
     diagnosticsState.report = sampleReport
     diagnosticsState.focusSessionId = null
+    diagnosticsState.preferredTab = null
     openSettings.mockClear()
     recoverMqttConnection.mockClear()
     signOut.mockClear()
@@ -229,5 +233,36 @@ describe('DiagnosticsSection symptom tabs', () => {
     expect(screen.getByText('broker down')).toBeTruthy()
     expect(screen.getByText('MQTT')).toBeTruthy()
     expect(screen.getByText('outbox_sender.mqtt_publish.failed')).toBeTruthy()
+  })
+
+  it('when opened from a session, labels scope and hides the live console', async () => {
+    const { collectDiagnosticReport } = await import('@/lib/diagnostics/diagnostic-report')
+    diagnosticsState.focusSessionId = 'sess-9'
+    diagnosticsState.preferredTab = 'send'
+    diagnosticsState.report = {
+      ...sampleReport,
+      findings: [
+        ...sampleReport.findings,
+        finding({
+          code: 'send.outbox_failed',
+          symptom: 'send',
+          status: 'fail',
+          title: '消息发送',
+          message: 'outbox 发送失败：other session boom',
+          evidence: [{ source: 'outbox', summary: 'm-other failed', data: { sessionId: 'sess-other' } }],
+        }),
+      ],
+    }
+
+    render(<DiagnosticsSection />)
+
+    await waitFor(() => {
+      expect(collectDiagnosticReport).toHaveBeenCalledWith({ sessionId: 'sess-9' })
+    })
+    expect(screen.queryByTestId('live-debug-console')).toBeNull()
+    expect(screen.getByText(/消息回复已限定到当前会话/)).toBeTruthy()
+    expect(screen.getByRole('tab', { name: '消息回复（此会话）' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: '模型（全局）' })).toBeTruthy()
+    expect(screen.queryByText(/other session boom/)).toBeNull()
   })
 })

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { diagnose } from '../orchestrator'
+import { scopeDiagnosticContext } from '../view'
 import { emptyCtx, trace } from './orchestrator-helpers'
 
 describe('diagnose send flow', () => {
@@ -103,5 +104,28 @@ describe('diagnose send flow', () => {
     )
     expect(findings.find((f) => f.code === 'send.delivered_no_turn')?.status).toBe('warn')
     expect(findings.some((f) => f.code === 'send.path_ok')).toBe(false)
+  })
+
+  it('ignores another session outbox failure when scoped to this session', () => {
+    const findings = diagnose(
+      scopeDiagnosticContext(
+        emptyCtx({
+          outbox: [
+            {
+              messageId: 'm-other',
+              sessionId: 's2',
+              state: 'failed',
+              lastError: 'other session boom',
+              attemptCount: 2,
+              updatedAt: '2026-09-03T00:02:00.000Z',
+            },
+          ],
+          traces: [trace({ sessionId: 's1', stage: 'outbox.attempt', status: 'ok' })],
+        }),
+        's1',
+      ),
+    )
+    expect(findings.find((f) => f.code === 'send.outbox_failed')).toBeUndefined()
+    expect(findings.some((f) => f.message?.includes('other session boom'))).toBe(false)
   })
 })
