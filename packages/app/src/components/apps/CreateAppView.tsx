@@ -8,6 +8,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { APP_TYPES, DEFAULT_APP_TYPE, IMPORTED_APP_TYPE, type AppTypeId } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
+import { isHttpGitUrl, splitGitUrlCredentials } from '@/lib/apps/git-url-credentials'
 import { closeCreateApp } from '@/lib/tabs/app-tabs'
 import { bindDaemonAppWorkdir, inspectDaemonDir } from '@/lib/daemon/daemon-local-client'
 import { isTauri } from '@/lib/utils'
@@ -88,6 +89,8 @@ export function CreateAppView() {
   const [appType, setAppType] = React.useState<AppTypeId>(DEFAULT_APP_TYPE)
   const [visibility, setVisibility] = React.useState<Visibility>('personal')
   const [gitRemoteUrl, setGitRemoteUrl] = React.useState('')
+  const [repoUsername, setRepoUsername] = React.useState('')
+  const [repoToken, setRepoToken] = React.useState('')
   const [localDir, setLocalDir] = React.useState('')
   const [localOrigin, setLocalOrigin] = React.useState<string | null>(null)
   const [localIsRepo, setLocalIsRepo] = React.useState(false)
@@ -101,6 +104,10 @@ export function CreateAppView() {
   const trimmed = name.trim()
   const trimmedRepo = gitRemoteUrl.trim()
   const repoValid = isValidGitRemoteUrl(gitRemoteUrl)
+  // Only an http(s) address takes a token. For ssh the machine's own key is
+  // the credential, and a field asking for one would be a question with no
+  // right answer.
+  const repoTakesCredential = repoValid && isHttpGitUrl(trimmedRepo)
   const sourceReady =
     source === 'new' ||
     (source === 'remote' && !!trimmedRepo && repoValid) ||
@@ -144,6 +151,25 @@ export function CreateAppView() {
     }
   }
 
+  /**
+   * The address to clone and the token to store for it.
+   *
+   * A token pasted into the address is lifted out rather than cloned with: the
+   * server strips it from the stored address anyway, so teammates would never
+   * get it, and git would write it into `.git/config` in plain text. What the
+   * fields say wins over what the address carried.
+   */
+  const remoteRepo = (): {
+    url: string
+    credential: { username: string; token: string } | null
+  } => {
+    if (!isHttpGitUrl(trimmedRepo)) return { url: trimmedRepo, credential: null }
+    const pasted = splitGitUrlCredentials(trimmedRepo)
+    const token = repoToken.trim() || pasted.token
+    const username = repoUsername.trim() || pasted.username
+    return { url: pasted.url, credential: token ? { username, token } : null }
+  }
+
   const submit = async () => {
     if (!canSubmit) return
     setSubmitting(true)
@@ -158,6 +184,7 @@ export function CreateAppView() {
       // record, so the app gets a Gitea repo and the folder is published into
       // it. Either way no template is written over the user's files.
       const adopting = source === 'local' && !localOrigin
+      const remote = source === 'remote' ? remoteRepo() : null
       const app = await useAppsStore.getState().create({
         teamId,
         name: trimmed,
@@ -165,10 +192,11 @@ export function CreateAppView() {
         visibility,
         // Both import paths record where the code came from. For a local
         // checkout that is its own `origin`.
-        gitRemoteUrl: source === 'remote' ? trimmedRepo : source === 'local' ? localOrigin : null,
+        gitRemoteUrl: remote ? remote.url : source === 'local' ? localOrigin : null,
         // Provision nothing only when there is already a remote to deploy from.
         localOnly: source === 'local' && !adopting,
         adoptLocalDir: adopting ? localDir : null,
+        ...(remote?.credential ? { gitCredential: remote.credential } : {}),
       })
 
       if (source === 'local' && !adopting) {
@@ -297,6 +325,47 @@ export function CreateAppView() {
                   ? t('apps.repoHint', "Fill this in and the repo is cloned as the app's code, with no template written.")
                   : t('apps.repoInvalid', 'Must be an http(s), ssh or git@host:owner/repo.git address.')}
               </span>
+
+              {repoTakesCredential ? (
+                <div className="mt-2 flex flex-col gap-1.5" data-testid="create-app-repo-credential">
+                  <span className="text-[12.5px] font-semibold text-muted-foreground">
+                    {t('apps.repoCredentialLabel', '访问凭证（私有仓库才需要）')}
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <Input
+                      aria-label={t('apps.repoUsernameLabel', '用户名')}
+                      value={repoUsername}
+                      onChange={(e) => setRepoUsername(e.target.value)}
+                      placeholder={t('apps.repoUsernamePlaceholder', '用户名（GitHub、GitLab 可留空）')}
+                      disabled={submitting}
+                      autoComplete="off"
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                    />
+                    <Input
+                      type="password"
+                      aria-label={t('apps.repoTokenLabel', '访问令牌')}
+                      value={repoToken}
+                      onChange={(e) => setRepoToken(e.target.value)}
+                      placeholder={t('apps.repoTokenPlaceholder', '访问令牌（Personal Access Token）')}
+                      disabled={submitting}
+                      autoComplete="new-password"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <span className="text-[11.5px] text-faint">
+                    {t(
+                      'apps.repoCredentialHint',
+                      '加密保存在云端。协作者的机器下载代码、agent 拉取和推送时都会用它，所以尽量用只读、只限这个仓库的令牌。',
+                    )}
+                  </span>
+                </div>
+              ) : trimmedRepo && repoValid ? (
+                <span className="text-[11.5px] text-faint">
+                  {t('apps.repoSshHint', 'ssh 地址用的是每台机器自己的 ssh key，这里不用填凭证。')}
+                </span>
+              ) : null}
             </div>
           )}
 

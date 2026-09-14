@@ -232,6 +232,60 @@ test("GET /v1/apps/:id/git-credential returns deploy key for creator", async () 
   assert.deepEqual(res.body, cred);
 });
 
+test("PUT /v1/apps/:id/git-credential refuses a body with no token before the repository sees it", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "PUT", "/v1/apps/:appId/git-credential")[2];
+  let reached = false;
+  await assert.rejects(
+    () =>
+      handler({
+        params: { appId: "app-1" },
+        json: { username: "me" },
+        repository: { setAppGitHttpsCredential: async () => { reached = true; return {}; } },
+      }),
+    (e) => (e as { statusCode?: number }).statusCode === 400,
+  );
+  assert.equal(reached, false);
+});
+
+test("PUT /v1/apps/:id/git-credential stores the parsed credential and answers with the app", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "PUT", "/v1/apps/:appId/git-credential")[2];
+  let stored: unknown = null;
+  const row = { id: "app-1", gitAuthKind: "https_token" };
+  const res = await handler({
+    params: { appId: "app-1" },
+    json: { token: " ghp_abc\n" },
+    repository: {
+      setAppGitHttpsCredential: async (_appId: string, input: unknown) => {
+        stored = input;
+        return row;
+      },
+    },
+  });
+  assert.deepEqual(stored, { username: "x-access-token", token: "ghp_abc" });
+  assert.deepEqual(res.body, row);
+});
+
+test("PUT and DELETE /v1/apps/:id/git-credential 404 when the repository declines", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const cases = [
+    ["PUT", { setAppGitHttpsCredential: async () => null }],
+    ["DELETE", { clearAppGitHttpsCredential: async () => null }],
+  ] as const;
+  for (const [method, repository] of cases) {
+    const handler = findRoute(routes, method, "/v1/apps/:appId/git-credential")[2];
+    await assert.rejects(
+      () => handler({ params: { appId: "app-1" }, json: { token: "t" }, repository }),
+      (e) => (e as { statusCode?: number }).statusCode === 404,
+      method,
+    );
+  }
+});
+
 test("GET /v1/apps/:id/git-head 404s when repo returns null", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);

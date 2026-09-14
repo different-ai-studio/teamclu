@@ -2,6 +2,7 @@ import { ApiError } from "../http-utils.js";
 import { parseLimit, requireString } from "../routing-utils.js";
 import { runDueAppCronJobs } from "../app-cron-runner.js";
 import { createServiceRoleClient } from "../supabase.js";
+import { parseGitHttpsCredentialInput } from "../app-git-credential.js";
 
 /**
  * Object paths travel as base64url, the same trick the data browser plays with
@@ -174,6 +175,24 @@ export function registerApps(router) {
       throw new ApiError(400, "bad_request", "deployKeyId must be an integer");
     }
     const out = await ctx.repository.revokeAppGitCredential(appId, deployKeyId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  // Store the token for an imported app's http(s) repo. Admin only, and
+  // write-only here: the value comes back out only through GET above, to the
+  // machines that clone. Secret request — never log the body.
+  router.put("/v1/apps/:appId/git-credential", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const input = parseGitHttpsCredentialInput(ctx.json);
+    const out = await ctx.repository.setAppGitHttpsCredential(appId, input);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.delete("/v1/apps/:appId/git-credential", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.clearAppGitHttpsCredential(appId);
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });

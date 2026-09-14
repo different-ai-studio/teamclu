@@ -71,6 +71,14 @@ import { decodeRowKey, describeDbError, parsePageLimit, type AppDataTarget, type
 import { teardownAppResources, type TeardownAppDeps } from "./provisioning/app-delete.js";
 import { giteaUnavailable, GITEA_AUTH_KIND } from "./provisioning/gitea.js";
 import {
+  APP_GIT_HTTPS_CREDENTIAL_KIND,
+  deserializeGitHttpsCredential,
+  GIT_HTTPS_AUTH_KIND,
+  isHttpGitRemote,
+  serializeGitHttpsCredential,
+  type GitHttpsCredential,
+} from "./app-git-credential.js";
+import {
   issueJitDeployKey,
   revokeActorDeployKeys,
   revokeOwnJitDeployKey,
@@ -792,11 +800,15 @@ export function createSupabaseBusinessRepository(options) {
     return typeof id === "string" && id.trim() ? id : null;
   }
 
-  /** Mint a JIT deploy key for a Gitea-managed app, titled for `actorId`. */
+  /**
+   * Mint a JIT deploy key for a Gitea-managed app, titled for `actorId`.
+   * `readOnly` for a caller who may download the code but not push to it.
+   */
   async function mintAppGitCredential(
     appId: string,
     app: { git_remote_url?: string | null; git_auth_kind?: string | null },
     actorId: string,
+    { readOnly = false }: { readOnly?: boolean } = {},
   ) {
     if (!app.git_remote_url) return null;
     // An imported app has a remote this deployment holds no credential for;
@@ -804,7 +816,7 @@ export function createSupabaseBusinessRepository(options) {
     if (app.git_auth_kind !== GITEA_AUTH_KIND) return null;
     if (!gitea) throw giteaUnavailable(giteaUnavailableReason);
 
-    const jit = await issueJitDeployKey(gitea, appId, actorId);
+    const jit = await issueJitDeployKey(gitea, appId, actorId, Date.now(), { readOnly });
     return {
       remoteUrl: app.git_remote_url,
       authKind: "deploy_key" as const,
@@ -4529,22 +4541,38 @@ export function createSupabaseBusinessRepository(options) {
      */
     async resolveAppGitCredentialActor(
       appId: string,
-    ): Promise<{ actorId: string; app: Record<string, any> } | null> {
+    ): Promise<{ actorId: string; app: Record<string, any>; readOnly: boolean } | null> {
       const { data: visible, error: selErr } = await supabase
         .from("apps")
-        .select("id, team_id, git_remote_url, git_auth_kind, created_by_actor_id")
+        .select("id, team_id, visibility, git_remote_url, git_auth_kind, created_by_actor_id")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
 
       if (visible) {
         const permission = await this.resolveAppCallerPermissionForApp(visible);
-        // A member the app knows about is answered on the member rules alone —
-        // an explicit `view` grant is a deny, never a fall-through to the
-        // agent path below.
+        // A member the app knows about is answered on the member rules alone,
+        // never by falling through to the agent path below. `view` may download
+        // the code but not push to it, so its key cannot push.
         if (permission) {
-          if (permission.level === "view") return null;
-          return { actorId: permission.callerMemberId, app: visible };
+          return {
+            actorId: permission.callerMemberId,
+            app: visible,
+            readOnly: permission.level === "view",
+          };
+        }
+        // A teammate with no grant on a team-visible app. The app list shows it
+        // to them with a download button, and refusing the repo made that
+        // button a dead end — while their own daemon, on the agent path below,
+        // could already push to it. Same terms as `view`.
+        if (visible.visibility === "team") {
+          const { data: userData, error: userErr } = await supabase.auth.getUser();
+          if (userErr) throw userErr;
+          const userId = userData?.user?.id;
+          const member = userId
+            ? await this.resolveCurrentMemberActor(visible.team_id, userId)
+            : null;
+          if (member?.id) return { actorId: member.id, app: visible, readOnly: true };
         }
       }
 
@@ -4569,13 +4597,120 @@ export function createSupabaseBusinessRepository(options) {
       if (!app) return null;
       const agentActorId = await resolveCurrentAgentActor(app.team_id);
       if (!agentActorId) return null;
-      return { actorId: agentActorId, app };
+      return { actorId: agentActorId, app, readOnly: false };
     },
 
     async getAppGitCredential(appId: string) {
       const resolved = await this.resolveAppGitCredentialActor(appId);
       if (!resolved) return null;
-      return mintAppGitCredential(appId, resolved.app, resolved.actorId);
+      if (resolved.app.git_auth_kind === GIT_HTTPS_AUTH_KIND) {
+        return this.readAppGitHttpsCredential(appId, resolved.app);
+      }
+      return mintAppGitCredential(appId, resolved.app, resolved.actorId, {
+        readOnly: resolved.readOnly,
+      });
+    },
+
+    /**
+     * The token an admin stored for an imported app's http(s) repo, for exactly
+     * the callers a Gitea app's deploy key goes to (resolveAppGitCredentialActor)
+     * — the machines that clone the repo and the agents that pull it.
+     */
+    async readAppGitHttpsCredential(appId: string, app: Record<string, any>) {
+      if (!isHttpGitRemote(app.git_remote_url)) return null;
+      const admin = await serviceRoleClient("read app git credential");
+      const plaintext = await getAppSecretSupabase(admin, appId, APP_GIT_HTTPS_CREDENTIAL_KIND);
+      const credential = plaintext ? deserializeGitHttpsCredential(plaintext) : null;
+      if (!credential) return null;
+      return {
+        remoteUrl: app.git_remote_url as string,
+        authKind: GIT_HTTPS_AUTH_KIND,
+        username: credential.username,
+        token: credential.token,
+      };
+    },
+
+    /**
+     * Authorize a write to an app's stored repo credential, and hand back the
+     * client that can do it. Same gate as updateApp: `admin` on an app the
+     * caller can already see, with the service role only for an admin grantee
+     * that `apps_update_if_creator` would otherwise refuse.
+     */
+    async authorizeAppGitCredentialWrite(appId: string): Promise<{ cur: any; writer: any } | null> {
+      const { data: cur, error } = await supabase
+        .from("apps")
+        .select("id, team_id, created_by_actor_id, git_remote_url, git_auth_kind")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!cur) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(cur);
+      if (permission?.level !== "admin") return null;
+      if (cur.git_auth_kind === GITEA_AUTH_KIND) {
+        throw new ApiError(
+          409,
+          "git_credential_not_applicable",
+          "this app's repo is hosted by this deployment, which issues its own deploy keys",
+        );
+      }
+      const callerIsCreator = await this.isAppCreator(cur.team_id, cur.created_by_actor_id);
+      const writer = callerIsCreator
+        ? supabase
+        : await serviceRoleClient("write an app git credential authorized by an admin grant");
+      return { cur, writer };
+    },
+
+    /**
+     * Store (or replace) the token for an imported app's http(s) repo.
+     *
+     * The secret is written before the row names it, and deleted only after the
+     * row stops naming it (clearAppGitHttpsCredential), so a row that says
+     * `https_token` always has a secret behind it. The other order leaves a
+     * window in which every fetch reads "no credential".
+     */
+    async setAppGitHttpsCredential(appId: string, input: GitHttpsCredential) {
+      const gate = await this.authorizeAppGitCredentialWrite(appId);
+      if (!gate) return null;
+      if (!isHttpGitRemote(gate.cur.git_remote_url)) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          "a stored credential only applies to an app imported from an http(s) repo address",
+        );
+      }
+      const admin = await serviceRoleClient("store app git credential");
+      await putAppSecretSupabase(
+        admin,
+        appId,
+        APP_GIT_HTTPS_CREDENTIAL_KIND,
+        serializeGitHttpsCredential(input),
+      );
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({ git_auth_kind: GIT_HTTPS_AUTH_KIND, updated_at: new Date().toISOString() })
+        .eq("id", appId)
+        .select(APP_COLUMNS)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      return mapApp(data);
+    },
+
+    /** Forget an imported app's stored token. Idempotent. */
+    async clearAppGitHttpsCredential(appId: string) {
+      const gate = await this.authorizeAppGitCredentialWrite(appId);
+      if (!gate) return null;
+      const { data, error } = await gate.writer
+        .from("apps")
+        .update({ git_auth_kind: null, updated_at: new Date().toISOString() })
+        .eq("id", appId)
+        .select(APP_COLUMNS)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      const admin = await serviceRoleClient("clear app git credential");
+      await deleteAppSecretSupabase(admin, appId, APP_GIT_HTTPS_CREDENTIAL_KIND);
+      return mapApp(data);
     },
 
     /**

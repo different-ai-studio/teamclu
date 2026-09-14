@@ -53,6 +53,21 @@ test("createDeployKey posts a write deploy key on the app repo", async () => {
   assert.equal(body.read_only, false);
 });
 
+test("createDeployKey can register a key that cannot push", async () => {
+  const calls: { input: unknown; init?: RequestInit }[] = [];
+  const client = makeGiteaClient({
+    url: "https://gitea.example",
+    token: "tok",
+    owner: "teamclaw-apps",
+    fetch: async (input, init) => {
+      calls.push({ input, init });
+      return json(201, { id: 8 });
+    },
+  });
+  await client.createDeployKey("uuid", "download-key", "ssh-ed25519 AAAA", { readOnly: true });
+  assert.equal(JSON.parse(String(calls[0].init?.body)).read_only, true);
+});
+
 test("deleteDeployKey deletes by id", async () => {
   const calls: { input: unknown; init?: RequestInit }[] = [];
   const client = makeGiteaClient({

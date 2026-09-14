@@ -25,11 +25,13 @@ import { cn, copyToClipboard, isTauri, openExternalUrl } from '@/lib/utils'
 import { appGitKind, appStatusMeta, canReseed } from '@/lib/apps/app-list-helpers'
 import { APP_TYPES, IMPORTED_APP_TYPE, resolveAppType, type AppTypeId } from '@/lib/apps/app-types'
 import { forgetAppSessionSetups } from '@/lib/apps/app-session-setup'
+import { isHttpGitUrl } from '@/lib/apps/git-url-credentials'
 import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-local-client'
 import { openAppAuth } from '@/lib/tabs/app-tabs'
 import { useActorDirectory } from '@/stores/actor-directory-store'
 import { useAppsStore } from '@/stores/apps-store'
 import { AppCustomDomainSection } from './AppCustomDomainSection'
+import { AppGitCredentialControl } from './AppGitCredentialControl'
 import { AppStatusDot } from './AppStatusDot'
 import type { AppRow } from '@/lib/backend/types'
 
@@ -88,7 +90,7 @@ const REPO_HINTS = {
   },
   remote: {
     key: 'apps.settingsPage.repoRemoteHint',
-    fallback: '外部仓库 —— 这里没有它的凭证，部署用的是本机目录里的代码。',
+    fallback: '外部仓库 —— 部署用的是本机目录里的代码，不从仓库取。',
   },
   local: {
     key: 'apps.settingsPage.repoLocalHint',
@@ -751,6 +753,19 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
             <Absent>{t('apps.settingsPage.repoNone', '没有远端仓库')}</Absent>
           )}
         </Row>
+
+        {gitKind.kind === 'remote' && isHttpGitUrl(app.gitRemoteUrl) && (
+          <Row
+            label={t('apps.settingsPage.repoCredential', '访问凭证')}
+            hint={t(
+              'apps.settingsPage.repoCredentialHint',
+              '私有仓库才需要。加密保存在云端；协作者的机器下载代码、agent 拉取和推送时都会用它，所以尽量用只读、只限这个仓库的令牌。',
+            )}
+            testId="app-settings-git-credential"
+          >
+            <AppGitCredentialControl app={app} />
+          </Row>
+        )}
 
         <Row label={t('apps.settingsPage.commit', '部署的提交')} hint={commitRow.hint}>
           {commitRow.value}

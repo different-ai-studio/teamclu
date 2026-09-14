@@ -270,6 +270,68 @@ describe('CreateAppView', () => {
       expect(bindWorkdirMock).toHaveBeenCalledWith('app-1', 'team-1', '/home/me/project'),
     )
   })
+
+  it('a private https repo carries its credential beside the address', async () => {
+    render(<CreateAppView />)
+
+    fireEvent.change(nameField(), { target: { value: 'Private' } })
+    chooseRemoteSource()
+    fireEvent.change(repoField(), { target: { value: 'https://github.com/owner/private.git' } })
+    fireEvent.change(screen.getByLabelText('用户名'), { target: { value: ' me ' } })
+    fireEvent.change(screen.getByLabelText('访问令牌'), { target: { value: 'ghp_abc' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1))
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitRemoteUrl: 'https://github.com/owner/private.git',
+        gitCredential: { username: 'me', token: 'ghp_abc' },
+      }),
+    )
+  })
+
+  it('a token pasted into the address is lifted out of it', async () => {
+    // Cloned as typed, it would sit in .git/config in plain text, and the
+    // server would strip it from the stored address so no teammate got it.
+    render(<CreateAppView />)
+
+    fireEvent.change(nameField(), { target: { value: 'Private' } })
+    chooseRemoteSource()
+    fireEvent.change(repoField(), {
+      target: { value: 'https://me:ghp_abc@github.com/owner/private.git' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1))
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitRemoteUrl: 'https://github.com/owner/private.git',
+        gitCredential: { username: 'me', token: 'ghp_abc' },
+      }),
+    )
+  })
+
+  it('a public https repo sends no credential at all', async () => {
+    render(<CreateAppView />)
+
+    fireEvent.change(nameField(), { target: { value: 'Public' } })
+    chooseRemoteSource()
+    fireEvent.change(repoField(), { target: { value: 'https://github.com/owner/repo.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1))
+    expect(createMock.mock.calls[0][0]).not.toHaveProperty('gitCredential')
+  })
+
+  it('an ssh address asks for no credential', () => {
+    render(<CreateAppView />)
+
+    chooseRemoteSource()
+    fireEvent.change(repoField(), { target: { value: 'git@github.com:owner/repo.git' } })
+
+    expect(screen.queryByLabelText('访问令牌')).toBeNull()
+    expect(screen.getByText(/ssh key/)).toBeInTheDocument()
+  })
 })
 
 describe('isValidGitRemoteUrl', () => {

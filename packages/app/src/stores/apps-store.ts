@@ -15,17 +15,22 @@ import {
   encodeWorkspaceId,
   getDaemonEnvActivationDiagnostics,
   type BuildAppResult,
+  type DaemonGitHttpsCredential,
   type SeedAppResult,
 } from "@/lib/daemon/daemon-local-client";
 import { isTauri } from "@/lib/utils";
 import { getEffectiveServerConfigSync } from "@/lib/config/server-config";
 import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
+import { usesStoredHttpsCredential } from "@/lib/apps/app-list-helpers";
 import type { AppTypeId } from "@/lib/apps/app-types";
 import type {
   AppRow,
   AppAuthPatch,
   AppCustomDomain,
+  AppGitCredential,
+  AppGitDeployKeyCredential,
+  AppGitHttpsCredentialInput,
   VerifyAppDomainResult,
 } from "@/lib/backend/types";
 
@@ -74,6 +79,9 @@ interface AppsState {
     /** Optional repo to import — the app is cloned from it instead of seeded
      *  with a starter template. */
     gitRemoteUrl?: string | null;
+    /** The login for a private http(s) `gitRemoteUrl`. Stored on the app
+     *  before the clone runs, so teammates can download it too. */
+    gitCredential?: AppGitHttpsCredentialInput | null;
     /** The code is a checkout already on this machine WITH a remote of its own:
      *  no repo is provisioned and no template is written. */
     localOnly?: boolean;
@@ -121,6 +129,13 @@ interface AppsState {
   setVisibility: (appId: string, visibility: "personal" | "team") => Promise<boolean>;
   /** What kind of app this is. Admin only. True when the change stuck. */
   setType: (appId: string, type: AppTypeId) => Promise<boolean>;
+  /**
+   * Store the token git uses for this app's imported http(s) repo. Admin only.
+   * True when it stuck; a failure has already been toasted.
+   */
+  saveGitCredential: (appId: string, input: AppGitHttpsCredentialInput) => Promise<boolean>;
+  /** Forget that token. Admin only. True when it stuck. */
+  clearGitCredential: (appId: string) => Promise<boolean>;
   /** Change any part of the login wall in one request. True when it stuck. */
   updateAuthPolicy: (appId: string, patch: AppAuthPatch) => Promise<boolean>;
   /** Bind a domain and get back the DNS records the owner must publish. */
@@ -371,6 +386,21 @@ function mapSeedErrorReason(raw: string | null): string | undefined {
       "克隆超时。多半是这台机器的 git 凭证助手在等一个弹不出来的登录框；先在终端里 clone 一次这个仓库，再回来重试。",
     );
   }
+  // git's words for a forge that wanted a login nobody supplied. Accurate, but
+  // "terminal prompts disabled" reads as a machine fault rather than as "this
+  // repo is private".
+  if (/could not read (Username|Password)|terminal prompts disabled/i.test(raw)) {
+    return i18n.t(
+      "apps.seedErrorReason.authRequired",
+      "这个仓库需要登录。填上用户名和访问令牌（Personal Access Token）再试。",
+    );
+  }
+  if (/Authentication failed|Invalid username or password|HTTP Basic: Access denied|returned error: 403/i.test(raw)) {
+    return i18n.t(
+      "apps.seedErrorReason.authRejected",
+      "仓库拒绝了这个凭证。检查访问令牌有没有过期、有没有读取这个仓库的权限。",
+    );
+  }
   return raw;
 }
 
@@ -410,12 +440,16 @@ async function discardCreatedApp(set: SetState, appId: string): Promise<void> {
  * one. Credentials pasted into a repo URL are stripped before the row is
  * written, so the create path passes what the user actually typed — that copy
  * lives for the length of one call and is never persisted.
+ * @param httpsCredential the token for an http(s) import when the caller
+ * already holds it — the create form, which stored it a moment ago. Without
+ * it, an app with a stored token has the token read back here.
  */
 async function runSeed(
   set: SetState,
   app: AppRow,
   adoptExisting = false,
   cloneUrl?: string | null,
+  httpsCredential?: DaemonGitHttpsCredential | null,
 ): Promise<SeedAppResult> {
   let deployKeyPem: string | null = null;
   let deployKeyId: number | null = null;
@@ -428,9 +462,9 @@ async function runSeed(
   const needsGiteaPush = isGiteaManaged(app) && !!app.gitRemoteUrl?.trim();
   if (needsGiteaPush) {
     try {
-      const cred = await getBackend().apps.getGitCredential(app.id);
-      deployKeyPem = cred?.privateKeyPem ?? null;
-      deployKeyId = cred?.deployKeyId ?? null;
+      const key = deployKeyOf(await getBackend().apps.getGitCredential(app.id));
+      deployKeyPem = key?.privateKeyPem ?? null;
+      deployKeyId = key?.deployKeyId ?? null;
       if (!deployKeyPem) {
         await patchStatus(set, app.id, "error");
         return { outcome: "failed", workdir: null, error: "无法获取 Gitea 部署密钥" };
@@ -445,18 +479,32 @@ async function runSeed(
       };
     }
   }
+  const cloneCredential =
+    httpsCredential ?? (needsGiteaPush ? null : await readStoredHttpsCredential(app));
 
   let result: SeedAppResult = { outcome: "unreachable", workdir: null, error: null };
   try {
-    result = await seedDaemonApp(
-      app.id,
-      app.teamId,
-      app.name,
-      app.type,
-      cloneUrl?.trim() || app.gitRemoteUrl,
-      deployKeyPem,
-      adoptExisting,
-    );
+    const cloneFrom = cloneUrl?.trim() || app.gitRemoteUrl;
+    result = cloneCredential
+      ? await seedDaemonApp(
+          app.id,
+          app.teamId,
+          app.name,
+          app.type,
+          cloneFrom,
+          deployKeyPem,
+          adoptExisting,
+          cloneCredential,
+        )
+      : await seedDaemonApp(
+          app.id,
+          app.teamId,
+          app.name,
+          app.type,
+          cloneFrom,
+          deployKeyPem,
+          adoptExisting,
+        );
   } catch (e) {
     console.warn("app seed kick failed (non-fatal)", e);
   } finally {
@@ -475,6 +523,27 @@ async function runSeed(
   }
   // unreachable → no status change; reseed remains available.
   return result;
+}
+
+/** The deploy-key half of a credential reply, or null for any other kind. */
+function deployKeyOf(cred: AppGitCredential | null): AppGitDeployKeyCredential | null {
+  return cred?.authKind === "deploy_key" ? cred : null;
+}
+
+/**
+ * The token stored for an imported http(s) repo, or null. Never throws: a
+ * clone without it still runs, and a private repo then fails with git's own
+ * reason, which `mapSeedErrorReason` turns into "this repo needs a login".
+ */
+async function readStoredHttpsCredential(app: AppRow): Promise<DaemonGitHttpsCredential | null> {
+  if (!usesStoredHttpsCredential(app)) return null;
+  try {
+    const cred = await getBackend().apps.getGitCredential(app.id);
+    return cred?.authKind === "https_token" ? { username: cred.username, token: cred.token } : null;
+  } catch (e) {
+    console.warn("reading the stored git credential failed (non-fatal)", e);
+    return null;
+  }
 }
 
 /**
@@ -511,9 +580,10 @@ async function localWorkdirHasCheckout(workdir: string): Promise<boolean> {
 
 /**
  * On-demand clone for collaborators (design §5.4): when this machine has no
- * local checkout yet, fetch the repo with a prompt+ deploy key and bind the
- * workdir. Skips when the directory already has files; dirty trees are left
- * alone (deploy/build reuse ERR_DIRTY — we never clone over them).
+ * local checkout yet, fetch the repo and bind the workdir. Anyone who can see
+ * the app can do this — the server hands a read-only deploy key to those who
+ * may not push. Skips when the directory already has files; dirty trees are
+ * left alone (deploy/build reuse ERR_DIRTY — we never clone over them).
  *
  * Resolves to the checkout directory when this machine has one afterwards, so
  * a caller that needs the path next does not ask the daemon for it again; null
@@ -533,7 +603,12 @@ export async function ensureAppCheckout(
   };
 
   if (!isTauri()) return null;
-  if (app.provisionStatus !== "ready") {
+  // For a hosted repo anything short of `ready` means the seed never pushed,
+  // and a clone would fetch an empty repository. An imported repo is not ours
+  // to be unready: its status only says whether the creator's own clone
+  // worked, and the repository is there to fetch either way.
+  const importedWithRemote = !isGiteaManaged(app) && !!app.gitRemoteUrl?.trim();
+  if (app.provisionStatus !== "ready" && !importedWithRemote) {
     await bail("应用尚未就绪");
     return null;
   }
@@ -549,17 +624,18 @@ export async function ensureAppCheckout(
   let gitRemoteUrl: string | null = app.gitRemoteUrl?.trim() || null;
   let deployKeyPem: string | null = null;
   let deployKeyId: number | null = null;
+  let httpsCredential: DaemonGitHttpsCredential | null = null;
 
   if (isGiteaManaged(app)) {
     try {
-      const cred = await getBackend().apps.getGitCredential(app.id);
-      if (!cred?.privateKeyPem || !cred.remoteUrl) {
+      const key = deployKeyOf(await getBackend().apps.getGitCredential(app.id));
+      if (!key?.privateKeyPem || !key.remoteUrl) {
         await bail("没有这个应用仓库的访问权限");
         return null;
       }
-      gitRemoteUrl = cred.remoteUrl;
-      deployKeyPem = cred.privateKeyPem;
-      deployKeyId = cred.deployKeyId ?? null;
+      gitRemoteUrl = key.remoteUrl;
+      deployKeyPem = key.privateKeyPem;
+      deployKeyId = key.deployKeyId ?? null;
     } catch (e) {
       console.warn("getGitCredential failed during checkout (non-fatal)", e);
       await bail(e instanceof Error ? e.message : String(e));
@@ -570,11 +646,17 @@ export async function ensureAppCheckout(
     // ever existed on the machine that made it.
     await bail("这个应用没有可下载的仓库地址");
     return null;
+  } else {
+    // A private import is the case this exists for: the machine that created
+    // the app had a login for the repo, and this one has only what is stored.
+    httpsCredential = await readStoredHttpsCredential(app);
   }
 
   let result: SeedAppResult = { outcome: "unreachable", workdir: null, error: null };
   try {
-    result = await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
+    result = httpsCredential
+      ? await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem, httpsCredential)
+      : await cloneDaemonApp(app.id, app.teamId, gitRemoteUrl, deployKeyPem);
   } catch (e) {
     console.warn("app clone kick failed (non-fatal)", e);
   } finally {
@@ -584,12 +666,31 @@ export async function ensureAppCheckout(
   if (result.outcome === "seeded" && result.workdir) {
     const { bindAppWorkdir } = await import("@/lib/apps/app-session");
     await bindAppWorkdir(app, result.workdir);
+    // An import whose first clone failed on the machine that created it now
+    // has its code on this one, which is what `ready` means. The server lets
+    // only an admin write it; for anyone else this is a no-op and the download
+    // still stands.
+    if (app.provisionStatus !== "ready") {
+      await patchStatus(useAppsStore.setState, app.id, "ready");
+    }
     return result.workdir;
   }
   if (result.outcome === "failed") {
-    await toastError("仓库克隆失败", result.error ?? undefined);
+    await toastError("仓库克隆失败", mapSeedErrorReason(result.error));
   }
   return null;
+}
+
+/**
+ * Why a stored-credential write failed, in words the user can act on. A 404 is
+ * also what a caller without admin gets — the route will not say which, and
+ * from a settings page "not an admin" is by far the likelier.
+ */
+function gitCredentialErrorReason(e: unknown): string {
+  if (e && typeof e === "object" && "status" in e && (e as { status: unknown }).status === 404) {
+    return i18n.t("apps.gitCredential.denied", "只有应用管理员可以修改仓库凭证。");
+  }
+  return e instanceof Error ? e.message : String(e);
 }
 
 /**
@@ -660,9 +761,25 @@ export const useAppsStore = create<AppsState>((set, get) => ({
     }
   },
   create: async (input) => {
-    const { adoptLocalDir, ...createInput } = input;
+    const { adoptLocalDir, gitCredential, ...createInput } = input;
     const row = await getBackend().apps.createApp(createInput);
     set((s) => ({ items: [row, ...s.items] }));
+    // Stored before the clone, not after it. The clone is the first thing that
+    // needs the token, and every teammate's later download reads this copy — an
+    // app whose token could not be stored clones here and nowhere else, so that
+    // fails the create the same way a failed clone does.
+    const cloneCredential = gitCredential?.token.trim() ? gitCredential : null;
+    if (cloneCredential) {
+      try {
+        mergeRow(set, await getBackend().apps.setGitHttpsCredential(row.id, cloneCredential));
+      } catch (e) {
+        await discardCreatedApp(set, row.id);
+        throw new Error(
+          `${i18n.t("apps.gitCredential.saveFailed", "凭证保存失败")}：${gitCredentialErrorReason(e)}`,
+          { cause: e },
+        );
+      }
+    }
     // Point the daemon at the user's folder BEFORE seeding. The seed resolves
     // the app's workdir from this override, so binding afterwards would have
     // it publish an empty default directory and leave the folder the user
@@ -693,7 +810,13 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // The typed address, not the stored one: `POST /v1/apps` strips any
       // credential out of it before writing the row, and this is the one call
       // that still needs it.
-      seedResult = await runSeed(set, row, !!adoptLocalDir?.trim(), input.gitRemoteUrl);
+      seedResult = await runSeed(
+        set,
+        row,
+        !!adoptLocalDir?.trim(),
+        input.gitRemoteUrl,
+        cloneCredential,
+      );
     }
     // Remote import whose clone failed: the cloud row is an empty shell. Leaving
     // it looks like create succeeded while a toast says it failed. Roll it back
@@ -802,7 +925,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       let deployKeyPem: string | undefined;
       let deployKeyId: number | null = null;
       if (viaGitea) {
-        const cred = await getBackend().apps.getGitCredential(appId);
+        const cred = deployKeyOf(await getBackend().apps.getGitCredential(appId));
         if (!cred?.privateKeyPem || !cred.remoteUrl) {
           throw new Error("无法获取 Gitea 部署凭证");
         }
@@ -919,6 +1042,38 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       await toastError(
         i18n.t("apps.visibilityFailed", "Could not change who can see this app"),
         e instanceof Error ? e.message : String(e),
+      );
+      return false;
+    }
+  },
+  saveGitCredential: async (appId, input) => {
+    try {
+      mergeRow(set, await getBackend().apps.setGitHttpsCredential(appId, input));
+      return true;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.gitCredential.saveFailed", "凭证保存失败"),
+        gitCredentialErrorReason(e),
+      );
+      return false;
+    }
+  },
+  clearGitCredential: async (appId) => {
+    try {
+      const updated = await getBackend().apps.clearGitHttpsCredential(appId);
+      if (!updated) {
+        await toastError(
+          i18n.t("apps.gitCredential.clearFailed", "凭证清除失败"),
+          i18n.t("apps.gitCredential.denied", "只有应用管理员可以修改仓库凭证。"),
+        );
+        return false;
+      }
+      mergeRow(set, updated);
+      return true;
+    } catch (e) {
+      await toastError(
+        i18n.t("apps.gitCredential.clearFailed", "凭证清除失败"),
+        gitCredentialErrorReason(e),
       );
       return false;
     }

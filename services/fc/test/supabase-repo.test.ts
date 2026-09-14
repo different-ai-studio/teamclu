@@ -1463,6 +1463,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
     sessions: [...(seed.sessions ?? [])],
     app_member_access: [...(seed.app_member_access ?? [])],
     app_env_vars: [...(seed.app_env_vars ?? [])],
+    app_secrets: [...(seed.app_secrets ?? [])],
     app_cron_jobs: [...(seed.app_cron_jobs ?? [])],
     // resolveTeamOrgId reads this; unseeded it yields no row, i.e. "team has
     // no org", which is what most apps tests want.
@@ -2433,11 +2434,54 @@ function appAccessRepo(permissionLevel: string, actorId = "member-other", extra:
   );
 }
 
-test("apps: getAppGitCredential returns null for view permission", async () => {
+test("apps: a view grant downloads with a key that cannot push", async () => {
+  const issued: unknown[] = [];
+  const gitea = fakeGitea({
+    createDeployKey: async (_appId: string, _title: string, _key: string, opts: unknown) => {
+      issued.push(opts);
+      return { id: 3 };
+    },
+  });
+  const repo = appAccessRepo("view", "member-other", { gitea });
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.readOnly, true);
+  assert.deepEqual(issued, [{ readOnly: true }]);
+});
+
+test("apps: a teammate with no grant on a team app downloads read-only", async () => {
+  // The app list shows every team-visible app to every teammate, with a
+  // download button. Refusing the repo made that button a dead end.
+  const issued: unknown[] = [];
+  const gitea = fakeGitea({
+    createDeployKey: async (_appId: string, _title: string, _key: string, opts: unknown) => {
+      issued.push(opts);
+      return { id: 4 };
+    },
+  });
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [GITEA_MANAGED_APP] },
+      actorRow: { id: "member-other", actor_type: "member" },
+    }),
+    { gitea },
+  );
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.remoteUrl, GITEA_MANAGED_APP.git_remote_url);
+  assert.equal(cred?.readOnly, true);
+  assert.deepEqual(issued, [{ readOnly: true }]);
+});
+
+test("apps: a teammate with no grant on a personal app gets nothing", async () => {
   const gitea = fakeGitea({
     createDeployKey: async () => { throw new Error("must not be called"); },
   });
-  const repo = appAccessRepo("view");
+  const repo = appsRepo(
+    appsSupabase({
+      seed: { apps: [{ ...GITEA_MANAGED_APP, visibility: "personal" }] },
+      actorRow: { id: "member-other", actor_type: "member" },
+    }),
+    { gitea },
+  );
   assert.equal(await repo.getAppGitCredential("app-1"), null);
 });
 
@@ -2518,12 +2562,21 @@ test("apps: the agent path reads past RLS for a personal app", async () => {
   assert.equal(cred?.remoteUrl, personal.git_remote_url);
 });
 
-test("apps: a view-only member is denied, not handed the agent path", async () => {
+test("apps: a view-only member is answered read-only, not handed the agent path", async () => {
+  // The agent path issues write keys. A member's own grant decides for them.
+  const issued: Array<{ title: string; opts: unknown }> = [];
   const gitea = fakeGitea({
-    createDeployKey: async () => { throw new Error("must not be called"); },
+    createDeployKey: async (_appId: string, title: string, _key: string, opts: unknown) => {
+      issued.push({ title, opts });
+      return { id: 6 };
+    },
   });
   const repo = appAccessRepo("view", "member-other", { gitea });
-  assert.equal(await repo.getAppGitCredential("app-1"), null);
+  const cred = await repo.getAppGitCredential("app-1");
+  assert.equal(cred?.readOnly, true);
+  assert.equal(issued.length, 1);
+  assert.deepEqual(issued[0].opts, { readOnly: true });
+  assert.ok(issued[0].title.startsWith("jit-member-other-"), `titled for the member, got ${issued[0].title}`);
 });
 
 test("apps: an agent actor from another team gets nothing", async () => {
@@ -3871,3 +3924,112 @@ test("app data: PATCH requires a patch object", async () => {
     );
   }
 });
+
+// ─── A stored token for an imported http(s) repo ────────────────────────────
+
+const IMPORTED_HTTPS_APP = {
+  ...APP_ROW,
+  created_by_actor_id: "actor-app-1",
+  git_remote_url: "https://github.com/owner/private.git",
+  git_auth_kind: null,
+};
+
+/** Run with a sealing key configured, restoring whatever was there. */
+function withAppSecretsKey(fn: () => Promise<void>) {
+  return async () => {
+    const prev = process.env.APP_SECRETS_ENCRYPTION_KEY;
+    process.env.APP_SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.APP_SECRETS_ENCRYPTION_KEY;
+      else process.env.APP_SECRETS_ENCRYPTION_KEY = prev;
+    }
+  };
+}
+
+/** One fake answers both the caller's client and the service role. */
+function httpsCredentialRepo(seed: any, over: any = {}) {
+  const calls: any[] = [];
+  const supabase = appsSupabase({ seed, calls, ...over });
+  return { repo: appsRepo(supabase, { createServiceRoleClient: () => supabase }), calls };
+}
+
+test(
+  "apps: a stored token for an imported https repo is handed out as its git credential",
+  withAppSecretsKey(async () => {
+    const { repo } = httpsCredentialRepo({ apps: [IMPORTED_HTTPS_APP] });
+    const row = await repo.setAppGitHttpsCredential("app-1", { username: "me", token: "ghp_secret" });
+    assert.equal(row?.gitAuthKind, "https_token");
+    assert.deepEqual(await repo.getAppGitCredential("app-1"), {
+      remoteUrl: IMPORTED_HTTPS_APP.git_remote_url,
+      authKind: "https_token",
+      username: "me",
+      token: "ghp_secret",
+    });
+  }),
+);
+
+test(
+  "apps: the stored token is sealed under its own kind, never written in the clear",
+  withAppSecretsKey(async () => {
+    const { repo, calls } = httpsCredentialRepo({ apps: [IMPORTED_HTTPS_APP] });
+    await repo.setAppGitHttpsCredential("app-1", { username: "me", token: "ghp_secret" });
+    const write = calls.find((c) => c.table === "app_secrets" && c.op === "upsert");
+    assert.ok(write, "the secret was written");
+    assert.equal(write.row.kind, "git_https_credential");
+    assert.ok(!JSON.stringify(write.row).includes("ghp_secret"));
+  }),
+);
+
+test(
+  "apps: clearing the token leaves the app with no git credential",
+  withAppSecretsKey(async () => {
+    const { repo } = httpsCredentialRepo({ apps: [IMPORTED_HTTPS_APP] });
+    await repo.setAppGitHttpsCredential("app-1", { username: "me", token: "ghp_secret" });
+    const row = await repo.clearAppGitHttpsCredential("app-1");
+    assert.equal(row?.gitAuthKind, null);
+    assert.equal(await repo.getAppGitCredential("app-1"), null);
+  }),
+);
+
+test(
+  "apps: a prompt grantee cannot store or clear a repo token",
+  withAppSecretsKey(async () => {
+    const { repo, calls } = httpsCredentialRepo(
+      {
+        apps: [IMPORTED_HTTPS_APP],
+        app_member_access: [{
+          app_id: "app-1",
+          member_id: "member-other",
+          permission_level: "prompt",
+          granted_by_member_id: "actor-app-1",
+          created_at: "2026-08-27T00:00:00.000Z",
+        }],
+      },
+      { actorRow: { id: "member-other" } },
+    );
+    assert.equal(await repo.setAppGitHttpsCredential("app-1", { username: "", token: "t" }), null);
+    assert.equal(await repo.clearAppGitHttpsCredential("app-1"), null);
+    assert.ok(!calls.some((c) => c.table === "app_secrets"), "nothing touched the secret");
+  }),
+);
+
+test(
+  "apps: a hosted repo or an ssh import cannot take a stored token",
+  withAppSecretsKey(async () => {
+    const hosted = httpsCredentialRepo({ apps: [GITEA_MANAGED_APP] });
+    await assert.rejects(
+      () => hosted.repo.setAppGitHttpsCredential("app-1", { username: "", token: "t" }),
+      (e: any) => e?.statusCode === 409,
+    );
+    const ssh = httpsCredentialRepo({
+      apps: [{ ...IMPORTED_HTTPS_APP, git_remote_url: "git@github.com:owner/private.git" }],
+    });
+    await assert.rejects(
+      () => ssh.repo.setAppGitHttpsCredential("app-1", { username: "", token: "t" }),
+      (e: any) => e?.statusCode === 400,
+    );
+    assert.ok(!ssh.calls.some((c) => c.table === "app_secrets"));
+  }),
+);

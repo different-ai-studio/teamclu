@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
 import {
@@ -28,6 +28,8 @@ const storeMocks = vi.hoisted(() => ({
   setVisibility: vi.fn(),
   setType: vi.fn(),
   deleteApp: vi.fn(),
+  saveGitCredential: vi.fn(),
+  clearGitCredential: vi.fn(),
 }))
 
 const actorMocks = vi.hoisted(() => ({
@@ -158,6 +160,75 @@ describe('AppSettingsPanel', () => {
       expect(screen.getByText(/外部仓库/)).toBeTruthy()
       await userEvent.setup().click(screen.getByTestId('app-settings-git-remote-open'))
       expect(utilMocks.openExternalUrl).toHaveBeenCalledWith(url)
+    })
+
+    it('offers a credential for an https import, and saves one', async () => {
+      storeMocks.saveGitCredential.mockResolvedValue(true)
+      render(
+        <AppSettingsPanel
+          app={{
+            ...baseApp,
+            gitAuthKind: null,
+            gitRemoteUrl: 'https://github.com/o/private.git',
+            gitCommitSha: null,
+          }}
+        />,
+      )
+      const row = within(screen.getByTestId('app-settings-git-credential'))
+      expect(row.getByTestId('app-settings-git-credential-status').textContent).toContain('未设置')
+
+      const user = userEvent.setup()
+      await user.click(row.getByRole('button', { name: '设置' }))
+      await user.type(row.getByLabelText('访问令牌'), 'ghp_abc')
+      await user.click(row.getByRole('button', { name: '保存' }))
+
+      expect(storeMocks.saveGitCredential).toHaveBeenCalledWith('app-1', {
+        username: '',
+        token: 'ghp_abc',
+      })
+      await waitFor(() =>
+        expect(screen.queryByTestId('app-settings-git-credential-form')).toBeNull(),
+      )
+      expect(toastMocks.success).toHaveBeenCalled()
+    })
+
+    it('clears a stored credential only on the second click', async () => {
+      storeMocks.clearGitCredential.mockResolvedValue(true)
+      render(
+        <AppSettingsPanel
+          app={{
+            ...baseApp,
+            gitAuthKind: 'https_token',
+            gitRemoteUrl: 'https://github.com/o/private.git',
+            gitCommitSha: null,
+          }}
+        />,
+      )
+      const row = within(screen.getByTestId('app-settings-git-credential'))
+      expect(row.getByTestId('app-settings-git-credential-status').textContent).toContain('已保存')
+
+      const user = userEvent.setup()
+      await user.click(row.getByRole('button', { name: '清除' }))
+      expect(storeMocks.clearGitCredential).not.toHaveBeenCalled()
+      await user.click(row.getByRole('button', { name: '确认清除' }))
+      expect(storeMocks.clearGitCredential).toHaveBeenCalledWith('app-1')
+    })
+
+    it('asks for no credential on a hosted repo or an ssh import', () => {
+      const { unmount } = render(<AppSettingsPanel app={baseApp} />)
+      expect(screen.queryByTestId('app-settings-git-credential')).toBeNull()
+      unmount()
+      render(
+        <AppSettingsPanel
+          app={{
+            ...baseApp,
+            gitAuthKind: null,
+            gitRemoteUrl: 'git@github.com:o/r.git',
+            gitCommitSha: null,
+          }}
+        />,
+      )
+      expect(screen.queryByTestId('app-settings-git-credential')).toBeNull()
     })
 
     it('says a local-only app has no remote rather than leaving the row blank', () => {

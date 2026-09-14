@@ -120,6 +120,18 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         console.warn("revokeGitCredential failed (non-fatal)", e);
       }
     },
+    async setGitHttpsCredential(appId, input) {
+      return client.put<AppRow>(`/v1/apps/${encodeURIComponent(appId)}/git-credential`, input);
+    },
+    async clearGitHttpsCredential(appId) {
+      try {
+        return await client.delete<AppRow>(`/v1/apps/${encodeURIComponent(appId)}/git-credential`);
+      } catch (e) {
+        // Also what a caller without admin gets — the route will not say which.
+        if (e instanceof CloudApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
     async getGitHead(appId, opts) {
       // The compare costs the server an extra forge round trip, so it is asked
       // for rather than assumed — the deploy path wants only the sha.
