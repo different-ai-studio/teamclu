@@ -14,6 +14,8 @@ type AgentWorkspaceLookup = {
   defaultWorkspaceId?: string | null
   /** First non-archived `workspaces` row bound to this agent. */
   ownedWorkspaceId?: string | null
+  /** Cloud returned a participant row for this agent (workspace_id may still be null). */
+  participantSeen?: boolean
 }
 
 /**
@@ -90,10 +92,11 @@ export async function loadAgentWorkspaceLookups(
     try {
       const participants = await backend.sessions.getSessionParticipants(sessionId)
       for (const row of participants) {
-        const workspaceId = row.workspaceId?.trim()
-        if (!workspaceId) continue
         const existing = out.get(row.actor_id)
-        if (existing) existing.sessionWorkspaceId = workspaceId
+        if (!existing) continue
+        existing.participantSeen = true
+        const workspaceId = row.workspaceId?.trim()
+        if (workspaceId) existing.sessionWorkspaceId = workspaceId
       }
     } catch {
       // offline — fall through to defaults.
