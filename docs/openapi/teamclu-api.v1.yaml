@@ -9601,6 +9601,23 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/SessionParticipant"
+            participantWorkspaces:
+              type: object
+              additionalProperties:
+                type: object
+                required: [workspaceId]
+                properties:
+                  workspaceId:
+                    type: string
+                    format: uuid
+                  workspacePath:
+                    type:
+                      - string
+                      - "null"
+              description: |
+                Authoritative agent workspace bindings written at create time.
+                Clients must persist this map into local cache; do not reconstruct
+                it from the create request.
     SessionParticipant:
       type: object
       required: [sessionId, actorId, role]

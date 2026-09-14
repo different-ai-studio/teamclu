@@ -160,7 +160,7 @@ name = "Mac-mini-8"                # 运维可改的显示名；id 在 backend.t
 broker_url = ""                    # 空 = 从 /v1/config/bootstrap 解析
 
 [http]
-bind = "127.0.0.1:0"
+bind = "0.0.0.0:0"
 allowed_origins = [...]
 # …其余 HTTP 参数
 

@@ -464,6 +464,10 @@ describe('outbox sender', () => {
     mocks.isTauri.mockReturnValue(true)
     mocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
     mocks.runtimeStart.mockResolvedValue({})
+    mocks.cachedSessionWorkspaceForLocalDaemon.mockResolvedValue({
+      workspaceId: 'ws-session-cache',
+      workspacePath: '/Users/me/copilot',
+    })
 
     const { useOutboxStore } = await import('@/stores/outbox-store')
     const { startOutboxSender } = await import('../outbox-sender')
@@ -485,8 +489,48 @@ describe('outbox sender', () => {
       expect(mocks.runtimeStart).toHaveBeenCalled()
     })
     expect(mocks.runtimeStart).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: 'ws-from-enqueue' }),
+      expect.objectContaining({
+        workspaceId: 'ws-session-cache',
+        worktree: '/Users/me/copilot',
+      }),
     )
+  })
+
+  it('local fast path does not start from enqueue hint, device default, or window path', async () => {
+    mocks.isTauri.mockReturnValue(true)
+    mocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    mocks.runtimeStart.mockResolvedValue({})
+    mocks.cachedSessionWorkspaceForLocalDaemon.mockResolvedValue(null)
+
+    const { ensureAgentRuntimesForSession } = await import('@/lib/teamclu/ensure-agent-runtime')
+    const { useOutboxStore } = await import('@/stores/outbox-store')
+    const { startOutboxSender } = await import('../outbox-sender')
+
+    await useOutboxStore.getState().enqueue({
+      messageId: 'msg-no-cache',
+      teamId: 'team-1',
+      sessionId: 'session-1',
+      senderActorId: 'member-1',
+      content: '@Local hi',
+      model: 'opencode/qwen',
+      mentionActorIds: ['agent-local'],
+      attachmentUrls: [],
+      workspaceIdHint: 'ws-from-enqueue',
+    })
+    startOutboxSender()
+
+    await vi.waitFor(() => {
+      expect(mocks.insertOutgoingMessage).toHaveBeenCalled()
+    })
+    expect(mocks.runtimeStart).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(ensureAgentRuntimesForSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 'session-1',
+          agentActorIds: ['agent-local'],
+        }),
+      )
+    })
   })
 
   it("local fast path runs in the session's own workspace, not the agent's device default", async () => {
@@ -533,6 +577,10 @@ describe('outbox sender', () => {
     const order: string[] = []
     mocks.isTauri.mockReturnValue(true)
     mocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    mocks.cachedSessionWorkspaceForLocalDaemon.mockResolvedValue({
+      workspaceId: 'ws-session-cache',
+      workspacePath: '/Users/me/copilot',
+    })
     mocks.runtimeStart.mockImplementation(async () => {
       order.push('runtimeStart')
       return {}
@@ -575,10 +623,8 @@ describe('outbox sender', () => {
       expect.objectContaining({
         targetActorId: 'agent-local',
         sessionId: 'session-1',
-        worktree: '/tmp/workspace',
-        // No enqueue hint and a cold cache in this fixture, so still empty —
-        // the fast path degrades to the old behaviour rather than guessing.
-        workspaceId: '',
+        worktree: '/Users/me/copilot',
+        workspaceId: 'ws-session-cache',
         modelId: 'opencode/qwen',
       }),
     )
@@ -593,6 +639,10 @@ describe('outbox sender', () => {
     mocks.isTauri.mockReturnValue(true)
     mocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
     mocks.runtimeStart.mockResolvedValue({})
+    mocks.cachedSessionWorkspaceForLocalDaemon.mockResolvedValue({
+      workspaceId: 'ws-session-cache',
+      workspacePath: '/Users/me/copilot',
+    })
 
     const { rememberThreadForkMetadata, clearThreadForkMetadataForTests } =
       await import('@/lib/session/thread-fork-metadata')
@@ -639,6 +689,10 @@ describe('outbox sender', () => {
     // failure ("retries agent-mentioned messages when MQTT publish fails").
     mocks.isTauri.mockReturnValue(true)
     mocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    mocks.cachedSessionWorkspaceForLocalDaemon.mockResolvedValue({
+      workspaceId: 'ws-session-cache',
+      workspacePath: '/Users/me/copilot',
+    })
     mocks.runtimeStart.mockResolvedValue({})
     mocks.ingestSessionLiveLocally.mockResolvedValue(undefined)
     mocks.mqttPublish.mockRejectedValue(new Error('mqtt not connected'))
@@ -673,6 +727,10 @@ describe('outbox sender', () => {
   it('local delivery survives both the broker and Cloud being down', async () => {
     mocks.isTauri.mockReturnValue(true)
     mocks.getLocalDaemonActorId.mockResolvedValue('agent-local')
+    mocks.cachedSessionWorkspaceForLocalDaemon.mockResolvedValue({
+      workspaceId: 'ws-session-cache',
+      workspacePath: '/Users/me/copilot',
+    })
     mocks.runtimeStart.mockResolvedValue({})
     mocks.ingestSessionLiveLocally.mockResolvedValue(undefined)
     mocks.mqttPublish.mockRejectedValue(new Error('mqtt not connected'))

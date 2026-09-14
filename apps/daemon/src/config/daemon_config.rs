@@ -52,7 +52,7 @@ pub struct DaemonConfig {
     /// Browser-facing HTTP/SSE API, bound alongside the Unix control socket.
     ///
     /// Omitting the section does **not** disable the listener — the daemon
-    /// falls back to `HttpConfig::default()` (loopback, ephemeral port). The
+    /// falls back to `HttpConfig::default()` (`0.0.0.0`, ephemeral port). The
     /// section only exists to override those defaults. The listener is how the
     /// setup UI is served, so an unconfigured daemon needs it most.
     #[serde(default)]
@@ -133,14 +133,16 @@ impl Default for TeamShareConfig {
     }
 }
 
-/// Configuration for the browser-facing HTTP+SSE listener. Defaults are tuned
-/// for "localhost browser connecting to a single user's daemon"; cross-host
-/// deployments must set `bind` + a TLS terminator in front.
+/// Configuration for the browser-facing HTTP+SSE listener. Defaults bind all
+/// interfaces (`0.0.0.0`) so headless / LAN hosts (boards, NAS) can open the
+/// setup UI without editing `daemon.toml`. Put a TLS terminator in front for
+/// untrusted networks; API routes still require the bearer token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
-    /// Socket address to bind. Use `127.0.0.1:0` (default) to pick an
-    /// ephemeral loopback port — the actual port is written to
-    /// `<config_dir>/amuxd.http.port` so clients can discover it.
+    /// Socket address to bind. Default `0.0.0.0:0` picks an ephemeral port on
+    /// all IPv4 interfaces — the actual port is written to
+    /// `<config_dir>/amuxd.http.port` so clients can discover it. Use
+    /// `127.0.0.1:0` to restrict to loopback.
     #[serde(default = "default_http_bind")]
     pub bind: String,
     /// Origins allowed by the CORS layer. `*` is rejected; supply
@@ -241,7 +243,7 @@ impl Default for HttpConfig {
 }
 
 fn default_http_bind() -> String {
-    "127.0.0.1:0".into()
+    "0.0.0.0:0".into()
 }
 fn default_session_idle_ttl() -> std::time::Duration {
     std::time::Duration::from_secs(30 * 60)
@@ -1069,6 +1071,11 @@ broker_url = "tcp://localhost:1883"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_config_default_binds_all_interfaces() {
+        assert_eq!(HttpConfig::default().bind, "0.0.0.0:0");
+    }
 
     #[test]
     fn http_section_without_allowed_origins_uses_desktop_defaults() {
