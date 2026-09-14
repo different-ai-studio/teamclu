@@ -10,6 +10,7 @@ import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { listTraces } from './trace-buffer'
+import { scopeDiagnosticContext } from './view'
 import type { DiagnosticContext } from './types'
 
 async function collectCatalog() {
@@ -70,6 +71,7 @@ export async function collectDiagnosticContext(input: {
   auth: DiagnosticContext['auth']
   teamEnv: TeamEnvDiagnostics | null
   runtimeState: RuntimeStateSnapshot | null
+  sessionId?: string | null
 }): Promise<DiagnosticContext> {
   const [catalog, teamLlm] = await Promise.all([collectCatalog(), collectTeamLlm()])
   const outbox = Object.values(useOutboxStore.getState().byId).map((entry) => ({
@@ -81,7 +83,7 @@ export async function collectDiagnosticContext(input: {
     updatedAt: entry.updatedAt,
   }))
 
-  return {
+  const ctx: DiagnosticContext = {
     online: input.online,
     daemon: {
       reachable: input.daemonProbe.ok,
@@ -110,4 +112,5 @@ export async function collectDiagnosticContext(input: {
     runtimeState: input.runtimeState,
     runtimeActivity: collectRuntimeActivity(),
   }
+  return input.sessionId ? scopeDiagnosticContext(ctx, input.sessionId) : ctx
 }

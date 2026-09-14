@@ -1774,6 +1774,8 @@
     "diagnostics": {
       "title": "Diagnostics & Support",
       "description": "Collect connection status and logs to help locate issues",
+      "sessionTitle": "This session",
+      "sessionDescription": "Message delivery is scoped to this session. Model and realtime checks are environment-wide, not session-specific.",
       "privacyNote": "Collects version, connection status, and recent logs (redacted). Nothing is uploaded automatically.",
       "run": "Run Diagnostics",
       "running": "Running diagnostics…",
@@ -1793,7 +1795,17 @@
       "desktopOnlyDetail": "One-click diagnostics requires the TeamClu Desktop client. Install it and try again.",
       "openFromError": "Open Diagnostics",
       "openFromSidebar": "Run diagnostics",
-      "sessionFocus": "Looking at session {{id}}",
+      "sessionFocus": "Message delivery is limited to this session. Model, realtime, and the checks below are environment-wide.",
+      "tab": {
+        "model": "Model",
+        "send": "Replies",
+        "realtime": "Realtime",
+        "all": "All checks",
+        "modelFocused": "Model (global)",
+        "sendFocused": "Replies (this session)",
+        "realtimeFocused": "Realtime (global)",
+        "allFocused": "All checks (global)"
+      },
       "mqttReconnected": "MQTT reconnect requested",
       "mqttReconnectFailed": "Reconnect failed: {{message}}",
       "confirmReloginTitle": "Sign in again?",

@@ -62,6 +62,47 @@ export function tracesForSession(traces: TraceEvent[], sessionId: string): Trace
   return traces.filter((event) => event.sessionId === sessionId)
 }
 
+export function scopeDiagnosticContext<
+  T extends { traces: TraceEvent[]; outbox: Array<{ sessionId: string }> },
+>(ctx: T, sessionId: string): T {
+  return {
+    ...ctx,
+    traces: tracesForSession(ctx.traces, sessionId),
+    outbox: ctx.outbox.filter((entry) => entry.sessionId === sessionId),
+  }
+}
+
+export function findingsForSessionFocus(
+  findings: DiagnosticFinding[],
+  traces: TraceEvent[],
+  sessionId: string,
+): DiagnosticFinding[] {
+  const sessionRawStages = new Set(
+    tracesForSession(traces, sessionId).map((event) => event.rawStage),
+  )
+  const foreignRawStages = new Set(
+    traces
+      .filter((event) => event.sessionId && event.sessionId !== sessionId)
+      .map((event) => event.rawStage),
+  )
+
+  return findings.filter((item) => {
+    if (item.symptom !== 'send') return true
+
+    const evidenceSessionId = item.evidence.find(
+      (entry) => typeof entry.data?.sessionId === 'string',
+    )?.data?.sessionId
+    if (typeof evidenceSessionId === 'string') return evidenceSessionId === sessionId
+
+    const traceSummaries = item.evidence
+      .filter((entry) => entry.source === 'trace')
+      .map((entry) => entry.summary)
+    if (traceSummaries.some((summary) => sessionRawStages.has(summary))) return true
+    if (traceSummaries.some((summary) => foreignRawStages.has(summary))) return false
+    return true
+  })
+}
+
 export function tracesForSymptom(traces: TraceEvent[], symptom: SymptomTab): TraceEvent[] {
   if (symptom === 'send') return traces.filter((event) => SEND_STAGES.has(event.stage))
   if (symptom === 'model') {
