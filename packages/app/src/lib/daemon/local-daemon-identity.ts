@@ -6,6 +6,7 @@ const PERSISTED_LOCAL_DAEMON_ACTOR_KEY = `${appStoragePrefix}-local-daemon-actor
 
 const supersededLocalActorIds = new Set<string>()
 let lastKnownLocalActorId: string | null = null
+const listeners = new Set<() => void>()
 
 function readPersistedLocalDaemonActorId(): string | null {
   try {
@@ -36,12 +37,28 @@ export function noteLocalDaemonActorId(current: string | null): void {
   }
   if (next) {
     const persisted = readPersistedLocalDaemonActorId()
+    const previous = lastKnownLocalActorId ?? persisted
     if (persisted && persisted !== next) {
       markSuperseded(persisted)
     }
     supersededLocalActorIds.delete(next)
     lastKnownLocalActorId = next
     writePersistedLocalDaemonActorId(next)
+    if (previous !== next) {
+      for (const listener of listeners) listener()
+    }
+  }
+}
+
+/**
+ * Called whenever `getKnownLocalDaemonActorId()` changes. The id is not fixed
+ * for the life of the app: amuxd takes a different actor id under each team, so
+ * a copy read once at mount goes stale on the first team switch.
+ */
+export function subscribeLocalDaemonActorId(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
   }
 }
 
