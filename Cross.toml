@@ -1,23 +1,13 @@
-# Used by `cross` when cross-compiling amuxd for Linux arm64 in the
-# release-beta workflow. amuxd pulls in openssl-sys (needs OpenSSL 1.1.0+) and
-# protoc (prost-build). $CROSS_DEB_ARCH resolves to `arm64` for this target.
+# Local / optional `cross` config for aarch64-unknown-linux-gnu.
 #
-# cross 0.2.5's default image is Ubuntu 16.04 whose libssl-dev is OpenSSL 1.0.2
-# — too old for openssl-sys. Pin the modern edge image (Ubuntu 22.04+, OpenSSL
-# 3.x). pre-build installs the arm64 OpenSSL + protoc; the multiarch libs
-# aren't found via pkg-config cross-lookup, so point openssl-sys straight at
-# /usr/lib/aarch64-linux-gnu + /usr/include.
-[target.aarch64-unknown-linux-gnu]
-image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
-pre-build = [
-    "dpkg --add-architecture $CROSS_DEB_ARCH",
-    "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH protobuf-compiler",
-]
-
-[target.aarch64-unknown-linux-gnu.env]
-passthrough = [
-    "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu",
-    # The release channel apps/daemon/build.rs bakes into amuxd.
-    "AMUXD_UPDATE_BASE_URL",
-    "OPENSSL_INCLUDE_DIR=/usr/include",
-]
+# Release CI (`release-oss.yml` → build-amuxd-linux) no longer uses `cross`.
+# It builds on ubuntu-22.04 with `gcc-aarch64-linux-gnu` so the published
+# binary stays at glibc ≤ 2.35 (Debian bookworm / Armbian-compatible).
+#
+# Do NOT point `image` at `ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main`:
+# that image is Ubuntu 24.04 (glibc 2.39) and recreates the bookworm break.
+# If you need `cross` locally, prefer a 22.04-based custom image, or match CI
+# and install `gcc-aarch64-linux-gnu` on an Ubuntu 22.04 host instead.
+#
+# openssl in apps/daemon is `vendored`, so a multiarch libssl-dev:arm64 is
+# not required for the CI path.
