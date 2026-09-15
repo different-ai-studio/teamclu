@@ -1,8 +1,9 @@
 /**
- * Org-scoped role catalog routes.
+ * Org-scoped role catalog + member role assignment routes.
  *
  * Design: docs/specs/2026-09-15-org-roles-permissions-design.md §2.1
- * Authz lives in the repository (owner/admin, system immutable, binding 409).
+ * Authz lives in the repository (owner/admin, system immutable, binding 409,
+ * admin-cannot-touch-owner, last-owner 409).
  */
 
 export function registerOrgRoles(router) {
@@ -28,5 +29,23 @@ export function registerOrgRoles(router) {
   router.delete("/v1/teams/:teamId/roles/:roleId", async (ctx) => {
     await ctx.repository.deleteOrgRole(ctx.params.teamId, ctx.params.roleId);
     return { statusCode: 204, body: null };
+  });
+
+  router.get("/v1/teams/:teamId/members/:actorId/roles", async (ctx) => {
+    const items = await ctx.repository.listMemberRoles(
+      ctx.params.teamId,
+      ctx.params.actorId,
+    );
+    return { body: { items } };
+  });
+
+  router.put("/v1/teams/:teamId/members/:actorId/roles", async (ctx) => {
+    const roleIds = ctx.json?.roleIds;
+    const items = await ctx.repository.putMemberRoles(
+      ctx.params.teamId,
+      ctx.params.actorId,
+      roleIds ?? [],
+    );
+    return { body: { items } };
   });
 }

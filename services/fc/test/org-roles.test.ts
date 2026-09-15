@@ -12,12 +12,21 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { handleBusinessApiRequest } from "../src/lib/business-api.js";
 import { ApiError } from "../src/lib/http-utils.js";
-import { makeOrgRolesRepo } from "../src/lib/supabase-repo/org-roles.js";
+import {
+  assignSystemOrgRole,
+  deriveHighestTeamRole,
+  makeOrgRolesRepo,
+} from "../src/lib/supabase-repo/org-roles.js";
 
 const TEAM = "11111111-1111-1111-1111-111111111111";
 const ORG = "22222222-2222-2222-2222-222222222222";
 const SYSTEM_ROLE = "33333333-3333-3333-3333-333333333333";
+const ADMIN_ROLE = "33333333-3333-3333-3333-333333333334";
+const MEMBER_ROLE = "33333333-3333-3333-3333-333333333335";
 const CUSTOM_ROLE = "44444444-4444-4444-4444-444444444444";
+const ACTOR = "55555555-5555-5555-5555-555555555555";
+const USER = "66666666-6666-6666-6666-666666666666";
+const OTHER_USER = "77777777-7777-7777-7777-777777777777";
 
 const SYSTEM_ITEMS = [
   {
@@ -100,6 +109,13 @@ function fakeRepo(overrides: Record<string, unknown> = {}) {
       parentRoleId: null,
     }),
     deleteOrgRole: record("deleteOrgRole"),
+    listMemberRoles: record("listMemberRoles", [
+      { id: MEMBER_ROLE, code: "member", name: "成员" },
+    ]),
+    putMemberRoles: record("putMemberRoles", [
+      { id: ADMIN_ROLE, code: "admin", name: "管理员" },
+      { id: MEMBER_ROLE, code: "member", name: "成员" },
+    ]),
     listTeamRoles: record("listTeamRoles", [{ id: "sr-1", teamId: TEAM, code: "admin", name: "Admin" }]),
     ...overrides,
   };
@@ -209,6 +225,40 @@ describe("org roles routes", () => {
     assert.equal(res.statusCode, 200);
     assert.deepEqual(repo.calls[0], { method: "listTeamRoles", args: [TEAM] });
   });
+
+  test("GET /v1/teams/:teamId/members/:actorId/roles lists member roles", async () => {
+    const repo = fakeRepo();
+    const res = await request(
+      { httpMethod: "GET", path: `/v1/teams/${TEAM}/members/${ACTOR}/roles` },
+      repo,
+    );
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.items[0].code, "member");
+    assert.deepEqual(repo.calls[0], { method: "listMemberRoles", args: [TEAM, ACTOR] });
+  });
+
+  test("PUT /v1/teams/:teamId/members/:actorId/roles replaces role set", async () => {
+    const repo = fakeRepo();
+    const res = await request(
+      {
+        httpMethod: "PUT",
+        path: `/v1/teams/${TEAM}/members/${ACTOR}/roles`,
+        body: JSON.stringify({ roleIds: [ADMIN_ROLE, MEMBER_ROLE] }),
+      },
+      repo,
+    );
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(
+      body.items.map((r: { code: string }) => r.code).sort(),
+      ["admin", "member"],
+    );
+    assert.deepEqual(repo.calls[0], {
+      method: "putMemberRoles",
+      args: [TEAM, ACTOR, [ADMIN_ROLE, MEMBER_ROLE]],
+    });
+  });
 });
 
 // ── Repository authz (in-memory supabase stub) ──────────────────────────────
@@ -225,14 +275,149 @@ type RoleRow = {
   parent_role_id: string | null;
 };
 
+type BindingRow = {
+  id: string;
+  user_id: string;
+  role_id: string;
+  org_id: string;
+  status: string;
+  store_id: string | null;
+};
+
 function makeStubHost(opts: {
   teamRole: string | null;
   roles: RoleRow[];
+  bindings?: BindingRow[];
+  /** When set, deleteOrgRole binding count uses this instead of bindings.length. */
   bindingCount?: number;
   member?: boolean;
+  actorUserId?: string | null;
 }) {
-  const roles = [...opts.roles];
-  let bindingCount = opts.bindingCount ?? 0;
+  const roles = opts.roles.map((r) => ({ ...r }));
+  const bindings: BindingRow[] = (opts.bindings ?? []).map((b) => ({ ...b }));
+  let bindingCountOverride = opts.bindingCount;
+  const actorUserId = opts.actorUserId === undefined ? USER : opts.actorUserId;
+
+  type Filter = { col: string; val: unknown; op?: string };
+
+  function matchRoleFilters(row: RoleRow, filters: Filter[]) {
+    return filters.every((f) => {
+      if (f.op === "in") return (f.val as string[]).includes((row as any)[f.col]);
+      return (row as any)[f.col] === f.val;
+    });
+  }
+
+  function matchBindingFilters(row: BindingRow, filters: Filter[]) {
+    return filters.every((f) => {
+      if (f.op === "in") return (f.val as string[]).includes((row as any)[f.col]);
+      if (f.op === "neq") return (row as any)[f.col] !== f.val;
+      if (f.op === "is" && f.val === null) return (row as any)[f.col] == null;
+      return (row as any)[f.col] === f.val;
+    });
+  }
+
+  function rolesQuery() {
+    const filters: Filter[] = [];
+    const api: any = {
+      select() {
+        return api;
+      },
+      eq(col: string, val: unknown) {
+        filters.push({ col, val });
+        return api;
+      },
+      in(col: string, vals: string[]) {
+        filters.push({ col, val: vals, op: "in" });
+        return api;
+      },
+      order: async () => ({
+        data: roles.filter((r) => matchRoleFilters(r, filters)),
+        error: null,
+      }),
+      maybeSingle: async () => ({
+        data: roles.find((r) => matchRoleFilters(r, filters)) ?? null,
+        error: null,
+      }),
+      single: async () => {
+        const row = roles.find((r) => matchRoleFilters(r, filters)) ?? null;
+        return { data: row, error: null };
+      },
+      then(resolve: (v: unknown) => void) {
+        return Promise.resolve({
+          data: roles.filter((r) => matchRoleFilters(r, filters)),
+          error: null,
+        }).then(resolve);
+      },
+    };
+    return api;
+  }
+
+  function rolesUsersQuery(mode: "select" | "delete" | "insert", payload?: any) {
+    if (mode === "insert") {
+      const row: BindingRow = {
+        id: `ru-${bindings.length + 1}`,
+        user_id: payload.user_id,
+        role_id: payload.role_id,
+        org_id: payload.org_id,
+        status: payload.status ?? "active",
+        store_id: payload.store_id ?? null,
+      };
+      bindings.push(row);
+      return {
+        select() {
+          return { single: async () => ({ data: row, error: null }) };
+        },
+        then(resolve: (v: unknown) => void) {
+          return Promise.resolve({ data: row, error: null }).then(resolve);
+        },
+      };
+    }
+
+    const filters: Filter[] = [];
+    const api: any = {
+      select(_cols?: string, selOpts?: { count?: string; head?: boolean }) {
+        api._countHead = Boolean(selOpts?.count && selOpts?.head);
+        return api;
+      },
+      eq(col: string, val: unknown) {
+        filters.push({ col, val });
+        return api;
+      },
+      neq(col: string, val: unknown) {
+        filters.push({ col, val, op: "neq" });
+        return api;
+      },
+      in(col: string, vals: string[]) {
+        filters.push({ col, val: vals, op: "in" });
+        return api;
+      },
+      is(col: string, val: unknown) {
+        filters.push({ col, val, op: "is" });
+        return api;
+      },
+      maybeSingle: async () => ({
+        data: bindings.find((b) => matchBindingFilters(b, filters)) ?? null,
+        error: null,
+      }),
+      then(resolve: (v: unknown) => void) {
+        const matched = bindings.filter((b) => matchBindingFilters(b, filters));
+        if (mode === "delete") {
+          for (const b of matched) {
+            const idx = bindings.indexOf(b);
+            if (idx >= 0) bindings.splice(idx, 1);
+          }
+          return Promise.resolve({ error: null }).then(resolve);
+        }
+        if (api._countHead) {
+          const count =
+            bindingCountOverride !== undefined ? bindingCountOverride : matched.length;
+          return Promise.resolve({ count, error: null, data: null }).then(resolve);
+        }
+        return Promise.resolve({ data: matched, error: null }).then(resolve);
+      },
+    };
+    return api;
+  }
 
   const supabase = {
     async rpc(name: string, args: Record<string, unknown>) {
@@ -256,28 +441,34 @@ function makeStubHost(opts: {
           },
         };
       }
-      if (table === "roles") {
+      if (table === "actors") {
         return {
           select() {
             return {
-              eq(_col: string, val: string) {
-                const filtered = roles.filter((r) => r.org_id === val || r.id === val);
+              eq(_c1: string, id: string) {
                 return {
-                  order: async () => ({ data: filtered.filter((r) => r.org_id === ORG), error: null }),
-                  maybeSingle: async () => ({
-                    data: roles.find((r) => r.id === val && r.org_id === ORG) ?? null,
-                    error: null,
-                  }),
-                  // chained .eq(id).eq(org) for load
-                  eq(_c2: string, v2: string) {
-                    const row = roles.find((r) => r.id === val && r.org_id === v2) ?? null;
+                  eq(_c2: string, teamId: string) {
+                    assert.equal(teamId, TEAM);
                     return {
-                      maybeSingle: async () => ({ data: row, error: null }),
+                      maybeSingle: async () => ({
+                        data:
+                          id === ACTOR
+                            ? { id: ACTOR, user_id: actorUserId, actor_type: "member" }
+                            : null,
+                        error: null,
+                      }),
                     };
                   },
                 };
               },
             };
+          },
+        };
+      }
+      if (table === "roles") {
+        return {
+          select() {
+            return rolesQuery();
           },
           insert(payload: Record<string, unknown>) {
             const row: RoleRow = {
@@ -301,49 +492,52 @@ function makeStubHost(opts: {
             };
           },
           update(patch: Record<string, unknown>) {
-            return {
-              eq(_c: string, id: string) {
+            const filters: Filter[] = [];
+            const api: any = {
+              eq(col: string, val: unknown) {
+                filters.push({ col, val });
+                return api;
+              },
+              select() {
                 return {
-                  eq(_c2: string, orgId: string) {
-                    const row = roles.find((r) => r.id === id && r.org_id === orgId);
+                  single: async () => {
+                    const row = roles.find((r) => matchRoleFilters(r, filters));
                     if (row) Object.assign(row, patch);
-                    return {
-                      select() {
-                        return {
-                          single: async () => ({ data: row, error: null }),
-                        };
-                      },
-                    };
+                    return { data: row, error: null };
                   },
                 };
               },
             };
+            return api;
           },
           delete() {
-            return {
-              eq(_c: string, id: string) {
-                return {
-                  eq: async (_c2: string, orgId: string) => {
-                    const idx = roles.findIndex((r) => r.id === id && r.org_id === orgId);
-                    if (idx >= 0) roles.splice(idx, 1);
-                    return { error: null };
-                  },
-                };
+            const filters: Filter[] = [];
+            const api: any = {
+              eq(col: string, val: unknown) {
+                filters.push({ col, val });
+                return api;
+              },
+              then(resolve: (v: unknown) => void) {
+                const idx = roles.findIndex((r) => matchRoleFilters(r, filters));
+                if (idx >= 0) roles.splice(idx, 1);
+                return Promise.resolve({ error: null }).then(resolve);
               },
             };
+            return api;
           },
         };
       }
       if (table === "roles_users") {
         return {
-          select(_cols: string, opts?: { count?: string; head?: boolean }) {
-            return {
-              eq: async () => ({
-                count: bindingCount,
-                error: null,
-                data: null,
-              }),
-            };
+          select(cols?: string, selOpts?: { count?: string; head?: boolean }) {
+            const q = rolesUsersQuery("select");
+            return q.select(cols, selOpts);
+          },
+          insert(payload: Record<string, unknown>) {
+            return rolesUsersQuery("insert", payload);
+          },
+          delete() {
+            return rolesUsersQuery("delete");
           },
         };
       }
@@ -356,8 +550,9 @@ function makeStubHost(opts: {
     resolveCallerActorForTeam: async () =>
       opts.member === false ? null : { id: "actor-1" },
     _roles: roles,
+    _bindings: bindings,
     setBindingCount(n: number) {
-      bindingCount = n;
+      bindingCountOverride = n;
     },
   };
 }
@@ -374,6 +569,30 @@ const seededSystem: RoleRow = {
   parent_role_id: null,
 };
 
+const seededAdmin: RoleRow = {
+  id: ADMIN_ROLE,
+  org_id: ORG,
+  name: "管理员",
+  code: "admin",
+  description: "系统角色：管理员",
+  is_system: true,
+  status: "active",
+  sort: 20,
+  parent_role_id: null,
+};
+
+const seededMember: RoleRow = {
+  id: MEMBER_ROLE,
+  org_id: ORG,
+  name: "成员",
+  code: "member",
+  description: "系统角色：成员",
+  is_system: true,
+  status: "active",
+  sort: 30,
+  parent_role_id: null,
+};
+
 const seededCustom: RoleRow = {
   id: CUSTOM_ROLE,
   org_id: ORG,
@@ -385,6 +604,8 @@ const seededCustom: RoleRow = {
   sort: 50,
   parent_role_id: null,
 };
+
+const systemCatalog = [seededSystem, seededAdmin, seededMember];
 
 describe("makeOrgRolesRepo", () => {
   test("listOrgRoles returns seeded system roles for a member", async () => {
@@ -465,5 +686,167 @@ describe("makeOrgRolesRepo", () => {
         return true;
       },
     );
+  });
+
+  test("putMemberRoles replaces the active set", async () => {
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: systemCatalog,
+      bindings: [
+        {
+          id: "ru-1",
+          user_id: USER,
+          role_id: MEMBER_ROLE,
+          org_id: ORG,
+          status: "active",
+          store_id: null,
+        },
+      ],
+    });
+    const repo = makeOrgRolesRepo(host);
+    const items = await repo.putMemberRoles(TEAM, ACTOR, [ADMIN_ROLE, MEMBER_ROLE]);
+    assert.deepEqual(items.map((r) => r.code).sort(), ["admin", "member"]);
+    assert.equal(host._bindings.length, 2);
+    assert.ok(host._bindings.every((b) => b.user_id === USER));
+  });
+
+  test("putMemberRoles: admin cannot grant owner → 403", async () => {
+    const host = makeStubHost({
+      teamRole: "admin",
+      roles: systemCatalog,
+      bindings: [
+        {
+          id: "ru-1",
+          user_id: USER,
+          role_id: MEMBER_ROLE,
+          org_id: ORG,
+          status: "active",
+          store_id: null,
+        },
+      ],
+    });
+    const repo = makeOrgRolesRepo(host);
+    await assert.rejects(
+      () => repo.putMemberRoles(TEAM, ACTOR, [SYSTEM_ROLE, MEMBER_ROLE]),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError);
+        assert.equal(err.statusCode, 403);
+        assert.match(err.message, /owner/i);
+        return true;
+      },
+    );
+  });
+
+  test("putMemberRoles: admin cannot revoke owner → 403", async () => {
+    const host = makeStubHost({
+      teamRole: "admin",
+      roles: systemCatalog,
+      bindings: [
+        {
+          id: "ru-1",
+          user_id: USER,
+          role_id: SYSTEM_ROLE,
+          org_id: ORG,
+          status: "active",
+          store_id: null,
+        },
+      ],
+    });
+    const repo = makeOrgRolesRepo(host);
+    await assert.rejects(
+      () => repo.putMemberRoles(TEAM, ACTOR, [MEMBER_ROLE]),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError);
+        assert.equal(err.statusCode, 403);
+        return true;
+      },
+    );
+  });
+
+  test("putMemberRoles: removing last owner → 409", async () => {
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: systemCatalog,
+      bindings: [
+        {
+          id: "ru-1",
+          user_id: USER,
+          role_id: SYSTEM_ROLE,
+          org_id: ORG,
+          status: "active",
+          store_id: null,
+        },
+      ],
+    });
+    const repo = makeOrgRolesRepo(host);
+    await assert.rejects(
+      () => repo.putMemberRoles(TEAM, ACTOR, [MEMBER_ROLE]),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError);
+        assert.equal(err.statusCode, 409);
+        assert.match(err.message, /last owner/i);
+        return true;
+      },
+    );
+  });
+
+  test("putMemberRoles: owner can revoke when another owner remains", async () => {
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: systemCatalog,
+      bindings: [
+        {
+          id: "ru-1",
+          user_id: USER,
+          role_id: SYSTEM_ROLE,
+          org_id: ORG,
+          status: "active",
+          store_id: null,
+        },
+        {
+          id: "ru-2",
+          user_id: OTHER_USER,
+          role_id: SYSTEM_ROLE,
+          org_id: ORG,
+          status: "active",
+          store_id: null,
+        },
+      ],
+    });
+    const repo = makeOrgRolesRepo(host);
+    const items = await repo.putMemberRoles(TEAM, ACTOR, [MEMBER_ROLE]);
+    assert.deepEqual(items.map((r) => r.code), ["member"]);
+    assert.equal(
+      host._bindings.filter((b) => b.role_id === SYSTEM_ROLE).length,
+      1,
+    );
+  });
+
+  test("assignSystemOrgRole inserts member binding (invite claim path)", async () => {
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: systemCatalog,
+      bindings: [],
+    });
+    await assignSystemOrgRole(host.supabase, {
+      teamId: TEAM,
+      userId: USER,
+      code: "member",
+    });
+    assert.equal(host._bindings.length, 1);
+    assert.equal(host._bindings[0].role_id, MEMBER_ROLE);
+    assert.equal(host._bindings[0].user_id, USER);
+    assert.equal(host._bindings[0].org_id, ORG);
+  });
+
+  test("deriveHighestTeamRole prefers owner > admin > finance > member", () => {
+    assert.equal(
+      deriveHighestTeamRole([
+        { id: MEMBER_ROLE, code: "member", name: "成员" },
+        { id: ADMIN_ROLE, code: "admin", name: "管理员" },
+      ]),
+      "admin",
+    );
+    assert.equal(deriveHighestTeamRole([]), null);
   });
 });

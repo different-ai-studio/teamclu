@@ -8,6 +8,7 @@ import { createPhoneAuthRepository } from "./phone-auth.js";
 import { makeDysmsSender } from "../sms.js";
 
 import { REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger } from "./shared.js";
+import { assignSystemOrgRole } from "./org-roles.js";
 
 // Both pending-invite RPCs guard by visibility: an invite not addressed to the
 // caller's verified contact raises 23503 exactly like a nonexistent id, so a
@@ -114,13 +115,26 @@ export function createSupabaseAuthRepository(options) {
         throw new ApiError(400, "validation_failed", msg);
       }
       const row = requiredRow(data, "auth.claimInvite");
-      return {
+      const result = {
         actorId: requiredString(row.actor_id, "auth.claimInvite", "actor_id"),
         teamId: requiredString(row.team_id, "auth.claimInvite", "team_id"),
         actorType: requiredString(row.actor_type, "auth.claimInvite", "actor_type"),
         displayName: requiredString(row.display_name, "auth.claimInvite", "display_name"),
         refreshToken: row.refresh_token ?? null,
       };
+      // Member invites: write roles_users (authz SoT). Agents have no public.users row.
+      if (result.actorType === "member" && ctx.accessToken) {
+        const { data: userData } = await client.auth.getUser();
+        const userId = userData?.user?.id;
+        if (userId) {
+          await assignSystemOrgRole(client, {
+            teamId: result.teamId,
+            userId,
+            code: "member",
+          });
+        }
+      }
+      return result;
     },
 
     // Invites addressed to the caller's verified email/phone. Lives here rather
@@ -151,13 +165,25 @@ export function createSupabaseAuthRepository(options) {
       const { data, error } = await client.rpc("accept_pending_invite", { p_invite_id: inviteId });
       if (error) throw mapPendingInviteError(error, "accept_pending_invite failed");
       const row = requiredRow(data, "auth.acceptPendingInvite");
-      return {
+      const result = {
         actorId: requiredString(row.actor_id, "auth.acceptPendingInvite", "actor_id"),
         teamId: requiredString(row.team_id, "auth.acceptPendingInvite", "team_id"),
         actorType: requiredString(row.actor_type, "auth.acceptPendingInvite", "actor_type"),
         displayName: requiredString(row.display_name, "auth.acceptPendingInvite", "display_name"),
         refreshToken: row.refresh_token ?? null,
       };
+      if (result.actorType === "member" && ctx.accessToken) {
+        const { data: userData } = await client.auth.getUser();
+        const userId = userData?.user?.id;
+        if (userId) {
+          await assignSystemOrgRole(client, {
+            teamId: result.teamId,
+            userId,
+            code: "member",
+          });
+        }
+      }
+      return result;
     },
 
     async declinePendingInvite(inviteId, ctx: { accessToken?: string } = {}) {
