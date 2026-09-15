@@ -1028,7 +1028,7 @@
     }
   },
   "workspace": {
-    "daemonUnavailableHint": "请在本机启动 amuxd（例如 pnpm daemon:run），确认 ~/.amuxd/ 下已写入 HTTP port/token 文件后重试。",
+    "daemonUnavailableHint": "请在本机启动 amuxd（例如 pnpm daemon:run），确认 {{path}} 下已写入 HTTP port/token 文件后重试。",
     "runtimeRefresh": {
       "pendingTitle": "工作区配置已更新",
       "failedTitle": "运行时配置读取失败",
@@ -1854,7 +1854,7 @@
       },
       "resetRemediation": {
         "title": "建议重置本地 daemon",
-        "description": "以下问题通常可通过清除本机 daemon 绑定并重新初始化解决。团队共享目录（~/.amuxd/teams/）不会受影响。",
+        "description": "以下问题通常可通过清除本机 daemon 绑定并重新初始化解决。团队共享目录（{{path}}）不会受影响。",
         "action": "重置本地 daemon",
         "confirmTitle": "重置本地 daemon？",
         "confirmDescription": "将清除本机 daemon 的身份与配置文件，之后需要重新绑定 agent。团队共享文件不会删除。",
@@ -2067,7 +2067,7 @@
       "forceReloadDone": "运行时已重载",
       "manualReset": {
         "title": "疑难问题排查",
-        "description": "若本机 daemon 状态异常且其他方式无法恢复，可清除本地绑定并重新初始化。团队共享目录（~/.amuxd/teams/）不会删除。",
+        "description": "若本机 daemon 状态异常且其他方式无法恢复，可清除本地绑定并重新初始化。团队共享目录（{{path}}）不会删除。",
         "action": "重置本地 daemon",
         "confirmTitle": "重置本地 daemon？",
         "confirmDescription": "将删除本机 daemon 的身份与配置文件（daemon.toml、backend.toml 等），之后需要重新绑定 agent。请输入 RESET 确认。",
@@ -2088,22 +2088,22 @@
         "start-daemon": "本地服务还在启动中。",
         "install-runtime": "正在下载 Node.js 与 pi。Windows 上可能需要几分钟——杀毒软件会逐个扫描写入的文件。",
         "mint-invite": "正在等服务器响应，检查一下网络连接。",
-        "init-daemon": "正在往 ~/.amuxd 写入凭证。",
+        "init-daemon": "正在往 {{path}} 写入凭证。",
         "restart-daemon": "正在等上一个进程退出。",
         "await-daemon": "服务已启动，但还没有响应。",
         "cloud-auth": "正在向服务器验证这台机器。"
       },
       "recovery": {
-        "start-daemon": "本地服务一直没起来，拿不到本机 ID。看看 ~/.amuxd/logs/amuxd.managed.log。",
+        "start-daemon": "本地服务一直没起来，拿不到本机 ID。看看 {{path}}。",
         "install-runtime": "运行时安装失败。检查网络后重试——下载来源是 nodejs.org 与 npm，中国大陆有镜像。",
         "mint-invite": "连不上服务器。检查网络后重试。",
         "init-daemon": "凭证没能写入。重置可以清掉写了一半的状态。",
         "restart-daemon": "本地服务没能重启。重置可以清掉写了一半的状态。",
-        "await-daemon": "服务起来了但一直没响应，看看 ~/.amuxd/logs/amuxd.managed.log。",
+        "await-daemon": "服务起来了但一直没响应，看看 {{path}}。",
         "cloud-auth": "这台机器没能通过服务器验证。",
         "daemon-outdated": "本机的 daemon 比应用旧，报不出运行时状态。要换一个版本匹配的 daemon 重启应用——对着同一个二进制重试不会有任何变化。"
       },
-      "runtimeStillMissing": "运行时已安装，但仍未报告就绪。查看 ~/.amuxd/logs/amuxd.managed.log。",
+      "runtimeStillMissing": "运行时已安装，但仍未报告就绪。查看 {{path}}。",
       "daemonOutdated": "本机 daemon（amuxd {{found}}）比这个应用（{{required}}）旧，报不出运行时是否就绪。请重装应用；开发环境下重启 `pnpm tauri:dev` 即可重新构建随包的 daemon。",
       "daemonOutdatedUnknownVersion": "本机 daemon 比这个应用旧，报不出运行时是否就绪。请重装应用；开发环境下重启 `pnpm tauri:dev` 即可重新构建随包的 daemon。",
       "probing": "正在检测哪个下载源最快…",
@@ -2113,7 +2113,7 @@
       "routeSelfHosted": "我们自己的镜像",
       "routeCustom": "你配置的 registry",
       "elapsed": "仍在进行——已用 {{seconds}} 秒",
-      "stuckHint": "比预期慢。细节看 ~/.amuxd/logs/amuxd.managed.log。",
+      "stuckHint": "比预期慢。细节看 {{path}}。",
       "errorAtStep": "卡在这一步：{{step}}",
       "reconnect": "重新连接",
       "doneTitle": "这台机器已就绪",
@@ -2133,7 +2133,7 @@
       "retrying": "重试中…",
       "retry": "重试",
       "resetReinit": "重置并重新初始化",
-      "resetIncomplete": "重置未生效：本机仍绑定在团队 {{teamId}} 上。请查看 ~/.amuxd/logs/amuxd.managed.log。"
+      "resetIncomplete": "重置未生效：本机仍绑定在团队 {{teamId}} 上。请查看 {{path}}。"
     },
     "daemonWorkspaces": {
       "current": "当前",
@@ -3713,7 +3713,7 @@
       "providerError": "模型服务返回错误，请重试或切换模型。"
     },
     "connection": {
-      "portFileMissing": "amuxd daemon 未连接：HTTP 控制面未就绪（~/.amuxd/run/amuxd.http.port 不存在）。请重启 amuxd，或确认运行的是本分支构建的版本。",
+      "portFileMissing": "amuxd daemon 未连接：HTTP 控制面未就绪（{{path}} 不存在）。请重启 amuxd，或确认运行的是本分支构建的版本。",
       "tokenExchangeFailed": "amuxd daemon HTTP 已启动但鉴权失败：请重启 amuxd 后重试。",
       "healthCheckFailed": "amuxd daemon HTTP 无响应：请确认 amuxd 进程仍在运行。",
       "notConnected": "amuxd daemon 未连接：请确认 amuxd 已启动且 HTTP 控制面可用"

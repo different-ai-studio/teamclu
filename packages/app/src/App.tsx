@@ -7,6 +7,7 @@ import { capabilities } from "@/lib/config/platform";
 import { isSoloBuild } from "@/lib/config/solo-build";
 import { scheduleReleaseStuckModalLayers } from "@/lib/ui/modal-layer-cleanup";
 import { appDisplayName } from "@/lib/config/build-config";
+import { daemonHomeDisplayPath } from "@/lib/daemon/daemon-paths";
 import { parseSessionDeeplink } from "@/lib/session/session-deeplink";
 import { markStartup } from "@/lib/telemetry/startup-perf";
 import { BookOpen, ChevronLeft, X, PanelRightClose, Loader2, RotateCw, MessageSquarePlus, AppWindow, Users, SlidersHorizontal } from "lucide-react";
@@ -262,10 +263,11 @@ function AppContent() {
       toast.error(openCodeError, {
         id: DAEMON_TOAST_ID,
         duration: Infinity,
-        description: t(
-          "workspace.daemonUnavailableHint",
-          "Start amuxd on this machine (e.g. pnpm daemon:run), confirm the HTTP port/token files exist under ~/.amuxd/, then retry.",
-        ),
+        description: t("workspace.daemonUnavailableHint", {
+          path: daemonHomeDisplayPath,
+          defaultValue:
+            "Start amuxd on this machine (e.g. pnpm daemon:run), confirm the HTTP port/token files exist under {{path}}, then retry.",
+        }),
         action: {
           label: t("common.retry", "Retry"),
           onClick: () => window.location.reload(),

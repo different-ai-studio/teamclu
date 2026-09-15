@@ -12,6 +12,10 @@ import {
 import { useSetupStore, type InstallRoute } from '@/stores/setup'
 import { useElapsedSeconds } from '@/hooks/use-elapsed-seconds'
 import { useShallow } from 'zustand/react/shallow'
+import {
+  daemonHomeDisplayPath,
+  daemonManagedLogDisplayPath,
+} from '@/lib/daemon/daemon-paths'
 
 /**
  * What to call each source amuxd can install the runtime from. The
@@ -279,16 +283,18 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
             </span>
             {step && (
               <span className="text-[11.5px] leading-4 text-faint">
-                {t(`settings.daemonOnboarding.slowHint.${step}`, '')}
+                {t(`settings.daemonOnboarding.slowHint.${step}`, {
+                  path: daemonHomeDisplayPath,
+                })}
               </span>
             )}
             {elapsed * 1000 >= STUCK_HINT_MS && (
               <>
                 <span className="text-[11.5px] leading-4 text-faint">
-                  {t(
-                    'settings.daemonOnboarding.stuckHint',
-                    'Taking longer than expected. Check ~/.amuxd/amuxd.managed.log for details.',
-                  )}
+                  {t('settings.daemonOnboarding.stuckHint', {
+                    path: daemonManagedLogDisplayPath,
+                    defaultValue: 'Taking longer than expected. Check {{path}} for details.',
+                  })}
                 </span>
                 <Button
                   variant="outline"
@@ -331,7 +337,9 @@ export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
                 'The daemon on this machine is older than the app and cannot report the runtime. Restarting the app with a matching daemon is the fix — a retry against the same one will not help.',
               )
             : failedStep
-              ? t(`settings.daemonOnboarding.recovery.${failedStep}`, '')
+              ? t(`settings.daemonOnboarding.recovery.${failedStep}`, {
+                  path: daemonManagedLogDisplayPath,
+                })
               : t(
                   'settings.daemonOnboarding.errorSubtitle',
                   'Nothing was left half-configured — retrying is safe.',

@@ -51,6 +51,7 @@
 
 mod apps;
 mod caller;
+mod confirm;
 
 pub const INTROSPECT_API_PORT: u16 = 13144;
 
@@ -787,6 +788,11 @@ async fn handle_mcp_put(app: &AppHandle, body: &[u8]) -> Result<String, String> 
     if !servers.is_object() {
         return Err("servers must be a JSON object".to_string());
     }
+    confirm::confirm_with_user(
+        app,
+        confirm::mcp_servers_replace(super::prefers_zh_locale(), &workspace, servers),
+    )
+    .await?;
     let result = super::daemon_http::put_mcp_via_daemon(&workspace, servers).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }

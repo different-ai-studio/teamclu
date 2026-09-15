@@ -17,6 +17,7 @@ import {
   readDaemonOnboardingIdentity,
   writeDaemonOnboardingIdentity,
 } from '@/lib/daemon/daemon-onboarding-identity'
+import { daemonManagedLogDisplayPath } from '@/lib/daemon/daemon-paths'
 import { useAuthStore } from '@/stores/auth-store'
 
 /**
@@ -118,10 +119,11 @@ async function ensureRuntimeReady(): Promise<boolean> {
       await useSetupStore.getState().listRequirements()
       if (runtimeMissing()) {
         throw new Error(
-          i18n.t(
-            'settings.daemonOnboarding.runtimeStillMissing',
-            'The runtime was installed but still does not report as ready. See ~/.amuxd/logs/amuxd.managed.log.',
-          ),
+          i18n.t('settings.daemonOnboarding.runtimeStillMissing', {
+            path: daemonManagedLogDisplayPath,
+            defaultValue:
+              'The runtime was installed but still does not report as ready. See {{path}}.',
+          }),
         )
       }
     })
@@ -782,11 +784,12 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       const stillBound = await daemonTeamId()
       if (stillBound) {
         set({
-          error: i18n.t(
-            'settings.daemonOnboarding.resetIncomplete',
-            'Reset did not take effect: this machine is still bound to team {{teamId}}. Check ~/.amuxd/amuxd.managed.log.',
-            { teamId: stillBound },
-          ),
+          error: i18n.t('settings.daemonOnboarding.resetIncomplete', {
+            teamId: stillBound,
+            path: daemonManagedLogDisplayPath,
+            defaultValue:
+              'Reset did not take effect: this machine is still bound to team {{teamId}}. Check {{path}}.',
+          }),
         })
         return
       }
