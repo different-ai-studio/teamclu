@@ -3279,7 +3279,6 @@
     "fieldPath": "知识库路径",
     "fieldTitle": "标题",
     "fromSession": "来自会话 {{id}}",
-    "fromUnknown": "来自本机草稿",
     "headerAction": "整理到知识库",
     "kicker": "审稿",
     "later": "稍后",
@@ -3292,7 +3291,10 @@
     "savedLocalOnly": "已写入本机，当前没有同步到团队",
     "tabLabel": "审稿",
     "title": "写入知识库前先看一遍",
-    "untitled": "未命名"
+    "untitled": "未命名",
+    "distillHint": "这是从会话里提炼的建议，不是聊天全文。勾选要留下的条目，再写入。",
+    "suggestions": "提炼建议",
+    "rewriteBody": "按所选建议重写正文"
   },
   "knowledgeSync": {
     "groupConflict": "待决策",

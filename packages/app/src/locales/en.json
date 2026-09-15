@@ -3279,7 +3279,6 @@
     "fieldPath": "Knowledge path",
     "fieldTitle": "Title",
     "fromSession": "From session {{id}}",
-    "fromUnknown": "From a local draft",
     "headerAction": "Save to knowledge",
     "kicker": "Review",
     "later": "Later",
@@ -3292,7 +3291,10 @@
     "savedLocalOnly": "Saved on this machine; not synced to the team yet",
     "tabLabel": "Review",
     "title": "Review before writing to knowledge",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "distillHint": "Suggestions distilled from the session — not the full chat. Select what to keep, then write.",
+    "suggestions": "Distilled suggestions",
+    "rewriteBody": "Rewrite body from selected suggestions"
   },
   "knowledgeSync": {
     "groupConflict": "Needs a decision",

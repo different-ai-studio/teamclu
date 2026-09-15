@@ -4220,6 +4220,9 @@ pub(crate) mod tests {
         // lookup stage, which then fails against the unmocked
         // `/v1/sessions/...` route — demonstrating the resolver supplied
         // the path.
+        let cloud_ws = std::path::Path::new("/tmp/cloud-ws");
+        let _ = std::fs::create_dir_all(cloud_ws);
+
         let srv = MockServer::start().await;
         auth_token_mock(&srv).await;
         Mock::given(method("POST"))
