@@ -67,7 +67,7 @@ describe('BillingSection top-up', () => {
     render(<BillingSection />)
     await screen.findByText('Starter')
     // Credits are shown in points, and the price in its own currency.
-    expect(screen.getByText('10,000 points')).toBeTruthy()
+    expect(screen.getByText('1,000 points')).toBeTruthy()
     expect(screen.getByText(/99\.00/)).toBeTruthy()
 
     fireEvent.click(screen.getByText('Buy'))

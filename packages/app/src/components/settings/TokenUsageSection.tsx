@@ -3,15 +3,11 @@ import { useTranslation } from 'react-i18next'
 import { Loader2, AlertTriangle, Coins, ChevronLeft, ChevronRight, Trophy } from 'lucide-react'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { formatPoints } from '@/lib/ui/credit-points'
 import { formatTokenCount } from '@/lib/ui/format-tokens'
 import { cn } from '@/lib/utils'
 import type { TFunction } from 'i18next'
-import type { CreditUsageReport, CreditUsageRange } from '@/lib/backend/types'
-
-/** Points, the display unit for credits. Matches BillingSection. */
-const POINTS_PER_CREDIT = 10_000
-const fmtPoints = (credits: number) =>
-  (credits / POINTS_PER_CREDIT).toLocaleString(undefined, { maximumFractionDigits: 0 })
+import type { CreditUsageReport, CreditUsageRange, TeamQuotas } from '@/lib/backend/types'
 
 /**
  * The date this deployment began recording usage. Periods that start before it
@@ -23,6 +19,14 @@ const fmtPoints = (credits: number) =>
 const STATS_START_UTC = import.meta.env.VITE_USAGE_STATS_START ?? ''
 
 const RANGES: CreditUsageRange[] = ['day', 'week', 'month', 'year']
+
+/** Resolve one actor's period limit, matching gateway `resolveQuota` rules for humans. */
+function limitForActor(quotas: TeamQuotas, actorId: string | null): number | null {
+  if (!actorId) return null
+  const row = quotas.members.find((m) => m.actorId === actorId)
+  if (row) return row.limitCredits
+  return quotas.defaultLimitCredits
+}
 
 /** Shift an anchor date by one period (range unit), clamped to "not future". */
 function shiftAnchor(anchor: Date, range: CreditUsageRange, dir: -1 | 1): Date {
@@ -55,6 +59,7 @@ export function TokenUsageSection() {
   const [range, setRange] = useState<CreditUsageRange>('month')
   const [anchor, setAnchor] = useState<Date>(() => new Date())
   const [data, setData] = useState<CreditUsageReport | null>(null)
+  const [quotas, setQuotas] = useState<TeamQuotas | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [unavailable, setUnavailable] = useState(false)
@@ -71,13 +76,19 @@ export function TokenUsageSection() {
     setError(null)
     setUnavailable(false)
     try {
-      const usage = await getBackend().teams.getCreditUsage(teamId, { range, date: toIsoDate(anchor) })
+      const backend = getBackend()
+      const [usage, teamQuotas] = await Promise.all([
+        backend.teams.getCreditUsage(teamId, { range, date: toIsoDate(anchor) }),
+        backend.teams.getMemberQuotas(teamId).catch(() => null),
+      ])
       setData(usage)
+      setQuotas(teamQuotas)
     } catch (e: unknown) {
       const code = (e as { code?: string })?.code
       if (code === 'ai_gateway_unavailable') {
         setUnavailable(true)
         setData(null)
+        setQuotas(null)
       } else {
         setError((e as Error)?.message ?? String(e))
       }
@@ -93,6 +104,9 @@ export function TokenUsageSection() {
     if (!data || !STATS_START_UTC) return false
     return new Date(data.endUtc) <= new Date(STATS_START_UTC)
   }, [data])
+
+  // Quota is week|month only. Day/year leaderboards would compare apples to oranges.
+  const showQuota = Boolean(quotas && (range === 'week' || range === 'month') && quotas.period === range)
 
   return (
     <div className="space-y-6">
@@ -174,7 +188,7 @@ export function TokenUsageSection() {
               separately because upstreams price them separately — a single
               total cannot be reconciled against a bill. */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <SummaryCard label={t('settings.tokenUsage.pointsUsed', 'Points used')} value={fmtPoints(data.summary.credits)} highlight />
+            <SummaryCard label={t('settings.tokenUsage.pointsUsed', 'Points used')} value={formatPoints(data.summary.credits)} highlight />
             <SummaryCard label={t('settings.tokenUsage.inputTokens', 'Input tokens')} value={formatTokenCount(data.summary.inputTokens)} />
             <SummaryCard label={t('settings.tokenUsage.outputTokens', 'Output tokens')} value={formatTokenCount(data.summary.outputTokens)} />
             <SummaryCard label={t('settings.tokenUsage.requests', 'Requests')} value={data.summary.requests.toLocaleString()} />
@@ -198,17 +212,24 @@ export function TokenUsageSection() {
               </div>
             ) : (
               <BreakdownTable
-                rows={data.byActor.map((m, i) => ({
-                  // Unattributed is a data-quality notice, not a competitor:
-                  // no rank, muted, and the server already sorts it last.
-                  rank: m.actorId ? i + 1 : undefined,
-                  label: m.displayName ?? t('settings.tokenUsage.unattributed', 'Unattributed'),
-                  muted: !m.actorId,
-                  key: m.actorId ?? '__unattributed__',
-                  tokens: m.inputTokens + m.outputTokens,
-                  credits: m.credits,
-                  requests: m.requests,
-                }))}
+                rows={data.byActor.map((m, i) => {
+                  const limitCredits = showQuota && quotas ? limitForActor(quotas, m.actorId) : null
+                  const overQuota = limitCredits != null && m.credits > limitCredits
+                  return {
+                    // Unattributed is a data-quality notice, not a competitor:
+                    // no rank, muted, and the server already sorts it last.
+                    rank: m.actorId ? i + 1 : undefined,
+                    label: m.displayName ?? t('settings.tokenUsage.unattributed', 'Unattributed'),
+                    muted: !m.actorId,
+                    key: m.actorId ?? '__unattributed__',
+                    tokens: m.inputTokens + m.outputTokens,
+                    credits: m.credits,
+                    requests: m.requests,
+                    limitCredits,
+                    overQuota,
+                  }
+                })}
+                showQuota={showQuota}
                 t={t}
               />
             )}
@@ -246,9 +267,19 @@ function SummaryCard({ label, value, highlight }: { label: string; value: string
   )
 }
 
-type Row = { rank?: number; label: string; tokens: number; credits: number; requests: number; muted?: boolean; key?: string }
+type Row = {
+  rank?: number
+  label: string
+  tokens: number
+  credits: number
+  requests: number
+  muted?: boolean
+  key?: string
+  limitCredits?: number | null
+  overQuota?: boolean
+}
 
-function BreakdownTable({ rows, t }: { rows: Row[]; t: TFunction }) {
+function BreakdownTable({ rows, t, showQuota }: { rows: Row[]; t: TFunction; showQuota?: boolean }) {
   return (
     <div className="divide-y divide-border">
       <div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 px-4 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -258,18 +289,27 @@ function BreakdownTable({ rows, t }: { rows: Row[]; t: TFunction }) {
         <span className="text-right">{t('settings.tokenUsage.colPoints', 'Points')}</span>
       </div>
       {rows.map((r, i) => (
-        <div key={r.key ?? `${r.label}-${i}`} className={cn('grid grid-cols-[1fr_auto_auto_auto] items-center gap-3 px-4 py-2 text-[12.5px]', r.muted && 'text-muted-foreground')}>
-          <span className="flex items-center gap-2 truncate">
+        <div key={r.key ?? `${r.label}-${i}`} className={cn('grid grid-cols-[1fr_auto_auto_auto] items-center gap-3 px-4 py-2 text-[12.5px]', r.muted && 'text-muted-foreground', r.overQuota && 'bg-amber-50/80 dark:bg-amber-950/20')}>
+          <span className="flex min-w-0 items-center gap-2 truncate">
             {r.rank != null && (
               <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-panel text-[11px] font-medium tabular-nums text-muted-foreground">
                 {r.rank}
               </span>
             )}
             <span className="truncate">{r.label}</span>
+            {showQuota && r.overQuota && (
+              <span className="shrink-0 rounded px-1.5 py-0.5 text-[10.5px] font-medium text-amber-800 bg-amber-100 dark:text-amber-200 dark:bg-amber-900/40">
+                {t('settings.tokenUsage.overQuota', 'Over quota')}
+              </span>
+            )}
           </span>
           <span className="text-right tabular-nums">{formatTokenCount(r.tokens)}</span>
           <span className="text-right tabular-nums text-muted-foreground">{r.requests.toLocaleString()}</span>
-          <span className="text-right font-medium tabular-nums">{fmtPoints(r.credits)}</span>
+          <span className={cn('text-right font-medium tabular-nums', r.overQuota && 'text-amber-800 dark:text-amber-200')}>
+            {showQuota && r.limitCredits != null
+              ? `${formatPoints(r.credits)} / ${formatPoints(r.limitCredits)}`
+              : formatPoints(r.credits)}
+          </span>
         </div>
       ))}
     </div>

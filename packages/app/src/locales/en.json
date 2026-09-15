@@ -2848,6 +2848,7 @@
       "outputTokens": "Output tokens",
       "byTier": "By tier",
       "colPoints": "Points",
+      "overQuota": "Over quota",
       "beforeStats": "No statistics before {{date}}. Usage recording began with the new billing system; earlier records stayed with the old gateway and measure a different thing, so they were not carried over."
     },
     "privacy": {

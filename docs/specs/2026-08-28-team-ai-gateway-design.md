@@ -108,7 +108,7 @@
 
 | 概念 | 说明 |
 |------|------|
-| **Credit** | 团队消费单位。**1 credit = 1e-6 元上游成本**（§4.4.1）；DB/API 用 `bigint` credits，UI 展示「积分」= credits/10,000 |
+| **Credit** | 团队消费单位。**1 credit = 1e-6 元上游成本**（§4.4.1）；DB/API 用 `bigint` credits，UI 展示「积分」= credits/100,000 |
 | **Team balance** | 团队共享钱包余额。充值、赠送、管理员调整 → **加**；AI 调用 → **减** |
 | **Member quota** | 成员在 **一个周期内** 最多可消耗的 credits 上限（从团队 balance 里扣，不是成员单独钱包） |
 | **Reservation** | 请求进行中的预留额度。防止并发超发，见 §4.6 |
@@ -256,7 +256,7 @@ agent 一次会话有几十次这种小请求，所以这是常态而不是边�
 | catalog 里的数值 | 每 1M token 收多少 credits，由我们自己定 |
 | 典型请求量级 | 5,000 input token ≈ 5,000 credits，`ceil` 误差 0.02% |
 | `bigint` 上限 | 9.2e18 credits = 9.2e12 元，不可能溢出 |
-| UI 显示 | 「积分」= `credits / 10_000` |
+| UI 显示 | 「积分」= `credits / 100_000` |
 
 **UI 只展示余额与聚合，不展示单次请求成本。** 余额（万级积分）和单次成本（0.0x 积分）差 5 个数量级，任何单一显示单位都会在一端难看；单次成本只出现在会话/日聚合里。
 
@@ -905,11 +905,11 @@ Stripe 相关的 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、`STRIPE_PRICE_I
 
 | 档位 | 1 积分 = 输入 token | 1 积分 = 输出 token |
 |---|---|---|
-| 标准 default | 10,000 | 2,500 |
-| 高级 pro | 2,500 | 625 |
-| 旗舰 max | 500 | 125 |
+| 标准 default | 100,000 | 25,000 |
+| 高级 pro | 25,000 | 6,250 |
+| 旗舰 max | 5,000 | 1,250 |
 
-（按 `catalog.example.yaml` 的**占位价**算出来的示意；1 积分 = 10,000 credits。真实数字待定价决策，见附录 F。）
+（按 `catalog.example.yaml` 的**占位价**算出来的示意；1 积分 = 100,000 credits。真实数字待定价决策，见附录 F。）
 
 两条硬要求：
 
@@ -1068,7 +1068,7 @@ Stripe 相关的 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、`STRIPE_PRICE_I
 | 问题 | 结论 | 位置 |
 |------|------|------|
 | 定价是否锚定上游成本 | **否，自主定价**，挂三档 tier | §4.4 |
-| UI 量纲 | 积分 = credits / 10,000；单价须满足 §4.4.1 的 ceil 约束 | §4.4.1 |
+| UI 量纲 | 积分 = credits / 100,000；单价须满足 §4.4.1 的 ceil 约束 | §4.4.1 |
 | 默认赠送额度 | 建团队一次性 grant 10,000,000 credits，不按人头 | §4.8 |
 | 余额耗尽的行为 | 402 硬停；不降级、不透支；靠低水位告警兜 | §4.2 |
 | 支付渠道 | **Stripe**（Phase 4）。幂等键让 Phase 0–3 完全不受影响 | §4.9 |
