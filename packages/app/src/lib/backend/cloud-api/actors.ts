@@ -8,6 +8,7 @@ import type {
 } from "@/lib/backend/types";
 import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 import { createCoalescedRead } from "@/lib/backend/cloud-api/coalesced-read";
+import { deriveHighestTeamRole, type MemberRoleRef } from "@/lib/backend/cloud-api/org-roles";
 
 type CloudActor = {
   id: string;
@@ -16,6 +17,7 @@ type CloudActor = {
   displayName: string;
   avatarUrl?: string | null;
   userId?: string | null;
+  roles?: MemberRoleRef[] | null;
   teamRole?: string | null;
   memberStatus?: string | null;
   agentStatus?: string | null;
@@ -56,6 +58,7 @@ type CloudAgentAccess = {
 type Page<T> = { items: T[]; nextCursor: string | null };
 
 function mapActor(row: CloudActor): ActorDirectoryEntry {
+  const roles = row.roles ?? [];
   return {
     id: row.id,
     team_id: row.teamId,
@@ -63,7 +66,8 @@ function mapActor(row: CloudActor): ActorDirectoryEntry {
     display_name: row.displayName ?? null,
     avatar_url: row.avatarUrl ?? null,
     user_id: row.userId ?? null,
-    team_role: row.teamRole ?? null,
+    roles,
+    team_role: row.teamRole ?? deriveHighestTeamRole(roles),
     member_status: row.memberStatus ?? null,
     agent_status: row.agentStatus ?? null,
     agent_types: row.agentTypes ?? null,
@@ -214,11 +218,15 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
       // only values that exist are member / agent / external. This asked for
       // `user`, which matches nothing — so every caller got an empty list.
       const page = await client.get<Page<CloudActor>>(`/v1/teams/${encodeURIComponent(teamId)}/actors?kind=member&limit=500`);
-      return page.items.map((row): TeamMemberOptionBackendRow => ({
-        id: row.id,
-        displayName: row.displayName || row.id,
-        role: row.teamRole ?? null,
-      }));
+      return page.items.map((row): TeamMemberOptionBackendRow => {
+        const roles = row.roles ?? [];
+        return {
+          id: row.id,
+          displayName: row.displayName || row.id,
+          roles,
+          role: row.teamRole ?? deriveHighestTeamRole(roles),
+        };
+      });
     },
     async upsertAgentAccess(input) {
       await afterWrite(

@@ -3,8 +3,11 @@ import type { MarketplaceBackend } from "@/lib/backend/cloud-api/marketplace";
 import type { TeamMcpBackend } from "@/lib/backend/cloud-api/team-mcp";
 import type { KnowledgeAclBackend } from "@/lib/backend/cloud-api/knowledge-acl";
 import type { TeamEnvSecretsBackend } from "@/lib/backend/cloud-api/team-env-secrets";
+import type { MemberRoleRef, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
 import type { OAuthProvider } from "@/lib/auth";
 import type { AppTypeId } from "@/lib/apps/app-types";
+
+export type { MemberRoleRef, OrgRole, OrgRoleCreate, OrgRolePatch, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
 
 export type BackendKind = "cloud_api";
 
@@ -344,6 +347,9 @@ export interface DirectoryMemberActor {
 export interface CurrentTeamMemberSummary {
   id: string;
   displayName: string;
+  /** Org role assignments — source of truth for permission UI. */
+  roles?: MemberRoleRef[];
+  /** Transitional derived highest privilege among `roles`. Prefer `roles`. */
   role: string | null;
   joinedAt: string | null;
 }
@@ -675,6 +681,9 @@ export interface ActorDirectoryEntry {
   updated_at?: string | null;
   member_status?: string | null;
   agent_status?: string | null;
+  /** Org role assignments. Empty for agents/external. Prefer over `team_role`. */
+  roles?: MemberRoleRef[];
+  /** Transitional derived highest privilege among `roles`. Prefer `roles`. */
   team_role?: string | null;
   agent_types?: string[] | null;
   default_agent_type?: string | null;
@@ -719,6 +728,7 @@ export interface AgentAccessBackendRow {
 export interface TeamMemberOptionBackendRow {
   id: string;
   displayName: string;
+  roles?: MemberRoleRef[];
   role: string | null;
 }
 
@@ -1732,4 +1742,5 @@ export interface TeamCluBackend {
   teamMcp: TeamMcpBackend;
   knowledgeAcl: KnowledgeAclBackend;
   teamEnvSecrets: TeamEnvSecretsBackend;
+  orgRoles: OrgRolesBackend;
 }

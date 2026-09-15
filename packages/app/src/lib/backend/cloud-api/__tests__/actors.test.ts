@@ -63,6 +63,22 @@ describe("actors module", () => {
     expect(out[0].display_name).toBe("Alice");
   });
 
+  it("listActorDirectory maps roles[] and derives team_role when server omits it", async () => {
+    const roles = [
+      { id: "r-member", code: "member", name: "成员" },
+      { id: "r-admin", code: "admin", name: "管理员" },
+    ];
+    const client = mockClient({
+      "GET /v1/teams/team-1/actors?limit=500": {
+        items: [{ ...cloudActor, roles }],
+        nextCursor: null,
+      },
+    });
+    const out = await createActorsModule(client).listActorDirectory("team-1");
+    expect(out[0].roles).toEqual(roles);
+    expect(out[0].team_role).toBe("admin");
+  });
+
   it("listConnectedAgents calls /v1/teams/:teamId/agents/connected", async () => {
     const cloudAgent = { ...cloudActor, kind: "agent", agentId: "a-1" };
     const client = mockClient({ "GET /v1/teams/team-1/agents/connected": { items: [cloudAgent] } });
