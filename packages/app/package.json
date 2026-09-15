@@ -60,7 +60,7 @@
     "@shikijs/engine-oniguruma": "4.4.3",
     "@shikijs/langs": "4.4.3",
     "@shikijs/themes": "4.4.3",
-    "@tanstack/react-virtual": "^3.14.9",
+    "@tanstack/react-virtual": "^3.14.11",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-dialog": "^2.7.2",
