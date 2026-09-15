@@ -3920,8 +3920,39 @@ export function createSupabaseBusinessRepository(options) {
         const scope = nextScope ?? ((cur?.auth_scope ?? "all") as AuthScope);
         const rules = nextRules ?? parseAuthRules(cur?.auth_rules ?? []);
         validateAuthPathConfig(scope, rules);
+        if (nextRules !== undefined) {
+          // Refuse role codes that are not in the team's active org catalog.
+          const wanted = [
+            ...new Set(rules.flatMap((r) => (Array.isArray(r.roles) ? r.roles : []))),
+          ];
+          if (wanted.length > 0 && cur?.team_id) {
+            const orgId = await this.resolveTeamOrgId(cur.team_id);
+            if (orgId) {
+              const rolesClient =
+                typeof supabase?.schema === "function"
+                  ? supabase.schema("public")
+                  : supabase;
+              const { data: catalog, error: catalogErr } = await rolesClient
+                .from("roles")
+                .select("code")
+                .eq("org_id", orgId)
+                .eq("status", "active");
+              if (catalogErr) throw catalogErr;
+              const known = new Set((catalog ?? []).map((r: { code: string }) => r.code));
+              const unknown = wanted.filter((c) => !known.has(c));
+              if (unknown.length > 0) {
+                throw new ApiError(
+                  400,
+                  "validation_failed",
+                  `unknown auth rule role codes: ${unknown.join(", ")}`,
+                  { details: { unknown } },
+                );
+              }
+            }
+          }
+          set.auth_rules = rules;
+        }
         if (nextScope !== undefined) set.auth_scope = scope;
-        if (nextRules !== undefined) set.auth_rules = rules;
       }
 
       if (typeof patch.provisionStatus === "string") {

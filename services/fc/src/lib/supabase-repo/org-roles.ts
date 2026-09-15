@@ -106,6 +106,35 @@ export function deriveHighestTeamRole(roles: MemberRoleRef[]): string | null {
 }
 
 /**
+ * Map a derived org role code onto `amux.team_members.role` CHECK
+ * (`owner|admin|member`). Finance and custom codes mirror as `member`.
+ * Empty / null → null (column is nullable).
+ */
+export function mirrorTeamMembersRole(code: string | null): "owner" | "admin" | "member" | null {
+  if (!code) return null;
+  if (code === "owner" || code === "admin") return code;
+  return "member";
+}
+
+/**
+ * Transitional dual-write: keep `amux.team_members.role` aligned with
+ * roles_users for live SQL/RLS that still reads the legacy column
+ * (remove_team_actor last-owner, join_public_team labeling, etc.).
+ */
+async function dualWriteTeamMembersRole(
+  client: any,
+  opts: { teamId: string; actorId: string; roleCode: string | null },
+): Promise<void> {
+  const mirrored = mirrorTeamMembersRole(opts.roleCode);
+  const { error } = await client
+    .from("team_members")
+    .update({ role: mirrored })
+    .eq("team_id", opts.teamId)
+    .eq("member_id", opts.actorId);
+  if (error) throw error;
+}
+
+/**
  * Assign a system org role (`owner` / `member` / …) for a user under a team's org.
  * Idempotent: existing active row is a no-op. Used by team create / invite claim.
  *
@@ -113,6 +142,10 @@ export function deriveHighestTeamRole(roles: MemberRoleRef[]): string | null {
  * gated by `is_org_role_manager`, which needs an existing owner/admin binding —
  * chicken-and-egg for new teams and invitees. Service-role bypasses that RLS.
  * Passing the caller JWT silently fails (or used to no-op); do not do that.
+ *
+ * Dual-writes `amux.team_members.role` (finance → member) so RPCs / SQL that
+ * still read the legacy column stay aligned. Prefer this exported helper over
+ * any caller-JWT wrapper.
  */
 export async function assignSystemOrgRole(
   admin: any,
@@ -159,21 +192,32 @@ export async function assignSystemOrgRole(
     .is("store_id", null)
     .maybeSingle();
   if (existErr) throw existErr;
-  if (existing?.id) return;
+  if (!existing?.id) {
+    const { error: insertErr } = await publicFrom(admin, "roles_users").insert({
+      user_id: userId,
+      role_id: role.id,
+      org_id: orgId,
+      status: "active",
+      store_id: null,
+      is_primary: false,
+      expires_at: null,
+    });
+    if (insertErr) {
+      // Unique race: another writer won — still mirror below.
+      if (insertErr.code !== "23505") throw insertErr;
+    }
+  }
 
-  const { error: insertErr } = await publicFrom(admin, "roles_users").insert({
-    user_id: userId,
-    role_id: role.id,
-    org_id: orgId,
-    status: "active",
-    store_id: null,
-    is_primary: false,
-    expires_at: null,
-  });
-  if (insertErr) {
-    // Unique race: another writer won — treat as success.
-    if (insertErr.code === "23505") return;
-    throw insertErr;
+  const { data: actor, error: actorErr } = await admin
+    .from("actors")
+    .select("id")
+    .eq("team_id", teamId)
+    .eq("user_id", userId)
+    .limit(1)
+    .maybeSingle();
+  if (actorErr) throw actorErr;
+  if (typeof actor?.id === "string" && actor.id) {
+    await dualWriteTeamMembersRole(admin, { teamId, actorId: actor.id, roleCode: code });
   }
 }
 
@@ -482,6 +526,12 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
       return listActiveMemberRoles(orgId, userId);
     },
 
+    /**
+     * Replace the member's active org-role set.
+     *
+     * Not a single SQL transaction (no put RPC yet): roles_users diffs first,
+     * then dual-write `team_members.role`. Prefer a future RPC for true atomicity.
+     */
     async putMemberRoles(
       teamId: string,
       actorId: string,
@@ -499,10 +549,15 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
       }
       const uniqueIds = [...new Set(roleIds.map((id) => String(id)))];
 
-      // Load target role rows (must all belong to this org).
+      // Load target role rows (must all belong to this org and be active).
       const targetRoles: Array<{ id: string; code: string; name: string; status: string }> = [];
       for (const roleId of uniqueIds) {
         const row = await loadRole(orgId, roleId);
+        if (row.status !== "active") {
+          throw new ApiError(400, "validation_failed", "cannot assign inactive org role", {
+            details: { roleId, status: row.status },
+          });
+        }
         targetRoles.push({
           id: row.id,
           code: row.code,
@@ -560,11 +615,13 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
         }
       }
 
-      return listActiveMemberRoles(orgId, userId);
-    },
-
-    assignSystemOrgRole(teamId: string, userId: string, code: string) {
-      return assignSystemOrgRole(host.supabase, { teamId, userId, code });
+      const items = await listActiveMemberRoles(orgId, userId);
+      await dualWriteTeamMembersRole(host.supabase, {
+        teamId,
+        actorId,
+        roleCode: deriveHighestTeamRole(items),
+      });
+      return items;
     },
   };
 }

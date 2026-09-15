@@ -16,6 +16,7 @@ import {
   assignSystemOrgRole,
   deriveHighestTeamRole,
   makeOrgRolesRepo,
+  mirrorTeamMembersRole,
 } from "../src/lib/supabase-repo/org-roles.js";
 
 const TEAM = "11111111-1111-1111-1111-111111111111";
@@ -297,6 +298,10 @@ function makeStubHost(opts: {
   const bindings: BindingRow[] = (opts.bindings ?? []).map((b) => ({ ...b }));
   let bindingCountOverride = opts.bindingCount;
   const actorUserId = opts.actorUserId === undefined ? USER : opts.actorUserId;
+  /** Mirrored `amux.team_members.role` for the ACTOR fixture. */
+  const teamMembers: Array<{ team_id: string; member_id: string; role: string | null }> = [
+    { team_id: TEAM, member_id: ACTOR, role: null },
+  ];
 
   type Filter = { col: string; val: unknown; op?: string };
 
@@ -419,6 +424,76 @@ function makeStubHost(opts: {
     return api;
   }
 
+  function actorsQuery() {
+    const filters: Filter[] = [];
+    const api: any = {
+      select() {
+        return api;
+      },
+      eq(col: string, val: unknown) {
+        filters.push({ col, val });
+        return api;
+      },
+      limit() {
+        return api;
+      },
+      maybeSingle: async () => {
+        const byId = filters.find((f) => f.col === "id")?.val;
+        const byTeam = filters.find((f) => f.col === "team_id")?.val;
+        const byUser = filters.find((f) => f.col === "user_id")?.val;
+        if (byTeam !== undefined && byTeam !== TEAM) {
+          return { data: null, error: null };
+        }
+        if (byId !== undefined) {
+          return {
+            data:
+              byId === ACTOR
+                ? { id: ACTOR, user_id: actorUserId, actor_type: "member" }
+                : null,
+            error: null,
+          };
+        }
+        if (byUser !== undefined) {
+          return {
+            data:
+              byUser === actorUserId
+                ? { id: ACTOR, user_id: actorUserId, actor_type: "member" }
+                : null,
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      },
+    };
+    return api;
+  }
+
+  function teamMembersQuery() {
+    const filters: Filter[] = [];
+    let patch: Record<string, unknown> | null = null;
+    const api: any = {
+      update(row: Record<string, unknown>) {
+        patch = row;
+        return api;
+      },
+      eq(col: string, val: unknown) {
+        filters.push({ col, val });
+        return api;
+      },
+      then(resolve: (v: unknown) => void) {
+        if (patch) {
+          for (const row of teamMembers) {
+            if (filters.every((f) => (row as any)[f.col] === f.val)) {
+              Object.assign(row, patch);
+            }
+          }
+        }
+        return Promise.resolve({ data: null, error: null }).then(resolve);
+      },
+    };
+    return api;
+  }
+
   const supabase = {
     async rpc(name: string, args: Record<string, unknown>) {
       if (name === "current_team_role") {
@@ -442,28 +517,10 @@ function makeStubHost(opts: {
         };
       }
       if (table === "actors") {
-        return {
-          select() {
-            return {
-              eq(_c1: string, id: string) {
-                return {
-                  eq(_c2: string, teamId: string) {
-                    assert.equal(teamId, TEAM);
-                    return {
-                      maybeSingle: async () => ({
-                        data:
-                          id === ACTOR
-                            ? { id: ACTOR, user_id: actorUserId, actor_type: "member" }
-                            : null,
-                        error: null,
-                      }),
-                    };
-                  },
-                };
-              },
-            };
-          },
-        };
+        return actorsQuery();
+      }
+      if (table === "team_members") {
+        return teamMembersQuery();
       }
       if (table === "roles") {
         return {
@@ -551,6 +608,7 @@ function makeStubHost(opts: {
       opts.member === false ? null : { id: "actor-1" },
     _roles: roles,
     _bindings: bindings,
+    _teamMembers: teamMembers,
     setBindingCount(n: number) {
       bindingCountOverride = n;
     },
@@ -708,6 +766,55 @@ describe("makeOrgRolesRepo", () => {
     assert.deepEqual(items.map((r) => r.code).sort(), ["admin", "member"]);
     assert.equal(host._bindings.length, 2);
     assert.ok(host._bindings.every((b) => b.user_id === USER));
+    assert.equal(host._teamMembers[0].role, "admin", "dual-writes highest privilege to team_members.role");
+  });
+
+  test("putMemberRoles: inactive role id → 400", async () => {
+    const inactive = { ...seededCustom, status: "inactive" };
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: [...systemCatalog, inactive],
+      bindings: [],
+    });
+    const repo = makeOrgRolesRepo(host);
+    await assert.rejects(
+      () => repo.putMemberRoles(TEAM, ACTOR, [CUSTOM_ROLE]),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError);
+        assert.equal(err.statusCode, 400);
+        assert.match(err.message, /inactive/i);
+        return true;
+      },
+    );
+    assert.equal(host._bindings.length, 0);
+  });
+
+  test("putMemberRoles: empty roles dual-writes null to team_members.role", async () => {
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: systemCatalog,
+      bindings: [
+        {
+          id: "ru-1",
+          user_id: USER,
+          role_id: MEMBER_ROLE,
+          org_id: ORG,
+          status: "active",
+          store_id: null,
+        },
+      ],
+    });
+    host._teamMembers[0].role = "member";
+    const repo = makeOrgRolesRepo(host);
+    const items = await repo.putMemberRoles(TEAM, ACTOR, []);
+    assert.deepEqual(items, []);
+    assert.equal(host._teamMembers[0].role, null);
+  });
+
+  test("makeOrgRolesRepo does not expose assignSystemOrgRole (caller-JWT footgun)", () => {
+    const host = makeStubHost({ teamRole: "owner", roles: systemCatalog });
+    const repo = makeOrgRolesRepo(host) as Record<string, unknown>;
+    assert.equal("assignSystemOrgRole" in repo, false);
   });
 
   test("putMemberRoles: admin cannot grant owner → 403", async () => {
@@ -838,6 +945,7 @@ describe("makeOrgRolesRepo", () => {
     assert.equal(host._bindings[0].role_id, MEMBER_ROLE);
     assert.equal(host._bindings[0].user_id, USER);
     assert.equal(host._bindings[0].org_id, ORG);
+    assert.equal(host._teamMembers[0].role, "member");
   });
 
   test("assignSystemOrgRole throws when userId missing (no silent skip)", async () => {
@@ -969,6 +1077,7 @@ describe("makeOrgRolesRepo", () => {
       code: "member",
     });
     assert.equal(admin._bindings.length, 1);
+    assert.equal(admin._teamMembers[0].role, "member");
   });
 
   test("deriveHighestTeamRole prefers owner > admin > finance > member", () => {
@@ -980,5 +1089,14 @@ describe("makeOrgRolesRepo", () => {
       "admin",
     );
     assert.equal(deriveHighestTeamRole([]), null);
+  });
+
+  test("mirrorTeamMembersRole maps finance/custom to member; empty → null", () => {
+    assert.equal(mirrorTeamMembersRole("owner"), "owner");
+    assert.equal(mirrorTeamMembersRole("admin"), "admin");
+    assert.equal(mirrorTeamMembersRole("finance"), "member");
+    assert.equal(mirrorTeamMembersRole("member"), "member");
+    assert.equal(mirrorTeamMembersRole("auditor"), "member");
+    assert.equal(mirrorTeamMembersRole(null), null);
   });
 });
