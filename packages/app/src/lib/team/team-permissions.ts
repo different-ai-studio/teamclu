@@ -81,7 +81,7 @@ export function permissionsForRoles(
 /** React hook: the single source of truth for team permissions (cloud roles). */
 export function useTeamPermissions(): TeamPermissions {
   const member = useCurrentTeamStore((s) => s.currentMember)
-  if (member?.roles != null) {
+  if (member?.roles != null && member.roles.length > 0) {
     return permissionsForRoles(member.roles)
   }
   // Rollout fallback: legacy single `role` string when `roles[]` is absent.

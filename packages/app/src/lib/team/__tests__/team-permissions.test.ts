@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { renderHook } from '@testing-library/react'
 import {
   canRemoveTeamActor,
   highestRoleCode,
   permissionsForRoles,
+  useTeamPermissions,
 } from '@/lib/team/team-permissions'
+import { useCurrentTeamStore } from '@/stores/current-team'
 import type { RemovableActorTarget } from '@/lib/team/team-permissions'
 
 describe('highestRoleCode', () => {
@@ -58,6 +61,16 @@ describe('permissionsForRoles', () => {
   })
   it('normalizes case', () => {
     expect(permissionsForRoles([{ code: 'Owner' }]).isOwner).toBe(true)
+  })
+})
+
+describe('useTeamPermissions', () => {
+  it('empty roles[] falls back to legacy role string', () => {
+    useCurrentTeamStore.setState({
+      currentMember: { roles: [], role: 'owner' },
+    } as never)
+    const { result } = renderHook(() => useTeamPermissions())
+    expect(result.current.isOwner).toBe(true)
   })
 })
 
