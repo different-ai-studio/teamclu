@@ -85,14 +85,21 @@ function AppRowButton({
           The relationship sits under it, not on the status line: there it cut
           "Deploy failed" short and then itself to "M…". The column is a fixed
           width so the discs line up whether or not a row has a word, and the
-          disc is 24px so disc + word (~36px) is as tall as name + status —
-          a 28px disc left the word hanging below the status line. */}
+          disc drops to 24px under a word so disc + word (~36px) is as tall as
+          name + status — a 28px disc left the word hanging below the status
+          line. Under a filter there is no word, and the full 28px disc is back. */}
       <span className="flex w-10 shrink-0 flex-col items-center gap-0.5">
-        <span className="flex h-6 w-6 items-center justify-center rounded-[7px] bg-panel text-muted-foreground">
+        <span
+          data-testid="app-row-icon"
+          className={cn(
+            'flex items-center justify-center bg-panel text-muted-foreground',
+            relationLabel ? 'h-6 w-6 rounded-[7px]' : 'h-7 w-7 rounded-[8px]',
+          )}
+        >
           {deploying || downloading ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <Loader2 className={relationLabel ? 'h-3 w-3 animate-spin' : 'h-3.5 w-3.5 animate-spin'} />
           ) : (
-            <TypeIcon className="h-[13px] w-[13px]" />
+            <TypeIcon className={relationLabel ? 'h-[13px] w-[13px]' : 'h-[15px] w-[15px]'} />
           )}
         </span>
         {relationLabel && (

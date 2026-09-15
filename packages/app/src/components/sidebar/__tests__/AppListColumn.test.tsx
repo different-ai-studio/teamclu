@@ -223,6 +223,15 @@ describe('AppListColumn', () => {
       expect(screen.queryByTestId('app-row-relationship')).not.toBeInTheDocument()
     })
 
+    it('shrinks the icon only to make room for the word under it', () => {
+      // 24px is what lets disc + word match name + status. With no word under
+      // it, a 24px disc just looks undersized next to two lines of text.
+      render(<AppListColumn />)
+      expect(screen.getAllByTestId('app-row-icon')[0]).toHaveClass('h-6', 'w-6')
+      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+      expect(screen.getAllByTestId('app-row-icon')[0]).toHaveClass('h-7', 'w-7')
+    })
+
     it('keeps the label off the status line, so it never squeezes the status', () => {
       // On the status line it cut "Deploy failed" to "Deploy fai…", and then
       // itself to "M…". Under the icon neither competes for that width.
