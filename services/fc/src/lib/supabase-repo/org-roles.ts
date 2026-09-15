@@ -108,24 +108,40 @@ export function deriveHighestTeamRole(roles: MemberRoleRef[]): string | null {
 /**
  * Assign a system org role (`owner` / `member` / …) for a user under a team's org.
  * Idempotent: existing active row is a no-op. Used by team create / invite claim.
+ *
+ * `admin` MUST be a **service-role** Supabase client. `roles_users` writes are
+ * gated by `is_org_role_manager`, which needs an existing owner/admin binding —
+ * chicken-and-egg for new teams and invitees. Service-role bypasses that RLS.
+ * Passing the caller JWT silently fails (or used to no-op); do not do that.
  */
 export async function assignSystemOrgRole(
-  supabase: any,
+  admin: any,
   opts: { teamId: string; userId: string; code: string },
 ): Promise<void> {
   const { teamId, userId, code } = opts;
-  if (!userId || !code) return;
+  if (!userId || !String(userId).trim()) {
+    throw new ApiError(500, "internal_error", "assignSystemOrgRole requires userId");
+  }
+  if (!code || !String(code).trim()) {
+    throw new ApiError(500, "internal_error", "assignSystemOrgRole requires role code");
+  }
 
-  const { data: team, error: teamErr } = await supabase
+  const { data: team, error: teamErr } = await admin
     .from("teams")
     .select("oid")
     .eq("id", teamId)
     .maybeSingle();
   if (teamErr) throw teamErr;
   const orgId = typeof team?.oid === "string" ? team.oid.trim() : "";
-  if (!orgId) return;
+  if (!orgId) {
+    throw new ApiError(
+      500,
+      "internal_error",
+      `team ${teamId} has no org_id; cannot assign system role ${code}`,
+    );
+  }
 
-  const { data: role, error: roleErr } = await publicFrom(supabase, "roles")
+  const { data: role, error: roleErr } = await publicFrom(admin, "roles")
     .select("id")
     .eq("org_id", orgId)
     .eq("code", code)
@@ -136,7 +152,7 @@ export async function assignSystemOrgRole(
     throw new ApiError(500, "internal_error", `system role ${code} missing for org`);
   }
 
-  const { data: existing, error: existErr } = await publicFrom(supabase, "roles_users")
+  const { data: existing, error: existErr } = await publicFrom(admin, "roles_users")
     .select("id")
     .eq("user_id", userId)
     .eq("role_id", role.id)
@@ -145,7 +161,7 @@ export async function assignSystemOrgRole(
   if (existErr) throw existErr;
   if (existing?.id) return;
 
-  const { error: insertErr } = await publicFrom(supabase, "roles_users").insert({
+  const { error: insertErr } = await publicFrom(admin, "roles_users").insert({
     user_id: userId,
     role_id: role.id,
     org_id: orgId,

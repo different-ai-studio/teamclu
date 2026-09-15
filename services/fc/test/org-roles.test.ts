@@ -828,6 +828,7 @@ describe("makeOrgRolesRepo", () => {
       roles: systemCatalog,
       bindings: [],
     });
+    // Service-role stub (same shape as FC admin client); caller JWT must not be used.
     await assignSystemOrgRole(host.supabase, {
       teamId: TEAM,
       userId: USER,
@@ -837,6 +838,137 @@ describe("makeOrgRolesRepo", () => {
     assert.equal(host._bindings[0].role_id, MEMBER_ROLE);
     assert.equal(host._bindings[0].user_id, USER);
     assert.equal(host._bindings[0].org_id, ORG);
+  });
+
+  test("assignSystemOrgRole throws when userId missing (no silent skip)", async () => {
+    const host = makeStubHost({ teamRole: "owner", roles: systemCatalog, bindings: [] });
+    await assert.rejects(
+      () => assignSystemOrgRole(host.supabase, { teamId: TEAM, userId: "", code: "owner" }),
+      (err: any) => err instanceof ApiError && err.statusCode === 500 && /userId/.test(err.message),
+    );
+  });
+
+  test("assignSystemOrgRole throws when team has no oid (no silent skip)", async () => {
+    const host = makeStubHost({ teamRole: "owner", roles: systemCatalog, bindings: [] });
+    const noOid = {
+      ...host.supabase,
+      from(table: string) {
+        if (table === "teams") {
+          return {
+            select() {
+              return {
+                eq() {
+                  return {
+                    maybeSingle: async () => ({ data: { oid: null }, error: null }),
+                  };
+                },
+              };
+            },
+          };
+        }
+        return host.supabase.from(table);
+      },
+    };
+    await assert.rejects(
+      () => assignSystemOrgRole(noOid, { teamId: TEAM, userId: USER, code: "owner" }),
+      (err: any) => err instanceof ApiError && err.statusCode === 500 && /org_id/.test(err.message),
+    );
+  });
+
+  test("assignSystemOrgRole documents service-role: caller-JWT insert is rejected (RLS mock)", async () => {
+    // roles_users_write_org_manager requires is_org_role_manager — brand-new
+    // team creators / invitees are not managers yet. Production uses service_role.
+    const rlsDenied = {
+      code: "42501",
+      message: "new row violates row-level security policy for table \"roles_users\"",
+    };
+    const callerJwtClient = {
+      from(table: string) {
+        if (table === "teams") {
+          return {
+            select() {
+              return {
+                eq() {
+                  return {
+                    maybeSingle: async () => ({ data: { oid: ORG }, error: null }),
+                  };
+                },
+              };
+            },
+          };
+        }
+        throw new Error(`unexpected from(${table})`);
+      },
+      schema() {
+        return {
+          from(table: string) {
+            if (table === "roles") {
+              return {
+                select() {
+                  const api: any = {
+                    eq() {
+                      return api;
+                    },
+                    maybeSingle: async () => ({
+                      data: { id: MEMBER_ROLE },
+                      error: null,
+                    }),
+                  };
+                  return api;
+                },
+              };
+            }
+            if (table === "roles_users") {
+              return {
+                select() {
+                  const api: any = {
+                    eq() {
+                      return api;
+                    },
+                    is() {
+                      return api;
+                    },
+                    maybeSingle: async () => ({ data: null, error: null }),
+                  };
+                  return api;
+                },
+                insert() {
+                  return {
+                    then(resolve: (v: unknown) => void) {
+                      return Promise.resolve({ data: null, error: rlsDenied }).then(resolve);
+                    },
+                  };
+                },
+              };
+            }
+            throw new Error(`unexpected public.from(${table})`);
+          },
+        };
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        assignSystemOrgRole(callerJwtClient, {
+          teamId: TEAM,
+          userId: USER,
+          code: "member",
+        }),
+      (err: any) => err?.code === "42501",
+    );
+
+    // Service-role path (stub without RLS) succeeds — what createTeam/claim use.
+    const admin = makeStubHost({
+      teamRole: "owner",
+      roles: systemCatalog,
+      bindings: [],
+    });
+    await assignSystemOrgRole(admin.supabase, {
+      teamId: TEAM,
+      userId: USER,
+      code: "member",
+    });
+    assert.equal(admin._bindings.length, 1);
   });
 
   test("deriveHighestTeamRole prefers owner > admin > finance > member", () => {

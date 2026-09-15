@@ -39,6 +39,8 @@ export function createSupabaseAuthRepository(options) {
     // present. The repo is built lazily so environments/tests lacking these
     // still construct fine.
     serviceRoleKey = undefined,
+    // Optional override for roles_users bootstrap writes (tests inject a stub).
+    createServiceRoleClient: createServiceRoleClientOpt = undefined,
     defaultOrgId = undefined,
     phoneEmailDomain = undefined,
     phoneAuthEncryptionKey = undefined,
@@ -96,6 +98,47 @@ export function createSupabaseAuthRepository(options) {
     });
   }
 
+  // roles_users INSERT requires is_org_role_manager — invitees are not managers
+  // yet, so claim/accept must write with service_role (same as createTeam).
+  function serviceRoleClient(what: string) {
+    if (createServiceRoleClientOpt) return createServiceRoleClientOpt();
+    const key = serviceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+    if (!key) {
+      throw new Error(`SUPABASE_SERVICE_ROLE_KEY is not configured on FC; cannot ${what}`);
+    }
+    return createClient(supabaseUrl, key, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      db: { schema: "amux" },
+      realtime: REALTIME_TRANSPORT_OPTS,
+    });
+  }
+
+  async function assignMemberRoleOnClaim(client: any, result: { teamId: string; actorType: string }, accessToken?: string) {
+    if (result.actorType !== "member") return;
+    if (!accessToken) {
+      throw new ApiError(
+        401,
+        "missing_auth",
+        "member invite claim requires an access token to assign org role",
+      );
+    }
+    const { data: userData } = await client.auth.getUser();
+    const userId = userData?.user?.id;
+    if (!userId) {
+      throw new ApiError(
+        401,
+        "missing_auth",
+        "authenticated user required to assign member org role",
+      );
+    }
+    const admin = serviceRoleClient("assign member org role on invite claim");
+    await assignSystemOrgRole(admin, {
+      teamId: result.teamId,
+      userId,
+      code: "member",
+    });
+  }
+
   return {
     // ctx.accessToken (optional): the joining user's bearer. Forwarded so the
     // `claim_team_invite` RPC resolves `auth.uid()` for member invites. Absent
@@ -122,18 +165,9 @@ export function createSupabaseAuthRepository(options) {
         displayName: requiredString(row.display_name, "auth.claimInvite", "display_name"),
         refreshToken: row.refresh_token ?? null,
       };
-      // Member invites: write roles_users (authz SoT). Agents have no public.users row.
-      if (result.actorType === "member" && ctx.accessToken) {
-        const { data: userData } = await client.auth.getUser();
-        const userId = userData?.user?.id;
-        if (userId) {
-          await assignSystemOrgRole(client, {
-            teamId: result.teamId,
-            userId,
-            code: "member",
-          });
-        }
-      }
+      // Member invites: write roles_users (authz SoT) via service-role.
+      // Agents have no public.users row and skip assignment.
+      await assignMemberRoleOnClaim(client, result, ctx.accessToken);
       return result;
     },
 
@@ -172,17 +206,7 @@ export function createSupabaseAuthRepository(options) {
         displayName: requiredString(row.display_name, "auth.acceptPendingInvite", "display_name"),
         refreshToken: row.refresh_token ?? null,
       };
-      if (result.actorType === "member" && ctx.accessToken) {
-        const { data: userData } = await client.auth.getUser();
-        const userId = userData?.user?.id;
-        if (userId) {
-          await assignSystemOrgRole(client, {
-            teamId: result.teamId,
-            userId,
-            code: "member",
-          });
-        }
-      }
+      await assignMemberRoleOnClaim(client, result, ctx.accessToken);
       return result;
     },
 

@@ -993,7 +993,9 @@ export function createSupabaseBusinessRepository(options) {
       const row = requiredRow(data, "teams.createTeam");
       const teamId = requiredString(row.team_id ?? row.id, "teams.createTeam", "team_id");
       // roles_users is the authz source of truth; creator gets owner (Task 4).
-      await assignSystemOrgRole(supabase, {
+      // Service-role: caller JWT cannot INSERT (is_org_role_manager chicken-egg).
+      const admin = await serviceRoleClient("assign owner org role on team create");
+      await assignSystemOrgRole(admin, {
         teamId,
         userId: caller.user.id,
         code: "owner",
@@ -1040,7 +1042,9 @@ export function createSupabaseBusinessRepository(options) {
       }
       const row = requiredRow(data, "teams.bootstrapTeam");
       const teamId = requiredString(row.team_id ?? row.id, "teams.bootstrapTeam", "team_id");
-      await assignSystemOrgRole(supabase, {
+      // Service-role: same chicken-egg as createTeam (roles_users RLS).
+      const admin = await serviceRoleClient("assign owner org role on team bootstrap");
+      await assignSystemOrgRole(admin, {
         teamId,
         userId: caller.user.id,
         code: "owner",
