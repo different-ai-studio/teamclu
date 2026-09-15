@@ -123,7 +123,12 @@ nowhere else; this describes what exists, it decides nothing):
   `127.0.0.1:13144` that the `teamclu-introspect` MCP sidecar calls for WeCom
   sends, cron runs, team sync, env vars, workspace MCP config, and session
   archive / participants / export. Requests carry a per-launch bearer token;
-  the module header documents the token file and the rejection rules.
+  the module header documents the token file and the rejection rules. Calls
+  that change state must also come from an agent host amuxd spawned (checked
+  against `/internal/runtime-context/verify`; see `introspect_api/caller.rs`).
+  Publishing or deleting an app, changing who can reach it, or replacing MCP
+  servers waits for a native approval dialog that times out when nobody is at
+  this machine (`introspect_api/confirm.rs`).
 
 **Editor system:** Markdown (Tiptap) / HTML (Tiptap + sandbox preview) / Code (CodeMirror 6 + Shiki)
 

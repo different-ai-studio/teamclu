@@ -24,6 +24,9 @@ const h = vi.hoisted(() => ({
   runtimeRows: [] as Array<{ id: string; optional: boolean; present: boolean }>,
   installCalls: [] as string[],
   installShouldThrow: false,
+  // Simulate the Copilot 361 split-brain: install-pi reports success but
+  // doctor still looks at the branded home and says the runtime is missing.
+  installLeavesRuntimeMissing: false,
 }))
 
 const runtimeRows = (present: boolean) => [
@@ -123,6 +126,12 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) })
 vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
   getLocalDaemonActorId: vi.fn(async () => h.localActorId),
 }))
+vi.mock('@/lib/daemon/daemon-paths', () => ({
+  daemonHomeDisplayPath: '~/.amuxd-copilot361',
+  daemonManagedLogDisplayPath: '~/.amuxd-copilot361/logs/amuxd.managed.log',
+  daemonPortFileDisplayPath: '~/.amuxd-copilot361/run/amuxd.http.port',
+  daemonTeamsDisplayPath: '~/.amuxd-copilot361/teams/',
+}))
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
     h.invokeCalls.push(cmd)
@@ -130,7 +139,7 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (cmd === 'setup_install') {
       h.installCalls.push((args as { id: string }).id)
       if (h.installShouldThrow) throw new Error('npm ci boom')
-      h.runtimeRows = runtimeRows(true)
+      if (!h.installLeavesRuntimeMissing) h.runtimeRows = runtimeRows(true)
       return undefined
     }
     if (cmd === 'get_daemon_team_id') return h.daemonTeam
@@ -188,6 +197,7 @@ beforeEach(() => {
   h.runtimeRows = runtimeRows(true)
   h.installCalls = []
   h.installShouldThrow = false
+  h.installLeavesRuntimeMissing = false
   localStorage.clear()
   useSetupStore.setState({ requirements: [], loaded: false, installing: null, errors: {}, progress: {}, installRoute: null, probeError: null })
   reset()
@@ -302,6 +312,23 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(s.daemonOutdated).toBe(true)
     expect(s.error).toContain('0.4.1-beta.40')
     expect(s.error).toContain('0.4.1-beta.44')
+  })
+
+  it('names the branded managed log when install succeeds but doctor still says missing', async () => {
+    h.runtimeRows = runtimeRows(false)
+    h.installLeavesRuntimeMissing = true
+    h.currentTeam = { id: 't1' }
+    h.daemonTeam = 't1'
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    await useDaemonOnboardingStore.getState().refresh()
+
+    const s = useDaemonOnboardingStore.getState()
+    expect(h.installCalls).toEqual(['pi'])
+    expect(s.status).toBe('error')
+    expect(s.failedStep).toBe('install-runtime')
+    expect(s.error).toContain('~/.amuxd-copilot361/logs/amuxd.managed.log')
+    expect(s.error).not.toContain('~/.amuxd/logs/')
   })
 
   it('stops at install-runtime, by name, when the install fails', async () => {

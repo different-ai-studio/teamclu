@@ -390,6 +390,23 @@ mod tests {
         assert_eq!(resolve_amuxd_dir_name("teamclu"), "amuxd");
         assert_eq!(resolve_amuxd_dir_name("teamcludev"), "amuxd-teamcludev");
         assert_eq!(resolve_amuxd_dir_name("copilot361"), "amuxd-copilot361");
+        assert_eq!(resolve_amuxd_dir_name("teamclaw"), "amuxd-teamclaw");
+    }
+
+    #[test]
+    fn amuxd_home_for_brand_keeps_official_and_namespaces_white_label() {
+        let _lock = home_env_lock();
+        let dir = tempdir().unwrap();
+        let _home = HomeGuard::set(dir.path());
+        assert_eq!(amuxd_home_for_brand("teamclu"), dir.path().join(".amuxd"));
+        assert_eq!(
+            amuxd_home_for_brand("copilot361"),
+            dir.path().join(".amuxd-copilot361")
+        );
+        assert_eq!(
+            amuxd_home_for_brand("teamclaw"),
+            dir.path().join(".amuxd-teamclaw")
+        );
     }
 
     #[test]

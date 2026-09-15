@@ -1045,7 +1045,7 @@
     }
   },
   "workspace": {
-    "daemonUnavailableHint": "Start amuxd on this machine (e.g. pnpm daemon:run), confirm the HTTP port/token files exist under ~/.amuxd/, then retry.",
+    "daemonUnavailableHint": "Start amuxd on this machine (e.g. pnpm daemon:run), confirm the HTTP port/token files exist under {{path}}, then retry.",
     "runtimeRefresh": {
       "pendingTitle": "Workspace configuration updated",
       "failedTitle": "Runtime refresh failed",
@@ -1871,7 +1871,7 @@
       },
       "resetRemediation": {
         "title": "Consider resetting the local daemon",
-        "description": "The issues below are often resolved by clearing the local daemon binding and re-initializing. Team shared directories (~/.amuxd/teams/) are not affected.",
+        "description": "The issues below are often resolved by clearing the local daemon binding and re-initializing. Team shared directories ({{path}}) are not affected.",
         "action": "Reset local daemon",
         "confirmTitle": "Reset local daemon?",
         "confirmDescription": "This clears the local daemon identity and config files. You will need to bind an agent again. Team shared files are not deleted.",
@@ -2084,7 +2084,7 @@
       "forceReloadDone": "Runtime reloaded",
       "manualReset": {
         "title": "Troubleshooting",
-        "description": "If the local daemon is in a bad state and other recovery steps fail, you can clear the local binding and re-initialize. Team shared directories (~/.amuxd/teams/) are not deleted.",
+        "description": "If the local daemon is in a bad state and other recovery steps fail, you can clear the local binding and re-initialize. Team shared directories ({{path}}) are not deleted.",
         "action": "Reset local daemon",
         "confirmTitle": "Reset local daemon?",
         "confirmDescription": "This deletes the local daemon identity and config files (daemon.toml, backend.toml, etc.). You will need to bind an agent again. Type RESET to confirm.",
@@ -2105,22 +2105,22 @@
         "start-daemon": "The local service is still starting up on this machine.",
         "install-runtime": "Downloading Node.js and pi. On Windows this can take several minutes — antivirus scans every file as it is written.",
         "mint-invite": "Waiting on the server. Check your network connection.",
-        "init-daemon": "Writing credentials to ~/.amuxd.",
+        "init-daemon": "Writing credentials to {{path}}.",
         "restart-daemon": "Waiting for the previous process to exit.",
         "await-daemon": "The service is starting but has not answered yet.",
         "cloud-auth": "Verifying this machine with the server."
       },
       "recovery": {
-        "start-daemon": "The local service never came up, so this machine has no id to bind. See ~/.amuxd/logs/amuxd.managed.log.",
+        "start-daemon": "The local service never came up, so this machine has no id to bind. See {{path}}.",
         "install-runtime": "The runtime could not be installed. Check your network connection, then retry — downloads come from nodejs.org and npm, with mirrors for mainland China.",
         "mint-invite": "The server could not be reached. Check your connection, then try again.",
         "init-daemon": "Credentials could not be written. A reset clears any half-written state.",
         "restart-daemon": "The local service would not restart. A reset clears any half-written state.",
-        "await-daemon": "The service started but never answered. See ~/.amuxd/logs/amuxd.managed.log.",
+        "await-daemon": "The service started but never answered. See {{path}}.",
         "cloud-auth": "This machine could not verify with the server.",
         "daemon-outdated": "The daemon on this machine is older than the app and cannot report the runtime. Restarting the app with a matching daemon is the fix — a retry against the same one will not help."
       },
-      "runtimeStillMissing": "The runtime was installed but still does not report as ready. See ~/.amuxd/logs/amuxd.managed.log.",
+      "runtimeStillMissing": "The runtime was installed but still does not report as ready. See {{path}}.",
       "daemonOutdated": "The local daemon (amuxd {{found}}) is older than this app ({{required}}) and cannot report whether the runtime is ready. Reinstall the app — or, in a dev checkout, restart `pnpm tauri:dev` so the bundled daemon is rebuilt.",
       "daemonOutdatedUnknownVersion": "The local daemon is older than this app and cannot report whether the runtime is ready. Reinstall the app — or, in a dev checkout, restart `pnpm tauri:dev` so the bundled daemon is rebuilt.",
       "probing": "Checking which download source is fastest…",
@@ -2130,7 +2130,7 @@
       "routeSelfHosted": "our own mirror",
       "routeCustom": "the registry you configured",
       "elapsed": "Still working — {{seconds}}s",
-      "stuckHint": "Taking longer than expected. Check ~/.amuxd/logs/amuxd.managed.log for details.",
+      "stuckHint": "Taking longer than expected. Check {{path}} for details.",
       "errorAtStep": "Setup stopped at: {{step}}",
       "reconnect": "Reconnect",
       "doneTitle": "This machine is ready",
@@ -2150,7 +2150,7 @@
       "retrying": "Retrying…",
       "retry": "Retry",
       "resetReinit": "Reset and re-initialize",
-      "resetIncomplete": "Reset did not take effect: this machine is still bound to team {{teamId}}. Check ~/.amuxd/logs/amuxd.managed.log."
+      "resetIncomplete": "Reset did not take effect: this machine is still bound to team {{teamId}}. Check {{path}}."
     },
     "daemonWorkspaces": {
       "current": "Open",
@@ -3732,7 +3732,7 @@
       "providerError": "The model provider reported an error. Please retry or switch models."
     },
     "connection": {
-      "portFileMissing": "amuxd daemon not connected: the HTTP control plane is not ready (~/.amuxd/run/amuxd.http.port does not exist). Restart amuxd, or confirm you are running the build from this branch.",
+      "portFileMissing": "amuxd daemon not connected: the HTTP control plane is not ready ({{path}} does not exist). Restart amuxd, or confirm you are running the build from this branch.",
       "tokenExchangeFailed": "amuxd daemon HTTP started but authentication failed: restart amuxd and try again.",
       "healthCheckFailed": "amuxd daemon HTTP is not responding: confirm the amuxd process is still running.",
       "notConnected": "amuxd daemon not connected: confirm amuxd is started and the HTTP control plane is available."

@@ -178,13 +178,32 @@ pub fn branded_amuxd_env() -> Vec<(&'static str, String)> {
 }
 
 /// Stamp brand + `AMUXD_HOME` onto a shell sidecar so CLI (`init` / `clear` /
-/// `doctor`) reads the same state dir as the desktop-managed daemon.
+/// `doctor` / `install-pi`) reads the same state dir as the desktop-managed daemon.
 pub fn with_amuxd_brand_env(
     command: tauri_plugin_shell::process::Command,
 ) -> tauri_plugin_shell::process::Command {
     branded_amuxd_env()
         .into_iter()
         .fold(command, |cmd, (key, value)| cmd.env(key, value))
+}
+
+/// The only way to spawn a bundled `amuxd` sidecar.
+///
+/// Injects brand + `AMUXD_HOME` so CLI subcommands hit the same home as the
+/// desktop-managed daemon. Call sites must not use `.sidecar("amuxd")` directly —
+/// that is how Copilot 361's `install-pi` wrote into `~/.amuxd` while `doctor`
+/// looked at `~/.amuxd-copilot361`.
+pub fn branded_amuxd_sidecar<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    args: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<tauri_plugin_shell::process::Command, String> {
+    use tauri_plugin_shell::ShellExt;
+    Ok(with_amuxd_brand_env(
+        app.shell()
+            .sidecar("amuxd")
+            .map_err(|e| format!("sidecar amuxd: {e}"))?
+            .args(args),
+    ))
 }
 
 /// Best-effort OS account name used to seed a new member's default display
@@ -357,4 +376,144 @@ fn open_in_terminal_blocking(path: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod branded_amuxd_sidecar_tests {
+    use super::*;
+    use crate::test_home::HomeGuard;
+    use std::path::{Path, PathBuf};
+
+    fn env_lookup<'a>(pairs: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
+        pairs
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn branded_amuxd_home_is_official_or_namespaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::set(tmp.path());
+        let cases = [
+            ("teamclu", "TeamClu", "teamclu", ".amuxd"),
+            ("copilot361", "Copilot 361", "copilot361", ".amuxd-copilot361"),
+            ("teamclaw", "TeamClaw", "teamclu", ".amuxd-teamclaw"),
+        ];
+        for (short, display, scheme, suffix) in cases {
+            let pairs = branded_amuxd_env_for(short, display, scheme);
+            let home = env_lookup(&pairs, teamclu_runtime_env::AMUXD_HOME_ENV)
+                .unwrap_or_else(|| panic!("AMUXD_HOME missing for {short}"));
+            assert!(
+                home.ends_with(suffix),
+                "{short} AMUXD_HOME should end with {suffix}, got {home}"
+            );
+            if short == "teamclu" {
+                assert!(
+                    !home.contains(".amuxd-"),
+                    "official brand must stay on ~/.amuxd, got {home}"
+                );
+            }
+            assert_eq!(
+                env_lookup(&pairs, teamclu_runtime_env::BRAND_SHORT_NAME_ENV),
+                Some(short)
+            );
+        }
+    }
+
+    fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk_rs(&path, out);
+            } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    fn function_body<'a>(src: &'a str, fn_name: &str) -> Option<&'a str> {
+        let start = src.find(&format!("fn {fn_name}"))?;
+        let after = &src[start..];
+        let brace = after.find('{')?;
+        let mut depth = 0usize;
+        for (i, c) in after[brace..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&after[..=brace + i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn amuxd_sidecar_spawns_must_go_through_branded_constructor() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
+        let constructor = std::fs::read_to_string(root.join("mod.rs")).unwrap();
+        let constructor_body = function_body(&constructor, "branded_amuxd_sidecar")
+            .expect("branded_amuxd_sidecar constructor is missing");
+        assert!(
+            constructor_body.contains(".sidecar(\"amuxd\")"),
+            "branded_amuxd_sidecar must be the sidecar spawn"
+        );
+
+        let mut files = Vec::new();
+        walk_rs(&root, &mut files);
+        let mut offenders = Vec::new();
+        for path in files {
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let rel = path.strip_prefix(&root).unwrap_or(&path);
+            for (idx, line) in contents.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if !line.contains(".sidecar(\"amuxd\")") {
+                    continue;
+                }
+                let allowed = rel == Path::new("mod.rs")
+                    && constructor_body
+                        .lines()
+                        .any(|constructor_line| constructor_line.trim() == line.trim());
+                if !allowed {
+                    offenders.push(format!("{}:{}: {}", rel.display(), idx + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "bare .sidecar(\"amuxd\") must live only inside branded_amuxd_sidecar:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    #[test]
+    fn doctor_and_install_pi_share_branded_sidecar_constructor() {
+        let setup = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/setup.rs"),
+        )
+        .unwrap();
+        for needle in ["fn run_doctor", "fn run_amuxd_install_pi"] {
+            let start = setup
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing {needle}"));
+            let body = &setup[start..];
+            let rest = &body[needle.len()..];
+            let end = rest
+                .find("\npub")
+                .or_else(|| rest.find("\nfn "))
+                .map(|i| needle.len() + i)
+                .unwrap_or(body.len());
+            let fn_body = &body[..end];
+            assert!(
+                fn_body.contains("branded_amuxd_sidecar"),
+                "{needle} must spawn via branded_amuxd_sidecar so install-pi inherits AMUXD_HOME"
+            );
+        }
+    }
 }

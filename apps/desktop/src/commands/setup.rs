@@ -142,9 +142,7 @@ pub(crate) async fn read_doctor<R: Runtime>(app: &AppHandle<R>) -> Option<serde_
 
 async fn run_doctor<R: Runtime>(app: &AppHandle<R>) -> Option<serde_json::Value> {
     use tauri_plugin_shell::process::CommandEvent;
-    use tauri_plugin_shell::ShellExt;
-    let command =
-        crate::commands::with_amuxd_brand_env(app.shell().sidecar("amuxd").ok()?.args(["doctor"]));
+    let command = crate::commands::branded_amuxd_sidecar(app, ["doctor"]).ok()?;
     let (mut rx, _child) = command.spawn().ok()?;
     let mut buf = String::new();
     while let Some(event) = rx.recv().await {
@@ -427,16 +425,11 @@ where
     F: Fn(&str, Option<String>, Option<String>) + Send,
 {
     use tauri_plugin_shell::process::CommandEvent;
-    use tauri_plugin_shell::ShellExt;
 
     emit("started", None, None);
     // `_child_guard` must stay alive until `rx` is drained: dropping the
     // CommandChild early can kill the sidecar mid-install.
-    let (mut rx, _child_guard) = app
-        .shell()
-        .sidecar("amuxd")
-        .map_err(|e| format!("sidecar amuxd: {e}"))?
-        .args(["install-pi"])
+    let (mut rx, _child_guard) = crate::commands::branded_amuxd_sidecar(app, ["install-pi"])?
         .spawn()
         .map_err(|e| format!("spawn amuxd: {e}"))?;
 

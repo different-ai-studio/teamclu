@@ -88,6 +88,68 @@ fn session_context_error_message(err: &ResolveError) -> &'static str {
     }
 }
 
+/// Body of `/internal/runtime-context/verify`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct VerifyRuntimeCallerRequest {
+    #[serde(rename = "hostGenerationId")]
+    pub host_generation_id: String,
+    #[serde(rename = "backendKind")]
+    pub backend_kind: String,
+}
+
+/// Is the bearer the live runtime-context token of this host generation?
+///
+/// Asked by the desktop's introspect API before it lets a `teamclu-introspect`
+/// sidecar change anything. amuxd puts the token only in the environment of the
+/// agent hosts it spawns, and they pass it only to their introspect child, so
+/// "yes" means the call came from inside an agent this daemon runs — not from a
+/// copy of the sidecar that some other program on the machine started.
+pub async fn verify_runtime_caller(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<VerifyRuntimeCallerRequest>,
+) -> Response {
+    if !runtime_context_peer_allowed(peer) {
+        return problem(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Runtime context verify is loopback-only",
+        );
+    }
+    let Some(service) = state.runtime_context.clone() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime_context_unavailable",
+            "Runtime context service is not configured",
+        );
+    };
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .trim();
+    match service.verify_token(bearer, &body.backend_kind, &body.host_generation_id) {
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(err) => {
+            warn!(
+                event = "runtime_context_verify",
+                backend_kind = %body.backend_kind,
+                host_generation_id = %body.host_generation_id,
+                result = err.code(),
+                "runtime caller verify failed"
+            );
+            problem(
+                StatusCode::from_u16(err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                err.code(),
+                session_context_error_message(&err),
+            )
+        }
+    }
+}
+
 pub async fn session_prompt(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -231,5 +293,109 @@ mod tests {
         let response =
             resolve_runtime_context(State(state), ConnectInfo(peer), headers, Json(body)).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    fn state_with(
+        service: std::sync::Arc<crate::runtime::context_service::RuntimeContextService>,
+        dir: &std::path::Path,
+    ) -> HttpState {
+        use crate::config::HttpConfig;
+        use crate::http::server::metadata;
+        use crate::http::tokens;
+
+        HttpState::new(
+            HttpConfig {
+                bind: "127.0.0.1:0".into(),
+                token_file: Some(dir.join("token")),
+                ..Default::default()
+            },
+            tokens::TokenStore::load_or_init(&dir.join("token")).unwrap(),
+            metadata("actor".into(), "test"),
+            crate::http::runtime_adapter::StubRuntimeAdapter::new(8),
+            None,
+            None,
+            crate::sync::dispatch::SyncDispatcher::new(
+                crate::sync::secret_store::SecretStore::new(),
+                None,
+            ),
+            None,
+        )
+        .with_runtime_context(service)
+    }
+
+    async fn verify(
+        state: &HttpState,
+        bearer: &str,
+        generation: &str,
+        backend: &str,
+        peer: SocketAddr,
+    ) -> StatusCode {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {bearer}").parse().unwrap(),
+        );
+        let body = VerifyRuntimeCallerRequest {
+            host_generation_id: generation.into(),
+            backend_kind: backend.into(),
+        };
+        verify_runtime_caller(State(state.clone()), ConnectInfo(peer), headers, Json(body))
+            .await
+            .status()
+    }
+
+    #[tokio::test]
+    async fn verify_runtime_caller_accepts_only_the_live_token_of_that_host() {
+        use crate::runtime::context_service::RuntimeContextService;
+        use std::sync::Arc;
+        use teamclu_runtime_env::session_context::TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV;
+
+        let service = Arc::new(RuntimeContextService::new());
+        let token = service
+            .env_for_generation(crate::proto::amux::AgentType::Pi, "pi-gen-1")
+            .get(TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV)
+            .cloned()
+            .expect("token");
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with(service, dir.path());
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242);
+
+        assert_eq!(
+            verify(&state, &token, "pi-gen-1", "pi", loopback).await,
+            StatusCode::OK
+        );
+        // A token amuxd never minted — what a copy of the sidecar started by
+        // another program would have to guess.
+        assert_eq!(
+            verify(&state, "rtctx_invalid", "pi-gen-1", "pi", loopback).await,
+            StatusCode::UNAUTHORIZED
+        );
+        // A real token only speaks for its own host.
+        assert_eq!(
+            verify(&state, &token, "pi-gen-2", "pi", loopback).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            verify(&state, &token, "pi-gen-1", "opencode", loopback).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            verify(&state, &token, "", "pi", loopback).await,
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_runtime_caller_rejects_non_loopback_peer() {
+        use crate::runtime::context_service::RuntimeContextService;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with(Arc::new(RuntimeContextService::new()), dir.path());
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 4242);
+        assert_eq!(
+            verify(&state, "rtctx_any", "pi-gen-1", "pi", remote).await,
+            StatusCode::FORBIDDEN
+        );
     }
 }

@@ -15,6 +15,7 @@ import {
 import { SettingCard } from './shared'
 import { DaemonOnboardingWizard } from '@/components/auth/DaemonOnboardingWizard'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
+import { daemonTeamsDisplayPath } from '@/lib/daemon/daemon-paths'
 import {
   collectDaemonResetRemediation,
   type DiagnosticCheck,
@@ -72,10 +73,11 @@ export function DaemonResetRemediationCard({
                 {t('settings.diagnostics.resetRemediation.title', '建议重置本地 daemon')}
               </h4>
               <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
-                {t(
-                  'settings.diagnostics.resetRemediation.description',
-                  '以下问题通常可通过清除本机 daemon 绑定并重新初始化解决。团队共享目录（~/.amuxd/teams/）不会受影响。',
-                )}
+                {t('settings.diagnostics.resetRemediation.description', {
+                  path: daemonTeamsDisplayPath,
+                  defaultValue:
+                    'The issues below are often resolved by clearing the local daemon binding and re-initializing. Team shared directories ({{path}}) are not affected.',
+                })}
               </p>
             </div>
             <ul className="space-y-1">

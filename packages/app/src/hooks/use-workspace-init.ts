@@ -14,6 +14,7 @@ import { probeDaemonHttp, invalidateDaemonConnection } from "@/lib/daemon/daemon
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
 import { getSkillDirectories, loadAllSkills } from "@/lib/skills/loader";
 import { DEFAULT_WORKSPACE_PATH } from "@/lib/config/build-config";
+import { daemonPortFileDisplayPath } from "@/lib/daemon/daemon-paths";
 import { markStartup } from "@/lib/telemetry/startup-perf";
 import { SKILLS_CHANGED_EVENT } from "@/lib/skills/changed-event";
 
@@ -164,7 +165,9 @@ export function useWorkspaceInit() {
         setOpenCodeReady(false);
         const message =
           probe.reason === "port_file_missing"
-            ? i18n.t("daemon.connection.portFileMissing")
+            ? i18n.t("daemon.connection.portFileMissing", {
+                path: daemonPortFileDisplayPath,
+              })
             : probe.reason === "token_invalid"
               ? i18n.t("daemon.connection.tokenExchangeFailed")
               : probe.reason === "not_running"

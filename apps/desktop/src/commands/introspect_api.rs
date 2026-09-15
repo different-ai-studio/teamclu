@@ -44,8 +44,14 @@
 //      cross-origin POST; the sidecar never does.
 //   3. `Host` must be a loopback name, closing the DNS-rebinding hole where a
 //      page on `evil.example` resolving to 127.0.0.1 would otherwise pass.
+//
+// The bearer file is readable by every program this user runs — another coding
+// agent included — so a call that changes something must also come from an
+// agent host amuxd spawned: see `introspect_api/caller.rs`.
 
 mod apps;
+mod caller;
+mod confirm;
 
 pub const INTROSPECT_API_PORT: u16 = 13144;
 
@@ -280,7 +286,7 @@ async fn not_found(method: axum::http::Method, uri: axum::http::Uri) -> impl Int
     )
 }
 
-fn router(app: AppHandle, token: Arc<str>) -> Router {
+fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> Router {
     Router::new()
         .route("/send-wecom", post_route!(handle_send_wecom))
         .route("/cron-run", post_route!(handle_cron_run))
@@ -305,6 +311,12 @@ fn router(app: AppHandle, token: Arc<str>) -> Router {
         .route("/app-domain", post_route!(apps::handle_app_domain))
         .fallback(not_found)
         .with_state(app)
+        // Inside the bearer gate, so an unauthenticated request never costs a
+        // round trip to amuxd.
+        .layer(axum::middleware::from_fn_with_state(
+            verifier,
+            caller::caller_gate,
+        ))
         // `layer`, not `route_layer`: this has to wrap the fallback too, or an
         // unauthorised caller learns which paths exist from the 404.
         .layer(axum::middleware::from_fn_with_state(token, gate))
@@ -329,7 +341,7 @@ pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
         token_path.display()
     );
 
-    axum::serve(listener, router(app, token))
+    axum::serve(listener, router(app, token, caller::daemon_verifier()))
         .await
         .map_err(Into::into)
 }
@@ -776,6 +788,11 @@ async fn handle_mcp_put(app: &AppHandle, body: &[u8]) -> Result<String, String> 
     if !servers.is_object() {
         return Err("servers must be a JSON object".to_string());
     }
+    confirm::confirm_with_user(
+        app,
+        confirm::mcp_servers_replace(super::prefers_zh_locale(), &workspace, servers),
+    )
+    .await?;
     let result = super::daemon_http::put_mcp_via_daemon(&workspace, servers).await?;
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {e}"))
 }

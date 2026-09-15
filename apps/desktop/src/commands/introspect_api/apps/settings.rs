@@ -17,7 +17,7 @@ use super::{
     app_path, explain, notify_app_changed, parse_body, require_action, resolve_app_row, row_id,
     row_str, u64_body_field, AppApi,
 };
-use crate::commands::introspect_api::{items_of, str_body_field};
+use crate::commands::introspect_api::{confirm, items_of, str_body_field};
 
 /// Exactly one of `candidates` whose `name` equals `wanted`, ignoring case.
 ///
@@ -174,6 +174,16 @@ pub(crate) async fn handle_app_access(app: &AppHandle, body: &[u8]) -> Result<St
                     "{name} created this app and is always admin on it; there is nothing to grant."
                 ));
             }
+            confirm::confirm_with_user(
+                app,
+                confirm::app_access_grant(
+                    crate::commands::prefers_zh_locale(),
+                    &row,
+                    &name,
+                    &level,
+                ),
+            )
+            .await?;
             let saved = api
                 .put(
                     &app_path(
@@ -198,6 +208,11 @@ pub(crate) async fn handle_app_access(app: &AppHandle, body: &[u8]) -> Result<St
         }
         "revoke" => {
             let (member_id, name) = resolve_member(&members, &v)?;
+            confirm::confirm_with_user(
+                app,
+                confirm::app_access_revoke(crate::commands::prefers_zh_locale(), &row, &name),
+            )
+            .await?;
             api.delete(
                 &app_path(
                     &app_id,
@@ -633,6 +648,13 @@ pub(crate) async fn handle_app_domain(app: &AppHandle, body: &[u8]) -> Result<St
             })
         }
         "set" => {
+            if let Some(confirmation) = confirm::app_domain_set(
+                crate::commands::prefers_zh_locale(),
+                &row,
+                domain.as_deref().unwrap_or_default(),
+            ) {
+                confirm::confirm_with_user(app, confirmation).await?;
+            }
             let saved = api
                 .put(
                     &path,
@@ -681,6 +703,11 @@ pub(crate) async fn handle_app_domain(app: &AppHandle, body: &[u8]) -> Result<St
             Err(e) => return Err(explain("Verifying the domain (needs admin on the app)", &e)),
         },
         "remove" => {
+            if let Some(confirmation) =
+                confirm::app_domain_remove(crate::commands::prefers_zh_locale(), &row)
+            {
+                confirm::confirm_with_user(app, confirmation).await?;
+            }
             api.delete(&path, "Unbinding the domain (needs admin on the app)")
                 .await?;
             notify_app_changed(app, &row);
