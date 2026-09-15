@@ -533,7 +533,6 @@ async fn send_wecom(
     use base64::Engine as _;
 
     let tgt = target.unwrap_or("");
-    let url = format!("http://127.0.0.1:{api_port}/send-wecom");
 
     let mut body = json!({
         "target": tgt,
@@ -547,10 +546,9 @@ async fn send_wecom(
         body["media_filename"] = json!(filename);
     }
 
-    let client = reqwest::Client::new();
-    let resp = client.post(&url).json(&body).send().await.map_err(|e| {
-        format!("WeCom internal API request failed: {e}. Is the TeamClu app running?")
-    })?;
+    // Through `desktop_api` like every other desktop call: a bare POST carries
+    // no bearer, and the desktop has refused those since SEC-1.
+    let resp = crate::desktop_api::send(api_port, "/send-wecom", &body).await?;
 
     if !resp.status().is_success() {
         let status = resp.status();

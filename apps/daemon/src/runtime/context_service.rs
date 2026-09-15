@@ -148,6 +148,26 @@ impl RuntimeContextService {
         inner.registry.resolve(req)
     }
 
+    /// Whether `bearer_token` is the live token of this host generation — the
+    /// check behind `/internal/runtime-context/verify`. Unlike
+    /// [`Self::resolve_with_token`] it names no backend session: the caller is
+    /// the host's MCP child, which serves every session in that host.
+    pub fn verify_token(
+        &self,
+        bearer_token: &str,
+        backend_kind: &str,
+        host_generation_id: &str,
+    ) -> Result<(), ResolveError> {
+        if host_generation_id.trim().is_empty() {
+            return Err(ResolveError::StaleHostGeneration);
+        }
+        self.inner.read().tokens.validate(
+            bearer_token,
+            backend_kind.trim(),
+            host_generation_id.trim(),
+        )
+    }
+
     pub fn env_for_generation(
         &self,
         agent_type: amux::AgentType,

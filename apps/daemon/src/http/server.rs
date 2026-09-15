@@ -119,6 +119,10 @@ async fn spawn_dedicated_runtime_context_listener(
             "/internal/runtime-context/session-prompt",
             post(crate::http::runtime_context::session_prompt),
         )
+        .route(
+            "/internal/runtime-context/verify",
+            post(crate::http::runtime_context::verify_runtime_caller),
+        )
         .with_state(state);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let join = tokio::spawn(async move {
