@@ -1379,8 +1379,7 @@ pub async fn get_file(
     let cipher_hash = if q.reference == "baseline" {
         crate::sync::oss::state::LocalSyncState::load_at(&q.team_id)
             .ok()
-            .and_then(|st| st.files.get(&q.path).map(|f| f.synced_cipher_hash.clone()))
-            .filter(|h| !h.is_empty())
+            .and_then(|st| baseline_cipher_hash(&st, &q.path))
     } else {
         Some(q.reference.clone())
     };
@@ -1390,21 +1389,54 @@ pub async fn get_file(
 
     let (fc, secret) = fc_client_from_store(&state, &q.team_id, q.fc_endpoint).await?;
     let key = optional_team_key(secret.as_deref())?;
-    let dl = fc
-        .download(&q.team_id, &cipher_hash)
-        .await
-        .map_err(|e| HttpError::internal(e.to_string()))?;
-    let blob = fc
-        .get_blob(&dl.download_url, &cipher_hash)
-        .await
-        .map_err(|e| HttpError::internal(e.to_string()))?;
+    let content = blob_text(&fc, &q.team_id, &cipher_hash, key.as_ref()).await?;
+    Ok(Json(FileContentResponse { content }))
+}
+
+/// The blob that is this path's last-synced copy, if it still has one.
+///
+/// `None` once the last thing synced for the path is its deletion. The entry
+/// keeps the deleted version's hash (a re-create CAS-es against that version),
+/// but that content is not a baseline any more — and once the team's storage
+/// is cleaned the blob is gone, so opening a re-created file failed its diff
+/// request with a 500 instead of reading as new.
+fn baseline_cipher_hash(
+    state: &crate::sync::oss::state::LocalSyncState,
+    path: &str,
+) -> Option<String> {
+    state
+        .files
+        .get(path)
+        .filter(|f| !f.deleted_local)
+        .map(|f| f.synced_cipher_hash.clone())
+        .filter(|h| !h.is_empty())
+}
+
+/// Download one blob and decode it as text. `Ok(None)` when the cloud no longer
+/// has it — the "missing version" case `get_file` promises to answer with
+/// `null`, which used to surface as a 500.
+async fn blob_text(
+    fc: &crate::sync::oss::fc_client::FcClient,
+    team_id: &str,
+    cipher_hash: &str,
+    key: Option<&[u8; 32]>,
+) -> Result<Option<String>, HttpError> {
+    use crate::sync::oss::error::SyncError;
+    let dl = match fc.download(team_id, cipher_hash).await {
+        Ok(dl) => dl,
+        Err(SyncError::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(HttpError::internal(e.to_string())),
+    };
+    let blob = match fc.get_blob(&dl.download_url, cipher_hash).await {
+        Ok(blob) => blob,
+        Err(SyncError::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(HttpError::internal(e.to_string())),
+    };
     let plaintext =
-        crate::sync::oss::crypto::decode_blob(blob, key.as_ref()).map_err(HttpError::internal)?;
+        crate::sync::oss::crypto::decode_blob(blob, key).map_err(HttpError::internal)?;
     let content =
         String::from_utf8(plaintext).map_err(|e| HttpError::internal(format!("utf8: {e}")))?;
-    Ok(Json(FileContentResponse {
-        content: Some(content),
-    }))
+    Ok(Some(content))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1417,7 +1449,8 @@ pub struct ChangedQuery {
 #[serde(rename_all = "camelCase")]
 pub struct ChangedResponse {
     pub files: Vec<ChangedFile>,
-    /// What the pull cannot apply, by path. Same call because the panel needs
+    /// What keeps failing to sync, by path: a pull this device cannot apply, or
+    /// a push the cloud will not take. Same call because the panel needs
     /// both to answer one question — "what is not in sync here" — and this one
     /// is already read on every write to the knowledge tree.
     pub stuck: Vec<StuckFile>,
@@ -1440,23 +1473,36 @@ pub async fn list_changed(
     let root = crate::config::global_team_store::sync_content_root(&q.team_id);
     let state = crate::sync::oss::state::LocalSyncState::load_at(&q.team_id)
         .map_err(|e| HttpError::internal(format!("load sync state: {e}")))?;
-    let mut stuck: Vec<StuckFile> = state
-        .quarantined
-        .iter()
-        .map(|(path, q)| StuckFile {
-            path: path.clone(),
-            reason: q.reason.clone(),
-            attempts: q.attempts,
-        })
-        .collect();
-    stuck.sort_by(|a, b| a.path.cmp(&b.path));
     let root = root.to_string_lossy().to_string();
     let rules = crate::sync::oss::ignore_rules::IgnoreRules::load(std::path::Path::new(&root));
     Ok(Json(ChangedResponse {
         files: local_changes_with(&root, &state, &rules),
-        stuck,
+        stuck: stuck_files(&state),
         ignored: crate::sync::oss::scanner::scan_ignored(&root, &rules),
     }))
+}
+
+/// Every path that keeps failing to sync — pulls this device cannot apply and
+/// pushes the cloud refused — once each, sorted. A path stuck both ways is
+/// listed with the pull's reason.
+fn stuck_files(state: &crate::sync::oss::state::LocalSyncState) -> Vec<StuckFile> {
+    let pulls = state.quarantined.iter().map(|(path, q)| StuckFile {
+        path: path.clone(),
+        reason: q.reason.clone(),
+        attempts: q.attempts,
+    });
+    let pushes = state
+        .push_failures
+        .iter()
+        .filter(|(path, _)| !state.quarantined.contains_key(*path))
+        .map(|(path, f)| StuckFile {
+            path: path.clone(),
+            reason: f.reason.clone(),
+            attempts: f.attempts,
+        });
+    let mut stuck: Vec<StuckFile> = pulls.chain(pushes).collect();
+    stuck.sort_by(|a, b| a.path.cmp(&b.path));
+    stuck
 }
 
 /// What is on this disk that the cloud does not have yet.
@@ -1664,6 +1710,101 @@ mod tests {
             st.mark_tombstoned(path, synced_version);
         }
         st
+    }
+
+    // ── file content + stuck list ────────────────────────────────────────────
+
+    #[test]
+    fn the_baseline_is_the_last_synced_copy() {
+        let st = state_with("knowledge/a.md", 3, false);
+        assert_eq!(
+            baseline_cipher_hash(&st, "knowledge/a.md").as_deref(),
+            Some("c")
+        );
+        assert_eq!(baseline_cipher_hash(&st, "knowledge/never-synced.md"), None);
+    }
+
+    /// A tombstoned entry still carries the deleted version's hash. Using it made
+    /// a re-created file ask for a blob the cleanup had already removed, and the
+    /// editor got a 500 instead of "this file is new".
+    #[test]
+    fn a_deleted_path_has_no_baseline() {
+        let st = state_with("knowledge/untitled.md", 17, true);
+        assert_eq!(baseline_cipher_hash(&st, "knowledge/untitled.md"), None);
+    }
+
+    #[tokio::test]
+    async fn a_hash_the_cloud_no_longer_lists_reads_as_no_content() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/sync/download"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(serde_json::json!({ "error": "blob not found" })),
+            )
+            .mount(&srv)
+            .await;
+
+        let fc = crate::sync::oss::fc_client::FcClient::new(srv.uri(), "jwt".into());
+        let content = blob_text(&fc, "t", "038252", None)
+            .await
+            .expect("a missing version is not an error");
+        assert_eq!(content, None);
+    }
+
+    #[tokio::test]
+    async fn a_listed_blob_missing_from_storage_reads_as_no_content() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/sync/download"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "downloadUrl": format!("{}/oss/blob", srv.uri()),
+                "size": 168,
+                "ttlSec": 600,
+            })))
+            .mount(&srv)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/oss/blob"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&srv)
+            .await;
+
+        let fc = crate::sync::oss::fc_client::FcClient::new(srv.uri(), "jwt".into());
+        let content = blob_text(&fc, "t", "038252", None)
+            .await
+            .expect("a missing object is not an error");
+        assert_eq!(content, None);
+    }
+
+    #[test]
+    fn a_refused_push_is_listed_with_the_files_that_cannot_sync() {
+        let mut st = crate::sync::oss::state::LocalSyncState::new_for_test("t");
+        st.quarantine("knowledge/b.md", "h", 2, "decrypt failed".into());
+        st.note_push_failure(
+            "knowledge/a.md",
+            "network: PUT blob failed (oss): HTTP 411 Length Required".into(),
+        );
+        st.note_push_failure("knowledge/b.md", "network: HTTP 411".into());
+
+        let stuck = stuck_files(&st);
+        let paths: Vec<&str> = stuck.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["knowledge/a.md", "knowledge/b.md"],
+            "once each, sorted"
+        );
+        assert!(stuck[0].reason.contains("411"), "{}", stuck[0].reason);
+        assert_eq!(
+            stuck[1].reason, "decrypt failed",
+            "a path stuck both ways keeps the pull's reason"
+        );
     }
 
     #[test]

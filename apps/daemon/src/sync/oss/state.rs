@@ -54,6 +54,24 @@ pub struct QuarantinedPull {
     pub attempts: u32,
 }
 
+/// A local change the push could not send.
+///
+/// The other direction's [`QuarantinedPull`]. Without it a push the server or
+/// OSS refused was a `warn!` and nothing else: the tick still reported
+/// `failed=0`, the file stayed dirty, and the panel had nothing to show — which
+/// is how every 0-byte file sat un-uploaded (OSS answered 411) unnoticed.
+///
+/// Carries no hash or version: the push re-reads the file every tick, so the
+/// only thing worth keeping is why the last attempt failed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedPush {
+    /// Why the last attempt failed.
+    pub reason: String,
+    /// How many ticks have tried. Informational — the push never stops trying.
+    pub attempts: u32,
+}
+
 /// A path the server refuses to serve this device: the team restricted the
 /// directory and this actor is not granted it.
 ///
@@ -209,6 +227,11 @@ pub struct LocalSyncState {
     /// got, and for the same reason.
     #[serde(default)]
     pub known: HashMap<String, KnownFile>,
+    /// Local changes the push could not send, by path. `serde(default)` for the
+    /// same reason as `quarantined`: an older state file still loads, and an
+    /// older daemon still reads a newer one.
+    #[serde(default)]
+    pub push_failures: HashMap<String, FailedPush>,
 }
 
 impl LocalSyncState {
@@ -276,6 +299,7 @@ impl LocalSyncState {
             forbidden: HashMap::new(),
             last_reconcile_at: 0,
             known: HashMap::new(),
+            push_failures: HashMap::new(),
         };
         let body = match std::fs::read_to_string(&path) {
             Ok(body) => body,
@@ -333,6 +357,7 @@ impl LocalSyncState {
             forbidden: HashMap::new(),
             last_reconcile_at: 0,
             known: HashMap::new(),
+            push_failures: HashMap::new(),
         }
     }
 
@@ -354,6 +379,44 @@ impl LocalSyncState {
         );
     }
 
+    /// Record (or re-record) a local change the push could not send.
+    pub fn note_push_failure(&mut self, path: &str, reason: String) {
+        let attempts = self
+            .push_failures
+            .get(path)
+            .map(|f| f.attempts.saturating_add(1))
+            .unwrap_or(1);
+        self.push_failures
+            .insert(path.to_string(), FailedPush { reason, attempts });
+    }
+
+    /// Drop push failures for every path not in `pushing` — the full list the
+    /// current tick is trying to send.
+    ///
+    /// A failure is only worth reporting while the path is still waiting to go
+    /// up. Once the file is deleted, reverted, ignored or restricted, nothing
+    /// retries it, and a leftover entry would keep it in the "cannot sync" list
+    /// forever.
+    pub fn retain_push_failures(&mut self, pushing: &[String]) {
+        if self.push_failures.is_empty() {
+            return;
+        }
+        let pushing: std::collections::HashSet<&str> = pushing.iter().map(String::as_str).collect();
+        self.push_failures
+            .retain(|path, _| pushing.contains(path.as_str()));
+    }
+
+    /// How many paths keep failing to sync, in either direction, each counted
+    /// once.
+    pub fn stuck_count(&self) -> usize {
+        let push_only = self
+            .push_failures
+            .keys()
+            .filter(|path| !self.quarantined.contains_key(*path))
+            .count();
+        self.quarantined.len() + push_only
+    }
+
     /// Insert or update a file entry after a successful download/upload.
     pub fn upsert(
         &mut self,
@@ -367,6 +430,7 @@ impl LocalSyncState {
     ) {
         // Whatever went wrong with this path before, it just landed.
         self.quarantined.remove(path);
+        self.push_failures.remove(path);
         self.files.insert(
             path.to_string(),
             FileState {
@@ -451,6 +515,7 @@ impl LocalSyncState {
     /// changed set and in the user's error count forever.
     pub fn mark_forbidden(&mut self, path: &str, reason: &str, now_secs: u64) {
         self.quarantined.remove(path);
+        self.push_failures.remove(path);
         self.forbidden.insert(
             path.to_string(),
             ForbiddenPath {
@@ -587,6 +652,55 @@ mod tests {
         let state = LocalSyncState::load(dir.path().to_str().unwrap(), "t").unwrap();
         assert_eq!(state.last_server_seq, 5);
         assert!(state.quarantined.is_empty());
+        assert!(state.push_failures.is_empty());
+    }
+
+    #[test]
+    fn a_push_failure_clears_when_the_path_finally_lands() {
+        let mut state = LocalSyncState::new("t");
+        state.note_push_failure("knowledge/a.md", "network: HTTP 411".into());
+        state.note_push_failure("knowledge/a.md", "network: HTTP 411".into());
+        assert_eq!(state.push_failures["knowledge/a.md"].attempts, 2);
+
+        state.upsert(
+            "knowledge/a.md",
+            1,
+            "c".into(),
+            "p".into(),
+            "p".into(),
+            0,
+            0,
+        );
+        assert!(state.push_failures.is_empty());
+    }
+
+    #[test]
+    fn push_failures_for_paths_no_longer_being_pushed_are_dropped() {
+        let mut state = LocalSyncState::new("t");
+        state.note_push_failure("knowledge/kept.md", "x".into());
+        state.note_push_failure("knowledge/deleted.md", "x".into());
+
+        state.retain_push_failures(&["knowledge/kept.md".to_string()]);
+
+        assert!(state.push_failures.contains_key("knowledge/kept.md"));
+        assert!(!state.push_failures.contains_key("knowledge/deleted.md"));
+    }
+
+    #[test]
+    fn a_restricted_path_is_not_also_a_push_failure() {
+        let mut state = LocalSyncState::new("t");
+        state.note_push_failure("knowledge/hr/a.md", "x".into());
+        state.mark_forbidden("knowledge/hr/a.md", "path forbidden", 1);
+        assert!(state.push_failures.is_empty());
+    }
+
+    #[test]
+    fn a_path_stuck_both_ways_counts_once() {
+        let mut state = LocalSyncState::new("t");
+        state.quarantine("knowledge/both.md", "h", 2, "decrypt failed".into());
+        state.note_push_failure("knowledge/both.md", "x".into());
+        state.note_push_failure("knowledge/push-only.md", "x".into());
+        assert_eq!(state.stuck_count(), 2);
     }
 
     #[test]
