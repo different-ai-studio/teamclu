@@ -522,7 +522,7 @@ export interface CreditPackage {
   name: string;
 }
 
-interface TeamQuotas {
+export interface TeamQuotas {
   /** Team-level, not per-member: mixed periods make "used this period" incomparable. */
   period: "week" | "month";
   /** null = unlimited. */

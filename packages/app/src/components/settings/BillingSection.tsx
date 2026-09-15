@@ -5,6 +5,7 @@ import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTeamPermissions } from '@/lib/team/team-permissions'
 import { cn, openExternalUrl } from '@/lib/utils'
+import { formatPoints } from '@/lib/ui/credit-points'
 import type {
   CreditLedgerEntry,
   CreditPackage,
@@ -17,17 +18,9 @@ import type {
  *
  * The headline unit is POINTS, not currency. Credits are our own pricing unit
  * and are not anchored to upstream cost, so showing a money figure here would
- * be a different number with a different meaning.
+ * be a different number with a different meaning. Display scale lives in
+ * `lib/ui/credit-points` and must stay shared with TokenUsageSection.
  */
-
-/** Display divisor: the wallet reads in the thousands, a request costs a
- *  fraction of one. No single unit is legible at both ends, so the balance is
- *  shown in points and per-request cost only ever appears aggregated. */
-const POINTS_PER_CREDIT = 10_000
-
-const toPoints = (credits: number) => credits / POINTS_PER_CREDIT
-const fmtPoints = (credits: number) =>
-  toPoints(credits).toLocaleString(undefined, { maximumFractionDigits: 0 })
 
 /** Stripe reports minor units (cents, 分). Formatting is left to the platform
  *  so a currency we have never seen still renders correctly. */
@@ -195,14 +188,14 @@ export function BillingSection() {
             <div className="mt-4 flex flex-wrap items-end gap-8">
               <Metric
                 label={t('settings.billing.available', 'Available')}
-                value={fmtPoints(credits.balanceCredits)}
+                value={formatPoints(credits.balanceCredits)}
                 unit={t('settings.billing.points', 'points')}
                 large
                 warn={isEmpty}
               />
               <Metric
                 label={t('settings.billing.usedThisPeriod', 'Used this period')}
-                value={fmtPoints(credits.usedCredits)}
+                value={formatPoints(credits.usedCredits)}
                 unit={t('settings.billing.points', 'points')}
               />
               {runwayDays !== null && (
@@ -257,7 +250,7 @@ export function BillingSection() {
                           <p className="text-[13px] font-medium">{p.name}</p>
                           <p className="mt-0.5 text-[12px] text-muted-foreground">
                             {t('settings.billing.packageCredits', '{{points}} points', {
-                              points: fmtPoints(p.credits),
+                              points: formatPoints(p.credits),
                             })}
                           </p>
                         </div>
@@ -335,7 +328,7 @@ export function BillingSection() {
                         <tr key={m.publicModelId} className="border-t border-border-soft">
                           <td className="px-4 py-2 font-medium">{m.publicModelId}</td>
                           <td className="px-4 py-2 text-right tabular-nums">{fmtTokens(m.inputTokens + m.outputTokens)}</td>
-                          <td className="px-4 py-2 text-right tabular-nums">{fmtPoints(m.credits)}</td>
+                          <td className="px-4 py-2 text-right tabular-nums">{formatPoints(m.credits)}</td>
                           <td className="px-4 py-2 text-right tabular-nums">{pct.toFixed(1)}%</td>
                         </tr>
                       )
@@ -379,7 +372,7 @@ export function BillingSection() {
                           </span>
                         </td>
                         <td className={cn('px-4 py-2 text-right tabular-nums', e.amountCredits >= 0 ? 'text-emerald-700' : 'text-foreground')}>
-                          {e.amountCredits >= 0 ? '+' : ''}{fmtPoints(e.amountCredits)}
+                          {e.amountCredits >= 0 ? '+' : ''}{formatPoints(e.amountCredits)}
                         </td>
                         <td className="px-4 py-2 text-muted-foreground">{e.note ?? ''}</td>
                       </tr>

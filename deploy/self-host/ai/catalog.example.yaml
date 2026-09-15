@@ -220,7 +220,8 @@ public_models:
 # "image tokens" for one whole picture, which is not a quantity the tier's
 # per-token price means anything against (§2.1).
 #
-# Set 2026-09-09: 1,500,000 credits = 150 credits-in-UI for a standard 1024².
+# Set 2026-09-09: 1,500,000 credits = 15 points-in-UI for a standard 1024²
+# (UI「积分」= credits / 100_000; was 150 when the divisor was 10_000).
 #
 # NOT cost-anchored, and it cannot be — the images upstream is a SUBSCRIPTION
 # pool (the mx5 relay fronts accounts, not a metered API), so the marginal cost

@@ -2877,6 +2877,7 @@
       "outputTokens": "输出 tokens",
       "byTier": "按档位",
       "colPoints": "积分",
+      "overQuota": "已超额",
       "beforeStats": "{{date}} 之前没有统计数据。用量统计自新账单系统上线起开始记录；更早的记录停留在旧网关，口径不同，没有迁移。"
     },
     "privacy": {
