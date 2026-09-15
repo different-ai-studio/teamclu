@@ -17,10 +17,13 @@
 //! Every call goes out on the signed-in user's bearer through
 //! [`introspect_fc_client`], so the Cloud API enforces app permissions exactly
 //! as it does for the desktop UI (`view` / `prompt` / `admin`) — nothing here
-//! escalates past what the user may do themselves. The work lives in this
-//! process because it is the only one holding both that bearer and a line to
-//! the local daemon, which builds what a deploy publishes and seeds, clones
-//! and moves checkouts.
+//! escalates past what the user may do themselves. On top of that, deploying,
+//! deleting and changing who can reach an app wait for the user to approve a
+//! native dialog (`../confirm.rs`).
+//!
+//! The work lives in this process because it is the only one holding both that
+//! bearer and a line to the local daemon, which builds what a deploy publishes
+//! and seeds, clones and moves checkouts.
 //!
 //! A capability added to the panel belongs here too: the panel and these tools
 //! are two views of one control plane, and an agent that can do only half of
@@ -616,6 +619,16 @@ pub(super) async fn handle_app_manage(app: &AppHandle, body: &[u8]) -> Result<St
         _ => {}
     }
     let row = resolve_app_row(app, &api, &v).await?;
+    let zh = crate::commands::prefers_zh_locale();
+    let confirmation = match action.as_str() {
+        "deploy" => Some(super::confirm::app_deploy(zh, &row)),
+        "delete" => Some(super::confirm::app_delete(zh, &row)),
+        "update" => super::confirm::app_exposure_change(zh, &row, &update_patch(&v)?),
+        _ => None,
+    };
+    if let Some(confirmation) = confirmation {
+        super::confirm::confirm_with_user(app, confirmation).await?;
+    }
     let out = match action.as_str() {
         "status" => json!({ "action": "status", "app": app_status(&api, &row).await }),
         "sessions" => app_sessions(&api, &row).await?,
