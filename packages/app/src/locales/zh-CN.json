@@ -3693,6 +3693,7 @@
       "transportOfflineDesc": "Desktop MQTT 已断开。Broker 重连后将自动重试启动 runtime。",
       "workspaceRpcTimeoutDesc": "Agent {{shortId}} 在超时时间内未通过 MQTT 响应 workspace 同步。",
       "workspaceEnsureFailedDesc": "Agent {{shortId}}：启动前未能将 workspace 同步到 daemon。",
+      "sessionWorkspaceUnboundDesc": "该会话没有绑定工作目录，无法启动 Agent {{shortId}}。",
       "sessionParticipantFailedDesc": "无法把 Agent {{shortId}} 加入本会话，因此没有启动它的 runtime。Agent 必须先成为会话参与者才能读取该会话。({{reason}})",
       "startFailedTitle": "启动 Agent runtime 失败",
       "emptyReply": "Agent 没有返回任何内容，所选模型可能不可用或配置异常。",
