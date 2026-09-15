@@ -130,11 +130,13 @@ pub struct TickResult {
     pub pulled: u32,
     pub pushed: u32,
     pub conflicts: u32,
-    /// Files the server listed but we could not fetch this tick.
+    /// Files that keep failing to sync, in either direction: a server copy this
+    /// device cannot apply, or a local change the server would not take.
     ///
     /// Previously this number had nowhere to go: a failed pull only produced a
     /// `warn!`, the tick still returned `Ok`, and the UI just saw a smaller
-    /// `pulled`. Surfacing it is what makes the failure observable at all.
+    /// `pulled`. Surfacing it is what makes the failure observable at all — and
+    /// a failed push stayed invisible the same way until it was counted here.
     pub failed: u32,
     /// Paths skipped for exceeding [`MAX_FILE_BYTES`].
     ///
@@ -561,10 +563,11 @@ pub async fn tick_with_progress(
         pulled,
         pushed,
         conflicts: conflict_count,
-        // What is STUCK, not what missed this tick: a quarantined file stays
-        // counted until it finally lands, which is the number a person needs to
-        // see. `pull_failures` is only interesting to the log line above.
-        failed: state.quarantined.len() as u32,
+        // What is STUCK, not what missed this tick: a quarantined pull or a
+        // refused push stays counted until it finally lands, which is the
+        // number a person needs to see. `pull_failures` is only interesting to
+        // the log line above.
+        failed: state.stuck_count() as u32,
         oversize,
         blocked_new_files,
         blocked_deletes,
@@ -787,12 +790,52 @@ fn record_forbidden(state: &mut LocalSyncState, label: &str, path: &str, message
 }
 
 fn record_item_error(stats: &mut PhaseStats, label: &str, path: &str, status: u16, message: &str) {
-    let e = SyncError::Internal(format!("FC item HTTP {status}: {message}"));
+    let e = item_error(status, message);
     if is_transient(&e) {
         stats.deferred += 1;
         stats.last_transient = Some(e);
     } else {
         tracing::warn!("[oss_sync] {label} {path} HTTP {status}: {message}");
+    }
+}
+
+/// One failed item of a batch response, as an error.
+fn item_error(status: u16, message: &str) -> SyncError {
+    SyncError::Internal(format!("FC item HTTP {status}: {message}"))
+}
+
+/// A push failure for one path. See [`record_push_errors`].
+fn record_push_error(
+    stats: &mut PhaseStats,
+    state: &mut LocalSyncState,
+    label: &str,
+    path: &str,
+    e: SyncError,
+) {
+    record_push_errors(stats, state, &format!("{label} {path}"), &[path], e);
+}
+
+/// A push failure covering `paths`: a transient one is deferred to the next
+/// tick as before; anything else is recorded against each path.
+///
+/// Recording is the change. This used to stop at `warn!`, so a file the server
+/// or OSS kept refusing stayed dirty forever while every tick reported
+/// `failed=0` and the panel showed nothing wrong.
+fn record_push_errors(
+    stats: &mut PhaseStats,
+    state: &mut LocalSyncState,
+    label: &str,
+    paths: &[&str],
+    e: SyncError,
+) {
+    if is_transient(&e) {
+        stats.deferred += paths.len() as u32;
+        stats.last_transient = Some(e);
+        return;
+    }
+    tracing::warn!("[oss_sync] {label}: {e}");
+    for path in paths {
+        state.note_push_failure(path, e.to_string());
     }
 }
 
@@ -1111,6 +1154,11 @@ async fn push_phase(
     progress: &ProgressSink,
 ) -> PhaseStats {
     let mut stats = PhaseStats::default();
+    // A recorded failure only means something while this tick is still trying
+    // to send the path. Deleted, reverted, ignored or restricted since, nothing
+    // will retry it — and a leftover entry would keep a note the user already
+    // threw away in the "cannot sync" list.
+    state.retain_push_failures(&paths);
     if paths.is_empty() {
         return stats;
     }
@@ -1121,12 +1169,13 @@ async fn push_phase(
     let uploaded = Arc::new(AtomicU32::new(0));
 
     for chunk in paths.chunks(MAX_BATCH) {
-        // Stage 0: read + hash. Unreadable files are skipped (stay dirty).
+        // Stage 0: read + hash. An unreadable file is skipped (stays dirty) and
+        // recorded.
         let mut prepared: Vec<PreparedUpload> = Vec::new();
         for p in chunk {
             match prepare_upload(content_root, p, state) {
                 Ok(pu) => prepared.push(pu),
-                Err(e) => tracing::warn!("[oss_sync] prepare {p}: {e}"),
+                Err(e) => record_push_error(&mut stats, state, "prepare", p, e),
             }
         }
         if prepared.is_empty() {
@@ -1155,12 +1204,8 @@ async fn push_phase(
                 continue;
             }
             Err(e) => {
-                if is_transient(&e) {
-                    stats.deferred += prepared.len() as u32;
-                    stats.last_transient = Some(e);
-                } else {
-                    tracing::warn!("[oss_sync] prepare-batch: {e}");
-                }
+                let paths: Vec<&str> = prepared.iter().map(|pu| pu.path.as_str()).collect();
+                record_push_errors(&mut stats, state, "prepare-batch", &paths, e);
                 continue;
             }
         };
@@ -1193,9 +1238,12 @@ async fn push_phase(
                                     (idx, sess, r)
                                 });
                             }
-                            None => tracing::warn!(
-                                "[oss_sync] prepare {} requires upload but no presigned URL",
-                                pu.path
+                            None => record_push_error(
+                                &mut stats,
+                                state,
+                                "prepare",
+                                &pu.path,
+                                SyncError::Internal("requires upload but no presigned URL".into()),
                             ),
                         }
                     } else {
@@ -1214,9 +1262,13 @@ async fn push_phase(
                 BatchItemOutcome::Forbidden { message } => {
                     record_forbidden(state, "prepare", &pu.path, &message)
                 }
-                BatchItemOutcome::Err { status, message } => {
-                    record_item_error(&mut stats, "prepare", &pu.path, status, &message)
-                }
+                BatchItemOutcome::Err { status, message } => record_push_error(
+                    &mut stats,
+                    state,
+                    "prepare",
+                    &pu.path,
+                    item_error(status, &message),
+                ),
             }
         }
 
@@ -1231,14 +1283,7 @@ async fn push_phase(
                     idx,
                     session_id: sess,
                 }),
-                Err(e) => {
-                    if is_transient(&e) {
-                        stats.deferred += 1;
-                        stats.last_transient = Some(e);
-                    } else {
-                        tracing::warn!("[oss_sync] put {}: {e}", prepared[idx].path);
-                    }
-                }
+                Err(e) => record_push_error(&mut stats, state, "put", &prepared[idx].path, e),
             }
         }
 
@@ -1280,25 +1325,17 @@ async fn push_phase(
                             )
                             .await
                         }
-                        Err(e) => {
-                            if is_transient(&e) {
-                                stats.deferred += 1;
-                                stats.last_transient = Some(e);
-                            } else {
-                                tracing::warn!("[oss_sync] complete {}: {e}", pu.path);
-                            }
-                        }
+                        Err(e) => record_push_error(&mut stats, state, "complete", &pu.path, e),
                     }
                 }
                 continue;
             }
             Err(e) => {
-                if is_transient(&e) {
-                    stats.deferred += ready.len() as u32;
-                    stats.last_transient = Some(e);
-                } else {
-                    tracing::warn!("[oss_sync] complete-batch: {e}");
-                }
+                let paths: Vec<&str> = ready
+                    .iter()
+                    .map(|r| prepared[r.idx].path.as_str())
+                    .collect();
+                record_push_errors(&mut stats, state, "complete-batch", &paths, e);
                 continue;
             }
         };
@@ -1329,9 +1366,13 @@ async fn push_phase(
                 BatchItemOutcome::Forbidden { message } => {
                     record_forbidden(state, "complete", &pu.path, &message)
                 }
-                BatchItemOutcome::Err { status, message } => {
-                    record_item_error(&mut stats, "complete", &pu.path, status, &message)
-                }
+                BatchItemOutcome::Err { status, message } => record_push_error(
+                    &mut stats,
+                    state,
+                    "complete",
+                    &pu.path,
+                    item_error(status, &message),
+                ),
             }
         }
     }
@@ -1437,14 +1478,7 @@ async fn apply_push_per_file(
             )
             .await
         }
-        Err(e) => {
-            if is_transient(&e) {
-                stats.deferred += 1;
-                stats.last_transient = Some(e);
-            } else {
-                tracing::warn!("[oss_sync] push {path}: {e}");
-            }
-        }
+        Err(e) => record_push_error(stats, state, "push", path, e),
     }
 }
 
@@ -2095,6 +2129,7 @@ mod tests {
             quarantined: Default::default(),
             forbidden: Default::default(),
             known: Default::default(),
+            push_failures: Default::default(),
             last_reconcile_at: 0,
             schema_version: 1,
             team_id: "t".into(),
@@ -2705,6 +2740,180 @@ mod tests {
         record_item_error(&mut s2, "complete", "a.md", 410, "session gone");
         assert_eq!(s2.deferred, 0, "410 is terminal, not deferred");
         assert!(s2.last_transient.is_none());
+    }
+
+    #[test]
+    fn a_refused_push_is_recorded_against_the_path() {
+        let mut state = empty_state();
+        let mut stats = PhaseStats::default();
+        let refused = || {
+            SyncError::Network(
+                "PUT blob failed (bucket.oss-cn-shenzhen.aliyuncs.com): HTTP 411 Length Required"
+                    .into(),
+            )
+        };
+
+        record_push_error(&mut stats, &mut state, "put", "knowledge/a.md", refused());
+        record_push_error(&mut stats, &mut state, "put", "knowledge/a.md", refused());
+
+        assert_eq!(stats.deferred, 0, "a 411 is not transient");
+        let f = &state.push_failures["knowledge/a.md"];
+        assert_eq!(f.attempts, 2);
+        assert!(
+            f.reason.contains("411"),
+            "the reason has to say why: {}",
+            f.reason
+        );
+        assert_eq!(state.stuck_count(), 1, "one path, however many attempts");
+    }
+
+    #[test]
+    fn a_transient_push_error_defers_without_recording() {
+        let mut state = empty_state();
+        let mut stats = PhaseStats::default();
+        record_push_errors(
+            &mut stats,
+            &mut state,
+            "prepare-batch",
+            &["knowledge/a.md", "knowledge/b.md"],
+            SyncError::Internal("FC returned HTTP 429: Too Many Requests".into()),
+        );
+        assert_eq!(stats.deferred, 2);
+        assert!(
+            state.push_failures.is_empty(),
+            "a rate limit clears on its own; it is not a file that cannot sync"
+        );
+    }
+
+    /// A prepare-batch reply for one item whose blob OSS does not have yet.
+    fn prepare_batch_requiring_upload(put_url: String) -> serde_json::Value {
+        serde_json::json!({
+            "results": [{
+                "ok": true,
+                "uploadSessionId": "sess-1",
+                "ossKey": "teams/t/blobs/x",
+                "requiresUpload": true,
+                "presignedPut": put_url,
+            }],
+        })
+    }
+
+    /// The whole push path for a 0-byte file, against a mock FC and OSS. The
+    /// mock OSS accepts only a PUT that says `Content-Length: 0`, as the real
+    /// one does — without it every empty note stopped at a 411.
+    #[tokio::test]
+    async fn an_empty_file_pushes_all_the_way_through() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/sync/upload/prepare-batch"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(prepare_batch_requiring_upload(format!(
+                    "{}/oss/blob",
+                    srv.uri()
+                ))),
+            )
+            .mount(&srv)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/oss/blob"))
+            .and(header("content-length", "0"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&srv)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/sync/upload/complete-batch"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [{
+                    "ok": true,
+                    "version": 18,
+                    "contentHash": sha256_hex(b""),
+                    "changeSeq": 7,
+                }],
+            })))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::create_dir_all(dir.path().join("knowledge")).unwrap();
+        std::fs::write(dir.path().join("knowledge/untitled.md"), b"").unwrap();
+
+        let fc = FcClient::new(srv.uri(), "jwt".into());
+        let mut state = empty_state();
+        let stats = push_phase(
+            root,
+            "t",
+            None,
+            &fc,
+            &mut state,
+            vec!["knowledge/untitled.md".into()],
+            &ProgressSink::new(|_| {}),
+        )
+        .await;
+
+        assert_eq!(stats.pushed, 1);
+        assert!(state.push_failures.is_empty());
+        assert_eq!(state.files["knowledge/untitled.md"].synced_version, 18);
+    }
+
+    /// A PUT that OSS refuses has to end up somewhere the tick counts and the
+    /// panel lists — it used to end at a `warn!`.
+    #[tokio::test]
+    async fn a_refused_blob_put_is_recorded_not_just_logged() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/sync/upload/prepare-batch"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(prepare_batch_requiring_upload(format!(
+                    "{}/oss/blob",
+                    srv.uri()
+                ))),
+            )
+            .mount(&srv)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(411))
+            .mount(&srv)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/sync/upload/complete-batch"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&srv)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::create_dir_all(dir.path().join("knowledge")).unwrap();
+        std::fs::write(dir.path().join("knowledge/a.md"), b"hello").unwrap();
+
+        let fc = FcClient::new(srv.uri(), "jwt".into());
+        let mut state = empty_state();
+        let stats = push_phase(
+            root,
+            "t",
+            None,
+            &fc,
+            &mut state,
+            vec!["knowledge/a.md".into()],
+            &ProgressSink::new(|_| {}),
+        )
+        .await;
+
+        assert_eq!(stats.pushed, 0);
+        assert_eq!(stats.deferred, 0, "411 is not transient");
+        let f = &state.push_failures["knowledge/a.md"];
+        assert!(f.reason.contains("411"), "{}", f.reason);
+        assert!(!state.files.contains_key("knowledge/a.md"));
+        assert_eq!(state.stuck_count(), 1);
     }
 
     #[test]
