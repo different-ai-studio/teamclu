@@ -35,7 +35,7 @@ export function createShortcutsModule(client: CloudApiClient): ShortcutsBackend 
       await client.post<void>("/v1/shortcuts/set-visible-roles", input);
     },
     async listTeamRoles(teamId) {
-      const out = await client.get<{ items: Array<{ id: string; teamId: string; code: string; name: string }> }>(`/v1/teams/${encodeURIComponent(teamId)}/roles`);
+      const out = await client.get<{ items: Array<{ id: string; teamId: string; code: string; name: string }> }>(`/v1/teams/${encodeURIComponent(teamId)}/shortcut-roles`);
       return out.items.map((r) => ({ id: r.id, team_id: r.teamId, code: r.code, name: r.name }));
     },
     async listShortcutRoleBindings(teamId) {

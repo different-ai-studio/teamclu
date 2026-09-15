@@ -35,6 +35,7 @@ function assertNewOrgAllowed(): void {
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
+import { makeOrgRolesRepo } from "./supabase-repo/org-roles.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
 import { parseAppType } from "./validation/app-type.js";
 import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
@@ -6234,6 +6235,28 @@ export function createSupabaseBusinessRepository(options) {
     ...makeKnowledgeAclRepo({
       supabase,
       serviceRoleClient,
+      resolveCallerActorForTeam: async (teamId: string) => {
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw userErr;
+        const userId = userData?.user?.id;
+        if (!userId) return null;
+        const { data, error } = await supabase
+          .from("actors")
+          .select("id")
+          .eq("team_id", teamId)
+          .eq("user_id", userId)
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { id: data.id } : null;
+      },
+    }),
+
+    // ─── Org roles catalog ───────────────────────────────────────────────────
+    // docs/specs/2026-09-15-org-roles-permissions-design.md
+    // Authz: current_team_role (owner/admin) + system immutable + binding 409.
+    ...makeOrgRolesRepo({
+      supabase,
       resolveCallerActorForTeam: async (teamId: string) => {
         const { data: userData, error: userErr } = await supabase.auth.getUser();
         if (userErr) throw userErr;

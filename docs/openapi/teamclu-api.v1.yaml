@@ -5530,6 +5530,35 @@ paths:
                         path: { type: [string, "null"] }
         "400":
           $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/shortcut-roles:
+    get:
+      operationId: listTeamRoles
+      summary: List shortcuts RBAC roles for a team
+      description: |
+        Returns `amux.team_roles` rows used by shortcuts visibility RBAC.
+        Relocated from `GET /v1/teams/{teamId}/roles`, which now lists org roles
+        (`listOrgRoles`).
+      tags: [Shortcuts]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Shortcuts team roles.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TeamRole"
+        "401":
+          $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/shortcut-role-bindings:
     get:
       operationId: listShortcutRoleBindings

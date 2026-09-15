@@ -1511,11 +1511,11 @@ test("PUT /v1/shortcuts/:shortcutId/visible-roles calls repo.setShortcutVisibleR
   assert.deepEqual(repo.calls[0], { method: "setShortcutVisibleRoles", shortcutId: "shortcut-1", input: { roleIds: ["role-1"] } });
 });
 
-test("GET /v1/teams/:teamId/roles calls repo.listTeamRoles", async () => {
+test("GET /v1/teams/:teamId/shortcut-roles calls repo.listTeamRoles", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
     httpMethod: "GET",
-    path: "/v1/teams/team-1/roles",
+    path: "/v1/teams/team-1/shortcut-roles",
     headers: { Authorization: "Bearer token" },
   }, { createRepository: () => repo });
 
