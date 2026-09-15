@@ -959,6 +959,16 @@
       "interruptedStatusLabel": "interrupted",
       "agentReplyBodyKept": "You interrupted this reply. Generated content is kept."
     },
+    "approvalTimeout": {
+      "stoppedTitle": "Timed out",
+      "statusLabel": "approval timeout",
+      "description": "The runtime was detached after waiting too long for permission approval."
+    },
+    "idleTimeout": {
+      "stoppedTitle": "Detached",
+      "statusLabel": "idle timeout",
+      "description": "The runtime was detached after prolonged inactivity."
+    },
     "noFinalReply": {
       "finishedTitle": "Turn finished",
       "statusLabel": "no final reply",

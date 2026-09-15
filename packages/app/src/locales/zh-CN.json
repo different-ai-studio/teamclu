@@ -959,6 +959,16 @@
       "interruptedStatusLabel": "中断",
       "agentReplyBodyKept": "你已打断本次回复。已生成的内容会保留。"
     },
+    "approvalTimeout": {
+      "stoppedTitle": "已超时",
+      "statusLabel": "approval timeout",
+      "description": "等待权限批准过久，运行时已回收。如需继续，请重新发起操作。"
+    },
+    "idleTimeout": {
+      "stoppedTitle": "已回收",
+      "statusLabel": "idle timeout",
+      "description": "会话长时间无活动，运行时已回收。"
+    },
     "noFinalReply": {
       "finishedTitle": "本轮已结束",
       "statusLabel": "no final reply",

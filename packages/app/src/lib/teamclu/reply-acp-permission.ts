@@ -1,11 +1,6 @@
 import { mqttPublish } from "@/lib/mqtt/mqtt-bridge";
-import {
-  resolvePermissionCommandTarget,
-  runtimeTargetsForSession,
-} from "@/lib/agent/runtime-state-resolve";
 import { sessionFlowError, sessionFlowLog } from "@/lib/session/session-flow-log";
 import { useCurrentTeamStore } from "@/stores/current-team";
-import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { acpOptionIdForDecision } from "@/lib/teamclu/acp-permission-option";
 import { createRuntimeCommandSender } from "@/lib/teamclu/runtime-command";
@@ -13,6 +8,14 @@ import { runtimeCommand } from "@/lib/daemon/teamclu-rpc";
 
 export type AcpPermissionDecision = "allow" | "deny" | "always";
 
+export type PermissionReplyResult =
+  | { status: "sent" }
+  | { status: "cold" }
+  | { status: "error"; message: string };
+
+export function isPermissionColdSessionError(error: unknown): boolean {
+  return error instanceof Error && /no live attachment for session/.test(error.message);
+}
 
 export function findV2PendingPermission(requestId: string): {
   sessionId: string;
@@ -37,9 +40,17 @@ export async function replyAcpPermission(args: {
   decision: AcpPermissionDecision;
   /** When omitted, resolved from v2 pending permission options. */
   optionId?: string;
-}): Promise<void> {
+}): Promise<PermissionReplyResult> {
   const teamId = useCurrentTeamStore.getState().team?.id?.trim();
-  if (!teamId) throw new Error("No active team");
+  if (!teamId) {
+    return { status: "error", message: "No active team" };
+  }
+
+  const sessionId = args.sessionId.trim();
+  const agentActorId = args.agentActorId.trim();
+  if (!sessionId || !agentActorId) {
+    return { status: "error", message: "Session id and agent actor id are required" };
+  }
 
   const senderActorId = useCurrentTeamStore.getState().currentMember?.id?.trim() ?? "";
   const granted = args.decision !== "deny";
@@ -50,47 +61,26 @@ export async function replyAcpPermission(args: {
       acpOptionIdForDecision(args.decision, { options: pendingReq?.options })
     : undefined;
 
-  // The participant lookup that used to live here only existed to narrow
-  // `listRuntimeTargetsForSession`. With targets read off the retain there is
-  // nothing to narrow, so this is one fewer network round trip per command.
-
-  // Straight off the retain: one attachment per session, no cloud round trip
-  // and nothing stale to choose between.
-  const sessionRuntimeRows = runtimeTargetsForSession(
-    args.sessionId,
-    useRuntimeStateStore.getState().byRuntimeId,
-  );
-
-  const byRuntimeId = useRuntimeStateStore.getState().byRuntimeId;
-  const target = resolvePermissionCommandTarget({
-    agentActorId: args.agentActorId,
-    sessionRuntimeRows,
-    byRuntimeId,
-  });
-
-  if (!target) {
-    throw new Error("Could not resolve agent runtime for permission response");
-  }
+  // Session-addressed RPC only — the daemon resolves the live attachment by
+  // session_id. Local MQTT retain is not consulted (see interrupt-agent.ts).
+  const targetActorId = agentActorId;
+  const runtimeId = sessionId;
 
   sessionFlowLog("permission.reply.begin", {
-    sessionId: args.sessionId,
-    agentActorId: args.agentActorId,
+    sessionId,
+    agentActorId,
     requestId: args.requestId,
     granted,
-    targetActorId: target.actorId,
-    runtimeId: target.runtimeId,
-    sessionRuntimeId:
-      sessionRuntimeRows.find((row) => row.agent_id?.trim() === args.agentActorId)?.runtime_id ??
-      null,
+    targetActorId,
+    runtimeId,
+    sessionRuntimeId: sessionId,
   });
 
   const peerId = `teamclu-desktop-${(senderActorId || "anon").slice(0, 8)}`;
   const sender = createRuntimeCommandSender({
     mqtt: { publish: mqttPublish },
-    // Session-addressed RPC; on transport failure the sender retries once
-    // then publishes to the spawn-keyed commands topic (issue #783).
-    rpc: ({ targetActorId, sessionId: sid, envelope }) =>
-      runtimeCommand({ targetActorId, sessionId: sid, envelope }),
+    rpc: ({ targetActorId: actor, sessionId: sid, envelope }) =>
+      runtimeCommand({ targetActorId: actor, sessionId: sid, envelope }),
     teamId,
     peerId,
     senderActorId,
@@ -98,43 +88,50 @@ export async function replyAcpPermission(args: {
 
   try {
     await sender.sendPermissionResponse({
-      targetActorId: target.actorId,
-      runtimeId: target.runtimeId,
-      sessionId: args.sessionId,
+      targetActorId,
+      runtimeId,
+      sessionId,
       requestId: args.requestId,
       granted,
       optionId,
     });
   } catch (error) {
+    if (isPermissionColdSessionError(error)) {
+      sessionFlowLog("permission.reply.cold", {
+        sessionId,
+        agentActorId,
+        requestId: args.requestId,
+      });
+      return { status: "cold" };
+    }
     sessionFlowError("permission.reply.failed", error, {
-      sessionId: args.sessionId,
-      agentActorId: args.agentActorId,
+      sessionId,
+      agentActorId,
       requestId: args.requestId,
-      runtimeId: target.runtimeId,
+      runtimeId,
     });
-    throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: "error", message };
   }
 
   sessionFlowLog("permission.reply.ok", {
-    sessionId: args.sessionId,
+    sessionId,
     requestId: args.requestId,
-    runtimeId: target.runtimeId,
+    runtimeId,
   });
 
-  useV2StreamingStore
-    .getState()
-    .clearPermissionRequest(args.sessionId, args.agentActorId, args.requestId);
+  return { status: "sent" };
 }
 
 export async function replyPermissionById(
   permissionId: string,
   decision: AcpPermissionDecision,
-): Promise<void> {
+): Promise<PermissionReplyResult> {
   const located = findV2PendingPermission(permissionId);
   if (!located) {
-    throw new Error(`Unknown permission request: ${permissionId}`);
+    return { status: "error", message: `Unknown permission request: ${permissionId}` };
   }
-  await replyAcpPermission({
+  return replyAcpPermission({
     sessionId: located.sessionId,
     agentActorId: located.actorId,
     requestId: permissionId,

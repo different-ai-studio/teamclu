@@ -214,6 +214,8 @@ export interface Message {
   /** Daemon AGENT_REPLY metadata.turn_status — e.g. user abort. */
   turnStatus?:
     | "interrupted"
+    | "approval_timeout"
+    | "idle_timeout"
     | "failed"
     | "no_final_reply"
     | "skill_created_in_unsupported_directory"

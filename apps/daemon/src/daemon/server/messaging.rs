@@ -16,6 +16,75 @@ fn latency_probe_enabled() -> bool {
 }
 
 impl DaemonServer {
+    /// Idle sweeper detach: synthetic Active→Idle only while the turn is still
+    /// open in daemon state; otherwise stop the attachment without a new
+    /// AGENT_REPLY.
+    pub(crate) async fn graceful_detach_idle_timeout(&mut self, agent_id: &str) {
+        let (snapshot, needs_synthetic) = {
+            let agents = self.agents.lock().await;
+            (
+                agents.idle_detach_snapshot(agent_id),
+                agents.needs_synthetic_idle_detach(agent_id),
+            )
+        };
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+
+        if needs_synthetic {
+            {
+                let mut agents = self.agents.lock().await;
+                agents.prepare_idle_timeout_detach(agent_id);
+            }
+
+            let frame = AcpEventFrame::new(
+                snapshot.acp_session_id,
+                amux::AcpEvent {
+                    event: Some(amux::acp_event::Event::StatusChange(
+                        amux::AcpStatusChange {
+                            old_status: amux::AgentStatus::Active as i32,
+                            new_status: amux::AgentStatus::Idle as i32,
+                        },
+                    )),
+                    model: String::new(),
+                },
+            );
+            self.forward_agent_event(agent_id, frame).await;
+        }
+
+        self.cancel_session_pending_permissions(agent_id, &snapshot.session_id)
+            .await;
+
+        let _ = {
+            let mut agents = self.agents.lock().await;
+            agents.complete_idle_detach_stop(agent_id).await
+        };
+    }
+
+    /// Pending approvals on a session whose attachment was torn down.
+    pub(crate) async fn cancel_session_pending_permissions(
+        &mut self,
+        agent_id: &str,
+        session_id: &str,
+    ) {
+        let request_ids = self.permissions.take_pending_for_session(session_id);
+        for request_id in request_ids {
+            self.publish_session_event(
+                agent_id,
+                amux::SessionEvent {
+                    event: Some(amux::session_event::Event::PermissionResolved(
+                        amux::PermissionResolved {
+                            request_id,
+                            resolved_by_peer_id: String::new(),
+                            granted: false,
+                        },
+                    )),
+                },
+            )
+            .await;
+        }
+    }
+
     /// Build merged agent list: active agents + historical (non-active) sessions.
     /// Now only used by `publish_all_agent_states` to iterate startup/reconnect state.
     /// Per-agent updates should go through `publish_runtime_state_by_id`.
@@ -248,7 +317,15 @@ impl DaemonServer {
 
         // Register permission requests for later resolution
         if let Some(amux::acp_event::Event::PermissionRequest(ref pr)) = acp_event.event {
-            self.permissions.register_pending(&pr.request_id);
+            let cloud_session_id = {
+                let agents = self.agents.lock().await;
+                agents
+                    .get_handle(agent_id)
+                    .map(|h| h.session_id.clone())
+                    .unwrap_or_default()
+            };
+            self.permissions
+                .register_pending(&pr.request_id, &cloud_session_id);
         }
 
         if let Some(amux::acp_event::Event::Error(ref err)) = acp_event.event {
@@ -465,7 +542,9 @@ impl DaemonServer {
                     let content = msg.content;
                     let mut metadata_json = msg.metadata_json;
                     let turn_id = msg.turn_id;
-                    let interrupted = metadata_json.contains("\"turn_status\":\"interrupted\"");
+                    let interrupted = metadata_json.contains("\"turn_status\":\"interrupted\"")
+                        || metadata_json.contains("\"turn_status\":\"approval_timeout\"")
+                        || metadata_json.contains("\"turn_status\":\"idle_timeout\"");
                     if persist {
                         let agents = self.agents.lock().await;
                         if let Some(handle) = agents.get_handle(agent_id) {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   findV2PendingPermission: vi.fn(),
   clearPermissionRequest: vi.fn(),
+  clearAllPermissionRequests: vi.fn(() => [] as string[]),
   setState: vi.fn(),
 }));
 
@@ -14,6 +15,7 @@ vi.mock("@/stores/v2-streaming-store", () => ({
   useV2StreamingStore: {
     getState: () => ({
       clearPermissionRequest: mocks.clearPermissionRequest,
+      clearAllPermissionRequests: mocks.clearAllPermissionRequests,
     }),
   },
 }));
@@ -25,6 +27,7 @@ vi.mock("@/stores/session-store", () => ({
 }));
 
 import {
+  clearPendingPermissionsOnTurnIdle,
   handleSessionEventPermissionResolved,
   resetPermissionResolvedTtlForTests,
   wasPermissionRecentlyResolved,
@@ -67,5 +70,43 @@ describe("handleSessionEventPermissionResolved", () => {
     handleSessionEventPermissionResolved({ requestId: "  " });
     expect(mocks.findV2PendingPermission).not.toHaveBeenCalled();
     expect(wasPermissionRecentlyResolved("")).toBe(false);
+  });
+});
+
+describe("clearPendingPermissionsOnTurnIdle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetPermissionResolvedTtlForTests();
+    mocks.clearAllPermissionRequests.mockReturnValue(["perm-a", "perm-b"]);
+    mocks.setState.mockImplementation((updater: (s: { pendingPermissions: unknown[] }) => unknown) => {
+      const result = updater({
+        pendingPermissions: [
+          {
+            permission: {
+              id: "perm-a",
+              sessionID: "sess-1",
+              metadata: { _acp_agent_actor_id: "agent-1" },
+            },
+          },
+          {
+            permission: {
+              id: "perm-other",
+              sessionID: "sess-1",
+              metadata: { _acp_agent_actor_id: "agent-2" },
+            },
+          },
+        ],
+      });
+      return result;
+    });
+  });
+
+  it("clears v2 pending for the actor and suppresses late permissionRequest", () => {
+    clearPendingPermissionsOnTurnIdle("sess-1", "agent-1");
+
+    expect(mocks.clearAllPermissionRequests).toHaveBeenCalledWith("sess-1", "agent-1");
+    expect(wasPermissionRecentlyResolved("perm-a")).toBe(true);
+    expect(wasPermissionRecentlyResolved("perm-b")).toBe(true);
+    expect(mocks.setState).toHaveBeenCalled();
   });
 });

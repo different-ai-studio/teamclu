@@ -2188,8 +2188,10 @@ impl DaemonServer {
                             .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
                             .unwrap_or(true);
                         if mqtt_up {
-                            let (agent_events, evicted_runtime_ids, actor_state_dirty): (
+                            let (agent_events, evicted_runtime_ids, evicted_sessions, idle_evict_ids, actor_state_dirty): (
                                 Vec<_>,
+                                Vec<String>,
+                                Vec<(String, String)>,
                                 Vec<String>,
                                 bool,
                             ) = {
@@ -2197,11 +2199,20 @@ impl DaemonServer {
                                 (
                                     mgr.poll_events(),
                                     mgr.drain_evicted(),
+                                    mgr.drain_evicted_session_detachments(),
+                                    mgr.drain_idle_evict_pending(),
                                     mgr.take_actor_state_dirty(),
                                 )
                             };
+                            for agent_id in idle_evict_ids {
+                                self.graceful_detach_idle_timeout(&agent_id).await;
+                            }
                             for runtime_id in evicted_runtime_ids {
                                 self.publish_runtime_detached(&runtime_id).await;
+                            }
+                            for (agent_id, session_id) in evicted_sessions {
+                                self.cancel_session_pending_permissions(&agent_id, &session_id)
+                                    .await;
                             }
                             // Covers every attach/detach, including the gateway
                             // and cron spawns that never reach

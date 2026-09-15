@@ -40,6 +40,11 @@ function markPermissionResolved(requestId: string): void {
  * Clear a pending ACP permission on every client after SessionEvent.PermissionResolved.
  * Locates by requestId scan so envelope actorId/runtimeId mismatches cannot leave sticky cards.
  */
+/** Clear one pending card locally (user dismissed or cold session). */
+export function dismissPendingPermission(requestId: string): void {
+  handleSessionEventPermissionResolved({ requestId });
+}
+
 export function handleSessionEventPermissionResolved(args: {
   requestId: string;
   /** Optional hint; ignored for lookup — findV2PendingPermission scans all keys. */
@@ -66,6 +71,42 @@ export function handleSessionEventPermissionResolved(args: {
         (e) => e.permission.id !== requestId,
       ),
     };
+  });
+}
+
+/**
+ * Turn reached terminal Idle (cancel, pi exit, normal completion). Pending
+ * approvals for that actor are stale — clear cards without pretending the user
+ * denied each request (PermissionResolved is for explicit decisions).
+ */
+export function clearPendingPermissionsOnTurnIdle(
+  sessionId: string,
+  actorId: string,
+): void {
+  const sid = sessionId.trim();
+  const aid = actorId.trim();
+  if (!sid || !aid) return;
+
+  const clearedIds = useV2StreamingStore
+    .getState()
+    .clearAllPermissionRequests(sid, aid);
+  for (const requestId of clearedIds) {
+    markPermissionResolved(requestId);
+  }
+
+  useSessionStore.setState((state) => {
+    const pendingPermissions = state.pendingPermissions.filter((entry) => {
+      if (entry.permission.sessionID?.trim() !== sid) return true;
+      const owner =
+        (entry.permission.metadata?._acp_agent_actor_id as string | undefined)?.trim() ||
+        "";
+      if (owner && owner !== aid) return true;
+      return !clearedIds.includes(entry.permission.id);
+    });
+    if (pendingPermissions.length === state.pendingPermissions.length) {
+      return {};
+    }
+    return { pendingPermissions };
   });
 }
 

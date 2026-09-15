@@ -172,6 +172,8 @@ interface State {
     actorId: string,
     requestId: string,
   ) => void;
+  /** Drop every pending ACP permission for one session actor (turn ended). */
+  clearAllPermissionRequests: (sessionId: string, actorId: string) => string[];
   replaceParts: (sessionId: string, actorId: string, parts: MessagePart[]) => void;
   ingestReplyPreview: (sessionId: string, actorId: string, text: string) => void;
   finalize: (sessionId: string, actorId: string, finalText?: string) => void;
@@ -1228,6 +1230,23 @@ export const useV2StreamingStore = create<State>((set, get) => ({
       },
       revisionBySession: bumpRevision(state.revisionBySession, sessionId),
     });
+  },
+
+  clearAllPermissionRequests: (sessionId, actorId) => {
+    const key = k(sessionId, actorId);
+    const state = get();
+    const existing = state.byKey[key];
+    if (!existing) return [];
+    const ids = Object.keys(existing.pendingPermissionsByRequestId).filter(Boolean);
+    if (ids.length === 0) return [];
+    set({
+      byKey: {
+        ...state.byKey,
+        [key]: { ...existing, pendingPermissionsByRequestId: {} },
+      },
+      revisionBySession: bumpRevision(state.revisionBySession, sessionId),
+    });
+    return ids;
   },
 
   replaceParts: (sessionId, actorId, parts) => {

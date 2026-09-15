@@ -103,7 +103,7 @@ export interface SessionState {
   replyPermission: (
     permissionId: string,
     decision: "allow" | "deny" | "always",
-  ) => Promise<void>;
+  ) => Promise<import("@/lib/teamclu/reply-acp-permission").PermissionReplyResult>;
   addPendingQuestion: (question: PendingQuestionState) => void;
   resolveQuestion: (questionId: string) => void;
   answerQuestion: (answers: Record<string, string>, questionId?: string) => Promise<void>;
@@ -207,7 +207,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   replyPermission: async (permissionId, decision) => {
     const { replyPermissionById } = await import("@/lib/teamclu/reply-acp-permission");
-    await replyPermissionById(permissionId, decision);
+    return replyPermissionById(permissionId, decision);
   },
 
   // ── opencode `question` tool ─────────────────────────────────────

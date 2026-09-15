@@ -6,6 +6,7 @@ import { patchPersistedToolResult, patchPersistedToolUse, syncStreamingToolOutpu
 import { streamActorIdFromLiveEvent } from "@/lib/daemon/teamclu-events";
 import { getFlushedTurn } from "@/lib/stream/flushed-turn-registry";
 import { handleAcpPermissionRequest } from "@/lib/teamclu/handle-acp-permission-request";
+import { clearPendingPermissionsOnTurnIdle } from "@/lib/teamclu/handle-session-event-permission-resolved";
 import { isStreamInterruptible, useV2StreamingStore } from "@/stores/v2-streaming-store";
 import { logInterruptMsgDiag, summarizePendingReplies, summarizeStreamEntry } from "@/lib/diagnostics/interrupt-msg-diag";
 import { logStreamToolDiag } from "@/lib/diagnostics/stream-tool-diag";
@@ -335,6 +336,7 @@ export function handleAcpEvent(
                 clearTerminalFlushPending(agentStreamKey(sid, actorId));
                 useV2StreamingStore.getState().beginPlanningPlaceholder(sid, actorId);
               } else if (isTerminalAgentStatus(sc.newStatus)) {
+                clearPendingPermissionsOnTurnIdle(sid, actorId);
                 const streamKey = agentStreamKey(sid, actorId);
                 clearFollowUpActive(streamKey);
                 terminalFlushPendingRef.current[streamKey] = true;
