@@ -56,9 +56,79 @@ export type LoginApp = {
   teamName?: string | null;
   /** `apps.auth_mode`. Only `platform` has a login wall at all. */
   authMode: string;
+  /** `apps.custom_domain`. A valid return origin only once verified. */
+  customDomain?: string | null;
+  /**
+   * `apps.custom_domain_verified_at` — null means stored but NOT served, so
+   * not a return origin either.
+   */
+  customDomainVerifiedAt?: string | null;
 };
 
 export type LookupLoginApp = (appId: string) => Promise<LoginApp | null>;
+
+/**
+ * Columns the login service reads from `amux.apps`.
+ *
+ * The custom-domain pair is here because the return address a visitor arrives
+ * with is checked against `appOrigins`, and a verified custom domain is one of
+ * those origins. The gateway reads the same two columns when it builds that
+ * address (`apps-vanity.ts`); without them here, every login started on a
+ * custom domain was refused as "返回地址与该应用不符".
+ */
+const LOGIN_APP_COLUMNS =
+  "id, slug, name, team_id, auth_mode, custom_domain, custom_domain_verified_at";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The app lookup, reading with a service-role client.
+ *
+ * Takes the client factory instead of importing it so the column list and the
+ * row mapping are testable without a database — the same seam
+ * `makeSupabaseVanityLookup` uses. The bug this exists to prevent was exactly
+ * a column the mapping never read.
+ */
+export function makeSupabaseLoginAppLookup(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getClient: () => any,
+): LookupLoginApp {
+  return async (appId: string) => {
+    if (!UUID_RE.test(appId)) return null;
+    const client = getClient();
+    const { data, error } = await client
+      .from("apps")
+      .select(LOGIN_APP_COLUMNS)
+      .eq("id", appId)
+      .maybeSingle();
+    if (error) throw new Error(`login app lookup failed: ${error.message}`);
+    if (!data) return null;
+    return {
+      id: data.id,
+      slug: data.slug,
+      name: data.name ?? null,
+      teamName: await readTeamName(client, data.team_id ?? null),
+      authMode: data.auth_mode ?? "none",
+      customDomain: data.custom_domain ?? null,
+      customDomainVerifiedAt: data.custom_domain_verified_at ?? null,
+    };
+  };
+}
+
+/**
+ * The team caption on the login page. Best effort, on purpose: it is a label,
+ * and a failed read must not become a login page that refuses to render.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readTeamName(client: any, teamId: string | null): Promise<string | null> {
+  if (!teamId) return null;
+  try {
+    const { data } = await client.from("teams").select("name").eq("id", teamId).maybeSingle();
+    return typeof data?.name === "string" && data.name.trim() ? data.name.trim() : null;
+  } catch {
+    return null;
+  }
+}
 
 export type LoginServiceDeps = {
   lookupApp: LookupLoginApp;
