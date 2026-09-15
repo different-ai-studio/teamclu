@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { SettingCard } from './shared'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
+import { daemonTeamsDisplayPath } from '@/lib/daemon/daemon-paths'
 
 const RESET_CONFIRM_TEXT = 'RESET'
 
@@ -57,10 +58,11 @@ export function DaemonManualResetCard({
               {t('settings.daemonGeneral.manualReset.title', '疑难问题排查')}
             </h4>
             <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
-              {t(
-                'settings.daemonGeneral.manualReset.description',
-                '若本机 daemon 状态异常且其他方式无法恢复，可清除本地绑定并重新初始化。团队共享目录（~/.amuxd/teams/）不会删除。',
-              )}
+              {t('settings.daemonGeneral.manualReset.description', {
+                path: daemonTeamsDisplayPath,
+                defaultValue:
+                  'If the local daemon is in a bad state and other recovery steps fail, you can clear the local binding and re-initialize. Team shared directories ({{path}}) are not deleted.',
+              })}
             </p>
           </div>
           {resetError && !confirmOpen && (
