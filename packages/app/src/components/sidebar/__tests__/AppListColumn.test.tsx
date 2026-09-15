@@ -1,16 +1,23 @@
 import * as React from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { AppListColumn } from '../AppListColumn'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTabsStore } from '@/stores/tabs'
+import { useAppRelationshipFilterStore } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string) => fallback ?? _key,
+    t: (_key: string, fallback?: string, values?: Record<string, string>) =>
+      (fallback ?? _key).replace(/\{\{(\w+)\}\}/g, (_m, name) => values?.[name] ?? ''),
   }),
+}))
+
+// Real one would reach the cache and the network on mount.
+vi.mock('@/stores/actor-directory-store', () => ({
+  useActorDirectory: () => ({ actors: [{ id: 'actor-lin', display_name: 'Lin' }] }),
 }))
 
 // Sidebar UI primitives call useSidebar() which requires a SidebarProvider.
@@ -46,6 +53,7 @@ describe('AppListColumn', () => {
     vi.clearAllMocks()
     useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
     useTabsStore.setState({ tabs: [], activeTabId: null })
+    useAppRelationshipFilterStore.setState({ byTeam: {} })
     useAppsStore.setState({
       items: [mkApp('app-1', 'Alpha'), mkApp('app-2', 'Beta')],
       loading: false,
@@ -161,6 +169,86 @@ describe('AppListColumn', () => {
     // header icon and the empty state's own button).
     expect(screen.getAllByRole('button', { name: '新建' })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: '所有应用' })).toHaveLength(2)
+  })
+
+  describe('relationship', () => {
+    beforeEach(() => {
+      useAppsStore.setState({
+        items: [
+          mkApp('a', 'Own', { relationship: 'owner' }),
+          mkApp('b', 'Shared', { relationship: 'invited', invitedByActorId: 'actor-lin' }),
+          mkApp('c', 'Common', { relationship: 'team', visibility: 'team' }),
+          mkApp('d', 'Common Two', { relationship: 'team', visibility: 'team' }),
+        ],
+        localAppIds: null,
+      })
+    })
+
+    it('counts the apps under each quick filter', () => {
+      render(<AppListColumn />)
+      expect(screen.getByTestId('app-relationship-chip-all')).toHaveTextContent('全部4')
+      expect(screen.getByTestId('app-relationship-chip-owner')).toHaveTextContent('我的1')
+      expect(screen.getByTestId('app-relationship-chip-invited')).toHaveTextContent('受邀1')
+      expect(screen.getByTestId('app-relationship-chip-team')).toHaveTextContent('团队2')
+      expect(screen.getByTestId('app-relationship-chip-all')).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('narrows the list to one relationship, and remembers it for the team', () => {
+      render(<AppListColumn />)
+      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+      expect(screen.queryByText('Own')).not.toBeInTheDocument()
+      expect(screen.queryByText('Shared')).not.toBeInTheDocument()
+      expect(screen.getByText('Common')).toBeInTheDocument()
+      expect(screen.getByText('Common Two')).toBeInTheDocument()
+      expect(screen.getByTestId('app-relationship-chip-team')).toHaveAttribute('aria-pressed', 'true')
+      expect(useAppRelationshipFilterStore.getState().byTeam['team-1']).toBe('team')
+    })
+
+    it('says under each icon how I am related to the app, with the inviter on hover', () => {
+      render(<AppListColumn />)
+      const labelIn = (name: RegExp) =>
+        within(screen.getByRole('button', { name })).getByTestId('app-row-relationship')
+      expect(labelIn(/Own/)).toHaveTextContent('我的')
+      expect(labelIn(/Common Two/)).toHaveTextContent('团队')
+      // One short word fits under a 28px icon; the name does not, so it hovers.
+      expect(labelIn(/Shared/)).toHaveTextContent(/^受邀$/)
+      expect(labelIn(/Shared/)).toHaveAttribute('title', 'Lin 邀请')
+      expect(labelIn(/Own/)).not.toHaveAttribute('title')
+    })
+
+    it('drops the row label once one relationship is picked — every row would say the same word', () => {
+      render(<AppListColumn />)
+      expect(screen.getAllByTestId('app-row-relationship')).toHaveLength(4)
+      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+      expect(screen.queryByTestId('app-row-relationship')).not.toBeInTheDocument()
+    })
+
+    it('shrinks the icon only to make room for the word under it', () => {
+      // 24px is what lets disc + word match name + status. With no word under
+      // it, a 24px disc just looks undersized next to two lines of text.
+      render(<AppListColumn />)
+      expect(screen.getAllByTestId('app-row-icon')[0]).toHaveClass('h-6', 'w-6')
+      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+      expect(screen.getAllByTestId('app-row-icon')[0]).toHaveClass('h-7', 'w-7')
+    })
+
+    it('keeps the label off the status line, so it never squeezes the status', () => {
+      // On the status line it cut "Deploy failed" to "Deploy fai…", and then
+      // itself to "M…". Under the icon neither competes for that width.
+      render(<AppListColumn />)
+      const status = screen.getAllByTestId('app-row-status')[0]
+      const label = screen.getAllByTestId('app-row-relationship')[0]
+      expect(status.parentElement).not.toContainElement(label)
+    })
+
+    it('a filter with nothing under it says so and offers the whole list back', () => {
+      useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'invited' } })
+      useAppsStore.setState({ items: [mkApp('a', 'Own', { relationship: 'owner' })] })
+      render(<AppListColumn />)
+      expect(screen.getByText('没有受邀的应用')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: '查看全部' }))
+      expect(screen.getByText('Own')).toBeInTheDocument()
+    })
   })
 
   it('refreshes the local half on mount', () => {
