@@ -285,31 +285,14 @@ pub async fn tick_with_progress(
         let local = state.files.get(&item.path).cloned();
 
         if item.deleted {
-            // Server says file is deleted.
-            if let Some(ref ls) = local {
-                if !ls.dirty && !ls.deleted_local {
-                    // Local is clean and not already tombstoned — remove it and
-                    // record the tombstone version (so a later re-create CAS-es
-                    // correctly). Skipping when already deleted_local keeps this
-                    // idempotent and avoids removing a file re-created locally.
-                    let _ = tokio::fs::remove_file(&abs_path).await;
-                    prune_empty_parents(Path::new(content_root), &item.path).await;
-                    state.mark_tombstoned(&item.path, item.version);
-                } else if ls.dirty {
-                    // Server deleted the path but the local copy has unpushed
-                    // edits: keep the file (user work survives), but advance the
-                    // entry's synced_version to the tombstone so the next push
-                    // CAS-es against the tombstone and RESURRECTS the file,
-                    // instead of sending the stale pre-delete parentVersion which
-                    // 409s forever (writing an unbounded stream of conflict
-                    // sidecars). dirty stays true so prepare_upload re-uploads it.
-                    state.advance_dirty_to_tombstone(&item.path, item.version);
-                }
-                // If dirty: leave local file, do NOT delete. User-local edits survive.
-            }
-            // A listed-but-unfetched entry stops being worth listing.
-            state.clear_known(&item.path);
-            // Not in local state → nothing to do.
+            apply_remote_tombstone(
+                content_root,
+                &abs_path,
+                &mut state,
+                &item.path,
+                item.version,
+            )
+            .await;
             continue;
         }
 
@@ -878,6 +861,45 @@ fn with_quarantined_retries(items: Vec<PullItem>, state: &LocalSyncState) -> Vec
     retries.sort_by(|a, b| a.path.cmp(&b.path));
     retries.extend(items);
     retries
+}
+
+/// Apply one server tombstone to this device.
+///
+/// A clean local copy is removed and its entry kept at the tombstone version, so
+/// a later re-create CAS-es against it. Skipping an entry that is already
+/// `deleted_local` keeps this idempotent and never removes a file re-created
+/// locally. A dirty copy stays on disk (user work survives) and is advanced to
+/// the tombstone, so its next push resurrects the file instead of sending the
+/// stale pre-delete parentVersion, which 409s forever and writes an unbounded
+/// stream of conflict sidecars.
+///
+/// Whatever the local side looked like, the path has nothing left to pull, so
+/// its quarantine entry goes too. That includes a path that never landed here
+/// at all — no entry in `files` — which is precisely the kind of file a device
+/// quarantines: a blob it could not fetch or decrypt. Skipping that case kept
+/// the entry forever, because `with_quarantined_retries` re-fetches it every
+/// tick while an incremental manifest never lists the path again once the
+/// cursor has passed the tombstone. A device already stuck that way heals on
+/// its next reconcile, whose complete manifest carries every tombstone.
+async fn apply_remote_tombstone(
+    content_root: &str,
+    abs_path: &Path,
+    state: &mut LocalSyncState,
+    path: &str,
+    version: i32,
+) {
+    if let Some(ls) = state.files.get(path).cloned() {
+        if !ls.dirty && !ls.deleted_local {
+            let _ = tokio::fs::remove_file(abs_path).await;
+            prune_empty_parents(Path::new(content_root), path).await;
+            state.mark_tombstoned(path, version);
+        } else if ls.dirty {
+            state.advance_dirty_to_tombstone(path, version);
+        }
+    }
+    state.quarantined.remove(path);
+    // A listed-but-unfetched entry stops being worth listing.
+    state.clear_known(path);
 }
 
 /// Where the sync cursor should sit after a pull: at the snapshot the manifest
@@ -2819,5 +2841,81 @@ mod tests {
         assert_eq!(prep_json["nodeId"], expected);
         let del_json = serde_json::to_value(&del).unwrap();
         assert_eq!(del_json["nodeId"], expected);
+    }
+
+    // ── server tombstones ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_tombstone_clears_a_quarantined_pull_that_never_landed() {
+        // Regression: a file this device could never apply (an envelope it has
+        // no key for, a blob that 404s) has no `files` entry, and the tombstone
+        // for it used to be skipped — so its quarantine entry, and "N files
+        // cannot sync", outlived the file for good.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let abs = dir.path().join("knowledge/stuck.md");
+        let mut state = empty_state();
+        state.quarantine("knowledge/stuck.md", "old-hash", 7, "decrypt failed".into());
+
+        apply_remote_tombstone(root, &abs, &mut state, "knowledge/stuck.md", 8).await;
+
+        assert!(
+            state.quarantined.is_empty(),
+            "a path the server deleted has nothing left to pull"
+        );
+        assert!(
+            with_quarantined_retries(Vec::new(), &state).is_empty(),
+            "so no retry is scheduled for it"
+        );
+        assert!(
+            !state.files.contains_key("knowledge/stuck.md"),
+            "no entry is invented for a file that never landed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tombstone_removes_a_clean_copy_and_its_stale_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::create_dir_all(dir.path().join("knowledge")).unwrap();
+        let abs = dir.path().join("knowledge/a.md");
+        std::fs::write(&abs, b"v1\n").unwrap();
+        let mut state = empty_state();
+        state.files.insert("knowledge/a.md".into(), synced_file(1));
+        // v2 could not be applied here, and then the file was deleted at v3.
+        state.quarantine("knowledge/a.md", "hash-v2", 2, "download 404".into());
+
+        apply_remote_tombstone(root, &abs, &mut state, "knowledge/a.md", 3).await;
+
+        assert!(!abs.exists(), "clean local copy removed");
+        let f = &state.files["knowledge/a.md"];
+        assert!(f.deleted_local);
+        assert_eq!(f.synced_version, 3, "entry kept at the tombstone version");
+        assert!(state.quarantined.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_tombstone_keeps_a_dirty_copy_and_drops_its_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::create_dir_all(dir.path().join("knowledge")).unwrap();
+        let abs = dir.path().join("knowledge/b.md");
+        std::fs::write(&abs, b"unpushed edit\n").unwrap();
+        let mut state = empty_state();
+        let mut dirty = synced_file(1);
+        dirty.dirty = true;
+        state.files.insert("knowledge/b.md".into(), dirty);
+        state.quarantine("knowledge/b.md", "hash-v2", 2, "download 404".into());
+
+        apply_remote_tombstone(root, &abs, &mut state, "knowledge/b.md", 3).await;
+
+        assert!(abs.exists(), "unpushed edits survive a remote delete");
+        let f = &state.files["knowledge/b.md"];
+        assert!(f.dirty && !f.deleted_local);
+        assert_eq!(
+            f.synced_version, 3,
+            "next push CAS-es against the tombstone"
+        );
+        assert!(state.quarantined.is_empty());
     }
 }
