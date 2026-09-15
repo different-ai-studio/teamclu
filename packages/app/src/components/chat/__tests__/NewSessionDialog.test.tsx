@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 const mocks = vi.hoisted(() => ({
   closeNewSessionDialog: vi.fn(),
@@ -108,6 +109,10 @@ vi.mock('@/stores/workspace', () => ({
     selector({ workspacePath: mocks.workspacePath }),
 }))
 
+vi.mock('@/stores/agent-default-workspace-store', () => ({
+  rememberDefaultWorkspaceId: (...args: unknown[]) => mocks.rememberDefaultWorkspaceId(...args),
+}))
+
 vi.mock('@/lib/actor/current-actor', () => ({
   resolveCurrentMemberActorId: vi.fn().mockResolvedValue('member-1'),
 }))
@@ -176,6 +181,11 @@ describe('NewSessionDialog', () => {
     mocks.createSessionWithFirstMessage.mockResolvedValue({ sessionId: 'sess-1' })
     mocks.getLocalDaemonActorId.mockResolvedValue(null)
     mocks.listDaemonWorkspaces.mockResolvedValue([])
+    // jsdom lacks these pointer APIs; Radix Select needs them to open.
+    Element.prototype.hasPointerCapture = () => false
+    Element.prototype.setPointerCapture = () => {}
+    Element.prototype.releasePointerCapture = () => {}
+    Element.prototype.scrollIntoView = () => {}
     // Candidates now flow through the shared actor-directory store, which reads
     // the network directory (listActorDirectory) — not the libsql cache — in the
     // jsdom test env (isTauri() === false).
@@ -242,22 +252,12 @@ describe('NewSessionDialog', () => {
       })
     })
 
-    it('reveals the readonly workspace path only while the local agent is a participant', async () => {
+    it('shows the workspace picker as soon as the local daemon is known', async () => {
       render(<NewSessionDialog />)
 
-      const rows = await screen.findAllByText('MCA2')
-      expect(screen.queryByTestId('new-session-workspace')).toBeNull()
-
-      fireEvent.click(rows[0])
       await waitFor(() => {
         expect(screen.getByTestId('new-session-workspace')).toBeTruthy()
-        expect(screen.queryByRole('combobox')).toBeNull()
-        expect(screen.queryByRole('button', { name: /设为默认/ })).toBeNull()
-      })
-
-      fireEvent.click(rows[0])
-      await waitFor(() => {
-        expect(screen.queryByTestId('new-session-workspace')).toBeNull()
+        expect(screen.getByRole('combobox', { name: '工作目录' })).toBeTruthy()
       })
     })
 
@@ -269,8 +269,9 @@ describe('NewSessionDialog', () => {
       })
       render(<NewSessionDialog />)
 
-      const rows = await screen.findAllByText('MCA2')
-      fireEvent.click(rows[0])
+      await waitFor(() => {
+        expect(screen.getByTestId('new-session-workspace')).toBeTruthy()
+      })
       fireEvent.change(screen.getByPlaceholderText('想聊点什么？'), {
         target: { value: 'run here' },
       })
@@ -279,7 +280,7 @@ describe('NewSessionDialog', () => {
       await waitFor(() => {
         expect(mocks.resolveLocalDaemonWorkspaceBinding).toHaveBeenCalledWith(
           'team-1',
-          ['agent-1'],
+          expect.arrayContaining(['agent-1']),
         )
         expect(mocks.createSessionWithFirstMessage).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -290,6 +291,51 @@ describe('NewSessionDialog', () => {
             },
           }),
         )
+      })
+    })
+
+    it('lets the user pick a registered workspace instead of the current window', async () => {
+      const user = userEvent.setup()
+      render(<NewSessionDialog />)
+
+      await waitFor(() => {
+        expect(mocks.listDaemonWorkspaces).toHaveBeenCalledWith('team-1', 'agent-1')
+      })
+
+      await user.click(await screen.findByRole('combobox', { name: '工作目录' }))
+      await user.click(await screen.findByRole('option', { name: 'other' }))
+      fireEvent.change(screen.getByPlaceholderText('想聊点什么？'), {
+        target: { value: 'run here' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /创建会话/ }))
+
+      await waitFor(() => {
+        expect(mocks.createSessionWithFirstMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            localWorkspace: {
+              agentId: 'agent-1',
+              workspaceId: 'ws-other',
+              path: '/tmp/other',
+            },
+          }),
+        )
+      })
+      expect(mocks.resolveLocalDaemonWorkspaceBinding).not.toHaveBeenCalled()
+    })
+
+    it('writes the agent default and refreshes the send-path cache', async () => {
+      const user = userEvent.setup()
+      mocks.setAgentDefaultWorkspace.mockResolvedValue(undefined)
+      render(<NewSessionDialog />)
+
+      await user.click(await screen.findByRole('combobox', { name: '工作目录' }))
+      await user.click(await screen.findByRole('option', { name: 'other' }))
+
+      fireEvent.click(await screen.findByRole('button', { name: /设为默认/ }))
+
+      await waitFor(() => {
+        expect(mocks.setAgentDefaultWorkspace).toHaveBeenCalledWith('agent-1', 'ws-other')
+        expect(mocks.rememberDefaultWorkspaceId).toHaveBeenCalledWith(['agent-1'], 'ws-other')
       })
     })
   })

@@ -224,8 +224,8 @@ function workspaceByActorIdFromLocal(
  * Map the current window folder to a cloud workspace UUID for the local
  * daemon, when that agent is among the new session's participants.
  *
- * Used by composer quick-create and the new-session dialog. Both bind the
- * current window project root — there is no folder picker on this path.
+ * Used by composer quick-create. The new-session dialog can pass an explicit
+ * folder instead; both bind the same `localWorkspace` shape.
  */
 export async function resolveLocalDaemonWorkspaceBinding(
   teamId: string,
@@ -292,8 +292,10 @@ interface CreateSessionWithFirstMessageArgs {
    */
   mentionActorIds?: string[]
   /**
-   * Folder the **local daemon agent** should run this session in (window
-   * project root). Ignored unless that agent is among `agentActorIds`.
+   * Folder the **local daemon agent** should run this session in.
+   * Composer quick-create uses the window project root; the new-session
+   * dialog may pass a workspace the user picked instead.
+   * Ignored unless that agent is among `agentActorIds`.
    */
   localWorkspace?: LocalDaemonWorkspaceBinding | null
 }
