@@ -30,7 +30,6 @@ import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-loca
 import {
   APP_AUTH_ACCESS_FALLBACKS,
   summarizeAppAuthBaseline,
-  type AppAuthAccessSummary,
 } from '@/lib/apps/app-auth-access'
 import { openAppAuth } from '@/lib/tabs/app-tabs'
 import { useActorDirectory } from '@/stores/actor-directory-store'
@@ -107,24 +106,6 @@ const AUTH_MODE_FALLBACKS: Record<AppRow['authMode'], string> = {
   none: '无需登录（公开）',
   platform: 'TeamClu 账号登录',
   third: '第三方登录（暂不支持）',
-}
-
-function labelAppAuthAccess(
-  summary: AppAuthAccessSummary,
-  t: (key: string, fallback?: string, opts?: Record<string, string>) => string,
-): string {
-  if (!summary.requiresLogin) {
-    return t('apps.auth.access.public', APP_AUTH_ACCESS_FALLBACKS.public)
-  }
-  if (summary.roleCodes === null) {
-    return t('apps.auth.access.org', APP_AUTH_ACCESS_FALLBACKS.orgLegacy)
-  }
-  if (summary.roleCodes.length === 0) {
-    return t('apps.auth.access.any', APP_AUTH_ACCESS_FALLBACKS.any)
-  }
-  return t('apps.auth.access.roles', '需要登录 · {{roles}}', {
-    roles: summary.roleCodes.join(', '),
-  })
 }
 
 function formatWhen(iso: string | null | undefined): string | null {
@@ -585,7 +566,15 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
   // and an unknown server must never make an app look more open than it is.
   const authRules = app.authRules ?? []
   const baselineSummary = summarizeAppAuthBaseline(app)
-  const baselineAccessLabel = labelAppAuthAccess(baselineSummary, t)
+  const baselineAccessLabel = !baselineSummary.requiresLogin
+    ? t('apps.auth.access.public', APP_AUTH_ACCESS_FALLBACKS.public)
+    : baselineSummary.roleCodes === null
+      ? t('apps.auth.access.org', APP_AUTH_ACCESS_FALLBACKS.orgLegacy)
+      : baselineSummary.roleCodes.length === 0
+        ? t('apps.auth.access.any', APP_AUTH_ACCESS_FALLBACKS.any)
+        : t('apps.auth.access.roles', '需要登录 · {{roles}}', {
+            roles: baselineSummary.roleCodes.join(', '),
+          })
 
   return (
     <div className="space-y-7 pb-8" data-testid="app-settings">

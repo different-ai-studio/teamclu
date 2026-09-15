@@ -11,8 +11,8 @@
  * correct (design D7). Authorisation is done here instead — owner/admin, checked
  * before anything is read or written — exactly as the /sync/* handlers do it.
  *
- * The caller-token client is still used for the membership checks themselves, so
- * a caller cannot assert admin over a team RLS would not show them.
+ * The caller-token client is still used for membership + `current_team_role`
+ * (roles_users), so a caller cannot assert admin over a team RLS would not show them.
  */
 
 import { ApiError } from "../http-utils.js";
@@ -41,15 +41,12 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
     const actor = await host.resolveCallerActorForTeam(teamId);
     if (!actor) throw new ApiError(403, "forbidden", "not a member of this team");
 
-    const { data, error } = await host.supabase
-      .from("team_members")
-      .select("role")
-      .eq("team_id", teamId)
-      .eq("member_id", actor.id)
-      .maybeSingle();
+    // Authz SoT is roles_users via current_team_role (not team_members.role).
+    const { data, error } = await host.supabase.rpc("current_team_role", {
+      target_team_id: teamId,
+    });
     if (error) throw error;
-    const role = data?.role;
-    if (role !== "owner" && role !== "admin") {
+    if (data !== "owner" && data !== "admin") {
       throw new ApiError(403, "forbidden", "team owner or admin access required");
     }
     return actor.id;

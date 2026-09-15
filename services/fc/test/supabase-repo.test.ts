@@ -477,10 +477,12 @@ const OWNER_AUTH = {
 function fakeSupabaseForOwnerRpc(rpcData, rpcCalls = []) {
   return fakeSupabase({
     rpcCalls,
-    rpcData,
+    rpcData: {
+      current_team_role: "owner",
+      ...rpcData,
+    },
     tableData: {
       actors: [{ id: "actor-owner-1" }],
-      team_members: [{ role: "owner" }],
     },
     auth: OWNER_AUTH.auth,
   });
@@ -714,6 +716,53 @@ test("createTeam mints a personal org when the caller carries none — never DEF
     assert.equal(rpcCalls[1].args.p_oid, "org-mine");
     assert.equal(rpcCalls[1].args.p_name, "My Team");
     assert.equal(rpcCalls[1].args.p_slug, "my-team");
+  } finally {
+    if (prev === undefined) delete process.env.DEFAULT_ORG_ID;
+    else process.env.DEFAULT_ORG_ID = prev;
+  }
+});
+
+test("joinPublicTeam assigns member roles_users via service-role", async () => {
+  const rpcCalls = [];
+  const prev = process.env.DEFAULT_ORG_ID;
+  process.env.DEFAULT_ORG_ID = "org-default";
+  try {
+    const memberRoleId = "role-member-1";
+    const caller = fakeSupabase({
+      rpcCalls,
+      auth: {
+        async getUser() {
+          return { data: { user: { id: "u-join" } }, error: null };
+        },
+      },
+      rpcData: {
+        join_public_team: [{
+          team_id: "team-public",
+          team_name: "Public",
+          team_slug: "public",
+        }],
+      },
+    });
+    const adminCalls: any[] = [];
+    const admin = fakeSupabase({
+      tableCalls: adminCalls,
+      tableData: {
+        teams: [{ id: "team-public", oid: "org-real" }],
+        roles: [{ id: memberRoleId, org_id: "org-real", code: "member", is_system: true }],
+        roles_users: [],
+      },
+    });
+    const repo = createRepo(caller, { createServiceRoleClient: () => admin });
+
+    const team = await repo.joinPublicTeam("team-public");
+
+    assert.equal(rpcCalls[0]?.name, "join_public_team");
+    assert.equal(team.id, "team-public");
+    const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+    assert.ok(insert, "roles_users member insert must use service-role client");
+    assert.equal(insert.row.user_id, "u-join");
+    assert.equal(insert.row.role_id, memberRoleId);
+    assert.equal(insert.row.org_id, "org-real");
   } finally {
     if (prev === undefined) delete process.env.DEFAULT_ORG_ID;
     else process.env.DEFAULT_ORG_ID = prev;

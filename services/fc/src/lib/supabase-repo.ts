@@ -574,14 +574,12 @@ export function createSupabaseBusinessRepository(options) {
       throw new ApiError(403, "forbidden", "not a member of this team");
     }
 
-    const { data: membership, error: memberErr } = await supabase
-      .from("team_members")
-      .select("role")
-      .eq("team_id", targetTeamId)
-      .eq("member_id", actor.id)
-      .maybeSingle();
-    if (memberErr) throw memberErr;
-    if (!membership || membership.role !== "owner") {
+    // Authz SoT is roles_users via current_team_role (not team_members.role).
+    const { data: role, error: roleErr } = await supabase.rpc("current_team_role", {
+      target_team_id: targetTeamId,
+    });
+    if (roleErr) throw roleErr;
+    if (role !== "owner") {
       throw new ApiError(403, "forbidden", "only team owners may change team share mode");
     }
   }
@@ -920,6 +918,10 @@ export function createSupabaseBusinessRepository(options) {
       // `p_default_org_id` names the shared tenant, as in listAllMyTeams: the
       // RPC's own-org check (CS-4) passes for every phone sign-up there, so the
       // shared org needs the extra employee test the picker now applies.
+      const { data: caller, error: callerErr } = await getCurrentUser();
+      if (callerErr || !caller?.user?.id) {
+        throw new ApiError(401, "missing_auth", "authenticated user required");
+      }
       const { data, error } = await supabase.rpc("join_public_team", {
         p_team_id: teamId,
         p_default_org_id: process.env.DEFAULT_ORG_ID || null,
@@ -931,8 +933,16 @@ export function createSupabaseBusinessRepository(options) {
         throw error;
       }
       const row = requiredRow(data, "teams.joinPublicTeam");
+      const joinedTeamId = requiredString(row.team_id ?? row.id, "teams.joinPublicTeam", "team_id");
+      // RPC still mirrors team_members.role='member'; authz SoT is roles_users.
+      const admin = await serviceRoleClient("assign member org role on public team join");
+      await assignSystemOrgRole(admin, {
+        teamId: joinedTeamId,
+        userId: caller.user.id,
+        code: "member",
+      });
       return mapTeam({
-        id: row.team_id ?? row.id,
+        id: joinedTeamId,
         name: row.team_name ?? row.name,
         slug: row.team_slug ?? row.slug,
       });
