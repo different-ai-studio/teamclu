@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ActorDetailDialog } from '../ActorDetailDialog'
 
 vi.mock('react-i18next', () => ({
@@ -23,6 +23,58 @@ vi.mock('@/lib/ui/date-format', () => ({
 }))
 
 const mockGetActorDirectoryEntry = vi.fn()
+const mockListOrgRoles = vi.fn()
+const mockPutMemberRoles = vi.fn()
+const mockRefetchDirectory = vi.fn()
+
+const perms = vi.hoisted(() => ({
+  canManageTeam: false,
+  isOwner: false,
+  role: 'member' as string | null,
+}))
+
+vi.mock('@/lib/team/team-permissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/team/team-permissions')>()
+  return {
+    ...actual,
+    useTeamPermissions: () => ({
+      role: perms.role,
+      isOwner: perms.isOwner,
+      canManageTeam: perms.canManageTeam,
+      canEditFiles: true,
+    }),
+  }
+})
+
+vi.mock('@/stores/current-team', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/stores/current-team')>()
+  return {
+    ...actual,
+    useCurrentTeamStore: Object.assign(
+      (sel: (s: { currentMember: { id: string }; team: { id: string } }) => unknown) =>
+        sel({ currentMember: { id: 'me-1' }, team: { id: 'team-abc' } }),
+      {
+        getState: () => ({ currentMember: { id: 'me-1' }, team: { id: 'team-abc' } }),
+        setState: actual.useCurrentTeamStore.setState,
+        subscribe: actual.useCurrentTeamStore.subscribe,
+      },
+    ),
+  }
+})
+
+vi.mock('@/stores/actor-directory-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/stores/actor-directory-store')>()
+  return {
+    ...actual,
+    useActorDirectory: () => ({
+      actors: [],
+      loading: false,
+      error: false,
+      teamId: 'team-abc',
+      refetch: mockRefetchDirectory,
+    }),
+  }
+})
 
 vi.mock('@/lib/backend', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/backend')>()
@@ -30,6 +82,11 @@ vi.mock('@/lib/backend', async (importOriginal) => {
     ...actual,
     getBackend: () => ({
       actors: { getActorDirectoryEntry: mockGetActorDirectoryEntry },
+      orgRoles: {
+        list: mockListOrgRoles,
+        putMemberRoles: mockPutMemberRoles,
+      },
+      teams: { removeTeamActor: vi.fn(), createTeamInvite: vi.fn() },
     }),
   }
 })
@@ -51,9 +108,43 @@ vi.mock('@/components/ui/dialog', () => ({
   ),
 }))
 
+vi.mock('@/components/ui/checkbox', () => ({
+  Checkbox: ({
+    checked,
+    disabled,
+    onCheckedChange,
+    id,
+  }: {
+    checked?: boolean
+    disabled?: boolean
+    onCheckedChange?: (v: boolean) => void
+    id?: string
+  }) => (
+    <input
+      type="checkbox"
+      id={id}
+      checked={!!checked}
+      disabled={disabled}
+      onChange={(e) => onCheckedChange?.(e.target.checked)}
+    />
+  ),
+}))
+
 beforeEach(() => {
   mockGetActorDirectoryEntry.mockReset()
   mockGetActorDirectoryEntry.mockResolvedValue(null)
+  mockListOrgRoles.mockReset()
+  mockListOrgRoles.mockResolvedValue([
+    { id: 'r-owner', code: 'owner', name: '拥有者', isSystem: true, status: 'active', sort: 1 },
+    { id: 'r-admin', code: 'admin', name: '管理员', isSystem: true, status: 'active', sort: 2 },
+    { id: 'r-member', code: 'member', name: '成员', isSystem: true, status: 'active', sort: 3 },
+  ])
+  mockPutMemberRoles.mockReset()
+  mockPutMemberRoles.mockResolvedValue([{ id: 'r-admin', code: 'admin', name: '管理员' }])
+  mockRefetchDirectory.mockReset()
+  perms.canManageTeam = false
+  perms.isOwner = false
+  perms.role = 'member'
 })
 
 describe('ActorDetailDialog', () => {
@@ -282,5 +373,87 @@ describe('ActorDetailDialog', () => {
     // Let the fetch resolve.
     await screen.findByText('Details')
     expect(screen.queryByText('Client versions')).not.toBeInTheDocument()
+  })
+
+  it('renders role chips from roles[]', () => {
+    render(
+      <ActorDetailDialog
+        actor={{
+          id: 'actor-1',
+          actor_type: 'member',
+          display_name: 'Alice',
+          member_status: 'active',
+          agent_status: null,
+          last_active_at: new Date().toISOString(),
+          roles: [
+            { id: 'r-admin', code: 'admin', name: '管理员' },
+            { id: 'r-finance', code: 'finance', name: '财务' },
+          ],
+          team_role: 'admin',
+        }}
+        teamId="team-abc"
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('member-role-chips')).toHaveTextContent('管理员')
+    expect(screen.getByTestId('member-role-chips')).toHaveTextContent('财务')
+  })
+
+  it('falls back to a Member chip when roles[] is empty', () => {
+    render(
+      <ActorDetailDialog
+        actor={{
+          id: 'actor-1',
+          actor_type: 'member',
+          display_name: 'Alice',
+          member_status: 'active',
+          agent_status: null,
+          last_active_at: new Date().toISOString(),
+          roles: [],
+        }}
+        teamId="team-abc"
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('member-role-chips')).toHaveTextContent('Member')
+  })
+
+  it('lets owner/admin edit roles and calls putMemberRoles on save', async () => {
+    perms.canManageTeam = true
+    perms.isOwner = true
+    perms.role = 'owner'
+
+    render(
+      <ActorDetailDialog
+        actor={{
+          id: 'actor-1',
+          actor_type: 'member',
+          display_name: 'Alice',
+          member_status: 'active',
+          agent_status: null,
+          last_active_at: new Date().toISOString(),
+          roles: [{ id: 'r-member', code: 'member', name: '成员' }],
+          team_role: 'member',
+        }}
+        teamId="team-abc"
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit roles|编辑角色/i }))
+    await screen.findByText('管理员')
+
+    fireEvent.click(screen.getByLabelText(/管理员/))
+    fireEvent.click(screen.getByRole('button', { name: /Save|保存/i }))
+
+    await waitFor(() => {
+      expect(mockPutMemberRoles).toHaveBeenCalledWith(
+        'team-abc',
+        'actor-1',
+        expect.arrayContaining(['r-admin', 'r-member']),
+      )
+    })
   })
 })

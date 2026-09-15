@@ -8,9 +8,11 @@ import {
 } from '@/lib/cache/local-cache'
 import { isTauri } from '@/lib/utils'
 import { isActorOnline, resolveActorOnlineStatus } from '@/lib/actor/actor-online'
+import type { MemberRoleRef } from '@/lib/backend/cloud-api/org-roles'
 import { useCurrentTeamStore } from '@/stores/current-team'
 
 export { isActorOnline, resolveActorOnlineStatus }
+export type { MemberRoleRef }
 
 /**
  * actor-directory-store — single reactive source of truth for a team's actor
@@ -59,7 +61,9 @@ export type ActorRow = {
   default_workspace_id?: string | null
   user_id?: string | null
   created_at?: string | null
-  // Member: 'owner' | 'admin' | 'member'. Agent: undefined.
+  /** Org role assignments from `roles_users`. Prefer over `team_role`. */
+  roles?: MemberRoleRef[]
+  // Member: highest privilege among roles (owner|admin|finance|member). Agent: undefined.
   team_role?: string | null
   // Agent: 'team' | 'personal'. Member: undefined.
   visibility?: string | null
@@ -241,6 +245,7 @@ export const useActorDirectoryStore = create<DirectoryState>((set, get) => {
         default_workspace_id: row.default_workspace_id ?? null,
         user_id: row.user_id ?? null,
         created_at: row.created_at ?? null,
+        roles: row.roles ?? [],
         team_role: row.team_role ?? null,
         visibility: row.visibility ?? null,
         owner_member_id: row.agent_owner_member_id ?? null,

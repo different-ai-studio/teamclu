@@ -89,12 +89,13 @@ describe('ActorsView', () => {
     expect(screen.getByRole('button', { name: /Alice/ })).toHaveClass('hover:bg-selected')
   })
 
-  it('shows owner and admin role pills for members', async () => {
+  it('shows owner and admin role pills for members from roles[]', async () => {
     mockActorsRows([
       {
         id: 'a-1',
         actor_type: 'member',
         display_name: 'Owner User',
+        roles: [{ id: 'r-o', code: 'owner', name: '拥有者' }],
         team_role: 'owner',
         member_status: 'active',
         agent_status: null,
@@ -104,6 +105,7 @@ describe('ActorsView', () => {
         id: 'a-2',
         actor_type: 'member',
         display_name: 'Admin User',
+        roles: [{ id: 'r-a', code: 'admin', name: '管理员' }],
         team_role: 'admin',
         member_status: 'active',
         agent_status: null,
@@ -118,12 +120,13 @@ describe('ActorsView', () => {
     expect(screen.getByText('Admin')).toBeInTheDocument()
   })
 
-  it('sorts members with owner and admin before regular members', async () => {
+  it('sorts members with owner and admin before regular members using roles[]', async () => {
     mockActorsRows([
       {
         id: 'm-1',
         actor_type: 'member',
         display_name: 'Zara',
+        roles: [],
         team_role: null,
         member_status: 'active',
         agent_status: null,
@@ -133,6 +136,7 @@ describe('ActorsView', () => {
         id: 'm-2',
         actor_type: 'member',
         display_name: 'Admin Bob',
+        roles: [{ id: 'r-a', code: 'admin', name: '管理员' }],
         team_role: 'admin',
         member_status: 'active',
         agent_status: null,
@@ -142,6 +146,7 @@ describe('ActorsView', () => {
         id: 'm-3',
         actor_type: 'member',
         display_name: 'Owner Ana',
+        roles: [{ id: 'r-o', code: 'owner', name: '拥有者' }],
         team_role: 'owner',
         member_status: 'active',
         agent_status: null,
@@ -151,7 +156,8 @@ describe('ActorsView', () => {
         id: 'm-4',
         actor_type: 'member',
         display_name: 'Alice',
-        team_role: null,
+        roles: [{ id: 'r-m', code: 'member', name: '成员' }],
+        team_role: 'member',
         member_status: 'active',
         agent_status: null,
         last_active_at: null,
@@ -321,25 +327,36 @@ describe('ActorsView', () => {
 })
 
 describe('compareMembersByRoleThenName', () => {
-  it('ranks owner before admin before member, then by name', () => {
-    const owner = { display_name: 'Zed', team_role: 'owner' } as ActorRow
-    const admin = { display_name: 'Amy', team_role: 'admin' } as ActorRow
-    const memberA = { display_name: 'Alice', team_role: null } as ActorRow
-    const memberZ = { display_name: 'Zara', team_role: 'member' } as ActorRow
+  it('ranks owner before admin before member from roles[], then by name', () => {
+    const owner = { display_name: 'Zed', roles: [{ id: '1', code: 'owner', name: 'O' }] } as ActorRow
+    const admin = { display_name: 'Amy', roles: [{ id: '2', code: 'admin', name: 'A' }] } as ActorRow
+    const memberA = { display_name: 'Alice', roles: [] } as ActorRow
+    const memberZ = { display_name: 'Zara', roles: [{ id: '3', code: 'member', name: 'M' }] } as ActorRow
 
     expect(compareMembersByRoleThenName(owner, admin)).toBeLessThan(0)
     expect(compareMembersByRoleThenName(admin, memberA)).toBeLessThan(0)
     expect(compareMembersByRoleThenName(memberA, memberZ)).toBeLessThan(0)
-    expect(compareMembersByRoleThenName(admin, { display_name: 'Bob', team_role: 'admin' } as ActorRow)).toBeLessThan(0)
+    expect(compareMembersByRoleThenName(admin, {
+      display_name: 'Bob',
+      roles: [{ id: '4', code: 'admin', name: 'A' }],
+    } as ActorRow)).toBeLessThan(0)
+  })
+
+  it('falls back to team_role when roles[] is absent', () => {
+    const owner = { display_name: 'Zed', team_role: 'owner' } as ActorRow
+    const admin = { display_name: 'Amy', team_role: 'admin' } as ActorRow
+    expect(compareMembersByRoleThenName(owner, admin)).toBeLessThan(0)
   })
 })
 
 describe('memberTeamRolePill', () => {
-  it('returns owner and admin only', () => {
-    expect(memberTeamRolePill('owner')).toBe('owner')
-    expect(memberTeamRolePill('admin')).toBe('admin')
-    expect(memberTeamRolePill('member')).toBeNull()
-    expect(memberTeamRolePill(null)).toBeNull()
+  it('returns owner and admin from roles[] (or legacy team_role)', () => {
+    expect(memberTeamRolePill({ roles: [{ id: '1', code: 'owner', name: 'O' }] })).toBe('owner')
+    expect(memberTeamRolePill({ roles: [{ id: '2', code: 'admin', name: 'A' }] })).toBe('admin')
+    expect(memberTeamRolePill({ roles: [{ id: '3', code: 'member', name: 'M' }] })).toBeNull()
+    expect(memberTeamRolePill({ team_role: 'owner' })).toBe('owner')
+    expect(memberTeamRolePill({ team_role: 'member' })).toBeNull()
+    expect(memberTeamRolePill({})).toBeNull()
   })
 })
 
