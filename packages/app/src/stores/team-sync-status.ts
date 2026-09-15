@@ -10,7 +10,7 @@ interface RemotePendingItem {
   deleted: boolean
 }
 
-/** A file the pull keeps failing on. Carries why, so the UI can say it. */
+/** A file that keeps failing to sync, either way. Carries why, so the UI can say it. */
 interface StuckFile {
   reason: string
   attempts: number
@@ -28,7 +28,7 @@ interface TeamSyncStatusState {
   localBySyncKey: Record<string, LocalChangeStatus>
   /** Sync key → the version waiting in the cloud. One FC round-trip to fill. */
   remoteBySyncKey: Record<string, RemotePendingItem>
-  /** Sync key → why this device cannot apply the cloud's copy. */
+  /** Sync key → why this file keeps failing to sync, in either direction. */
   stuckBySyncKey: Record<string, StuckFile>
   /**
    * Shallowest sync keys the ignore rules exclude — `knowledge/node_modules`,

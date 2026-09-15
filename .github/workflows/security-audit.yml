@@ -99,7 +99,7 @@ jobs:
           node-version: lts/*
 
       # pnpm version comes from package.json#packageManager, as in ci.yml.
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
 
       # No `pnpm install`: audit posts the lockfile to the registry and needs no
       # node_modules.

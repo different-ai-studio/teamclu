@@ -25,7 +25,8 @@ pub struct ChangedFile {
     pub status: String, // "modified" | "added" | "deleted"
 }
 
-/// A file the cloud has that this device keeps failing to apply.
+/// A file that keeps failing to sync: the cloud's copy this device cannot
+/// apply, or a local change the cloud will not take.
 ///
 /// Carries the path, not just a count: "3 files cannot sync" is not something a
 /// person can act on, and the whole reason the quarantine exists is that these

@@ -195,7 +195,7 @@ pub fn with_amuxd_brand_env(
 /// looked at `~/.amuxd-copilot361`.
 pub fn branded_amuxd_sidecar<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    args: impl IntoIterator<Item = impl AsRef<str>>,
+    args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
 ) -> Result<tauri_plugin_shell::process::Command, String> {
     use tauri_plugin_shell::ShellExt;
     let args: Vec<String> = args.into_iter().map(|a| a.as_ref().to_string()).collect();

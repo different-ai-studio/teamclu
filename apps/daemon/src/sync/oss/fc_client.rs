@@ -246,6 +246,11 @@ impl FcClient {
         let resp = self
             .client
             .put(presigned_url)
+            // Always explicit. For an empty body hyper writes no Content-Length
+            // at all, and OSS refuses a PUT without one (411 Length Required),
+            // so every 0-byte file — a note just created, a `.gitkeep` — never
+            // uploaded.
+            .header(reqwest::header::CONTENT_LENGTH, data.len())
             .body(data)
             .send()
             .await
@@ -306,10 +311,13 @@ impl FcClient {
             .map_err(|e| SyncError::Network(e.to_string()))?;
         if !resp.status().is_success() {
             let host = resp.url().host_str().unwrap_or("<unknown host>");
-            return Err(SyncError::Network(format!(
-                "GET blob failed ({host}): HTTP {}",
-                resp.status()
-            )));
+            let msg = format!("GET blob failed ({host}): HTTP {}", resp.status());
+            // The object is gone. A reader of an old version can answer that
+            // with "no content", so keep it distinguishable from a network error.
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(SyncError::NotFound(msg));
+            }
+            return Err(SyncError::Network(msg));
         }
         let bytes = resp
             .bytes()
@@ -915,6 +923,48 @@ mod tests {
             "error should name the host that returned 413: {msg}"
         );
         assert!(msg.contains("413"), "error should name the status: {msg}");
+    }
+
+    /// For an empty body hyper sends no Content-Length at all, and OSS answers a
+    /// PUT like that with 411 — so no 0-byte file could ever upload. The header
+    /// has to be there, and it has to say 0.
+    #[tokio::test]
+    async fn put_blob_sends_content_length_for_an_empty_file() {
+        use wiremock::matchers::{header, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(header("content-length", "0"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&srv)
+            .await;
+
+        let fc = FcClient::new(srv.uri(), "jwt".into());
+        let url = format!("{}/blob", srv.uri());
+        fc.put_blob(&url, Vec::new())
+            .await
+            .expect("an empty blob must upload");
+    }
+
+    #[tokio::test]
+    async fn a_missing_blob_reads_as_not_found() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let srv = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&srv)
+            .await;
+
+        let fc = FcClient::new(srv.uri(), "jwt".into());
+        let err = fc
+            .get_blob(&format!("{}/blob", srv.uri()), "hash")
+            .await
+            .expect_err("a 404 is not content");
+        assert!(matches!(err, SyncError::NotFound(_)), "got {err:?}");
     }
 
     #[tokio::test]

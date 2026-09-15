@@ -909,7 +909,7 @@ fn trigger_manual_sync(theme: &ColorfulTheme, team_id: &str) -> anyhow::Result<(
             );
             if status.failed > 0 {
                 println!(
-                    "  ⚠ {} file(s) could not be pulled — cursor held back, will retry",
+                    "  ⚠ {} file(s) cannot sync — retried every tick",
                     status.failed
                 );
             }
