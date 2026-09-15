@@ -122,6 +122,12 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
     void ensureParticipants([sessionId])
   }, [sessionId, ensureParticipants])
 
+  // Resolved again whenever the workspace store moves, not only on a session
+  // switch. The binding can change under an open session — an app session's
+  // seat is moved onto the checkout after the session is already on screen —
+  // and the store following it there is the sign that it did. Keeping the
+  // answer from before the move left the pane on "Agent 尚未启动" beside the
+  // right folder's tree.
   React.useEffect(() => {
     if (!sessionId || !teamId) {
       setBound(null)
@@ -132,7 +138,7 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
       if (!cancelled) setBound({ sessionId, path: path?.trim() || null })
     })
     return () => { cancelled = true }
-  }, [sessionId, teamId])
+  }, [sessionId, teamId, workspacePath])
 
   return React.useMemo(() => {
     if (!sessionId || !localAgentId) return EMPTY

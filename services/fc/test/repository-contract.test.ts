@@ -218,6 +218,11 @@ function contractRepo() {
       const p = s?.participants?.find(p => p.actorId === actorId);
       if (p) p.model = model;
     },
+    async setParticipantWorkspace(sessionId, actorId, { workspaceId }) {
+      const s = sessionStore.find(s => s.id === sessionId);
+      const p = s?.participants?.find(p => p.actorId === actorId);
+      if (p) p.workspaceId = workspaceId;
+    },
     async removeSessionParticipant(sessionId, actorId) {
       const s = sessionStore.find(s => s.id === sessionId);
       if (s?.participants) s.participants = s.participants.filter(p => p.actorId !== actorId);
