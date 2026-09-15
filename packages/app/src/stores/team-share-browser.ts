@@ -2228,7 +2228,22 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
           get().mcp.items,
           get().subjectActorId ?? undefined,
         )
-        set({ mcp: { items, loading: false, loaded: true, error: null } })
+        // `listTeamMcp` merges the probes it saw when THIS call started, which
+        // is stale whenever a probing load landed while this one was in flight.
+        // A refresh that does not probe (`loadCounts` on a team/workspace
+        // switch, `createMcp`) routinely outlives the probing load that opened
+        // the pane, and its late `set` then put every probed server back to
+        // "Idle · 0 tools" — with nothing left to re-probe, until the user
+        // clicked Re-sync. Merge against the live rows at write time instead.
+        set((s) => ({
+          mcp: {
+            ...s.mcp,
+            items: preserveMcpProbes(items, s.mcp.items),
+            loading: false,
+            loaded: true,
+            error: null,
+          },
+        }))
         if (opts?.withTools) await get().loadMcpTools()
       }
     } catch (e) {
