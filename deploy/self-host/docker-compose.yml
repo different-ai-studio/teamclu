@@ -172,7 +172,7 @@ services:
       # does. The gateway holds no signing key.
       SUPABASE_URL: "${SUPABASE_URL:-http://kong:8000}"
       SUPABASE_ANON_KEY: "${ANON_KEY:-}"
-      AUTH_BASE_URL: "${AUTH_BASE_URL:-}"
+      AUTH_BASE_URL: "${AUTH_BASE_URL:-https://${FC_DOMAIN}}"
       # Reserve before the upstream call and settle after it (design 4.6).
       # OFF means metered-only: usage is still recorded, nothing is deducted,
       # and an exhausted team is never stopped.
@@ -387,7 +387,7 @@ services:
       # Public Cloud API base the deployed app calls back on to mint those
       # credentials. It dials this from Function Compute, outside this network,
       # so an internal address is useless here.
-      APPS_CLOUD_API_URL: "${APPS_CLOUD_API_URL:-https://${API_DOMAIN}}"
+      APPS_CLOUD_API_URL: "${APPS_CLOUD_API_URL:-https://${FC_DOMAIN}}"
       # Per-app storage ceiling in bytes; the app row's storage_quota_bytes
       # overrides it. Blank = unlimited. Enforced when credentials are minted,
       # not per write, because an app with a token writes without passing us.
@@ -521,7 +521,9 @@ services:
       MARKETPLACE_ADMIN_SECRET: "${MARKETPLACE_ADMIN_SECRET:-}"
       # Issuer/audience for the JWTs FC mints for a deployed app's platform
       # auth, and the API_BASE it hands that app (services/fc/src/auth/base-url.ts).
-      AUTH_BASE_URL: "${AUTH_BASE_URL:-}"
+      # Fail-closed when blank — default to this box's Cloud API origin so a
+      # missing .env row does not break app finalize.
+      AUTH_BASE_URL: "${AUTH_BASE_URL:-https://${FC_DOMAIN}}"
       SMS_DEBUG_MODE: "${SMS_DEBUG_MODE:-}"
       # Postgres pool size for the apps admin connection.
       PG_POOL_MAX: "${PG_POOL_MAX:-}"
