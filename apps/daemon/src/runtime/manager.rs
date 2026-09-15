@@ -147,6 +147,13 @@ pub struct RuntimeManager {
     /// through the RPC handler which publishes directly, so they do NOT
     /// enter this buffer.
     evicted_pending_publish: Vec<String>,
+    /// `(agent_id, cloud_session_id)` pairs stopped via the idle/capacity
+    /// sweepers so the main loop can emit PermissionResolved(false) for any
+    /// pending approval on that session before clearing retains.
+    evicted_session_detachments: Vec<(String, String)>,
+    /// Agent ids the idle sweeper marked stale; the main loop runs a graceful
+    /// detach (Active→Idle AGENT_REPLY, permission cancel) before stop.
+    idle_evict_pending: Vec<String>,
     /// Set on every mutation of `agents`; drained by the main loop, which
     /// republishes the actor snapshot. See `mark_actor_state_dirty`.
     actor_state_dirty: bool,
@@ -236,6 +243,8 @@ impl RuntimeManager {
             refresh_coordinator: None,
             context_service: None,
             evicted_pending_publish: Vec::new(),
+            evicted_session_detachments: Vec::new(),
+            idle_evict_pending: Vec::new(),
             actor_state_dirty: false,
             #[cfg(test)]
             last_sent: HashMap::new(),
@@ -920,7 +929,12 @@ impl RuntimeManager {
         if let Some(h) = self.agents.get_mut(session_id) {
             h.available_models = startup.available_models;
             h.acp_session_id = new_acp_sid.clone();
-            h.status = amux::AgentStatus::Active;
+            // Empty prompt = runtimeStart wake / re-attach only; no ACP turn yet.
+            h.status = if prompt.trim().is_empty() {
+                amux::AgentStatus::Idle
+            } else {
+                amux::AgentStatus::Active
+            };
         }
         if let Some(model_id) = startup.initial_model {
             self.set_current_model(session_id, &model_id);
@@ -934,6 +948,10 @@ impl RuntimeManager {
 
     pub async fn stop_runtime(&mut self, agent_id: &str) -> Option<RuntimeHandle> {
         if let Some(mut handle) = self.agents.remove(agent_id) {
+            if !handle.session_id.is_empty() {
+                self.evicted_session_detachments
+                    .push((agent_id.to_string(), handle.session_id.clone()));
+            }
             self.mark_actor_state_dirty();
             self.aggregators.remove(agent_id);
             self.agent_state.remove(agent_id);
@@ -3428,7 +3446,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evict_idle_stops_runtimes_past_threshold() {
+    async fn evict_idle_queues_stale_runtimes_without_stopping() {
         let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-stale");
         let stale_ts = chrono::Utc::now().timestamp() - 3600; // 1h ago
         mgr.get_handle_mut("rt-stale").unwrap().last_active_at = stale_ts;
@@ -3439,7 +3457,11 @@ mod tests {
 
         let evicted = mgr.evict_idle(1800).await; // 30-minute threshold
         assert_eq!(evicted, vec!["rt-stale".to_string()]);
-        assert!(mgr.get_handle("rt-stale").is_none(), "stale handle removed");
+        assert!(
+            mgr.get_handle("rt-stale").is_some(),
+            "main loop graceful detach stops the handle"
+        );
+        assert_eq!(mgr.drain_idle_evict_pending(), vec!["rt-stale".to_string()]);
         assert!(
             mgr.get_handle("sess-fresh").is_some(),
             "fresh handle retained"
@@ -3513,15 +3535,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evict_idle_buffers_ids_for_drain() {
+    async fn evict_idle_buffers_ids_for_graceful_detach() {
         let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-old");
         mgr.get_handle_mut("rt-old").unwrap().last_active_at = 0;
         let evicted = mgr.evict_idle(60).await;
         assert_eq!(evicted, vec!["rt-old".to_string()]);
-        let drained = mgr.drain_evicted();
-        assert_eq!(drained, vec!["rt-old".to_string()]);
-        // Second drain returns empty.
-        assert!(mgr.drain_evicted().is_empty());
+        assert_eq!(mgr.drain_idle_evict_pending(), vec!["rt-old".to_string()]);
+        assert!(mgr.drain_evicted().is_empty(), "stop happens after graceful detach");
     }
 
     #[tokio::test]
@@ -3547,6 +3567,18 @@ mod tests {
             mgr.get_handle("rt-mid-turn").is_some(),
             "handle must remain in map"
         );
+        assert!(
+            !mgr.can_graceful_idle_detach("rt-mid-turn"),
+            "graceful detach must re-check checkout before stop"
+        );
+    }
+
+    #[test]
+    fn can_graceful_idle_detach_matches_evict_idle_gate() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-idle");
+        assert!(mgr.can_graceful_idle_detach("rt-idle"));
+        mgr.get_handle_mut("rt-idle").unwrap().event_rx.take();
+        assert!(!mgr.can_graceful_idle_detach("rt-idle"));
     }
 
     #[tokio::test]
@@ -3602,21 +3634,60 @@ mod tests {
         assert!(mgr.get_handle("sess-other").is_none());
     }
 
+    #[test]
+    fn needs_synthetic_idle_detach_false_when_idle_and_turn_closed() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-idle");
+        mgr.get_handle_mut("rt-idle").unwrap().status = amux::AgentStatus::Idle;
+        assert!(
+            !mgr.needs_synthetic_idle_detach("rt-idle"),
+            "normal completion: no synthetic Active→Idle"
+        );
+    }
+
+    #[test]
+    fn needs_synthetic_idle_detach_true_when_handle_active() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-active");
+        mgr.get_handle_mut("rt-active").unwrap().status = amux::AgentStatus::Active;
+        assert!(mgr.needs_synthetic_idle_detach("rt-active"));
+    }
+
+    #[test]
+    fn needs_synthetic_idle_detach_true_when_aggregator_turn_open() {
+        use crate::runtime::turn_aggregator::TurnAggregator;
+
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-settling");
+        mgr.get_handle_mut("rt-settling").unwrap().status = amux::AgentStatus::Idle;
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&amux::AcpEvent {
+            event: Some(amux::acp_event::Event::Output(amux::AcpOutput {
+                text: "partial".into(),
+                is_complete: false,
+            })),
+            model: String::new(),
+        });
+        mgr.aggregators.insert("rt-settling".to_string(), agg);
+        assert!(
+            mgr.needs_synthetic_idle_detach("rt-settling"),
+            "open aggregator counts even when handle.status is Idle"
+        );
+    }
+
     #[tokio::test]
-    async fn evict_idle_full_cycle_emits_evicted_id_for_publish() {
+    async fn evict_idle_full_cycle_emits_evicted_id_after_graceful_stop() {
         let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-x");
         mgr.get_handle_mut("rt-x").unwrap().last_active_at = 0;
 
-        // First sweep: stops the runtime, buffers id.
         let evicted = mgr.evict_idle(60).await;
         assert_eq!(evicted, vec!["rt-x".to_string()]);
+        assert!(mgr.get_handle("rt-x").is_some());
+        assert_eq!(mgr.drain_idle_evict_pending(), vec!["rt-x".to_string()]);
+
+        assert!(mgr.complete_idle_detach_stop("rt-x").await);
         assert!(mgr.get_handle("rt-x").is_none());
 
-        // Main loop drains the buffer.
         let to_publish = mgr.drain_evicted();
         assert_eq!(to_publish, vec!["rt-x".to_string()]);
 
-        // Second sweep: nothing left, buffer is empty.
         assert!(mgr.evict_idle(60).await.is_empty());
         assert!(mgr.drain_evicted().is_empty());
     }

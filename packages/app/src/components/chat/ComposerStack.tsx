@@ -716,6 +716,12 @@ export function ComposerStack({
                           queueTotal={queuedCount}
                           onReplyStart={onReplyStart}
                           onReplyRollback={onReplyRollback}
+                          onContinueConversation={() => {
+                            const editor = document.querySelector(
+                              '[data-testid="v2-composer-editor"]',
+                            ) as HTMLElement | null;
+                            editor?.focus();
+                          }}
                           appearance="glass"
                           className={cn(
                             approvalPanelMotionClasses,

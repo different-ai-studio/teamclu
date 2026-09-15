@@ -100,6 +100,8 @@ const DYNAMIC_PREFIXES = [
   'apps.cron.status.',
   // Keyed by pi compaction reason (manual | threshold | overflow).
   'chat.compaction.reason.',
+  // Keyed by diagnostics tab id in DiagnosticsSection (t(`settings.diagnostics.tab.${id}`)).
+  'settings.diagnostics.tab.',
 ]
 // i18next plural/context suffixes resolve from the base key at runtime.
 const PLURAL_SUFFIX = /_(plural|one|two|few|many|other|zero|\d+)$/

@@ -637,7 +637,14 @@
       "waitingForApproval": "等待 {{name}} 批准",
       "queuePosition": "第 {{current}} / {{total}} 条",
       "approvalSectionAria": "权限审批",
-      "approve": "允许"
+      "approve": "允许",
+      "outcomeColdAria": "审批不可用",
+      "outcomeColdTitle": "无法提交审批",
+      "outcomeColdBody": "Agent 连接已结束，此请求不会执行。",
+      "outcomeDismiss": "知道了",
+      "outcomeContinue": "在会话中继续",
+      "sendFailed": "未能发送你的选择，请重试。",
+      "retry": "重试"
     },
     "todo": {
       "stackSummary": "{{count}} 项任务 · {{completed}} 已完成"
@@ -959,6 +966,16 @@
       "stoppedTitle": "已停止",
       "interruptedStatusLabel": "中断",
       "agentReplyBodyKept": "你已打断本次回复。已生成的内容会保留。"
+    },
+    "approvalTimeout": {
+      "stoppedTitle": "已超时",
+      "statusLabel": "审批超时",
+      "description": "等待权限批准过久，运行时已回收。如需继续，请重新发起操作。"
+    },
+    "idleTimeout": {
+      "stoppedTitle": "已回收",
+      "statusLabel": "空闲回收",
+      "description": "会话长时间无活动，运行时已回收。"
     },
     "noFinalReply": {
       "finishedTitle": "本轮已结束",
@@ -3262,7 +3279,6 @@
     "fieldPath": "知识库路径",
     "fieldTitle": "标题",
     "fromSession": "来自会话 {{id}}",
-    "fromUnknown": "来自本机草稿",
     "headerAction": "整理到知识库",
     "kicker": "审稿",
     "later": "稍后",
@@ -3275,7 +3291,10 @@
     "savedLocalOnly": "已写入本机，当前没有同步到团队",
     "tabLabel": "审稿",
     "title": "写入知识库前先看一遍",
-    "untitled": "未命名"
+    "untitled": "未命名",
+    "distillHint": "这是从会话里提炼的建议，不是聊天全文。勾选要留下的条目，再写入。",
+    "suggestions": "提炼建议",
+    "rewriteBody": "按所选建议重写正文"
   },
   "knowledgeSync": {
     "groupConflict": "待决策",

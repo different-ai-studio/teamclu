@@ -1,9 +1,10 @@
 use crate::proto::amux;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct PermissionManager {
     pending: HashSet<String>,
     resolved: HashSet<String>,
+    pending_by_session: HashMap<String, HashSet<String>>,
 }
 
 impl PermissionManager {
@@ -11,6 +12,7 @@ impl PermissionManager {
         Self {
             pending: HashSet::new(),
             resolved: HashSet::new(),
+            pending_by_session: HashMap::new(),
         }
     }
 
@@ -38,13 +40,58 @@ impl PermissionManager {
         Ok(())
     }
 
-    pub fn register_pending(&mut self, request_id: &str) {
+    pub fn register_pending(&mut self, request_id: &str, session_id: &str) {
+        let request_id = request_id.trim();
+        let session_id = session_id.trim();
+        if request_id.is_empty() || session_id.is_empty() {
+            return;
+        }
         self.pending.insert(request_id.to_string());
+        self.pending_by_session
+            .entry(session_id.to_string())
+            .or_default()
+            .insert(request_id.to_string());
     }
 
     pub fn try_resolve_permission(&mut self, request_id: &str) -> bool {
+        let request_id = request_id.trim();
+        if request_id.is_empty() {
+            return false;
+        }
         self.pending.remove(request_id);
+        for ids in self.pending_by_session.values_mut() {
+            ids.remove(request_id);
+        }
+        self.pending_by_session.retain(|_, ids| !ids.is_empty());
         self.resolved.insert(request_id.to_string())
+    }
+
+    pub fn session_has_pending(&self, session_id: &str) -> bool {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return false;
+        }
+        self.pending_by_session
+            .get(session_id)
+            .is_some_and(|ids| !ids.is_empty())
+    }
+
+    /// Pending permission ids for a session when its attachment is torn down.
+    pub fn take_pending_for_session(&mut self, session_id: &str) -> Vec<String> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Vec::new();
+        }
+        let Some(ids) = self.pending_by_session.remove(session_id) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if self.pending.remove(&id) {
+                out.push(id);
+            }
+        }
+        out
     }
 }
 
@@ -118,16 +165,25 @@ mod tests {
     #[test]
     fn pending_and_resolve_flow() {
         let mut pm = PermissionManager::new();
-        pm.register_pending("req-1");
+        pm.register_pending("req-1", "sess-1");
         assert!(pm.try_resolve_permission("req-1"));
-        // second resolve of same id is idempotent (already in resolved set)
         assert!(!pm.try_resolve_permission("req-1"));
+    }
+
+    #[test]
+    fn take_pending_for_session_drains_only_that_session() {
+        let mut pm = PermissionManager::new();
+        pm.register_pending("req-1", "sess-1");
+        pm.register_pending("req-2", "sess-2");
+        let drained = pm.take_pending_for_session("sess-1");
+        assert_eq!(drained, vec!["req-1".to_string()]);
+        assert_eq!(pm.take_pending_for_session("sess-1"), Vec::<String>::new());
+        assert_eq!(pm.take_pending_for_session("sess-2"), vec!["req-2".to_string()]);
     }
 
     #[test]
     fn resolve_unknown_id_returns_true_first_time() {
         let mut pm = PermissionManager::new();
-        // never registered, but resolved set insert returns true the first time
         assert!(pm.try_resolve_permission("unknown"));
     }
 }

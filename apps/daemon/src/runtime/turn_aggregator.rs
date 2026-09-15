@@ -21,6 +21,8 @@
 //! - AgentReply: `""` normally; special turn endings use non-empty
 //!   agent-facing English content plus:
 //!   - `{"turn_status":"interrupted"}` — user abort
+//!   - `{"turn_status":"approval_timeout"}` — idle detach with pending approval
+//!   - `{"turn_status":"idle_timeout"}` — idle detach without pending approval
 //!   - `{"turn_status":"failed"}` — the model provider errored out
 //!     (host/extension noise is *not* this; see `AcpErrorKind::SideChannel`)
 //!   - `{"turn_status":"no_final_reply"}` — Idle with no final prose
@@ -46,6 +48,21 @@ Do not continue, resume, or retry the interrupted work unless the user \
 explicitly asks again.";
 
 const INTERRUPTED_REPLY_METADATA_JSON: &str = r#"{"turn_status":"interrupted"}"#;
+
+/// Durable AGENT_REPLY when idle detach tears down a session waiting on approval.
+pub const APPROVAL_TIMEOUT_AGENT_REPLY_CONTENT: &str = "\
+[Permission approval timed out] The runtime was detached after waiting too \
+long for permission approval. Do not continue the blocked tool action unless \
+the user explicitly asks again.";
+
+const APPROVAL_TIMEOUT_REPLY_METADATA_JSON: &str = r#"{"turn_status":"approval_timeout"}"#;
+
+/// Durable AGENT_REPLY when idle detach ends an open turn without user abort.
+pub const IDLE_TIMEOUT_AGENT_REPLY_CONTENT: &str = "\
+[Runtime idle timeout] The runtime was detached after prolonged inactivity. \
+Do not resume the interrupted work unless the user explicitly asks again.";
+
+const IDLE_TIMEOUT_REPLY_METADATA_JSON: &str = r#"{"turn_status":"idle_timeout"}"#;
 
 /// Durable AGENT_REPLY body when a turn ends at Idle with no final prose
 /// (tool-only, thinking-only, or all narration was mid-flushed before Idle).
@@ -217,11 +234,24 @@ pub struct TurnAggregator {
     /// pi aborted a tool mid-flight (`tool_execution_end` with an abort-shaped
     /// summary) without emitting assistant `stopReason: "aborted"`.
     turn_saw_abort_tool_result: bool,
+    /// Synthetic Active→Idle from idle-runtime graceful detach.
+    turn_detach_idle_timeout: bool,
+    turn_detach_approval_timeout: bool,
 }
 
 impl TurnAggregator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Before forwarding synthetic Active→Idle on idle detach.
+    pub fn mark_idle_timeout_detach(&mut self, approval_pending: bool) {
+        self.ensure_turn_started();
+        self.turn_had_activity = true;
+        self.turn_detach_idle_timeout = true;
+        if approval_pending {
+            self.turn_detach_approval_timeout = true;
+        }
     }
 
     /// Feed one ACP event in; return any logical messages this triggers.
@@ -321,7 +351,9 @@ impl TurnAggregator {
                         self.turn_was_interrupted = true;
                         self.turn_failed = false;
                     }
-                    let ended_badly = self.turn_was_interrupted || self.turn_failed;
+                    let ended_badly = self.turn_was_interrupted
+                        || self.turn_failed
+                        || self.turn_detach_idle_timeout;
                     if ended_badly && self.turn_had_activity {
                         // Single durable AGENT_REPLY: keep any unflushed prose in
                         // content (user must see what was generated). Only fall
@@ -331,7 +363,17 @@ impl TurnAggregator {
                         // An interrupt outranks a failure: if the user stopped
                         // the turn, that is the outcome they need to see, even
                         // when a provider error also landed on the way out.
-                        let (notice, metadata) = if self.turn_was_interrupted {
+                        let (notice, metadata) = if self.turn_detach_approval_timeout {
+                            (
+                                APPROVAL_TIMEOUT_AGENT_REPLY_CONTENT,
+                                APPROVAL_TIMEOUT_REPLY_METADATA_JSON,
+                            )
+                        } else if self.turn_detach_idle_timeout {
+                            (
+                                IDLE_TIMEOUT_AGENT_REPLY_CONTENT,
+                                IDLE_TIMEOUT_REPLY_METADATA_JSON,
+                            )
+                        } else if self.turn_was_interrupted {
                             (
                                 INTERRUPTED_AGENT_REPLY_CONTENT,
                                 INTERRUPTED_REPLY_METADATA_JSON,
@@ -376,6 +418,8 @@ impl TurnAggregator {
                     self.turn_was_interrupted = false;
                     self.turn_failed = false;
                     self.turn_saw_abort_tool_result = false;
+                    self.turn_detach_idle_timeout = false;
+                    self.turn_detach_approval_timeout = false;
                     self.current_turn_id = None;
                 }
             }
@@ -433,6 +477,8 @@ impl TurnAggregator {
     pub fn is_agent_facing_status_notice(content: &str) -> bool {
         let trimmed = content.trim_start();
         trimmed.starts_with("[Turn interrupted by user]")
+            || trimmed.starts_with("[Permission approval timed out]")
+            || trimmed.starts_with("[Runtime idle timeout]")
             || trimmed.starts_with("[Turn completed with no final reply]")
             || trimmed.starts_with("[Skill created in unsupported directory]")
     }
@@ -700,6 +746,36 @@ mod tests {
         assert!(emitted[0]
             .metadata_json
             .contains("\"turn_status\":\"interrupted\""));
+    }
+
+    #[test]
+    fn idle_detach_with_pending_approval_stamps_approval_timeout() {
+        let mut agg = TurnAggregator::new();
+        agg.mark_idle_timeout_detach(true);
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].content, APPROVAL_TIMEOUT_AGENT_REPLY_CONTENT);
+        assert!(emitted[0]
+            .metadata_json
+            .contains("\"turn_status\":\"approval_timeout\""));
+    }
+
+    #[test]
+    fn idle_detach_without_pending_approval_stamps_idle_timeout() {
+        let mut agg = TurnAggregator::new();
+        agg.mark_idle_timeout_detach(false);
+        let emitted = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].content, IDLE_TIMEOUT_AGENT_REPLY_CONTENT);
+        assert!(emitted[0]
+            .metadata_json
+            .contains("\"turn_status\":\"idle_timeout\""));
     }
 
     #[test]

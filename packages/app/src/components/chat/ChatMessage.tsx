@@ -116,6 +116,8 @@ export const ChatMessage = React.memo(function ChatMessage({
   const { t } = useTranslation();
   const isUser = message.role === "user";
   const isInterruptedTurn = !isUser && message.turnStatus === "interrupted";
+  const isApprovalTimeoutTurn = !isUser && message.turnStatus === "approval_timeout";
+  const isIdleTimeoutTurn = !isUser && message.turnStatus === "idle_timeout";
   const isNoFinalReplyTurn = !isUser && message.turnStatus === "no_final_reply";
   const isFailedTurn = !isUser && message.turnStatus === "failed";
   const isUnsupportedNativeSkillTurn =
@@ -600,6 +602,54 @@ export const ChatMessage = React.memo(function ChatMessage({
             {t(
               "chat.interrupt.agentReplyBodyKept",
               "You interrupted this reply. Generated content is kept.",
+            )}
+          </p>
+        </div>
+      ) : null}
+
+      {isApprovalTimeoutTurn ? (
+        <div
+          className="mt-1 flex max-w-[520px] flex-wrap items-baseline gap-x-2 gap-y-1 pl-1 text-[12.5px] leading-[1.5] text-ink-2"
+          data-testid="approval-timeout-agent-reply"
+        >
+          <span
+            className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-[1px] bg-muted-foreground/70"
+            aria-hidden
+          />
+          <span className="font-semibold">
+            {t("chat.approvalTimeout.stoppedTitle", "Timed out")}
+          </span>
+          <span className="font-mono text-[11px] text-faint">
+            · {t("chat.approvalTimeout.statusLabel", "approval timeout")}
+          </span>
+          <p className="mt-0.5 w-full text-[12.5px] leading-[1.55] text-muted-foreground">
+            {t(
+              "chat.approvalTimeout.description",
+              "The runtime was detached after waiting too long for permission approval.",
+            )}
+          </p>
+        </div>
+      ) : null}
+
+      {isIdleTimeoutTurn ? (
+        <div
+          className="mt-1 flex max-w-[520px] flex-wrap items-baseline gap-x-2 gap-y-1 pl-1 text-[12.5px] leading-[1.5] text-ink-2"
+          data-testid="idle-timeout-agent-reply"
+        >
+          <span
+            className="inline-block h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-[1px] bg-muted-foreground/70"
+            aria-hidden
+          />
+          <span className="font-semibold">
+            {t("chat.idleTimeout.stoppedTitle", "Detached")}
+          </span>
+          <span className="font-mono text-[11px] text-faint">
+            · {t("chat.idleTimeout.statusLabel", "idle timeout")}
+          </span>
+          <p className="mt-0.5 w-full text-[12.5px] leading-[1.55] text-muted-foreground">
+            {t(
+              "chat.idleTimeout.description",
+              "The runtime was detached after prolonged inactivity.",
             )}
           </p>
         </div>

@@ -64,6 +64,8 @@ const DEBT: &[&str] = &[
     // treatment rather than a rewrite.
     "apps/desktop/src/commands/amuxd_supervisor.rs",
     "apps/desktop/src/commands/diagnostics.rs",
+    // Test-only: branded AMUXD_HOME suffix assertions (same rationale as amuxd_supervisor).
+    "apps/desktop/src/commands/mod.rs",
     "apps/desktop/src/commands/team_share/enable.rs",
     "apps/desktop/tests/team_share_smoke.rs",
     "crates/teamclu-gateway/src/lib.rs",

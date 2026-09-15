@@ -12,7 +12,10 @@ const onboardingState = vi.hoisted(() => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string) => fallback ?? _key,
+    t: (_key: string, fallback?: string | Record<string, unknown>) =>
+      typeof fallback === 'string'
+        ? fallback
+        : String(fallback?.defaultValue ?? _key),
   }),
 }))
 

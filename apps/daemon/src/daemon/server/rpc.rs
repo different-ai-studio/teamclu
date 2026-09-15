@@ -1539,8 +1539,7 @@ impl DaemonServer {
                 let grant_option_id =
                     (!grant.option_id.is_empty()).then(|| grant.option_id.clone());
                 if self.permissions.try_resolve_permission(&grant.request_id) {
-                    // Resolve via ACP permission response
-                    match self
+                    let resolve_ok = self
                         .agents
                         .lock()
                         .await
@@ -1551,11 +1550,7 @@ impl DaemonServer {
                             grant_option_id,
                         )
                         .await
-                    {
-                        Ok(()) => {
-                            info!(request_id = %grant.request_id, peer_id, agent_id, "permission granted via ACP");
-                        }
-                        Err(e) => {
+                        .inspect_err(|e| {
                             warn!(
                                 request_id = %grant.request_id,
                                 peer_id,
@@ -1563,7 +1558,10 @@ impl DaemonServer {
                                 error = %e,
                                 "resolve_permission failed after grant; ACP may stay blocked"
                             );
-                        }
+                        })
+                        .is_ok();
+                    if resolve_ok {
+                        info!(request_id = %grant.request_id, peer_id, agent_id, "permission granted via ACP");
                     }
                     self.publish_session_event(
                         agent_id,
@@ -1572,7 +1570,7 @@ impl DaemonServer {
                                 amux::PermissionResolved {
                                     request_id: grant.request_id,
                                     resolved_by_peer_id: peer_id,
-                                    granted: true,
+                                    granted: resolve_ok,
                                 },
                             )),
                         },

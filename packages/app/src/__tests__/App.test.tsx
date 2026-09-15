@@ -98,17 +98,22 @@ vi.mock('@/lib/config/platform', () => ({
     pageCapture: false,
   },
 }))
-vi.mock('@/lib/config/build-config', () => ({
-  appShortName: 'teamclu',
-  appStoragePrefix: 'teamclu',
-  appScheme: 'teamclu',
-  deeplinkSchemes: ['teamclu', 'teamclaw', 'amux'],
-  TEAM_REPO_DIR: 'teamclu-team',
-  buildConfig: {
-    app: { name: 'TeamClu' },
-    features: {},
-  },
-}))
+vi.mock('@/lib/config/build-config', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/config/build-config')>()
+  return {
+    ...actual,
+    appShortName: 'teamclu',
+    appStoragePrefix: 'teamclu',
+    appScheme: 'teamclu',
+    deeplinkSchemes: ['teamclu', 'teamclaw', 'amux'],
+    TEAM_REPO_DIR: 'teamclu-team',
+    buildConfig: {
+      app: { name: 'TeamClu' },
+      features: {},
+    },
+  }
+})
 vi.mock('@/components/FileEditor', () => ({ FileContentViewer: () => <div data-testid="file-content-viewer" /> }))
 // STR-11: one module per hook now (was `@/hooks/useAppInit`).
 vi.mock('@/hooks/use-workspace-init', () => ({

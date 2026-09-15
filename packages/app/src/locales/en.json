@@ -637,7 +637,14 @@
       "waitingForApproval": "Waiting for {{name}} to approve",
       "queuePosition": "{{current}} / {{total}}",
       "approvalSectionAria": "Permission approval",
-      "approve": "Allow"
+      "approve": "Allow",
+      "outcomeColdAria": "Approval unavailable",
+      "outcomeColdTitle": "Approval could not be submitted",
+      "outcomeColdBody": "The agent connection has ended. This request will not run.",
+      "outcomeDismiss": "Got it",
+      "outcomeContinue": "Continue in chat",
+      "sendFailed": "Could not send your response. Try again.",
+      "retry": "Retry"
     },
     "todo": {
       "stackSummary": "{{count}} tasks · {{completed}} done"
@@ -959,6 +966,16 @@
       "stoppedTitle": "Stopped",
       "interruptedStatusLabel": "interrupted",
       "agentReplyBodyKept": "You interrupted this reply. Generated content is kept."
+    },
+    "approvalTimeout": {
+      "stoppedTitle": "Timed out",
+      "statusLabel": "approval timeout",
+      "description": "The runtime was detached after waiting too long for permission approval."
+    },
+    "idleTimeout": {
+      "stoppedTitle": "Detached",
+      "statusLabel": "idle timeout",
+      "description": "The runtime was detached after prolonged inactivity."
     },
     "noFinalReply": {
       "finishedTitle": "Turn finished",
@@ -3262,7 +3279,6 @@
     "fieldPath": "Knowledge path",
     "fieldTitle": "Title",
     "fromSession": "From session {{id}}",
-    "fromUnknown": "From a local draft",
     "headerAction": "Save to knowledge",
     "kicker": "Review",
     "later": "Later",
@@ -3275,7 +3291,10 @@
     "savedLocalOnly": "Saved on this machine; not synced to the team yet",
     "tabLabel": "Review",
     "title": "Review before writing to knowledge",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "distillHint": "Suggestions distilled from the session — not the full chat. Select what to keep, then write.",
+    "suggestions": "Distilled suggestions",
+    "rewriteBody": "Rewrite body from selected suggestions"
   },
   "knowledgeSync": {
     "groupConflict": "Needs a decision",

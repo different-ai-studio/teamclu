@@ -2187,21 +2187,39 @@ impl DaemonServer {
                             .as_ref()
                             .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
                             .unwrap_or(true);
+                        let idle_evict_ids = {
+                            let mut mgr = self.agents.lock().await;
+                            mgr.drain_idle_evict_pending()
+                        };
+                        for agent_id in idle_evict_ids {
+                            self.graceful_detach_idle_timeout(&agent_id, mqtt_up)
+                                .await;
+                        }
                         if mqtt_up {
-                            let (agent_events, evicted_runtime_ids, actor_state_dirty): (
+                            let (agent_events, evicted_runtime_ids, evicted_sessions, actor_state_dirty): (
                                 Vec<_>,
                                 Vec<String>,
+                                Vec<(String, String)>,
                                 bool,
                             ) = {
                                 let mut mgr = self.agents.lock().await;
                                 (
                                     mgr.poll_events(),
                                     mgr.drain_evicted(),
+                                    mgr.drain_evicted_session_detachments(),
                                     mgr.take_actor_state_dirty(),
                                 )
                             };
                             for runtime_id in evicted_runtime_ids {
                                 self.publish_runtime_detached(&runtime_id).await;
+                            }
+                            for (agent_id, session_id) in evicted_sessions {
+                                self.cancel_session_pending_permissions(
+                                    &agent_id,
+                                    &session_id,
+                                    true,
+                                )
+                                .await;
                             }
                             // Covers every attach/detach, including the gateway
                             // and cron spawns that never reach
@@ -4209,6 +4227,9 @@ pub(crate) mod tests {
         // lookup stage, which then fails against the unmocked
         // `/v1/sessions/...` route — demonstrating the resolver supplied
         // the path.
+        let cloud_ws = std::path::Path::new("/tmp/cloud-ws");
+        let _ = std::fs::create_dir_all(cloud_ws);
+
         let srv = MockServer::start().await;
         auth_token_mock(&srv).await;
         Mock::given(method("POST"))

@@ -38,7 +38,7 @@ function resetStores() {
     activeSessionId: null,
     sessions: [],
     pendingPermissions: [],
-    replyPermission: vi.fn(() => Promise.resolve()),
+    replyPermission: vi.fn(() => Promise.resolve({ status: "sent" as const })),
   });
 }
 
@@ -102,7 +102,7 @@ describe('PendingPermissionInline', () => {
   });
 
   it('clicking allow calls replyPermission with correct arguments', async () => {
-    const replyMock = vi.fn(() => Promise.resolve());
+    const replyMock = vi.fn(() => Promise.resolve({ status: "sent" as const }));
     useSessionStore.setState({
       replyPermission: replyMock,
       pendingPermissions: [
@@ -130,9 +130,12 @@ describe('PendingPermissionInline', () => {
 
   it('promotes the next queued permission immediately before reply resolves', async () => {
     let resolveReply: (() => void) | null = null;
-    const replyMock = vi.fn(() => new Promise<void>((resolve) => {
-      resolveReply = resolve;
-    }));
+    const replyMock = vi.fn(
+      () =>
+        new Promise<{ status: "sent" }>((resolve) => {
+          resolveReply = () => resolve({ status: "sent" });
+        }),
+    );
     useSessionStore.setState({
       replyPermission: replyMock,
       pendingPermissions: [

@@ -782,6 +782,32 @@ describe("adaptTeamcluMessages", () => {
     expect(result?.[0]?.parts ?? []).toEqual([]);
   });
 
+  it("maps approval_timeout AGENT_REPLY metadata to turnStatus and hides agent-facing body", () => {
+    const result = adaptTeamcluMessages([
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content: "[Permission approval timed out] The runtime was detached.",
+        turnId: "t-apt",
+        metadataJson: JSON.stringify({ turn_status: "approval_timeout" }),
+      }),
+    ]);
+    expect(result?.[0]?.turnStatus).toBe("approval_timeout");
+    expect(result?.[0]?.content).toBe("");
+  });
+
+  it("maps idle_timeout AGENT_REPLY metadata to turnStatus and hides agent-facing body", () => {
+    const result = adaptTeamcluMessages([
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content: "[Runtime idle timeout] The runtime was detached.",
+        turnId: "t-idle",
+        metadataJson: JSON.stringify({ turn_status: "idle_timeout" }),
+      }),
+    ]);
+    expect(result?.[0]?.turnStatus).toBe("idle_timeout");
+    expect(result?.[0]?.content).toBe("");
+  });
+
   it("maps unsupported native skill AGENT_REPLY metadata to turnStatus and violations", () => {
     const result = adaptTeamcluMessages([
       tmsg({

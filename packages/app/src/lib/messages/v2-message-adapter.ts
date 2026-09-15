@@ -54,6 +54,8 @@ function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
   const replyTo = m.replyToMessageId?.trim() || undefined;
   const turnId = m.turnId?.trim() || undefined;
   const interrupted = isInterruptedReply(m);
+  const approvalTimeout = isApprovalTimeoutReply(m);
+  const idleTimeout = isIdleTimeoutReply(m);
   const noFinalReply = isNoFinalReply(m);
   const unsupportedNativeSkill = isUnsupportedNativeSkillReply(m);
   const failed = isFailedReply(m);
@@ -75,13 +77,17 @@ function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
     turnId,
     turnStatus: interrupted
       ? "interrupted"
-      : unsupportedNativeSkill
-        ? "skill_created_in_unsupported_directory"
-        : failed
-          ? "failed"
-          : noFinalReply
-            ? "no_final_reply"
-            : undefined,
+      : approvalTimeout
+        ? "approval_timeout"
+        : idleTimeout
+          ? "idle_timeout"
+          : unsupportedNativeSkill
+            ? "skill_created_in_unsupported_directory"
+            : failed
+              ? "failed"
+              : noFinalReply
+                ? "no_final_reply"
+                : undefined,
     nativeSkillViolations,
     parts: displayContent
       ? [
@@ -108,6 +114,16 @@ function parseMetadata(m: TeamcluMessage): Record<string, unknown> {
 
 function isInterruptedReply(m: TeamcluMessage): boolean {
   return parseMetadata(m).turn_status === "interrupted";
+}
+
+function isApprovalTimeoutReply(m: TeamcluMessage): boolean {
+  if (parseMetadata(m).turn_status === "approval_timeout") return true;
+  return isAgentFacingApprovalTimeoutNotice(m.content ?? "");
+}
+
+function isIdleTimeoutReply(m: TeamcluMessage): boolean {
+  if (parseMetadata(m).turn_status === "idle_timeout") return true;
+  return isAgentFacingIdleTimeoutNotice(m.content ?? "");
 }
 
 function isNoFinalReply(m: TeamcluMessage): boolean {
@@ -144,6 +160,14 @@ function isAgentFacingInterruptNotice(content: string): boolean {
   return content.trimStart().startsWith("[Turn interrupted by user]");
 }
 
+function isAgentFacingApprovalTimeoutNotice(content: string): boolean {
+  return content.trimStart().startsWith("[Permission approval timed out]");
+}
+
+function isAgentFacingIdleTimeoutNotice(content: string): boolean {
+  return content.trimStart().startsWith("[Runtime idle timeout]");
+}
+
 function isAgentFacingNoFinalReplyNotice(content: string): boolean {
   return content.trimStart().startsWith("[Turn completed with no final reply]");
 }
@@ -161,6 +185,8 @@ function displayContentForReply(m: TeamcluMessage): string {
   const raw = m.content ?? "";
   if (
     isAgentFacingInterruptNotice(raw) ||
+    isAgentFacingApprovalTimeoutNotice(raw) ||
+    isAgentFacingIdleTimeoutNotice(raw) ||
     isAgentFacingNoFinalReplyNotice(raw) ||
     isAgentFacingUnsupportedNativeSkillNotice(raw) ||
     isAgentFacingFailedNotice(raw)
@@ -174,11 +200,15 @@ function turnStatusFromReplies(
   replies: TeamcluMessage[],
 ):
   | "interrupted"
+  | "approval_timeout"
+  | "idle_timeout"
   | "failed"
   | "no_final_reply"
   | "skill_created_in_unsupported_directory"
   | undefined {
   if (replies.some(isInterruptedReply)) return "interrupted";
+  if (replies.some(isApprovalTimeoutReply)) return "approval_timeout";
+  if (replies.some(isIdleTimeoutReply)) return "idle_timeout";
   if (replies.some(isUnsupportedNativeSkillReply)) {
     return "skill_created_in_unsupported_directory";
   }

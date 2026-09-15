@@ -28,19 +28,15 @@ impl RuntimeManager {
             .filter(|(_, h)| h.event_rx.is_some() && h.last_active_at <= cutoff)
             .map(|(id, _)| id.clone())
             .collect();
-        let mut evicted = Vec::with_capacity(stale.len());
-        for id in stale {
-            if self.stop_runtime(&id).await.is_some() {
-                info!(
-                    agent_id = %id,
-                    threshold_secs,
-                    "idle sweeper: evicted runtime"
-                );
-                evicted.push(id);
-            }
+        for id in &stale {
+            info!(
+                agent_id = %id,
+                threshold_secs,
+                "idle sweeper: queued runtime for graceful detach"
+            );
         }
-        self.evicted_pending_publish.extend(evicted.iter().cloned());
-        evicted
+        self.idle_evict_pending.extend(stale.iter().cloned());
+        stale
     }
 
     /// Desktop turns are driven by `poll_events`, which has no wait loop.
@@ -152,4 +148,66 @@ impl RuntimeManager {
     pub fn drain_evicted(&mut self) -> Vec<String> {
         std::mem::take(&mut self.evicted_pending_publish)
     }
+
+    pub fn drain_evicted_session_detachments(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.evicted_session_detachments)
+    }
+
+    pub fn drain_idle_evict_pending(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.idle_evict_pending)
+    }
+
+    /// Snapshot for the main-loop graceful idle detach path.
+    pub fn idle_detach_snapshot(&self, agent_id: &str) -> Option<IdleDetachSnapshot> {
+        self.agents.get(agent_id).map(|h| IdleDetachSnapshot {
+            session_id: h.session_id.clone(),
+            acp_session_id: h.acp_session_id.clone(),
+        })
+    }
+
+    /// Same gate as [`Self::evict_idle`]: do not detach while `event_rx` is
+    /// checked out (gateway/cron/desktop turn in flight).
+    pub fn can_graceful_idle_detach(&self, agent_id: &str) -> bool {
+        self.agents
+            .get(agent_id)
+            .is_some_and(|h| h.event_rx.is_some())
+    }
+
+    /// Idle sweeper only evicts handles that still own `event_rx`, so this
+    /// deliberately ignores the checkout (`event_rx == None`) branch of
+    /// `runtime_has_active_turn`.
+    pub fn needs_synthetic_idle_detach(&self, agent_id: &str) -> bool {
+        let Some(handle) = self.agents.get(agent_id) else {
+            return false;
+        };
+        matches!(handle.status, crate::proto::amux::AgentStatus::Active)
+            || self
+                .aggregators
+                .get(agent_id)
+                .and_then(|agg| agg.current_turn_id())
+                .is_some()
+    }
+
+    pub fn prepare_idle_timeout_detach(&mut self, agent_id: &str) {
+        if let Some(agg) = self.aggregators.get_mut(agent_id) {
+            agg.mark_idle_timeout_detach(false);
+        }
+    }
+
+    /// Stop after synthetic Active→Idle; buffer MQTT detached publish like idle evict.
+    pub async fn complete_idle_detach_stop(&mut self, agent_id: &str) -> bool {
+        if self.stop_runtime(agent_id).await.is_some() {
+            self.evicted_pending_publish.push(agent_id.to_string());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Inputs for [`RuntimeManager::prepare_idle_timeout_detach`].
+#[derive(Debug, Clone)]
+pub struct IdleDetachSnapshot {
+    pub session_id: String,
+    pub acp_session_id: String,
 }

@@ -22,6 +22,8 @@ overrides:
   # this repo's history (present in the initial import, 0f585b2a) and no commit
   # records why, so this migration does not touch the version.
   '@codemirror/state': '6.7.0'
+  # react-pdf@11 vendors pdfjs-dist; PDFViewer loads the worker from our direct dep.
+  pdfjs-dist: '6.3.289'
 
 publicHoistPattern:
   # Was .npmrc's public-hoist-pattern[]. Per that file's own note: packages/app
