@@ -637,7 +637,14 @@
       "waitingForApproval": "等待 {{name}} 批准",
       "queuePosition": "第 {{current}} / {{total}} 条",
       "approvalSectionAria": "权限审批",
-      "approve": "允许"
+      "approve": "允许",
+      "outcomeColdAria": "审批不可用",
+      "outcomeColdTitle": "无法提交审批",
+      "outcomeColdBody": "Agent 连接已结束，此请求不会执行。",
+      "outcomeDismiss": "知道了",
+      "outcomeContinue": "在会话中继续",
+      "sendFailed": "未能发送你的选择，请重试。",
+      "retry": "重试"
     },
     "todo": {
       "stackSummary": "{{count}} 项任务 · {{completed}} 已完成"
@@ -961,12 +968,12 @@
     },
     "approvalTimeout": {
       "stoppedTitle": "已超时",
-      "statusLabel": "approval timeout",
+      "statusLabel": "审批超时",
       "description": "等待权限批准过久，运行时已回收。如需继续，请重新发起操作。"
     },
     "idleTimeout": {
       "stoppedTitle": "已回收",
-      "statusLabel": "idle timeout",
+      "statusLabel": "空闲回收",
       "description": "会话长时间无活动，运行时已回收。"
     },
     "noFinalReply": {

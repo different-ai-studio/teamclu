@@ -637,7 +637,14 @@
       "waitingForApproval": "Waiting for {{name}} to approve",
       "queuePosition": "{{current}} / {{total}}",
       "approvalSectionAria": "Permission approval",
-      "approve": "Allow"
+      "approve": "Allow",
+      "outcomeColdAria": "Approval unavailable",
+      "outcomeColdTitle": "Approval could not be submitted",
+      "outcomeColdBody": "The agent connection has ended. This request will not run.",
+      "outcomeDismiss": "Got it",
+      "outcomeContinue": "Continue in chat",
+      "sendFailed": "Could not send your response. Try again.",
+      "retry": "Retry"
     },
     "todo": {
       "stackSummary": "{{count}} tasks · {{completed}} done"
