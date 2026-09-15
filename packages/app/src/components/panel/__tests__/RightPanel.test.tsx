@@ -55,6 +55,8 @@ const mockLocalWorkspace = {
   hasLocalAgent: true,
   agentName: 'Mac-mini-3' as string | null,
   path: '/Volumes/openbeta/workspace/teamclu' as string | null,
+  bindingResolved: true,
+  boundPath: '/Volumes/openbeta/workspace/teamclu' as string | null,
 }
 vi.mock('@/hooks/use-session-local-workspace', () => ({
   useSessionLocalWorkspace: () => mockLocalWorkspace,
@@ -67,6 +69,8 @@ beforeEach(() => {
   mockLocalWorkspace.hasLocalAgent = true
   mockLocalWorkspace.agentName = 'Mac-mini-3'
   mockLocalWorkspace.path = '/Volumes/openbeta/workspace/teamclu'
+  mockLocalWorkspace.bindingResolved = true
+  mockLocalWorkspace.boundPath = '/Volumes/openbeta/workspace/teamclu'
 })
 
 describe('RightPanel', () => {
@@ -90,15 +94,40 @@ describe('RightPanel', () => {
     expect(screen.queryByTestId('shortcuts-panel')).toBeNull()
   })
 
-  // A session created a second ago has no workspace binding until its runtime
-  // starts. Rendering the tree anyway showed the PREVIOUS session's folder,
-  // because the workspace store is ambient and lags the session switch.
-  it('files tab says the agent has not started while the session has no bound folder', () => {
+  // A session created a second ago may still be switching the workspace store.
+  // Rendering the tree anyway showed the PREVIOUS session's folder.
+  it('files tab says the agent has not started while the binding is still pending', () => {
     mockStoreState.activeTab = 'files'
     mockLocalWorkspace.path = null
+    mockLocalWorkspace.bindingResolved = false
+    mockLocalWorkspace.boundPath = null
     render(React.createElement(RightPanel))
     expect(screen.getByTestId('files-agent-not-started')).toBeDefined()
+    expect(screen.getByTestId('files-agent-not-started').textContent).toContain('Agent 尚未启动')
     expect(screen.queryByTestId('file-browser')).toBeNull()
+  })
+
+  // workspace_id was never stamped on the participant — not "agent not started".
+  it('files tab says the session has no workspace when the binding resolved empty', () => {
+    mockStoreState.activeTab = 'files'
+    mockLocalWorkspace.path = null
+    mockLocalWorkspace.bindingResolved = true
+    mockLocalWorkspace.boundPath = null
+    render(React.createElement(RightPanel))
+    expect(screen.getByTestId('files-no-workspace')).toBeDefined()
+    expect(screen.getByTestId('files-no-workspace').textContent).toContain('该会话没有工作目录')
+    expect(screen.queryByTestId('files-agent-not-started')).toBeNull()
+    expect(screen.queryByTestId('file-browser')).toBeNull()
+  })
+
+  it('files tab still says agent not started while the store has not followed a known binding', () => {
+    mockStoreState.activeTab = 'files'
+    mockLocalWorkspace.path = null
+    mockLocalWorkspace.bindingResolved = true
+    mockLocalWorkspace.boundPath = '/tmp/bound'
+    render(React.createElement(RightPanel))
+    expect(screen.getByTestId('files-agent-not-started')).toBeDefined()
+    expect(screen.queryByTestId('files-no-workspace')).toBeNull()
   })
 
   it('files tab names the agent and its folder under the tree', () => {

@@ -1040,6 +1040,7 @@
   },
   "fileExplorer": {
     "agentNotStarted": "Agent has not started yet",
+    "noWorkspaceBound": "This session has no workspace",
     "teamLink": "Linked to the team's shared folder",
     "newFile": "New File",
     "newFolder": "New Folder",
