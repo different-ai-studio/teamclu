@@ -21,22 +21,25 @@ interface RightPanelProps {
  * The file tree, plus the fixed line naming whose folder it is.
  *
  * The tab only opens for a session the local agent is in (App gates the header
- * entry on the same hook), so the two states here are "bound" and "not bound
- * yet": a session created a second ago has no workspace binding until its
- * runtime starts, and rendering the previous session's tree in that gap is the
- * bug this replaces.
+ * entry on the same hook). Empty states:
+ * - binding resolved with no folder → session has no workspace_id
+ * - otherwise no settled path → waiting on runtime / workspace switch
+ * Rendering the previous session's tree in that gap is the bug this replaces.
  */
 function WorkspaceFilesPane() {
   const { t } = useTranslation()
-  const { agentName, path } = useSessionLocalWorkspace()
+  const { agentName, path, bindingResolved, boundPath } = useSessionLocalWorkspace()
 
   if (!path) {
+    const unbound = bindingResolved && !boundPath
     return (
       <div
-        data-testid="files-agent-not-started"
+        data-testid={unbound ? 'files-no-workspace' : 'files-agent-not-started'}
         className="flex h-full items-center justify-center px-6 text-center text-[12.5px] text-muted-foreground"
       >
-        {t('fileExplorer.agentNotStarted', 'Agent 尚未启动')}
+        {unbound
+          ? t('fileExplorer.noWorkspaceBound', '该会话没有工作目录')
+          : t('fileExplorer.agentNotStarted', 'Agent 尚未启动')}
       </div>
     )
   }
