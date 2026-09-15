@@ -18,6 +18,7 @@ use super::auth;
 use super::config;
 use super::limit::{body_limit_layer, rate_limit_layer};
 use super::knowledge_inbox;
+use super::knowledge_scaffold;
 use super::live_events;
 use super::live_ingest;
 use super::observ::request_id_layer;
@@ -286,6 +287,10 @@ pub fn build(state: HttpState) -> Router {
         .route(
             "/v1/knowledge/inbox/:id/publish",
             post(knowledge_inbox::publish_inbox),
+        )
+        .route(
+            "/v1/knowledge/scaffold",
+            post(knowledge_scaffold::scaffold_knowledge),
         )
         .route("/v1/team/link", post(team::link_team_workspace))
         .route("/v1/team/unlink", post(team::unlink_team_workspace))
