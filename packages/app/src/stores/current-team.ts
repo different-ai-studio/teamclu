@@ -23,6 +23,9 @@ interface CurrentTeam {
 interface CurrentTeamMember {
   id: string;
   displayName: string;
+  /** Org role assignments — source of truth for `useTeamPermissions`. */
+  roles?: Array<{ id?: string; code: string; name?: string }>;
+  /** Transitional derived highest privilege; prefer `roles`. */
   role: string | null;
   joinedAt: string | null;
 }

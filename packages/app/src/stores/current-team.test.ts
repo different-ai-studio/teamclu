@@ -45,6 +45,7 @@ const ACTIVE_TEAM = { id: "team-1", name: "Brave Otter", slug: "brave-otter" };
 const ACTIVE_MEMBER = {
   id: "member-1",
   displayName: "You",
+  roles: [{ id: "role-owner", code: "owner", name: "Owner" }],
   role: "owner",
   joinedAt: "2026-05-29T00:00:00.000Z",
 };
