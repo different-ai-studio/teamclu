@@ -165,6 +165,14 @@ impl RuntimeManager {
         })
     }
 
+    /// Same gate as [`Self::evict_idle`]: do not detach while `event_rx` is
+    /// checked out (gateway/cron/desktop turn in flight).
+    pub fn can_graceful_idle_detach(&self, agent_id: &str) -> bool {
+        self.agents
+            .get(agent_id)
+            .is_some_and(|h| h.event_rx.is_some())
+    }
+
     /// Idle sweeper only evicts handles that still own `event_rx`, so this
     /// deliberately ignores the checkout (`event_rx == None`) branch of
     /// `runtime_has_active_turn`.

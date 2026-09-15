@@ -19,19 +19,27 @@ impl DaemonServer {
     /// Idle sweeper detach: synthetic Active→Idle only while the turn is still
     /// open in daemon state; otherwise stop the attachment without a new
     /// AGENT_REPLY.
-    pub(crate) async fn graceful_detach_idle_timeout(&mut self, agent_id: &str) {
-        let (snapshot, needs_synthetic) = {
+    pub(crate) async fn graceful_detach_idle_timeout(
+        &mut self,
+        agent_id: &str,
+        publish_live: bool,
+    ) {
+        let (snapshot, needs_synthetic, can_detach) = {
             let agents = self.agents.lock().await;
             (
                 agents.idle_detach_snapshot(agent_id),
                 agents.needs_synthetic_idle_detach(agent_id),
+                agents.can_graceful_idle_detach(agent_id),
             )
         };
         let Some(snapshot) = snapshot else {
             return;
         };
+        if !can_detach {
+            return;
+        }
 
-        if needs_synthetic {
+        if needs_synthetic && publish_live {
             {
                 let mut agents = self.agents.lock().await;
                 agents.prepare_idle_timeout_detach(agent_id);
@@ -52,8 +60,12 @@ impl DaemonServer {
             self.forward_agent_event(agent_id, frame).await;
         }
 
-        self.cancel_session_pending_permissions(agent_id, &snapshot.session_id)
-            .await;
+        self.cancel_session_pending_permissions(
+            agent_id,
+            &snapshot.session_id,
+            publish_live,
+        )
+        .await;
 
         let _ = {
             let mut agents = self.agents.lock().await;
@@ -66,8 +78,12 @@ impl DaemonServer {
         &mut self,
         agent_id: &str,
         session_id: &str,
+        publish_live: bool,
     ) {
         let request_ids = self.permissions.take_pending_for_session(session_id);
+        if !publish_live {
+            return;
+        }
         for request_id in request_ids {
             self.publish_session_event(
                 agent_id,

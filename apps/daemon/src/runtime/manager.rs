@@ -3567,6 +3567,18 @@ mod tests {
             mgr.get_handle("rt-mid-turn").is_some(),
             "handle must remain in map"
         );
+        assert!(
+            !mgr.can_graceful_idle_detach("rt-mid-turn"),
+            "graceful detach must re-check checkout before stop"
+        );
+    }
+
+    #[test]
+    fn can_graceful_idle_detach_matches_evict_idle_gate() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-idle");
+        assert!(mgr.can_graceful_idle_detach("rt-idle"));
+        mgr.get_handle_mut("rt-idle").unwrap().event_rx.take();
+        assert!(!mgr.can_graceful_idle_detach("rt-idle"));
     }
 
     #[tokio::test]
