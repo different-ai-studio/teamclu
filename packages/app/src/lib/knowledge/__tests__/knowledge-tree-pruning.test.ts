@@ -63,6 +63,46 @@ describe('pruneKnowledgeNoise', () => {
     expect(pruneKnowledgeNoise(tree, opts)).toBe(tree)
   })
 
+  // Finder writes .DS_Store into any folder you browse, including the
+  // team-sync root itself. The daemon already refuses to sync it; listing it
+  // as a note just opens a binary file and a UTF-8 error.
+  it('hides .DS_Store at the team-sync root', () => {
+    const tree = [
+      dir(`${SYNC_ROOT}/documents`),
+      dir(`${SYNC_ROOT}/knowledge`),
+      file(`${SYNC_ROOT}/.DS_Store`),
+    ]
+    const out = pruneKnowledgeNoise(tree, opts)
+    expect(out.map((n) => n.name)).toEqual(['documents', 'knowledge'])
+  })
+
+  it('hides nested .DS_Store inside knowledge', () => {
+    const tree = [
+      dir(`${KNOWLEDGE}/notes`, [
+        file(`${KNOWLEDGE}/notes/.DS_Store`),
+        file(`${KNOWLEDGE}/notes/a.md`),
+      ]),
+    ]
+    const out = pruneKnowledgeNoise(tree, opts)
+    expect(out[0].children!.map((n) => n.name)).toEqual(['a.md'])
+  })
+
+  it('hides Windows OS litter files too', () => {
+    const tree = [
+      file(`${KNOWLEDGE}/note.md`),
+      file(`${KNOWLEDGE}/Thumbs.db`),
+      file(`${KNOWLEDGE}/desktop.ini`),
+    ]
+    const out = pruneKnowledgeNoise(tree, opts)
+    expect(out.map((n) => n.name)).toEqual(['note.md'])
+  })
+
+  it('leaves .DS_Store alone outside the knowledge tree', () => {
+    const tree = [file('/work/.DS_Store'), file('/work/a.md')]
+    const out = pruneKnowledgeNoise(tree, opts)
+    expect(out.map((n) => n.name)).toEqual(['.DS_Store', 'a.md'])
+  })
+
   // A file named `.obsidian` is not the config directory.
   it('only prunes .obsidian when it is a directory', () => {
     const tree = [file(`${KNOWLEDGE}/.obsidian`)]

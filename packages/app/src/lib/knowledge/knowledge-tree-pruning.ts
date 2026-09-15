@@ -14,6 +14,13 @@ import { teamSyncKeyForPath } from '@/lib/team/team-skill-paths'
 const KNOWLEDGE_TOOLING_DIRS = new Set(['.obsidian'])
 
 /**
+ * OS litter the daemon already refuses to sync (`BUILTIN_RULES`). Finder
+ * (and Explorer) write these into any folder you browse — including the
+ * team-sync root itself — and they are not notes.
+ */
+const KNOWLEDGE_OS_JUNK_FILES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini'])
+
+/**
  * The sync engine's local-only conflict copies, mirrored under the note's
  * relative path. Obsidian ignores dot-directories; we hide the same folder so
  * the tree badge on the document is the only signal.
@@ -33,7 +40,8 @@ interface KnowledgeScopeOpts {
 }
 
 /**
- * Drop what a team-knowledge tree should not show: tooling directories above.
+ * Drop what a team-knowledge tree should not show: tooling directories and
+ * OS junk files above.
  *
  * Conflict copies live under `.conflicts/` (not beside the note), so pruning
  * that directory is enough — do not hide ordinary notes whose names happen to
@@ -54,10 +62,16 @@ export function pruneKnowledgeNoise(
   const out: FileNode[] = []
   for (const node of nodes) {
     const syncKey = teamSyncKeyForPath(node.path, opts)
-    if (syncKey !== null && node.type === 'directory') {
-      if (KNOWLEDGE_TOOLING_DIRS.has(node.name) || syncKey === CONFLICTS_SYNC_KEY) {
+    if (syncKey !== null) {
+      if (KNOWLEDGE_OS_JUNK_FILES.has(node.name)) {
         changed = true
         continue
+      }
+      if (node.type === 'directory') {
+        if (KNOWLEDGE_TOOLING_DIRS.has(node.name) || syncKey === CONFLICTS_SYNC_KEY) {
+          changed = true
+          continue
+        }
       }
     }
     if (node.children) {
