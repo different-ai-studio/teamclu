@@ -440,6 +440,18 @@ describe("makeOrgRolesRepo", () => {
         return true;
       },
     );
+    assert.equal(host._roles.length, 1, "role row kept when bindings present");
+  });
+
+  test("deleteOrgRole without bindings removes role", async () => {
+    const host = makeStubHost({
+      teamRole: "admin",
+      roles: [seededCustom],
+      bindingCount: 0,
+    });
+    const repo = makeOrgRolesRepo(host);
+    await repo.deleteOrgRole(TEAM, CUSTOM_ROLE);
+    assert.equal(host._roles.length, 0);
   });
 
   test("createOrgRole as non-admin → 403", async () => {

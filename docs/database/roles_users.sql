@@ -10,7 +10,7 @@
 CREATE TABLE IF NOT EXISTS public.roles_users (
     id UUID PRIMARY KEY DEFAULT extensions.uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES public.users (id) ON DELETE CASCADE,
-    role_id UUID NOT NULL REFERENCES public.roles (id) ON DELETE CASCADE,
+    role_id UUID NOT NULL REFERENCES public.roles (id) ON DELETE RESTRICT,
     store_id UUID,
     org_id UUID NOT NULL DEFAULT '5f7cb659-7302-4465-85b1-68a64bb3322e'::UUID
         REFERENCES public.orgs (id) ON DELETE CASCADE,

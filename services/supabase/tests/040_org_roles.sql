@@ -9,7 +9,7 @@
 
 begin;
 
-select plan(10);
+select plan(11);
 
 create or replace function pg_temp.as_user(p_user uuid)
 returns void language plpgsql as $$
@@ -175,6 +175,26 @@ select is(
   amux.current_team_role((select team_b from fx)),
   'admin',
   'current_team_role is org-scoped: team B still sees admin from union'
+);
+
+-- ── FK: role delete blocked while roles_users bindings exist ────────────────
+select pg_temp.as_service();
+
+select throws_ok(
+  $$
+    delete from public.roles
+    where id = (
+      select r.id
+      from public.roles r
+      join public.roles_users ru on ru.role_id = r.id
+      where r.org_id = (select org_id from fx)
+        and r.code = 'owner'
+      limit 1
+    )
+  $$,
+  '23503',
+  null,
+  'delete role with roles_users bindings rejected by ON DELETE RESTRICT'
 );
 
 select * from finish();
