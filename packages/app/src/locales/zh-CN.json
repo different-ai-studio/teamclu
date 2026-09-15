@@ -900,6 +900,7 @@
       "workspaceScope": "仅对本机 Agent 生效",
       "workspaceNone": "本机还没有工作目录",
       "workspaceDefaultTag": "默认",
+      "workspaceCurrentWindowTag": "当前窗口",
       "workspaceBrowse": "选择工作目录",
       "workspaceBrowseAction": "浏览…",
       "workspaceAddFailed": "添加工作目录失败：{{msg}}",
