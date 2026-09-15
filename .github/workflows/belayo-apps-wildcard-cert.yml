@@ -1,0 +1,207 @@
+# Renew the *.apps.mx5.cn wildcard certificate on belayo's Dokploy Traefik.
+#
+# Every app's vanity host and login.apps.mx5.cn are served with a FILE
+# certificate on the Dokploy manager (dynamic/certificates/teamclu-apps-wildcard,
+# referenced by its certificate.yml). Traefik cannot renew it itself: a
+# wildcard needs a DNS-01 challenge, mx5.cn is on DNSPod, and giving the shared
+# Traefik DNS credentials would mean restarting the ingress for everything on
+# that Swarm, saas-mono included. So the renewal happens here and Traefik only
+# sees two files change.
+#
+# Weekly: read the certificate clients are served. With more than RENEW_DAYS
+# left, stop. Otherwise issue a new one with acme.sh over DNSPod, check the key
+# matches, swap the files on the manager (the old pair stays as *.prev),
+# rewrite certificate.yml so Traefik reloads, and confirm clients now get the
+# new certificate — restoring the old pair if they do not. Any failure pings
+# WeCom while the served certificate still has weeks to run.
+#
+# DNS credentials: BELAYO_DNSPOD_SECRET_ID / BELAYO_DNSPOD_SECRET_KEY, a
+# Tencent Cloud CAM sub-account key that can edit mx5.cn records (the same key
+# saas-mono uses). SSH: the belayo deploy key other belayo workflows use.
+#
+# Manual runs: `force` renews even when not due; `staging` issues from Let's
+# Encrypt staging and stops before touching the manager.
+name: Belayo Apps Wildcard Certificate
+
+on:
+  schedule:
+    # GitHub Actions cron is UTC: Monday 01:00 UTC is 09:00 China Standard Time.
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Renew even if the served certificate is not due yet
+        type: boolean
+        default: false
+      staging:
+        description: Issue from Let's Encrypt staging only; do not touch the manager
+        type: boolean
+        default: false
+
+concurrency:
+  group: belayo-apps-wildcard-cert
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DOMAIN: '*.apps.mx5.cn'
+      # Any name under the wildcard reaches the same Traefik; the login host is
+      # the one guaranteed to exist.
+      PROBE_HOST: login.apps.mx5.cn
+      CERT_DIR: /etc/dokploy/traefik/dynamic/certificates/teamclu-apps-wildcard
+      RENEW_DAYS: '30'
+      ACME_SH_VERSION: '3.1.4'
+    steps:
+      - name: Check the certificate clients are served
+        id: current
+        env:
+          FORCE: ${{ inputs.force }}
+          STAGING: ${{ inputs.staging }}
+        run: |
+          set -euo pipefail
+          end=$(echo | openssl s_client -connect "$PROBE_HOST:443" -servername "$PROBE_HOST" 2>/dev/null \
+            | openssl x509 -noout -enddate | cut -d= -f2)
+          left=$(( ( $(date -ud "$end" +%s) - $(date -u +%s) ) / 86400 ))
+          echo "served certificate expires $end ($left days left)"
+          due=false
+          if [ "$left" -le "$RENEW_DAYS" ] || [ "$FORCE" = "true" ] || [ "$STAGING" = "true" ]; then
+            due=true
+          fi
+          {
+            echo "days_left=$left"
+            echo "due=$due"
+          } >> "$GITHUB_OUTPUT"
+          echo "Served \`$DOMAIN\` certificate expires **$end** ($left days left); renew now: **$due**" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Issue the certificate over DNSPod
+        if: steps.current.outputs.due == 'true'
+        env:
+          Tencent_SecretId: ${{ secrets.BELAYO_DNSPOD_SECRET_ID }}
+          Tencent_SecretKey: ${{ secrets.BELAYO_DNSPOD_SECRET_KEY }}
+          STAGING: ${{ inputs.staging }}
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/acme.sh-src"
+          home="$RUNNER_TEMP/acme-home"
+          git clone --quiet --depth 1 --branch "$ACME_SH_VERSION" https://github.com/acmesh-official/acme.sh "$src"
+          server=letsencrypt
+          if [ "$STAGING" = "true" ]; then server=letsencrypt_test; fi
+          "$src/acme.sh" --home "$home" --config-home "$home" --cert-home "$home/certs" \
+            --issue --dns dns_tencent -d "$DOMAIN" --server "$server" --keylength ec-256
+
+          dir=$(find "$home/certs" -mindepth 1 -maxdepth 1 -type d -name '*apps.mx5.cn*' | head -1)
+          key=$(find "$dir" -maxdepth 1 -type f -name '*.key' | head -1)
+          install -m 600 "$dir/fullchain.cer" "$RUNNER_TEMP/fullchain.pem"
+          install -m 600 "$key" "$RUNNER_TEMP/privkey.pem"
+          # The saved DNS credentials must not outlive this step.
+          rm -rf "$home"
+
+          openssl x509 -in "$RUNNER_TEMP/fullchain.pem" -noout -subject -issuer -enddate
+          # A key that does not match its certificate would take every app's TLS down.
+          cert_pub=$(openssl x509 -in "$RUNNER_TEMP/fullchain.pem" -noout -pubkey | openssl sha256)
+          key_pub=$(openssl pkey -in "$RUNNER_TEMP/privkey.pem" -pubout | openssl sha256)
+          [ "$cert_pub" = "$key_pub" ]
+          openssl x509 -in "$RUNNER_TEMP/fullchain.pem" -noout -ext subjectAltName | grep -qF "DNS:$DOMAIN"
+
+      - name: Start ssh-agent
+        if: steps.current.outputs.due == 'true' && inputs.staging != true
+        run: |
+          eval "$(ssh-agent -s)"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          ssh-add - <<< "${{ secrets.BELAYO_DEPLOY_SSH_KEY }}"
+          mkdir -p ~/.ssh
+          printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' > ~/.ssh/config
+
+      - name: Swap the certificate on the Dokploy manager
+        id: swap
+        if: steps.current.outputs.due == 'true' && inputs.staging != true
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          scp -q "$RUNNER_TEMP/fullchain.pem" "root@$MGR:/tmp/teamclu-apps-wildcard.fullchain.pem"
+          scp -q "$RUNNER_TEMP/privkey.pem" "root@$MGR:/tmp/teamclu-apps-wildcard.privkey.pem"
+          ssh "root@$MGR" bash -s -- "$CERT_DIR" <<'EOF'
+            set -euo pipefail
+            dir=$1
+            new_chain=/tmp/teamclu-apps-wildcard.fullchain.pem
+            new_key=/tmp/teamclu-apps-wildcard.privkey.pem
+            trap 'rm -f "$new_chain" "$new_key"' EXIT
+            test -f "$dir/certificate.yml"
+            test -f "$dir/fullchain.pem"
+            test -f "$dir/privkey.pem"
+            cp -p "$dir/fullchain.pem" "$dir/fullchain.pem.prev"
+            cp -p "$dir/privkey.pem" "$dir/privkey.pem.prev"
+            cat "$new_chain" > "$dir/fullchain.pem.new"
+            cat "$new_key" > "$dir/privkey.pem.new"
+            chmod --reference="$dir/fullchain.pem" "$dir/fullchain.pem.new"
+            chmod --reference="$dir/privkey.pem" "$dir/privkey.pem.new"
+            mv "$dir/fullchain.pem.new" "$dir/fullchain.pem"
+            mv "$dir/privkey.pem.new" "$dir/privkey.pem"
+            # Traefik reloads a file certificate when its dynamic config changes,
+            # not when the PEM underneath does, so the stamp is what makes it look.
+            stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            printf '# Renewed by .github/workflows/belayo-apps-wildcard-cert.yml at %s\ntls:\n  certificates:\n    - certFile: %s/fullchain.pem\n      keyFile: %s/privkey.pem\n' \
+              "$stamp" "$dir" "$dir" > "$dir/certificate.yml"
+            echo "swapped at $stamp"
+          EOF
+
+      - name: Confirm clients get the new certificate
+        if: steps.swap.outcome == 'success'
+        run: |
+          set -euo pipefail
+          want=$(openssl x509 -in "$RUNNER_TEMP/fullchain.pem" -noout -fingerprint -sha256 | cut -d= -f2)
+          got=""
+          for _ in $(seq 1 24); do
+            got=$(echo | openssl s_client -connect "$PROBE_HOST:443" -servername "$PROBE_HOST" 2>/dev/null \
+              | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 || true)
+            [ "$got" = "$want" ] && break
+            sleep 5
+          done
+          if [ "$got" != "$want" ]; then
+            echo "clients are still served $got, expected $want"
+            exit 1
+          fi
+          # Full verification against the system trust store, not just a fingerprint match.
+          curl -fsS --max-time 20 -o /dev/null "https://$PROBE_HOST/"
+          end=$(openssl x509 -in "$RUNNER_TEMP/fullchain.pem" -noout -enddate | cut -d= -f2)
+          echo "Renewed: clients now get the certificate valid until **$end**" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore the previous certificate
+        if: failure() && steps.swap.outcome == 'success'
+        env:
+          MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
+        run: |
+          ssh "root@$MGR" bash -s -- "$CERT_DIR" <<'EOF'
+            set -euo pipefail
+            dir=$1
+            mv "$dir/fullchain.pem.prev" "$dir/fullchain.pem"
+            mv "$dir/privkey.pem.prev" "$dir/privkey.pem"
+            stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            printf '# Restored by .github/workflows/belayo-apps-wildcard-cert.yml at %s\ntls:\n  certificates:\n    - certFile: %s/fullchain.pem\n      keyFile: %s/privkey.pem\n' \
+              "$stamp" "$dir" "$dir" > "$dir/certificate.yml"
+            echo "restored previous certificate at $stamp"
+          EOF
+
+      - name: Alert WeCom on failure
+        if: failure()
+        env:
+          WECOM_WEBHOOK_KEY: ${{ secrets.WECOM_WEBHOOK_KEY }}
+          DAYS_LEFT: ${{ steps.current.outputs.days_left }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # shellcheck disable=SC2016  # the backticks are WeCom markdown, not shell
+          content=$(printf '## 🚨 belayo 应用通配证书续期失败\n> **证书**: `*.apps.mx5.cn`\n> **当前证书剩余**: %s 天\n> **时间**: %s\n> **日志**: [查看 Run](%s)' \
+            "${DAYS_LEFT:-未知}" "$(date -u '+%Y-%m-%d %H:%M UTC')" "$RUN_URL")
+          jq -nc --arg content "$content" '{msgtype:"markdown",markdown:{content:$content}}' \
+            | curl -s -X POST \
+                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=$WECOM_WEBHOOK_KEY" \
+                -H 'Content-Type: application/json' \
+                --data-binary @-

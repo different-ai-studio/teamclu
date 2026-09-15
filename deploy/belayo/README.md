@@ -55,7 +55,7 @@ Dokploy control-plane application's `dockerImage` field.
 | MQTT WebSocket | Caddy to emqx:8083 | Traefik to emqx:8083 | Aligned |
 | Registry | Caddy method-split auth | Traefik method-split auth | Aligned |
 | Gitea HTTP | Caddy to gitea:3000 | Traefik to the managed external server | Intentional |
-| App wildcard/custom domains | Caddy on-demand TLS | Alibaba FC custom domains for user Apps | Intentionally different |
+| App wildcard/custom domains | Caddy on-demand TLS | Traefik file routes; custom domains added by hand | Intentionally different |
 
 Do not change production DNS, scheduler ownership, MQTT client URLs, or
 database migrations as part of an environment-key parity change. Each needs
@@ -89,3 +89,30 @@ followed by an authenticated connect/subscribe/publish/receive roundtrip.
 Rollback is additive and does not affect native clients: restore the previous
 Cloud API MQTT variables, redeploy Cloud API, then remove the
 `mqtt.service.ucar.cc` Compose domain and reload the `emqx` Compose service.
+
+## App ingress and wildcard certificate
+
+App traffic reaches the Cloud API through Traefik dynamic files on the Dokploy
+manager (`/etc/dokploy/traefik/dynamic/`), not through Dokploy's domain table:
+
+- `teamclu-apps-ingress.yml` routes `login.apps.mx5.cn` and every app vanity
+  host (`<slug>-<id8>.apps.mx5.cn`) and declares the `teamclu-apps-cloud-api`
+  service.
+- `app-custom-domains.yml` routes verified user custom domains to the same
+  service, one `Host` router per domain, with certificates from Traefik's
+  `letsencrypt` resolver (HTTP-01). A custom domain is served only after it is
+  added here and its DNS points at the manager.
+- The Cloud API application's own Dokploy file carries only
+  `teamclaw-api.ucar.cc`. Dokploy adds and removes only the routers it names
+  itself, and rewrites the file when it does, so edit it by parsing YAML rather
+  than by matching text.
+
+`*.apps.mx5.cn` is a file certificate in
+`certificates/teamclu-apps-wildcard/`. `mx5.cn` is on DNSPod, so Traefik cannot
+renew it; `.github/workflows/belayo-apps-wildcard-cert.yml` does. It runs every
+Monday, renews when 30 days or fewer remain (DNS-01 via DNSPod with
+`BELAYO_DNSPOD_SECRET_ID` / `BELAYO_DNSPOD_SECRET_KEY`), swaps the files over
+SSH keeping the previous pair as `*.prev`, rewrites `certificate.yml` so Traefik
+reloads, confirms clients get the new certificate or restores the old one, and
+alerts WeCom on failure. Run it manually with `force` to renew early, or with
+`staging` to test issuance without touching the manager.
