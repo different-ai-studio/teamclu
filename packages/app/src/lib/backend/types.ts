@@ -1023,13 +1023,18 @@ export interface AppAuthRule {
   path: string;
   auth: "required" | "public";
   /**
-   * Who satisfies the login on this path. Only meaningful with
-   * `auth: "required"`.
+   * Role codes that may access this path when `auth: "required"`.
+   * Empty or omitted = any authenticated user. Ignored when `auth: "public"`.
+   * Prefer this over `audience`; new writes should emit `roles` only.
+   */
+  roles?: string[];
+  /**
+   * Legacy who-satisfies-login filter. Only meaningful with `auth: "required"`.
    *
    * `undefined` means "use the app's own `authAudience`", and is NOT the same
    * as `"org"`. Every rule saved before this field existed is undefined, so
    * treating absence as `org` would tighten a live wall on every app currently
-   * set to "any signed-in user".
+   * set to "any signed-in user". New writes should emit `roles` instead.
    */
   audience?: AppAuthAudience;
 }

@@ -1448,13 +1448,27 @@
       "baseline": "其余所有页面",
       "noRules": "还没有单独设置的页面 —— 全站都按上面这条。",
       "addPage": "添加一个页面",
-      "audienceHint": "「任何用户」是任何人用邮箱注册后都能进；「仅员工」只有与这个应用同属一个组织的人能进，在登录页注册的路人进不来。",
+      "rolesHint": "需要登录且未选角色时，任意已登录用户都可进入；选了角色则仅持有其中任一角色的成员可进入。",
       "nothingProtected": "其余页面设为公开时，至少要有一个页面需要登录 —— 否则这道墙什么也没挡。",
       "blankPath": "有一行还没填路径。",
+      "col": {
+        "path": "页面地址",
+        "login": "是否需要登录",
+        "roles": "角色"
+      },
+      "login": {
+        "public": "不需要登录",
+        "required": "需要登录"
+      },
+      "roles": {
+        "any": "任意用户",
+        "empty": "还没有可分配的角色"
+      },
       "access": {
         "public": "不需要登录",
-        "any": "需要登录 · 任何用户",
-        "org": "需要登录 · 仅员工"
+        "any": "需要登录 · 任意用户",
+        "org": "需要登录 · 组织角色",
+        "roles": "需要登录 · {{roles}}"
       }
     },
     "env": {
@@ -1638,7 +1652,6 @@
       "summaryMembers_one": "{{count}} 位成员",
       "summaryMembers_other": "{{count}} 位成员",
       "summaryNoLogin": "不需要登录",
-      "summaryAllPages": "全站一条规则",
       "summaryRules_one": "{{count}} 条页面规则",
       "summaryRules_other": "{{count}} 条页面规则",
       "summaryTables_one": "{{count}} 张表",

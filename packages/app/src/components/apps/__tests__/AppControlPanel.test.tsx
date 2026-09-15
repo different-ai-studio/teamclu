@@ -306,11 +306,14 @@ describe('AppControlPanel', () => {
           {
             ...baseApp,
             authMode: 'platform',
-            authRules: [{ path: '/admin', auth: 'required' }],
+            authAudience: 'any',
+            authScope: 'all',
+            authRules: [{ path: '/admin', auth: 'required', roles: ['admin'] }],
           } as AppRow
         }
       />,
     )
+    expect(screen.getByTestId('app-control-open-auth').textContent).toContain('需要登录 · 任意用户')
     expect(screen.getByTestId('app-control-open-auth').textContent).toContain('1 条页面规则')
   })
 

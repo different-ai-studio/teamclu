@@ -1448,13 +1448,27 @@
       "baseline": "Every other page",
       "noRules": "No page has its own setting yet — the whole site follows the line above.",
       "addPage": "Add a page",
-      "audienceHint": "\"Anyone signed in\" lets anybody register with an email and enter. \"Staff only\" admits people in the same organisation as this app; someone who registered on the login page stays out.",
+      "rolesHint": "With login required and no roles selected, any signed-in user may enter. Selected roles admit members who hold any one of them.",
       "nothingProtected": "When every other page is public, at least one page has to require a login — otherwise this wall stops nothing.",
       "blankPath": "One row still has no path.",
+      "col": {
+        "path": "Path",
+        "login": "Login required",
+        "roles": "Roles"
+      },
+      "login": {
+        "public": "No login needed",
+        "required": "Login required"
+      },
+      "roles": {
+        "any": "Anyone signed in",
+        "empty": "No roles to choose from yet"
+      },
       "access": {
         "public": "No login needed",
         "any": "Sign in · anyone",
-        "org": "Sign in · staff only"
+        "org": "Sign in · org roles",
+        "roles": "Sign in · {{roles}}"
       }
     },
     "env": {
@@ -1638,7 +1652,6 @@
       "summaryMembers_one": "{{count}} member",
       "summaryMembers_other": "{{count}} members",
       "summaryNoLogin": "No login required",
-      "summaryAllPages": "One rule, whole site",
       "summaryRules_one": "{{count}} page rule",
       "summaryRules_other": "{{count}} page rules",
       "summaryTables_one": "{{count}} table",

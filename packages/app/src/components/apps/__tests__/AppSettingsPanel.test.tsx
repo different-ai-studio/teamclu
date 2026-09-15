@@ -467,7 +467,7 @@ describe('AppSettingsPanel', () => {
       )
       const auth = screen.getByTestId('app-settings-auth').textContent
       expect(auth).toContain('TeamClu 账号登录')
-      expect(auth).toContain('其余页面：需要登录 · 仅员工')
+      expect(auth).toContain('其余页面：需要登录 · 组织角色')
       expect(auth).toContain('1 条页面规则')
       expect(screen.getByTestId('app-settings-oauth-client').textContent).toBe('client-123')
     })
@@ -490,7 +490,7 @@ describe('AppSettingsPanel', () => {
       // An older server omits it; it must never make the wall look wider.
       const { authAudience: _omitted, ...olderRow } = { ...baseApp, authMode: 'platform' as const }
       render(<AppSettingsPanel app={olderRow as AppRow} />)
-      expect(screen.getByTestId('app-settings-auth').textContent).toContain('仅员工')
+      expect(screen.getByTestId('app-settings-auth').textContent).toContain('组织角色')
     })
 
     it('edits the wall in its own tab', async () => {
