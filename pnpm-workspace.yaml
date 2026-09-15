@@ -22,6 +22,9 @@ overrides:
   # this repo's history (present in the initial import, 0f585b2a) and no commit
   # records why, so this migration does not touch the version.
   '@codemirror/state': '6.7.0'
+  # react-pdf vendors pdfjs-dist; PDFViewer loads the worker from our direct dep.
+  # Hoist/cache drift once walked the pin to 6.x while the API stayed on 5.4.x.
+  pdfjs-dist: '5.4.296'
 
 publicHoistPattern:
   # Was .npmrc's public-hoist-pattern[]. Per that file's own note: packages/app

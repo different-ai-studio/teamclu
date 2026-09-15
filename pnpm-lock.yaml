@@ -6,6 +6,7 @@ settings:
 
 overrides:
   '@codemirror/state': 6.7.0
+  pdfjs-dist: 5.4.296
 
 importers:
 
