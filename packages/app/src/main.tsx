@@ -2,11 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { initSentry, withSentry } from './lib/telemetry/capture'
 import { invoke } from '@tauri-apps/api/core'
-import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { AuthGate } from './components/auth/AuthGate'
-import { SidePanelHostGateOverlay } from './components/extension/SidePanelHostGateOverlay'
 import { LocalAgentPanelApp } from './components/LocalAgentPanelApp'
+import { MainWindowRoot } from './components/MainWindowRoot'
 import './styles/globals.css'
 import './stores/dev-expose'
 import { i18nReady } from './lib/i18n'; // Initialize i18n
@@ -16,11 +15,8 @@ import { fetchPublicConfig } from '@/lib/config/bootstrap'
 import { ensureBundledAmuxdCurrent } from '@/lib/daemon/daemon-version-upgrade'
 import { initJwtBridge } from '@/lib/daemon/jwt-bridge'
 import { installConsoleCapture, redactSentryBreadcrumb } from '@/lib/diagnostics/console-capture'
-import { InviteLinkConfirmDialog } from './components/invite/InviteLinkConfirmDialog'
-import { UpdateDialogContainer } from './components/updater/UpdateDialog'
 import { markStartup } from '@/lib/telemetry/startup-perf'
 import { removeStartupSkeleton } from './lib/utils'
-import { E2E_BUILD } from './lib/e2e/v2-control-active'
 
 markStartup('main:start')
 
@@ -158,43 +154,7 @@ createRoot(document.getElementById('root')!).render(
           <LocalAgentPanelApp />
         </AuthGate>
       ) : (
-        <>
-          <SidePanelHostGateOverlay />
-          {/*
-            SEC-3: the invite-link confirmation lives outside AuthGate so a link
-            arriving on the login screen is asked about just like one arriving
-            inside the shell. Only a token accepted here is ever claimed.
-          */}
-          <InviteLinkConfirmDialog />
-          {/*
-            Outside AuthGate for the same reason: updating needs nothing from
-            the backend — `check_update` is a plain fetch of the release
-            manifest — but mounted inside App it only ever ran for a user who
-            had already signed in AND passed team bootstrap. A build that cannot
-            get anyone past the login screen was therefore also a build nobody
-            could update out of.
-          */}
-          <UpdateDialogContainer />
-          {/*
-            An E2E build mounts App without AuthGate. The harness never signs
-            in — it drives the app over the MCP socket and seeds sessions,
-            actors and messages straight into the stores — so there is no
-            session for the gate to pass. Inside AuthGate, App simply never
-            mounts at the login screen, and it takes the tauri-plugin-mcp
-            listeners and the `window.__TEAMCLU_V2_E2E__` control surface down
-            with it, leaving the harness with nothing to talk to.
-
-            `E2E_BUILD` is a build-time constant: a normal build folds this to
-            the AuthGate branch and the bundler drops the other one.
-          */}
-          {E2E_BUILD ? (
-            <App />
-          ) : (
-            <AuthGate>
-              <App />
-            </AuthGate>
-          )}
-        </>
+        <MainWindowRoot />
       )}
     </ErrorBoundary>
   </StrictMode>,

@@ -45,7 +45,6 @@ import { resolveControlPanelAppId } from "@/lib/apps/app-control-panel";
 import { lazyNamed } from "@/lib/lazy-component";
 import { useEverTrue } from "@/hooks/use-ever-true";
 import { PaneLoading } from "@/components/ui/pane-loading";
-import { CloseToTrayHost } from "@/components/CloseToTrayDialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { TelemetryConsentDialog } from "@/components/telemetry/TelemetryConsentDialog";
 import { RuntimeRefreshWorkspaceBanner } from "@/components/workspace/RuntimeRefreshBanner";
@@ -914,7 +913,6 @@ function App() {
           descriptionClassName: '!text-muted-foreground !text-[11px]',
         }}
       />
-      <CloseToTrayHost />
       <AppDeployConfirmDialog />
       <NewSessionDialog />
       <TelemetryConsentDialog
