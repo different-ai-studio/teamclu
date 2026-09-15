@@ -9,6 +9,16 @@ pub const TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV: &str = "TEAMCLU_RUNTIME_CONTEXT_TOK
 pub const TEAMCLU_HOST_GENERATION_ID_ENV: &str = "TEAMCLU_HOST_GENERATION_ID";
 pub const TEAMCLU_AGENT_BACKEND_ENV: &str = "TEAMCLU_AGENT_BACKEND";
 
+/// Headers the `teamclu-introspect` sidecar forwards to the desktop's introspect
+/// API, carrying the token, host generation and backend above exactly as amuxd
+/// set them for the agent host that spawned it. The desktop checks them with the
+/// daemon (`/internal/runtime-context/verify`) before any call that changes
+/// something: a copy of the sidecar that some other program started has no host
+/// generation to present.
+pub const INTROSPECT_CALLER_TOKEN_HEADER: &str = "x-teamclu-runtime-context-token";
+pub const INTROSPECT_CALLER_GENERATION_HEADER: &str = "x-teamclu-host-generation-id";
+pub const INTROSPECT_CALLER_BACKEND_HEADER: &str = "x-teamclu-agent-backend";
+
 /// Session-scoped TeamClu MCP tools that must receive an explicit `session_id`.
 pub const SESSION_SCOPED_MCP_TOOLS: &[&str] = &[
     "get_session_deeplink",

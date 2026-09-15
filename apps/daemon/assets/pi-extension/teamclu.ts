@@ -509,11 +509,26 @@ function resolveVars(raw: Record<string, unknown> | undefined): Record<string, s
  * difference is not cosmetic: amuxd injects the team API key, provider
  * credentials and an enriched PATH into pi's environment, and every one of
  * them would vanish from MCP servers under the SDK default.
+ *
+ * One exception: the runtime-context token goes to `teamclu-introspect` only.
+ * The desktop app lets that sidecar change things — deploy an app, edit MCP
+ * config — only when it presents this host's token, so handing the token to
+ * every server would hand that permission to any third-party `npx` package a
+ * workspace configures.
  */
-function childEnv(environment: Record<string, unknown> | undefined): Record<string, string> {
+const INTROSPECT_SERVER = "teamclu-introspect";
+const INTROSPECT_ONLY_ENV = ["TEAMCLU_RUNTIME_CONTEXT_TOKEN"];
+
+function childEnv(
+  label: string,
+  environment: Record<string, unknown> | undefined,
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === "string") out[k] = v;
+  }
+  if (label !== INTROSPECT_SERVER) {
+    for (const k of INTROSPECT_ONLY_ENV) delete out[k];
   }
   return { ...out, ...resolveVars(environment) };
 }
@@ -573,7 +588,7 @@ class McpBridge {
       new sdk.StdioClientTransport({
         command,
         args,
-        env: childEnv(spec.environment),
+        env: childEnv(label, spec.environment),
         // The server's own stderr belongs in pi's, which amuxd captures.
         stderr: "inherit",
       }),
