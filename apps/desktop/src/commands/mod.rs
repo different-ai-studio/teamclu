@@ -397,7 +397,12 @@ mod branded_amuxd_sidecar_tests {
         let _guard = HomeGuard::set(tmp.path());
         let cases = [
             ("teamclu", "TeamClu", "teamclu", ".amuxd"),
-            ("copilot361", "Copilot 361", "copilot361", ".amuxd-copilot361"),
+            (
+                "copilot361",
+                "Copilot 361",
+                "copilot361",
+                ".amuxd-copilot361",
+            ),
             ("teamclaw", "TeamClaw", "teamclu", ".amuxd-teamclaw"),
         ];
         for (short, display, scheme, suffix) in cases {
