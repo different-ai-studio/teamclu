@@ -60,6 +60,8 @@ const app = (over: Partial<GateApp> = {}): GateApp => ({
 
 const deps = (over: Partial<GateDeps> = {}): GateDeps => ({
   resolveOrgs: async () => ({ visitorOrgId: ORG_A, appOrgId: ORG_A }),
+  // Default: an active org member. Tests that need outsiders pass [].
+  resolveVisitorRoles: async () => ["member"],
   secureCookies: true,
   ...over,
 });
@@ -146,7 +148,10 @@ test("the any audience admits any signed-in visitor", async () => {
       req("/", { cookie }),
       app({ authAudience: "any" }),
       // Would reject if consulted; the any audience must not consult it.
-      deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_A, appOrgId: ORG_B }) }),
+      deps({
+        resolveOrgs: async () => ({ visitorOrgId: ORG_A, appOrgId: ORG_B }),
+        resolveVisitorRoles: async () => [],
+      }),
     );
     assert.equal(out.response, null);
     assert.equal(out.identity?.userId, "user-1");
@@ -154,26 +159,32 @@ test("the any audience admits any signed-in visitor", async () => {
   });
 });
 
-test("the org audience admits a colleague and forwards their org", async () => {
+test("the org audience admits a colleague via any roles_users row", async () => {
   await withEnv({}, async () => {
     const cookie = await sessionCookie();
     const out = await applyAuthGate(
       req("/", { cookie }),
       app({ authAudience: "org" }),
-      deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_A, appOrgId: ORG_A }) }),
+      deps({
+        resolveOrgs: async () => ({ visitorOrgId: ORG_A, appOrgId: ORG_A }),
+        resolveVisitorRoles: async () => ["member"],
+      }),
     );
     assert.equal(out.response, null);
     assert.equal(out.identity?.orgId, ORG_A);
   });
 });
 
-test("the org audience turns away an outsider with a 403, not a redirect", async () => {
+test("the org audience turns away a user with no org roles with a 403, not a redirect", async () => {
   await withEnv({}, async () => {
     const cookie = await sessionCookie();
     const out = await applyAuthGate(
       req("/", { cookie }),
       app({ authAudience: "org" }),
-      deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) }),
+      deps({
+        resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }),
+        resolveVisitorRoles: async () => [],
+      }),
     );
     // They ARE logged in; bouncing them to the login page would loop forever.
     assert.equal(out.response?.status, 403);
@@ -182,15 +193,16 @@ test("the org audience turns away an outsider with a 403, not a redirect", async
   });
 });
 
-test("a visitor with no org of their own is an outsider", async () => {
-  // Someone who signed up through an app's login page has no public.users row,
-  // which is exactly what makes "staff only" mean something.
+test("a visitor with no org roles of their own is an outsider", async () => {
   await withEnv({}, async () => {
     const cookie = await sessionCookie();
     const out = await applyAuthGate(
       req("/", { cookie }),
       app({ authAudience: "org" }),
-      deps({ resolveOrgs: async () => ({ visitorOrgId: null, appOrgId: ORG_A }) }),
+      deps({
+        resolveOrgs: async () => ({ visitorOrgId: null, appOrgId: ORG_A }),
+        resolveVisitorRoles: async () => [],
+      }),
     );
     assert.equal(out.response?.status, 403);
   });
@@ -216,7 +228,10 @@ test("an unset audience is read as org, not as open", async () => {
     const out = await applyAuthGate(
       req("/", { cookie }),
       app({ authAudience: null }),
-      deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) }),
+      deps({
+        resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }),
+        resolveVisitorRoles: async () => [],
+      }),
     );
     assert.equal(out.response?.status, 403, "a missing column must not widen access");
   });
@@ -229,7 +244,10 @@ test("a path rule's audience narrows an app that admits anyone", async () => {
   // outsider gets / and is refused /admin, in one request each.
   await withEnv({}, async () => {
     const cookie = await sessionCookie();
-    const outsider = deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) });
+    const outsider = deps({
+      resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }),
+      resolveVisitorRoles: async () => [],
+    });
     const walled = app({
       authAudience: "any",
       authScope: "all",
@@ -248,7 +266,10 @@ test("a path rule's audience narrows an app that admits anyone", async () => {
 test("a path rule's audience widens an employees-only app", async () => {
   await withEnv({}, async () => {
     const cookie = await sessionCookie();
-    const outsider = deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) });
+    const outsider = deps({
+      resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }),
+      resolveVisitorRoles: async () => [],
+    });
     const walled = app({
       authAudience: "org",
       authScope: "all",
@@ -276,7 +297,10 @@ test("a rule that says nothing about audience leaves the app's own value alone",
         authScope: "all",
         authRules: [{ path: "/reports", auth: "required" }],
       }),
-      deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) }),
+      deps({
+        resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }),
+        resolveVisitorRoles: async () => [],
+      }),
     );
     assert.equal(out.response, null);
   });
@@ -298,6 +322,84 @@ test("a public path with a narrower neighbour still serves anonymously", async (
     );
     assert.equal(out.response, null);
     assert.equal(out.identity, null);
+  });
+});
+
+// --- per-path roles ---------------------------------------------------------
+
+test("required + roles [admin] admits an admin and denies a member", async () => {
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const walled = app({
+      authAudience: "any",
+      authScope: "all",
+      authRules: [{ path: "/admin", auth: "required", roles: ["admin"] }],
+    });
+
+    const admin = await applyAuthGate(
+      req("/admin", { cookie }),
+      walled,
+      deps({ resolveVisitorRoles: async () => ["admin", "member"] }),
+    );
+    assert.equal(admin.response, null);
+    assert.equal(admin.identity?.userId, "user-1");
+    assert.equal(admin.identity?.orgId, ORG_A);
+
+    const member = await applyAuthGate(
+      req("/admin", { cookie }),
+      walled,
+      deps({ resolveVisitorRoles: async () => ["member"] }),
+    );
+    assert.equal(member.response?.status, 403);
+    assert.equal(member.identity, null);
+  });
+});
+
+test("required + empty roles admits any signed-in visitor", async () => {
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const out = await applyAuthGate(
+      req("/dash", { cookie }),
+      app({
+        authAudience: "org",
+        authScope: "all",
+        authRules: [{ path: "/dash", auth: "required", roles: [] }],
+      }),
+      // Would reject under org audience; empty roles skips the org check.
+      deps({
+        resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }),
+        resolveVisitorRoles: async () => [],
+      }),
+    );
+    assert.equal(out.response, null);
+    assert.equal(out.identity?.userId, "user-1");
+    assert.equal(out.identity?.orgId, null);
+  });
+});
+
+test("legacy audience org still works via roles_users presence", async () => {
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const walled = app({
+      authAudience: "any",
+      authScope: "all",
+      authRules: [{ path: "/staff", auth: "required", audience: "org" }],
+    });
+
+    const withRole = await applyAuthGate(
+      req("/staff", { cookie }),
+      walled,
+      deps({ resolveVisitorRoles: async () => ["finance"] }),
+    );
+    assert.equal(withRole.response, null);
+    assert.equal(withRole.identity?.orgId, ORG_A);
+
+    const without = await applyAuthGate(
+      req("/staff", { cookie }),
+      walled,
+      deps({ resolveVisitorRoles: async () => [] }),
+    );
+    assert.equal(without.response?.status, 403);
   });
 });
 
@@ -531,7 +633,10 @@ test("a public path names nobody when the visitor would be refused entry", async
     const out = await applyAuthGate(
       req("/", { cookie }),
       a,
-      deps({ resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }) }),
+      deps({
+        resolveOrgs: async () => ({ visitorOrgId: ORG_B, appOrgId: ORG_A }),
+        resolveVisitorRoles: async () => [],
+      }),
     );
     assert.equal(out.response, null, "the page itself is public, so it is served");
     assert.equal(out.identity, null, "but the app is not told who they are");

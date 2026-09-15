@@ -55,15 +55,21 @@ export type OrgPair = {
 
 export type GateDeps = {
   /**
-   * The two org ids the `org` audience compares.
+   * The two org ids the `org` audience / role checks need.
    *
    * Injected because answering it needs two control-plane reads that this
    * module has no business owning. It returns both ids rather than a verdict so
-   * the gateway can tell "this visitor is in the wrong org" (their problem)
-   * from "this app's team has no org at all" (an operator's problem) — and so
-   * the visitor's org can be forwarded to the app.
+   * the gateway can tell "this visitor has no role in the app org" (their
+   * problem) from "this app's team has no org at all" (an operator's problem) —
+   * and so the app org can be forwarded when the visitor is admitted by role.
    */
   resolveOrgs: (userId: string, teamId: string | null) => Promise<OrgPair>;
+  /**
+   * Active role codes for the visitor in the given org (`roles_users` ∩
+   * active `roles`). Used for non-empty `roles` intersection and for legacy
+   * `audience: org` (any assignment).
+   */
+  resolveVisitorRoles: (userId: string, orgId: string) => Promise<string[]>;
   env?: NodeJS.ProcessEnv;
   /** False only on a plain-http local box. */
   secureCookies?: boolean;
@@ -262,9 +268,9 @@ export async function applyAuthGate(
   if (!origin) return answered(misconfigured("未配置应用域名"));
   if (!loginDomain(env)) return answered(misconfigured("未配置登录域名"));
 
-  // One match, both answers: whether this path is walled, and which audience
-  // its own rule asks for. A public path still resolves an audience of null,
-  // which is what the anonymous branch below wants anyway.
+  // One match, all answers: whether this path is walled, and which
+  // audience / roles its own rule asks for. A public path still resolves
+  // audience/roles of null, which is what the anonymous branch below wants.
   const policy = resolvePathPolicy(url.pathname, app.authScope, app.authRules);
   const protectedPath = policy.requiresLogin;
 
@@ -277,7 +283,7 @@ export async function applyAuthGate(
   // protected one need the SAME answer to "may this person be named to the
   // app" — they only differ in what happens when the answer is no.
   const admission = session
-    ? await admit(session, app, deps, policy.audience)
+    ? await admit(session, app, deps, policy.audience, policy.roles)
     : { ok: false, denial: "anonymous" as const, orgId: null };
 
   if (!protectedPath) {
@@ -318,36 +324,62 @@ type Admission = {
 };
 
 /**
- * Whether a signed-in visitor meets this app's audience.
+ * Whether a signed-in visitor meets this path's roles / audience.
  *
- * `pathAudience` is the winning path rule's audience, or null when the rule
- * did not name one. Unset `authAudience` reads as `org`, matching the column default: a row that
- * predates the column, or a lookup that failed to select it, must not silently
- * widen the audience to everyone with an account.
+ * Precedence: explicit path `roles` (including `[]`) → path legacy `audience`
+ * → app-level `authAudience` (unset reads as `org`). Empty roles = any
+ * authenticated user (skip org / role check). Non-empty roles = intersection
+ * with the visitor's active codes in the app org. Legacy `audience: org` =
+ * any active `roles_users` row in that org; `audience: any` = allow.
  */
 async function admit(
   session: { sub: string; email: string },
   app: GateApp,
   deps: GateDeps,
   pathAudience: AuthAudience | null = null,
+  pathRoles: string[] | null = null,
 ): Promise<Admission> {
-  // The path's own audience wins when its rule names one; otherwise the app's.
-  // Null is "the rule said nothing", not "any" — an app set to employees-only
-  // must not be widened by a rule that only spoke about whether a login was
-  // needed at all.
-  if ((pathAudience ?? app.authAudience ?? "org") !== "org") {
+  if (pathRoles !== null) {
+    if (pathRoles.length === 0) {
+      return { ok: true, denial: "none", orgId: null };
+    }
+    return admitByRoles(session, app, deps, pathRoles);
+  }
+
+  const audience = (pathAudience ?? app.authAudience ?? "org") as string;
+  if (audience !== "org") {
     return { ok: true, denial: "none", orgId: null };
   }
+  // Legacy org: any active roles_users assignment in the app's org.
+  return admitByRoles(session, app, deps, null);
+}
+
+/**
+ * @param required null = any non-empty role set; otherwise require intersection.
+ */
+async function admitByRoles(
+  session: { sub: string; email: string },
+  app: GateApp,
+  deps: GateDeps,
+  required: string[] | null,
+): Promise<Admission> {
   const orgs = await deps.resolveOrgs(session.sub, app.teamId);
-  // A team with no org cannot admit anyone under this audience — the comparison
+  // A team with no org cannot admit anyone under a role check — the lookup
   // has nothing to succeed against. That is a configuration fault (R10), not a
   // rejected visitor, and saying so is what stops an operator from hunting for
   // a permissions bug that is not there.
   if (!orgs.appOrgId) return { ok: false, denial: "no_app_org", orgId: null };
-  if (!orgs.visitorOrgId || orgs.visitorOrgId !== orgs.appOrgId) {
+
+  const codes = await deps.resolveVisitorRoles(session.sub, orgs.appOrgId);
+  if (required === null) {
+    if (codes.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
+    return { ok: true, denial: "none", orgId: orgs.appOrgId };
+  }
+  const have = new Set(codes);
+  if (!required.some((code) => have.has(code))) {
     return { ok: false, denial: "wrong_org", orgId: null };
   }
-  return { ok: true, denial: "none", orgId: orgs.visitorOrgId };
+  return { ok: true, denial: "none", orgId: orgs.appOrgId };
 }
 
 /**

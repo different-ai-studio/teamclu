@@ -256,23 +256,28 @@ test("the winning rule decides both the login and the audience", () => {
     { path: "/", auth: "required", audience: "any" },
     { path: "/admin", auth: "required", audience: "org" },
   ];
-  assert.deepEqual(resolvePathPolicy("/", "all", rules), { requiresLogin: true, audience: "any" });
+  assert.deepEqual(resolvePathPolicy("/", "all", rules), {
+    requiresLogin: true,
+    audience: "any",
+    roles: null,
+  });
   assert.deepEqual(resolvePathPolicy("/admin/users", "all", rules), {
     requiresLogin: true,
     audience: "org",
+    roles: null,
   });
 });
 
 test("a public path resolves no audience at all", () => {
   const policy = resolvePathPolicy("/health", "all", [{ path: "/health", auth: "public" }]);
-  assert.deepEqual(policy, { requiresLogin: false, audience: null });
+  assert.deepEqual(policy, { requiresLogin: false, audience: null, roles: null });
 });
 
 test("an unreadable audience invalidates the set, like an unreadable verdict", () => {
   const policy = resolvePathPolicy("/anything", "paths", [
     { path: "/x", auth: "required", audience: "everyone" },
   ]);
-  assert.deepEqual(policy, { requiresLogin: true, audience: null });
+  assert.deepEqual(policy, { requiresLogin: true, audience: null, roles: null });
 });
 
 test("the login verdict is exactly what it used to be", () => {
@@ -283,4 +288,68 @@ test("the login verdict is exactly what it used to be", () => {
   assert.equal(resolvePathPolicy("/admin", "paths", rules).requiresLogin, true);
   assert.equal(resolvePathPolicy("/other", "paths", rules).requiresLogin, false);
   assert.equal(resolvePathPolicy("/other", "all", rules).requiresLogin, true);
+});
+
+// --- per-path roles ---------------------------------------------------------
+
+test("a rule may name roles, and public drops them", () => {
+  assert.deepEqual(
+    parseAuthRules([
+      { path: "/admin", auth: "required", roles: ["admin", "finance"] },
+      { path: "/", auth: "required", roles: [] },
+      { path: "/health", auth: "public", roles: ["admin"] },
+    ]),
+    [
+      { path: "/admin", auth: "required", roles: ["admin", "finance"] },
+      { path: "/", auth: "required", roles: [] },
+      { path: "/health", auth: "public" },
+    ],
+  );
+});
+
+test("an invalid role code is refused", () => {
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", roles: ["Admin"] }]), /roles|code/);
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", roles: ["1admin"] }]), /roles|code/);
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", roles: ["bad-code"] }]), /roles|code/);
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", roles: "admin" }]), /roles/);
+  rejects(() => parseAuthRules([{ path: "/x", auth: "required", roles: [1] }]), /roles|code/);
+});
+
+test("roles do not require audience, and absence stays absent", () => {
+  assert.deepEqual(parseAuthRules([{ path: "/x", auth: "required", roles: ["admin"] }]), [
+    { path: "/x", auth: "required", roles: ["admin"] },
+  ]);
+  assert.deepEqual(parseAuthRules([{ path: "/x", auth: "required" }]), [
+    { path: "/x", auth: "required" },
+  ]);
+});
+
+test("the winning rule decides login, audience, and roles together", () => {
+  const rules = [
+    { path: "/", auth: "required", roles: [] },
+    { path: "/admin", auth: "required", roles: ["admin"] },
+    { path: "/legacy", auth: "required", audience: "org" },
+  ];
+  assert.deepEqual(resolvePathPolicy("/", "all", rules), {
+    requiresLogin: true,
+    audience: null,
+    roles: [],
+  });
+  assert.deepEqual(resolvePathPolicy("/admin/users", "all", rules), {
+    requiresLogin: true,
+    audience: null,
+    roles: ["admin"],
+  });
+  assert.deepEqual(resolvePathPolicy("/legacy", "all", rules), {
+    requiresLogin: true,
+    audience: "org",
+    roles: null,
+  });
+});
+
+test("an unreadable roles value invalidates the set", () => {
+  const policy = resolvePathPolicy("/anything", "paths", [
+    { path: "/x", auth: "required", roles: ["Bad"] },
+  ]);
+  assert.deepEqual(policy, { requiresLogin: true, audience: null, roles: null });
 });

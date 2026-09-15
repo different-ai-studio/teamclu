@@ -31,21 +31,27 @@ export type AuthAudience = (typeof AUTH_AUDIENCES)[number];
 /**
  * One path rule.
  *
- * `audience` narrows WHO satisfies the login on this path, and is only
- * meaningful with `auth: "required"`. Absent means "whatever the app's own
- * `auth_audience` says" — NOT a hard-coded default. Every rule stored before
- * this key existed is absent, so reading absence as `org` would tighten the
- * wall on every app currently set to "any signed-in user", which is a live
- * access boundary changing because a column grew a key.
+ * `roles` is the preferred WHO filter for `auth: "required"`: an empty list
+ * means any signed-in user; a non-empty list means the visitor needs an
+ * intersection with their active org role codes. `audience` is legacy-read
+ * only (`any` ≡ `roles: []`, `org` ≡ any `roles_users` row) and is only
+ * meaningful with `auth: "required"`. Absent `roles` AND absent `audience`
+ * means "whatever the app's own `auth_audience` says" — NOT a hard-coded
+ * default. Every rule stored before these keys existed is absent, so reading
+ * absence as `org` would tighten the wall on every app currently set to "any
+ * signed-in user", which is a live access boundary changing because a column
+ * grew a key.
  */
 export type AuthRule = {
   path: string;
   auth: "required" | "public";
   audience?: AuthAudience;
+  roles?: string[];
 };
 
 const MAX_RULES = 50;
 const MAX_PATH_LEN = 512;
+const ROLE_CODE_RE = /^[a-z][a-z0-9_]*$/;
 
 // --- writing: strict ---------------------------------------------------------
 
@@ -91,6 +97,41 @@ export function normalizeRulePath(raw: unknown): string {
   return path || "/";
 }
 
+/** Parse and validate role codes on a required rule. Undefined = key absent. */
+function parseRuleRoles(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new ApiError(400, "validation_failed", 'auth rule "roles" must be an array');
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string" || !ROLE_CODE_RE.test(item)) {
+      throw new ApiError(
+        400,
+        "validation_failed",
+        'auth rule role codes must match /^[a-z][a-z0-9_]*$/',
+      );
+    }
+    if (seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+/** Lenient read of roles from a stored rule; null entry = unreadable. */
+function readRuleRoles(raw: unknown): { ok: true; roles?: string[] } | { ok: false } {
+  if (raw === undefined || raw === null) return { ok: true };
+  if (!Array.isArray(raw)) return { ok: false };
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string" || !ROLE_CODE_RE.test(item)) return { ok: false };
+    out.push(item);
+  }
+  return { ok: true, roles: out };
+}
+
 /** Parse and validate the rule list a client is trying to store. */
 export function parseAuthRules(raw: unknown): AuthRule[] {
   if (raw === undefined || raw === null) return [];
@@ -122,21 +163,29 @@ export function parseAuthRules(raw: unknown): AuthRule[] {
     seen.add(key);
 
     // Dropped rather than stored on a public path: a public path admits
-    // everyone by definition, so an audience there would be a setting the UI
-    // shows and the gateway ignores.
-    const rawAudience = (entry as any).audience;
-    if (auth === "public" || rawAudience === undefined || rawAudience === null) {
+    // everyone by definition, so roles/audience there would be settings the
+    // UI shows and the gateway ignores.
+    if (auth === "public") {
       out.push({ path, auth });
       continue;
     }
-    if (typeof rawAudience !== "string" || !AUTH_AUDIENCES.includes(rawAudience.trim() as AuthAudience)) {
-      throw new ApiError(
-        400,
-        "validation_failed",
-        `auth rule "audience" must be one of: ${AUTH_AUDIENCES.join(", ")}`,
-      );
+
+    const rule: AuthRule = { path, auth };
+    const roles = parseRuleRoles((entry as any).roles);
+    if (roles !== undefined) rule.roles = roles;
+
+    const rawAudience = (entry as any).audience;
+    if (rawAudience !== undefined && rawAudience !== null) {
+      if (typeof rawAudience !== "string" || !AUTH_AUDIENCES.includes(rawAudience.trim() as AuthAudience)) {
+        throw new ApiError(
+          400,
+          "validation_failed",
+          `auth rule "audience" must be one of: ${AUTH_AUDIENCES.join(", ")}`,
+        );
+      }
+      rule.audience = rawAudience.trim() as AuthAudience;
     }
-    out.push({ path, auth, audience: rawAudience.trim() as AuthAudience });
+    out.push(rule);
   }
   return out;
 }
@@ -206,48 +255,67 @@ function readRule(entry: unknown): AuthRule | null {
   let p = path.trim();
   while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
 
-  const audience = (entry as any).audience;
-  if (audience === undefined || audience === null) return { path: p, auth };
-  // Present but not a value we know: unreadable, like a bad `auth`. The caller
-  // treats an unreadable rule as "protect everything", which is the direction
-  // this whole file errs in.
-  if (audience !== "any" && audience !== "org") return null;
-  return { path: p, auth, audience };
+  const rule: AuthRule = { path: p, auth };
+  if (auth === "required") {
+    const rolesRead = readRuleRoles((entry as any).roles);
+    if (!rolesRead.ok) return null;
+    if (rolesRead.roles !== undefined) rule.roles = rolesRead.roles;
+
+    const audience = (entry as any).audience;
+    if (audience !== undefined && audience !== null) {
+      // Present but not a value we know: unreadable, like a bad `auth`. The
+      // caller treats an unreadable rule as "protect everything", which is the
+      // direction this whole file errs in.
+      if (audience !== "any" && audience !== "org") return null;
+      rule.audience = audience;
+    }
+  }
+  return rule;
 }
 
 /**
- * Does this request path sit behind the login wall?
+ * All halves of a path's verdict, from ONE longest-prefix match: whether it
+ * needs a login, and — when it does — which audience / roles satisfy it.
  *
  * Takes the raw column values, so no caller has to pre-validate a row it read
- * from the database. Anything unusable resolves to `true`: a malformed rule set
- * must not be the reason a protected path becomes reachable, and an unknown
- * scope must not either. Writes are validated strictly, so reaching these
+ * from the database. Anything unusable resolves to protected: a malformed rule
+ * set must not be the reason a protected path becomes reachable, and an unknown
+ * scope must not either. Writes are validated strictly, so reaching those
  * branches means something wrote to the column directly.
- */
-/**
- * Both halves of a path's verdict, from ONE longest-prefix match: whether it
- * needs a login, and — when it does — which audience satisfies it.
  *
- * One function rather than two because the two answers must come from the same
+ * One function rather than several because the answers must come from the same
  * winning rule. Matching twice would mean two copies of the longest-prefix
  * comparison, and the next person to touch one of them would have no way to
  * know the other existed.
  *
- * `audience: null` means the winning rule did not name one (or no rule won at
- * all), and the caller falls back to the app-level `auth_audience`.
+ * `audience: null` / `roles: null` means the winning rule did not name that
+ * key (or no rule won at all). The caller falls back: explicit `roles`
+ * (including `[]`) win; else legacy `audience`; else the app-level
+ * `auth_audience`.
  */
+export type PathPolicy = {
+  requiresLogin: boolean;
+  audience: AuthAudience | null;
+  /** null = key absent; [] = any authenticated; non-empty = intersection. */
+  roles: string[] | null;
+};
+
 export function resolvePathPolicy(
   pathname: string,
   scope: unknown,
   rawRules: unknown,
-): { requiresLogin: boolean; audience: AuthAudience | null } {
+): PathPolicy {
   // Fail-safe on every unusable input: protected, and under the app's own
   // audience rather than a per-path widening we could not read.
-  const protectedFallback = { requiresLogin: true, audience: null };
+  const protectedFallback: PathPolicy = { requiresLogin: true, audience: null, roles: null };
   if (isUnreasonable(pathname)) return protectedFallback;
 
   // unknown scope behaves as "all"
-  const baseline = { requiresLogin: scope !== "paths", audience: null };
+  const baseline: PathPolicy = {
+    requiresLogin: scope !== "paths",
+    audience: null,
+    roles: null,
+  };
 
   if (rawRules === undefined || rawRules === null) return baseline;
   if (!Array.isArray(rawRules)) return protectedFallback;
@@ -271,8 +339,12 @@ export function resolvePathPolicy(
   }
 
   if (!winner) return baseline;
+  if (winner.auth !== "required") {
+    return { requiresLogin: false, audience: null, roles: null };
+  }
   return {
-    requiresLogin: winner.auth === "required",
-    audience: winner.auth === "required" ? (winner.audience ?? null) : null,
+    requiresLogin: true,
+    audience: winner.audience ?? null,
+    roles: winner.roles !== undefined ? winner.roles : null,
   };
 }

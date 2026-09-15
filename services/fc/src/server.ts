@@ -7,6 +7,7 @@ import {
   vanityLookup,
   loginAppLookup,
   appOrgsLookup,
+  visitorRolesLookup,
 } from "./index.js";
 
 const app = createApp({
@@ -20,6 +21,7 @@ const app = createApp({
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
   resolveAppOrgs: appOrgsLookup(),
+  resolveVisitorRoles: visitorRolesLookup(),
 });
 
 const parsedPort = Number(process.env.PORT);
