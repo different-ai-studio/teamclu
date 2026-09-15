@@ -7,6 +7,14 @@ import {
 const RUNTIME_ENSURE_MIN_INTERVAL_MS = 3_000
 
 /**
+ * After MQTT rewiring, `byRuntimeId` is cleared and retains re-flush. Wake
+ * ensures that fire in that window race an empty store, call runtimeStart, and
+ * toast `rpc timeout after 20000ms` even though the remote agent was fine.
+ * Wait this long for session attachments to reappear before ensuring.
+ */
+export const WAKE_RETAIN_REFILL_WAIT_MS = 5_000
+
+/**
  * Wake/recover paths — skip when THIS SESSION's bound spawn is already live.
  * Bind paths (session_create / outbox_send / mention_pill) always proceed.
  * offline_banner_retry is excluded: user asked to retry despite retain ghosts.
@@ -91,6 +99,64 @@ export function shouldSkipAlreadyReadyRuntimeEnsure(
 ): boolean {
   if (!isRuntimeEnsureWakeReason(reason)) return false
   return agentsHaveLiveRuntimeModels(agentActorIds, sessionRuntimeByAgent)
+}
+
+function agentsStillNeedingWakeRetain(
+  sessionId: string,
+  agentActorIds: string[],
+): string[] {
+  const sid = sessionId.trim()
+  if (!sid) return [...agentActorIds]
+  return agentActorIds.filter(
+    (agentActorId) => !agentHasLiveRuntimeForSessionBinding(agentActorId, sid),
+  )
+}
+
+export type WakeRetainWaitResult = {
+  status: 'ready' | 'timeout'
+  /** Agents that still lack an ACTIVE+models attachment for this session. */
+  stillNeeded: string[]
+}
+
+/**
+ * Poll until every agent has an ACTIVE retain+models attachment for
+ * `sessionId`, or until `timeoutMs`. Used by wake ensures after MQTT rewiring
+ * clears `byRuntimeId`.
+ */
+export async function waitForWakeRuntimeRetain(args: {
+  sessionId: string
+  agentActorIds: string[]
+  timeoutMs?: number
+  pollMs?: number
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+}): Promise<WakeRetainWaitResult> {
+  const sessionId = args.sessionId.trim()
+  const agentActorIds = [
+    ...new Set(args.agentActorIds.map((id) => id.trim()).filter(Boolean)),
+  ]
+  if (!sessionId || agentActorIds.length === 0) {
+    return { status: 'ready', stillNeeded: [] }
+  }
+
+  const timeoutMs = args.timeoutMs ?? WAKE_RETAIN_REFILL_WAIT_MS
+  const pollMs = args.pollMs ?? 100
+  const now = args.now ?? Date.now
+  const sleep =
+    args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  const deadline = now() + timeoutMs
+
+  for (;;) {
+    const stillNeeded = agentsStillNeedingWakeRetain(sessionId, agentActorIds)
+    if (stillNeeded.length === 0) {
+      return { status: 'ready', stillNeeded: [] }
+    }
+    const remaining = deadline - now()
+    if (remaining <= 0) {
+      return { status: 'timeout', stillNeeded }
+    }
+    await sleep(Math.min(pollMs, remaining))
+  }
 }
 
 /** Returns true when a recent runtime-start attempt for the same session+agents should be skipped. */
