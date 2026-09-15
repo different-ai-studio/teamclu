@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { AppListColumn } from '../AppListColumn'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -204,11 +204,16 @@ describe('AppListColumn', () => {
       expect(useAppRelationshipFilterStore.getState().byTeam['team-1']).toBe('team')
     })
 
-    it('says on each row how I am related to it, naming who invited me', () => {
+    it('says under each icon how I am related to the app, with the inviter on hover', () => {
       render(<AppListColumn />)
-      expect(screen.getByRole('button', { name: /Own/ })).toHaveTextContent('我的')
-      expect(screen.getByRole('button', { name: /Shared/ })).toHaveTextContent('Lin 邀请')
-      expect(screen.getByRole('button', { name: /Common Two/ })).toHaveTextContent('团队')
+      const labelIn = (name: RegExp) =>
+        within(screen.getByRole('button', { name })).getByTestId('app-row-relationship')
+      expect(labelIn(/Own/)).toHaveTextContent('我的')
+      expect(labelIn(/Common Two/)).toHaveTextContent('团队')
+      // One short word fits under a 28px icon; the name does not, so it hovers.
+      expect(labelIn(/Shared/)).toHaveTextContent(/^受邀$/)
+      expect(labelIn(/Shared/)).toHaveAttribute('title', 'Lin 邀请')
+      expect(labelIn(/Own/)).not.toHaveAttribute('title')
     })
 
     it('drops the row label once one relationship is picked — every row would say the same word', () => {
@@ -218,16 +223,13 @@ describe('AppListColumn', () => {
       expect(screen.queryByTestId('app-row-relationship')).not.toBeInTheDocument()
     })
 
-    it('the status keeps its width and the relationship label gives way', () => {
-      // "Deploy failed" was cut to "Deploy fai…" to make room for "Mine"; the
-      // status is what someone acts on.
+    it('keeps the label off the status line, so it never squeezes the status', () => {
+      // On the status line it cut "Deploy failed" to "Deploy fai…", and then
+      // itself to "M…". Under the icon neither competes for that width.
       render(<AppListColumn />)
-      const label = screen.getAllByTestId('app-row-relationship')[0]
       const status = screen.getAllByTestId('app-row-status')[0]
-      expect(status).toHaveClass('shrink-0')
-      expect(status).not.toHaveClass('truncate')
-      expect(label).toHaveClass('min-w-0', 'truncate')
-      expect(label).not.toHaveClass('shrink-0')
+      const label = screen.getAllByTestId('app-row-relationship')[0]
+      expect(status.parentElement).not.toContainElement(label)
     })
 
     it('a filter with nothing under it says so and offers the whole list back', () => {

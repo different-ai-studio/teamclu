@@ -40,10 +40,11 @@ function AppRowButton({
 }: {
   app: AppRow
   /**
-   * Mine / Team / "<name> 邀请", already resolved by the list — or null under a
+   * The word under the icon (Mine / Invited / Team) and what hovering it says
+   * (who invited me), already resolved by the list — or null under a
    * single-relationship filter, where every row would repeat the chip.
    */
-  relationLabel: string | null
+  relationLabel: { label: string; hint: string | null } | null
   /** `null` while the daemon has not answered — treated as "here". */
   local: boolean | null
   downloading: boolean
@@ -79,12 +80,27 @@ function AppRowButton({
     >
       {/* One glyph per type, on a quiet disc. Eleven identical coral marks
           down the left edge said nothing about eleven different apps, and
-          spent the palette's whole coral budget saying it. */}
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-panel text-muted-foreground">
-        {deploying || downloading ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <TypeIcon className="h-[15px] w-[15px]" />
+          spent the palette's whole coral budget saying it.
+
+          The relationship sits under it, not on the status line: there it cut
+          "Deploy failed" short and then itself to "M…". The column is a fixed
+          width so the discs line up whether or not a row has a word. */}
+      <span className="flex w-10 shrink-0 flex-col items-center gap-1">
+        <span className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-panel text-muted-foreground">
+          {deploying || downloading ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <TypeIcon className="h-[15px] w-[15px]" />
+          )}
+        </span>
+        {relationLabel && (
+          <span
+            data-testid="app-row-relationship"
+            title={relationLabel.hint ?? undefined}
+            className="max-w-full truncate text-[9.5px] leading-none text-faint"
+          >
+            {relationLabel.label}
+          </span>
         )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -104,7 +120,7 @@ function AppRowButton({
             </span>
           )}
         </span>
-        <span className="flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] text-faint">
+        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-faint">
           <span className="shrink-0">{t(typeMeta.labelKey, typeMeta.label)}</span>
           <span>·</span>
           <span
@@ -115,19 +131,9 @@ function AppRowButton({
               meta.dot === 'idle' && 'bg-muted-foreground/40',
             )}
           />
-          {/* The status keeps its width; the relationship label is what gives
-              way. "Deploy failed" is something to act on, "Mine" is not. */}
-          <span className="shrink-0 whitespace-nowrap" data-testid="app-row-status">
+          <span className="truncate" data-testid="app-row-status">
             {t(meta.key, meta.fallback)}
           </span>
-          {relationLabel && (
-            <>
-              <span className="shrink-0">·</span>
-              <span className="min-w-0 truncate" data-testid="app-row-relationship">
-                {relationLabel}
-              </span>
-            </>
-          )}
         </span>
       </span>
       {/* The row drills one level deeper into this same column, which is not
@@ -183,14 +189,15 @@ export function AppListColumn() {
   const relationLabelFor = React.useCallback(
     (app: AppRow) => {
       const relationship = appRelationship(app, myActorId)
-      if (relationship === 'owner') return t('apps.relationshipOwner', '我的')
-      if (relationship === 'team') return t('apps.relationshipTeam', '团队')
+      if (relationship === 'owner') return { label: t('apps.relationshipOwner', '我的'), hint: null }
+      if (relationship === 'team') return { label: t('apps.relationshipTeam', '团队'), hint: null }
       const inviter = app.invitedByActorId
         ? actors.find((a) => a.id === app.invitedByActorId)?.display_name
         : null
-      return inviter
-        ? t('apps.relationshipInvitedBy', '{{name}} 邀请', { name: inviter })
-        : t('apps.relationshipInvited', '受邀')
+      return {
+        label: t('apps.relationshipInvited', '受邀'),
+        hint: inviter ? t('apps.relationshipInvitedBy', '{{name}} 邀请', { name: inviter }) : null,
+      }
     },
     [actors, myActorId, t],
   )
