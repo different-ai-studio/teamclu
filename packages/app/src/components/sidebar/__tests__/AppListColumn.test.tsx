@@ -211,6 +211,25 @@ describe('AppListColumn', () => {
       expect(screen.getByRole('button', { name: /Common Two/ })).toHaveTextContent('团队')
     })
 
+    it('drops the row label once one relationship is picked — every row would say the same word', () => {
+      render(<AppListColumn />)
+      expect(screen.getAllByTestId('app-row-relationship')).toHaveLength(4)
+      fireEvent.click(screen.getByTestId('app-relationship-chip-team'))
+      expect(screen.queryByTestId('app-row-relationship')).not.toBeInTheDocument()
+    })
+
+    it('the status keeps its width and the relationship label gives way', () => {
+      // "Deploy failed" was cut to "Deploy fai…" to make room for "Mine"; the
+      // status is what someone acts on.
+      render(<AppListColumn />)
+      const label = screen.getAllByTestId('app-row-relationship')[0]
+      const status = screen.getAllByTestId('app-row-status')[0]
+      expect(status).toHaveClass('shrink-0')
+      expect(status).not.toHaveClass('truncate')
+      expect(label).toHaveClass('min-w-0', 'truncate')
+      expect(label).not.toHaveClass('shrink-0')
+    })
+
     it('a filter with nothing under it says so and offers the whole list back', () => {
       useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'invited' } })
       useAppsStore.setState({ items: [mkApp('a', 'Own', { relationship: 'owner' })] })

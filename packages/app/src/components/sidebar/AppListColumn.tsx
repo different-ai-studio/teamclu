@@ -39,8 +39,11 @@ function AppRowButton({
   onDownload,
 }: {
   app: AppRow
-  /** Mine / Team / "<name> 邀请", already resolved by the list. */
-  relationLabel: string
+  /**
+   * Mine / Team / "<name> 邀请", already resolved by the list — or null under a
+   * single-relationship filter, where every row would repeat the chip.
+   */
+  relationLabel: string | null
   /** `null` while the daemon has not answered — treated as "here". */
   local: boolean | null
   downloading: boolean
@@ -101,7 +104,7 @@ function AppRowButton({
             </span>
           )}
         </span>
-        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-faint">
+        <span className="flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] text-faint">
           <span className="shrink-0">{t(typeMeta.labelKey, typeMeta.label)}</span>
           <span>·</span>
           <span
@@ -112,9 +115,19 @@ function AppRowButton({
               meta.dot === 'idle' && 'bg-muted-foreground/40',
             )}
           />
-          <span className="truncate">{t(meta.key, meta.fallback)}</span>
-          <span>·</span>
-          <span className="max-w-[12ch] shrink-0 truncate" data-testid="app-row-relationship">{relationLabel}</span>
+          {/* The status keeps its width; the relationship label is what gives
+              way. "Deploy failed" is something to act on, "Mine" is not. */}
+          <span className="shrink-0 whitespace-nowrap" data-testid="app-row-status">
+            {t(meta.key, meta.fallback)}
+          </span>
+          {relationLabel && (
+            <>
+              <span className="shrink-0">·</span>
+              <span className="min-w-0 truncate" data-testid="app-row-relationship">
+                {relationLabel}
+              </span>
+            </>
+          )}
         </span>
       </span>
       {/* The row drills one level deeper into this same column, which is not
@@ -311,7 +324,7 @@ export function AppListColumn() {
             <AppRowButton
               key={app.id}
               app={app}
-              relationLabel={relationLabelFor(app)}
+              relationLabel={filter === 'all' ? relationLabelFor(app) : null}
               local={resolveAppLocality(localAppIds, app.id)}
               downloading={downloadingId === app.id}
               onSelect={() => selectApp(app.id)}
