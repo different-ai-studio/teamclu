@@ -1,7 +1,8 @@
 -- 040_org_roles.sql
 --
 -- Org-scoped public.roles / public.roles_users: schema, system seed, backfill
--- from team_members.role, and current_team_role derived from roles_users.
+-- from team_members.role, and current_team_role from roles_users only
+-- (no team_members.role fallback).
 --
 -- Run via:
 --   cd services/supabase/tests && ./run.sh 040_org_roles.sql

@@ -1,6 +1,7 @@
 -- Org-scoped RBAC: public.roles / public.roles_users.
 -- Seed system roles per org, backfill from amux.team_members.role,
--- rewrite amux.current_team_role to prefer roles_users.
+-- rewrite amux.current_team_role from roles_users only (no team_members.role
+-- fallback — callers without roles_users rows get NULL).
 
 -- ── 1) Tables (from docs/database/*.sql) ─────────────────────────────────────
 
@@ -250,10 +251,10 @@ GRANT EXECUTE ON FUNCTION amux.backfill_roles_users_from_team_members() TO servi
 
 SELECT amux.backfill_roles_users_from_team_members();
 
--- ── 6) current_team_role from roles_users ───────────────────────────────────
--- Primary path matches the plan (roles_users, privilege order). COALESCE to
--- team_members.role keeps legacy pgTAP fixtures that lack oid/roles_users
--- working until invite/create-team writers always populate roles_users.
+-- ── 6) current_team_role from roles_users only ───────────────────────────────
+-- Privilege order: owner > admin > finance > member > other.
+-- No COALESCE to team_members.role (option A). Without roles_users, returns NULL;
+-- legacy pgTAP fixtures that only set team_members.role are Task 4/11.
 
 CREATE OR REPLACE FUNCTION amux.current_team_role(target_team_id uuid)
 RETURNS text
@@ -262,33 +263,22 @@ STABLE
 SECURITY DEFINER
 SET search_path TO 'public', 'auth', 'amux'
 AS $$
-  SELECT COALESCE(
-    (
-      SELECT r.code
-      FROM amux.teams t
-      JOIN public.roles_users ru
-        ON ru.org_id = t.oid
-       AND ru.user_id = auth.uid()
-       AND ru.status = 'active'
-      JOIN public.roles r ON r.id = ru.role_id AND r.status = 'active'
-      WHERE t.id = target_team_id
-      ORDER BY CASE r.code
-        WHEN 'owner' THEN 1
-        WHEN 'admin' THEN 2
-        WHEN 'finance' THEN 3
-        WHEN 'member' THEN 4
-        ELSE 5
-      END
-      LIMIT 1
-    ),
-    (
-      SELECT tm.role
-      FROM amux.team_members tm
-      WHERE tm.team_id = target_team_id
-        AND tm.member_id = amux.current_actor_id_for_team(target_team_id)
-      LIMIT 1
-    )
-  );
+  SELECT r.code
+  FROM amux.teams t
+  JOIN public.roles_users ru
+    ON ru.org_id = t.oid
+   AND ru.user_id = auth.uid()
+   AND ru.status = 'active'
+  JOIN public.roles r ON r.id = ru.role_id AND r.status = 'active'
+  WHERE t.id = target_team_id
+  ORDER BY CASE r.code
+    WHEN 'owner' THEN 1
+    WHEN 'admin' THEN 2
+    WHEN 'finance' THEN 3
+    WHEN 'member' THEN 4
+    ELSE 5
+  END
+  LIMIT 1;
 $$;
 
 REVOKE ALL ON FUNCTION amux.current_team_role(uuid) FROM PUBLIC;
