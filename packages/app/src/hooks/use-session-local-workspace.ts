@@ -22,12 +22,24 @@ export type SessionLocalWorkspace = {
    * flight, and for a session whose runtime has never bound a folder.
    */
   path: string | null
+  /**
+   * Binding lookup for this session finished. Distinguishes "no workspace_id"
+   * (resolved + null boundPath) from "still waiting / agent not started".
+   */
+  bindingResolved: boolean
+  /**
+   * Folder from the session binding (cache / participants), before the
+   * workspace store has to agree. Null when the session has no workspace.
+   */
+  boundPath: string | null
 }
 
 const EMPTY: SessionLocalWorkspace = {
   hasLocalAgent: false,
   agentName: null,
   path: null,
+  bindingResolved: false,
+  boundPath: null,
 }
 
 /**
@@ -127,7 +139,8 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
     const participant = (participants ?? []).find((p) => p.actorId === localAgentId)
     if (!participant) return EMPTY
 
-    const boundPath = bound?.sessionId === sessionId ? bound.path : null
+    const bindingResolved = bound?.sessionId === sessionId
+    const boundPath = bindingResolved ? bound.path : null
     const settled =
       !!boundPath && !!workspacePath && workspacePathsMatch(boundPath, workspacePath)
 
@@ -135,6 +148,8 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
       hasLocalAgent: true,
       agentName: participant.displayName || null,
       path: settled ? boundPath : null,
+      bindingResolved,
+      boundPath,
     }
   }, [sessionId, localAgentId, participants, bound, workspacePath])
 }

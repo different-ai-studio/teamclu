@@ -12,12 +12,23 @@ use super::*;
 /// then reports as a missing Node.js. Both sides must be checked: an empty or
 /// non-existent client path is no better than the cloud's, and a cloud path
 /// that does exist here stays authoritative.
-fn prefer_client_worktree(cloud_path: &str, client_worktree: &str) -> bool {
-    let cloud = cloud_path.trim();
-    !cloud.is_empty()
-        && !std::path::Path::new(cloud).is_dir()
-        && !client_worktree.is_empty()
-        && std::path::Path::new(client_worktree).is_dir()
+fn prefer_client_worktree(_cloud_path: &str, _client_worktree: &str) -> bool {
+    // Path-bearing workspaces are the session's immutable binding. A missing
+    // local directory is WORKSPACE_PATH_UNAVAILABLE, not a reason to run in
+    // the current window. Empty-path app rows still use the dedicated arm
+    // above this helper.
+    false
+}
+
+/// Directory for a workspace row that already stores a path. Missing on this
+/// machine is a hard error — never swap in the client's current window.
+fn path_bearing_worktree(cloud_path: &str) -> Result<String, &'static str> {
+    let trimmed = cloud_path.trim();
+    if std::path::Path::new(trimmed).is_dir() {
+        Ok(trimmed.to_string())
+    } else {
+        Err("WORKSPACE_PATH_UNAVAILABLE")
+    }
 }
 
 /// The local fast-path starts before cloud workspace resolution and therefore
@@ -201,7 +212,7 @@ impl DaemonServer {
         // Resolve workspace + worktree via the cloud-backed WorkspaceResolver.
         // The cloud UUID (`workspace_id`) IS the workspace id now — there is
         // no separate local/remote id split.
-        let (mut resolved_worktree, mut ws_id): (String, String) = if !workspace_id.is_empty() {
+        let (resolved_worktree, mut ws_id): (String, String) = if !workspace_id.is_empty() {
             match self.workspace_resolver.resolve(workspace_id).await {
                 // A workspace row can exist with no path — an app's 1:1
                 // workspace is created by the cloud API, which never sees a
@@ -210,13 +221,9 @@ impl DaemonServer {
                 Ok(ws) if ws.path.trim().is_empty() && !worktree.is_empty() => {
                     (worktree.to_string(), workspace_id.to_string())
                 }
-                // The stored path is an absolute path on whichever machine
-                // created the workspace. A teammate's app row therefore points
-                // at *their* home directory, which does not exist here — and
-                // handing that to `Command::current_dir` fails the spawn with
-                // `NotFound`, reported as a missing binary. The client sends
-                // the path it actually has, so prefer it when the cloud's is
-                // not a directory on this machine.
+                // Path-bearing rows stay on the stored path. A missing local
+                // directory is WORKSPACE_PATH_UNAVAILABLE, not a reason to
+                // run in the client's current window.
                 Ok(ws) if prefer_client_worktree(&ws.path, worktree) => {
                     warn!(
                         workspace_id,
@@ -225,6 +232,21 @@ impl DaemonServer {
                         "workspace path does not exist here (likely another member's machine); using the client's path"
                     );
                     (worktree.to_string(), workspace_id.to_string())
+                }
+                Ok(ws) if !ws.path.trim().is_empty() => {
+                    match path_bearing_worktree(&ws.path) {
+                        Ok(path) => (path, workspace_id.to_string()),
+                        Err(error_code) => {
+                            return Err(StartRuntimeError {
+                                error_code: error_code.to_string(),
+                                error_message: format!(
+                                    "workspace path is not available on this machine: {}",
+                                    ws.path.trim()
+                                ),
+                                failed_stage: "validation".to_string(),
+                            });
+                        }
+                    }
                 }
                 Ok(ws) => (ws.path, workspace_id.to_string()),
                 Err(_) if !worktree.is_empty() => {
@@ -1172,9 +1194,7 @@ impl DaemonServer {
         request: &crate::proto::teamclu::RpcRequest,
         body: &crate::proto::teamclu::SessionPermissionModeRequest,
     ) -> crate::proto::teamclu::RpcResponse {
-        use crate::proto::teamclu::{
-            rpc_response, RpcResponse, SessionPermissionModeResult,
-        };
+        use crate::proto::teamclu::{rpc_response, RpcResponse, SessionPermissionModeResult};
 
         let session_id = body.session_id.trim();
         if session_id.is_empty() {
@@ -1254,7 +1274,7 @@ impl DaemonServer {
 
 #[cfg(test)]
 mod workspace_binding_tests {
-    use super::{prefer_client_worktree, same_runtime_workspace};
+    use super::{path_bearing_worktree, prefer_client_worktree, same_runtime_workspace};
 
     #[test]
     fn local_fast_path_and_canonical_workspace_id_share_one_runtime() {
@@ -1288,10 +1308,10 @@ mod workspace_binding_tests {
     /// "managed Node.js not found; run `amuxd install-pi`" — against a Node.js
     /// that was present the whole time.
     #[test]
-    fn another_machines_workspace_path_yields_to_the_local_one() {
+    fn another_machines_workspace_path_does_not_yield_to_the_local_one() {
         let local = tempfile::tempdir().expect("tempdir");
         let local_path = local.path().to_string_lossy().into_owned();
-        assert!(prefer_client_worktree(
+        assert!(!prefer_client_worktree(
             "/Users/someone-else/.amuxd/teams/t/apps/a",
             &local_path
         ));
@@ -1306,6 +1326,17 @@ mod workspace_binding_tests {
             &cloud.path().to_string_lossy(),
             &local.path().to_string_lossy()
         ));
+    }
+
+    #[test]
+    fn a_missing_cloud_directory_is_unavailable() {
+        assert_eq!(
+            path_bearing_worktree("/Users/someone-else/Copilot 361").unwrap_err(),
+            "WORKSPACE_PATH_UNAVAILABLE"
+        );
+        let local = tempfile::tempdir().expect("tempdir");
+        let local_path = local.path().to_string_lossy().into_owned();
+        assert_eq!(path_bearing_worktree(&local_path).unwrap(), local_path);
     }
 
     #[test]

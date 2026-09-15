@@ -16,4 +16,18 @@ describe('computeInitialSelection', () => {
     const result = computeInitialSelection(null, new Set(['agent-1', 'member-1']))
     expect(result).toEqual(new Set())
   })
+
+  it('also pre-selects the local daemon agent, even when the default is a different row', () => {
+    const result = computeInitialSelection(
+      'agent-remote',
+      new Set(['agent-remote', 'agent-local', 'member-1']),
+      'agent-local',
+    )
+    expect(result).toEqual(new Set(['agent-remote', 'agent-local']))
+  })
+
+  it('pre-selects only the local agent when there is no team default', () => {
+    const result = computeInitialSelection(null, new Set(['agent-local', 'member-1']), 'agent-local')
+    expect(result).toEqual(new Set(['agent-local']))
+  })
 })

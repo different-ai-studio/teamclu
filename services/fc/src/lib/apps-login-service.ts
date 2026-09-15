@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { appOrigins } from "./apps-public-host.js";
-import { esc, page, redirect, safeNext } from "./apps-auth-page.js";
+import { esc, mark, page, redirect, safeNext, statusIcon, type PageApp } from "./apps-auth-page.js";
 import {
   APP_AUTH_CALLBACK_PATH,
   LOGIN_STATE_COOKIE,
@@ -25,8 +25,8 @@ import { resolveFeatures } from "./routes/config.js";
  * (`docs/specs/2026-09-08-apps-login-and-custom-domain-design.md` §4.3-§4.4).
  *
  * It answers on one hostname — `LOGIN_DOMAIN` — and owns the entire login
- * experience: the page, the email/phone round trips, configured OAuth/Web SSO,
- * and the SSO cookie. Apps never see any of it. What crosses back to an app's
+ * experience: the page, the email/password/phone round trips, configured
+ * OAuth, and the SSO cookie. Apps never see any of it. What crosses back to an app's
  * own hostname is a single one-shot code, because a cookie set here cannot be
  * read on `app.example.com`, and once custom domains exist that is the common
  * case rather than the exception.
@@ -35,19 +35,100 @@ import { resolveFeatures } from "./routes/config.js";
  * `GET /` mints a code immediately and bounces, so the visitor sees two
  * redirects and no form.
  *
- * Email and phone stay plain `<form>` POSTs. Web SSO has one tiny inline bridge
- * script because only the browser can read a provider session in a URL
- * fragment; it has no dependency on the app's script bundle.
+ * Which methods the page offers is not decided here: it is the same
+ * `features.auth` block `/v1/config/public` hands the desktop login screen, so
+ * turning Google off or phone on changes both at once. Email has no flag on
+ * either side and is always offered. Web SSO is not offered at all — it is a
+ * desktop sign-in path, not one for an app's visitors.
+ *
+ * Every step is a plain `<form>` POST or a redirect.
  */
 
 export type LoginApp = {
   id: string;
   slug: string;
+  /**
+   * `apps.name`. Every page names the app so the visitor can tell what is
+   * asking them to sign in; the slug stands in when it is blank.
+   */
+  name?: string | null;
+  /** Name of the app's team, shown beside it. Null when it could not be read. */
+  teamName?: string | null;
   /** `apps.auth_mode`. Only `platform` has a login wall at all. */
   authMode: string;
+  /** `apps.custom_domain`. A valid return origin only once verified. */
+  customDomain?: string | null;
+  /**
+   * `apps.custom_domain_verified_at` — null means stored but NOT served, so
+   * not a return origin either.
+   */
+  customDomainVerifiedAt?: string | null;
 };
 
 export type LookupLoginApp = (appId: string) => Promise<LoginApp | null>;
+
+/**
+ * Columns the login service reads from `amux.apps`.
+ *
+ * The custom-domain pair is here because the return address a visitor arrives
+ * with is checked against `appOrigins`, and a verified custom domain is one of
+ * those origins. The gateway reads the same two columns when it builds that
+ * address (`apps-vanity.ts`); without them here, every login started on a
+ * custom domain was refused as "返回地址与该应用不符".
+ */
+const LOGIN_APP_COLUMNS =
+  "id, slug, name, team_id, auth_mode, custom_domain, custom_domain_verified_at";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The app lookup, reading with a service-role client.
+ *
+ * Takes the client factory instead of importing it so the column list and the
+ * row mapping are testable without a database — the same seam
+ * `makeSupabaseVanityLookup` uses. The bug this exists to prevent was exactly
+ * a column the mapping never read.
+ */
+export function makeSupabaseLoginAppLookup(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getClient: () => any,
+): LookupLoginApp {
+  return async (appId: string) => {
+    if (!UUID_RE.test(appId)) return null;
+    const client = getClient();
+    const { data, error } = await client
+      .from("apps")
+      .select(LOGIN_APP_COLUMNS)
+      .eq("id", appId)
+      .maybeSingle();
+    if (error) throw new Error(`login app lookup failed: ${error.message}`);
+    if (!data) return null;
+    return {
+      id: data.id,
+      slug: data.slug,
+      name: data.name ?? null,
+      teamName: await readTeamName(client, data.team_id ?? null),
+      authMode: data.auth_mode ?? "none",
+      customDomain: data.custom_domain ?? null,
+      customDomainVerifiedAt: data.custom_domain_verified_at ?? null,
+    };
+  };
+}
+
+/**
+ * The team caption on the login page. Best effort, on purpose: it is a label,
+ * and a failed read must not become a login page that refuses to render.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readTeamName(client: any, teamId: string | null): Promise<string | null> {
+  if (!teamId) return null;
+  try {
+    const { data } = await client.from("teams").select("name").eq("id", teamId).maybeSingle();
+    return typeof data?.name === "string" && data.name.trim() ? data.name.trim() : null;
+  } catch {
+    return null;
+  }
+}
 
 export type LoginServiceDeps = {
   lookupApp: LookupLoginApp;
@@ -64,11 +145,15 @@ export type LoginServiceDeps = {
 /** Verification codes per IP+email per minute. GoTrue also limits sending. */
 const OTP_RATE_LIMIT = 5;
 const PHONE_OTP_RATE_LIMIT = 3;
+/** Password attempts per IP+email per minute. GoTrue limits behind this too. */
+const PASSWORD_RATE_LIMIT = 10;
 const OAUTH_CALLBACK_PATH = "/oauth/callback";
-const WEB_SSO_CALLBACK_PATH = "/sso/callback";
 
 type OAuthProvider = "google" | "wechat";
-type LoginMethod = "phone" | "google" | "wechat" | "webSSO";
+/** Methods filled in on this page, as opposed to handed off to a provider. */
+type CredentialMethod = "email" | "password" | "phone";
+/** Methods behind a `features.auth` flag. Email has none. */
+type FlaggedMethod = "password" | "phone" | OAuthProvider;
 
 type PhoneLoginUser = {
   id: string;
@@ -191,21 +276,17 @@ function loginOrigin(req: Request, secure: boolean, env: NodeJS.ProcessEnv): str
   return `${secure ? "https" : "http"}://${host}`;
 }
 
-function authMethodEnabled(method: LoginMethod, env: NodeJS.ProcessEnv): boolean {
+function authMethodEnabled(method: FlaggedMethod, env: NodeJS.ProcessEnv): boolean {
   const auth = resolveFeatures(env).auth;
   return auth?.[method] === true;
 }
 
-function webSsoUrl(env: NodeJS.ProcessEnv): string | null {
-  const raw = env.WEBSSO_LOGIN_URL?.trim();
-  if (!raw) return null;
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-    return url.toString();
-  } catch {
-    return null;
-  }
+/** In tab order. Email first because it is the one method that is always there. */
+function credentialMethods(env: NodeJS.ProcessEnv): CredentialMethod[] {
+  const methods: CredentialMethod[] = ["email"];
+  if (authMethodEnabled("password", env)) methods.push("password");
+  if (authMethodEnabled("phone", env)) methods.push("phone");
+  return methods;
 }
 
 function pkceVerifier(): string {
@@ -286,43 +367,6 @@ async function callGotrue(
   return { kind: "rejected", body: parsed, message: "" };
 }
 
-/** Validate a refresh/access token harvested by the browser SSO bridge. */
-async function callGotrueUser(
-  accessToken: string,
-  deps: LoginServiceDeps,
-  env: NodeJS.ProcessEnv,
-): Promise<GotrueResult> {
-  const base = gotrueBase(env);
-  const key = anonKey(env);
-  if (!base || !key) {
-    return { kind: "unavailable", body: null, message: "登录服务尚未配置。" };
-  }
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  let res: Response;
-  try {
-    res = await fetchImpl(`${base}/auth/v1/user`, {
-      method: "GET",
-      headers: { apikey: key, Authorization: `Bearer ${accessToken}` },
-    });
-  } catch {
-    return { kind: "unavailable", body: null, message: "登录服务暂时不可用，请稍后再试。" };
-  }
-  const text = await res.text().catch(() => "");
-  let parsed: any = null;
-  if (text) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = null;
-    }
-  }
-  if (res.ok) return { kind: "ok", body: { user: parsed }, message: "" };
-  if (res.status >= 500) {
-    return { kind: "unavailable", body: null, message: "登录服务暂时不可用，请稍后再试。" };
-  }
-  return { kind: "rejected", body: parsed, message: "" };
-}
-
 // ---------------------------------------------------------------------------
 // Pages
 // ---------------------------------------------------------------------------
@@ -337,105 +381,222 @@ function carried(ctx: LoginContext): string {
 }
 
 function errorBlock(message: string): string {
-  return message ? `<p class="err">${esc(message)}</p>` : "";
+  return message ? `<p class="err" role="alert">${esc(message)}</p>` : "";
 }
 
-function methodLinks(
-  ctx: LoginContext,
-  env: NodeJS.ProcessEnv,
-  current?: LoginMethod,
-): string {
-  const links: string[] = [];
-  if (current !== "phone" && authMethodEnabled("phone", env)) {
-    links.push(`<a href="${esc(flowUrl("/", ctx, { method: "phone" }))}">手机号登录</a>`);
+function noteBlock(message: string): string {
+  return message ? `<p class="note" role="status">${esc(message)}</p>` : "";
+}
+
+function appName(app: LoginApp): string {
+  return app.name?.trim() || app.slug;
+}
+
+function hostOf(origin: string): string {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return origin;
   }
+}
+
+/** A page inside the flow for a known app, which the shell names in its corner. */
+function appPage(ctx: LoginContext, title: string, inner: string, status = 200): Response {
+  const app: PageApp = { id: ctx.app.id, name: appName(ctx.app) };
+  return page(title, inner, status, { app });
+}
+
+function startHeading(ctx: LoginContext): string {
+  return `<p class="eyebrow">访问 <strong>${esc(appName(ctx.app))}</strong> 需要先登录</p><h1>登录账号</h1>`;
+}
+
+const CREDENTIAL_LABELS: Record<CredentialMethod, string> = {
+  email: "邮箱登录",
+  password: "密码登录",
+  phone: "手机号登录",
+};
+
+function methodUrl(ctx: LoginContext, method: CredentialMethod): string {
+  return flowUrl("/", ctx, method === "email" ? {} : { method });
+}
+
+/** Only drawn when there is a choice to make; a single method needs no tabs. */
+function methodTabs(ctx: LoginContext, env: NodeJS.ProcessEnv, current: CredentialMethod): string {
+  const methods = credentialMethods(env);
+  if (methods.length < 2) return "";
+  const tabs = methods.map(
+    (method) =>
+      `<a href="${esc(methodUrl(ctx, method))}"${method === current ? ` aria-current="page"` : ""}>` +
+      `${CREDENTIAL_LABELS[method]}</a>`,
+  );
+  return `<nav class="tabs" aria-label="登录方式">${tabs.join("")}</nav>`;
+}
+
+const GOOGLE_ICON =
+  `<svg viewBox="0 0 24 24" aria-hidden="true">` +
+  `<path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1Z"/>` +
+  `<path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.65l-3.57-2.77c-.99.66-2.26 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23Z"/>` +
+  `<path fill="#FBBC05" d="M5.84 14.11a6.6 6.6 0 0 1 0-4.22V7.05H2.18a11 11 0 0 0 0 9.9l3.66-2.84Z"/>` +
+  `<path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 0 0 2.18 7.05l3.66 2.84C6.71 7.3 9.14 5.38 12 5.38Z"/>` +
+  `</svg>`;
+
+const WECHAT_ICON =
+  `<svg viewBox="0 0 24 24" fill="#07C160" aria-hidden="true">` +
+  `<path d="M8.69 4C4.86 4 1.75 6.61 1.75 9.83c0 1.8.98 3.41 2.52 4.49l-.63 1.9 2.2-1.1c.79.22 1.6.36 2.45.4-.1-.43-.16-.87-.16-1.32 0-3.05 2.96-5.4 6.46-5.4.23 0 .46.02.68.04C14.9 5.77 12.07 4 8.69 4Zm-2.3 3.1a.86.86 0 1 1 0 1.72.86.86 0 0 1 0-1.72Zm4.6 0a.86.86 0 1 1 0 1.72.86.86 0 0 1 0-1.72Z"/>` +
+  `<path d="M22.25 14.07c0-2.7-2.62-4.9-5.85-4.9-3.34 0-5.86 2.32-5.86 4.96 0 2.65 2.52 4.9 5.86 4.9.72 0 1.42-.12 2.07-.32l1.86.93-.52-1.6c1.45-.94 2.44-2.36 2.44-3.97Zm-7.74-1.06a.72.72 0 1 1 0-1.44.72.72 0 0 1 0 1.44Zm3.78 0a.72.72 0 1 1 0-1.44.72.72 0 0 1 0 1.44Z"/>` +
+  `</svg>`;
+
+function providerButtons(ctx: LoginContext, env: NodeJS.ProcessEnv): string {
+  const buttons: string[] = [];
   if (authMethodEnabled("google", env)) {
-    links.push(`<a href="${esc(flowUrl("/oauth/google", ctx))}">Google 登录</a>`);
+    buttons.push(
+      `<a class="btn btn-outline" href="${esc(flowUrl("/oauth/google", ctx))}">${GOOGLE_ICON}<span>使用 Google 登录</span></a>`,
+    );
   }
   // Keep this in lock-step with the Tauri auth config. WeChat is not enabled
   // by the shipped profiles, but a deployment that turns it on gets the same
   // provider here as well.
   if (authMethodEnabled("wechat", env)) {
-    links.push(`<a href="${esc(flowUrl("/oauth/wechat", ctx))}">微信登录</a>`);
+    buttons.push(
+      `<a class="btn btn-outline" href="${esc(flowUrl("/oauth/wechat", ctx))}">${WECHAT_ICON}<span>使用微信登录</span></a>`,
+    );
   }
-  if (authMethodEnabled("webSSO", env) && webSsoUrl(env)) {
-    links.push(`<a href="${esc(flowUrl("/sso", ctx))}">快捷登录</a>`);
-  }
-  return links.length ? `<nav class="methods">${links.join("")}</nav>` : "";
+  return buttons.length ? `<div class="divider">或</div><div class="alt">${buttons.join("")}</div>` : "";
+}
+
+/**
+ * What the visitor is agreeing to, at the point they agree to it: which app,
+ * whose, where they land afterwards, and what the app learns about them. The
+ * host is `ctx.origin`, which has already been matched against the app's own
+ * origins, so it is the address the visitor will really be sent back to.
+ */
+function consent(ctx: LoginContext): string {
+  const name = appName(ctx.app);
+  const team = ctx.app.teamName?.trim();
+  return (
+    `<div class="consent"><div class="consent-app">${mark(ctx.app.id, name, "mark mark-sm")}` +
+    `<div class="consent-who"><strong>${esc(name)}</strong>` +
+    (team ? `<span>${esc(team)}</span>` : "") +
+    `<span class="host">${esc(hostOf(ctx.origin))}</span></div></div>` +
+    `<p>登录后将返回该应用，应用会获得你的账号 ID 和邮箱地址。</p></div>`
+  );
 }
 
 function emailPage(
   ctx: LoginContext,
+  env: NodeJS.ProcessEnv,
   email = "",
   error = "",
   status = 200,
-  env: NodeJS.ProcessEnv = process.env,
 ): Response {
-  return page(
+  return appPage(
+    ctx,
     "登录",
-    `<h1>登录</h1><p class="sub">继续访问需要先验证你的邮箱。</p>` +
+    startHeading(ctx) +
+      methodTabs(ctx, env, "email") +
       errorBlock(error) +
       `<form method="post" action="/otp">${carried(ctx)}` +
-      `<label for="email">邮箱</label>` +
-      `<input id="email" name="email" type="email" inputmode="email" autocomplete="email" ` +
-      `autofocus required value="${esc(email)}">` +
-      `<button type="submit">发送验证码</button></form>` +
-      methodLinks(ctx, env),
+      `<label class="field"><span class="sr">邮箱地址</span>` +
+      `<input name="email" type="email" inputmode="email" autocomplete="email" placeholder="邮箱地址" ` +
+      `autofocus required value="${esc(email)}"></label>` +
+      `<button class="btn btn-primary" type="submit">发送验证码</button></form>` +
+      providerButtons(ctx, env) +
+      consent(ctx),
     status,
   );
 }
 
-function codePage(ctx: LoginContext, email: string, error = "", status = 200): Response {
-  return page(
+function passwordPage(
+  ctx: LoginContext,
+  env: NodeJS.ProcessEnv,
+  email = "",
+  error = "",
+  status = 200,
+): Response {
+  // Focus lands where the typing starts: the address, or the password when
+  // the address came back with an error attached.
+  return appPage(
+    ctx,
+    "密码登录",
+    startHeading(ctx) +
+      methodTabs(ctx, env, "password") +
+      errorBlock(error) +
+      `<form method="post" action="/password">${carried(ctx)}` +
+      `<label class="field"><span class="sr">邮箱地址</span>` +
+      `<input name="email" type="email" inputmode="email" autocomplete="username" placeholder="邮箱地址" ` +
+      `${email ? "" : "autofocus "}required value="${esc(email)}"></label>` +
+      `<label class="field"><span class="sr">密码</span>` +
+      `<input name="password" type="password" autocomplete="current-password" placeholder="密码" ` +
+      `${email ? "autofocus " : ""}required></label>` +
+      `<button class="btn btn-primary" type="submit">登录</button></form>` +
+      providerButtons(ctx, env) +
+      consent(ctx),
+    status,
+  );
+}
+
+function codePage(ctx: LoginContext, email: string, error = "", status = 200, note = ""): Response {
+  return appPage(
+    ctx,
     "输入验证码",
-    `<h1>输入验证码</h1><p class="sub">验证码已发送到 ${esc(email)}。</p>` +
+    `<p class="eyebrow">验证码已发送至 <strong>${esc(email)}</strong></p><h1>输入验证码</h1>` +
+      noteBlock(note) +
       errorBlock(error) +
       `<form method="post" action="/verify">${carried(ctx)}` +
       `<input type="hidden" name="email" value="${esc(email)}">` +
-      `<label for="code">验证码</label>` +
-      `<input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" ` +
-      `class="code-input" autofocus required maxlength="10">` +
-      `<button type="submit">登录</button></form>` +
-      `<p class="foot"><a href="/?app=${encodeURIComponent(ctx.app.id)}` +
-      `&amp;r=${encodeURIComponent(ctx.origin)}&amp;next=${encodeURIComponent(ctx.next)}">换一个邮箱</a></p>`,
+      `<label class="field"><span class="sr">验证码</span>` +
+      `<input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" ` +
+      `class="code-input" placeholder="······" autofocus required maxlength="10"></label>` +
+      `<button class="btn btn-primary" type="submit">登录</button></form>` +
+      `<div class="row"><a class="link link-muted" href="${esc(flowUrl("/", ctx))}">← 换一个邮箱</a>` +
+      `<form method="post" action="/otp">${carried(ctx)}` +
+      `<input type="hidden" name="email" value="${esc(email)}"><input type="hidden" name="resend" value="1">` +
+      `<button class="link" type="submit">重新发送</button></form></div>`,
     status,
   );
 }
 
 function phonePage(
   ctx: LoginContext,
+  env: NodeJS.ProcessEnv,
   phone = "",
   error = "",
   status = 200,
-  env: NodeJS.ProcessEnv = process.env,
 ): Response {
-  return page(
+  return appPage(
+    ctx,
     "手机号登录",
-    `<h1>手机号登录</h1><p class="sub">我们会向你的手机发送 6 位验证码。</p>` +
+    startHeading(ctx) +
+      methodTabs(ctx, env, "phone") +
       errorBlock(error) +
       `<form method="post" action="/phone">${carried(ctx)}` +
-      `<label for="phone">手机号</label>` +
-      `<input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" ` +
-      `autofocus required value="${esc(phone)}" placeholder="+8613800138000">` +
-      `<button type="submit">发送验证码</button></form>` +
-      `<p class="foot"><a href="${esc(flowUrl("/", ctx))}">使用邮箱登录</a></p>` +
-      methodLinks(ctx, env, "phone"),
+      `<label class="field"><span class="sr">手机号</span>` +
+      `<input name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="手机号，例如 +8613800138000" ` +
+      `autofocus required value="${esc(phone)}"></label>` +
+      `<button class="btn btn-primary" type="submit">发送验证码</button></form>` +
+      providerButtons(ctx, env) +
+      consent(ctx),
     status,
   );
 }
 
-function phoneCodePage(ctx: LoginContext, phone: string, error = "", status = 200): Response {
-  return page(
+function phoneCodePage(ctx: LoginContext, phone: string, error = "", status = 200, note = ""): Response {
+  return appPage(
+    ctx,
     "输入验证码",
-    `<h1>输入验证码</h1><p class="sub">验证码已发送到 ${esc(phone)}。</p>` +
+    `<p class="eyebrow">验证码已发送至 <strong>${esc(phone)}</strong></p><h1>输入验证码</h1>` +
+      noteBlock(note) +
       errorBlock(error) +
       `<form method="post" action="/phone/verify">${carried(ctx)}` +
       `<input type="hidden" name="phone" value="${esc(phone)}">` +
-      `<label for="code">验证码</label>` +
-      `<input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" ` +
-      `class="code-input" autofocus required maxlength="6" pattern="[0-9]{6}">` +
-      `<button type="submit">登录</button></form>` +
-      `<p class="foot"><a href="${esc(flowUrl("/", ctx, { method: "phone" }))}">换一个手机号</a></p>`,
+      `<label class="field"><span class="sr">验证码</span>` +
+      `<input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" ` +
+      `class="code-input" placeholder="······" autofocus required maxlength="6" pattern="[0-9]{6}"></label>` +
+      `<button class="btn btn-primary" type="submit">登录</button></form>` +
+      `<div class="row"><a class="link link-muted" href="${esc(methodUrl(ctx, "phone"))}">← 换一个手机号</a>` +
+      `<form method="post" action="/phone">${carried(ctx)}` +
+      `<input type="hidden" name="phone" value="${esc(phone)}"><input type="hidden" name="resend" value="1">` +
+      `<button class="link" type="submit">重新发送</button></form></div>`,
     status,
   );
 }
@@ -453,33 +614,41 @@ function phoneAccountPage(
       const label = user.nickname?.trim() || user.email?.trim() || "账号";
       const detail = user.org_name?.trim() || user.email?.trim() || "";
       return (
-        `<button type="submit" name="userId" value="${esc(user.id)}">` +
-        `<span>${esc(label)}</span>${detail ? `<small>${esc(detail)}</small>` : ""}</button>`
+        `<button class="account" type="submit" name="userId" value="${esc(user.id)}">` +
+        `${mark(user.id, label, "mark mark-sm")}` +
+        `<span class="who"><strong>${esc(label)}</strong>${detail ? `<small>${esc(detail)}</small>` : ""}</span></button>`
       );
     })
     .join("");
-  return page(
+  return appPage(
+    ctx,
     "选择账号",
-    `<h1>选择账号</h1><p class="sub">手机号 ${esc(phone)} 关联了多个账号，请选择要登录的账号。</p>` +
+    `<p class="eyebrow">手机号 <strong>${esc(phone)}</strong> 关联了多个账号</p><h1>选择要登录的账号</h1>` +
       errorBlock(error) +
       `<form method="post" action="/phone/select">${carried(ctx)}` +
       `<input type="hidden" name="phone" value="${esc(phone)}">` +
       `<input type="hidden" name="code" value="${esc(code)}">` +
       `<div class="account-choices">${choices}</div></form>` +
-      `<p class="foot"><a href="${esc(flowUrl("/", ctx, { method: "phone" }))}">使用其他手机号</a></p>`,
+      `<p class="foot"><a class="link link-muted" href="${esc(methodUrl(ctx, "phone"))}">使用其他手机号</a></p>`,
     status,
   );
 }
 
+/**
+ * A dead end with no app to name — the request itself did not identify one we
+ * may render. Deliberately app-free, so "no such app" and "no login on this
+ * app" stay byte-identical.
+ */
 function noticePage(message: string, status: number): Response {
-  return page("登录", `<h1>无法继续</h1><p class="sub">${esc(message)}</p>`, status);
+  return page("无法继续", `${statusIcon("warn")}<h1>无法继续</h1><p class="sub">${esc(message)}</p>`, status);
 }
 
 function retryPage(ctx: LoginContext, message: string, status: number): Response {
-  return page(
-    "登录",
-    `<h1>无法继续</h1><p class="sub">${esc(message)}</p>` +
-      `<a class="btn" href="${esc(flowUrl("/", ctx))}">返回登录</a>`,
+  return appPage(
+    ctx,
+    "登录未完成",
+    `${statusIcon("warn")}<h1>登录未完成</h1><p class="sub">${esc(message)}</p>` +
+      `<a class="btn btn-primary" href="${esc(flowUrl("/", ctx))}">返回登录</a>`,
     status,
   );
 }
@@ -541,24 +710,24 @@ async function handlePhoneStart(
   if (!authMethodEnabled("phone", env)) return noticePage("手机号登录未启用。", 404);
 
   const phone = (form.get("phone") ?? "").trim();
-  if (phone.length < 6) return phonePage(ctx, phone, "请填写有效的手机号码。", 400, env);
+  if (phone.length < 6) return phonePage(ctx, env, phone, "请填写有效的手机号码。", 400);
 
   const limiter = deps.rateLimited ?? isRateLimited;
   const { ip } = resolveClientIp((n) => req.headers.get(n) ?? undefined);
   if (limiter(`apps-login:phone:${ip ?? "unknown"}:${phone}`, PHONE_OTP_RATE_LIMIT)) {
-    return phonePage(ctx, phone, "尝试过于频繁，请稍后再试。", 429, env);
+    return phonePage(ctx, env, phone, "尝试过于频繁，请稍后再试。", 429);
   }
 
   try {
     const repository = await authRepository(deps);
-    if (!repository) return phonePage(ctx, phone, "手机号登录尚未配置。", 503, env);
+    if (!repository) return phonePage(ctx, env, phone, "手机号登录尚未配置。", 503);
     // The desktop client uses the same non-empty captcha placeholder until the
     // partner captcha is wired. The repository remains the single validator.
     await repository.phoneSendCode({ phone, captchaVerify: "fc-app-login" });
-    return phoneCodePage(ctx, phone);
+    return phoneCodePage(ctx, phone, "", 200, form.get("resend") === "1" ? "新的验证码已发送。" : "");
   } catch (error) {
     const failure = authFailure(error);
-    return phonePage(ctx, phone, failure.message, failure.status, env);
+    return phonePage(ctx, env, phone, failure.message, failure.status);
   }
 }
 
@@ -701,169 +870,6 @@ async function handleOAuthCallback(
   return bounceWithSso(ctx, user, secure, [clear()]);
 }
 
-function webSsoBridgePage(): Response {
-  return page(
-    "快捷登录",
-    `<h1>快捷登录</h1><p class="sub">正在读取登录结果，请稍候……</p>` +
-      `<p id="message" class="foot">如果页面没有继续，请关闭此页后重试。</p>` +
-      `<script>` +
-      `(async()=>{` +
-      `const p=new URLSearchParams(location.hash.slice(1));` +
-      `history.replaceState(null,"",location.pathname+location.search);` +
-      `const f=document.createElement("form");f.method="POST";f.action="/sso/exchange";` +
-      `for(const k of ["access_token","refresh_token"]){const v=p.get(k);if(v){const i=document.createElement("input");i.type="hidden";i.name=k;i.value=v;f.append(i)}}` +
-      `if(!f.elements.length){document.getElementById("message").textContent="没有读取到登录结果，请重试。";return}` +
-      `document.body.append(f);f.submit();` +
-      `})();</script>`,
-  );
-}
-
-async function handleWebSsoStart(
-  url: URL,
-  req: Request,
-  deps: LoginServiceDeps,
-  env: NodeJS.ProcessEnv,
-  secure: boolean,
-): Promise<Response> {
-  const ctx = await loadContext(url.searchParams, deps, env);
-  if ("error" in ctx) return noticePage(ctx.error, ctx.status);
-  const targetRaw = webSsoUrl(env);
-  if (!authMethodEnabled("webSSO", env) || !targetRaw) {
-    return noticePage("快捷登录未启用。", 404);
-  }
-  const verifier = pkceVerifier();
-  const state = randomBytes(24).toString("base64url");
-  const loginState = await mintLoginState({
-    appId: ctx.app.id,
-    redirect: ctx.origin,
-    next: ctx.next,
-    provider: "webSSO",
-    state,
-    codeVerifier: verifier,
-  });
-  const callback = `${loginOrigin(req, secure, env)}${WEB_SSO_CALLBACK_PATH}`;
-  const target = new URL(targetRaw);
-  // The configured admin login page is the same page Tauri opens. These
-  // standard names let a web-capable admin login return either a PKCE code or
-  // the Supabase session fragment to this bridge. Existing admin pages may
-  // ignore the extra query parameters without affecting Tauri's flow.
-  target.searchParams.set("redirect_to", callback);
-  target.searchParams.set("return_to", callback);
-  target.searchParams.set("state", state);
-  target.searchParams.set("code_challenge", pkceChallenge(verifier));
-  target.searchParams.set("code_challenge_method", "s256");
-  return redirect(
-    target.toString(),
-    [serializeSessionCookie(LOGIN_STATE_COOKIE, loginState.token, LOGIN_STATE_TTL_SECONDS, secure)],
-  );
-}
-
-async function finishWebSso(
-  state: Awaited<ReturnType<typeof verifyLoginState>>,
-  request: { accessToken?: string; refreshToken?: string },
-  deps: LoginServiceDeps,
-  env: NodeJS.ProcessEnv,
-  secure: boolean,
-): Promise<Response> {
-  const ctx = await contextFromLoginState(state, deps, env);
-  if ("error" in ctx) return clearLoginState(noticePage(ctx.error, ctx.status), secure);
-  if (!authMethodEnabled("webSSO", env)) {
-    return clearLoginState(retryPage(ctx, "该登录方式已被关闭，请重新选择登录方式。", 400), secure);
-  }
-  let result: GotrueResult;
-  if (request.refreshToken) {
-    result = await callGotrue(
-      "/auth/v1/token?grant_type=refresh_token",
-      { refresh_token: request.refreshToken },
-      deps,
-      env,
-    );
-  } else if (request.accessToken) {
-    result = await callGotrueUser(request.accessToken, deps, env);
-  } else {
-    return clearLoginState(retryPage(ctx, "没有读取到登录结果，请重试。", 400), secure);
-  }
-  if (result.kind !== "ok") {
-    return clearLoginState(
-      retryPage(ctx, result.kind === "unavailable" ? result.message : "登录未完成，请重试。", result.kind === "unavailable" ? 503 : 400),
-      secure,
-    );
-  }
-  const user = userFromAuthBody(result.body);
-  if (!user) return clearLoginState(retryPage(ctx, "登录服务没有返回有效账号。", 503), secure);
-  return bounceWithSso(ctx, user, secure, [clearSessionCookie(LOGIN_STATE_COOKIE, secure)]);
-}
-
-async function handleWebSsoCallback(
-  url: URL,
-  req: Request,
-  deps: LoginServiceDeps,
-  env: NodeJS.ProcessEnv,
-  secure: boolean,
-): Promise<Response> {
-  const state = await verifyLoginState(readCookie(req.headers.get("cookie"), LOGIN_STATE_COOKIE) ?? "");
-  if (!state || state.provider !== "webSSO") {
-    return clearLoginState(noticePage("登录状态已失效，请重新开始。", 400), secure);
-  }
-  const queryState = url.searchParams.get("state");
-  if (queryState && queryState !== state.state) {
-    return clearLoginState(noticePage("登录状态已失效，请重新开始。", 400), secure);
-  }
-  const ctx = await contextFromLoginState(state, deps, env);
-  if ("error" in ctx) return clearLoginState(noticePage(ctx.error, ctx.status), secure);
-  if (!authMethodEnabled("webSSO", env)) {
-    return clearLoginState(retryPage(ctx, "该登录方式已被关闭，请重新选择登录方式。", 400), secure);
-  }
-  if (url.searchParams.get("error")) {
-    return clearLoginState(retryPage(ctx, "登录未完成，请重新选择登录方式。", 400), secure);
-  }
-  const code = url.searchParams.get("code");
-  if (code) {
-    if (queryState !== state.state) {
-      return clearLoginState(noticePage("登录状态已失效，请重新开始。", 400), secure);
-    }
-    const result = await callGotrue(
-      "/auth/v1/token?grant_type=pkce",
-      { auth_code: code, code_verifier: state.codeVerifier },
-      deps,
-      env,
-    );
-    if (result.kind !== "ok") {
-      return clearLoginState(
-        retryPage(ctx, result.kind === "unavailable" ? result.message : "登录未完成，请重试。", result.kind === "unavailable" ? 503 : 400),
-        secure,
-      );
-    }
-    const user = userFromAuthBody(result.body);
-    if (!user) return clearLoginState(noticePage("登录服务没有返回有效账号。", 503), secure);
-    return bounceWithSso(ctx, user, secure, [clearSessionCookie(LOGIN_STATE_COOKIE, secure)]);
-  }
-  // Supabase implicit-flow tokens arrive in the URL fragment, which the
-  // browser-only bridge above reads without sending them to FC access logs.
-  // Never accept access or refresh tokens in the query string.
-  return webSsoBridgePage();
-}
-
-async function handleWebSsoExchange(
-  req: Request,
-  deps: LoginServiceDeps,
-  env: NodeJS.ProcessEnv,
-  secure: boolean,
-): Promise<Response> {
-  const state = await verifyLoginState(readCookie(req.headers.get("cookie"), LOGIN_STATE_COOKIE) ?? "");
-  if (!state || state.provider !== "webSSO") {
-    return clearLoginState(noticePage("登录状态已失效，请重新开始。", 400), secure);
-  }
-  const body = new URLSearchParams(await req.text());
-  return finishWebSso(
-    state,
-    { accessToken: body.get("access_token") ?? undefined, refreshToken: body.get("refresh_token") ?? undefined },
-    deps,
-    env,
-    secure,
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -899,10 +905,11 @@ async function handleRoot(
     return page(
       "登录",
       session
-        ? `<h1>已登录</h1><p class="sub">当前账号 ${esc(session.email)}。` +
+        ? `${statusIcon("ok")}<h1>已登录</h1><p class="sub">当前账号 <strong>${esc(session.email)}</strong>。` +
             `请从应用的地址进入。</p>` +
-            `<form method="post" action="/logout"><button type="submit">退出登录</button></form>`
-        : `<h1>登录</h1><p class="sub">请从你要访问的应用地址进入，这里会引导你完成登录。</p>`,
+            `<form method="post" action="/logout"><button class="btn btn-outline" type="submit">退出登录</button></form>`
+        : `${statusIcon("lock")}<h1>从应用进入</h1>` +
+            `<p class="sub">请从你要访问的应用地址进入，这里会引导你完成登录。</p>`,
     );
   }
 
@@ -915,10 +922,10 @@ async function handleRoot(
   const session = await verifySsoSession(readCookie(req.headers.get("cookie"), SSO_COOKIE) ?? "");
   if (session) return bounceWithCode(ctx, session);
 
-  if (url.searchParams.get("method") === "phone" && authMethodEnabled("phone", env)) {
-    return phonePage(ctx, "", "", 200, env);
-  }
-  return emailPage(ctx, "", "", 200, env);
+  const method = url.searchParams.get("method");
+  if (method === "phone" && authMethodEnabled("phone", env)) return phonePage(ctx, env);
+  if (method === "password" && authMethodEnabled("password", env)) return passwordPage(ctx, env);
+  return emailPage(ctx, env);
 }
 
 async function handleOtp(
@@ -932,7 +939,7 @@ async function handleOtp(
 
   const email = (form.get("email") ?? "").trim().toLowerCase();
   if (!looksLikeEmail(email)) {
-    return emailPage(ctx, email, "请填写一个有效的邮箱地址。", 400, env);
+    return emailPage(ctx, env, email, "请填写一个有效的邮箱地址。", 400);
   }
 
   // Per IP AND per address: keying on one alone lets an attacker either mail
@@ -940,7 +947,7 @@ async function handleOtp(
   const limiter = deps.rateLimited ?? isRateLimited;
   const { ip } = resolveClientIp((n) => req.headers.get(n) ?? undefined);
   if (limiter(`apps-login:otp:${ip ?? "unknown"}:${email}`, OTP_RATE_LIMIT)) {
-    return emailPage(ctx, email, "尝试过于频繁，请等一分钟再试。", 429, env);
+    return emailPage(ctx, env, email, "尝试过于频繁，请等一分钟再试。", 429);
   }
 
   const result = await callGotrue("/auth/v1/otp", { email, create_user: true }, deps, env);
@@ -948,13 +955,13 @@ async function handleOtp(
     const down = result.kind === "unavailable";
     return emailPage(
       ctx,
+      env,
       email,
       down ? result.message : "这个邮箱地址无法接收验证码。",
       down ? 503 : 400,
-      env,
     );
   }
-  return codePage(ctx, email);
+  return codePage(ctx, email, "", 200, form.get("resend") === "1" ? "新的验证码已发送。" : "");
 }
 
 async function handleVerify(
@@ -968,7 +975,7 @@ async function handleVerify(
 
   const email = (form.get("email") ?? "").trim().toLowerCase();
   const code = (form.get("code") ?? "").trim();
-  if (!looksLikeEmail(email)) return emailPage(ctx, email, "请重新输入邮箱地址。", 400, env);
+  if (!looksLikeEmail(email)) return emailPage(ctx, env, email, "请重新输入邮箱地址。", 400);
   if (!code) return codePage(ctx, email, "请输入验证码。", 400);
 
   const result = await callGotrue(
@@ -994,6 +1001,60 @@ async function handleVerify(
     return codePage(ctx, email, "登录服务暂时不可用，请稍后再试。", 503);
   }
 
+  return bounceWithSso(ctx, user, secure);
+}
+
+/**
+ * Email + password, offered only where `features.auth.password` is on.
+ *
+ * GoTrue is asked directly, the same way the code flow above is. A wrong
+ * password and an unknown address get one message: telling them apart would
+ * let anyone test which addresses have accounts. The password is never written
+ * back into the page.
+ */
+async function handlePassword(
+  form: URLSearchParams,
+  req: Request,
+  deps: LoginServiceDeps,
+  env: NodeJS.ProcessEnv,
+  secure: boolean,
+): Promise<Response> {
+  const ctx = await loadContext(form, deps, env);
+  if ("error" in ctx) return noticePage(ctx.error, ctx.status);
+  if (!authMethodEnabled("password", env)) return noticePage("密码登录未启用。", 404);
+
+  const email = (form.get("email") ?? "").trim().toLowerCase();
+  const password = form.get("password") ?? "";
+  if (!looksLikeEmail(email)) {
+    return passwordPage(ctx, env, email, "请填写一个有效的邮箱地址。", 400);
+  }
+  if (!password) return passwordPage(ctx, env, email, "请输入密码。", 400);
+
+  const limiter = deps.rateLimited ?? isRateLimited;
+  const { ip } = resolveClientIp((n) => req.headers.get(n) ?? undefined);
+  if (limiter(`apps-login:password:${ip ?? "unknown"}:${email}`, PASSWORD_RATE_LIMIT)) {
+    return passwordPage(ctx, env, email, "尝试过于频繁，请等一分钟再试。", 429);
+  }
+
+  const result = await callGotrue(
+    "/auth/v1/token?grant_type=password",
+    { email, password },
+    deps,
+    env,
+  );
+  if (result.kind !== "ok") {
+    const down = result.kind === "unavailable";
+    return passwordPage(
+      ctx,
+      env,
+      email,
+      down ? result.message : "邮箱或密码不正确。",
+      down ? 503 : 400,
+    );
+  }
+
+  const user = userFromAuthBody(result.body, email);
+  if (!user) return passwordPage(ctx, env, email, "登录服务暂时不可用，请稍后再试。", 503);
   return bounceWithSso(ctx, user, secure);
 }
 
@@ -1023,27 +1084,21 @@ export async function handleLoginRequest(
   if (req.method === "GET" && (path === "/oauth/google" || path === "/oauth/wechat")) {
     return handleOAuthStart(path.slice("/oauth/".length) as OAuthProvider, url, req, deps, env, secure);
   }
-  if (req.method === "GET" && path === "/oauth/callback") {
+  if (req.method === "GET" && path === OAUTH_CALLBACK_PATH) {
     return handleOAuthCallback(url, req, deps, env, secure);
-  }
-  if (req.method === "GET" && path === "/sso") {
-    return handleWebSsoStart(url, req, deps, env, secure);
-  }
-  if (req.method === "GET" && path === WEB_SSO_CALLBACK_PATH) {
-    return handleWebSsoCallback(url, req, deps, env, secure);
   }
 
   if (
     req.method === "POST" &&
-    ["/otp", "/verify", "/logout", "/phone", "/phone/verify", "/phone/select", "/sso/exchange"].includes(path)
+    ["/otp", "/verify", "/password", "/logout", "/phone", "/phone/verify", "/phone/select"].includes(path)
   ) {
     if (path === "/logout") return handleLogout(secure);
-    if (path === "/sso/exchange") return handleWebSsoExchange(req, deps, env, secure);
     // Deliberately not req.formData(): these forms are urlencoded, and
     // URLSearchParams cannot be talked into multipart parsing by a caller.
     const form = new URLSearchParams(await req.text());
     if (path === "/otp") return handleOtp(form, req, deps, env);
     if (path === "/verify") return handleVerify(form, deps, env, secure);
+    if (path === "/password") return handlePassword(form, req, deps, env, secure);
     if (path === "/phone") return handlePhoneStart(form, req, deps, env);
     if (path === "/phone/verify") return handlePhoneVerify(form, deps, env, secure);
     return handlePhoneSelect(form, deps, env, secure);
@@ -1059,7 +1114,7 @@ export async function handleLoginRequest(
   if (req.method === "GET" && path === "/logout") {
     const res = page(
       "已退出",
-      `<h1>已退出</h1><p class="sub">你已从所有应用退出登录。</p>`,
+      `${statusIcon("ok")}<h1>已退出</h1><p class="sub">你已从所有应用退出登录。</p>`,
     );
     res.headers.append("Set-Cookie", clearSessionCookie(SSO_COOKIE, secure));
     return res;
@@ -1067,7 +1122,10 @@ export async function handleLoginRequest(
 
   // A GET to the other POST-only paths is a stale bookmark or a back button,
   // not an error worth a status code — send them to the start of the flow.
-  if (req.method === "GET" && (path === "/otp" || path === "/verify" || path.startsWith("/phone"))) {
+  if (
+    req.method === "GET" &&
+    (path === "/otp" || path === "/verify" || path === "/password" || path.startsWith("/phone"))
+  ) {
     return redirect("/");
   }
 

@@ -5,6 +5,13 @@ import {
   Dialog, DialogContent, DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { useUIStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -12,12 +19,13 @@ import { resolveCurrentMemberActorId } from '@/lib/actor/current-actor'
 import { syncActorsForTeam } from '@/lib/sync/actor-sync'
 import { useActorDirectory } from '@/stores/actor-directory-store'
 import { actorAvatarColor } from '@/lib/actor/actor-color'
-import { createSessionWithFirstMessage } from '@/lib/session/session-create'
+import { createSessionWithFirstMessage, resolveLocalDaemonWorkspaceBinding } from '@/lib/session/session-create'
 import { promoteCreatedSessionToUi } from '@/lib/session/promote-created-session'
 import { useEngagedAgentStore } from '@/stores/engaged-agent-store'
 import { cn, isTauri } from '@/lib/utils'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { rememberDefaultWorkspaceId } from '@/stores/agent-default-workspace-store'
+import { useWorkspaceStore } from '@/stores/workspace'
 import {
   createDaemonWorkspace,
   listDaemonWorkspaces,
@@ -25,7 +33,12 @@ import {
   type DaemonWorkspace,
 } from '@/lib/daemon/daemon-workspaces'
 import { shortenWorkspacePath, workspaceNameFromPath } from '@/lib/workspace/shorten-path'
+import { workspacePathsMatch } from '@/stores/session-utils'
 import { computeInitialSelection } from './new-session-prefill'
+import {
+  CURRENT_WINDOW_WORKSPACE_ID,
+  pickNewSessionWorkspaceId,
+} from './new-session-workspace'
 
 type Candidate = {
   id: string
@@ -62,18 +75,30 @@ export function NewSessionDialog() {
   // display name (three rows reading `liziliudeMacBook-Air` is the normal
   // case), so the badge and the workspace picker cannot be driven by name.
   const [localAgentId, setLocalAgentId] = React.useState<string | null>(null)
+  const [localAgentResolved, setLocalAgentResolved] = React.useState(() => !isTauri())
   const [workspaces, setWorkspaces] = React.useState<DaemonWorkspace[]>([])
   const [workspacesLoading, setWorkspacesLoading] = React.useState(false)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = React.useState<string>('')
   const [workspaceBusy, setWorkspaceBusy] = React.useState(false)
+  const windowWorkspacePath = useWorkspaceStore((s) => s.workspacePath)
 
   React.useEffect(() => {
     if (open) setMessage(initialMessage ?? '')
   }, [open, initialMessage])
 
   React.useEffect(() => {
-    if (!open || !isTauri()) return
+    if (!open) {
+      setLocalAgentId(null)
+      setLocalAgentResolved(!isTauri())
+      return
+    }
+    if (!isTauri()) {
+      setLocalAgentId(null)
+      setLocalAgentResolved(true)
+      return
+    }
     let cancelled = false
+    setLocalAgentResolved(false)
     void (async () => {
       try {
         const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
@@ -81,6 +106,8 @@ export function NewSessionDialog() {
         if (!cancelled) setLocalAgentId(id?.trim() || null)
       } catch {
         if (!cancelled) setLocalAgentId(null)
+      } finally {
+        if (!cancelled) setLocalAgentResolved(true)
       }
     })()
     return () => { cancelled = true }
@@ -129,11 +156,6 @@ export function NewSessionDialog() {
     [candidates, picked],
   )
 
-  // A workspace is a folder on one machine, so the picker only means anything
-  // when the agent that would run there is in the session. Deselect it and the
-  // choice is dropped rather than left dangling on an absent agent.
-  const localAgentPicked = !!localAgentId && picked.has(localAgentId)
-
   const localAgentDefaultWorkspaceId = React.useMemo(() => {
     if (!localAgentId) return ''
     const row = actors.find((a) => a.id === localAgentId)
@@ -162,30 +184,42 @@ export function NewSessionDialog() {
   }, [teamId, localAgentId])
 
   React.useEffect(() => {
-    if (!open || !localAgentPicked) {
+    if (!open || !localAgentId) {
       loadGenerationRef.current += 1
       setWorkspaces([])
       setSelectedWorkspaceId('')
       return
     }
     void loadWorkspaces()
-  }, [open, localAgentPicked, loadWorkspaces])
+  }, [open, localAgentId, loadWorkspaces])
 
-  // Land on the agent's own default; fall back to its first folder so the
-  // picker is never empty-but-populated.
+  // Prefer the current window folder (even if it is not a cloud row yet).
+  // Never fall back to workspaces[0] — that is how Copilot 361 used to
+  // silently bind TeamClaw.
   React.useEffect(() => {
-    if (!localAgentPicked || workspaces.length === 0) return
-    setSelectedWorkspaceId((current) => {
-      if (current && workspaces.some((w) => w.id === current)) return current
-      const preferred = workspaces.find((w) => w.id === localAgentDefaultWorkspaceId)
-      return (preferred ?? workspaces[0]).id
-    })
-  }, [localAgentPicked, workspaces, localAgentDefaultWorkspaceId])
+    if (!localAgentId) return
+    setSelectedWorkspaceId((current) =>
+      pickNewSessionWorkspaceId({
+        currentId: current,
+        workspaces,
+        windowPath: windowWorkspacePath ?? '',
+        defaultWorkspaceId: localAgentDefaultWorkspaceId,
+      }),
+    )
+  }, [localAgentId, workspaces, windowWorkspacePath, localAgentDefaultWorkspaceId])
 
-  const selectedWorkspace = React.useMemo(
+  const selectedRegisteredWorkspace = React.useMemo(
     () => workspaces.find((w) => w.id === selectedWorkspaceId) ?? null,
     [workspaces, selectedWorkspaceId],
   )
+  const selectedWorkspacePath =
+    selectedRegisteredWorkspace?.path
+    || (selectedWorkspaceId === CURRENT_WINDOW_WORKSPACE_ID ? (windowWorkspacePath ?? '') : '')
+  const windowAlreadyListed = React.useMemo(() => {
+    const path = windowWorkspacePath?.trim()
+    if (!path) return false
+    return workspaces.some((w) => !!w.path && workspacePathsMatch(w.path, path))
+  }, [workspaces, windowWorkspacePath])
 
   const handleBrowseWorkspace = async () => {
     if (!teamId || !localAgentId) return
@@ -210,16 +244,11 @@ export function NewSessionDialog() {
       // produce it. A transient list failure used to empty the picker while
       // leaving the id selected, so the session was created in the agent's
       // default folder instead of the one the user had just chosen — silently.
-      // The server also dedupes by (teamId, path), which can return an archived
-      // row that the reload filters out.
       setWorkspaces((prev) => {
         const rest = prev.filter((w) => w.id !== created.id)
         return created.path ? [...rest, { ...created, archived: false }] : rest
       })
       setSelectedWorkspaceId(created.id)
-      // The viewer context caches cloud-workspace → local-path for 5s, and a
-      // row created inside that window is missing from it. Session workspace
-      // resolution then finds a binding with no local path and reports none.
       const { invalidateViewerWorkspaceContext } = await import(
         '@/lib/session/session-viewer-workspace'
       )
@@ -238,13 +267,11 @@ export function NewSessionDialog() {
   }
 
   const handleSetDefaultWorkspace = async () => {
-    if (!localAgentId || !selectedWorkspace) return
+    if (!localAgentId || !selectedRegisteredWorkspace) return
     setWorkspaceBusy(true)
     try {
-      await setAgentDefaultWorkspace(localAgentId, selectedWorkspace.id)
-      // Keep the send-path fast cache in step with what we just wrote; a stale
-      // entry here is what makes the next first message cold-start twice.
-      rememberDefaultWorkspaceId([localAgentId], selectedWorkspace.id)
+      await setAgentDefaultWorkspace(localAgentId, selectedRegisteredWorkspace.id)
+      rememberDefaultWorkspaceId([localAgentId], selectedRegisteredWorkspace.id)
       refetch()
       const { toast } = await import('sonner')
       toast.success(t('chat.newSessionDialog.workspaceDefaultSet', '已设为默认工作目录'))
@@ -268,10 +295,14 @@ export function NewSessionDialog() {
     if (prefillAppliedRef.current) return
     // Wait until the load for the current team has completed.
     if (effectiveDefaultLoading || effectiveDefaultTeamId !== teamId) return
+    // Wait for /v1/info so the local row is in the prefill — otherwise the
+    // team's default agent (often a same-named remote twin) is the only pick
+    // and the workspace picker stays hidden.
+    if (!localAgentResolved) return
     prefillAppliedRef.current = true
     const candidateIds = new Set(candidates.map((c) => c.id))
-    setPicked(computeInitialSelection(effectiveDefaultAgentId, candidateIds))
-  }, [open, effectiveDefaultAgentId, effectiveDefaultTeamId, effectiveDefaultLoading, candidates, teamId])
+    setPicked(computeInitialSelection(effectiveDefaultAgentId, candidateIds, localAgentId))
+  }, [open, effectiveDefaultAgentId, effectiveDefaultTeamId, effectiveDefaultLoading, candidates, teamId, localAgentId, localAgentResolved])
 
   const togglePick = (id: string) =>
     setPicked((prev) => {
@@ -310,24 +341,41 @@ export function NewSessionDialog() {
         return
       }
       const additionalActorIds = Array.from(picked)
-      const agentActorIds = pickedActors.filter((p) => p.actor_type === 'agent').map((p) => p.id)
+      if (localAgentId && !additionalActorIds.includes(localAgentId)) {
+        additionalActorIds.push(localAgentId)
+      }
+      const agentActorIds = Array.from(
+        new Set([
+          ...pickedActors.filter((p) => p.actor_type === 'agent').map((p) => p.id),
+          ...(localAgentId ? [localAgentId] : []),
+        ]),
+      )
       const trimmed = message.trim()
+      const pickedRegistered =
+        localAgentId && selectedRegisteredWorkspace?.path
+          ? {
+              agentId: localAgentId,
+              workspaceId: selectedRegisteredWorkspace.id,
+              path: selectedRegisteredWorkspace.path,
+            }
+          : null
+      const localWorkspace = pickedRegistered
+        ?? (localAgentId
+          ? await resolveLocalDaemonWorkspaceBinding(teamId, additionalActorIds)
+          : null)
       const { sessionId } = await createSessionWithFirstMessage({
         teamId,
         creatorActorId,
         additionalActorIds,
         agentActorIds,
         messageText: trimmed,
-        localWorkspace:
-          localAgentPicked && localAgentId && selectedWorkspace?.path
-            ? {
-                agentId: localAgentId,
-                workspaceId: selectedWorkspace.id,
-                path: selectedWorkspace.path,
-              }
-            : null,
+        localWorkspace,
       })
-      const agentPicks = pickedActors.filter((p) => p.actor_type === 'agent')
+      const agentPicks = [...pickedActors.filter((p) => p.actor_type === 'agent')]
+      if (localAgentId && !agentPicks.some((p) => p.id === localAgentId)) {
+        const local = candidates.find((c) => c.id === localAgentId)
+        if (local) agentPicks.push(local)
+      }
       if (agentPicks.length > 0) {
         useEngagedAgentStore.getState().setAgents(
           sessionId,
@@ -482,8 +530,10 @@ export function NewSessionDialog() {
           ))}
         </div>
 
-        {/* Workspace — only once the agent on this machine is in the session */}
-        {localAgentPicked && (
+        {/* Workspace — shown as soon as this machine's agent is known, not
+            only after the user ticks it. Duplicate display names otherwise
+            hide the picker behind the remote twin. */}
+        {!!localAgentId && (
           <div
             data-testid="new-session-workspace"
             className="border-b border-border px-5 pt-4 pb-3"
@@ -503,30 +553,47 @@ export function NewSessionDialog() {
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <select
-                  value={selectedWorkspaceId}
-                  onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-                  disabled={workspaceBusy || workspaces.length === 0}
-                  aria-label={t('chat.newSessionDialog.workspaceLabel', '工作目录')}
-                  className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-muted/30 px-2.5 text-[13px] outline-none focus:border-foreground/30 disabled:opacity-50"
+                <Select
+                  value={selectedWorkspaceId || undefined}
+                  onValueChange={setSelectedWorkspaceId}
+                  disabled={workspaceBusy}
                 >
-                  {workspaces.length === 0 && (
-                    <option value="">
-                      {t('chat.newSessionDialog.workspaceNone', '本机还没有工作目录')}
-                    </option>
-                  )}
-                  {workspaces.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.id === localAgentDefaultWorkspaceId
-                        ? `${w.name} · ${t('chat.newSessionDialog.workspaceDefaultTag', '默认')}`
-                        : w.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger
+                    aria-label={t('chat.newSessionDialog.workspaceLabel', '工作目录')}
+                    className="h-8 min-w-0 flex-1 rounded-lg border-border-soft bg-background text-[12.5px] shadow-none"
+                  >
+                    <SelectValue
+                      placeholder={t('chat.newSessionDialog.workspaceNone', '本机还没有工作目录')}
+                    />
+                  </SelectTrigger>
+                  <SelectContent className="z-[60]">
+                    {windowWorkspacePath && !windowAlreadyListed && (
+                      <SelectItem value={CURRENT_WINDOW_WORKSPACE_ID}>
+                        {`${workspaceNameFromPath(windowWorkspacePath)} · ${t('chat.newSessionDialog.workspaceCurrentWindowTag', '当前窗口')}`}
+                      </SelectItem>
+                    )}
+                    {workspaces.map((w) => {
+                      const isWindow =
+                        !!w.path
+                        && !!windowWorkspacePath
+                        && workspacePathsMatch(w.path, windowWorkspacePath)
+                      const tag = isWindow
+                        ? t('chat.newSessionDialog.workspaceCurrentWindowTag', '当前窗口')
+                        : w.id === localAgentDefaultWorkspaceId
+                          ? t('chat.newSessionDialog.workspaceDefaultTag', '默认')
+                          : null
+                      return (
+                        <SelectItem key={w.id} value={w.id}>
+                          {tag ? `${w.name} · ${tag}` : w.name}
+                        </SelectItem>
+                      )
+                    })}
+                  </SelectContent>
+                </Select>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-9 shrink-0 gap-1.5"
+                  className="h-8 shrink-0 gap-1.5 text-[12.5px] shadow-none"
                   disabled={workspaceBusy}
                   onClick={() => void handleBrowseWorkspace()}
                 >
@@ -535,15 +602,15 @@ export function NewSessionDialog() {
                 </Button>
               </div>
             )}
-            {selectedWorkspace?.path && (
+            {selectedWorkspacePath && (
               <div
                 className="truncate pt-1.5 text-[11.5px] text-faint"
-                title={selectedWorkspace.path}
+                title={selectedWorkspacePath}
               >
-                {shortenWorkspacePath(selectedWorkspace.path)}
+                {shortenWorkspacePath(selectedWorkspacePath)}
               </div>
             )}
-            {selectedWorkspace && selectedWorkspace.id !== localAgentDefaultWorkspaceId && (
+            {selectedRegisteredWorkspace && selectedRegisteredWorkspace.id !== localAgentDefaultWorkspaceId && (
               <button
                 type="button"
                 disabled={workspaceBusy}

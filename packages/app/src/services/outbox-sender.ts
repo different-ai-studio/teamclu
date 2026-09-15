@@ -112,50 +112,37 @@ export function isLocalOnlyAgentMention(
   return mentionActorIds.every((id) => id === localId);
 }
 
-async function ensureLocalRuntimeForFastPath(
+async function sessionCacheBindingForLocalDaemon(
   entry: OutboxEntry,
   localDaemonActorId: string,
-): Promise<void> {
-  const { runtimeStart } = await import("@/lib/daemon/teamclu-rpc");
-  const { AgentType } = await import("@/lib/proto/amux_pb");
-  // pi is the only local runtime (#1247); the daemon reroutes anything else.
-  const agentType = AgentType.PI;
-  // Carry a workspace id. This used to send `""`, and the daemon skips its
-  // workspace resolver entirely for an empty one — it starts in whatever
-  // `worktree` says instead. The slow path that follows ~0.8s later DOES
-  // resolve, and when it lands on a different directory the runtime this call
-  // just started is superseded and the backend respawns. Measured on a first
-  // message: `~/TeamClu` here, `~/TeamClu Dev` there, and a 5.5s cold start
-  // paid twice. A path that exists to be fast was costing an extra one.
-  //
-  // Order matters, and both of the cheap sources it used to have are
-  // session-blind: the enqueue hint is per-message, but `cachedDefaultWorkspaceId`
-  // is this device's default for the AGENT, shared by every session it runs.
-  // Sending the first message in a brand-new app therefore started the runtime
-  // in the app that happened to be open before, and the agent read and edited
-  // that app's files while the new one deployed as the untouched template.
-  // The session's own binding goes in between — local cache only, so the fast
-  // path stays local, and null on a cold cache falls through to the old answer.
-  const [{ cachedDefaultWorkspaceId }, { cachedSessionWorkspaceForLocalDaemon }] =
-    await Promise.all([
-      import("@/stores/agent-default-workspace-store"),
-      import("@/lib/teamclu/resolve-runtime-start-workspace"),
-    ]);
+): Promise<{ workspaceId: string; worktree: string } | null> {
+  const { cachedSessionWorkspaceForLocalDaemon } = await import(
+    "@/lib/teamclu/resolve-runtime-start-workspace"
+  );
   const bound = await cachedSessionWorkspaceForLocalDaemon({
     teamId: entry.teamId,
     sessionId: entry.sessionId,
     localDaemonActorId,
   });
-  const workspaceId =
-    entry.workspaceIdHint?.trim() ||
-    bound?.workspaceId ||
-    cachedDefaultWorkspaceId([localDaemonActorId]);
-  // Same reasoning for the worktree: the workspace store is whichever folder
-  // the desktop has open, which is not necessarily the one this session runs
-  // in. It is only the daemon's fallback for an id it cannot resolve, but when
-  // that fallback fires it decides the directory outright.
-  const worktree =
-    bound?.workspacePath || (useWorkspaceStore.getState().workspacePath?.trim() ?? "");
+  const workspaceId = bound?.workspaceId?.trim() || "";
+  const worktree = bound?.workspacePath?.trim() || "";
+  if (!workspaceId || !worktree) return null;
+  return { workspaceId, worktree };
+}
+
+async function ensureLocalRuntimeForFastPath(
+  entry: OutboxEntry,
+  localDaemonActorId: string,
+  bound: { workspaceId: string; worktree: string },
+): Promise<void> {
+  const { runtimeStart } = await import("@/lib/daemon/teamclu-rpc");
+  const { AgentType } = await import("@/lib/proto/amux_pb");
+  // pi is the only local runtime (#1247); the daemon reroutes anything else.
+  const agentType = AgentType.PI;
+  // Path-bearing sessions bind once at create. The fast path may only start
+  // from this session's cached pair — enqueue hints, the device default, and
+  // the current window path are all session-blind.
+  const { workspaceId, worktree } = bound;
 
   const forkFrom = runtimeForkFromForSession(entry.sessionId);
   sessionFlowLog("outbox_sender.local_runtime_start.begin", {
@@ -347,6 +334,7 @@ async function attemptLocalFastPath(
   metadata: Record<string, unknown>,
   liveBytes: Uint8Array,
   localDaemonActorId: string,
+  bound: { workspaceId: string; worktree: string },
 ): Promise<void> {
   const store = useOutboxStore.getState();
   sessionFlowLog("outbox_sender.local_fast_path.begin", {
@@ -356,7 +344,7 @@ async function attemptLocalFastPath(
     localDaemonActorId,
   });
 
-  await ensureLocalRuntimeForFastPath(entry, localDaemonActorId);
+  await ensureLocalRuntimeForFastPath(entry, localDaemonActorId, bound);
 
   const { ingestSessionLiveLocally } = await import("@/lib/daemon/daemon-local-client");
   sessionFlowLog("outbox_sender.local_ingest.begin", {
@@ -481,13 +469,20 @@ async function attempt(entry: OutboxEntry): Promise<void> {
     const localDaemonActorId = await resolveLocalDaemonActorIdIfTauri();
 
     if (isLocalOnlyAgentMention(entry.mentionActorIds, localDaemonActorId)) {
-      await attemptLocalFastPath(
+      const bound = await sessionCacheBindingForLocalDaemon(
         entry,
-        metadata,
-        liveBytes,
         localDaemonActorId!,
       );
-      return;
+      if (bound) {
+        await attemptLocalFastPath(
+          entry,
+          metadata,
+          liveBytes,
+          localDaemonActorId!,
+          bound,
+        );
+        return;
+      }
     }
 
     await attemptRemotePath(entry, metadata, liveBytes, localDaemonActorId);

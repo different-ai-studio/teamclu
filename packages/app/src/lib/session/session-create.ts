@@ -15,8 +15,6 @@ import { resolveAgentSessionModel } from '@/lib/agent/resolve-agent-session-mode
 import { useAgentModelPickStore } from '@/stores/agent-model-pick-store'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useAuthStore } from '@/stores/auth-store'
-import { resolveCurrentMemberActorId } from '@/lib/actor/current-actor'
 import { trackEvent } from '@/lib/telemetry/analytics'
 import { mqttPublish } from '@/lib/mqtt/mqtt-bridge'
 import {
@@ -42,7 +40,6 @@ import {
 import {
   ensureCloudWorkspaceIdForAgentRuntime,
   loadAgentWorkspaceLookups,
-  resolveAgentRuntimeWorkspaceId,
   resolveCloudWorkspaceIdForLocalPath,
   runtimeStartWorkspaceArgs,
 } from '@/lib/teamclu/resolve-runtime-start-workspace'
@@ -75,6 +72,7 @@ interface CreateSessionShellArgs {
 
 interface CreateSessionShellResult {
   sessionId: string
+  participantWorkspaces?: Record<string, { workspaceId: string; workspacePath: string | null }>
 }
 
 /**
@@ -113,6 +111,19 @@ export async function createSessionShell(
       ...(workspaceByActorId ? { workspaceByActorId } : {}),
     })
     sessionId = created.sessionId
+    const boundFromServer = created.participantWorkspaces?.[args.localWorkspace?.agentId ?? '']
+    if (boundFromServer?.workspaceId?.trim() && boundFromServer.workspacePath?.trim() && args.localWorkspace) {
+      args = {
+        ...args,
+        localWorkspace: {
+          agentId: args.localWorkspace.agentId,
+          workspaceId: boundFromServer.workspaceId.trim(),
+          path: boundFromServer.workspacePath.trim(),
+        },
+      }
+    } else if (args.localWorkspace) {
+      args = { ...args, localWorkspace: null }
+    }
   } catch (error) {
     sessionFlowError('session_shell.create_backend.failed', error, {
       requestedSessionId,
@@ -213,8 +224,8 @@ function workspaceByActorIdFromLocal(
  * Map the current window folder to a cloud workspace UUID for the local
  * daemon, when that agent is among the new session's participants.
  *
- * Used by the composer quick-create path (no folder picker). The advanced
- * dialog already has an explicit `localWorkspace` from the user.
+ * Used by composer quick-create. The new-session dialog can pass an explicit
+ * folder instead; both bind the same `localWorkspace` shape.
  */
 export async function resolveLocalDaemonWorkspaceBinding(
   teamId: string,
@@ -281,30 +292,21 @@ interface CreateSessionWithFirstMessageArgs {
    */
   mentionActorIds?: string[]
   /**
-   * Folder the **local daemon agent** should run this session in, chosen in the
-   * advanced dialog. Ignored unless that agent is among `agentActorIds`:
-   * a cloud workspace row belongs to one agent, so handing its id to a remote
-   * daemon names a row that daemon cannot resolve — it would fall back to its
-   * own onboarded default and run in the wrong directory, silently.
+   * Folder the **local daemon agent** should run this session in.
+   * Composer quick-create uses the window project root; the new-session
+   * dialog may pass a workspace the user picked instead.
+   * Ignored unless that agent is among `agentActorIds`.
    */
   localWorkspace?: LocalDaemonWorkspaceBinding | null
 }
 
 /**
- * Record the chosen folder as this session's workspace binding, in the local
- * cache, before anything can start a runtime.
+ * Record the Cloud-confirmed folder as this session's workspace binding in the
+ * local cache, before anything can start a runtime.
  *
- * This is the same row `bindAppWorkspace` writes, and it is read first by
- * `resolveLiveWorkspaceHint` — ahead of the ambient workspace store, the agent
- * default and the agent's owned row. Writing it here rather than passing a
- * hint into a runtime start is what makes the choice durable: this session
- * does not start its runtimes from the dialog (ChatPanel and the outbox sender
- * do, later), and a hint that lives only in a function argument would be gone
- * by the time either of them runs — most visibly when the first send fails and
- * the outbox retries it.
- *
- * Best-effort throughout: a session that cannot be bound falls back to the
- * agent default, which is the behaviour that existed before the picker.
+ * ID and path must come from the same Cloud `participantWorkspaces` pair.
+ * Outbox fast-send and focus-wake read this row; they must not invent a
+ * binding from the current window or the agent default.
  */
 async function bindLocalDaemonSessionWorkspace(
   sessionId: string,
@@ -316,11 +318,6 @@ async function bindLocalDaemonSessionWorkspace(
 ): Promise<void> {
   const workspaceId = args.localWorkspace?.workspaceId?.trim()
   const workspacePath = args.localWorkspace?.path?.trim()
-  // The caller resolved this agent id to show the picker at all. Re-deriving it
-  // here would mean a `get_daemon_http_info` IPC plus an uncached HTTP call to
-  // `/v1/info` in the middle of session creation — latency on every create, and
-  // a null on a momentarily unreachable daemon would discard the folder the
-  // user explicitly chose.
   const localDaemonActorId = args.localWorkspace?.agentId?.trim()
   if (!workspaceId || !workspacePath || !localDaemonActorId || !isTauri()) return
 
@@ -536,6 +533,7 @@ export type RuntimeStartFailureCode =
    * real cause is reported instead of that downstream symptom.
    */
   | 'session_participant_failed'
+  | 'session_workspace_unbound'
   | 'runtime_rejected'
   | 'backend_session_not_resumable'
   | 'runtime_rpc_failed'
@@ -603,17 +601,9 @@ export async function startAgentRuntimesAsync(
   if (args.agentActorIds.length === 0) return { failures: [], runtimeIdsByAgent: {} }
   const failures: RuntimeStartFailure[] = []
   const runtimeIdsByAgent: Record<string, string> = {}
-  const localWorkspacePath = useWorkspaceStore.getState().workspacePath?.trim() || ''
-  // The workspace store lags a freshly-opened session — switchToSession
-  // resolves the workspace in the background so the view flip stays instant —
-  // so prefer the session's own binding. Without this the first prompt in a
-  // just-opened app ran in whatever folder the previous session happened to be
-  // using.
-  //
   // An app session is switched to BEFORE its binding is written (the setup runs
   // behind the switch so the session list stays responsive), so wait for any
-  // setup still in flight for this session first; reading the binding early
-  // finds none and falls back to that same wrong folder.
+  // setup still in flight for this session first.
   if (args.sessionId?.trim()) {
     const { waitForAppSessionSetup } = await import('@/lib/apps/app-session-setup')
     await waitForAppSessionSetup(args.sessionId)
@@ -622,15 +612,8 @@ export async function startAgentRuntimesAsync(
     ? (await resolveSessionWorkspacePath(args.teamId, args.sessionId).catch(() => null))?.trim() ||
       ''
     : ''
-  const localWorktree = sessionWorkspacePath || localWorkspacePath
+  const localWorktree = sessionWorkspacePath
   const rpcTimeoutMs = args.rpcTimeoutMs ?? RUNTIME_START_RPC_TIMEOUT_MS
-  let createdByMemberId: string | null = null
-  try {
-    const userId = useAuthStore.getState().session?.user?.id ?? ''
-    createdByMemberId = userId ? await resolveCurrentMemberActorId(args.teamId, userId) : null
-  } catch {
-    createdByMemberId = null
-  }
   sessionFlowLog('runtime_start.batch.begin', {
     sessionId: args.sessionId,
     teamId: args.teamId,
@@ -742,49 +725,31 @@ export async function startAgentRuntimesAsync(
     const baseLookup = workspaceLookups.get(agentActorId) ?? {}
     const callerHint =
       isLocalDaemonAgent ? args.workspaceIdHint?.trim() || undefined : undefined
-    const workspaceLookup = {
-      ...baseLookup,
-      ...(callerHint ? { callerWorkspaceId: callerHint } : {}),
-    }
-    let workspaceId = ''
-    const sessionWorkspaceId = baseLookup.sessionWorkspaceId?.trim()
-    if (callerHint) {
-      workspaceId = resolveAgentRuntimeWorkspaceId(workspaceLookup)
-    }
-    // The session's own workspace binding names the folder this session is
-    // for, so it outranks `sessionWorkspaceId` — which records where a PRIOR
-    // runtime ran and goes stale the moment the agent runs elsewhere. Opening
-    // one app after another, that stale id still named the first app's
-    // workspace, and it beat the correct path all the way into the daemon:
-    // the second app's agent ran in the first app's checkout.
-    if (!workspaceId && isLocalDaemonAgent && sessionWorkspacePath) {
-      workspaceId =
-        (await resolveCloudWorkspaceIdForLocalPath(args.teamId, sessionWorkspacePath, {
-          agentActorId,
-        })) ?? ''
-    }
-    if (!workspaceId && !sessionWorkspaceId && isLocalDaemonAgent && localWorkspacePath) {
-      workspaceId =
-        (await resolveCloudWorkspaceIdForLocalPath(args.teamId, localWorkspacePath, {
-          agentActorId,
-        })) ?? ''
-    }
-    if (!workspaceId) {
-      workspaceId = resolveAgentRuntimeWorkspaceId(workspaceLookup)
-    }
-    if (!workspaceId) {
-      workspaceId = await ensureCloudWorkspaceIdForAgentRuntime({
+    // Existing sessions prefer the participant stamp. Historical rows were
+    // created before that column was written, so a seen-but-null binding
+    // falls back to the agent's default — the same value pathless create
+    // would have used. Never the current window, never owned[0].
+    const workspaceId =
+      baseLookup.sessionWorkspaceId?.trim() ||
+      (baseLookup.participantSeen ? baseLookup.defaultWorkspaceId?.trim() || '' : '')
+    if (callerHint && workspaceId && callerHint !== workspaceId) {
+      sessionFlowLog('runtime_start.workspace_hint_mismatch', {
+        sessionId: args.sessionId,
         teamId: args.teamId,
         agentActorId,
-        localWorkspacePath: isLocalDaemonAgent ? localWorktree || null : null,
-        sessionId: args.sessionId,
-        createdByMemberId,
+        callerHint,
+        workspaceId,
+      }, 'warn')
+    }
+    if (!workspaceId) {
+      failures.push({
+        agentActorId,
+        code: 'session_workspace_unbound',
+        reason: 'SESSION_WORKSPACE_UNBOUND',
       })
+      return
     }
 
-    // The cloud workspace UUID is sent directly to runtimeStart — the target
-    // daemon resolves UUID -> local path itself (no client-side daemon
-    // pre-registration dance needed).
     const runtimeWorkspaceId = workspaceId
 
     try {

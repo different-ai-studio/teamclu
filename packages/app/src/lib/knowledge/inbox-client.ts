@@ -1,5 +1,9 @@
 import { daemonRequest } from '@/lib/daemon/daemon-local-client'
-import type { KnowledgeCandidate, KnowledgePublishResult } from '@/lib/knowledge/inbox-types'
+import type {
+  KnowledgeCandidate,
+  KnowledgePublishResult,
+  KnowledgeSuggestion,
+} from '@/lib/knowledge/inbox-types'
 
 export type ProposeKnowledgeInput = {
   title: string
@@ -7,6 +11,8 @@ export type ProposeKnowledgeInput = {
   sessionId?: string
   suggestedPath?: string
   source?: KnowledgeCandidate['source']
+  summary?: string
+  suggestions?: KnowledgeSuggestion[]
 }
 
 export async function listKnowledgeInbox(): Promise<KnowledgeCandidate[]> {
@@ -29,6 +35,8 @@ export async function proposeKnowledgeCandidate(
       sessionId: input.sessionId,
       suggestedPath: input.suggestedPath,
       source: input.source ?? 'session-header',
+      summary: input.summary,
+      suggestions: input.suggestions,
     }),
   })
 }

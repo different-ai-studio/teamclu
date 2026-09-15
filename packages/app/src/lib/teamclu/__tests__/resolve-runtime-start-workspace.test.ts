@@ -17,6 +17,9 @@ vi.mock('@/lib/backend', () => ({
     actors: {
       listActorDirectoryByIds: vi.fn().mockResolvedValue([]),
     },
+    sessions: {
+      getSessionParticipants: vi.fn().mockResolvedValue([]),
+    },
   }),
 }))
 
@@ -183,24 +186,13 @@ describe('resolveSessionWorkspaceHintForRuntimeStart', () => {
       resolveSessionWorkspaceHintForRuntimeStart({
         teamId: 'team-1',
         localWorkspacePath: '/Users/me/copilot-ws-v2',
-        sessionId: 'sess-new',
         agentActorIds: ['agent-1'],
         localDaemonActorId: 'agent-1',
       }),
     ).resolves.toBe('ws-copilot')
   })
 
-  // The other half of the #926 contract. That change stopped
-  // ensureCloudWorkspaceIdForAgentRuntime from reading the cache, and pinned it
-  // with two tests. Nothing pins the cache fallback that must REMAIN here.
-  //
-  // It is load-bearing: an empty hint makes the daemon skip its workspace
-  // resolver entirely (runtime_lifecycle.rs runs it only when
-  // `!workspace_id.is_empty()`) and start in whatever worktree the client
-  // passed, so a new session's first send paid the backend cold start twice —
-  // the 5.5s #921 measured. Deleting the fallback as "the thing that caused the
-  // #926 bug" would silently bring that back, and no test would go red.
-  it('falls back to the remembered default when nothing is live', async () => {
+  it('does not fall back to the remembered default for an existing session', async () => {
     useAgentDefaultWorkspaceStore.getState().clear()
     useAgentDefaultWorkspaceStore.getState().remember('agent-1', 'ws-remembered')
 
@@ -212,7 +204,7 @@ describe('resolveSessionWorkspaceHintForRuntimeStart', () => {
         agentActorIds: ['agent-1'],
         localDaemonActorId: 'agent-1',
       }),
-    ).resolves.toBe('ws-remembered')
+    ).resolves.toBe('')
   })
 })
 
@@ -283,6 +275,134 @@ describe('ensureCloudWorkspaceIdForAgentRuntime', () => {
     expect(backendMocks.createDaemonWorkspace).toHaveBeenCalledTimes(1)
     // And the freshly created one replaces the stale cache entry.
     expect(useAgentDefaultWorkspaceStore.getState().recall('agent-1')).toBe('ws-new')
+  })
+
+  it('creates Copilot 361 instead of returning the agent first workspace TeamClaw', async () => {
+    backendMocks.listDaemonWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-teamclaw',
+        team_id: 'team-1',
+        agent_id: 'agent-1',
+        name: 'TeamClaw',
+        path: '/Users/me/TeamClaw',
+        archived: false,
+        created_at: '',
+        updated_at: '',
+      },
+    ])
+    backendMocks.createDaemonWorkspace.mockResolvedValue({
+      id: 'ws-copilot-361',
+      team_id: 'team-1',
+      agent_id: 'agent-1',
+      name: 'Copilot 361',
+      path: '/Users/me/Copilot 361',
+      archived: false,
+      created_at: '',
+      updated_at: '',
+    })
+
+    await expect(
+      ensureCloudWorkspaceIdForAgentRuntime({
+        teamId: 'team-1',
+        agentActorId: 'agent-1',
+        localWorkspacePath: '/Users/me/Copilot 361',
+        createdByMemberId: 'member-1',
+      }),
+    ).resolves.toBe('ws-copilot-361')
+
+    expect(backendMocks.createDaemonWorkspace).toHaveBeenCalledWith({
+      teamId: 'team-1',
+      agentId: 'agent-1',
+      createdByMemberId: 'member-1',
+      name: 'Copilot 361',
+      path: '/Users/me/Copilot 361',
+    })
+  })
+
+  it('reuses the same id when the window path only differs by a trailing slash', async () => {
+    backendMocks.listDaemonWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-copilot',
+        team_id: 'team-1',
+        agent_id: 'agent-1',
+        name: 'Copilot 361',
+        path: '/Users/me/Copilot 361',
+        archived: false,
+        created_at: '',
+        updated_at: '',
+      },
+    ])
+
+    await expect(
+      ensureCloudWorkspaceIdForAgentRuntime({
+        teamId: 'team-1',
+        agentActorId: 'agent-1',
+        localWorkspacePath: '/Users/me/Copilot 361/',
+        createdByMemberId: 'member-1',
+      }),
+    ).resolves.toBe('ws-copilot')
+
+    expect(backendMocks.createDaemonWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('reuses an existing row for the same path_key even when it belongs to another agent', async () => {
+    backendMocks.listDaemonWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-copilot',
+        team_id: 'team-1',
+        agent_id: 'agent-other',
+        name: 'Copilot 361',
+        path: '/Users/me/Copilot 361',
+        archived: false,
+        created_at: '',
+        updated_at: '',
+      },
+    ])
+
+    await expect(
+      ensureCloudWorkspaceIdForAgentRuntime({
+        teamId: 'team-1',
+        agentActorId: 'agent-1',
+        localWorkspacePath: '/Users/me/Copilot 361/ios/../',
+        createdByMemberId: 'member-1',
+      }),
+    ).resolves.toBe('ws-copilot')
+
+    expect(backendMocks.createDaemonWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('prefers the local daemon row when duplicate path_keys exist', async () => {
+    backendMocks.listDaemonWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-other-agent',
+        team_id: 'team-1',
+        agent_id: 'agent-other',
+        name: 'Copilot 361',
+        path: '/Users/me/Copilot 361',
+        archived: false,
+        created_at: '',
+        updated_at: '',
+      },
+      {
+        id: 'ws-local',
+        team_id: 'team-1',
+        agent_id: 'agent-1',
+        name: 'Copilot 361',
+        path: '/Users/me/Copilot 361',
+        archived: false,
+        created_at: '',
+        updated_at: '',
+      },
+    ])
+
+    await expect(
+      ensureCloudWorkspaceIdForAgentRuntime({
+        teamId: 'team-1',
+        agentActorId: 'agent-1',
+        localWorkspacePath: '/Users/me/Copilot 361',
+        createdByMemberId: 'member-1',
+      }),
+    ).resolves.toBe('ws-local')
   })
 
   it('does not create when the path already resolves to a live workspace', async () => {

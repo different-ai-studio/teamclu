@@ -23,6 +23,7 @@ import { getEffectiveServerConfigSync } from "@/lib/config/server-config";
 import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
 import { usesStoredHttpsCredential } from "@/lib/apps/app-list-helpers";
+import { keepRelationship } from "@/lib/apps/app-relationship";
 import type { AppTypeId } from "@/lib/apps/app-types";
 import type {
   AppRow,
@@ -174,7 +175,7 @@ function clearDeployProgress(set: SetState, appId: string): void {
 
 /** Merge a fresh app row (from create/deploy/rename responses) into the store. */
 function mergeRow(set: SetState, row: AppRow): void {
-  set((s) => ({ items: s.items.map((a) => (a.id === row.id ? row : a)) }));
+  set((s) => ({ items: s.items.map((a) => (a.id === row.id ? keepRelationship(a, row) : a)) }));
 }
 
 /**
@@ -207,7 +208,7 @@ async function toastError(title: string, description?: string): Promise<void> {
 async function patchStatus(set: SetState, appId: string, status: string): Promise<void> {
   try {
     const updated = await getBackend().apps.updateAppProvisionStatus(appId, status);
-    if (updated) set((s) => ({ items: s.items.map((a) => (a.id === appId ? updated : a)) }));
+    if (updated) set((s) => ({ items: s.items.map((a) => (a.id === appId ? keepRelationship(a, updated) : a)) }));
   } catch (e) {
     console.warn("app status writeback failed (non-fatal)", e);
   }
@@ -763,7 +764,8 @@ export const useAppsStore = create<AppsState>((set, get) => ({
   create: async (input) => {
     const { adoptLocalDir, gitCredential, ...createInput } = input;
     const row = await getBackend().apps.createApp(createInput);
-    set((s) => ({ items: [row, ...s.items] }));
+    // Whoever creates an app owns it; the create response does not say so.
+    set((s) => ({ items: [{ ...row, relationship: row.relationship ?? "owner", invitedByActorId: null }, ...s.items] }));
     // Stored before the clone, not after it. The clone is the first thing that
     // needs the token, and every teammate's later download reads this copy — an
     // app whose token could not be stored clones here and nowhere else, so that

@@ -118,6 +118,12 @@ jobs:
             sync_env ACCESS_KEY_ID "$TEAMCLAW_ALIYUN_ACCESS_KEY_ID"
             sync_env ACCESS_KEY_SECRET "$TEAMCLAW_ALIYUN_ACCESSKEY_SECRET"
 
+            # Apps platform-auth JWT issuer/audience + API_BASE handed to
+            # deployed apps (services/fc/src/auth/base-url.ts). Fail-closed when
+            # blank — pin this box's Cloud API origin so nightly redeploys cannot
+            # drop it again (seen as finalize_failed: AUTH_BASE_URL is not set).
+            upsert_env AUTH_BASE_URL "https://api.teamclu-dev.ucar.cc"
+
             if [ -n "$FC_SUPABASE_URL" ]; then
               echo "=== migrate external Supabase schema ==="
               [ -n "$BELAYO_TEST_RDS_PRIVATE_HOST" ] || { echo "missing BELAYO_TEST_RDS_PRIVATE_HOST"; exit 1; }

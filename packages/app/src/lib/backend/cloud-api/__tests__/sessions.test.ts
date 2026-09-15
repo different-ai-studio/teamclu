@@ -72,11 +72,28 @@ describe("sessions module", () => {
     expect(called).toBe(true);
   });
 
-  it("createSessionShell POSTs /v1/sessions and returns sessionId", async () => {
-    const client = mockClient({ "POST /v1/sessions": cloudSession });
+  it("createSessionShell returns participantWorkspaces from the Cloud response", async () => {
+    const client = mockClient({
+      "POST /v1/sessions": {
+        ...cloudSession,
+        sessionId: "session-1",
+        participantWorkspaces: {
+          "agent-1": { workspaceId: "ws-1", workspacePath: "/Users/me/copilot" },
+        },
+      },
+    });
     const mod = createSessionsModule(client);
-    const out = await mod.createSessionShell({ id: "session-1", teamId: "team-1", createdByActorId: "a1", title: "T", additionalActorIds: [] });
+    const out = await mod.createSessionShell({
+      id: "session-1",
+      teamId: "team-1",
+      createdByActorId: "a1",
+      title: "T",
+      additionalActorIds: ["agent-1"],
+    });
     expect(out.sessionId).toBe("session-1");
+    expect(out.participantWorkspaces).toEqual({
+      "agent-1": { workspaceId: "ws-1", workspacePath: "/Users/me/copilot" },
+    });
   });
 
   it("createSessionShell forwards appId in the POST body when provided, omits otherwise", async () => {

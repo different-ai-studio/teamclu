@@ -71,6 +71,8 @@ describe('useSessionLocalWorkspace', () => {
     await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
     expect(result.current.hasLocalAgent).toBe(true)
     expect(result.current.agentName).toBe('Mac-mini-3')
+    expect(result.current.bindingResolved).toBe(true)
+    expect(result.current.boundPath).toBe('/tmp/a')
   })
 
   // The tree renders from the workspace store while the footer names the
@@ -86,12 +88,23 @@ describe('useSessionLocalWorkspace', () => {
 
     await waitFor(() => expect(mocks.resolveSessionWorkspacePath).toHaveBeenCalledWith('team-1', 'sess-b'))
     // Store has not followed yet: no path, and crucially never '/tmp/a'.
+    await waitFor(() => expect(result.current.boundPath).toBe('/tmp/b'))
     expect(result.current.path).toBeNull()
     expect(result.current.hasLocalAgent).toBe(true)
+    expect(result.current.bindingResolved).toBe(true)
 
     mocks.workspacePath = '/tmp/b'
     rerender()
     await waitFor(() => expect(result.current.path).toBe('/tmp/b'))
+  })
+
+  it('marks an empty resolve as unbound rather than pending', async () => {
+    mocks.resolveSessionWorkspacePath.mockResolvedValue(null)
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.bindingResolved).toBe(true))
+    expect(result.current.boundPath).toBeNull()
+    expect(result.current.path).toBeNull()
+    expect(result.current.hasLocalAgent).toBe(true)
   })
 
   it('reports no local agent when this machine has none in the session', async () => {

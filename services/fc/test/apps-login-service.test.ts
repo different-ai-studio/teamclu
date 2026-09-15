@@ -11,6 +11,7 @@ import {
 import {
   handleLoginRequest,
   isLoginHost,
+  makeSupabaseLoginAppLookup,
   type LoginApp,
   type LoginServiceDeps,
 } from "../src/lib/apps-login-service.js";
@@ -464,17 +465,108 @@ test("an address containing markup cannot break out of the page", async () => {
 test("the login page mirrors enabled FC auth methods", async () => {
   await withEnv(
     {
-      APP_FEATURES_JSON: JSON.stringify({ auth: { phone: true, google: true, webSSO: true } }),
+      APP_FEATURES_JSON: JSON.stringify({ auth: { phone: true, google: true, password: true, webSSO: true } }),
       WEBSSO_LOGIN_URL: "https://admin.example.com/sign-in",
     },
     async () => {
       const res = await handleLoginRequest(get(`/?app=${APP_ID}`), deps());
       const html = await res!.text();
       assert.match(html, /手机号登录/);
+      assert.match(html, /密码登录/);
       assert.match(html, /Google 登录/);
-      assert.match(html, /快捷登录/);
+      assert.doesNotMatch(html, /微信登录/, "wechat is off in this config");
+      assert.doesNotMatch(html, /快捷登录|\/sso/, "web SSO is never offered to app visitors");
     },
   );
+});
+
+test("with every optional method off, the page is the email form alone", async () => {
+  await withEnv(
+    { APP_FEATURES_JSON: JSON.stringify({ auth: { phone: false, google: false, password: false } }) },
+    async () => {
+      const html = await (await handleLoginRequest(get(`/?app=${APP_ID}`), deps()))!.text();
+      assert.match(html, /action="\/otp"/);
+      assert.doesNotMatch(html, /class="tabs"/, "one method needs no tabs");
+      assert.doesNotMatch(html, /Google 登录|手机号登录|密码登录/);
+    },
+  );
+});
+
+test("the login page names the app, its team, and the host the visitor returns to", async () => {
+  await withEnv({}, async () => {
+    const named: LoginApp = { ...APP, name: "周报 <助手>", teamName: "研发效能部" };
+    const res = await handleLoginRequest(get(`/?app=${APP_ID}`), deps({ lookupApp: async () => named }));
+    const html = await res!.text();
+    assert.match(html, /<title>登录 · 周报 &lt;助手&gt;<\/title>/);
+    assert.doesNotMatch(html, /<助手>/);
+    assert.match(html, /研发效能部/);
+    assert.match(html, /report-11111111\.apps\.example\.com/);
+  });
+});
+
+test("an app with no name is named by its slug", async () => {
+  await withEnv({}, async () => {
+    const res = await handleLoginRequest(get(`/?app=${APP_ID}`), deps());
+    assert.match(await res!.text(), /<title>登录 · report<\/title>/);
+  });
+});
+
+test("resending an email code says a new one went out", async () => {
+  await withEnv({}, async () => {
+    const res = await handleLoginRequest(post("/otp", { ...flow, email: "a@example.com", resend: "1" }), deps());
+    assert.equal(res?.status, 200);
+    assert.match(await res!.text(), /新的验证码已发送/);
+  });
+});
+
+test("password login signs in through GoTrue where the config enables it", async () => {
+  await withEnv({ APP_FEATURES_JSON: JSON.stringify({ auth: { password: true } }) }, async () => {
+    const d = deps();
+    const res = await handleLoginRequest(
+      post("/password", { ...flow, email: "A@Example.com", password: "hunter2" }),
+      d,
+    );
+    assert.equal(res?.status, 302);
+    assert.match(res!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
+    assert.match(res!.headers.get("set-cookie")!, new RegExp(`^${SSO_COOKIE}=`));
+    assert.equal(d.calls[0].url, "http://kong:8000/auth/v1/token?grant_type=password");
+    assert.deepEqual(d.calls[0].body, { email: "a@example.com", password: "hunter2" });
+  });
+});
+
+test("a rejected password gets one message and is never written back into the page", async () => {
+  await withEnv({ APP_FEATURES_JSON: JSON.stringify({ auth: { password: true } }) }, async () => {
+    const d = deps({
+      gotrue: () =>
+        new Response(JSON.stringify({ error: "invalid_grant", error_description: "Invalid login credentials" }), {
+          status: 400,
+        }),
+    });
+    const res = await handleLoginRequest(
+      post("/password", { ...flow, email: "a@example.com", password: "s3cret-typed" }),
+      d,
+    );
+    assert.equal(res?.status, 400);
+    const html = await res!.text();
+    assert.match(html, /邮箱或密码不正确/);
+    assert.doesNotMatch(html, /Invalid login credentials/);
+    assert.doesNotMatch(html, /s3cret-typed/);
+    assert.match(html, /name="email" type="email"[^>]*value="a@example\.com"/);
+  });
+});
+
+test("password login is refused where the config leaves it off", async () => {
+  await withEnv({ APP_FEATURES_JSON: JSON.stringify({ auth: { password: false } }) }, async () => {
+    const d = deps();
+    const res = await handleLoginRequest(
+      post("/password", { ...flow, email: "a@example.com", password: "x" }),
+      d,
+    );
+    assert.equal(res?.status, 404);
+    assert.equal(d.calls.length, 0);
+    const form = await handleLoginRequest(get(`/?app=${APP_ID}&method=password`), d);
+    assert.doesNotMatch(await form!.text(), /action="\/password"/);
+  });
 });
 
 test("phone login uses the existing auth repository and does not bootstrap a team", async () => {
@@ -573,45 +665,132 @@ test("Google login uses the central login host as a PKCE callback", async () => 
   );
 });
 
-test("Web SSO redirects through the configured target and supports a token bridge", async () => {
+test("Web SSO is not part of app login, even where the deployment enables it", async () => {
   await withEnv(
     {
       APP_FEATURES_JSON: JSON.stringify({ auth: { webSSO: true } }),
-      WEBSSO_LOGIN_URL: "https://admin.example.com/sign-in?tenant=teamclu",
+      WEBSSO_LOGIN_URL: "https://admin.example.com/sign-in",
     },
     async () => {
-      const d = deps({
-        gotrue: (call) => {
-          if (call.url.endsWith("/auth/v1/token?grant_type=refresh_token")) {
-            return new Response(JSON.stringify({ user: { id: "sso-user", email: "sso@example.com" } }), { status: 200 });
-          }
-          return new Response(JSON.stringify({ user: { id: "u-1", email: "a@example.com" } }), { status: 200 });
-        },
-      });
-      const start = await handleLoginRequest(get(`/sso?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`), d);
-      assert.equal(start?.status, 302);
-      const target = new URL(start!.headers.get("location")!);
-      assert.equal(target.origin, "https://admin.example.com");
-      assert.equal(target.searchParams.get("redirect_to"), "https://login.example.com/sso/callback");
-      assert.ok(target.searchParams.get("code_challenge"));
-
-      const stateCookie = `${LOGIN_STATE_COOKIE}=${cookieValue(start!, LOGIN_STATE_COOKIE)}`;
-      const bridge = await handleLoginRequest(
-        get(`/sso/callback?state=${encodeURIComponent(target.searchParams.get("state")!)}&refresh_token=must-not-be-accepted`, {
-          cookie: stateCookie,
-        }),
-        d,
-      );
-      assert.equal(bridge?.status, 200);
-      assert.match(await bridge!.text(), /f\.action="\/sso\/exchange"/);
-      assert.equal(d.calls.length, 0, "tokens in the callback query must not reach GoTrue");
-
-      const completed = await handleLoginRequest(
-        post("/sso/exchange", { refresh_token: "external-refresh" }, { cookie: stateCookie }),
-        d,
-      );
-      assert.equal(completed?.status, 302);
-      assert.match(completed!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
+      const d = deps();
+      for (const path of [`/sso?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`, "/sso/callback?state=x"]) {
+        assert.equal(await handleLoginRequest(get(path), d), null, path);
+      }
+      assert.equal(await handleLoginRequest(post("/sso/exchange", { refresh_token: "r" }), d), null);
+      assert.equal(d.calls.length, 0);
     },
   );
+});
+
+// --- custom domains ---------------------------------------------------------
+
+const CUSTOM = "https://hire.example.org";
+const TEAM_ID = "22222222-3333-4444-5555-666666666666";
+
+test("a verified custom domain is a return address the login page accepts", async () => {
+  await withEnv({}, async () => {
+    const app: LoginApp = { ...APP, customDomain: "hire.example.org", customDomainVerifiedAt: "2026-09-10T10:43:48Z" };
+    const d = deps({ lookupApp: async () => app });
+    const page = await handleLoginRequest(
+      get(`/?app=${APP_ID}&r=${encodeURIComponent(CUSTOM)}&next=%2Fcustom-apply`),
+      d,
+    );
+    assert.equal(page?.status, 200);
+    const html = await page!.text();
+    assert.match(html, /name="r" value="https:\/\/hire\.example\.org"/);
+    assert.match(html, /<span class="host">hire\.example\.org<\/span>/);
+
+    // And the code goes back to the custom domain, where the visitor started,
+    // not to the vanity name the session cookie would be useless on.
+    const verified = await handleLoginRequest(
+      post("/verify", { app: APP_ID, r: CUSTOM, next: "/custom-apply", email: "a@example.com", code: "123456" }),
+      d,
+    );
+    assert.equal(verified?.status, 302);
+    assert.match(verified!.headers.get("location")!, new RegExp(`^${CUSTOM}${APP_AUTH_CALLBACK_PATH}\\?code=`));
+  });
+});
+
+test("an unverified custom domain is still refused as a return address", async () => {
+  await withEnv({}, async () => {
+    const app: LoginApp = { ...APP, customDomain: "hire.example.org", customDomainVerifiedAt: null };
+    const res = await handleLoginRequest(
+      get(`/?app=${APP_ID}&r=${encodeURIComponent(CUSTOM)}`),
+      deps({ lookupApp: async () => app }),
+    );
+    assert.equal(res?.status, 400);
+    assert.match(await res!.text(), /返回地址与该应用不符/);
+  });
+});
+
+test("the app lookup reads the custom domain columns the return check needs", async () => {
+  const calls: any[] = [];
+  const row = {
+    id: APP_ID,
+    slug: "report",
+    name: "周报",
+    team_id: TEAM_ID,
+    auth_mode: "platform",
+    custom_domain: "hire.example.org",
+    custom_domain_verified_at: "2026-09-10T10:43:48Z",
+  };
+  let built = 0;
+  const client = {
+    from(table: string) {
+      const q: any = {
+        select(cols: string) { calls.push(["select", table, cols]); return q; },
+        eq(col: string, val: string) { calls.push(["eq", table, col, val]); return q; },
+        maybeSingle: async () =>
+          table === "apps" ? { data: row, error: null } : { data: { name: " 研发效能部 " }, error: null },
+      };
+      return q;
+    },
+  };
+  const lookup = makeSupabaseLoginAppLookup(() => { built++; return client; });
+
+  assert.deepEqual(await lookup(APP_ID), {
+    id: APP_ID,
+    slug: "report",
+    name: "周报",
+    teamName: "研发效能部",
+    authMode: "platform",
+    customDomain: "hire.example.org",
+    customDomainVerifiedAt: "2026-09-10T10:43:48Z",
+  });
+  const selected = calls.find((c) => c[0] === "select" && c[1] === "apps")[2]
+    .split(",")
+    .map((col: string) => col.trim());
+  for (const col of ["custom_domain", "custom_domain_verified_at", "name", "team_id", "auth_mode"]) {
+    assert.ok(selected.includes(col), `the apps lookup must select ${col}`);
+  }
+  assert.deepEqual(calls.find((c) => c[0] === "eq" && c[1] === "teams"), ["eq", "teams", "id", TEAM_ID]);
+
+  assert.equal(await lookup("not-a-uuid"), null);
+  assert.equal(built, 1, "a malformed id never reaches the database");
+});
+
+test("the app lookup surfaces a query error, but a failed team read only drops the caption", async () => {
+  const failing = {
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: { message: "boom" } }) }) }) }),
+  };
+  await assert.rejects(() => makeSupabaseLoginAppLookup(() => failing)(APP_ID), /login app lookup failed: boom/);
+
+  const teamsDown = {
+    from(table: string) {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => {
+              if (table === "teams") throw new Error("teams unavailable");
+              return { data: { id: APP_ID, slug: "report", name: null, team_id: TEAM_ID, auth_mode: "platform" }, error: null };
+            },
+          }),
+        }),
+      };
+    },
+  };
+  const app = await makeSupabaseLoginAppLookup(() => teamsDown)(APP_ID);
+  assert.equal(app?.teamName, null);
+  assert.equal(app?.customDomain, null);
+  assert.equal(app?.customDomainVerifiedAt, null);
 });

@@ -119,6 +119,33 @@ export function slugify(name: string): string {
 
 export const appIso = (v: any): string | null => (v ? new Date(v).toISOString() : null);
 
+export type AppRelationship = "owner" | "invited" | "team";
+
+/**
+ * How the caller came to see an app — the three routes `apps_select_if_visible`
+ * lets a row through by, collapsed to one answer.
+ *
+ * Owner first, then invited, then team: a grant on a team app is what gives
+ * the caller rights beyond reading it, so it is the fact worth showing. A row
+ * that is neither the caller's nor a team app can only be visible through a
+ * grant, so it is `invited` even when the grants could not be read — just
+ * without the name of whoever granted it.
+ */
+export function appRelationshipFor(
+  r: { id: string; created_by_actor_id?: string | null; visibility?: string | null },
+  callerActorId: string | null,
+  grants: Map<string, string | null> | null,
+): { relationship: AppRelationship; invitedByActorId: string | null } {
+  if (callerActorId && r.created_by_actor_id === callerActorId) {
+    return { relationship: "owner", invitedByActorId: null };
+  }
+  if (grants?.has(r.id)) {
+    return { relationship: "invited", invitedByActorId: grants.get(r.id) ?? null };
+  }
+  if (r.visibility === "team") return { relationship: "team", invitedByActorId: null };
+  return { relationship: "invited", invitedByActorId: null };
+}
+
 // Exposes EXACTLY the canonical app fields. Reads snake_case DB columns
 // (PostgREST returns the table's native column names).
 export function mapApp(r: any) {

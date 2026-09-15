@@ -43,7 +43,12 @@ import { LiveDebugConsole } from './LiveDebugConsole'
 import { DaemonResetRemediationCard } from './DaemonResetRemediationCard'
 import { AuthSyncBanner, DiagnosticSymptomPanel } from './DiagnosticSymptomPanel'
 import { DaemonOnboardingWizard } from '@/components/auth/DaemonOnboardingWizard'
-import { firstFailingTab, worstFindingStatus, type SymptomTab } from '@/lib/diagnostics/view'
+import {
+  findingsForSessionFocus,
+  firstFailingTab,
+  worstFindingStatus,
+  type SymptomTab,
+} from '@/lib/diagnostics/view'
 
 function statusDot(status: DiagnosticStatus) {
   switch (status) {
@@ -88,11 +93,11 @@ function CheckRow({
   )
 }
 
-const SYMPTOM_TABS: Array<{ id: SymptomTab | 'all'; label: string }> = [
-  { id: 'model', label: '模型' },
-  { id: 'send', label: '消息回复' },
-  { id: 'realtime', label: '实时通道' },
-  { id: 'all', label: '全部检查' },
+const SYMPTOM_TABS: Array<{ id: SymptomTab | 'all'; label: string; focusedLabel: string }> = [
+  { id: 'model', label: '模型', focusedLabel: '模型（全局）' },
+  { id: 'send', label: '消息回复', focusedLabel: '消息回复（此会话）' },
+  { id: 'realtime', label: '实时通道', focusedLabel: '实时通道（全局）' },
+  { id: 'all', label: '全部检查', focusedLabel: '全部检查（全局）' },
 ]
 
 function tabTone(status: 'ok' | 'warn' | 'fail' | null): string {
@@ -126,7 +131,9 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
     }
     setRunning(true)
     try {
-      const next = await collectDiagnosticReport()
+      const next = await collectDiagnosticReport(
+        focusSessionId ? { sessionId: focusSessionId } : undefined,
+      )
       setReport(next)
       toast.success(t('settings.diagnostics.runComplete', '诊断完成'))
     } catch (err) {
@@ -138,7 +145,13 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
     } finally {
       setRunning(false)
     }
-  }, [t, setReport])
+  }, [t, setReport, focusSessionId])
+
+  const displayFindings = React.useMemo(() => {
+    const findings = report?.findings ?? []
+    if (!focusSessionId) return findings
+    return findingsForSessionFocus(findings, report?.traces ?? [], focusSessionId)
+  }, [report, focusSessionId])
 
   React.useEffect(() => {
     if (!report) return
@@ -146,8 +159,8 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
       setActiveTab(preferredTab)
       return
     }
-    setActiveTab(firstFailingTab(report.findings ?? []))
-  }, [report, preferredTab])
+    setActiveTab(firstFailingTab(displayFindings))
+  }, [report, preferredTab, displayFindings])
 
   React.useEffect(() => {
     if (!isTauri() || !focusSessionId) return
@@ -289,14 +302,25 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
     <div className="space-y-6">
       <SectionHeader
         icon={LifeBuoy}
-        title={t('settings.diagnostics.title', '诊断与支持')}
-        description={t(
-          'settings.diagnostics.description',
-          '收集连接状态与日志，帮助快速定位问题',
-        )}
+        title={
+          focusSessionId
+            ? t('settings.diagnostics.sessionTitle', '此会话诊断')
+            : t('settings.diagnostics.title', '诊断与支持')
+        }
+        description={
+          focusSessionId
+            ? t(
+                'settings.diagnostics.sessionDescription',
+                '消息回复只看当前会话；模型与实时通道是全局环境，不针对某一会话。',
+              )
+            : t(
+                'settings.diagnostics.description',
+                '收集连接状态与日志，帮助快速定位问题',
+              )
+        }
       />
 
-      <LiveDebugConsole />
+      {!focusSessionId && <LiveDebugConsole />}
 
       <SettingCard>
         <p className="text-[13px] text-muted-foreground mb-4">
@@ -319,7 +343,7 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
               </>
             )}
           </Button>
-          {report && (
+          {report && !focusSessionId && (
             <span className="text-[12px] font-mono text-faint">
               {t('settings.diagnostics.summary', '{{ok}} 通过 · {{warn}} 警告 · {{fail}} 失败', {
                 ok: report.summary.ok,
@@ -338,12 +362,13 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
 
       {report && (
         <>
-          <AuthSyncBanner findings={report.findings ?? []} onRemediate={handleRemediate} />
+          <AuthSyncBanner findings={displayFindings} onRemediate={handleRemediate} />
           {focusSessionId && (
-            <p className="text-[12px] font-mono text-faint">
-              {t('settings.diagnostics.sessionFocus', '正在查看会话 {{id}}', {
-                id: focusSessionId,
-              })}
+            <p className="text-[12px] text-muted-foreground">
+              {t(
+                'settings.diagnostics.sessionFocus',
+                '消息回复已限定到当前会话。模型、实时通道与下方检查是全局环境。',
+              )}
             </p>
           )}
           <SettingCard>
@@ -353,7 +378,7 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
                   tab.id === 'all'
                     ? null
                     : worstFindingStatus(
-                        (report.findings ?? []).filter((item) => item.symptom === tab.id),
+                        displayFindings.filter((item) => item.symptom === tab.id),
                       )
                 return (
                   <button
@@ -370,7 +395,12 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
                       tabTone(status),
                     )}
                   >
-                    {t(`settings.diagnostics.tab.${tab.id}`, tab.label)}
+                    {t(
+                      focusSessionId
+                        ? `settings.diagnostics.tab.${tab.id}Focused`
+                        : `settings.diagnostics.tab.${tab.id}`,
+                      focusSessionId ? tab.focusedLabel : tab.label,
+                    )}
                   </button>
                 )
               })}
@@ -387,7 +417,7 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
             ) : (
               <DiagnosticSymptomPanel
                 tab={activeTab}
-                findings={report.findings ?? []}
+                findings={displayFindings}
                 traces={report.traces ?? []}
                 sessionId={focusSessionId}
                 onOpenHint={handleOpenHint}

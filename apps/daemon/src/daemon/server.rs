@@ -1087,7 +1087,7 @@ impl DaemonServer {
 
         // Browser-facing HTTP+SSE listener. Desktop TeamClu requires this
         // control plane; when `[http]` is absent from daemon.toml we still
-        // bind loopback with `HttpConfig::default()`. Failure to bind is
+        // bind with `HttpConfig::default()` (`0.0.0.0:0`). Failure to bind is
         // logged but does NOT abort the daemon — the Unix socket path remains
         // usable for legacy clients.
         let http_cfg = self.config.http.clone().unwrap_or_default();

@@ -1,5 +1,5 @@
 import { create } from '@bufbuild/protobuf'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AgentStatus,
   RuntimeInfoSchema,
@@ -14,6 +14,7 @@ import {
   runtimeEnsureKey,
   shouldSkipAlreadyReadyRuntimeEnsure,
   shouldSkipThrottledRuntimeEnsure,
+  waitForWakeRuntimeRetain,
 } from '@/lib/teamclu/runtime-ensure-scheduler'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 
@@ -137,5 +138,110 @@ describe('runtime-ensure-scheduler', () => {
     )
     const map = new Map([['agent-1', 'rt-1']])
     expect(shouldSkipAlreadyReadyRuntimeEnsure(['agent-1'], 'session_focus', map)).toBe(false)
+  })
+
+  describe('waitForWakeRuntimeRetain', () => {
+    it('returns ready immediately when session attachments are already live', async () => {
+      useRuntimeStateStore.getState().upsert(
+        'agent-1::session-a',
+        'agent-1',
+        create(RuntimeInfoSchema, {
+          runtimeId: 'session-a',
+          state: RuntimeLifecycle.ACTIVE,
+          status: AgentStatus.IDLE,
+          availableModels: [{ id: 'm1', displayName: 'Model 1' }],
+        }),
+      )
+      const sleep = vi.fn(async () => {})
+      await expect(
+        waitForWakeRuntimeRetain({
+          sessionId: 'session-a',
+          agentActorIds: ['agent-1'],
+          timeoutMs: 5_000,
+          sleep,
+        }),
+      ).resolves.toEqual({ status: 'ready', stillNeeded: [] })
+      expect(sleep).not.toHaveBeenCalled()
+    })
+
+    it('waits until retain arrives after a clear, then returns ready', async () => {
+      let clock = 0
+      const sleep = vi.fn(async (ms: number) => {
+        clock += ms
+        if (clock >= 200) {
+          useRuntimeStateStore.getState().upsert(
+            'agent-1::session-a',
+            'agent-1',
+            create(RuntimeInfoSchema, {
+              runtimeId: 'session-a',
+              state: RuntimeLifecycle.ACTIVE,
+              status: AgentStatus.IDLE,
+              availableModels: [{ id: 'm1', displayName: 'Model 1' }],
+            }),
+          )
+        }
+      })
+      await expect(
+        waitForWakeRuntimeRetain({
+          sessionId: 'session-a',
+          agentActorIds: ['agent-1'],
+          timeoutMs: 5_000,
+          pollMs: 100,
+          now: () => clock,
+          sleep,
+        }),
+      ).resolves.toEqual({ status: 'ready', stillNeeded: [] })
+      expect(sleep.mock.calls.length).toBeGreaterThan(0)
+    })
+
+    it('returns timeout with stillNeeded when retain never arrives', async () => {
+      let clock = 0
+      const sleep = vi.fn(async (ms: number) => {
+        clock += ms
+      })
+      await expect(
+        waitForWakeRuntimeRetain({
+          sessionId: 'session-a',
+          agentActorIds: ['agent-1', 'agent-2'],
+          timeoutMs: 300,
+          pollMs: 100,
+          now: () => clock,
+          sleep,
+        }),
+      ).resolves.toEqual({
+        status: 'timeout',
+        stillNeeded: ['agent-1', 'agent-2'],
+      })
+    })
+
+    it('on timeout only lists agents that are still missing retain', async () => {
+      useRuntimeStateStore.getState().upsert(
+        'agent-1::session-a',
+        'agent-1',
+        create(RuntimeInfoSchema, {
+          runtimeId: 'session-a',
+          state: RuntimeLifecycle.ACTIVE,
+          status: AgentStatus.IDLE,
+          availableModels: [{ id: 'm1', displayName: 'Model 1' }],
+        }),
+      )
+      let clock = 0
+      const sleep = vi.fn(async (ms: number) => {
+        clock += ms
+      })
+      await expect(
+        waitForWakeRuntimeRetain({
+          sessionId: 'session-a',
+          agentActorIds: ['agent-1', 'agent-2'],
+          timeoutMs: 200,
+          pollMs: 100,
+          now: () => clock,
+          sleep,
+        }),
+      ).resolves.toEqual({
+        status: 'timeout',
+        stillNeeded: ['agent-2'],
+      })
+    })
   })
 })

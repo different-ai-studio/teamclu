@@ -48,6 +48,16 @@ pub(super) enum CandidateStatus {
     Discarded,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct KnowledgeSuggestion {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct KnowledgeCandidate {
@@ -63,6 +73,10 @@ pub(super) struct KnowledgeCandidate {
     pub status: CandidateStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<KnowledgeSuggestion>,
 }
 
 pub(crate) fn inbox_dir(team_id: &str) -> PathBuf {
@@ -103,6 +117,29 @@ fn candidate_json(c: &KnowledgeCandidate) -> Value {
     serde_json::to_value(c).unwrap_or(Value::Null)
 }
 
+fn parse_suggestions(payload: &Value) -> Vec<KnowledgeSuggestion> {
+    let Some(arr) = payload.get("suggestions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| serde_json::from_value::<KnowledgeSuggestion>(item.clone()).ok())
+        .filter(|item| !item.text.trim().is_empty())
+        .take(8)
+        .enumerate()
+        .map(|(i, mut item)| {
+            let kind = match item.kind.as_str() {
+                "decision" | "fact" | "followup" => item.kind.clone(),
+                _ => "fact".to_string(),
+            };
+            item.kind = kind;
+            if item.id.trim().is_empty() {
+                item.id = format!("{}-{i}", item.kind);
+            }
+            item
+        })
+        .collect()
+}
+
 /// `propose` — create a pending candidate. Does not touch the vault.
 pub(crate) fn propose(team_id: &str, inbox: &Path, payload: &Value) -> String {
     let Some(body) = str_field(payload, "content").or_else(|| str_field(payload, "body")) else {
@@ -118,6 +155,10 @@ pub(crate) fn propose(team_id: &str, inbox: &Path, payload: &Value) -> String {
             return e;
         }
     }
+    let summary = str_field(payload, "summary")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let candidate = KnowledgeCandidate {
         id: Uuid::new_v4().to_string(),
         team_id: team_id.to_string(),
@@ -132,6 +173,8 @@ pub(crate) fn propose(team_id: &str, inbox: &Path, payload: &Value) -> String {
         created_at: chrono::Utc::now().to_rfc3339(),
         status: CandidateStatus::Pending,
         published_path: None,
+        summary,
+        suggestions: parse_suggestions(payload),
     };
     match write_candidate(inbox, &candidate) {
         Ok(()) => ok(candidate_json(&candidate)),
@@ -320,6 +363,51 @@ mod tests {
         let vault_files: Vec<_> = fs::read_dir(&vault).unwrap().collect();
         assert!(vault_files.is_empty(), "propose must not write the vault");
         assert_eq!(fs::read_dir(&inbox).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn propose_persists_distilled_suggestions() {
+        let (_tmp, inbox, vault) = tmp_pair();
+        let reply = propose(
+            "team-1",
+            &inbox,
+            &json!({
+                "title": "对账口径",
+                "content": "以渠道单号为准",
+                "summary": "以渠道单号为准",
+                "suggestions": [
+                    {"id": "d-1", "kind": "decision", "text": "以渠道单号为准"},
+                    {"kind": "followup", "text": "补一条 runbook"},
+                    {"kind": "noise", "text": ""}
+                ],
+            }),
+        );
+        let v = parse(&reply);
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["result"]["summary"], "以渠道单号为准");
+        let items = v["result"]["suggestions"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["kind"], "decision");
+        assert_eq!(items[1]["kind"], "followup");
+        assert_eq!(items[1]["id"], "followup-1");
+        assert!(vault.read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn inbox_get_reads_candidates_written_before_suggestions_existed() {
+        let (_tmp, inbox, _vault) = tmp_pair();
+        fs::write(
+            inbox.join("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.json"),
+            r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","teamId":"t","sessionId":"s","title":"old","body":"plain","suggestedPath":"","source":"session-header","createdAt":"2026-09-11T00:00:00Z","status":"pending"}"#,
+        )
+        .unwrap();
+        let got = parse(&inbox_get(
+            &inbox,
+            &json!({ "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }),
+        ));
+        assert_eq!(got["ok"], true, "{got}");
+        assert_eq!(got["result"]["title"], "old");
+        assert!(got["result"].get("suggestions").is_none());
     }
 
     #[test]

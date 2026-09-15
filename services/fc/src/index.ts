@@ -41,6 +41,7 @@ import { makeAppLogsReader } from "./lib/provisioning/app-logs.js";
 import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
+import { makeSupabaseLoginAppLookup } from "./lib/apps-login-service.js";
 import { createServiceRoleClient } from "./lib/supabase.js";
 
 // ---------------------------------------------------------------------------
@@ -365,17 +366,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * that `apps-vanity.ts` documents.
  */
 export function loginAppLookup() {
-  return async (appId: string) => {
-    if (!UUID_RE.test(appId)) return null;
-    const { data, error } = await createServiceRoleClient()
-      .from("apps")
-      .select("id, slug, auth_mode")
-      .eq("id", appId)
-      .maybeSingle();
-    if (error) throw new Error(`login app lookup failed: ${error.message}`);
-    if (!data) return null;
-    return { id: data.id, slug: data.slug, authMode: data.auth_mode ?? "none" };
-  };
+  return makeSupabaseLoginAppLookup(createServiceRoleClient);
 }
 
 /**

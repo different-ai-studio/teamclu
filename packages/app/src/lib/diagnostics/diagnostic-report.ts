@@ -1011,7 +1011,9 @@ async function collectRustBundle(): Promise<DiagnosticBundleParts | null> {
   }
 }
 
-export async function collectDiagnosticReport(): Promise<DiagnosticReport> {
+export async function collectDiagnosticReport(options?: {
+  sessionId?: string | null
+}): Promise<DiagnosticReport> {
   useMqttReconnectStore.getState().ensureWired()
 
   const serverConfig = getEffectiveServerConfigSync()
@@ -1123,6 +1125,7 @@ export async function collectDiagnosticReport(): Promise<DiagnosticReport> {
     },
     teamEnv,
     runtimeState,
+    sessionId: options?.sessionId,
   })
   const findings = diagnose(ctx)
   const causeCodes = causeCodesFromFindings(findings)

@@ -148,7 +148,7 @@ import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
-  APP_COLUMNS, slugify, appIso, mapApp, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
+  APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
   mapActor, mapTeamMember, mapIdeaRow, mapShortcutRow, mapIdeaActivityRow,
@@ -272,9 +272,87 @@ function applySyncKeyset(query, cursor, limit) {
 
 function normalizeWorkspacePath(path: string | null | undefined): string | null {
   if (path == null) return null;
-  const trimmed = path.trim();
+  const trimmed = path.trim().replace(/\\/g, "/");
   if (!trimmed) return null;
-  return trimmed.replace(/\/+$/, "") || trimmed;
+  const isAbs = trimmed.startsWith("/");
+  const parts: string[] = [];
+  for (const seg of trimmed.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length > 0) parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  const joined = parts.join("/");
+  if (isAbs) return joined ? `/${joined}` : "/";
+  return joined || null;
+}
+
+async function assertExplicitWorkspaceBindings(
+  supabase: any,
+  teamId: string,
+  overrideByActorId: Record<string, string>,
+): Promise<void> {
+  const entries = Object.entries(overrideByActorId).filter(
+    ([actorId, workspaceId]) => actorId.trim() && workspaceId.trim(),
+  );
+  if (entries.length === 0) return;
+  const ids = [...new Set(entries.map(([, workspaceId]) => workspaceId.trim()))];
+  const rows = await chunkedIn(ids, async (chunk: string[]) => {
+    const { data, error } = await supabase
+      .from("workspaces")
+      .select("id, team_id, agent_id, archived, path")
+      .in("id", chunk);
+    if (error) throw error;
+    return data ?? [];
+  });
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  for (const [actorId, workspaceId] of entries) {
+    const ws = byId.get(workspaceId.trim());
+    if (!ws) {
+      throw new ApiError(400, "validation_failed", "workspace not found");
+    }
+    if (String(ws.team_id) !== teamId) {
+      throw new ApiError(400, "validation_failed", "workspace team mismatch");
+    }
+    if (ws.archived === true) {
+      throw new ApiError(400, "validation_failed", "workspace archived");
+    }
+    if (String(ws.agent_id ?? "").trim() !== actorId.trim()) {
+      throw new ApiError(400, "validation_failed", "workspace agent mismatch");
+    }
+    if (!normalizeWorkspacePath(ws.path)) {
+      throw new ApiError(400, "validation_failed", "workspace path empty");
+    }
+  }
+}
+
+async function participantWorkspacesFromBindings(
+  supabase: any,
+  workspaceByActor: Map<string, string>,
+): Promise<Record<string, { workspaceId: string; workspacePath: string | null }>> {
+  const ids = [...new Set([...workspaceByActor.values()].filter(Boolean))];
+  if (ids.length === 0) return {};
+  const rows = await chunkedIn(ids, async (chunk: string[]) => {
+    const { data, error } = await supabase
+      .from("workspaces")
+      .select("id, path")
+      .in("id", chunk);
+    if (error) throw error;
+    return data ?? [];
+  });
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  const out: Record<string, { workspaceId: string; workspacePath: string | null }> = {};
+  for (const [actorId, workspaceId] of workspaceByActor) {
+    const row = byId.get(workspaceId);
+    if (!row) continue;
+    out[actorId] = {
+      workspaceId,
+      workspacePath: typeof row.path === "string" ? row.path : null,
+    };
+  }
+  return out;
 }
 
 async function findUniqueWorkspaceName(
@@ -1555,6 +1633,17 @@ export function createSupabaseBusinessRepository(options) {
       let resolvedName = input.name;
 
       if (!targetId && normalizedPath) {
+        const { data: byKey, error: keyErr } = await supabase
+          .from("workspaces")
+          .select("id")
+          .eq("team_id", input.teamId)
+          .eq("path_key", normalizedPath)
+          .limit(1);
+        if (keyErr) throw keyErr;
+        if (byKey?.[0]?.id) targetId = byKey[0].id;
+      }
+
+      if (!targetId && normalizedPath) {
         const { data: byPath, error: pathErr } = await supabase
           .from("workspaces")
           .select("id")
@@ -1594,17 +1683,17 @@ export function createSupabaseBusinessRepository(options) {
         }
       }
 
-      // Agent callers re-upserting an existing row (path/id dedup) must not
-      // wipe member attribution that Desktop registration wrote first.
       let createdByMemberIdForRow = createdByMemberId;
-      if (targetId && createdByMemberId === null) {
+      let agentIdForRow = agentId;
+      if (targetId) {
         const { data: existing, error: existingErr } = await supabase
           .from("workspaces")
-          .select("created_by_member_id")
+          .select("agent_id, created_by_member_id")
           .eq("id", targetId)
           .maybeSingle();
         if (existingErr) throw existingErr;
-        if (existing?.created_by_member_id) {
+        if (existing?.agent_id) agentIdForRow = existing.agent_id;
+        if (createdByMemberId === null && existing?.created_by_member_id) {
           createdByMemberIdForRow = existing.created_by_member_id;
         }
       }
@@ -1613,7 +1702,8 @@ export function createSupabaseBusinessRepository(options) {
         team_id: input.teamId,
         name: resolvedName,
         path: normalizedPath,
-        agent_id: agentId,
+        path_key: normalizedPath,
+        agent_id: agentIdForRow,
         created_by_member_id: createdByMemberIdForRow,
         archived: input.archived ?? false,
       };
@@ -2733,6 +2823,13 @@ export function createSupabaseBusinessRepository(options) {
       const resolved = await this.resolveCurrentMemberActor(input.teamId, userId);
       if (!resolved?.id) throw new ApiError(403, "forbidden", "not a member of this team");
       const createdByActorId = resolved.id;
+      const additionalIds = Array.isArray(input.additionalActorIds) ? input.additionalActorIds : [];
+      const participantIds = Array.isArray(input.participantActorIds) ? input.participantActorIds : [];
+      const overrideByActorId =
+        input.workspaceByActorId && typeof input.workspaceByActorId === "object"
+          ? input.workspaceByActorId
+          : {};
+      await assertExplicitWorkspaceBindings(supabase, input.teamId, overrideByActorId);
       const insertRow: any = {
         id,
         team_id: input.teamId,
@@ -2753,8 +2850,6 @@ export function createSupabaseBusinessRepository(options) {
         .single();
       if (error) throw error;
 
-      const additionalIds = Array.isArray(input.additionalActorIds) ? input.additionalActorIds : [];
-      const participantIds = Array.isArray(input.participantActorIds) ? input.participantActorIds : [];
       const seedActorIds = Array.from(
         new Set(
           [
@@ -2765,10 +2860,6 @@ export function createSupabaseBusinessRepository(options) {
         ),
       );
       if (seedActorIds.length > 0) {
-        const overrideByActorId =
-          input.workspaceByActorId && typeof input.workspaceByActorId === "object"
-            ? input.workspaceByActorId
-            : {};
         const workspaceByActor = await workspaceIdByAgentActor(
           supabase,
           seedActorIds,
@@ -2779,10 +2870,19 @@ export function createSupabaseBusinessRepository(options) {
         );
         const { error: partError } = await supabase
           .from("session_participants")
-          .upsert(rows, { onConflict: "session_id,actor_id" });
+          .upsert(rows, { onConflict: "session_id,actor_id", ignoreDuplicates: true });
         if (partError) throw partError;
+        const participantWorkspaces = await participantWorkspacesFromBindings(
+          supabase,
+          workspaceByActor,
+        );
+        return {
+          ...mapSessionFull(data),
+          sessionId: id,
+          participantWorkspaces,
+        };
       }
-      return mapSessionFull(data);
+      return { ...mapSessionFull(data), sessionId: id, participantWorkspaces: {} };
     },
 
     async patchSession(sessionId, patch) {
@@ -3617,7 +3717,12 @@ export function createSupabaseBusinessRepository(options) {
         .order("created_at", { ascending: false })
         .limit(limit);
       if (error) throw error;
-      return (data ?? []).map(mapApp);
+      const rows = data ?? [];
+      const viewer = await this.resolveAppViewer(teamId, rows.map((r: any) => r.id));
+      return rows.map((r: any) => ({
+        ...mapApp(r),
+        ...appRelationshipFor(r, viewer.actorId, viewer.grants),
+      }));
     },
 
     async getApp(appId: string) {
@@ -3629,7 +3734,54 @@ export function createSupabaseBusinessRepository(options) {
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
-      return data ? mapApp(data) : null;
+      if (!data) return null;
+      const viewer = await this.resolveAppViewer(data.team_id, [data.id]);
+      return { ...mapApp(data), ...appRelationshipFor(data, viewer.actorId, viewer.grants) };
+    },
+
+    /**
+     * The caller's member actor in this team, and which of `appIds` they hold a
+     * grant on (app id → who granted it).
+     *
+     * The grants are read with the service role, filtered to that actor and to
+     * apps RLS already showed the caller — so nothing the caller could not see
+     * leaves. The caller's own token cannot do this: `app_member_access_select`
+     * matches `current_member_id()`, the user's oldest actor, which hides their
+     * grants in every team after the first.
+     *
+     * Never fails the list. Without the grants every app still gets a
+     * relationship; only a team app the caller was also invited to reads as
+     * `team`, and an invited app loses the inviter's name.
+     */
+    async resolveAppViewer(
+      teamId: string,
+      appIds: string[],
+    ): Promise<{ actorId: string | null; grants: Map<string, string | null> | null }> {
+      const { data: userData, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userData?.user?.id;
+      if (!userId) throw new ApiError(401, "unauthorized", "no authenticated user");
+      const actorId = (await this.resolveCurrentMemberActor(teamId, userId))?.id ?? null;
+      if (!actorId || appIds.length === 0) return { actorId, grants: null };
+      try {
+        const admin = await serviceRoleClient("read the caller's app grants");
+        const rows = await chunkedIn(appIds, async (chunk) => {
+          const { data, error } = await admin
+            .from("app_member_access")
+            .select("app_id, granted_by_member_id")
+            .eq("member_id", actorId)
+            .in("app_id", chunk);
+          if (error) throw error;
+          return data ?? [];
+        });
+        return {
+          actorId,
+          grants: new Map(rows.map((g: any) => [g.app_id, g.granted_by_member_id ?? null])),
+        };
+      } catch (e) {
+        console.warn(`[apps] app grants unavailable for the list: ${String(e)}`);
+        return { actorId, grants: null };
+      }
     },
 
     async createApp(input: {

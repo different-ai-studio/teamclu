@@ -5,6 +5,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTabsStore } from '@/stores/tabs'
 import { useUIStore } from '@/stores/ui'
+import { useAppRelationshipFilterStore } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
 
 vi.mock('react-i18next', () => ({
@@ -58,6 +59,7 @@ describe('AppLibraryView', () => {
     useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
     useTabsStore.setState({ tabs: [], activeTabId: null })
     useUIStore.setState({ sidebarFilter: { kind: 'all' } })
+    useAppRelationshipFilterStore.setState({ byTeam: {} })
     useAppsStore.setState({
       items: [
         mkApp('app-1', 'Mine'),
@@ -190,7 +192,9 @@ describe('AppLibraryView', () => {
     // one word: the picker's label had to become a sentence to say what the
     // setting does, and a sentence is not a badge.
     render(<AppLibraryView />)
-    expect(screen.getAllByText('团队')).toHaveLength(1)
+    // The 团队 quick-filter chip is not a badge on a card.
+    const badges = screen.getAllByText('团队').filter((el) => !el.closest('[role="group"]'))
+    expect(badges).toHaveLength(1)
     expect(screen.queryByText('个人')).not.toBeInTheDocument()
   })
 
@@ -199,6 +203,41 @@ describe('AppLibraryView', () => {
     render(<AppLibraryView />)
     expect(screen.getByText('Orphan')).toBeInTheDocument()
     expect(screen.queryByText('海港')).not.toBeInTheDocument()
+  })
+
+  it('the quick filter narrows the cards, together with search', () => {
+    useAppsStore.setState({
+      items: [
+        mkApp('app-1', 'Own', { relationship: 'owner' }),
+        mkApp('app-2', 'Shared one', { relationship: 'invited' }),
+        mkApp('app-3', 'Shared two', { relationship: 'invited' }),
+        mkApp('app-4', 'Common', { relationship: 'team', visibility: 'team' }),
+      ],
+    })
+    render(<AppLibraryView />)
+    expect(screen.getByTestId('app-relationship-chip-invited')).toHaveTextContent('受邀2')
+
+    fireEvent.click(screen.getByTestId('app-relationship-chip-invited'))
+    expect(screen.queryByText('Own')).not.toBeInTheDocument()
+    expect(screen.queryByText('Common')).not.toBeInTheDocument()
+    expect(screen.getByText('Shared one')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('搜索应用'), { target: { value: 'two' } })
+    expect(screen.queryByText('Shared one')).not.toBeInTheDocument()
+    expect(screen.getByText('Shared two')).toBeInTheDocument()
+  })
+
+  it('opens on the filter the sidebar list already picked', () => {
+    // One filter, not two: narrowing to 受邀 in column two and then opening the
+    // library should not show everything again.
+    useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'team' } })
+    useAppsStore.setState({
+      items: [mkApp('app-1', 'Own', { relationship: 'owner' }), mkApp('app-4', 'Common', { relationship: 'team' })],
+    })
+    render(<AppLibraryView />)
+    expect(screen.getByTestId('app-relationship-chip-team')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByText('Own')).not.toBeInTheDocument()
+    expect(screen.getByText('Common')).toBeInTheDocument()
   })
 
   it('search narrows by name', () => {

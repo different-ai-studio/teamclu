@@ -41,6 +41,7 @@ vi.mock('@/lib/teamclu/runtime-ensure-scheduler', () => ({
   recordRuntimeEnsureAttempt: (...a: unknown[]) => mocks.recordRuntimeEnsureAttempt(...a),
   isRuntimeEnsureWakeReason: () => false,
   shouldSkipAlreadyReadyRuntimeEnsure: () => false,
+  waitForWakeRuntimeRetain: async () => ({ status: 'ready', stillNeeded: [] }),
 }))
 vi.mock('@/lib/telemetry/runtime-error-report', async (importOriginal) => ({
   // Spread the real module so pure helpers the module under test calls

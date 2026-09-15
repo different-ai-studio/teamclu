@@ -1776,8 +1776,8 @@ test("apps: mapApp exposes exactly the canonical keys", async () => {
     "envPendingRedeploy", "typePendingRedeploy",
     "createdAt", "createdByActorId",
     "fcStatus", "fcEndpoint", "fcFunctionName", "fcRegion",
-    "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "name", "oauthClientId",
-    "provisionStatus", "publicUrl",
+    "gitAuthKind", "gitCommitSha", "gitRemoteUrl", "id", "invitedByActorId", "name", "oauthClientId",
+    "provisionStatus", "publicUrl", "relationship",
     "runtime", "slug", "startSpec", "teamId", "type", "updatedAt", "visibility", "workspaceId",
   ].sort());
   assert.equal(items[0].authMode, "none");
@@ -1903,6 +1903,86 @@ test("apps: listApps filters by team_id, orders created_at desc, limits", async 
   await repo.listApps({ teamId: "team-7", limit: 25 });
   const teamEq = calls.find((c) => c.table === "apps" && c.column === "team_id");
   assert.equal(teamEq?.value, "team-7");
+});
+
+test("apps: listApps says how the caller is related to each app, owner before invited before team", async () => {
+  const me = "actor-app-1";
+  const apps = [
+    { ...APP_ROW, id: "mine-team", created_by_actor_id: me, visibility: "team" },
+    { ...APP_ROW, id: "mine-granted", created_by_actor_id: me, visibility: "personal" },
+    { ...APP_ROW, id: "team-granted", created_by_actor_id: "actor-lin", visibility: "team" },
+    { ...APP_ROW, id: "personal-granted", created_by_actor_id: "actor-lin", visibility: "personal" },
+    { ...APP_ROW, id: "team-only", created_by_actor_id: "actor-lin", visibility: "team" },
+  ];
+  const calls: any[] = [];
+  // The grants are read with the service role, filtered to the caller's actor
+  // in THIS team: the caller-token policy keys on current_member_id(), which is
+  // the user's oldest actor and so hides their grants in any later team.
+  const admin = appsSupabase({
+    calls,
+    seed: {
+      app_member_access: [
+        { app_id: "mine-granted", member_id: me, permission_level: "admin", granted_by_member_id: "actor-x" },
+        { app_id: "team-granted", member_id: me, permission_level: "prompt", granted_by_member_id: "actor-lin" },
+        { app_id: "personal-granted", member_id: me, permission_level: "view", granted_by_member_id: null },
+        { app_id: "team-only", member_id: "actor-someone-else", permission_level: "admin", granted_by_member_id: "actor-lin" },
+      ],
+    },
+  });
+  const repo = appsRepo(appsSupabase({ seed: { apps } }), { createServiceRoleClient: () => admin });
+
+  const items = await repo.listApps({ teamId: "team-1", limit: 100 });
+  const byId = Object.fromEntries(items.map((a: any) => [a.id, [a.relationship, a.invitedByActorId]]));
+
+  assert.deepEqual(byId, {
+    "mine-team": ["owner", null],
+    "mine-granted": ["owner", null],
+    "team-granted": ["invited", "actor-lin"],
+    "personal-granted": ["invited", null],
+    "team-only": ["team", null],
+  });
+  const memberEq = calls.find((c) => c.table === "app_member_access" && c.column === "member_id");
+  assert.equal(memberEq?.value, me);
+});
+
+test("apps: listApps still labels every app when the grants cannot be read", async () => {
+  const apps = [
+    { ...APP_ROW, id: "mine", created_by_actor_id: "actor-app-1", visibility: "personal" },
+    { ...APP_ROW, id: "team", created_by_actor_id: "actor-lin", visibility: "team" },
+    // Visible, not mine, not team: RLS only lets a grant through, so it is one.
+    { ...APP_ROW, id: "shared", created_by_actor_id: "actor-lin", visibility: "personal" },
+  ];
+  const repo = appsRepo(appsSupabase({ seed: { apps } }), {
+    createServiceRoleClient: () => {
+      throw new Error("SUPABASE_SERVICE_ROLE_KEY is not configured");
+    },
+  });
+
+  const items = await repo.listApps({ teamId: "team-1", limit: 100 });
+
+  assert.deepEqual(
+    items.map((a: any) => [a.id, a.relationship, a.invitedByActorId]),
+    [["mine", "owner", null], ["team", "team", null], ["shared", "invited", null]],
+  );
+});
+
+test("apps: getApp carries the caller's relationship too", async () => {
+  const admin = appsSupabase({
+    seed: {
+      app_member_access: [
+        { app_id: "app-1", member_id: "actor-app-1", permission_level: "prompt", granted_by_member_id: "actor-lin" },
+      ],
+    },
+  });
+  const repo = appsRepo(
+    appsSupabase({ seed: { apps: [{ ...APP_ROW, created_by_actor_id: "actor-lin" }] } }),
+    { createServiceRoleClient: () => admin },
+  );
+
+  const app = await repo.getApp("app-1");
+
+  assert.equal(app?.relationship, "invited");
+  assert.equal(app?.invitedByActorId, "actor-lin");
 });
 
 test("apps: getApp returns null when RLS hides the row", async () => {
@@ -3595,10 +3675,17 @@ test("createSession honors workspaceByActorId over the agent default", async () 
     calls,
     seed: {
       agents: [{ id: "agent-1", default_workspace_id: "ws-default" }],
+      workspaces: [{
+        id: "ws-picked",
+        team_id: "team-1",
+        agent_id: "agent-1",
+        path: "/Users/me/copilot",
+        archived: false,
+      }],
     },
   });
   const repo = appsRepo(supabase);
-  await repo.createSession({
+  const created = await repo.createSession({
     id: "sess-ws-2",
     teamId: "team-1",
     title: "Chat",
@@ -3608,6 +3695,122 @@ test("createSession honors workspaceByActorId over the agent default", async () 
   const rows = participantUpsertRows(calls);
   const agentRow = rows.find((r) => r.actor_id === "agent-1");
   assert.equal(agentRow?.workspace_id, "ws-picked");
+  assert.deepEqual(created.participantWorkspaces, {
+    "agent-1": { workspaceId: "ws-picked", workspacePath: "/Users/me/copilot" },
+  });
+});
+
+test("createSession rejects workspaceByActorId that belongs to another agent", async () => {
+  const supabase = appsSupabase({
+    actorRow: { id: "actor-app-1", actor_type: "member" },
+    seed: {
+      agents: [{ id: "agent-1", default_workspace_id: "ws-default" }],
+      workspaces: [{
+        id: "ws-other-agent",
+        team_id: "team-1",
+        agent_id: "agent-other",
+        path: "/Users/me/copilot",
+        archived: false,
+      }],
+    },
+  });
+  const repo = appsRepo(supabase);
+  await assert.rejects(
+    () => repo.createSession({
+      id: "sess-ws-bad",
+      teamId: "team-1",
+      title: "Chat",
+      additionalActorIds: ["agent-1"],
+      workspaceByActorId: { "agent-1": "ws-other-agent" },
+    }),
+    (err: any) => err?.statusCode === 400,
+  );
+});
+
+test("upsertWorkspace reuse of the same path_key does not steal agent_id", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    calls,
+    seed: {
+      workspaces: [{
+        id: "ws-existing",
+        team_id: "team-b",
+        name: "Alpha",
+        path: "/tmp/alpha",
+        path_key: "/tmp/alpha",
+        agent_id: "agent-1",
+        archived: false,
+      }],
+    },
+  }));
+
+  await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "Alpha",
+    path: "/tmp/alpha",
+    agentId: "agent-2",
+  });
+
+  const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+  assert.equal(upsert?.row.id, "ws-existing");
+  assert.equal(upsert?.row.agent_id, "agent-1");
+});
+
+test("createSession rejects an explicit workspace whose path is empty", async () => {
+  const repo = appsRepo(appsSupabase({
+    actorRow: { id: "actor-app-1", actor_type: "member" },
+    seed: {
+      agents: [{ id: "agent-1", default_workspace_id: "ws-default" }],
+      workspaces: [{
+        id: "ws-placeholder",
+        team_id: "team-1",
+        agent_id: "agent-1",
+        path: null,
+        archived: false,
+      }],
+    },
+  }));
+  await assert.rejects(
+    () => repo.createSession({
+      id: "sess-ws-empty",
+      teamId: "team-1",
+      title: "Chat",
+      additionalActorIds: ["agent-1"],
+      workspaceByActorId: { "agent-1": "ws-placeholder" },
+    }),
+    (err: any) => err?.statusCode === 400,
+  );
+});
+
+test("upsertWorkspace writes path_key and treats trailing slash plus .. as the same path", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({
+    calls,
+    seed: {
+      workspaces: [{
+        id: "ws-existing",
+        team_id: "team-b",
+        name: "Alpha",
+        path: "/tmp/alpha",
+        path_key: "/tmp/alpha",
+        agent_id: "agent-1",
+        archived: false,
+      }],
+    },
+  }));
+
+  const out = await repo.upsertWorkspace({
+    teamId: "team-b",
+    name: "Alpha",
+    path: "/tmp/alpha/foo/../",
+    agentId: "agent-1",
+  });
+
+  const upsert = calls.find((c) => c.table === "workspaces" && c.op === "upsert");
+  assert.equal(upsert?.row.id, "ws-existing");
+  assert.equal(upsert?.row.path, "/tmp/alpha");
+  assert.equal(upsert?.row.path_key, "/tmp/alpha");
+  assert.equal(out.id, "ws-existing");
 });
 
 test("createCronSession stamps the primary agent's default_workspace_id", async () => {

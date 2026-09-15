@@ -11,7 +11,7 @@ import {
   shouldRenew,
   verifyAppSession,
 } from "./apps-auth-session.js";
-import { esc, page, redirect, safeNext } from "./apps-auth-page.js";
+import { esc, page, redirect, safeNext, statusIcon } from "./apps-auth-page.js";
 import { appOrigins } from "./apps-public-host.js";
 import { resolvePathPolicy, type AuthAudience } from "./apps-auth-paths.js";
 import type { ProxyIdentity } from "./apps-vanity.js";
@@ -111,7 +111,7 @@ function loginDomain(env: NodeJS.ProcessEnv): string {
 function misconfigured(reason: string): Response {
   return page(
     "无法访问",
-    `<h1>登录未配置</h1><p class="sub">这个应用需要登录，但当前部署无法提供登录服务` +
+    `${statusIcon("warn")}<h1>登录未配置</h1><p class="sub">这个应用需要登录，但当前部署无法提供登录服务` +
       `（${esc(reason)}）。请联系管理员。</p>`,
     503,
   );
@@ -184,8 +184,8 @@ async function handleCallback(
     // click costs the visitor nothing and cannot loop.
     return page(
       "登录已失效",
-      `<h1>登录已失效</h1><p class="sub">这个登录链接已过期或已被使用。</p>` +
-        `<a class="btn" href="${esc(loginUrl(app, origin, next, env))}">重新登录</a>`,
+      `${statusIcon("warn")}<h1>登录已失效</h1><p class="sub">这个登录链接已过期或已被使用。</p>` +
+        `<a class="btn btn-primary" href="${esc(loginUrl(app, origin, next, env))}">重新登录</a>`,
       400,
     );
   }
@@ -216,10 +216,10 @@ function handleLogout(app: GateApp, origin: string, env: NodeJS.ProcessEnv, secu
 function wrongOrgPage(app: GateApp, origin: string, email: string): Response {
   return page(
     "无权访问",
-    `<h1>无权访问</h1>` +
-      `<p class="sub">当前账号 ${esc(email)} 不属于这个应用所在的组织。</p>` +
+    `${statusIcon("lock")}<h1>无权访问</h1>` +
+      `<p class="sub">当前账号 <strong>${esc(email)}</strong> 不属于这个应用所在的组织。</p>` +
       `<form method="post" action="${esc(APP_AUTH_LOGOUT_PATH)}">` +
-      `<button type="submit">换一个账号</button></form>`,
+      `<button class="btn btn-primary" type="submit">换一个账号</button></form>`,
     403,
   );
 }
