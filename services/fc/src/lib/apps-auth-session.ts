@@ -15,7 +15,7 @@ import { ApiError } from "./http-utils.js";
  *     domain to an app's hostname, because a cookie on `login.<domain>` cannot
  *     be read by `app.example.com`.
  *   * **Login state** — a short-lived HttpOnly cookie that binds a browser
- *     OAuth / Web SSO callback to its PKCE verifier and app return address.
+ *     OAuth callback to its PKCE verifier and app return address.
  *
  * The audience separation is load-bearing, not decoration: without it an SSO
  * cookie lifted from the central domain would verify as an app session, and the
@@ -47,7 +47,7 @@ export const APP_RENEW_WINDOW_SECONDS = 24 * 60 * 60;
 
 export const SSO_COOKIE = "__teamclu_sso";
 export const APP_COOKIE = "__teamclu_app_session";
-/** Short-lived state for browser OAuth / Web SSO callbacks on the login host. */
+/** Short-lived state for browser OAuth callbacks on the login host. */
 export const LOGIN_STATE_COOKIE = "__teamclu_login_state";
 export const LOGIN_STATE_TTL_SECONDS = 10 * 60;
 
