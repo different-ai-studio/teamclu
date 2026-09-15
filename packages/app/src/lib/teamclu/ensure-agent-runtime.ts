@@ -30,6 +30,7 @@ import {
   recordRuntimeEnsureAttempt,
   isRuntimeEnsureWakeReason,
   shouldSkipAlreadyReadyRuntimeEnsure,
+  waitForWakeRuntimeRetain,
 } from "@/lib/teamclu/runtime-ensure-scheduler";
 import {
   DEVICE_PRESENCE_GATE_TIMEOUT_MS,
@@ -360,13 +361,17 @@ async function runEnsureRuntimeThenSetModel(
  * already ACTIVE with models. Create/send paths always proceed so a new
  * session can bind. When the caller omits sessionRuntimeByAgent on a wake
  * path, we load runtime-targets before deciding to skip.
+ *
+ * After MQTT rewiring clears `byRuntimeId`, wake ensures wait briefly for
+ * session attachments to refill before calling runtimeStart — otherwise a
+ * remote agent that is already fine looks cold and the client toasts a
+ * 20s RPC timeout.
  */
 export async function ensureAgentRuntimesForSession(args: EnsureAgentRuntimeArgs): Promise<void> {
   // Narrowed below to the locally-reachable subset when the broker is down.
   let agentActorIds = [...new Set(args.agentActorIds.map((id) => id.trim()).filter(Boolean))];
   if (!args.sessionId || !args.teamId || agentActorIds.length === 0) return;
 
-  const key = `${args.sessionId}::${agentActorIds.slice().sort().join(",")}`;
   const reason = args.reason ?? "unknown";
 
   let sessionRuntimeByAgent = args.sessionRuntimeByAgent;
@@ -404,6 +409,37 @@ export async function ensureAgentRuntimesForSession(args: EnsureAgentRuntimeArgs
     });
     return;
   }
+
+  // Empty store after MQTT rewiring: wait for retains before ensuring.
+  if (isRuntimeEnsureWakeReason(reason)) {
+    const waitResult = await waitForWakeRuntimeRetain({
+      sessionId: args.sessionId,
+      agentActorIds,
+    });
+    if (waitResult.stillNeeded.length === 0) {
+      sessionFlowLog("ensure_agent_runtime.skip_already_ready", {
+        sessionId: args.sessionId,
+        teamId: args.teamId,
+        reason,
+        agentActorIds,
+        afterRetainWait: true,
+        waitStatus: waitResult.status,
+      });
+      return;
+    }
+    if (waitResult.stillNeeded.length < agentActorIds.length) {
+      sessionFlowLog("ensure_agent_runtime.retain_wait_partial", {
+        sessionId: args.sessionId,
+        reason,
+        waitedFor: agentActorIds,
+        stillNeeded: waitResult.stillNeeded,
+        waitStatus: waitResult.status,
+      });
+    }
+    agentActorIds = waitResult.stillNeeded;
+  }
+
+  const key = `${args.sessionId}::${agentActorIds.slice().sort().join(",")}`;
 
   const existing = inFlight.get(key);
   if (existing) return existing.promise;
