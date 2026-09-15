@@ -198,6 +198,7 @@ pub fn branded_amuxd_sidecar<R: tauri::Runtime>(
     args: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<tauri_plugin_shell::process::Command, String> {
     use tauri_plugin_shell::ShellExt;
+    let args: Vec<String> = args.into_iter().map(|a| a.as_ref().to_string()).collect();
     Ok(with_amuxd_brand_env(
         app.shell()
             .sidecar("amuxd")
@@ -397,7 +398,12 @@ mod branded_amuxd_sidecar_tests {
         let _guard = HomeGuard::set(tmp.path());
         let cases = [
             ("teamclu", "TeamClu", "teamclu", ".amuxd"),
-            ("copilot361", "Copilot 361", "copilot361", ".amuxd-copilot361"),
+            (
+                "copilot361",
+                "Copilot 361",
+                "copilot361",
+                ".amuxd-copilot361",
+            ),
             ("teamclaw", "TeamClaw", "teamclu", ".amuxd-teamclaw"),
         ];
         for (short, display, scheme, suffix) in cases {
