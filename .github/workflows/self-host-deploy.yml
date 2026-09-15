@@ -124,6 +124,15 @@ jobs:
             # drop it again (seen as finalize_failed: AUTH_BASE_URL is not set).
             upsert_env AUTH_BASE_URL "https://api.teamclu-dev.ucar.cc"
 
+            # Where deployed apps' function logs live (Alibaba SLS). Left unset the
+            # project is derived as teamclu-apps-<account>, which does not exist in
+            # the functions' account — and a missing project reads back as an
+            # empty page, not an error, so the logs tab just says "no logs" (#1431).
+            # This is the project the app functions already write to; Belayo reads
+            # the same one. The APPS_ACCESS_KEY_* RAM user needs log:* on it.
+            upsert_env APPS_SLS_PROJECT "serverless-cn-shenzhen-5003014c-4786-50e5-96f4-2ce61d669184"
+            upsert_env APPS_SLS_LOGSTORE "default-logs"
+
             if [ -n "$FC_SUPABASE_URL" ]; then
               echo "=== migrate external Supabase schema ==="
               [ -n "$BELAYO_TEST_RDS_PRIVATE_HOST" ] || { echo "missing BELAYO_TEST_RDS_PRIVATE_HOST"; exit 1; }
