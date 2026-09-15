@@ -367,15 +367,39 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function loginAppLookup() {
   return async (appId: string) => {
     if (!UUID_RE.test(appId)) return null;
-    const { data, error } = await createServiceRoleClient()
+    const client = createServiceRoleClient();
+    const { data, error } = await client
       .from("apps")
-      .select("id, slug, auth_mode")
+      .select("id, slug, name, team_id, auth_mode")
       .eq("id", appId)
       .maybeSingle();
     if (error) throw new Error(`login app lookup failed: ${error.message}`);
     if (!data) return null;
-    return { id: data.id, slug: data.slug, authMode: data.auth_mode ?? "none" };
+    return {
+      id: data.id,
+      slug: data.slug,
+      name: data.name ?? null,
+      teamName: await loginTeamName(client, data.team_id),
+      authMode: data.auth_mode ?? "none",
+    };
   };
+}
+
+/**
+ * The team caption on the login page. Best effort, on purpose: it is a label,
+ * and a failed read must not become a login page that refuses to render.
+ */
+async function loginTeamName(
+  client: ReturnType<typeof createServiceRoleClient>,
+  teamId: string | null,
+): Promise<string | null> {
+  if (!teamId) return null;
+  try {
+    const { data } = await client.from("teams").select("name").eq("id", teamId).maybeSingle();
+    return typeof data?.name === "string" && data.name.trim() ? data.name.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

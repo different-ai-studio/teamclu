@@ -464,17 +464,108 @@ test("an address containing markup cannot break out of the page", async () => {
 test("the login page mirrors enabled FC auth methods", async () => {
   await withEnv(
     {
-      APP_FEATURES_JSON: JSON.stringify({ auth: { phone: true, google: true, webSSO: true } }),
+      APP_FEATURES_JSON: JSON.stringify({ auth: { phone: true, google: true, password: true, webSSO: true } }),
       WEBSSO_LOGIN_URL: "https://admin.example.com/sign-in",
     },
     async () => {
       const res = await handleLoginRequest(get(`/?app=${APP_ID}`), deps());
       const html = await res!.text();
       assert.match(html, /手机号登录/);
+      assert.match(html, /密码登录/);
       assert.match(html, /Google 登录/);
-      assert.match(html, /快捷登录/);
+      assert.doesNotMatch(html, /微信登录/, "wechat is off in this config");
+      assert.doesNotMatch(html, /快捷登录|\/sso/, "web SSO is never offered to app visitors");
     },
   );
+});
+
+test("with every optional method off, the page is the email form alone", async () => {
+  await withEnv(
+    { APP_FEATURES_JSON: JSON.stringify({ auth: { phone: false, google: false, password: false } }) },
+    async () => {
+      const html = await (await handleLoginRequest(get(`/?app=${APP_ID}`), deps()))!.text();
+      assert.match(html, /action="\/otp"/);
+      assert.doesNotMatch(html, /class="tabs"/, "one method needs no tabs");
+      assert.doesNotMatch(html, /Google 登录|手机号登录|密码登录/);
+    },
+  );
+});
+
+test("the login page names the app, its team, and the host the visitor returns to", async () => {
+  await withEnv({}, async () => {
+    const named: LoginApp = { ...APP, name: "周报 <助手>", teamName: "研发效能部" };
+    const res = await handleLoginRequest(get(`/?app=${APP_ID}`), deps({ lookupApp: async () => named }));
+    const html = await res!.text();
+    assert.match(html, /<title>登录 · 周报 &lt;助手&gt;<\/title>/);
+    assert.doesNotMatch(html, /<助手>/);
+    assert.match(html, /研发效能部/);
+    assert.match(html, /report-11111111\.apps\.example\.com/);
+  });
+});
+
+test("an app with no name is named by its slug", async () => {
+  await withEnv({}, async () => {
+    const res = await handleLoginRequest(get(`/?app=${APP_ID}`), deps());
+    assert.match(await res!.text(), /<title>登录 · report<\/title>/);
+  });
+});
+
+test("resending an email code says a new one went out", async () => {
+  await withEnv({}, async () => {
+    const res = await handleLoginRequest(post("/otp", { ...flow, email: "a@example.com", resend: "1" }), deps());
+    assert.equal(res?.status, 200);
+    assert.match(await res!.text(), /新的验证码已发送/);
+  });
+});
+
+test("password login signs in through GoTrue where the config enables it", async () => {
+  await withEnv({ APP_FEATURES_JSON: JSON.stringify({ auth: { password: true } }) }, async () => {
+    const d = deps();
+    const res = await handleLoginRequest(
+      post("/password", { ...flow, email: "A@Example.com", password: "hunter2" }),
+      d,
+    );
+    assert.equal(res?.status, 302);
+    assert.match(res!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
+    assert.match(res!.headers.get("set-cookie")!, new RegExp(`^${SSO_COOKIE}=`));
+    assert.equal(d.calls[0].url, "http://kong:8000/auth/v1/token?grant_type=password");
+    assert.deepEqual(d.calls[0].body, { email: "a@example.com", password: "hunter2" });
+  });
+});
+
+test("a rejected password gets one message and is never written back into the page", async () => {
+  await withEnv({ APP_FEATURES_JSON: JSON.stringify({ auth: { password: true } }) }, async () => {
+    const d = deps({
+      gotrue: () =>
+        new Response(JSON.stringify({ error: "invalid_grant", error_description: "Invalid login credentials" }), {
+          status: 400,
+        }),
+    });
+    const res = await handleLoginRequest(
+      post("/password", { ...flow, email: "a@example.com", password: "s3cret-typed" }),
+      d,
+    );
+    assert.equal(res?.status, 400);
+    const html = await res!.text();
+    assert.match(html, /邮箱或密码不正确/);
+    assert.doesNotMatch(html, /Invalid login credentials/);
+    assert.doesNotMatch(html, /s3cret-typed/);
+    assert.match(html, /name="email" type="email"[^>]*value="a@example\.com"/);
+  });
+});
+
+test("password login is refused where the config leaves it off", async () => {
+  await withEnv({ APP_FEATURES_JSON: JSON.stringify({ auth: { password: false } }) }, async () => {
+    const d = deps();
+    const res = await handleLoginRequest(
+      post("/password", { ...flow, email: "a@example.com", password: "x" }),
+      d,
+    );
+    assert.equal(res?.status, 404);
+    assert.equal(d.calls.length, 0);
+    const form = await handleLoginRequest(get(`/?app=${APP_ID}&method=password`), d);
+    assert.doesNotMatch(await form!.text(), /action="\/password"/);
+  });
 });
 
 test("phone login uses the existing auth repository and does not bootstrap a team", async () => {
@@ -573,45 +664,19 @@ test("Google login uses the central login host as a PKCE callback", async () => 
   );
 });
 
-test("Web SSO redirects through the configured target and supports a token bridge", async () => {
+test("Web SSO is not part of app login, even where the deployment enables it", async () => {
   await withEnv(
     {
       APP_FEATURES_JSON: JSON.stringify({ auth: { webSSO: true } }),
-      WEBSSO_LOGIN_URL: "https://admin.example.com/sign-in?tenant=teamclu",
+      WEBSSO_LOGIN_URL: "https://admin.example.com/sign-in",
     },
     async () => {
-      const d = deps({
-        gotrue: (call) => {
-          if (call.url.endsWith("/auth/v1/token?grant_type=refresh_token")) {
-            return new Response(JSON.stringify({ user: { id: "sso-user", email: "sso@example.com" } }), { status: 200 });
-          }
-          return new Response(JSON.stringify({ user: { id: "u-1", email: "a@example.com" } }), { status: 200 });
-        },
-      });
-      const start = await handleLoginRequest(get(`/sso?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`), d);
-      assert.equal(start?.status, 302);
-      const target = new URL(start!.headers.get("location")!);
-      assert.equal(target.origin, "https://admin.example.com");
-      assert.equal(target.searchParams.get("redirect_to"), "https://login.example.com/sso/callback");
-      assert.ok(target.searchParams.get("code_challenge"));
-
-      const stateCookie = `${LOGIN_STATE_COOKIE}=${cookieValue(start!, LOGIN_STATE_COOKIE)}`;
-      const bridge = await handleLoginRequest(
-        get(`/sso/callback?state=${encodeURIComponent(target.searchParams.get("state")!)}&refresh_token=must-not-be-accepted`, {
-          cookie: stateCookie,
-        }),
-        d,
-      );
-      assert.equal(bridge?.status, 200);
-      assert.match(await bridge!.text(), /f\.action="\/sso\/exchange"/);
-      assert.equal(d.calls.length, 0, "tokens in the callback query must not reach GoTrue");
-
-      const completed = await handleLoginRequest(
-        post("/sso/exchange", { refresh_token: "external-refresh" }, { cookie: stateCookie }),
-        d,
-      );
-      assert.equal(completed?.status, 302);
-      assert.match(completed!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
+      const d = deps();
+      for (const path of [`/sso?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`, "/sso/callback?state=x"]) {
+        assert.equal(await handleLoginRequest(get(path), d), null, path);
+      }
+      assert.equal(await handleLoginRequest(post("/sso/exchange", { refresh_token: "r" }), d), null);
+      assert.equal(d.calls.length, 0);
     },
   );
 });

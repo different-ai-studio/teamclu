@@ -6,11 +6,14 @@
 - 前置文档：`docs/specs/2026-08-27-apps-self-serve-gitea-fc-design.md`（§6 `auth_mode`、§7 公开性、§8 路线图把「自定义域名」列在 Phase 2）
 
 > **2026-09-11 增补（FC app 登录）**：中心登录页复用 Tauri 的 `features.auth` 配置，
-> 同步提供邮箱 OTP、手机号 OTP、Google OAuth PKCE，以及配置了 `WEBSSO_LOGIN_URL` 时的 Web SSO。
+> 同步提供邮箱 OTP、手机号 OTP 与 Google OAuth PKCE。
 > 手机号登录直接复用 FC auth repository；这些登录/注册路径只创建或复用 Supabase 用户，
-> 不调用 team bootstrap。Web SSO 在 Tauri 中仍使用原生 WebView + localStorage；FC 浏览器流
-> 使用回调桥接，因此配置的登录页需要把 PKCE code 回跳到 `redirect_to`，或把 Supabase 会话
-> 放在回调 URL fragment 中。
+> 不调用 team bootstrap。
+>
+> **2026-09-15 增补（登录页改版）**：应用登录页**不再提供 Web SSO**（`/sso`、`/sso/callback`、
+> `/sso/exchange` 已删除；`features.auth.webSSO` 只作用于桌面端）。补上 `features.auth.password`
+> 对应的密码登录（此前 self-host 下发 `password: true`，页面却没有这种方式）。登录方式改为
+> 页签 + 带图标的第三方按钮，页面左上角与卡片底部展示发起登录的应用名、所属团队和回跳域名。
 
 本增补 supersedes 下文关于「FC app 不支持 Google/社交登录」的非目标描述；动态 OAuth 2.1
 客户端注册、`app` 自己的登录页和独立用户池仍不在范围内。
@@ -192,11 +195,11 @@ GOTRUE_URI_ALLOW_LIST=http://127.0.0.1:*/callback,teamclaw://auth-callback,teamc
 ### D2 · 邮箱验证码（OTP）是默认流程；FC 登录主机按配置支持 PKCE
 
 邮箱 OTP 仍是最兼容任意 app / 自定义域名的默认流程。FC 登录主机同时可以按
-`features.auth` 开启 Google/WeChat 的 GoTrue PKCE，以及 `WEBSSO_LOGIN_URL` 配置的 Web SSO；
+`features.auth` 开启密码登录与 Google/WeChat 的 GoTrue PKCE；
 这不使用 OAuth 2.1 动态客户端注册，不需要 `APP_SECRETS_ENCRYPTION_KEY`，也不会创建 team。
 
 Google/WeChat 的登录回调是固定的 `https://<LOGIN_DOMAIN>/oauth/callback`，因此启用时必须将
-它加入 GoTrue 的 `GOTRUE_URI_ALLOW_LIST`；Web SSO 则回到 `https://<LOGIN_DOMAIN>/sso/callback`。
+它加入 GoTrue 的 `GOTRUE_URI_ALLOW_LIST`。
 
 ### D3 · 会话票据由 FC 自签，密钥从 service role key 派生
 
@@ -214,7 +217,7 @@ HKDF-SHA256 派生（`info="teamclu-apps-auth-v1"`）。
 
 不动 `apps_auth_mode_check` 约束、不动 UI 的三个选项、不动 `deployed_auth_mode` 的
 pending 机制。变的是 `platform` 的**实现**（OAuth 2.1 动态注册 → 代理层 OTP 网关；FC 登录
-主机另外按配置提供 GoTrue PKCE 和 Web SSO）。
+主机另外按配置提供密码登录和 GoTrue PKCE）。
 
 两档门槛用新列 `auth_audience`（`any` | `org`）表达，只在 `auth_mode = 'platform'` 时
 有意义。**默认 `org`（收紧）** —— 设计文档 §7「公开性必须显式化」那节的教训是：默认值
@@ -286,7 +289,7 @@ Postgres 和 GoTrue —— `data_app` 至今不通就是这个原因（`APPS_DB_
 ② 中心登录服务
    有中心 cookie？
      是 → 直接签 code
-     否 → 登录页 → 邮箱/手机号 OTP，或 Google PKCE / Web SSO → 种中心 cookie → 签 code
+     否 → 登录页 → 邮箱/手机号 OTP、密码，或 Google PKCE → 种中心 cookie → 签 code
    → 302 https://app.example.com/__teamclu/auth/callback?code=<一次性>&next=%2Freport
 
 ③ app 域名网关
@@ -307,18 +310,16 @@ Postgres 和 GoTrue —— `data_app` 至今不通就是这个原因（`APPS_DB_
 | GET | `/` | 登录页；带 `app` / `next` / `r` 参数。有中心会话则直接签 code 并 302 |
 | POST | `/otp` | `{email}` → GoTrue `POST /auth/v1/otp`（`create_user: true`）发验证码 |
 | POST | `/verify` | `{email, code}` → GoTrue `POST /auth/v1/verify`（`type: "email"`）→ 种中心 cookie → 签 code → 302 |
+| POST | `/password` | `{email, password}` → GoTrue `POST /auth/v1/token?grant_type=password`；仅 `features.auth.password` 开启时 |
 | POST | `/phone` | `{phone}` → 复用 FC auth repository 发送手机号验证码 |
 | POST | `/phone/verify` / `/phone/select` | 校验手机号验证码，必要时选择关联账号，再种中心 cookie → 签 code → 302 |
 | GET | `/oauth/google` / `/oauth/wechat` | 按 `features.auth` 开启对应的 GoTrue PKCE 授权 |
 | GET | `/oauth/callback` | 校验签名 state cookie，交换 PKCE code，再种中心 cookie |
-| GET | `/sso` / `/sso/callback` | 跳转配置的 Web SSO 登录页并接收 code 或会话 fragment |
-| POST | `/sso/exchange` | 同源桥接页提交 fragment 中的 token，验证后种中心 cookie |
 | POST | `/logout` | 清中心 cookie |
 
-登录方法与 Tauri 的配置保持一致：邮箱 OTP 始终存在，手机号 / Google / WeChat / Web SSO
-由 `features.auth` 和对应环境配置共同决定。浏览器端不能跨 origin 读取 Tauri 所使用的
-`WEBSSO_STORAGE_KEY` localStorage，因此 Web SSO 目标页必须支持 `redirect_to` / `return_to`
-回跳约定；FC 不接受 query string 中的 access/refresh token，避免 token 进入访问日志。
+登录方法与 Tauri 的配置保持一致：邮箱 OTP 始终存在，密码 / 手机号 / Google / WeChat 由
+`features.auth` 决定。Web SSO 不在应用登录页提供 —— 部署即使开启了 `features.auth.webSSO`，
+也只影响桌面端。
 
 GoTrue 调用走**内网** `SUPABASE_URL`（`http://kong:8000`），不走公网域名。
 
@@ -690,7 +691,7 @@ api/supabase/mqtt 共享）。
    `test/apps-auth-session.test.ts`，24 个用例）。验收全部达成，另加了两项设计断言：
    「失败的兑换不烧 code」（校验顺序）与「四种票据不可互换」（audience 隔离）。
    两处变异检验确认测试非假绿：去掉 `aid` 绑定 → 红；把 `jti` 标记提到校验之前 → 红。
-2. ~~**批次 2 — 中心登录服务**~~ ✅ **已完成**（`src/lib/apps-login-service.ts`，29 个用例，覆盖邮箱/手机号 OTP、Google PKCE 与 Web SSO）。
+2. ~~**批次 2 — 中心登录服务**~~ ✅ **已完成**（`src/lib/apps-login-service.ts`，29 个用例，覆盖邮箱/手机号 OTP、Google PKCE 与 Web SSO；2026-09-15 删除 Web SSO、补上密码登录）。
    顺带把 `LOGIN_DOMAIN` / `APPS_AUTH_SESSION_SECRET` 在 compose、`s.yaml`、`.env.example`
    三处声明齐，并加了 Caddy 的登录站点块 —— env 少加一处会静默失效，留到批次 5 太容易漏。
    两处变异检验：放开返回地址校验 → 红；身份改用用户输入的邮箱而非 GoTrue 的回答 → 红。
