@@ -201,6 +201,22 @@ export function registerSessions(router) {
     return { statusCode: 204, body: null };
   });
 
+  // Which folder this agent runs in for this session — the seat's workspace
+  // (ADR-0005), addressed like the cursor and model above. The seat is stamped
+  // when it is created; this moves it afterwards, which the desktop needs for an
+  // app session whose local agent was seated on its default folder instead of
+  // the app's checkout (#1430). The repository authorizes the move.
+  router.put("/v1/sessions/:sessionId/participants/:actorId/workspace", async (ctx) => {
+    const body = ctx.json ?? {};
+    const workspaceId = requireString(body.workspaceId, "workspaceId");
+    await ctx.repository.setParticipantWorkspace(
+      decodeURIComponent(ctx.params.sessionId),
+      decodeURIComponent(ctx.params.actorId),
+      { workspaceId },
+    );
+    return { statusCode: 204, body: null };
+  });
+
   router.delete("/v1/sessions/:sessionId/participants/:actorId", async (ctx) => {
     const sessionId = decodeURIComponent(ctx.params.sessionId);
     const actorId = decodeURIComponent(ctx.params.actorId);

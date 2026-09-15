@@ -98,6 +98,22 @@ describe('useSessionLocalWorkspace', () => {
     await waitFor(() => expect(result.current.path).toBe('/tmp/b'))
   })
 
+  // An app session's seat is moved onto the checkout after the session is on
+  // screen, and the workspace store following it is the only sign of that the
+  // hook gets.
+  it('resolves again when the workspace store moves under the open session', async () => {
+    mocks.workspacePath = '/tmp/default'
+    mocks.resolveSessionWorkspacePath.mockResolvedValue('/tmp/default')
+    const { result, rerender } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.path).toBe('/tmp/default'))
+
+    mocks.resolveSessionWorkspacePath.mockResolvedValue('/tmp/app')
+    mocks.workspacePath = '/tmp/app'
+    rerender()
+
+    await waitFor(() => expect(result.current.path).toBe('/tmp/app'))
+  })
+
   it('marks an empty resolve as unbound rather than pending', async () => {
     mocks.resolveSessionWorkspacePath.mockResolvedValue(null)
     const { result } = renderHook(() => useSessionLocalWorkspace())

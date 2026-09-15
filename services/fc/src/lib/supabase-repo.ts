@@ -2730,15 +2730,27 @@ export function createSupabaseBusinessRepository(options) {
 
     async listWorkspacesByIdsSlim(teamId, workspaceIds) {
       if (!Array.isArray(workspaceIds) || workspaceIds.length === 0) return [];
-      return chunkedIn(workspaceIds, async (chunk) => {
+      const rows = await chunkedIn(workspaceIds, async (chunk) => {
         const { data, error } = await supabase
           .from("workspaces")
-          .select("id, name, path")
+          .select("id, name, path, agent_id, archived")
           .eq("team_id", teamId)
           .in("id", chunk);
         if (error) throw error;
         return data ?? [];
       });
+      // `agentId` and `archived` are two of the rules a session seat holds a
+      // workspace to (assertExplicitWorkspaceBindings). The desktop checks them
+      // before creating an app session on a row, so a row another machine's
+      // daemon holds does not fail the whole create (#1430). The daemon has read
+      // both from this response all along and been handed its defaults.
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name ?? null,
+        path: row.path ?? null,
+        agentId: row.agent_id ?? null,
+        archived: row.archived === true,
+      }));
     },
 
     async listShortcutRoleBindings(teamId) {
@@ -3400,6 +3412,80 @@ export function createSupabaseBusinessRepository(options) {
       const { error } = await supabase
         .from("session_participants")
         .update({ model, updated_at: new Date().toISOString() })
+        .eq("session_id", sessionId)
+        .eq("actor_id", actorId);
+      if (error) throw error;
+    },
+
+    /**
+     * Move an agent's seat to another folder.
+     *
+     * `session_participants.workspace_id` is where the file tree, runtime-start
+     * and the daemon's cold paths all read an agent's folder from (ADR-0005),
+     * and it used to be written only when the seat was created — with the
+     * agent's default folder unless the creator named one. An app session
+     * seated that way kept showing the default workspace while its agent worked
+     * in the app's checkout, and nothing could move it (#1430).
+     *
+     * The table has no UPDATE policy, and a row-level one would hand every
+     * member `role` and the cursor along with it, so the write goes through the
+     * service role — after the checks such a policy would have made. The caller
+     * must see the session, speak for the agent (be it, own it, or hold admin on
+     * it), and name a workspace that passes the rules `createSession` applies.
+     */
+    async setParticipantWorkspace(sessionId, actorId, { workspaceId }) {
+      const { data: session, error: sessionErr } = await supabase
+        .from("sessions")
+        .select("id, team_id")
+        .eq("id", sessionId)
+        .maybeSingle();
+      if (sessionErr) throw sessionErr;
+      if (!session) throw new ApiError(404, "not_found", "session not found");
+      const teamId = String(session.team_id);
+      const callerActorId = await requireCallerTeamMemberActor(teamId);
+      const admin = await serviceRoleClient("move a session participant's workspace");
+
+      if (callerActorId !== actorId) {
+        const { data: agent, error: agentErr } = await admin
+          .from("agents")
+          .select("id, owner_member_id")
+          .eq("id", actorId)
+          .maybeSingle();
+        if (agentErr) throw agentErr;
+        if (agent?.owner_member_id !== callerActorId) {
+          const { data: grant, error: grantErr } = await admin
+            .from("agent_member_access")
+            .select("agent_id")
+            .eq("agent_id", actorId)
+            .eq("member_id", callerActorId)
+            .eq("permission_level", "admin")
+            .maybeSingle();
+          if (grantErr) throw grantErr;
+          if (!grant) {
+            throw new ApiError(
+              403,
+              "forbidden",
+              "only the agent, its owner or one of its admins can move its workspace",
+            );
+          }
+        }
+      }
+
+      await assertExplicitWorkspaceBindings(supabase, teamId, { [actorId]: workspaceId });
+
+      const { data: seat, error: seatErr } = await admin
+        .from("session_participants")
+        .select("workspace_id")
+        .eq("session_id", sessionId)
+        .eq("actor_id", actorId)
+        .maybeSingle();
+      if (seatErr) throw seatErr;
+      if (!seat) throw new ApiError(404, "not_found", "participant not found");
+      if (seat.workspace_id === workspaceId) return;
+
+      const { error } = await admin
+        .from("session_participants")
+        .update({ workspace_id: workspaceId, updated_at: new Date().toISOString() })
         .eq("session_id", sessionId)
         .eq("actor_id", actorId);
       if (error) throw error;

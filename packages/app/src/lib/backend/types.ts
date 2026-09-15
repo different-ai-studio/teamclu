@@ -826,6 +826,11 @@ export interface SessionMembersBackend {
   listSessionIdsForActor(actorId: string): Promise<string[]>;
   listCandidateActors(teamId: string, presentActorIds: string[]): Promise<SessionMemberCandidate[]>;
   addParticipant(sessionId: string, actorId: string): Promise<void>;
+  /**
+   * Move an agent's seat to another workspace (`session_participants.workspace_id`) —
+   * the folder the file tree and runtime-start resolve for that agent.
+   */
+  setParticipantWorkspace(sessionId: string, actorId: string, workspaceId: string): Promise<void>;
   removeParticipant(sessionId: string, actorId: string): Promise<void>;
 }
 
@@ -954,7 +959,17 @@ export interface DaemonWorkspaceBackendRow {
 }
 
 export interface WorkspacesBackend {
-  listWorkspacesByIds(teamId: string, workspaceIds: string[]): Promise<Array<{ id: string; name: string | null; path: string | null }>>;
+  /**
+   * `agentId` and `archived` are missing from a Cloud API that predates them;
+   * read missing as unknown, not as "no agent" or "not archived".
+   */
+  listWorkspacesByIds(teamId: string, workspaceIds: string[]): Promise<Array<{
+    id: string;
+    name: string | null;
+    path: string | null;
+    agentId?: string | null;
+    archived?: boolean;
+  }>>;
   listDaemonWorkspaces(teamId: string, agentId?: string | null): Promise<DaemonWorkspaceBackendRow[]>;
   createDaemonWorkspace(input: {
     /** Upsert an existing row instead of inserting a new one. An app is created

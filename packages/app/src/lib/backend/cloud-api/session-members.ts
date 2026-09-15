@@ -119,6 +119,13 @@ export function createSessionMembersModule(client: CloudApiClient): SessionMembe
         participantsRead.invalidate(sessionId);
       }
     },
+    async setParticipantWorkspace(sessionId, actorId, workspaceId) {
+      // The roster read above carries no workspace, so there is nothing to invalidate.
+      await client.put<void>(
+        `/v1/sessions/${encodeURIComponent(sessionId)}/participants/${encodeURIComponent(actorId)}/workspace`,
+        { workspaceId },
+      );
+    },
     async removeParticipant(sessionId, actorId) {
       try {
         await client.delete<void>(`/v1/sessions/${encodeURIComponent(sessionId)}/participants/${encodeURIComponent(actorId)}`);

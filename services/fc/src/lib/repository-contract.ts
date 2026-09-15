@@ -258,6 +258,18 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     assert.equal(row.model, "openai/gpt-5");
   });
 
+  test("repository contract: setParticipantWorkspace round-trips through the participant row", async () => {
+    // The seat's workspace is where the desktop file tree and runtime-start read
+    // an agent's folder from. It could only be set when the seat was created,
+    // which is what stranded app sessions on the agent's default folder (#1430).
+    const repo = createRepository();
+    await repo.setParticipantWorkspace("session-1", "actor-1", { workspaceId: "workspace-1" });
+    const out = await repo.listSessionParticipants("session-1");
+    const row = out.items.find((p) => p.actorId === "actor-1");
+    assert.ok(row, "actor-1 should still be a participant");
+    assert.equal(row.workspaceId, "workspace-1");
+  });
+
   test("repository contract: removeSessionParticipant succeeds", async () => {
     const repo = createRepository();
     await repo.removeSessionParticipant("session-1", "actor-1");

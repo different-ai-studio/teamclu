@@ -1470,6 +1470,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
     teams: [...(seed.teams ?? [])],
     agents: [...(seed.agents ?? [])],
     session_participants: [...(seed.session_participants ?? [])],
+    agent_member_access: [...(seed.agent_member_access ?? [])],
   };
   return {
     auth: appsAuth(),
@@ -3725,6 +3726,103 @@ test("createSession rejects workspaceByActorId that belongs to another agent", a
     }),
     (err: any) => err?.statusCode === 400,
   );
+});
+
+// A seat's workspace used to be writable only when the seat was created, so an
+// app session seated on the agent's default folder could never be moved onto
+// the app's checkout (#1430). `session_participants` has no UPDATE policy: the
+// move is authorized in the repository and written through the service role.
+function seatMoveFixture({
+  actorRow = { id: "member-1" },
+  access = [],
+  seatWorkspaceId = "ws-default",
+}: any = {}) {
+  const seed = {
+    sessions: [{ id: "sess-1", team_id: "team-1" }],
+    agents: [{ id: "agent-1", owner_member_id: "member-1" }],
+    agent_member_access: access,
+    workspaces: [
+      { id: "ws-app", team_id: "team-1", agent_id: "agent-1", path: "/Users/me/.amuxd/apps/app-1", archived: false },
+      { id: "ws-other-agent", team_id: "team-1", agent_id: "agent-2", path: "/Users/me/elsewhere", archived: false },
+    ],
+    session_participants: [{ session_id: "sess-1", actor_id: "agent-1", workspace_id: seatWorkspaceId }],
+  };
+  const adminCalls: any[] = [];
+  const caller = appsSupabase({ seed, actorRow });
+  const admin = appsSupabase({ seed, actorRow, calls: adminCalls });
+  const repo = appsRepo(caller, { createServiceRoleClient: () => admin });
+  const seatWrites = () =>
+    adminCalls.filter((c) => c.table === "session_participants" && c.op === "update");
+  return { repo, seatWrites };
+}
+
+test("setParticipantWorkspace moves the seat when the agent's owner asks", async () => {
+  const { repo, seatWrites } = seatMoveFixture();
+  await repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-app" });
+  assert.equal(seatWrites().length, 1);
+  assert.equal(seatWrites()[0].row.workspace_id, "ws-app");
+});
+
+test("setParticipantWorkspace lets an admin of the agent move its seat", async () => {
+  const { repo, seatWrites } = seatMoveFixture({
+    actorRow: { id: "member-2" },
+    access: [{ agent_id: "agent-1", member_id: "member-2", permission_level: "admin" }],
+  });
+  await repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-app" });
+  assert.equal(seatWrites().length, 1);
+});
+
+test("setParticipantWorkspace lets the agent move its own seat", async () => {
+  const { repo, seatWrites } = seatMoveFixture({ actorRow: { id: "agent-1" } });
+  await repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-app" });
+  assert.equal(seatWrites().length, 1);
+});
+
+test("setParticipantWorkspace refuses a member who neither owns nor administers the agent", async () => {
+  const { repo, seatWrites } = seatMoveFixture({
+    actorRow: { id: "member-2" },
+    access: [{ agent_id: "agent-1", member_id: "member-2", permission_level: "member" }],
+  });
+  await assert.rejects(
+    () => repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-app" }),
+    (err: any) => err?.statusCode === 403,
+  );
+  assert.equal(seatWrites().length, 0);
+});
+
+test("setParticipantWorkspace rejects a workspace that belongs to another agent", async () => {
+  const { repo, seatWrites } = seatMoveFixture();
+  await assert.rejects(
+    () => repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-other-agent" }),
+    (err: any) => err?.statusCode === 400,
+  );
+  assert.equal(seatWrites().length, 0);
+});
+
+test("setParticipantWorkspace leaves a seat that is already on the workspace untouched", async () => {
+  const { repo, seatWrites } = seatMoveFixture({ seatWorkspaceId: "ws-app" });
+  await repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-app" });
+  assert.equal(seatWrites().length, 0);
+});
+
+test("setParticipantWorkspace answers 404 for a session the caller cannot see", async () => {
+  const { repo, seatWrites } = seatMoveFixture();
+  await assert.rejects(
+    () => repo.setParticipantWorkspace("sess-hidden", "agent-1", { workspaceId: "ws-app" }),
+    (err: any) => err?.statusCode === 404,
+  );
+  assert.equal(seatWrites().length, 0);
+});
+
+test("listWorkspacesByIdsSlim says who holds each row and whether it is archived", async () => {
+  const repo = appsRepo(appsSupabase({
+    seed: {
+      workspaces: [{ id: "ws-1", team_id: "team-1", name: "App", path: "/p", agent_id: "agent-1", archived: true }],
+    },
+  }));
+  assert.deepEqual(await repo.listWorkspacesByIdsSlim("team-1", ["ws-1"]), [
+    { id: "ws-1", name: "App", path: "/p", agentId: "agent-1", archived: true },
+  ]);
 });
 
 test("upsertWorkspace reuse of the same path_key does not steal agent_id", async () => {
