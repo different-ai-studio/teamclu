@@ -11,6 +11,7 @@ import {
 import {
   handleLoginRequest,
   isLoginHost,
+  makeSupabaseLoginAppLookup,
   type LoginApp,
   type LoginServiceDeps,
 } from "../src/lib/apps-login-service.js";
@@ -679,4 +680,117 @@ test("Web SSO is not part of app login, even where the deployment enables it", a
       assert.equal(d.calls.length, 0);
     },
   );
+});
+
+// --- custom domains ---------------------------------------------------------
+
+const CUSTOM = "https://hire.example.org";
+const TEAM_ID = "22222222-3333-4444-5555-666666666666";
+
+test("a verified custom domain is a return address the login page accepts", async () => {
+  await withEnv({}, async () => {
+    const app: LoginApp = { ...APP, customDomain: "hire.example.org", customDomainVerifiedAt: "2026-09-10T10:43:48Z" };
+    const d = deps({ lookupApp: async () => app });
+    const page = await handleLoginRequest(
+      get(`/?app=${APP_ID}&r=${encodeURIComponent(CUSTOM)}&next=%2Fcustom-apply`),
+      d,
+    );
+    assert.equal(page?.status, 200);
+    const html = await page!.text();
+    assert.match(html, /name="r" value="https:\/\/hire\.example\.org"/);
+    assert.match(html, /<span class="host">hire\.example\.org<\/span>/);
+
+    // And the code goes back to the custom domain, where the visitor started,
+    // not to the vanity name the session cookie would be useless on.
+    const verified = await handleLoginRequest(
+      post("/verify", { app: APP_ID, r: CUSTOM, next: "/custom-apply", email: "a@example.com", code: "123456" }),
+      d,
+    );
+    assert.equal(verified?.status, 302);
+    assert.match(verified!.headers.get("location")!, new RegExp(`^${CUSTOM}${APP_AUTH_CALLBACK_PATH}\\?code=`));
+  });
+});
+
+test("an unverified custom domain is still refused as a return address", async () => {
+  await withEnv({}, async () => {
+    const app: LoginApp = { ...APP, customDomain: "hire.example.org", customDomainVerifiedAt: null };
+    const res = await handleLoginRequest(
+      get(`/?app=${APP_ID}&r=${encodeURIComponent(CUSTOM)}`),
+      deps({ lookupApp: async () => app }),
+    );
+    assert.equal(res?.status, 400);
+    assert.match(await res!.text(), /返回地址与该应用不符/);
+  });
+});
+
+test("the app lookup reads the custom domain columns the return check needs", async () => {
+  const calls: any[] = [];
+  const row = {
+    id: APP_ID,
+    slug: "report",
+    name: "周报",
+    team_id: TEAM_ID,
+    auth_mode: "platform",
+    custom_domain: "hire.example.org",
+    custom_domain_verified_at: "2026-09-10T10:43:48Z",
+  };
+  let built = 0;
+  const client = {
+    from(table: string) {
+      const q: any = {
+        select(cols: string) { calls.push(["select", table, cols]); return q; },
+        eq(col: string, val: string) { calls.push(["eq", table, col, val]); return q; },
+        maybeSingle: async () =>
+          table === "apps" ? { data: row, error: null } : { data: { name: " 研发效能部 " }, error: null },
+      };
+      return q;
+    },
+  };
+  const lookup = makeSupabaseLoginAppLookup(() => { built++; return client; });
+
+  assert.deepEqual(await lookup(APP_ID), {
+    id: APP_ID,
+    slug: "report",
+    name: "周报",
+    teamName: "研发效能部",
+    authMode: "platform",
+    customDomain: "hire.example.org",
+    customDomainVerifiedAt: "2026-09-10T10:43:48Z",
+  });
+  const selected = calls.find((c) => c[0] === "select" && c[1] === "apps")[2]
+    .split(",")
+    .map((col: string) => col.trim());
+  for (const col of ["custom_domain", "custom_domain_verified_at", "name", "team_id", "auth_mode"]) {
+    assert.ok(selected.includes(col), `the apps lookup must select ${col}`);
+  }
+  assert.deepEqual(calls.find((c) => c[0] === "eq" && c[1] === "teams"), ["eq", "teams", "id", TEAM_ID]);
+
+  assert.equal(await lookup("not-a-uuid"), null);
+  assert.equal(built, 1, "a malformed id never reaches the database");
+});
+
+test("the app lookup surfaces a query error, but a failed team read only drops the caption", async () => {
+  const failing = {
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: { message: "boom" } }) }) }) }),
+  };
+  await assert.rejects(() => makeSupabaseLoginAppLookup(() => failing)(APP_ID), /login app lookup failed: boom/);
+
+  const teamsDown = {
+    from(table: string) {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => {
+              if (table === "teams") throw new Error("teams unavailable");
+              return { data: { id: APP_ID, slug: "report", name: null, team_id: TEAM_ID, auth_mode: "platform" }, error: null };
+            },
+          }),
+        }),
+      };
+    },
+  };
+  const app = await makeSupabaseLoginAppLookup(() => teamsDown)(APP_ID);
+  assert.equal(app?.teamName, null);
+  assert.equal(app?.customDomain, null);
+  assert.equal(app?.customDomainVerifiedAt, null);
 });
