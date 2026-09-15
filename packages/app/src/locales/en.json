@@ -1871,7 +1871,11 @@
       "rolesSkills": "Roles & Skills",
       "deps": "Dependencies",
       "billing": "Billing",
+      "teamRoles": "Team Roles",
       "knowledgeAcl": "Knowledge Access"
+    },
+    "navGroup": {
+      "teamManagement": "团队管理"
     },
     "general": {
       "title": "General",
@@ -3227,6 +3231,27 @@
         "adjustment": "Adjustment",
         "refund": "Refund"
       }
+    },
+    "teamRoles": {
+      "title": "Team Roles",
+      "description": "Org-scoped roles shared across teams in this organization. System roles cannot be edited.",
+      "noTeam": "Join or create a team to manage roles.",
+      "newRole": "New role",
+      "createTitle": "New role",
+      "name": "Name",
+      "code": "Code",
+      "descriptionField": "Description",
+      "create": "Create",
+      "edit": "Edit",
+      "delete": "Delete",
+      "system": "System",
+      "status": "Status",
+      "statusActive": "active",
+      "statusInactive": "inactive",
+      "sort": "Sort",
+      "empty": "No roles yet.",
+      "invalidCode": "Code must start with a letter and use only lowercase letters, digits, and underscores.",
+      "deleteBound": "Cannot delete: {{count}} member binding(s) still use this role."
     },
     "knowledgeAcl": {
       "title": "Knowledge Access",

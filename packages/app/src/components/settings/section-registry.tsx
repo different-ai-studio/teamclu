@@ -35,6 +35,7 @@ const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.ComponentType> 
   deps: lazySection(() => import('./DependenciesSection'), 'DependenciesSection'),
   billing: lazySection(() => import('./BillingSection'), 'BillingSection'),
   tokenUsage: lazySection(() => import('./TokenUsageSection'), 'TokenUsageSection'),
+  teamRoles: lazySection(() => import('./TeamRolesSection'), 'TeamRolesSection'),
   privacy: lazySection(() => import('./PrivacySection'), 'PrivacySection'),
   leaderboard: lazySection(() => import('./LeaderboardSection'), 'LeaderboardSection'),
   shortcuts: lazySection(() => import('@/components/shortcuts/ShortcutsSection'), 'ShortcutsSection'),

@@ -5,13 +5,21 @@ export class CloudApiError extends Error {
   status: number;
   code: string;
   requestId: string | null;
+  details: Record<string, unknown> | null;
 
-  constructor(status: number, code: string, message: string, requestId: string | null) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    requestId: string | null,
+    details: Record<string, unknown> | null = null,
+  ) {
     super(message);
     this.name = "CloudApiError";
     this.status = status;
     this.code = code;
     this.requestId = requestId;
+    this.details = details;
   }
 }
 
@@ -85,6 +93,7 @@ export function createCloudApiClient(args: {
         typeof error?.code === "string" ? error.code : "internal",
         typeof error?.message === "string" ? error.message : "Cloud API request failed.",
         response.headers.get("X-Request-Id") ?? error?.requestId ?? null,
+        error?.details && typeof error.details === "object" ? error.details : null,
       );
     }
 
@@ -133,6 +142,7 @@ export function createCloudApiClient(args: {
             typeof error?.code === "string" ? error.code : "internal",
             typeof error?.message === "string" ? error.message : "Cloud API request failed.",
             res.headers.get("X-Request-Id") ?? error?.requestId ?? null,
+            error?.details && typeof error.details === "object" ? error.details : null,
           );
         }
         return data as T;

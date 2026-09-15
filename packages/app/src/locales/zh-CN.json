@@ -1871,7 +1871,11 @@
       "rolesSkills": "角色与技能",
       "deps": "依赖",
       "billing": "账单",
+      "teamRoles": "团队角色",
       "knowledgeAcl": "知识库权限"
+    },
+    "navGroup": {
+      "teamManagement": "团队管理"
     },
     "general": {
       "title": "通用",
@@ -3227,6 +3231,27 @@
         "adjustment": "调整",
         "refund": "退款"
       }
+    },
+    "teamRoles": {
+      "title": "团队角色",
+      "description": "组织级角色，同组织下各团队共用。系统角色不可编辑。",
+      "noTeam": "加入或创建团队后才能管理角色。",
+      "newRole": "新建角色",
+      "createTitle": "新建角色",
+      "name": "名称",
+      "code": "代码",
+      "descriptionField": "描述",
+      "create": "创建",
+      "edit": "编辑",
+      "delete": "删除",
+      "system": "系统",
+      "status": "状态",
+      "statusActive": "active",
+      "statusInactive": "inactive",
+      "sort": "排序",
+      "empty": "暂无角色。",
+      "invalidCode": "代码须以字母开头，且只能包含小写字母、数字和下划线。",
+      "deleteBound": "无法删除：仍有 {{count}} 个成员绑定此角色。"
     },
     "knowledgeAcl": {
       "title": "知识库权限",

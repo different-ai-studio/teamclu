@@ -158,4 +158,32 @@ describe('Settings navigation', () => {
 
     vi.doUnmock('@/stores/ui')
   })
+
+  it('团队管理 group lists billing, tokenUsage, teamRoles; Desktop no longer has them', async () => {
+    vi.resetModules()
+    vi.doMock('@/stores/ui', () => ({
+      useUIStore: (selector: (state: unknown) => unknown) =>
+        selector({ settingsInitialSection: null }),
+    }))
+    const { Settings } = await import('../Settings')
+
+    render(<Settings />)
+
+    const teamMgmtButton = screen.getByRole('button', { name: '团队管理' })
+    expect(teamMgmtButton).toBeInTheDocument()
+
+    const clientSubnav = screen.getByTestId('client-subnav')
+    const clientLabels = within(clientSubnav).getAllByRole('button').map((b) => b.textContent)
+    expect(clientLabels).not.toContain('Billing')
+    expect(clientLabels).not.toContain('Token Usage')
+    expect(clientLabels).not.toContain('团队角色')
+
+    fireEvent.click(teamMgmtButton)
+    const teamSubnav = screen.getByTestId('team-management-subnav')
+    expect(
+      within(teamSubnav).getAllByRole('button').map((button) => button.textContent),
+    ).toEqual(['Billing', 'Token Usage', '团队角色'])
+
+    vi.doUnmock('@/stores/ui')
+  })
 })
