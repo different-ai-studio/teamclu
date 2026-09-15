@@ -30,29 +30,34 @@ def main() -> int:
         return 1
     print("Syncing app version ->", version)
 
+    # encoding= on every handle and ensure_ascii=False on every dump (#1403).
+    # The Windows runner's Python defaults open() to cp1252, which read the
+    # brand's "TeamClu 群策" as "TeamClu ç¾¤ç­–" without raising and wrote it
+    # back out, so every Windows build since #1027 shipped a mojibake window
+    # title and APP_DISPLAY_NAME. macOS defaults to UTF-8 and never showed it.
     conf_path = "apps/desktop/tauri.conf.json"
-    with open(conf_path) as f:
+    with open(conf_path, encoding="utf-8") as f:
         conf = json.load(f)
     conf["version"] = version
     conf["build"]["beforeBuildCommand"] = "echo frontend already built"
     conf.setdefault("plugins", {}).setdefault("updater", {})["endpoints"] = [manifest_url]
-    with open(conf_path, "w") as f:
-        json.dump(conf, f, indent=2)
+    with open(conf_path, "w", encoding="utf-8") as f:
+        json.dump(conf, f, indent=2, ensure_ascii=False)
 
     # Keep the Rust crates (desktop binary + bundled amuxd sidecar) in lockstep.
     for cargo in ("apps/desktop/Cargo.toml", "apps/daemon/Cargo.toml"):
-        with open(cargo) as f:
+        with open(cargo, encoding="utf-8") as f:
             txt = f.read()
         txt = re.sub(r'(?m)^version = "[^"]*"', f'version = "{version}"', txt, count=1)
-        with open(cargo, "w") as f:
+        with open(cargo, "w", encoding="utf-8") as f:
             f.write(txt)
 
     # package.json drives any in-app version read from the JS side.
-    with open("package.json") as f:
+    with open("package.json", encoding="utf-8") as f:
         pkg = json.load(f)
     pkg["version"] = version
-    with open("package.json", "w") as f:
-        json.dump(pkg, f, indent=2)
+    with open("package.json", "w", encoding="utf-8") as f:
+        json.dump(pkg, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
     # The custom Rust updater (apps/desktop/src/commands/updater.rs) reads its
@@ -65,11 +70,11 @@ def main() -> int:
     # This also deliberately REPLACES (not appends to) whatever endpoints the
     # brand's build.config.json declared: a brand config may carry a GitHub
     # fallback endpoint, but nothing in this channel is published to GitHub.
-    with open("build.config.json") as f:
+    with open("build.config.json", encoding="utf-8") as f:
         bc = json.load(f)
     bc.setdefault("app", {}).setdefault("updater", {})["endpoints"] = [manifest_url]
-    with open("build.config.json", "w") as f:
-        json.dump(bc, f, indent=2)
+    with open("build.config.json", "w", encoding="utf-8") as f:
+        json.dump(bc, f, indent=2, ensure_ascii=False)
 
     print("Updater endpoint ->", manifest_url)
     return 0

@@ -570,6 +570,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ inputs.tag }}
+          # The script pins UTF-8 itself; this covers any open() added later.
+          # Under the runner's cp1252 default it rewrote the brand's Chinese
+          # displayName into the mojibake window title of #1403.
+          PYTHONUTF8: "1"
         run: python3 scripts/finalize-oss-release-conf.py
 
       # Build only — no tagName, so tauri-action does NOT create a GitHub Release.
