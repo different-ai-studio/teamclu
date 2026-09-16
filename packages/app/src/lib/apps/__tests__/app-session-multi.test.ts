@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   bindAppWorkspaceInternals: vi.fn(),
   daemonAppWorkdir: vi.fn(),
   createDaemonWorkspace: vi.fn(),
+  listDaemonWorkspaces: vi.fn(),
 }))
 
 vi.mock('@/lib/backend', () => ({
@@ -60,7 +61,7 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
 }))
 
 vi.mock('@/lib/daemon/daemon-workspaces', () => ({
-  listDaemonWorkspaces: vi.fn().mockResolvedValue([]),
+  listDaemonWorkspaces: mocks.listDaemonWorkspaces,
   createDaemonWorkspace: mocks.createDaemonWorkspace,
 }))
 
@@ -82,6 +83,7 @@ beforeEach(() => {
   mocks.daemonAppWorkdir.mockResolvedValue({ workdir: '/workdir/app-1', deviceName: 'test-host' })
   mocks.createDaemonWorkspace.mockResolvedValue({ id: 'ws-new' })
   mocks.listWorkspacesByIds.mockResolvedValue([])
+  mocks.listDaemonWorkspaces.mockResolvedValue([])
   mocks.setParticipantWorkspace.mockResolvedValue(undefined)
 })
 
@@ -272,10 +274,10 @@ describe("the local daemon's seat", () => {
     expect(mocks.setParticipantWorkspace).toHaveBeenCalledTimes(2)
   })
 
-  it("is left alone when the checkout's row belongs to another machine's daemon", async () => {
-    // Both machines lay their home out identically and share the app's row.
-    // The Cloud API only puts an agent's own workspace on its seat, so naming
-    // this row would fail the create outright.
+  // Both machines lay their home out identically and share the app's row. The
+  // seat can take it, but only by a move: a Cloud API from before shared-path
+  // seats refuses another agent's row at create time and fails the create.
+  it("is moved onto the row another machine's daemon registered for the same path", async () => {
     mocks.listWorkspacesByIds.mockResolvedValue([
       { id: 'ws-1', name: 'w', path: '/workdir/app-1', agentId: 'daemon-other', archived: false },
     ])
@@ -287,6 +289,24 @@ describe("the local daemon's seat", () => {
     expect(mocks.createSessionShell).toHaveBeenCalledWith(
       expect.objectContaining({ localWorkspace: null }),
     )
-    expect(mocks.setParticipantWorkspace).not.toHaveBeenCalled()
+    expect(mocks.setParticipantWorkspace).toHaveBeenCalledWith('seat-shared-row', 'daemon-1', 'ws-1')
+    expect(mocks.setParticipantWorkspace).toHaveBeenCalledWith('seat-shared-row-opened', 'daemon-1', 'ws-1')
+  })
+
+  it('takes a shared row found by path instead of posting the folder again', async () => {
+    // The app's own row names another machine's directory, so this machine
+    // looks for a row of its own directory — which another daemon registered.
+    mocks.listWorkspacesByIds.mockResolvedValue([
+      { id: 'ws-1', name: 'w', path: '/elsewhere/app-1', agentId: 'daemon-other', archived: false },
+    ])
+    mocks.listDaemonWorkspaces.mockResolvedValue([
+      { id: 'ws-shared', agentId: 'daemon-other', archived: false, path: '/workdir/app-1' },
+    ])
+    const { openAppSession } = await import('@/lib/apps/app-session')
+    await openAppSession(app as never, 'seat-shared-by-path')
+
+    expect(mocks.listDaemonWorkspaces).toHaveBeenCalledWith('team-1')
+    expect(mocks.createDaemonWorkspace).not.toHaveBeenCalled()
+    expect(mocks.setParticipantWorkspace).toHaveBeenCalledWith('seat-shared-by-path', 'daemon-1', 'ws-shared')
   })
 })

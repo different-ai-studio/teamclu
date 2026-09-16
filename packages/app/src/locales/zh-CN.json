@@ -1081,7 +1081,6 @@
     "browseWorkspace": "浏览其他目录…",
     "browseWorkspaceTitle": "选择工作目录",
     "bindWorkspaceFailed": "设置工作目录失败：{{msg}}",
-    "workspaceHeldByAnotherAgent": "该目录已登记在团队里另一个 Agent 名下",
     "teamLink": "链接到团队共享目录",
     "newFile": "新建文件",
     "newFolder": "新建文件夹",

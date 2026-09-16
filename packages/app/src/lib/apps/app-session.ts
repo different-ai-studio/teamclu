@@ -119,12 +119,20 @@ async function loadContext(app: AppRow): Promise<AppSessionContext> {
 interface AppWorkspaceRow {
   id: string
   /**
-   * The local daemon's seat can take this row: it is that daemon's own and not
-   * archived, which is what the Cloud API holds a seat's workspace to. False
-   * when that is not known — an older Cloud API does not say who holds a row —
-   * which costs the seat binding, never the session.
+   * The local daemon's seat can be moved onto this row: it is live, which is
+   * what the Cloud API holds a seat's workspace to. It may be a row another
+   * machine registered for the same path. False when that is not known — an
+   * older Cloud API does not say — which costs the seat binding, never the
+   * session.
    */
   seatable: boolean
+  /**
+   * Also this daemon's own row, so the session can be created with its seat
+   * already on it. A shared row is only moved onto afterwards: a Cloud API from
+   * before shared-path seats refuses another agent's row at create time, and
+   * that fails the whole create, where a refused move costs only the binding.
+   */
+  seatableAtCreate: boolean
 }
 
 /**
@@ -151,13 +159,15 @@ interface AppWorkspaceRow {
  *
  * So the app's own row is claimed only when it is unclaimed (no path yet) or
  * already names this machine's directory. Anything else means another machine
- * holds it, and this machine gets a row of its own — found by path, or created.
- * `POST /v1/workspaces` dedupes on `(team, path)` before `(team, agent, name)`
- * and renames on a name collision, so creating one is safe.
+ * holds it, and this machine gets a row for its own directory — found by path
+ * across the team, or created.
  *
- * Two machines that lay their home out identically share the app's row, held by
- * whichever claimed it first. It resolves correctly on both, but only the
- * holder's daemon can put it on its seat — hence {@link AppWorkspaceRow.seatable}.
+ * Two machines that lay their home out identically share one row, held by
+ * whichever claimed it first. It resolves correctly on both, and either daemon's
+ * seat can take it — see {@link AppWorkspaceRow.seatableAtCreate} for when.
+ * The row is looked up before anything is posted: `POST /v1/workspaces` would
+ * find the same row but rename it and put the caller down as its creator, which
+ * the workspaces update policy refuses when someone else created it.
  */
 async function ensureAppWorkspaceRow(
   app: AppRow,
@@ -168,8 +178,11 @@ async function ensureAppWorkspaceRow(
   if (!localDaemonActorId) return null
   const { listDaemonWorkspaces, createDaemonWorkspace } = await import('@/lib/daemon/daemon-workspaces')
   const { workspacePathsMatch } = await import('@/stores/session-utils')
-  const seatable = (row: { agentId?: string | null; archived?: boolean }) =>
-    row.agentId === localDaemonActorId && row.archived !== true
+  const rowFor = (id: string, row: { agentId?: string | null; archived?: boolean }): AppWorkspaceRow => {
+    // `archived` is missing from an older Cloud API's by-ids response.
+    const seatable = row.archived === false
+    return { id, seatable, seatableAtCreate: seatable && row.agentId === localDaemonActorId }
+  }
 
   if (app.workspaceId) {
     try {
@@ -178,7 +191,7 @@ async function ensureAppWorkspaceRow(
       // machines happen to lay their amuxd home out identically, in which case
       // the path resolves correctly on each and one row is enough.
       if (row?.path && workspacePathsMatch(row.path, appWorkdir)) {
-        return { id: app.workspaceId, seatable: seatable(row) }
+        return rowFor(app.workspaceId, row)
       }
       if (row && !row.path) {
         // Unclaimed: the row the cloud API minted with the app, which no
@@ -193,7 +206,7 @@ async function ensureAppWorkspaceRow(
           name: row.name || app.name,
           path: appWorkdir,
         })
-        return { id: saved.id, seatable: seatable(saved) }
+        return rowFor(saved.id, saved)
       }
       // A row with a *different* path belongs to another machine's copy of this
       // app. Leave it exactly as it is and fall through to this machine's own.
@@ -203,10 +216,11 @@ async function ensureAppWorkspaceRow(
   }
 
   try {
-    const existing = (await listDaemonWorkspaces(ctx.teamId, localDaemonActorId)).find(
+    const matches = (await listDaemonWorkspaces(ctx.teamId)).filter(
       (w) => !w.archived && w.path && workspacePathsMatch(w.path, appWorkdir),
     )
-    if (existing) return { id: existing.id, seatable: seatable(existing) }
+    const existing = matches.find((w) => w.agentId === localDaemonActorId) ?? matches[0]
+    if (existing) return rowFor(existing.id, existing)
     const created = await createDaemonWorkspace({
       teamId: ctx.teamId,
       agentId: localDaemonActorId,
@@ -214,7 +228,7 @@ async function ensureAppWorkspaceRow(
       name: app.name,
       path: appWorkdir,
     })
-    return { id: created.id, seatable: seatable(created) }
+    return rowFor(created.id, created)
   } catch (e) {
     console.warn('[app-session] could not register app daemon workspace (non-fatal):', e)
     return null
@@ -253,8 +267,10 @@ interface AppCheckout {
    * that is not here.
    */
   workspaceId: string | null
-  /** `workspaceId`, when the local daemon's seat can take it; see {@link AppWorkspaceRow}. */
+  /** `workspaceId`, when the local daemon's seat can be moved onto it; see {@link AppWorkspaceRow}. */
   seatWorkspaceId: string | null
+  /** `workspaceId`, when a session can be created with the seat on it; see {@link AppWorkspaceRow}. */
+  createSeatWorkspaceId: string | null
 }
 
 /** Find the app's checkout on this machine and the workspace row that stands for it. */
@@ -279,6 +295,7 @@ async function resolveAppCheckout(
     workdir,
     workspaceId: row?.id ?? null,
     seatWorkspaceId: row?.seatable ? row.id : null,
+    createSeatWorkspaceId: row?.seatableAtCreate ? row.id : null,
   }
 }
 
@@ -290,10 +307,10 @@ function seatBindingFor(
   checkout: AppCheckout | null,
   ctx: AppSessionContext,
 ): LocalDaemonWorkspaceBinding | null {
-  if (!checkout?.seatWorkspaceId || !ctx.localDaemonActorId) return null
+  if (!checkout?.createSeatWorkspaceId || !ctx.localDaemonActorId) return null
   return {
     agentId: ctx.localDaemonActorId,
-    workspaceId: checkout.seatWorkspaceId,
+    workspaceId: checkout.createSeatWorkspaceId,
     path: checkout.workdir,
   }
 }

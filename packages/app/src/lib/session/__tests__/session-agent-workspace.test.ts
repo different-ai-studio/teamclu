@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   setParticipantWorkspace: vi.fn(),
   getSessionParticipants: vi.fn(),
   listWorkspacesByIds: vi.fn(),
-  listDaemonWorkspaces: vi.fn(),
+  resolveCloudWorkspaceIdForLocalPath: vi.fn(),
   createDaemonWorkspace: vi.fn(),
   upsertSessionWorkspacesBatch: vi.fn(),
   invalidateViewerWorkspaceContext: vi.fn(),
@@ -22,8 +22,11 @@ vi.mock('@/lib/backend', () => ({
 }))
 
 vi.mock('@/lib/daemon/daemon-workspaces', () => ({
-  listDaemonWorkspaces: mocks.listDaemonWorkspaces,
   createDaemonWorkspace: mocks.createDaemonWorkspace,
+}))
+
+vi.mock('@/lib/teamclu/resolve-runtime-start-workspace', () => ({
+  resolveCloudWorkspaceIdForLocalPath: mocks.resolveCloudWorkspaceIdForLocalPath,
 }))
 
 vi.mock('@/lib/cache/local-cache', () => ({
@@ -52,7 +55,6 @@ import {
   bindSessionAgentWorkspace,
   ensureAgentWorkspaceForPath,
   localSeatNeedsWorkspace,
-  WorkspaceHeldByAnotherAgentError,
 } from '../session-agent-workspace'
 import { sessionWorkspaceRebindRevision } from '../session-workspace-rebind'
 
@@ -123,36 +125,32 @@ describe('localSeatNeedsWorkspace', () => {
 })
 
 describe('ensureAgentWorkspaceForPath', () => {
+  const args = { teamId: 'team-1', agentId: 'agent-local', memberId: 'member-1', path: '/Users/me/project' }
+
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('reuses the agent\'s live workspace for the folder instead of registering it again', async () => {
-    mocks.listDaemonWorkspaces.mockResolvedValue([
-      workspaceRow({ id: 'ws-archived', archived: true }),
-      workspaceRow({ id: 'ws-live', path: '/Users/me/project/' }),
-    ])
-    const out = await ensureAgentWorkspaceForPath({
-      teamId: 'team-1',
-      agentId: 'agent-local',
-      memberId: 'member-1',
+  it('reuses the team\'s live workspace for the folder instead of registering it again', async () => {
+    mocks.resolveCloudWorkspaceIdForLocalPath.mockResolvedValue('ws-live')
+    await expect(ensureAgentWorkspaceForPath(args)).resolves.toEqual({
+      id: 'ws-live',
       path: '/Users/me/project',
     })
-    expect(out.id).toBe('ws-live')
-    expect(mocks.listDaemonWorkspaces).toHaveBeenCalledWith('team-1', 'agent-local')
+    expect(mocks.resolveCloudWorkspaceIdForLocalPath).toHaveBeenCalledWith('team-1', '/Users/me/project', {
+      agentActorId: 'agent-local',
+    })
+    // Posting the folder again would rename that row and claim its creator.
     expect(mocks.createDaemonWorkspace).not.toHaveBeenCalled()
   })
 
   it('registers a folder that is not a workspace yet, named after it', async () => {
-    mocks.listDaemonWorkspaces.mockResolvedValue([])
+    mocks.resolveCloudWorkspaceIdForLocalPath.mockResolvedValue(null)
     mocks.createDaemonWorkspace.mockResolvedValue(workspaceRow({ id: 'ws-new', name: 'blog', path: '/Users/me/blog' }))
-    const out = await ensureAgentWorkspaceForPath({
-      teamId: 'team-1',
-      agentId: 'agent-local',
-      memberId: 'member-1',
+    await expect(ensureAgentWorkspaceForPath({ ...args, path: '/Users/me/blog' })).resolves.toEqual({
+      id: 'ws-new',
       path: '/Users/me/blog',
     })
-    expect(out.id).toBe('ws-new')
     expect(mocks.createDaemonWorkspace).toHaveBeenCalledWith({
       teamId: 'team-1',
       agentId: 'agent-local',
@@ -162,19 +160,14 @@ describe('ensureAgentWorkspaceForPath', () => {
     })
   })
 
-  // The Cloud API dedupes on the team's path and keeps the row's agent; a seat
-  // would refuse that row, so fail here with something the user can act on.
-  it('refuses a folder another agent in the team already holds', async () => {
-    mocks.listDaemonWorkspaces.mockResolvedValue([])
-    mocks.createDaemonWorkspace.mockResolvedValue(workspaceRow({ agentId: 'agent-other' }))
-    await expect(
-      ensureAgentWorkspaceForPath({
-        teamId: 'team-1',
-        agentId: 'agent-local',
-        memberId: 'member-1',
-        path: '/Users/me/project',
-      }),
-    ).rejects.toBeInstanceOf(WorkspaceHeldByAnotherAgentError)
+  // Machines whose folders share a path share one row; the seat takes it.
+  it('accepts the row another agent holds when registering hands that back', async () => {
+    mocks.resolveCloudWorkspaceIdForLocalPath.mockResolvedValue(null)
+    mocks.createDaemonWorkspace.mockResolvedValue(workspaceRow({ id: 'ws-shared', agentId: 'agent-other' }))
+    await expect(ensureAgentWorkspaceForPath(args)).resolves.toEqual({
+      id: 'ws-shared',
+      path: '/Users/me/project',
+    })
   })
 })
 

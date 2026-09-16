@@ -9,30 +9,11 @@
  */
 import { getBackend } from '@/lib/backend'
 import { upsertSessionWorkspacesBatch } from '@/lib/cache/local-cache'
-import {
-  createDaemonWorkspace,
-  listDaemonWorkspaces,
-  type DaemonWorkspace,
-} from '@/lib/daemon/daemon-workspaces'
+import { createDaemonWorkspace } from '@/lib/daemon/daemon-workspaces'
 import { invalidateViewerWorkspaceContext } from '@/lib/session/session-viewer-workspace'
 import { noteSessionWorkspaceRebound } from '@/lib/session/session-workspace-rebind'
+import { resolveCloudWorkspaceIdForLocalPath } from '@/lib/teamclu/resolve-runtime-start-workspace'
 import { workspaceNameFromPath } from '@/lib/workspace/shorten-path'
-import { workspacePathsMatch } from '@/stores/session-utils'
-
-/**
- * The folder is already a workspace in this team, registered by another agent.
- *
- * `POST /v1/workspaces` dedupes on the team's path before anything else and
- * keeps the row's agent, so re-adding the folder hands back that agent's row —
- * and a seat only takes a workspace of its own agent. Two machines that lay
- * their home out identically land here.
- */
-export class WorkspaceHeldByAnotherAgentError extends Error {
-  constructor(readonly path: string) {
-    super(`workspace ${path} belongs to another agent in this team`)
-    this.name = 'WorkspaceHeldByAnotherAgentError'
-  }
-}
 
 /**
  * Whether the files pane may offer to bind a folder for the agent: its seat in
@@ -62,17 +43,25 @@ export async function localSeatNeedsWorkspace(args: {
   return !row || row.archived === true || !row.path
 }
 
-/** The agent's live workspace for `path`, registering the folder when it is not one yet. */
+/**
+ * The team's live workspace for `path`, registering the folder when there is none.
+ *
+ * It may be a row another agent registered. A workspace is one per (team, path),
+ * so machines whose folders share a path share its row, and a seat can take it.
+ * The row is looked up before anything is posted: `POST /v1/workspaces` finds
+ * the same row but renames it and puts the caller down as its creator, which
+ * the workspaces update policy refuses when someone else created it.
+ */
 export async function ensureAgentWorkspaceForPath(args: {
   teamId: string
   agentId: string
   memberId: string | null
   path: string
-}): Promise<DaemonWorkspace> {
-  const existing = (await listDaemonWorkspaces(args.teamId, args.agentId)).find(
-    (w) => !w.archived && !!w.path && workspacePathsMatch(w.path, args.path),
-  )
-  if (existing) return existing
+}): Promise<{ id: string; path: string }> {
+  const existingId = await resolveCloudWorkspaceIdForLocalPath(args.teamId, args.path, {
+    agentActorId: args.agentId,
+  })
+  if (existingId) return { id: existingId, path: args.path }
 
   const saved = await createDaemonWorkspace({
     teamId: args.teamId,
@@ -81,8 +70,7 @@ export async function ensureAgentWorkspaceForPath(args: {
     name: workspaceNameFromPath(args.path),
     path: args.path,
   })
-  if (saved.agentId !== args.agentId) throw new WorkspaceHeldByAnotherAgentError(args.path)
-  return saved
+  return { id: saved.id, path: saved.path ?? args.path }
 }
 
 /**

@@ -1081,7 +1081,6 @@
     "browseWorkspace": "Browse for another folder…",
     "browseWorkspaceTitle": "Choose a workspace folder",
     "bindWorkspaceFailed": "Could not set the workspace: {{msg}}",
-    "workspaceHeldByAnotherAgent": "This folder is already registered to another agent in the team",
     "teamLink": "Linked to the team's shared folder",
     "newFile": "New File",
     "newFolder": "New Folder",

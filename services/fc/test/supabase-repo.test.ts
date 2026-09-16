@@ -3932,7 +3932,10 @@ test("createSession honors workspaceByActorId over the agent default", async () 
   });
 });
 
-test("createSession rejects workspaceByActorId that belongs to another agent", async () => {
+// Two machines whose folders share a path share one workspace row, registered
+// by whichever agent got there first. Refusing the other agent's row left the
+// second machine unable to be seated in that folder at all.
+test("createSession seats an agent on a workspace another agent registered for the same path", async () => {
   const supabase = appsSupabase({
     actorRow: { id: "actor-app-1", actor_type: "member" },
     seed: {
@@ -3947,16 +3950,14 @@ test("createSession rejects workspaceByActorId that belongs to another agent", a
     },
   });
   const repo = appsRepo(supabase);
-  await assert.rejects(
-    () => repo.createSession({
-      id: "sess-ws-bad",
-      teamId: "team-1",
-      title: "Chat",
-      additionalActorIds: ["agent-1"],
-      workspaceByActorId: { "agent-1": "ws-other-agent" },
-    }),
-    (err: any) => err?.statusCode === 400,
-  );
+  const out = await repo.createSession({
+    id: "sess-ws-shared",
+    teamId: "team-1",
+    title: "Chat",
+    additionalActorIds: ["agent-1"],
+    workspaceByActorId: { "agent-1": "ws-other-agent" },
+  });
+  assert.equal(out.participantWorkspaces?.["agent-1"]?.workspaceId, "ws-other-agent");
 });
 
 // A seat's workspace used to be writable only when the seat was created, so an
@@ -3975,6 +3976,8 @@ function seatMoveFixture({
     workspaces: [
       { id: "ws-app", team_id: "team-1", agent_id: "agent-1", path: "/Users/me/.amuxd/apps/app-1", archived: false },
       { id: "ws-other-agent", team_id: "team-1", agent_id: "agent-2", path: "/Users/me/elsewhere", archived: false },
+      { id: "ws-other-team", team_id: "team-2", agent_id: "agent-1", path: "/Users/me/other-team", archived: false },
+      { id: "ws-archived", team_id: "team-1", agent_id: "agent-1", path: "/Users/me/old", archived: true },
     ],
     session_participants: [{ session_id: "sess-1", actor_id: "agent-1", workspace_id: seatWorkspaceId }],
   };
@@ -4021,14 +4024,27 @@ test("setParticipantWorkspace refuses a member who neither owns nor administers 
   assert.equal(seatWrites().length, 0);
 });
 
-test("setParticipantWorkspace rejects a workspace that belongs to another agent", async () => {
+test("setParticipantWorkspace moves the seat onto a workspace another agent registered for the same path", async () => {
   const { repo, seatWrites } = seatMoveFixture();
-  await assert.rejects(
-    () => repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-other-agent" }),
-    (err: any) => err?.statusCode === 400,
-  );
-  assert.equal(seatWrites().length, 0);
+  await repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId: "ws-other-agent" });
+  assert.equal(seatWrites().length, 1);
+  assert.equal(seatWrites()[0].row.workspace_id, "ws-other-agent");
 });
+
+for (const [label, workspaceId] of [
+  ["in another team", "ws-other-team"],
+  ["archived", "ws-archived"],
+  ["unknown", "ws-missing"],
+]) {
+  test(`setParticipantWorkspace rejects a workspace that is ${label}`, async () => {
+    const { repo, seatWrites } = seatMoveFixture();
+    await assert.rejects(
+      () => repo.setParticipantWorkspace("sess-1", "agent-1", { workspaceId }),
+      (err: any) => err?.statusCode === 400,
+    );
+    assert.equal(seatWrites().length, 0);
+  });
+}
 
 test("setParticipantWorkspace leaves a seat that is already on the workspace untouched", async () => {
   const { repo, seatWrites } = seatMoveFixture({ seatWorkspaceId: "ws-app" });

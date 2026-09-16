@@ -1022,9 +1022,11 @@ paths:
         (#1430).
 
         The caller must be able to see the session and must be the agent, its
-        owner, or one of its admins. The workspace must belong to that agent,
-        sit in the session's team, carry a path and not be archived, which are
-        the rules `workspaceByActorId` is held to when a session is created.
+        owner, or one of its admins. The workspace must sit in the session's
+        team, carry a path and not be archived, which are the rules
+        `workspaceByActorId` is held to when a session is created. It need not
+        be the agent's own row: a workspace is one per (team, path), so agents
+        on machines whose folders share a path share its row.
         Naming the workspace the seat already has changes nothing.
       tags: [Sessions]
       parameters:
@@ -5592,9 +5594,9 @@ paths:
                         agentId:
                           type: [string, "null"]
                           description: |
-                            The agent that registered the row. A session seat
-                            only takes a live workspace of its own agent, so the
-                            desktop checks this before naming a row for one.
+                            The agent that registered the row. Agents whose
+                            folders share a path share the row, so this is not
+                            necessarily the agent working in it.
                         archived: { type: boolean }
         "400":
           $ref: "#/components/responses/Error"
@@ -9901,7 +9903,9 @@ components:
           description: |
             Cloud workspace UUID for each agent participant. Overrides
             `agents.default_workspace_id` for that actor. Member seats stay
-            unbound (workspace_id is not applicable).
+            unbound (workspace_id is not applicable). Each must be a live
+            workspace with a path in the session's team; it may be a row
+            another agent registered for the same path.
     SessionThreadSummary:
       type: object
       required: [threadSessionId, rootMessageId, messageCount, participantCount]

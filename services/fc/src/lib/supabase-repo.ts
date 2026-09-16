@@ -294,6 +294,17 @@ function normalizeWorkspacePath(path: string | null | undefined): string | null 
   return joined || null;
 }
 
+/**
+ * The workspace named for an agent's seat must be in the session's team, live,
+ * and carry a path.
+ *
+ * It need not be the agent's own row. A workspace is one per (team, path) —
+ * `workspaces_team_path_unique` — and its `agent_id` only records who registered
+ * it first, so two machines whose folders share a path share one row. Holding
+ * the seat to its agent's rows left the second machine unable to be seated in
+ * that folder at all. The daemon resolves the id to the path and opens it on its
+ * own machine, and refuses a path that does not exist there.
+ */
 async function assertExplicitWorkspaceBindings(
   supabase: any,
   teamId: string,
@@ -313,7 +324,7 @@ async function assertExplicitWorkspaceBindings(
     return data ?? [];
   });
   const byId = new Map(rows.map((row) => [String(row.id), row]));
-  for (const [actorId, workspaceId] of entries) {
+  for (const [, workspaceId] of entries) {
     const ws = byId.get(workspaceId.trim());
     if (!ws) {
       throw new ApiError(400, "validation_failed", "workspace not found");
@@ -323,9 +334,6 @@ async function assertExplicitWorkspaceBindings(
     }
     if (ws.archived === true) {
       throw new ApiError(400, "validation_failed", "workspace archived");
-    }
-    if (String(ws.agent_id ?? "").trim() !== actorId.trim()) {
-      throw new ApiError(400, "validation_failed", "workspace agent mismatch");
     }
     if (!normalizeWorkspacePath(ws.path)) {
       throw new ApiError(400, "validation_failed", "workspace path empty");
@@ -2833,10 +2841,11 @@ export function createSupabaseBusinessRepository(options) {
         if (error) throw error;
         return data ?? [];
       });
-      // `agentId` and `archived` are two of the rules a session seat holds a
-      // workspace to (assertExplicitWorkspaceBindings). The desktop checks them
-      // before creating an app session on a row, so a row another machine's
-      // daemon holds does not fail the whole create (#1430). The daemon has read
+      // `archived` is one of the rules a session seat holds a workspace to
+      // (assertExplicitWorkspaceBindings). `agentId` says who registered the
+      // row: the desktop names only its own daemon's rows when creating an app
+      // session, because a Cloud API from before shared-path seats refuses any
+      // other row there and fails the whole create (#1430). The daemon has read
       // both from this response all along and been handed its defaults.
       return rows.map((row) => ({
         id: row.id,

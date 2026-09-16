@@ -7,7 +7,6 @@ import { listDaemonWorkspaces, type DaemonWorkspace } from '@/lib/daemon/daemon-
 import {
   bindSessionAgentWorkspace,
   ensureAgentWorkspaceForPath,
-  WorkspaceHeldByAnotherAgentError,
 } from '@/lib/session/session-agent-workspace'
 import { shortenWorkspacePath } from '@/lib/workspace/shorten-path'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -86,11 +85,9 @@ export function SessionWorkspacePicker({ agentId }: SessionWorkspacePickerProps)
     } catch (e) {
       console.warn('[SessionWorkspacePicker] binding failed:', e)
       toast.error(
-        e instanceof WorkspaceHeldByAnotherAgentError
-          ? t('fileExplorer.workspaceHeldByAnotherAgent', '该目录已登记在团队里另一个 Agent 名下')
-          : t('fileExplorer.bindWorkspaceFailed', '设置工作目录失败：{{msg}}', {
-              msg: e instanceof Error ? e.message : String(e),
-            }),
+        t('fileExplorer.bindWorkspaceFailed', '设置工作目录失败：{{msg}}', {
+          msg: e instanceof Error ? e.message : String(e),
+        }),
       )
     } finally {
       bindingRef.current = false
@@ -109,8 +106,7 @@ export function SessionWorkspacePicker({ agentId }: SessionWorkspacePickerProps)
       })
       const path = typeof selected === 'string' ? selected.trim() : ''
       if (!path) return null
-      const workspace = await ensureAgentWorkspaceForPath({ teamId, agentId, memberId, path })
-      return { id: workspace.id, path: workspace.path ?? path }
+      return ensureAgentWorkspaceForPath({ teamId, agentId, memberId, path })
     })
 
   return (

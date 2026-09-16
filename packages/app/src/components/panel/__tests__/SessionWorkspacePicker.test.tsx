@@ -25,14 +25,10 @@ vi.mock('@/lib/daemon/daemon-workspaces', () => ({
   listDaemonWorkspaces: mocks.listDaemonWorkspaces,
 }))
 
-vi.mock('@/lib/session/session-agent-workspace', async () => {
-  class WorkspaceHeldByAnotherAgentError extends Error {}
-  return {
-    bindSessionAgentWorkspace: mocks.bindSessionAgentWorkspace,
-    ensureAgentWorkspaceForPath: mocks.ensureAgentWorkspaceForPath,
-    WorkspaceHeldByAnotherAgentError,
-  }
-})
+vi.mock('@/lib/session/session-agent-workspace', () => ({
+  bindSessionAgentWorkspace: mocks.bindSessionAgentWorkspace,
+  ensureAgentWorkspaceForPath: mocks.ensureAgentWorkspaceForPath,
+}))
 
 vi.mock('@/stores/session-selection-store', () => ({
   useSessionSelectionStore: (selector: (s: unknown) => unknown) =>
@@ -50,7 +46,6 @@ vi.mock('@/stores/workspace', () => ({
 }))
 
 import { SessionWorkspacePicker } from '../SessionWorkspacePicker'
-import { WorkspaceHeldByAnotherAgentError } from '@/lib/session/session-agent-workspace'
 
 function workspaceRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -126,9 +121,7 @@ describe('SessionWorkspacePicker', () => {
 
   it('registers a browsed folder and binds it', async () => {
     mocks.openDialog.mockResolvedValue('/Users/me/new-thing')
-    mocks.ensureAgentWorkspaceForPath.mockResolvedValue(
-      workspaceRow({ id: 'ws-new', path: '/Users/me/new-thing' }),
-    )
+    mocks.ensureAgentWorkspaceForPath.mockResolvedValue({ id: 'ws-new', path: '/Users/me/new-thing' })
     render(<SessionWorkspacePicker agentId="agent-local" />)
     await screen.findByTestId('files-workspace-options')
     fireEvent.click(screen.getByText('浏览其他目录…'))
@@ -161,20 +154,6 @@ describe('SessionWorkspacePicker', () => {
     render(<SessionWorkspacePicker agentId="agent-local" />)
     expect(await screen.findByText('本机还没有工作目录')).toBeDefined()
     expect(screen.getByText('浏览其他目录…').closest('button')?.disabled).toBe(false)
-  })
-
-  it('says so when the browsed folder belongs to another agent', async () => {
-    mocks.openDialog.mockResolvedValue('/Users/me/project')
-    mocks.ensureAgentWorkspaceForPath.mockRejectedValue(
-      new WorkspaceHeldByAnotherAgentError('/Users/me/project'),
-    )
-    render(<SessionWorkspacePicker agentId="agent-local" />)
-    await screen.findByTestId('files-workspace-options')
-    fireEvent.click(screen.getByText('浏览其他目录…'))
-    await waitFor(() =>
-      expect(mocks.toastError).toHaveBeenCalledWith('该目录已登记在团队里另一个 Agent 名下'),
-    )
-    expect(mocks.bindSessionAgentWorkspace).not.toHaveBeenCalled()
   })
 
   it('reports a seat that could not be moved, and lets the user try again', async () => {
