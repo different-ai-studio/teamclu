@@ -53,8 +53,10 @@ create temporary table fx (
 
 grant select on fx to anon, authenticated, service_role;
 
-select pg_temp.as_service();
-
+-- No as_service() here. The fixture writes auth.users, and service_role has no
+-- INSERT on it (`GRANT INSERT ON auth.users TO service_role` is what the error
+-- asks for). The plain session role owns these tables, so it bypasses RLS and
+-- can write auth — which is what every other fixture in this directory does.
 do $$
 declare
   v_org uuid := gen_random_uuid();
@@ -80,7 +82,9 @@ begin
      '00000000-0000-0000-0000-000000000000')
   on conflict do nothing;
 
-  -- roles_users.user_id → public.users(id); store auth uid as users.id.
+  -- public.users rows are the business profile, not what roles_users keys on:
+  -- that column references auth.users (see the migration header). They are here
+  -- because caller_employee_orgs() and the org resolvers read them.
   insert into public.users (id, auth_user_id, org_id, email) values
     (v_owner, v_owner, v_org, 'org-roles-owner@amux.test'),
     (v_multi, v_multi, v_org, 'org-roles-multi@amux.test');

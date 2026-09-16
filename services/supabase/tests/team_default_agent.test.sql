@@ -47,6 +47,34 @@ $$;
 -- ── fixtures ──────────────────────────────────────────────────────────────────
 
 -- Auth users: owner and plain member
+-- amux.current_team_role reads public.roles_users, which is ORG-scoped, so a
+-- fixture that seeds only amux.team_members.role leaves every actor at the
+-- `member` floor. Give the team an org (creating one on the fly if it has
+-- none — the orgs trigger seeds the four system roles) and the user a real
+-- binding. See 20260915200000_org_roles.sql.
+create or replace function pg_temp.grant_org_role(p_team uuid, p_user uuid, p_code text)
+returns void language plpgsql as $$
+declare
+  v_org  uuid;
+  v_role uuid;
+begin
+  select oid into v_org from amux.teams where id = p_team;
+  if v_org is null then
+    insert into public.orgs (name) values ('fixture ' || left(p_team::text, 8))
+    returning id into v_org;
+    update amux.teams set oid = v_org where id = p_team;
+  end if;
+  select id into v_role from public.roles
+   where org_id = v_org and code = p_code and is_system limit 1;
+  if v_role is null then
+    raise exception 'fixture: no system role % for org %', p_code, v_org;
+  end if;
+  insert into public.roles_users (user_id, role_id, org_id, status, store_id, is_primary)
+  values (p_user, v_role, v_org, 'active', null, false)
+  on conflict do nothing;
+end;
+$$;
+
 insert into auth.users (id, email, aud, role, instance_id) values
   ('da010001-0000-4000-8000-000000000001', 'tda-owner@amux.test',  'authenticated', 'authenticated', '00000000-0000-0000-0000-000000000000'),
   ('da010001-0000-4000-8000-000000000002', 'tda-member@amux.test', 'authenticated', 'authenticated', '00000000-0000-0000-0000-000000000000')
@@ -68,6 +96,11 @@ insert into amux.members (id, status) values
 insert into amux.team_members (team_id, member_id, role) values
   ('da020001-0000-4000-8000-000000000000', 'da030001-0000-4000-8000-000000000001', 'owner'),
   ('da020001-0000-4000-8000-000000000000', 'da030001-0000-4000-8000-000000000002', 'member');
+
+select pg_temp.grant_org_role(
+  'da020001-0000-4000-8000-000000000000', 'da010001-0000-4000-8000-000000000001', 'owner');
+select pg_temp.grant_org_role(
+  'da020001-0000-4000-8000-000000000000', 'da010001-0000-4000-8000-000000000002', 'member');
 
 -- Agent actors:
 --   agent1 = team-visible, active   (primary team default)

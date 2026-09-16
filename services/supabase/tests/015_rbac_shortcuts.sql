@@ -21,6 +21,34 @@ create temp table fx(
 -- below read fx while impersonating it to check rows past RLS.
 grant select on fx to anon, authenticated, service_role;
 
+-- amux.current_team_role reads public.roles_users, which is ORG-scoped, so a
+-- fixture that seeds only amux.team_members.role leaves every actor at the
+-- `member` floor. Give the team an org (creating one on the fly if it has
+-- none — the orgs trigger seeds the four system roles) and the user a real
+-- binding. See 20260915200000_org_roles.sql.
+create or replace function pg_temp.grant_org_role(p_team uuid, p_user uuid, p_code text)
+returns void language plpgsql as $$
+declare
+  v_org  uuid;
+  v_role uuid;
+begin
+  select oid into v_org from amux.teams where id = p_team;
+  if v_org is null then
+    insert into public.orgs (name) values ('fixture ' || left(p_team::text, 8))
+    returning id into v_org;
+    update amux.teams set oid = v_org where id = p_team;
+  end if;
+  select id into v_role from public.roles
+   where org_id = v_org and code = p_code and is_system limit 1;
+  if v_role is null then
+    raise exception 'fixture: no system role % for org %', p_code, v_org;
+  end if;
+  insert into public.roles_users (user_id, role_id, org_id, status, store_id, is_primary)
+  values (p_user, v_role, v_org, 'active', null, false)
+  on conflict do nothing;
+end;
+$$;
+
 create or replace function pg_temp.mk_member(p_team uuid, p_name text, p_role text)
 returns table(member_id uuid, user_id uuid)
 language plpgsql as $$
@@ -35,6 +63,7 @@ begin
     values (v_actor, 'active');
   insert into amux.team_members(team_id, member_id, role)
     values (p_team, v_actor, p_role);
+  perform pg_temp.grant_org_role(p_team, v_user, p_role);
   return query select v_actor, v_user;
 end $$;
 
