@@ -20,13 +20,6 @@ export interface RemovableActorTarget {
   owner_member_id?: string | null
 }
 
-export interface RoleChangeActorTarget {
-  id: string
-  actor_type?: 'member' | 'agent' | 'external' | string
-  team_role?: string | null
-  roles?: Array<{ code: string }> | null
-}
-
 /** Whether the signed-in member may remove another actor from the team. */
 export function canRemoveTeamActor(
   permissions: Pick<TeamPermissions, 'canManageTeam'>,
@@ -48,38 +41,6 @@ export function canRemoveTeamActor(
   }
 
   return permissions.canManageTeam
-}
-
-/** Highest assignment from roles[], then the legacy team_role column. */
-export function effectiveTeamRole(target: RoleChangeActorTarget): string {
-  if (target.roles?.length) {
-    return highestRoleCode(target.roles) ?? (target.team_role ?? 'member').toLowerCase()
-  }
-  return (target.team_role ?? 'member').toLowerCase()
-}
-
-/** Whether the signed-in member may set or remove another member's admin role. */
-export function canSetTeamMemberRole(
-  permissions: Pick<TeamPermissions, 'canManageTeam'>,
-  target: RoleChangeActorTarget,
-  currentMemberId: string | null | undefined,
-): boolean {
-  if (!permissions.canManageTeam) return false
-  if (!currentMemberId) return false
-  if (target.id === currentMemberId) return false
-  if (target.actor_type !== 'member') return false
-  const role = effectiveTeamRole(target)
-  return role === 'admin' || role === 'member'
-}
-
-/** Next role for the context-menu action, or null when the target cannot change. */
-export function nextTeamMemberRole(
-  teamRole: string | null | undefined,
-): 'admin' | 'member' | null {
-  const role = (teamRole ?? 'member').toLowerCase()
-  if (role === 'admin') return 'member'
-  if (role === 'member') return 'admin'
-  return null
 }
 
 /** Highest privilege among owner|admin|member (finance is not a CloudRole). */

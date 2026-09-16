@@ -3594,8 +3594,6 @@
       "copyId": "Copy ID",
       "setDefault": "Set as default agent",
       "removeDefault": "Remove as default agent",
-      "setAdmin": "Set as admin",
-      "removeAdmin": "Remove admin",
       "remove": "Remove from team"
     },
     "detail": {
@@ -3659,18 +3657,6 @@
     },
     "copyFailed": "Copy failed",
     "removed": "Removed from team",
-    "roleChanged": {
-      "setAdmin": "{{name}} is now an admin",
-      "removeAdmin": "{{name}} is no longer an admin"
-    },
-    "roleFailed": {
-      "generic": "Could not update role: {{msg}}",
-      "self": "You cannot change your own role.",
-      "owner": "The team owner role cannot be changed this way.",
-      "forbidden": "Only team owners and admins can change member roles.",
-      "notFound": "This member is no longer in the team.",
-      "notMember": "Only team members can be made admin."
-    },
     "removeFailed": {
       "generic": "Remove failed: {{msg}}",
       "lastOwner": "Cannot remove the last team owner. Promote another member first.",

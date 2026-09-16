@@ -926,11 +926,6 @@ test("removeTeamActor calls amux.remove_team_actor explicitly", async () => {
   assert.equal(rpc.schema, "amux", "must call amux.remove_team_actor explicitly");
 });
 
-test("setTeamMemberRole is provided by the org-roles repo (roles_users SoT)", async () => {
-  const repo = createRepo(fakeSupabase({}));
-  assert.equal(typeof repo.setTeamMemberRole, "function");
-});
-
 test("getWorkspaceConfig merges teams + team_workspace_config rows", async () => {
   const repo = createRepo(fakeSupabase({
     tableData: {

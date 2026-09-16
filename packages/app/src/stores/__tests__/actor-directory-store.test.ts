@@ -2,9 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   isListableActor,
   mapCacheRow,
-  patchMemberTeamRole,
   toActorKind,
-  useActorDirectoryStore,
 } from '@/stores/actor-directory-store'
 
 describe('mapCacheRow', () => {
@@ -84,59 +82,5 @@ describe('isListableActor', () => {
     expect(isListableActor({ actor_type: 'member', agent_status: null })).toBe(true)
     // A row cached before agent_status was carried must not vanish.
     expect(isListableActor({ actor_type: 'agent', agent_status: null })).toBe(true)
-  })
-})
-
-describe('patchMemberTeamRole', () => {
-  it('updates the member row in the directory slice', () => {
-    useActorDirectoryStore.setState({
-      byTeam: {
-        'team-1': {
-          actors: [{
-            id: 'actor-b',
-            actor_type: 'member',
-            display_name: 'Bob',
-            member_status: null,
-            agent_status: null,
-            last_active_at: null,
-            team_role: 'member',
-          }],
-          loading: false,
-          error: false,
-          started: true,
-        },
-      },
-    })
-    patchMemberTeamRole('team-1', 'actor-b', 'admin')
-    expect(useActorDirectoryStore.getState().byTeam['team-1'].actors[0].team_role).toBe('admin')
-  })
-
-  it('strips admin from roles[] when demoting so the list pill does not stick', () => {
-    useActorDirectoryStore.setState({
-      byTeam: {
-        'team-1': {
-          actors: [{
-            id: 'actor-b',
-            actor_type: 'member',
-            display_name: 'Bob',
-            member_status: null,
-            agent_status: null,
-            last_active_at: null,
-            team_role: 'admin',
-            roles: [
-              { id: 'r-admin', code: 'admin', name: '管理员' },
-              { id: 'r-member', code: 'member', name: '成员' },
-            ],
-          }],
-          loading: false,
-          error: false,
-          started: true,
-        },
-      },
-    })
-    patchMemberTeamRole('team-1', 'actor-b', 'member')
-    const row = useActorDirectoryStore.getState().byTeam['team-1'].actors[0]
-    expect(row.team_role).toBe('member')
-    expect(row.roles?.map((r) => r.code)).toEqual(['member'])
   })
 })

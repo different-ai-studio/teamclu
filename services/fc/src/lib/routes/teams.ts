@@ -1,5 +1,5 @@
 import { requireString, optionalStringOrNull } from "../routing-utils.js";
-import { ApiError, optionalBearerToken } from "../http-utils.js";
+import { optionalBearerToken } from "../http-utils.js";
 
 export function registerTeams(router) {
   router.get("/v1/teams", async (ctx) => {
@@ -126,15 +126,6 @@ export function registerTeams(router) {
 
   router.delete("/v1/teams/:teamId/members/:actorId", async (ctx) => {
     await ctx.repository.removeTeamActor(ctx.params.teamId, ctx.params.actorId);
-    return { statusCode: 204 };
-  });
-
-  router.patch("/v1/teams/:teamId/members/:actorId", async (ctx) => {
-    const role = requireString(ctx.json?.role, "role");
-    if (role !== "admin" && role !== "member") {
-      throw new ApiError(400, "validation_failed", "role must be admin or member");
-    }
-    await ctx.repository.setTeamMemberRole(ctx.params.teamId, ctx.params.actorId, role);
     return { statusCode: 204 };
   });
 
