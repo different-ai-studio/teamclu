@@ -212,6 +212,23 @@ describe('canSetTeamMemberRole', () => {
   it('denies when the current member is unknown', () => {
     expect(canSetTeamMemberRole(adminPerms, memberTarget, null)).toBe(false)
   })
+
+  it('uses roles[] over a stale team_role', () => {
+    expect(
+      canSetTeamMemberRole(
+        adminPerms,
+        { id: 'actor-b', actor_type: 'member', team_role: 'member', roles: [{ code: 'owner' }] },
+        'actor-a',
+      ),
+    ).toBe(false)
+    expect(
+      canSetTeamMemberRole(
+        adminPerms,
+        { id: 'actor-b', actor_type: 'member', team_role: 'member', roles: [{ code: 'admin' }] },
+        'actor-a',
+      ),
+    ).toBe(true)
+  })
 })
 
 describe('nextTeamMemberRole', () => {

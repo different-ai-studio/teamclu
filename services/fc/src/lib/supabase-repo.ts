@@ -153,7 +153,6 @@ import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
   DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
-  mapSetTeamMemberRoleError,
   APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
@@ -1300,13 +1299,6 @@ export function createSupabaseBusinessRepository(options) {
         .schema("amux")
         .rpc("remove_team_actor", { p_actor_id: actorId });
       if (error) throw error;
-    },
-
-    async setTeamMemberRole(_teamId, actorId, role) {
-      const { error } = await supabase
-        .schema("amux")
-        .rpc("set_team_member_role", { p_actor_id: actorId, p_role: role });
-      if (error) throw mapSetTeamMemberRoleError(error);
     },
 
     async updateCurrentActorProfile(actorId, { displayName, avatarUrl }) {

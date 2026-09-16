@@ -398,10 +398,11 @@ paths:
       operationId: setTeamMemberRole
       summary: Set team member role
       description: |
-        Owner or admin sets another member's role to `admin` or `member`.
-        Cannot change the caller's own role, cannot change an owner, and
-        cannot promote anyone to owner. Idempotent when the target already
-        has the requested role.
+        Owner or admin grants or revokes the org `admin` role (`roles_users`)
+        for another member. Cannot change the caller's own role, cannot
+        change an owner, and cannot promote anyone to owner. Idempotent
+        when the target already has the requested role. Dual-writes
+        `team_members.role` for legacy readers.
       tags: [Teams]
       parameters:
         - $ref: "#/components/parameters/TeamId"
