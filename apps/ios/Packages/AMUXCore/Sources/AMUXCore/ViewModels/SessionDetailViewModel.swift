@@ -173,6 +173,7 @@ public final class SessionDetailViewModel {
     private let sessionsRepository: SessionRepository?
     private let messagesRepository: MessagesRepository?
     private let workspacesRepository: (any WorkspaceRepository)?
+    private let turnTraceLoader: TurnTraceLoader?
     /// `nonisolated(unsafe)` so the deinit (which runs in a nonisolated
     /// context) can cancel the MQTT subscription task on VM teardown.
     /// Writes happen only from main-actor methods (`start`, `stop`); the
@@ -297,7 +298,8 @@ public final class SessionDetailViewModel {
                 sessionsRepository: SessionRepository? = nil,
                 messagesRepository: MessagesRepository? = nil,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
-                outboxSender: OutboxSender? = nil) {
+                outboxSender: OutboxSender? = nil,
+                turnTraceLoader: TurnTraceLoader? = nil) {
         _ = runtime; self.mqtt = mqtt; self.hub = hub; self.teamID = teamID; self.peerId = peerId
         self.session = session; self.teamcluService = teamcluService
         self.connectedAgentsStore = connectedAgentsStore
@@ -305,6 +307,7 @@ public final class SessionDetailViewModel {
         self.messagesRepository = messagesRepository
         self.workspacesRepository = workspacesRepository
         self.outboxSender = outboxSender
+        self.turnTraceLoader = turnTraceLoader ?? messagesRepository.map { TurnTraceLoader(repository: $0) }
     }
 
     /// The session's default routing actor: its primary agent, or the sole
@@ -2197,6 +2200,8 @@ public final class SessionDetailViewModel {
         }
         guard !messages.isEmpty else { return }
 
+        let streamingBeforeSeed = timelineState.streamingTurnIDByAgent
+
         // Reducer dedupes by `supabaseMessageID` and backfills the
         // id onto an existing content-equal entry when one exists.
         // Apply per record, project once at the end.
@@ -2212,6 +2217,10 @@ public final class SessionDetailViewModel {
             case "user_message", "user_prompt", "text": kind = .userPrompt
             default: continue
             }
+            if kind == .output, let trace = record.trace,
+               let turnID = record.turnID, !turnID.isEmpty {
+                tracedTurns[turnID] = TracedTurn(pointer: trace, senderActorID: record.senderActorID)
+            }
             let dirty = applyTimelineInput(
                 .historyMessage(HistoryInput(
                     supabaseMessageID: record.id,
@@ -2221,13 +2230,142 @@ public final class SessionDetailViewModel {
                     createdAt: record.createdAt,
                     model: record.model,
                     turnID: record.turnID,
-                    sequence: record.sequence
+                    sequence: record.sequence,
+                    closesTurn: kind == .output && record.trace != nil
                 )),
                 modelContext: modelContext
             )
             if dirty { anyChange = true }
         }
+        if pruneTracedTurnRuntimeRows(modelContext: modelContext) { anyChange = true }
         if anyChange { recomputeGroups() }
+        settleTurnsClosedByTrace(streamingBeforeSeed: streamingBeforeSeed)
+    }
+
+    // MARK: - Turn traces
+
+    /// A turn whose final reply carries `metadata.trace`, as of the last seed.
+    private struct TracedTurn {
+        let pointer: TurnTracePointer
+        let senderActorID: String
+    }
+
+    /// By turn id. Filled by `seedFromSupabaseMessages`.
+    private var tracedTurns: [String: TracedTurn] = [:]
+
+    /// Traces loaded for the turn detail view, by turn id.
+    public private(set) var loadedTurnTraces: [String: LoadedTurnTrace] = [:]
+
+    /// Turns whose trace couldn't be loaded, so the detail view asked the
+    /// daemon instead. The view uses this to tell "still loading" from
+    /// "nothing more to show".
+    public private(set) var turnTraceFallbackTurnIDs: Set<String> = []
+
+    /// Loads a finished turn's process for `StreamingDetailView`: the cloud
+    /// trace when the turn has one, which works with the daemon offline and
+    /// from any device, otherwise the daemon's own record through
+    /// `requestTurnHistory`.
+    public func loadTurnDetail(modelContext: ModelContext, turnID: String, agentID: String) async {
+        guard !turnID.isEmpty, loadedTurnTraces[turnID] == nil else { return }
+        // Skip the cloud only when the seed already said the upload failed.
+        // No pointer yet may just mean it hasn't landed: FC writes it after
+        // the reply.
+        if let loader = turnTraceLoader,
+           let sessionID = session?.sessionId,
+           tracedTurns[turnID]?.pointer.isUploaded != false {
+            do {
+                if let detail = try await loader.load(
+                    teamID: teamID,
+                    sessionID: sessionID,
+                    turnID: turnID,
+                    senderActorID: agentID
+                ) {
+                    loadedTurnTraces[turnID] = makeLoadedTurnTrace(detail)
+                    turnTraceFallbackTurnIDs.remove(turnID)
+                    return
+                }
+            } catch {
+                print("[SessionDetailVM] turn trace load failed for \(turnID): \(error)")
+            }
+        }
+        turnTraceFallbackTurnIDs.insert(turnID)
+        try? await requestTurnHistory(modelContext: modelContext, turnID: turnID, agentID: agentID)
+    }
+
+    /// Trace entries as AgentEvents the turn detail view can render. They
+    /// are never inserted into SwiftData — the trace in the cloud and on disk
+    /// is their only copy.
+    private func makeLoadedTurnTrace(_ detail: TurnTraceDetail) -> LoadedTurnTrace {
+        let rows = detail.entries.map { entry in
+            let event = TimelineSwiftDataSync.makeAgentEvent(from: entry, agentId: eventScopeKey)
+            // The trace records the request, not the answer; the local row
+            // may know how it was resolved.
+            if entry.eventType == "permission_request",
+               let requestID = entry.toolID,
+               let local = events.first(where: {
+                   $0.eventType == "permission_request" && $0.toolId == requestID
+               }) {
+                event.success = local.success
+            }
+            return event
+        }
+        return LoadedTurnTrace(events: rows, droppedEvents: detail.droppedEvents)
+    }
+
+    /// Drops the local thinking / tool / mid-turn reply rows of every turn
+    /// whose trace is uploaded. The trace holds all of it, so SwiftData keeps
+    /// only what the chat feed shows (the final reply, permission cards,
+    /// plans, errors), and long sessions stop loading every tool call ever
+    /// made into memory on open. Rows of a turn still streaming are kept.
+    @discardableResult
+    private func pruneTracedTurnRuntimeRows(modelContext: ModelContext) -> Bool {
+        guard tracedTurns.values.contains(where: { $0.pointer.isUploaded }) else { return false }
+        let liveTurnIDs = Set(timelineState.streamingTurnIDByAgent.values)
+        var doomed = Set<String>()
+        for entry in timelineState.entries {
+            guard let turnID = entry.turnID,
+                  let traced = tracedTurns[turnID], traced.pointer.isUploaded,
+                  !liveTurnIDs.contains(turnID),
+                  (entry.senderActorID ?? "") == traced.senderActorID
+            else { continue }
+            switch entry.eventType {
+            case "thinking", "tool_use", "tool_result":
+                doomed.insert(entry.id)
+            case "output" where entry.supabaseMessageID == nil:
+                // Mid-turn reply segments, or a live copy of the final reply
+                // the seed couldn't match. The cloud row stays.
+                doomed.insert(entry.id)
+            default:
+                break
+            }
+        }
+        guard !doomed.isEmpty else { return false }
+        timelineState.entries.removeAll { doomed.contains($0.id) }
+        for event in events where doomed.contains(event.id) {
+            modelContext.delete(event)
+        }
+        events.removeAll { doomed.contains($0.id) }
+        try? modelContext.save()
+        rebuildIndexes()
+        return true
+    }
+
+    /// Streams the seed just closed through a trace pointer (see
+    /// `HistoryInput.closesTurn`) need the same VM-side settle a live idle
+    /// gets, and their trace is fetched now so the turn detail opens from
+    /// disk. Replaces the daemon replay `replayStreamingTurnsAfterReconnect`
+    /// would otherwise send for them.
+    private func settleTurnsClosedByTrace(streamingBeforeSeed: [String: String]) {
+        for (bucket, turnID) in streamingBeforeSeed
+        where timelineState.streamingTurnIDByAgent[bucket] != turnID && tracedTurns[turnID] != nil {
+            settleAgentTurn(bucket: bucket)
+            guard let loader = turnTraceLoader,
+                  let sessionID = session?.sessionId,
+                  tracedTurns[turnID]?.pointer.isUploaded == true
+            else { continue }
+            let teamID = self.teamID
+            Task { await loader.prefetch(teamID: teamID, sessionID: sessionID, turnID: turnID) }
+        }
     }
 
     /// On MQTT reconnect, replay the daemon's recorded envelopes for

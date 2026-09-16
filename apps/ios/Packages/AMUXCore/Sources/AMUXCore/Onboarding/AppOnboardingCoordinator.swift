@@ -579,6 +579,8 @@ public final class AppOnboardingCoordinator {
             // Sign-out path; surface only via errorMessage on the
             // signOut() flow itself.
         }
+        // Downloaded turn traces are this account's session content too.
+        await TurnTraceCache.shared.removeAll()
         await signOut()
     }
 

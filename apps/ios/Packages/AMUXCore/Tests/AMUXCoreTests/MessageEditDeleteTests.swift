@@ -36,6 +36,8 @@ private actor FakeMessagesRepository: MessagesRepository {
     }
 
     func listFeedback(sessionID: String) async throws -> [FeedbackRecord] { [] }
+
+    func turnTrace(teamID: String, sessionID: String, turnID: String) async throws -> TurnTraceLocation? { nil }
 }
 
 private actor FakeSessionsRepository: SessionsRepository {

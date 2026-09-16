@@ -99,7 +99,7 @@ public enum TimelineSwiftDataSync {
         return changed
     }
 
-    private static func makeAgentEvent(from entry: TimelineEntry, agentId: String) -> AgentEvent {
+    static func makeAgentEvent(from entry: TimelineEntry, agentId: String) -> AgentEvent {
         let event = AgentEvent(agentId: agentId, sequence: Int(entry.sequence), eventType: entry.eventType)
         event.id = entry.id
         event.text = entry.text
