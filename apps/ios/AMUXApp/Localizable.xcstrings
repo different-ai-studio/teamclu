@@ -41,6 +41,16 @@
         }
       }
     },
+    "%lld more events weren't recorded": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另有 %lld 个事件未被记录"
+          }
+        }
+      }
+    },
     "%lld of %lld": {
       "localizations": {
         "zh-Hans": {
@@ -2042,6 +2052,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂无待处理邀请"
+          }
+        }
+      }
+    },
+    "No process details are available for this turn": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这一轮没有可查看的过程详情"
           }
         }
       }

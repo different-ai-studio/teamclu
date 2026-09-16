@@ -11,13 +11,12 @@ private struct TurnHistoryFetcher: ViewModifier {
 
     func body(content: Content) -> some View {
         content.task(id: route.frozenTurnID) {
-            // Fetch the daemon's recorded thinking / tool-call / partial-output
-            // events for the pinned turn. Active streams already receive live
-            // deltas via MQTT; the daemon scan is fast and the reducer dedupes
-            // overlap, so we don't gate on "do we already have events for this
-            // turn" — a redundant call is cheaper than missing thinking events.
+            // Load the pinned turn's thinking / tool calls / partial output:
+            // its cloud trace (cached on disk after the first open), or the
+            // daemon's recorded events when the turn has no trace. Active
+            // streams already receive live deltas via MQTT.
             guard let turnID = route.frozenTurnID, !turnID.isEmpty else { return }
-            try? await viewModel.requestTurnHistory(
+            await viewModel.loadTurnDetail(
                 modelContext: modelContext,
                 turnID: turnID,
                 agentID: route.agentID
@@ -111,13 +110,21 @@ public struct StreamingDetailView: View {
             default: break
             }
         }
-        return "\(items.count)-\(turnEventCount)-\(lastEventID)"
+        // A trace arriving for the pinned turn replaces the local rows.
+        let traceCount = route.frozenTurnID
+            .flatMap { viewModel.loadedTurnTraces[$0]?.events.count } ?? -1
+        return "\(items.count)-\(turnEventCount)-\(lastEventID)-\(traceCount)"
     }
 
     /// Compute resolved turn data fresh from feedItems. The result is sorted
     /// chronologically so text→tool→text turns display in the correct order.
     private func computeResolved() -> (events: [AgentEvent], isActive: Bool, agentName: String) {
         if let pinned = route.frozenTurnID {
+            // The trace is the whole turn, already in the order the daemon
+            // recorded it; the local rows are at best a subset of it.
+            if let trace = viewModel.loadedTurnTraces[pinned], !trace.events.isEmpty {
+                return (trace.events, false, agentNameFor(route.agentID))
+            }
             for item in viewModel.feedItems {
                 if case .completedTurn(let id, let agentID, let final, let runtime) = item,
                    id == pinned {
@@ -165,6 +172,22 @@ public struct StreamingDetailView: View {
             if let name = event.modelDisplayName(via: attachment) {
                 return name
             }
+        }
+        return nil
+    }
+
+    /// A quiet line under a pinned turn when there is less to show than the
+    /// agent did: the trace hit its size budget, or neither the cloud nor the
+    /// daemon had anything beyond the final reply.
+    private func processNote(eventCount: Int) -> String? {
+        guard let pinned = route.frozenTurnID else { return nil }
+        if let dropped = viewModel.loadedTurnTraces[pinned]?.droppedEvents, dropped > 0 {
+            return String(localized: "\(dropped) more events weren't recorded")
+        }
+        if viewModel.turnTraceFallbackTurnIDs.contains(pinned),
+           !viewModel.isSyncing,
+           eventCount <= 1 {
+            return String(localized: "No process details are available for this turn")
         }
         return nil
     }
@@ -222,6 +245,16 @@ public struct StreamingDetailView: View {
                     if snapshot.isActive || stillStreaming {
                         TypingIndicatorView()
                             .id("detail-typing")
+                    }
+
+                    if let note = processNote(eventCount: snapshot.events.count) {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(Color.amux.slate)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
                     }
 
                     Color.clear.frame(height: 16).id("detail-bottom")

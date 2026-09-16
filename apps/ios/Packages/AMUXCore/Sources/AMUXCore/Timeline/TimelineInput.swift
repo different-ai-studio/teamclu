@@ -162,6 +162,9 @@ public struct HistoryInput: Sendable {
     /// (Supabase seed vs. live MQTT deltas) is stable. 0 = legacy row
     /// without sequence; reducer falls back to (createdAt, supabaseMessageID).
     public let sequence: Int64
+    /// The row carries `metadata.trace`, which the daemon attaches only to a
+    /// turn's final reply: the turn `turnID` has ended.
+    public let closesTurn: Bool
 
     public init(supabaseMessageID: String,
                 kind: HistoryKind,
@@ -170,7 +173,8 @@ public struct HistoryInput: Sendable {
                 createdAt: Date,
                 model: String? = nil,
                 turnID: String? = nil,
-                sequence: Int64 = 0) {
+                sequence: Int64 = 0,
+                closesTurn: Bool = false) {
         self.supabaseMessageID = supabaseMessageID
         self.kind = kind
         self.senderActorID = senderActorID
@@ -179,6 +183,7 @@ public struct HistoryInput: Sendable {
         self.model = model
         self.turnID = turnID
         self.sequence = sequence
+        self.closesTurn = closesTurn
     }
 }
 

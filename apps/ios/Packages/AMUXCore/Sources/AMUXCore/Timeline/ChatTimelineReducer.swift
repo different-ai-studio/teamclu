@@ -443,6 +443,30 @@ public enum ChatTimelineReducer {
 
     @discardableResult
     static func applyHistory(_ input: HistoryInput, to state: inout TimelineState) -> TimelineReducerEffect {
+        let effect = applyHistoryRow(input, to: &state)
+        guard input.kind == .output,
+              let bucket = input.senderActorID,
+              !bucket.isEmpty
+        else { return effect }
+
+        // A row carrying a trace pointer is the turn's final reply, so the
+        // turn is over no matter what the saved partial holds. The partial
+        // often isn't a prefix of the reply: the reply only holds the text
+        // after the last tool call. Close the stream and any tool row still
+        // marked running, instead of asking the daemon to replay the turn.
+        if input.closesTurn,
+           let turnID = input.turnID, !turnID.isEmpty,
+           state.streamingTurnIDByAgent[bucket] == turnID {
+            clearStreaming(bucket, in: &state)
+            for i in state.entries.indices where state.entries[i].eventType == "tool_use"
+                && !state.entries[i].isComplete
+                && state.entries[i].turnID == turnID
+                && (state.entries[i].senderActorID ?? "") == bucket {
+                state.entries[i].isComplete = true
+            }
+            return .entriesChanged
+        }
+
         // Residual-streaming cleanup. Cold-start `start()` may have restored
         // `streamingAgentSet[bucket]` from a `stop()`-saved synthetic
         // incomplete output — but if Supabase shows the turn already
@@ -452,24 +476,25 @@ public enum ChatTimelineReducer {
         // the streaming partial we saved is a prefix of the finalized text
         // (so we don't wipe an unrelated, genuinely-active stream for the
         // same agent that just happened to land mid-seed).
-        defer {
-            if input.kind == .output,
-               let bucket = input.senderActorID,
-               !bucket.isEmpty {
-                let partial = state.streamingTextByAgent[bucket] ?? ""
-                // Only clear when our saved partial is consistent with the
-                // finalized text — empty partial (no active stream) or a
-                // prefix of the completed content. Otherwise leave streaming
-                // state alone; it belongs to an unrelated active turn.
-                if partial.isEmpty || input.content.hasPrefix(partial) {
-                    state.streamingAgentSet.remove(bucket)
-                    state.streamingTextByAgent[bucket] = nil
-                    state.streamingModelByAgent[bucket] = nil
-                    state.streamingTurnIDByAgent[bucket] = nil
-                }
-            }
+        let partial = state.streamingTextByAgent[bucket] ?? ""
+        // Only clear when our saved partial is consistent with the
+        // finalized text — empty partial (no active stream) or a
+        // prefix of the completed content. Otherwise leave streaming
+        // state alone; it belongs to an unrelated active turn.
+        if partial.isEmpty || input.content.hasPrefix(partial) {
+            clearStreaming(bucket, in: &state)
         }
+        return effect
+    }
 
+    private static func clearStreaming(_ bucket: String, in state: inout TimelineState) {
+        state.streamingAgentSet.remove(bucket)
+        state.streamingTextByAgent[bucket] = nil
+        state.streamingModelByAgent[bucket] = nil
+        state.streamingTurnIDByAgent[bucket] = nil
+    }
+
+    private static func applyHistoryRow(_ input: HistoryInput, to state: inout TimelineState) -> TimelineReducerEffect {
         // Identity dedupe by supabaseMessageID.
         if let idx = state.entries.firstIndex(where: { $0.supabaseMessageID == input.supabaseMessageID }) {
             if state.entries[idx].timestamp != input.createdAt {

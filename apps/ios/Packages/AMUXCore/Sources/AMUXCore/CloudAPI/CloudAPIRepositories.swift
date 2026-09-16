@@ -345,7 +345,8 @@ public actor CloudAPIMessagesRepository: MessagesRepository {
                 turnID: row.turnId,
                 replyToMessageID: row.replyToMessageId,
                 mentionActorIDs: row.metadata?.mentionActorIds ?? [],
-                sequence: 0
+                sequence: 0,
+                trace: row.metadata?.trace
             )
         }
         return MessagePage(messages: messages, nextCursor: page.nextCursor)
@@ -410,6 +411,25 @@ public actor CloudAPIMessagesRepository: MessagesRepository {
         let out: CloudFeedbackList = try await client.get("/v1/feedback?sessionId=\(Self.enc(sessionID))")
         return out.items.map { FeedbackRecord(messageID: $0.messageId, actorID: $0.actorId, kind: $0.kind) }
     }
+
+    public func turnTrace(teamID: String, sessionID: String, turnID: String) async throws -> TurnTraceLocation? {
+        let session = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionID
+        let turn = turnID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? turnID
+        let out: CloudTurnTraceDownload
+        do {
+            out = try await client.get("/v1/sessions/\(session)/turns/\(turn)/trace?teamId=\(Self.enc(teamID))")
+        } catch CloudAPIError.requestFailed(status: 404, code: _, message: _) {
+            return nil
+        }
+        guard let url = URL(string: out.downloadUrl) else { throw CloudAPIError.invalidResponse }
+        return TurnTraceLocation(downloadURL: url, size: out.size, sha256: out.sha256)
+    }
+}
+
+private struct CloudTurnTraceDownload: Decodable, Sendable {
+    let downloadUrl: String
+    let size: Int
+    let sha256: String
 }
 
 private struct CloudFeedbackRequest: Encodable, Sendable {
@@ -959,9 +979,19 @@ private struct CloudSession: Decodable, Sendable {
 /// keys iOS consumes are decoded; unknown keys are ignored by `Decodable`.
 private struct CloudMessageMetadata: Decodable, Sendable {
     let mentionActorIds: [String]?
+    let trace: TurnTracePointer?
 
     private enum CodingKeys: String, CodingKey {
         case mentionActorIds = "mention_actor_ids"
+        case trace
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mentionActorIds = try container.decodeIfPresent([String].self, forKey: .mentionActorIds)
+        // A malformed pointer must not fail the whole message page; the turn
+        // detail just falls back to asking the daemon.
+        trace = try? container.decodeIfPresent(TurnTracePointer.self, forKey: .trace)
     }
 }
 

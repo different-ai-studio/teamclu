@@ -99,6 +99,10 @@ public struct MessageRecord: Equatable, Sendable {
     /// fanouts where `created_at` would collide. 0 means "legacy row
     /// before the column existed" — fall back to created_at ordering.
     public let sequence: Int64
+    /// `messages.metadata.trace`: where this turn's execution trace lives.
+    /// Only turn-final agent replies carry one, and it lands a few seconds
+    /// after the reply itself, so nil does not mean the turn has no trace.
+    public var trace: TurnTracePointer? = nil
 }
 
 /// Input shape for inserting a chat message into Supabase. iOS writes
@@ -178,6 +182,10 @@ public protocol MessagesRepository: Sendable {
     /// Existing feedback rows for a session (`GET /v1/feedback?sessionId=`).
     /// Includes every actor's rows; callers filter to the current actor.
     func listFeedback(sessionID: String) async throws -> [FeedbackRecord]
+    /// Presigned download for a turn's execution trace
+    /// (`GET /v1/sessions/:id/turns/:turnId/trace`). nil when FC has no
+    /// uploaded trace for the turn (404).
+    func turnTrace(teamID: String, sessionID: String, turnID: String) async throws -> TurnTraceLocation?
 }
 
 public struct FeedbackInput: Sendable {
