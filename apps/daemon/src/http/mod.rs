@@ -34,6 +34,7 @@ pub mod cors;
 pub mod errors;
 pub mod events;
 pub mod knowledge_inbox;
+pub mod knowledge_scaffold;
 pub mod limit;
 pub mod live_events;
 pub mod live_ingest;

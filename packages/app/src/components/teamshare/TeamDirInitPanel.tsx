@@ -1,69 +1,70 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { FolderPlus, Loader2 } from 'lucide-react'
+import { BookPlus, FolderPlus, Loader2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
+import { useCurrentTeamStore } from '@/stores/current-team'
 import { linkDaemonTeamWorkspace, TEAM_LINK_LEGACY_DAEMON } from '@/lib/daemon/daemon-local-client'
+import { scaffoldKnowledgeVault } from '@/lib/knowledge/scaffold-client'
 import { isTauri } from '@/lib/utils'
 
+export type KnowledgeInitMode = 'missing-dir' | 'empty-vault'
+
+type Props = {
+  /**
+   * `missing-dir` — sync root absent on this machine; rebuild then scaffold.
+   * `empty-vault` — directory exists but has no notes yet; scaffold only.
+   */
+  mode?: KnowledgeInitMode
+  /** Called after a successful scaffold so the parent can refresh empty-state. */
+  onScaffolded?: () => void
+}
+
 /**
- * Shown in the Knowledge column when the team's knowledge directory is missing
- * on THIS machine — `~/.amuxd[-<brand>]/teams/<id>/shared/knowledge` is not
- * there, so there is no root to render a file tree from. (It no longer means
- * "this workspace has no symlink": the column reads that directory by absolute
- * path and does not go through the workspace link at all.)
+ * One-click knowledge vault initialization.
  *
- * This is a local-state problem, not an account one: sync is on for the team
- * either way. The daemon owns the directory, and `POST /v1/team/link` is
- * idempotent — it materializes whichever half is missing. So the fix is one
- * button, and pressing it twice is harmless.
+ * Two repairable empty states share this panel:
+ * 1. The team's sync root is missing locally → `POST /v1/team/link`, then scaffold.
+ * 2. The vault exists but has no files yet → scaffold only.
  *
- * `strict: true` because the whole point here is to report failure: the
- * best-effort default would swallow "daemon not running", which is the most
- * likely reason the directory is missing in the first place.
+ * Scaffold is idempotent (existing files are never overwritten).
  */
-export function TeamDirInitPanel() {
+export function TeamDirInitPanel({ mode = 'missing-dir', onScaffolded }: Props) {
   const { t } = useTranslation()
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
+  const teamName = useCurrentTeamStore((s) => s.team?.name ?? null)
 
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
-  // A workspace is not required: the repair this button performs is "create the
-  // team's directory", which belongs to the team. When a folder IS open its
-  // team links get repaired too, as a bonus.
   const ready = isTauri()
+  const missingDir = mode === 'missing-dir'
 
   async function handleInit() {
     if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await linkDaemonTeamWorkspace(workspacePath, { strict: true })
-      // Re-resolving the root is enough. It reads the daemon's directory
-      // directly, so there is no cached workspace tree standing between the
-      // repair and the column noticing it.
-      await loadSection('knowledge', { force: true })
-
-      // "The call succeeded" is not "the repair worked". A daemon older than
-      // the knowledge relocation materializes the previous layout
-      // (`shared/teamclu-team/knowledge`) and answers 200 — nothing this column
-      // reads has changed, no exception was thrown, and the panel re-renders
-      // itself unchanged. That is indistinguishable from a dead button, and it
-      // is what a user actually hit: four clicks, four 200s, no feedback.
-      //
-      // So check the outcome, not the call.
-      if (!useTeamShareBrowserStore.getState().syncRoot) {
-        setError(
-          t(
-            'teamShare.dirMissingStillMissing',
-            'Rebuilt, but the team folder is still not here. The local daemon is probably out of date — restart or update it, then try again.',
-          ),
-        )
+      if (missingDir) {
+        await linkDaemonTeamWorkspace(workspacePath, { strict: true })
+        await loadSection('knowledge', { force: true })
+        if (!useTeamShareBrowserStore.getState().syncRoot) {
+          setError(
+            t(
+              'teamShare.dirMissingStillMissing',
+              'Rebuilt, but the team folder is still not here. The local daemon is probably out of date — restart or update it, then try again.',
+            ),
+          )
+          return
+        }
       }
+
+      await scaffoldKnowledgeVault({ teamName: teamName ?? undefined })
+      await loadSection('knowledge', { force: true })
+      onScaffolded?.()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setError(
@@ -79,25 +80,40 @@ export function TeamDirInitPanel() {
     }
   }
 
+  const title = missingDir
+    ? t('teamShare.dirMissingTitle', 'Team folder is missing on this machine')
+    : t('teamShare.knowledgeScaffoldTitle', '初始化团队知识库')
+  const body = missingDir
+    ? t(
+        'teamShare.dirMissingBody',
+        "Team sync is on, but the team's folder is not on this machine yet. Rebuilding creates it and pulls the team content down.",
+      )
+    : t(
+        'teamShare.knowledgeScaffoldBody',
+        '一键生成标准目录（入职、域知识、决策、运维手册等）和双语模板。已有文件不会被覆盖。',
+      )
+  const action = missingDir
+    ? t('teamShare.dirMissingAction', 'Rebuild team folder')
+    : t('teamShare.knowledgeScaffoldAction', '初始化知识库')
+  const Icon = missingDir ? FolderPlus : BookPlus
+
   return (
-    <div className="flex flex-col items-center gap-3 px-6 py-12 text-center">
+    <div className="flex flex-col items-center gap-3 px-6 py-12 text-center" data-testid="knowledge-init-panel">
       <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-        <FolderPlus className="h-5 w-5" />
+        <Icon className="h-5 w-5" />
       </span>
-      <p className="text-[13px] font-medium text-foreground">
-        {t('teamShare.dirMissingTitle', 'Team folder is missing on this machine')}
-      </p>
-      <p className="max-w-[280px] text-[12.5px] leading-relaxed text-muted-foreground">
-        {t(
-          'teamShare.dirMissingBody',
-          "Team sync is on, but the team's folder is not on this machine yet. Rebuilding creates it and pulls the team content down.",
-        )}
-      </p>
+      <p className="text-[13px] font-medium text-foreground">{title}</p>
+      <p className="max-w-[280px] text-[12.5px] leading-relaxed text-muted-foreground">{body}</p>
 
       {ready ? (
-        <Button size="sm" onClick={() => void handleInit()} disabled={busy}>
+        <Button
+          size="sm"
+          onClick={() => void handleInit()}
+          disabled={busy}
+          data-testid="knowledge-init-action"
+        >
           {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-          {t('teamShare.dirMissingAction', 'Rebuild team folder')}
+          {action}
         </Button>
       ) : (
         <p className="text-[12px] text-muted-foreground">
