@@ -10,6 +10,19 @@ include:
   - path: ./supabase/docker-compose.yml
     project_directory: ./supabase
 
+# Container logs, capped. json-file is Docker's default driver and its default
+# is UNBOUNDED, so every container here grew a log until the disk did. On the
+# live box that reached 1.9 GB across all containers — imgproxy alone 746 MB,
+# kong 503 MB — on a 40 GB root that was 96% full.
+#
+# 50m x 3 is ~150 MB worst case per container: enough history to debug a bad
+# night, small enough that 20 containers cannot fill the disk between them.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   # Override only the healthcheck of the vendored Supabase service (the file under
   # supabase/ stays pristine). Upstream sets interval 5s x 3 retries with no
@@ -18,10 +31,12 @@ services:
   # unhealthy and aborts migrate's `depends_on: storage: service_healthy`, so a cold
   # `up` fails while storage is merely still starting.
   storage:
+    logging: *default-logging
     healthcheck:
       start_period: 120s
 
   emqx:
+    logging: *default-logging
     # 5.10.3+ required: 5.8.0 has a WebSocket bug where emqx_ws_connection
     # handle_outgoing/2 crashes with {badmatch, <send_oct>} when a broker
     # delivery exceeds the client's advertised Maximum-Packet-Size, killing the
@@ -75,6 +90,7 @@ services:
       retries: 12
 
   migrate:
+    logging: *default-logging
     image: postgres:15-alpine
     restart: "no"
     depends_on:
@@ -107,6 +123,7 @@ services:
   # and cannot run inside a transaction; docker-entrypoint-initdb.d never re-runs
   # on an already-initialized volume.
   apps-db-init:
+    logging: *default-logging
     image: postgres:15-alpine
     restart: "no"
     depends_on:
@@ -153,6 +170,7 @@ services:
   #
   # Reached publicly through Caddy at /ai/* ; FC calls it in-network on :4001.
   ai-gateway:
+    logging: *default-logging
     build:
       context: ../../services/ai-gateway
     restart: unless-stopped
@@ -209,6 +227,7 @@ services:
       start_period: 20s
 
   gitea:
+    logging: *default-logging
     # Per-app private git repos for the Apps module. HTTP is fronted by Caddy on
     # GITEA_DOMAIN; SSH is published to the host on GITEA_SSH_PORT so developer
     # laptops and the daemon can push/fetch — not only containers on this network.
@@ -253,6 +272,7 @@ services:
       start_period: 30s
 
   fc:
+    logging: *default-logging
     build:
       context: ../../services/fc
     image: teamclu-fc:self-host
@@ -552,6 +572,7 @@ services:
   # logs app-cron` shows it. The loop never exits, so one bad minute (FC
   # restarting, say) is retried on the next.
   app-cron:
+    logging: *default-logging
     image: curlimages/curl:8.11.1
     restart: unless-stopped
     depends_on:
@@ -610,6 +631,7 @@ services:
   # dials the public name. Hence MINIO_SERVER_URL and the Caddy site. Bytes
   # still live on this box; only the door is public.
   minio:
+    logging: *default-logging
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     profiles: ["minio"]
     restart: unless-stopped
@@ -639,6 +661,7 @@ services:
   #   apps/…  team-blobs/…  team-skills/…
   # Idempotent, so it is safe on every `compose up`.
   minio-init:
+    logging: *default-logging
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     profiles: ["minio"]
     # Start order only — NOT `condition: service_healthy`. A blocking condition
@@ -663,6 +686,7 @@ services:
     restart: "no"
 
   caddy:
+    logging: *default-logging
     image: caddy:2
     restart: unless-stopped
     ports:
@@ -739,6 +763,7 @@ services:
   # The image bundles opencode; set OPENCODE_* to run agent sessions. With no
   # OPENCODE_API_KEY the entrypoint disables agent discovery (presence-only).
   amuxd:
+    logging: *default-logging
     build:
       context: ../..
       dockerfile: deploy/self-host/amuxd/Dockerfile
@@ -783,6 +808,7 @@ services:
   # No auth of its own: the credentials live in Caddy, which is the only way in
   # and the only place that can tell a pull from a push (see the Caddyfile).
   registry:
+    logging: *default-logging
     # 3, not 2: the 2.x S3 driver addresses the bucket path-style and OSS
     # answers `SecondLevelDomainForbidden: Please use virtual hosted style` to
     # the very first blob upload. 3.x is on the AWS SDK v2 and gets it right —
@@ -810,6 +836,42 @@ services:
       REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
       # Deleting a tag is how an app's images are reclaimed on teardown.
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
+
+  # ── Log caps for the vendored Supabase services ───────────────────────────
+  #
+  # The file under supabase/ stays pristine (same reason as storage's
+  # healthcheck override above), so the cap is applied here instead. These are
+  # the containers that actually filled the disk: imgproxy 746 MB and kong
+  # 503 MB of a 1.9 GB total, on a 40 GB root at 96%.
+  #
+  # `storage` is not in this list — it has its own override stanza above and
+  # takes the anchor there.
+  studio:
+    logging: *default-logging
+  kong:
+    logging: *default-logging
+  templates-server:
+    logging: *default-logging
+  auth:
+    logging: *default-logging
+  rest:
+    logging: *default-logging
+  realtime:
+    logging: *default-logging
+  imgproxy:
+    logging: *default-logging
+  meta:
+    logging: *default-logging
+  functions:
+    logging: *default-logging
+  analytics:
+    logging: *default-logging
+  db:
+    logging: *default-logging
+  vector:
+    logging: *default-logging
+  supavisor:
+    logging: *default-logging
 
 volumes:
   emqx_data:
