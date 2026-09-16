@@ -6085,7 +6085,26 @@ export function createSupabaseBusinessRepository(options) {
       return mapTeamSkillVersionRow(data);
     },
 
+    async requireTeamAdmin(teamId) {
+      const actor = await this.resolveCallerActorForTeam(teamId);
+      if (!actor) throw new ApiError(403, "forbidden", "not a member of this team");
+      const { data, error } = await supabase
+        .from("team_members")
+        .select("role")
+        .eq("team_id", teamId)
+        .eq("member_id", actor.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (data?.role !== "owner" && data?.role !== "admin") {
+        throw new ApiError(403, "forbidden", "team owner or admin access required");
+      }
+      return actor.id;
+    },
+
     async updateTeamSkill(teamId, slug, patch: any = {}) {
+      if (patch.status !== undefined || patch.supersededBy !== undefined) {
+        await this.requireTeamAdmin(teamId);
+      }
       const { data: existing, error: eErr } = await supabase
         .from("team_skills")
         .select("*")
@@ -6129,18 +6148,29 @@ export function createSupabaseBusinessRepository(options) {
         .eq("slug", slug)
         .select("*")
         .maybeSingle();
-      if (error) throw error;
+      if (error) {
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", "team owner or admin access required");
+        }
+        throw error;
+      }
       if (!data) throw new ApiError(404, "not_found", `skill not found: ${slug}`);
       return mapTeamSkillRow(data);
     },
 
     async deleteTeamSkill(teamId, slug) {
+      await this.requireTeamAdmin(teamId);
       const { error } = await supabase
         .from("team_skills")
         .delete()
         .eq("team_id", teamId)
         .eq("slug", slug);
-      if (error) throw error;
+      if (error) {
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", "team owner or admin access required");
+        }
+        throw error;
+      }
     },
 
     async getTeamSkillVersion(teamId, slug, version) {

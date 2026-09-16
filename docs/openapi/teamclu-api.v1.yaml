@@ -2534,6 +2534,10 @@ paths:
     patch:
       operationId: updateTeamSkill
       summary: Edit metadata, transfer owner, deprecate
+      description: >
+        Any team member may patch summary, category, whenToUse, whenNotToUse,
+        requires, and ownerActorId. Changing `status` or `supersededBy`
+        (deprecate / restore published) requires team owner or admin.
       tags: [TeamSkills]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -2568,6 +2572,10 @@ paths:
     delete:
       operationId: deleteTeamSkill
       summary: Remove a skill from the registry
+      description: >
+        Hard-delete the registry row for the whole team. Requires team owner
+        or admin. Version history and install rows cascade. Absence from the
+        list is the deletion signal; there is no tombstone.
       tags: [TeamSkills]
       parameters:
         - $ref: "#/components/parameters/TeamId"
