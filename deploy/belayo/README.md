@@ -102,17 +102,21 @@ manager (`/etc/dokploy/traefik/dynamic/`), not through Dokploy's domain table:
   service, one `Host` router per domain, with certificates from Traefik's
   `letsencrypt` resolver (HTTP-01). A custom domain is served only after it is
   added here and its DNS points at the manager.
+- `teamclu-apps-wildcard-cert.yml` declares the `*.apps.mx5.cn` certificate,
+  whose PEMs live in `certificates/teamclu-apps-wildcard/`. The declaration is
+  top level because Traefik watches `dynamic/` and the files directly in it and
+  skips subdirectories, while any event there reloads the whole tree — a
+  declaration next to the PEMs is loaded at startup but never reloaded.
 - The Cloud API application's own Dokploy file carries only
   `teamclaw-api.ucar.cc`. Dokploy adds and removes only the routers it names
   itself, and rewrites the file when it does, so edit it by parsing YAML rather
   than by matching text.
 
-`*.apps.mx5.cn` is a file certificate in
-`certificates/teamclu-apps-wildcard/`. `mx5.cn` is on DNSPod, so Traefik cannot
-renew it; `.github/workflows/belayo-apps-wildcard-cert.yml` does. It runs every
-Monday, renews when 30 days or fewer remain (DNS-01 via DNSPod with
-`BELAYO_DNSPOD_SECRET_ID` / `BELAYO_DNSPOD_SECRET_KEY`), swaps the files over
-SSH keeping the previous pair as `*.prev`, rewrites `certificate.yml` so Traefik
-reloads, confirms clients get the new certificate or restores the old one, and
-alerts WeCom on failure. Run it manually with `force` to renew early, or with
+`mx5.cn` is on DNSPod, so Traefik cannot renew that certificate;
+`.github/workflows/belayo-apps-wildcard-cert.yml` does. It runs every Monday,
+renews when 30 days or fewer remain (DNS-01 via DNSPod with
+`BELAYO_DNSPOD_SECRET_ID` / `BELAYO_DNSPOD_SECRET_KEY`), swaps the PEMs over SSH
+keeping the previous pair as `*.prev`, rewrites the top-level
+`teamclu-apps-wildcard-cert.yml` so Traefik reloads, confirms clients get the
+new certificate or restores the old one, and alerts WeCom on failure. Run it manually with `force` to renew early, or with
 `staging` to test issuance without touching the manager.
