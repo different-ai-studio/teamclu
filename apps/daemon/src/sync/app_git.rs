@@ -126,12 +126,35 @@ fn ensure_success(out: &Output, context: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let reason = stderr
-        .lines()
-        .rfind(|l| !l.trim().is_empty())
-        .unwrap_or(context)
-        .trim();
+    let reason = git_failure_reason(&stderr).unwrap_or(context);
     anyhow::bail!("{context}: {reason}");
+}
+
+/// What git prints after every failed ssh transport, whatever went wrong.
+const GIT_SSH_ADVICE: [&str; 2] = [
+    "Please make sure you have the correct access rights",
+    "and the repository exists.",
+];
+const GIT_SSH_FATAL: &str = "fatal: Could not read from remote repository.";
+
+/// The one line of a failed git command's stderr to show the user.
+///
+/// The last line, except that git's closing ssh advice is never the reason.
+/// Taking it literally reported "and the repository exists." and dropped the
+/// line ssh wrote above it — "Permission denied (publickey)", "Host key
+/// verification failed", "Connection refused". Only one line either way: git
+/// echoes the remote URL in other lines, and that can carry a token.
+pub(crate) fn git_failure_reason(stderr: &str) -> Option<&str> {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !GIT_SSH_ADVICE.contains(l) && !l.starts_with("Cloning into "))
+        .collect();
+    lines
+        .iter()
+        .rfind(|l| **l != GIT_SSH_FATAL)
+        .or(lines.last())
+        .copied()
 }
 
 /// Whether `out` failed because another `git` process held `.git/config.lock`
@@ -232,11 +255,24 @@ fn set_restrictive_permissions(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One word for the POSIX shell git runs `GIT_SSH_COMMAND`, `core.sshCommand`
+/// and a `!` credential helper through — on Windows too, where that shell is
+/// Git for Windows' bash.
+///
+/// Anything beyond plain path characters goes in single quotes, the one form
+/// where nothing but the closing quote is special. A bare word loses its
+/// backslashes: a deploy key at `C:\Users\me\AppData\Local\Temp\…` reached ssh
+/// as `C:UsersmeAppDataLocalTemp…`, ssh loaded no key and offered none, and
+/// every clone on Windows failed as "Permission denied (publickey)". Double
+/// quotes would not do either — `$` and backticks still expand inside them.
 fn shell_quote(s: &str) -> String {
-    if s.contains(' ') || s.contains('"') {
-        format!("\"{}\"", s.replace('"', "\\\""))
-    } else {
+    let plain = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c));
+    if plain {
         s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
     }
 }
 
@@ -1302,14 +1338,122 @@ mod tests {
     }
 
     #[test]
-    fn a_shim_path_with_spaces_stays_one_argument() {
-        // amuxd ships inside an .app bundle, so its path routinely has spaces.
-        // Unquoted, git splits it and reports a missing command instead.
-        let quoted = shell_quote("/Applications/My App.app/Contents/MacOS/amuxd");
-        assert!(
-            quoted.starts_with('"') && quoted.ends_with('"'),
-            "got {quoted}"
+    fn a_shell_word_reaches_the_command_verbatim() {
+        // amuxd ships inside an .app bundle, so its path routinely has spaces;
+        // on Windows every path is backslashes, which a bare word loses.
+        for word in [
+            r"C:\Users\me\AppData\Local\Temp\amuxd-deploy-key-Ab12",
+            "/Applications/My App.app/Contents/MacOS/amuxd",
+            "/Users/jo/Library/Application Support/TeamClu/amuxd",
+            "it's",
+            "$HOME `id` \"x\"",
+            "",
+            "app-42",
+        ] {
+            let quoted = shell_quote(word);
+            let Ok(out) = Command::new("sh")
+                .arg("-c")
+                .arg(format!("printf %s {quoted}"))
+                .output()
+            else {
+                eprintln!("no sh here; skipping");
+                return;
+            };
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                word,
+                "quoted as {quoted}"
+            );
+        }
+        // Plain words stay bare, so the stamped config still reads as written.
+        assert_eq!(shell_quote("app-42"), "app-42");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_hands_ssh_the_deploy_key_path_verbatim() {
+        // The Windows clone failure end to end: git runs GIT_SSH_COMMAND through
+        // sh, and ssh must receive the key path exactly as written. A stand-in
+        // `ssh` on PATH records its argv; sh treats backslashes the same here as
+        // Git for Windows' bash does.
+        use std::os::unix::fs::PermissionsExt;
+        if !Command::new(git_bin())
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            eprintln!("git not usable; skipping");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake_ssh = bin.join("ssh");
+        std::fs::write(
+            &fake_ssh,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AMUXD_TEST_SSH_ARGV\"\nexit 255\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let argv_file = tmp.path().join("argv");
+
+        // No space in it: that is the ordinary Windows temp path, and the one
+        // a bare word used to reach ssh with every backslash gone.
+        let key_path = r"C:\Users\me\AppData\Local\Temp\amuxd-deploy-key-Ab12";
+        let ssh = SshEnv {
+            key_path: PathBuf::from(key_path),
+            _guard: tempfile::NamedTempFile::new().unwrap(),
+        };
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
         );
+        let out = Command::new(git_bin())
+            .current_dir(tmp.path())
+            .env("PATH", path)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_SSH_COMMAND", ssh.git_ssh_command())
+            .env("AMUXD_TEST_SSH_ARGV", &argv_file)
+            .args(["ls-remote", "ssh://git@example.invalid:2222/o/r.git"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "the stand-in ssh always fails");
+
+        let argv = std::fs::read_to_string(&argv_file).expect("git ran the stand-in ssh");
+        let args: Vec<&str> = argv.lines().collect();
+        let i = args.iter().position(|a| *a == "-i").expect("-i passed");
+        assert_eq!(args.get(i + 1).copied(), Some(key_path), "argv: {args:?}");
+    }
+
+    #[test]
+    fn a_failed_ssh_transport_reports_ssh_s_reason_not_git_s_advice() {
+        let windows_clone = "Cloning into 'C:\\app'...\n\
+            Warning: Identity file C:UsersmeTempkey not accessible: No such file or directory.\n\
+            git@git.example.com: Permission denied (publickey).\n\
+            fatal: Could not read from remote repository.\n\
+            \n\
+            Please make sure you have the correct access rights\n\
+            and the repository exists.\n";
+        assert_eq!(
+            git_failure_reason(windows_clone),
+            Some("git@git.example.com: Permission denied (publickey).")
+        );
+        // ssh said nothing: git's own line still beats its advice.
+        let silent = "Cloning into 'app'...\n\
+            fatal: Could not read from remote repository.\n\
+            \n\
+            Please make sure you have the correct access rights\n\
+            and the repository exists.\n";
+        assert_eq!(git_failure_reason(silent), Some(GIT_SSH_FATAL));
+        // An http failure has no advice and keeps reporting its last line.
+        assert_eq!(
+            git_failure_reason(
+                "remote: Repository not found.\nfatal: repository 'https://example.com/o/r.git/' not found\n"
+            ),
+            Some("fatal: repository 'https://example.com/o/r.git/' not found")
+        );
+        assert_eq!(git_failure_reason("\n  \n"), None);
     }
 
     #[test]
