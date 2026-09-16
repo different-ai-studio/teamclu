@@ -76,6 +76,14 @@ function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authSto
           authStore.users.push(u);
           return { data: { user: u }, error: null };
         },
+        updateUserById: async (id: string, patch: any) => {
+          const u = authStore.users.find((x: any) => x.id === id);
+          if (!u) return { data: null, error: { message: "not found" } };
+          if (patch?.app_metadata) {
+            u.app_metadata = { ...(u.app_metadata ?? {}), ...patch.app_metadata };
+          }
+          return { data: { user: u }, error: null };
+        },
         deleteUser: async (id: string) => {
           authStore.users = authStore.users.filter((x: any) => x.id !== id);
           return { data: null, error: null };
@@ -177,7 +185,7 @@ test("login creates a new user when none exists in the default org", async () =>
   assert.equal(db.users.length, 1);
 });
 
-test("login returns MULTI_USER when the phone maps to >1 user in the org", async () => {
+test("login returns MULTI_USER when the phone maps to >1 user", async () => {
   const db = {
     auth_verify_code: [
       { id: "c1", phone: "13700000002", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
@@ -192,6 +200,74 @@ test("login returns MULTI_USER when the phone maps to >1 user in the org", async
   assert.equal(r.multiUser, true);
   assert.equal(r.users.length, 2);
   assert.equal(db.auth_verify_code[0].used, false); // code not consumed
+});
+
+test("login resolves a user whose org is NOT the default org", async () => {
+  // The org filter used to pin a phone identity to DEFAULT_ORG forever: once
+  // switch_active_team rewrote public.users.org_id to the team's oid, the next
+  // login missed and registered the person again as brand new.
+  const authStore = {
+    users: [
+      {
+        id: "auth-moved",
+        email: "13700000010@phone.example.test",
+        app_metadata: { org_id: "org-default" },
+      },
+    ],
+  };
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000010", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "u9", org_id: "org-own", mobile: "13700000010", auth_user_id: "auth-moved", deleted_at: null },
+    ],
+  };
+  const repo = repoWith(db, authStore);
+  const r: any = await repo.login({ phone: "13700000010", code: "123456" });
+  assert.equal(r.created, undefined, "must reuse, not re-register");
+  assert.equal(r.user.id, "u9");
+  assert.equal(authStore.users.length, 1);
+  // amux.current_org_id() reads the JWT claim before public.users.org_id, so a
+  // stale claim would keep the session pinned to the old org.
+  assert.equal(authStore.users[0].app_metadata.org_id, "org-own");
+});
+
+test("login leaves the org claim alone when it already matches", async () => {
+  const authStore = {
+    users: [
+      { id: "auth-same", email: "13700000011@phone.example.test", app_metadata: { org_id: "org-own" } },
+    ],
+  };
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000011", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "u10", org_id: "org-own", mobile: "13700000011", auth_user_id: "auth-same", deleted_at: null },
+    ],
+  };
+  const repo = repoWith(db, authStore);
+  const r: any = await repo.login({ phone: "13700000011", code: "123456" });
+  assert.equal(r.user.id, "u10");
+  assert.equal(authStore.users[0].app_metadata.org_id, "org-own");
+});
+
+test("login offers the picker across DIFFERENT orgs, not just within one", async () => {
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000012", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "u11", org_id: "org-default", mobile: "13700000012", auth_user_id: "a1", deleted_at: null },
+      { id: "u12", org_id: "org-acme", mobile: "13700000012", auth_user_id: "a2", deleted_at: null },
+    ],
+  };
+  const repo = repoWith(db, { users: [] });
+  const r: any = await repo.login({ phone: "13700000012", code: "123456" });
+  assert.equal(r.multiUser, true);
+  assert.deepEqual(r.users.map((u: any) => u.org_id).sort(), ["org-acme", "org-default"]);
+  assert.equal(db.auth_verify_code[0].used, false);
 });
 
 test("login rejects a wrong/expired code", async () => {
