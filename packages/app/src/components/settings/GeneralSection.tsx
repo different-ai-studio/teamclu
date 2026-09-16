@@ -16,6 +16,7 @@ import {
   TerminalSquare,
   FolderGit,
   RefreshCw,
+  Shield,
   Sparkles,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -41,6 +42,12 @@ import { useHeaderPreferencesStore } from '@/stores/header-preferences-store'
 import { useAutoUpdatePreferenceStore } from '@/stores/auto-update-preference-store'
 import { appStoragePrefix, buildConfig } from '@/lib/config/build-config'
 import { getFeatures } from '@/lib/config/remote-features'
+import { isSoloBuild } from '@/lib/config/solo-build'
+import {
+  setSessionDefaultPermissionMode,
+  useSessionDefaultPermissionMode,
+} from '@/lib/session/session-permission-mode'
+import { syncDefaultPermissionModeToLiveSessions } from '@/lib/teamclu/sync-session-permission-mode'
 import { NOTIFICATION_LEVEL_KEY } from '@/lib/ui/notification-service'
 import { LANGUAGE_OPTIONS, getPreferredLanguage, normalizeSupportedLanguage, persistLanguage } from '@/lib/locale'
 import { changeLanguage } from '@/lib/i18n'
@@ -230,6 +237,15 @@ export const GeneralSection = React.memo(function GeneralSection() {
     system: Monitor,
   }
 
+  const defaultPermissionMode = useSessionDefaultPermissionMode()
+  const handleDefaultPermissionChange = React.useCallback((value: string) => {
+    const next = value === 'fullAccess' ? 'fullAccess' : 'default'
+    setSessionDefaultPermissionMode(next)
+    // Keep running sessions without an explicit per-session pick in step with
+    // the new default; per-session picks are untouched.
+    void syncDefaultPermissionModeToLiveSessions()
+  }, [])
+
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -369,6 +385,39 @@ export const GeneralSection = React.memo(function GeneralSection() {
                     {t(option.labelKey, option.fallback)}
                   </SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </SettingCard>
+      ) : null}
+
+      {!isSoloBuild() ? (
+        <SettingCard>
+          <div className="space-y-2">
+            <label className="text-[13px] font-medium flex items-center gap-2">
+              <Shield className="h-4 w-4 text-muted-foreground" />
+              {t('settings.general.defaultPermission', '默认权限')}
+            </label>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                'settings.general.defaultPermissionDesc',
+                '新会话默认使用的权限模式。修改后会同步应用到未单独设置的进行中会话；已单独设置的会话不受影响。',
+              )}
+            </p>
+            <Select
+              value={defaultPermissionMode}
+              onValueChange={handleDefaultPermissionChange}
+            >
+              <SelectTrigger className="h-11" data-testid="default-permission-select">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">
+                  {t('settings.general.defaultPermissionAsk', '询问')}
+                </SelectItem>
+                <SelectItem value="fullAccess">
+                  {t('settings.general.defaultPermissionFullAccess', '完全访问')}
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>

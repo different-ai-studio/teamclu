@@ -1,6 +1,10 @@
 import { runtimeTargetsForSession } from "@/lib/agent/runtime-state-resolve";
 import { sessionPermissionMode } from "@/lib/daemon/teamclu-rpc";
-import type { SessionPermissionMode } from "@/lib/session/session-permission-mode";
+import {
+  getSessionPermissionMode,
+  hasExplicitSessionPermissionMode,
+  type SessionPermissionMode,
+} from "@/lib/session/session-permission-mode";
 import { sessionPermissionModeToWire } from "@/lib/session/session-permission-mode-wire";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
 import { useSessionParticipantStore } from "@/stores/session-participant-store";
@@ -65,5 +69,36 @@ export async function syncSessionPermissionModeToDaemon(
       err,
     });
     return { accepted: false };
+  }
+}
+
+/**
+ * Push the (just-changed) global default to every session with a live runtime
+ * that has no explicit per-session mode. Without this the composer pill would
+ * show the new default while the daemon still runs the old policy until the
+ * next runtimeStart. Sessions the user picked a mode for keep their pick.
+ */
+export async function syncDefaultPermissionModeToLiveSessions(): Promise<void> {
+  const byRuntimeId = useRuntimeStateStore.getState().byRuntimeId;
+  const sessionIds = new Set<string>();
+  for (const key of Object.keys(byRuntimeId)) {
+    // Keys are `{actorId}::{sessionId}`; split from the right so an actor id
+    // containing `::` cannot eat the session id.
+    const sep = key.lastIndexOf("::");
+    if (sep < 0) continue;
+    const sessionId = key.slice(sep + 2).trim();
+    if (sessionId) sessionIds.add(sessionId);
+  }
+
+  for (const sessionId of sessionIds) {
+    if (hasExplicitSessionPermissionMode(sessionId)) continue;
+    const mode = getSessionPermissionMode(sessionId);
+    const { accepted } = await syncSessionPermissionModeToDaemon(sessionId, mode);
+    if (!accepted) {
+      console.warn("[permission] global default did not reach a live session", {
+        sessionId,
+        mode,
+      });
+    }
   }
 }

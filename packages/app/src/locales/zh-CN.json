@@ -794,7 +794,7 @@
       "unsupported": "本机暂不支持本地语音输入"
     },
     "permissionMode": {
-      "default": "默认权限",
+      "default": "询问",
       "fullAccess": "完全访问权限"
     },
     "mentionPopoverTitle": "提及人或 agent",
@@ -1926,6 +1926,10 @@
       "appearance": "外观",
       "language": "语言",
       "languageDesc": "选择应用界面语言",
+      "defaultPermission": "默认权限",
+      "defaultPermissionDesc": "新会话默认使用的权限模式。修改后会同步应用到未单独设置的进行中会话；已单独设置的会话不受影响。",
+      "defaultPermissionAsk": "询问",
+      "defaultPermissionFullAccess": "完全访问",
       "closeWindow": "关闭窗口时",
       "closeWindowDesc": "点击窗口关闭按钮时的行为。Cmd+Q 始终退出并停止 Agent。",
       "closeWindowAsk": "每次询问",
