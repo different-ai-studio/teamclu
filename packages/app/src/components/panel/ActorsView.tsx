@@ -125,6 +125,10 @@ function MemberActorRowView({
   const rolePill = memberTeamRolePill(actor)
   const initial = actor.display_name?.trim().slice(0, 1).toUpperCase() || ''
   const colors = actorAvatarColor(actor.id)
+  // Remember which URL failed rather than a flag, so a newly uploaded photo
+  // (a fresh URL) gets its own try instead of staying on the initial.
+  const [failedAvatarUrl, setFailedAvatarUrl] = React.useState<string | null>(null)
+  const avatarUrl = actor.avatar_url && actor.avatar_url !== failedAvatarUrl ? actor.avatar_url : null
   const lastActive = actor.last_active_at ? formatRelativeTimeShort(new Date(actor.last_active_at)) : ''
 
   const handleCopyName = async () => {
@@ -162,9 +166,21 @@ function MemberActorRowView({
       >
         <div
           className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[16px] font-semibold text-white"
-          style={{ backgroundColor: colors.bg, color: colors.fg }}
+          style={avatarUrl ? undefined : { backgroundColor: colors.bg, color: colors.fg }}
         >
-          {initial || <UserIcon className="h-4 w-4" />}
+          {avatarUrl ? (
+            // Decorative: the name sits right beside it.
+            <img
+              src={avatarUrl}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              className="h-full w-full rounded-full object-cover"
+              onError={() => setFailedAvatarUrl(avatarUrl)}
+            />
+          ) : (
+            initial || <UserIcon className="h-4 w-4" />
+          )}
           <span
             className={cn(
               'absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ring-2 ring-background',
