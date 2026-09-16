@@ -1685,6 +1685,8 @@ export interface ActorDirectorySyncRow {
   team_id: string;
   actor_type: string;
   display_name: string;
+  /** Absent from Cloud API builds that predate it; treated as no photo. */
+  avatar_url?: string | null;
   member_status?: string | null;
   agent_status?: string | null;
   last_active_at?: string | null;

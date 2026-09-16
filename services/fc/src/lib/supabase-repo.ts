@@ -2505,7 +2505,7 @@ export function createSupabaseBusinessRepository(options) {
       let q = supabase
         .from("actor_directory")
         .select(
-          "id, team_id, actor_type, display_name, member_status, agent_status, last_active_at, created_at, updated_at",
+          "id, team_id, actor_type, display_name, avatar_url, member_status, agent_status, last_active_at, created_at, updated_at",
         )
         .eq("team_id", teamId);
       if (updatedAfter) q = q.gt("updated_at", updatedAfter);
