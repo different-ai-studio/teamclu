@@ -68,6 +68,19 @@ async function renderWith(over: Partial<AppRow> = {}) {
 }
 
 describe('AppAuthTabContent', () => {
+  it('blocks saving when the org role catalog could not be loaded', async () => {
+    // An empty catalog is indistinguishable from "restricts nobody": it renders
+    // a legacy `audience: org` app as "any signed-in user", and saving from
+    // there writes `roles: []`, which the gateway admits everyone on. One
+    // failed request would silently open a staff-only app.
+    orgRolesList.mockRejectedValueOnce(new Error('network'))
+    storeMocks.items = [{ ...baseApp, authAudience: 'org' } as AppRow]
+    render(<AppAuthTabContent appId="app-1" />)
+
+    await waitFor(() => expect(screen.getByTestId('app-auth-roles-error')).toBeTruthy())
+    expect(screen.getByTestId('app-auth-save')).toHaveProperty('disabled', true)
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     storeMocks.deployingIds = []
@@ -136,7 +149,10 @@ describe('AppAuthTabContent', () => {
     expect(appId).toBe('app-1')
     expect(patch.authMode).toBe('platform')
     expect(patch.authScope).toBe('all')
-    expect(patch.authAudience).toBe('any')
+    // 'org' because /admin restricts roles: auth_audience is the gateway's
+    // last-resort answer for an unreadable path, and 'any' there would admit
+    // every signed-in visitor to an app that names specific roles.
+    expect(patch.authAudience).toBe('org')
     expect(patch.authRules).toEqual([
       { path: '/', auth: 'required', roles: [] },
       { path: '/admin', auth: 'required', roles: ['admin'] },

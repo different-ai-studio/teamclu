@@ -1492,6 +1492,7 @@
       "noRules": "No page has its own setting yet — the whole site follows the line above.",
       "addPage": "Add a page",
       "rolesHint": "With login required and no roles selected, any signed-in user may enter. Selected roles admit members who hold any one of them.",
+      "rolesLoadFailed": "Could not load the role list, so saving is blocked — otherwise it would clear the roles this app restricts to. Please retry.",
       "nothingProtected": "When every other page is public, at least one page has to require a login — otherwise this wall stops nothing.",
       "blankPath": "One row still has no path.",
       "col": {

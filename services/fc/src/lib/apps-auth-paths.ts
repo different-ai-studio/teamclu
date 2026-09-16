@@ -298,6 +298,17 @@ export type PathPolicy = {
   audience: AuthAudience | null;
   /** null = key absent; [] = any authenticated; non-empty = intersection. */
   roles: string[] | null;
+  /**
+   * True when this verdict came from the fail-safe rather than from a rule —
+   * an encoded separator / dot segment, or a rule set that could not be read.
+   *
+   * It exists because `requiresLogin: true, roles: null, audience: null` means
+   * two different things: "no rule named a WHO, use the app's own" and "I could
+   * not read this, protect it". The caller must not answer the second one by
+   * falling back to `auth_audience`, which is exactly how the strictest case
+   * ends up admitting the widest audience.
+   */
+  unreadable?: boolean;
 };
 
 export function resolvePathPolicy(
@@ -307,7 +318,12 @@ export function resolvePathPolicy(
 ): PathPolicy {
   // Fail-safe on every unusable input: protected, and under the app's own
   // audience rather than a per-path widening we could not read.
-  const protectedFallback: PathPolicy = { requiresLogin: true, audience: null, roles: null };
+  const protectedFallback: PathPolicy = {
+    requiresLogin: true,
+    audience: null,
+    roles: null,
+    unreadable: true,
+  };
   if (isUnreasonable(pathname)) return protectedFallback;
 
   // unknown scope behaves as "all"

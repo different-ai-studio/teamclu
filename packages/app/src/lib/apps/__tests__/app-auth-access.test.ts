@@ -36,13 +36,29 @@ describe('app-auth-access', () => {
         [{ path: '/health', requiresLogin: false, roleCodes: [] }],
       ),
     ).toEqual({
-      authAudience: 'any',
+      // 'org', not 'any': auth_audience is the gateway's last-resort answer for
+      // a path whose own verdict cannot be read, and this policy restricts
+      // roles. Writing 'any' made that fallback admit every signed-in visitor.
+      authAudience: 'org',
       authScope: 'all',
       authRules: [
         { path: '/', auth: 'required', roles: ['admin', 'finance'] },
         { path: '/health', auth: 'public' },
       ],
     })
+  })
+
+  it("keeps the fallback audience 'any' only when nothing restricts anybody", () => {
+    expect(
+      buildAuthPolicyPatch({ path: '/', requiresLogin: true, roleCodes: [] }, []).authAudience,
+    ).toBe('any')
+    // A public baseline whose exceptions still name roles must not advertise
+    // 'any' either — the exceptions are what the fallback would answer for.
+    expect(
+      buildAuthPolicyPatch({ path: '/', requiresLogin: false, roleCodes: [] }, [
+        { path: '/admin', requiresLogin: true, roleCodes: ['admin'] },
+      ]).authAudience,
+    ).toBe('org')
   })
 
   it('loads a / roles rule as baseline and drops it from exceptions', () => {

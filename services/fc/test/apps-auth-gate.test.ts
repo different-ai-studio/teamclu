@@ -738,3 +738,55 @@ test("the callback on a custom domain redeems a code minted for it", async () =>
     assert.match(out.response!.headers.get("set-cookie")!, new RegExp(`^${APP_COOKIE}=`));
   });
 });
+
+// --- fail-safe must not widen ------------------------------------------------
+
+test("an unreadable path does not fall back to auth_audience: any", async () => {
+  // resolvePathPolicy deliberately treats an encoded separator as protected.
+  // That verdict carries no WHO, and answering it out of `auth_audience` —
+  // which the editor writes as `any` — turned the strictest branch into the
+  // widest audience: any signed-in visitor, on an app restricted to admins.
+  await withEnv({}, async () => {
+    const out = await applyAuthGate(
+      req("/admin%2e%2e", { cookie: await sessionCookie() }),
+      app({
+        authAudience: "any",
+        authRules: [{ path: "/", auth: "required", roles: ["admin"] }],
+      }),
+      deps({ resolveVisitorRoles: async () => [] }),
+    );
+    assert.ok(out.response, "a visitor with no org role must be refused");
+    assert.equal(out.response?.status, 403);
+    assert.equal(out.identity, null);
+  });
+});
+
+test("an unreadable rule set does not fall back to auth_audience: any", async () => {
+  await withEnv({}, async () => {
+    const out = await applyAuthGate(
+      req("/", { cookie: await sessionCookie() }),
+      app({
+        authAudience: "any",
+        // `auth` is unusable, so the whole set is unreadable.
+        authRules: [{ path: "/", auth: "sometimes" }],
+      }),
+      deps({ resolveVisitorRoles: async () => [] }),
+    );
+    assert.ok(out.response);
+    assert.equal(out.response?.status, 403);
+  });
+});
+
+test("an unreadable path still admits a visitor who holds an org role", async () => {
+  // Fail-closed, not fail-shut: the fallback is org membership, which is what
+  // an unset auth_audience has always meant.
+  await withEnv({}, async () => {
+    const out = await applyAuthGate(
+      req("/admin%2e%2e", { cookie: await sessionCookie() }),
+      app({ authAudience: "any", authRules: [{ path: "/", auth: "required", roles: ["admin"] }] }),
+      deps({ resolveVisitorRoles: async () => ["member"] }),
+    );
+    assert.equal(out.response, null);
+    assert.equal(out.identity?.userId, "user-1");
+  });
+});

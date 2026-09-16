@@ -150,6 +150,19 @@ export function exceptionRulesToRowState(
  * required rule with `roles` (so WHO migrates off authAudience). Public
  * baseline is authScope=paths with no injected `/`.
  */
+/**
+ * `auth_audience` is legacy, but it is still the gateway's LAST-RESORT answer to
+ * "who may enter" — the one it uses when a path's own verdict cannot be read
+ * (an encoded separator, a corrupt rule set). Writing `any` unconditionally
+ * made that last resort admit every signed-in visitor, including for an app
+ * whose every rule names specific roles. So it tracks the policy: `any` only
+ * when nothing here restricts anybody.
+ */
+function fallbackAudience(rows: AppAuthRowState[]): AppAuthAudience {
+  const restricts = rows.some((r) => r.requiresLogin && r.roleCodes.length > 0)
+  return restricts ? 'org' : 'any'
+}
+
 export function buildAuthPolicyPatch(
   baseline: AppAuthRowState,
   exceptions: AppAuthRowState[],
@@ -161,7 +174,7 @@ export function buildAuthPolicyPatch(
   const exceptionRules = exceptions.map(rowStateToRule)
   if (!baseline.requiresLogin) {
     return {
-      authAudience: 'any',
+      authAudience: fallbackAudience(exceptions),
       authScope: 'paths',
       authRules: exceptionRules,
     }
@@ -170,8 +183,7 @@ export function buildAuthPolicyPatch(
   const rootRule = rowStateToRule({ ...baseline, path: '/' })
   const withoutRoot = exceptionRules.filter((r) => r.path !== '/')
   return {
-    // Deprecated; kept as `any` so an absent-roles fallback never tightens.
-    authAudience: 'any',
+    authAudience: fallbackAudience([baseline, ...exceptions]),
     authScope: 'all',
     authRules: [rootRule, ...withoutRoot],
   }
