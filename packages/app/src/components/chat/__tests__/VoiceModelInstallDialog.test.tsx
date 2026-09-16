@@ -36,8 +36,8 @@ describe("VoiceModelInstallDialog", () => {
       />,
     );
 
-    expect(screen.getByText("284 MB")).toBeInTheDocument();
-    expect(screen.getByText("500 MB")).toBeInTheDocument();
+    expect(screen.getByText("285 MB")).toBeInTheDocument();
+    expect(screen.getByText("501 MB")).toBeInTheDocument();
     fireEvent.click(screen.getByText("F16 高精度"));
     expect(select).toHaveBeenCalledWith("f16");
     fireEvent.click(screen.getByText("下载并安装"));

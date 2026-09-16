@@ -28,6 +28,15 @@ const SPEAKER_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/
 #[cfg(target_os = "macos")]
 const SPEAKER_MODEL_SHA256: &str =
     "f682b514c05d947ee3fa91cd6ec6c5c7543479a128373fa29b1faedccd21fd11";
+/// Silero VAD v4, 16kHz branch, exported to ONNX by k2-fsa. This is what draws
+/// the segment boundaries; `VAD_URL` below is the FunASR-side GGUF that only
+/// trims inside a segment we already cut.
+#[cfg(target_os = "macos")]
+const SEGMENTER_MODEL_URL: &str =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
+#[cfg(target_os = "macos")]
+const SEGMENTER_MODEL_SHA256: &str =
+    "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6";
 
 #[cfg(target_os = "macos")]
 const Q8_MODEL_BYTES: u64 = 254_208_320;
@@ -37,6 +46,8 @@ const F16_MODEL_BYTES: u64 = 470_197_600;
 const VAD_BYTES: u64 = 1_720_512;
 #[cfg(target_os = "macos")]
 const SPEAKER_MODEL_BYTES: u64 = 28_281_138;
+#[cfg(target_os = "macos")]
+const SEGMENTER_MODEL_BYTES: u64 = 643_854;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -126,6 +137,10 @@ fn speaker_model_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("3dspeaker-campplus-zh-common.onnx")
 }
 
+fn segmenter_model_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("silero-vad.onnx")
+}
+
 fn model_marker_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("model-variant")
 }
@@ -150,8 +165,7 @@ fn base_installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
 }
 
 fn installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
-    speaker_model_path(root)
-        .is_file()
+    (speaker_model_path(root).is_file() && segmenter_model_path(root).is_file())
         .then(|| base_installed_variant(root))
         .flatten()
 }
@@ -343,7 +357,7 @@ fn install_engine(app: &AppHandle, model_variant: VoiceModelVariant) -> Result<(
         return Ok(());
     }
     let model = model_variant.spec();
-    let total_bytes = model.bytes + VAD_BYTES + SPEAKER_MODEL_BYTES;
+    let total_bytes = model.bytes + VAD_BYTES + SPEAKER_MODEL_BYTES + SEGMENTER_MODEL_BYTES;
     let parent = final_dir
         .parent()
         .ok_or("invalid voice install directory")?;
@@ -390,6 +404,17 @@ fn install_engine(app: &AppHandle, model_variant: VoiceModelVariant) -> Result<(
         model.bytes + VAD_BYTES,
         total_bytes,
         "speaker",
+    )?;
+    stage_or_download_checked(
+        app,
+        &segmenter_model_path(&final_dir),
+        SEGMENTER_MODEL_URL,
+        SEGMENTER_MODEL_SHA256,
+        SEGMENTER_MODEL_BYTES,
+        &segmenter_model_path(temp.path()),
+        model.bytes + VAD_BYTES + SPEAKER_MODEL_BYTES,
+        total_bytes,
+        "segmenter",
     )?;
     std::fs::write(model_marker_path(temp.path()), model_variant.id())
         .map_err(|error| format!("write model variant: {error}"))?;
@@ -491,8 +516,10 @@ pub fn voice_input_stop(state: State<'_, VoiceInputState>) -> Result<(), String>
 mod macos {
     use super::*;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
-    use std::collections::VecDeque;
+    use sherpa_onnx::{
+        SileroVadModelConfig, SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig,
+        VadModelConfig, VoiceActivityDetector,
+    };
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     use std::path::PathBuf;
@@ -501,12 +528,16 @@ mod macos {
 
     const SAMPLE_RATE: u32 = 16_000;
     const STEP_MS: usize = 100;
-    const STEP_SAMPLES: usize = SAMPLE_RATE as usize * STEP_MS / 1000;
-    const SILENCE_STEPS: usize = 8;
-    const PRE_ROLL_STEPS: usize = 3;
-    const MIN_SPEECH_SAMPLES: usize = SAMPLE_RATE as usize * 4 / 10;
-    const MAX_SEGMENT_SAMPLES: usize = SAMPLE_RATE as usize * 20;
-    const RMS_SPEECH_THRESHOLD: f32 = 0.012;
+    /// Silero draws the boundaries. These mirror sherpa-onnx's defaults except
+    /// for the silence window: Mandarin mid-sentence pauses routinely exceed the
+    /// stock 500ms, which used to split one utterance across several messages.
+    const VAD_THRESHOLD: f32 = 0.5;
+    const VAD_MIN_SILENCE_SECONDS: f32 = 0.8;
+    const VAD_MIN_SPEECH_SECONDS: f32 = 0.25;
+    const VAD_MAX_SPEECH_SECONDS: f32 = 20.0;
+    /// Silero v4's 16kHz branch accepts 512, 1024 or 1536 samples per window.
+    const VAD_WINDOW_SAMPLES: i32 = 512;
+    const VAD_BUFFER_SECONDS: f32 = VAD_MAX_SPEECH_SECONDS + 10.0;
     const SPEAKER_MATCH_THRESHOLD: f32 = 0.5;
     const MAX_SPEAKERS: usize = 15;
     const TRANSCRIPT_BACKUP_AFTER_MS: u64 = 2 * 60 * 1000;
@@ -795,6 +826,7 @@ mod macos {
         let mut speaker_clusterer = speaker_diarization
             .then(|| SpeakerClusterer::new(&speaker_model_path(&root)))
             .transpose()?;
+        let vad = build_vad(&segmenter_model_path(&root))?;
         let mut transcript_backup = TranscriptBackup::new(
             workspace_path,
             recording_id.clone(),
@@ -888,9 +920,6 @@ mod macos {
         });
 
         let started = Instant::now();
-        let mut pre_roll = VecDeque::<Vec<f32>>::with_capacity(PRE_ROLL_STEPS);
-        let mut active = Vec::<f32>::new();
-        let mut silence = 0_usize;
         let mut backup_due_sent = false;
         while !stop.load(Ordering::SeqCst) {
             let chunk = match audio_rx.recv_timeout(Duration::from_millis(150)) {
@@ -898,10 +927,11 @@ mod macos {
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
+            // Purely cosmetic now: the waveform meter reads this, Silero decides
+            // where one utterance ends and the next begins.
             let rms = (chunk.iter().map(|sample| sample * sample).sum::<f32>()
                 / chunk.len().max(1) as f32)
                 .sqrt();
-            let speech = rms >= RMS_SPEECH_THRESHOLD;
             let _ = app.emit(
                 "voice:level",
                 serde_json::json!({
@@ -915,39 +945,15 @@ mod macos {
                 let _ = segment_tx.send(InferenceInput::TranscriptBackupDue);
                 backup_due_sent = true;
             }
-            if active.is_empty() {
-                pre_roll.push_back(chunk.clone());
-                while pre_roll.len() > PRE_ROLL_STEPS {
-                    pre_roll.pop_front();
-                }
-                if speech {
-                    for prior in pre_roll.drain(..) {
-                        active.extend(prior);
-                    }
-                    silence = 0;
-                }
-                continue;
-            }
-            active.extend(chunk);
-            silence = if speech { 0 } else { silence + 1 };
-            if silence >= SILENCE_STEPS || active.len() >= MAX_SEGMENT_SAMPLES {
-                finalize(
-                    &segment_tx,
-                    &mut active,
-                    silence,
-                    started.elapsed().as_millis() as u64,
-                );
-                silence = 0;
-            }
+            vad.accept_waveform(&chunk);
+            drain_vad(&vad, &segment_tx);
         }
         drop(stream);
         let _ = pump.join();
-        finalize(
-            &segment_tx,
-            &mut active,
-            silence,
-            started.elapsed().as_millis() as u64,
-        );
+        // Speech still open when the user stops is real speech: flush it rather
+        // than dropping the tail of the last sentence.
+        vad.flush();
+        drain_vad(&vad, &segment_tx);
         if !backup_due_sent && started.elapsed().as_millis() as u64 >= TRANSCRIPT_BACKUP_AFTER_MS {
             let _ = segment_tx.send(InferenceInput::TranscriptBackupDue);
         }
@@ -1009,24 +1015,56 @@ mod macos {
         }
     }
 
-    fn finalize(
-        sender: &mpsc::Sender<InferenceInput>,
-        active: &mut Vec<f32>,
-        silence_steps: usize,
-        ended_at_ms: u64,
-    ) {
-        let trim_steps = silence_steps.saturating_sub(2);
-        active.truncate(active.len().saturating_sub(trim_steps * STEP_SAMPLES));
-        if active.len() >= MIN_SPEECH_SAMPLES {
-            let duration_ms = active.len() as u64 * 1000 / SAMPLE_RATE as u64;
-            let _ = sender.send(InferenceInput::Segment(CapturedSegment {
-                samples: std::mem::take(active),
-                started_at_ms: ended_at_ms.saturating_sub(duration_ms),
-                ended_at_ms,
-            }));
-        } else {
-            active.clear();
+    fn build_vad(model: &std::path::Path) -> Result<VoiceActivityDetector, String> {
+        let config = VadModelConfig {
+            silero_vad: SileroVadModelConfig {
+                model: Some(model.to_string_lossy().into_owned()),
+                threshold: VAD_THRESHOLD,
+                min_silence_duration: VAD_MIN_SILENCE_SECONDS,
+                min_speech_duration: VAD_MIN_SPEECH_SECONDS,
+                window_size: VAD_WINDOW_SAMPLES,
+                max_speech_duration: VAD_MAX_SPEECH_SECONDS,
+            },
+            sample_rate: SAMPLE_RATE as i32,
+            num_threads: 1,
+            provider: Some("cpu".to_string()),
+            debug: false,
+            ..Default::default()
+        };
+        VoiceActivityDetector::create(&config, VAD_BUFFER_SECONDS)
+            .ok_or_else(|| "Initialize the Silero speech segmenter".to_string())
+    }
+
+    /// Hand every segment Silero has closed to the transcriber, untrimmed.
+    ///
+    /// Nothing here second-guesses the boundaries: the previous RMS gate cut
+    /// 600ms off each segment's tail, which ate the quiet final syllable of
+    /// most Mandarin sentences.
+    fn drain_vad(vad: &VoiceActivityDetector, sender: &mpsc::Sender<InferenceInput>) {
+        while let Some(segment) = vad.front() {
+            let samples = segment.samples().to_vec();
+            let (started_at_ms, ended_at_ms) = segment_bounds_ms(segment.start(), samples.len());
+            vad.pop();
+            if sender
+                .send(InferenceInput::Segment(CapturedSegment {
+                    samples,
+                    started_at_ms,
+                    ended_at_ms,
+                }))
+                .is_err()
+            {
+                return;
+            }
         }
+    }
+
+    /// `SpeechSegment::start` counts samples from the first one fed to the
+    /// detector, so timestamps come from the audio itself rather than from
+    /// wall-clock drift between capture and inference.
+    fn segment_bounds_ms(start_sample: i32, sample_count: usize) -> (u64, u64) {
+        let started_at_ms = start_sample.max(0) as u64 * 1000 / SAMPLE_RATE as u64;
+        let duration_ms = sample_count as u64 * 1000 / SAMPLE_RATE as u64;
+        (started_at_ms, started_at_ms + duration_ms)
     }
 
     fn resample(samples: &[f32], source_rate: u32) -> Vec<f32> {
@@ -1165,30 +1203,18 @@ mod macos {
         }
 
         #[test]
-        fn finalize_ignores_short_noise() {
-            let (sender, receiver) = mpsc::channel();
-            let mut active = vec![0.2_f32; MIN_SPEECH_SAMPLES - 1];
-            finalize(&sender, &mut active, 0, 1_000);
-            assert!(receiver.try_recv().is_err());
-            assert!(active.is_empty());
+        fn segment_bounds_are_derived_from_the_sample_index() {
+            let (started_at_ms, ended_at_ms) =
+                segment_bounds_ms(2 * SAMPLE_RATE as i32, SAMPLE_RATE as usize);
+            assert_eq!(started_at_ms, 2_000);
+            assert_eq!(ended_at_ms, 3_000);
         }
 
         #[test]
-        fn finalize_emits_speech_and_trims_excess_silence() {
-            let (sender, receiver) = mpsc::channel();
-            let original_len = MIN_SPEECH_SAMPLES + SILENCE_STEPS * STEP_SAMPLES;
-            let mut active = vec![0.2_f32; original_len];
-            finalize(&sender, &mut active, SILENCE_STEPS, 2_000);
-            let InferenceInput::Segment(segment) = receiver.try_recv().expect("final segment")
-            else {
-                panic!("expected audio segment");
-            };
-            assert_eq!(
-                segment.samples.len(),
-                original_len - (SILENCE_STEPS - 2) * STEP_SAMPLES
-            );
-            assert_eq!(segment.ended_at_ms, 2_000);
-            assert!(active.is_empty());
+        fn segment_bounds_clamp_a_negative_start() {
+            let (started_at_ms, ended_at_ms) = segment_bounds_ms(-1, SAMPLE_RATE as usize / 2);
+            assert_eq!(started_at_ms, 0);
+            assert_eq!(ended_at_ms, 500);
         }
 
         #[test]
@@ -1266,7 +1292,7 @@ mod macos {
         }
 
         #[test]
-        fn installed_variant_requires_campplus_and_preserves_legacy_model_choice() {
+        fn installed_variant_requires_every_model_and_preserves_legacy_model_choice() {
             let root = tempfile::tempdir().expect("temp voice root");
             std::fs::write(runtime_path(root.path()), []).expect("runtime");
             std::fs::write(vad_path(root.path()), []).expect("vad");
@@ -1277,7 +1303,12 @@ mod macos {
             );
             assert_eq!(installed_variant(root.path()), None);
 
+            // An install predating the Silero segmenter is incomplete, so the
+            // next launch re-runs it and picks up the new model.
             std::fs::write(speaker_model_path(root.path()), []).expect("speaker");
+            assert_eq!(installed_variant(root.path()), None);
+
+            std::fs::write(segmenter_model_path(root.path()), []).expect("segmenter");
             assert_eq!(installed_variant(root.path()), Some(VoiceModelVariant::Q8));
 
             std::fs::write(model_path(root.path(), VoiceModelVariant::F16), []).expect("f16");
