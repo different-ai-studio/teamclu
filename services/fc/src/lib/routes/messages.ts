@@ -5,7 +5,13 @@ import {
   decodeMessageCursor,
   nextMessageCursor,
 } from "../routing-utils.js";
-import { prepareTurnTraceUpload } from "../turn-trace.js";
+import {
+  completeTurnTraceUpload,
+  createTurnTraceDownload,
+  parseTurnTraceClaim,
+  parseTurnTraceTarget,
+  prepareTurnTraceUpload,
+} from "../turn-trace.js";
 
 export function registerMessages(router) {
   // Paginated backward from the newest message. `nextCursor` was hardcoded to
@@ -43,6 +49,12 @@ export function registerMessages(router) {
   router.patch("/v1/messages/:messageId", async (ctx) => {
     const patch = ctx.json ?? {};
     const message = await ctx.repository.patchMessage(decodeURIComponent(ctx.params.messageId), patch);
+    // `null` is PostgREST matching no row — absent, or not updatable by this
+    // caller under RLS. Answering 200 with a null body told the caller the
+    // write landed when nothing was written.
+    if (!message) {
+      throw new ApiError(404, "not_found", "message not found");
+    }
     return { body: message };
   });
 
@@ -51,22 +63,41 @@ export function registerMessages(router) {
     return { statusCode: 204 };
   });
 
-  // Turn execution trace upload (#1455 Phase 2). Daemon reads local history,
-  // gzip-jsonl's it, presigns here, PUTs directly to blob storage.
+  // Turn execution trace (#1455 Phase 2). The daemon uploads at turn end and
+  // attaches the pointer to its reply; clients expand tool cards by fetching a
+  // short-lived download URL. See lib/turn-trace.ts for the authorization.
   router.post("/v1/sessions/:sessionId/turns/:turnId/trace/prepare", async (ctx) => {
-    const sessionId = decodeURIComponent(ctx.params.sessionId);
-    const turnId = decodeURIComponent(ctx.params.turnId);
-    requireString(turnId, "turnId");
     const body = ctx.json ?? {};
-    const teamId = requireString(
-      typeof body.teamId === "string" ? body.teamId : ctx.query.get("teamId"),
-      "teamId",
+    const target = parseTurnTraceTarget(
+      decodeURIComponent(ctx.params.sessionId),
+      decodeURIComponent(ctx.params.turnId),
+      body.teamId,
     );
-    const session = await ctx.repository.getSession(sessionId, { teamId });
-    if (!session) {
-      throw new ApiError(404, "not_found", "session not found");
+    const claim = parseTurnTraceClaim(target, body);
+    return { body: await prepareTurnTraceUpload(ctx.repository, claim) };
+  });
+
+  router.post("/v1/sessions/:sessionId/turns/:turnId/trace/complete", async (ctx) => {
+    const body = ctx.json ?? {};
+    const target = parseTurnTraceTarget(
+      decodeURIComponent(ctx.params.sessionId),
+      decodeURIComponent(ctx.params.turnId),
+      body.teamId,
+    );
+    const claim = parseTurnTraceClaim(target, body);
+    return { body: await completeTurnTraceUpload(ctx.repository, claim, body.status) };
+  });
+
+  router.get("/v1/sessions/:sessionId/turns/:turnId/trace", async (ctx) => {
+    const target = parseTurnTraceTarget(
+      decodeURIComponent(ctx.params.sessionId),
+      decodeURIComponent(ctx.params.turnId),
+      ctx.query.get("teamId"),
+    );
+    const download = await createTurnTraceDownload(ctx.repository, target);
+    if (!download) {
+      throw new ApiError(404, "not_found", "turn trace not found");
     }
-    const prepared = await prepareTurnTraceUpload(teamId, sessionId, turnId);
-    return { body: prepared };
+    return { body: download };
   });
 }

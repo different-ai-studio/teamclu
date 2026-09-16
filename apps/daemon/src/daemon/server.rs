@@ -176,6 +176,8 @@ pub struct DaemonServer {
     sessions: SessionStore,
     sessions_path: PathBuf,
     history: EventHistory,
+    /// Each agent's in-flight turn trace, uploaded when the turn's reply lands.
+    turn_traces: crate::runtime::turn_trace::TurnTraceRecorder,
     teamclu: Option<crate::teamclu::SessionManager>,
     backend: Arc<dyn Backend>,
     /// The same object as `backend`, typed concretely so the setup endpoint can
@@ -794,6 +796,7 @@ impl DaemonServer {
             sessions,
             sessions_path,
             history,
+            turn_traces: Default::default(),
             teamclu,
             backend: backend.clone(),
             deferred_backend,
@@ -4039,6 +4042,7 @@ pub(crate) mod tests {
                 sessions: SessionStore::default(),
                 sessions_path: tmp.path().join("sessions.toml"),
                 history: EventHistory::new(&tmp.path().join("history")),
+                turn_traces: Default::default(),
                 teamclu: Some(teamclu),
                 backend: backend.clone(),
                 deferred_backend,

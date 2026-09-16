@@ -488,6 +488,63 @@ function fakeSupabaseForOwnerRpc(rpcData, rpcCalls = []) {
   });
 }
 
+// ── turn traces ──────────────────────────────────────────────────────────────
+
+const TRACE_CLAIM = {
+  teamId: "team-1",
+  sessionId: "session-1",
+  turnId: "turn-1",
+  messageId: "message-1",
+  size: 10,
+  sha256: "a".repeat(64),
+};
+
+test("turn trace rpcs pass the claim's ids and return the stored pointer", async () => {
+  const rpcCalls: any[] = [];
+  const pointer = { key: "turns/k", size: 10, sha256: "a".repeat(64), status: "uploaded" };
+  const repo = createRepo(fakeSupabase({
+    rpcCalls,
+    rpcData: { authorize_turn_trace_upload: null, record_turn_trace: pointer },
+  }));
+
+  assert.equal(await repo.authorizeTurnTraceUpload(TRACE_CLAIM), null);
+  assert.deepEqual(await repo.recordTurnTrace(TRACE_CLAIM, pointer), pointer);
+  const ids = { p_team_id: "team-1", p_session_id: "session-1", p_turn_id: "turn-1", p_message_id: "message-1" };
+  assert.deepEqual(rpcCalls, [
+    { name: "authorize_turn_trace_upload", args: ids },
+    { name: "record_turn_trace", args: { ...ids, p_trace: pointer } },
+  ]);
+});
+
+test("turn trace rpc errors map to HTTP statuses", async () => {
+  for (const [code, status] of [["P0002", 404], ["42501", 403], ["22023", 400]] as const) {
+    const repo = createRepo(fakeSupabase({
+      rpcErrors: {
+        authorize_turn_trace_upload: { code, message: "no" },
+        record_turn_trace: { code, message: "no" },
+      },
+    }));
+    await assert.rejects(() => repo.authorizeTurnTraceUpload(TRACE_CLAIM), (e: any) => e.statusCode === status);
+    await assert.rejects(() => repo.recordTurnTrace(TRACE_CLAIM, {}), (e: any) => e.statusCode === status);
+  }
+});
+
+test("getTurnTrace reads the pointer off the turn's reply", async () => {
+  const tableCalls: any[] = [];
+  const pointer = { key: "turns/k", size: 10, sha256: "a".repeat(64), status: "uploaded" };
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: { messages: [{ trace: null }, { trace: pointer }] },
+  }));
+
+  assert.deepEqual(await repo.getTurnTrace({ teamId: "team-1", sessionId: "session-1", turnId: "turn-1" }), pointer);
+  const filters = tableCalls.filter((c) => c.op === "eq").map((c) => [c.column, c.value]);
+  assert.deepEqual(filters, [["team_id", "team-1"], ["session_id", "session-1"], ["turn_id", "turn-1"]]);
+
+  const empty = createRepo(fakeSupabase({ tableData: { messages: [] } }));
+  assert.equal(await empty.getTurnTrace({ teamId: "team-1", sessionId: "session-1", turnId: "turn-1" }), null);
+});
+
 // ── listMessages pagination ──────────────────────────────────────────────────
 // The query fetches NEWEST-first so `limit` truncates the old end of a long
 // history, then reverses so the page reads oldest-first. Fetching ascending and

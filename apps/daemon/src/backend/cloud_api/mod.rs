@@ -6,7 +6,8 @@ use super::{
     AgentDefaults, AppGitCredential, Backend, BackendError, BackendResult,
     BackendSessionAndParticipants, BootstrapMqttOverride, ClaimResult, CloudAuthSnapshot,
     GatewaySessionRow, ManagedLlmConfig, ManagedLlmModelInfo, StoredMessage, TeamEnvSecretRow,
-    TeamSkillDownload, TeamSkillRow, TurnTracePrepare, WorkspaceRow, WorkspaceUpsert,
+    TeamSkillDownload, TeamSkillRow, TurnTraceStatus, TurnTraceUpload, WorkspaceRow,
+    WorkspaceUpsert,
 };
 use crate::provider_config::CloudApiConfig;
 use async_trait::async_trait;
@@ -1823,23 +1824,25 @@ impl Backend for CloudApiBackend {
 
     async fn prepare_turn_trace_upload(
         &self,
-        session_id: &str,
-        turn_id: &str,
-        team_id: &str,
-        size: u64,
-        sha256: &str,
-    ) -> BackendResult<TurnTracePrepare> {
-        self.prepare_turn_trace_upload_impl(session_id, turn_id, team_id, size, sha256)
-            .await
+        upload: &TurnTraceUpload<'_>,
+    ) -> BackendResult<String> {
+        self.prepare_turn_trace_upload_impl(upload).await
     }
 
-    async fn patch_message_metadata(
+    async fn put_turn_trace_blob(
         &self,
-        message_id: &str,
-        metadata_json: &str,
+        presigned_put: &str,
+        blob: bytes::Bytes,
     ) -> BackendResult<()> {
-        self.patch_message_metadata_impl(message_id, metadata_json)
-            .await
+        self.put_turn_trace_blob_impl(presigned_put, blob).await
+    }
+
+    async fn complete_turn_trace_upload(
+        &self,
+        upload: &TurnTraceUpload<'_>,
+        status: TurnTraceStatus,
+    ) -> BackendResult<()> {
+        self.complete_turn_trace_upload_impl(upload, status).await
     }
 
     async fn insert_message(

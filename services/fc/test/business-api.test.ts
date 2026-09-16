@@ -318,6 +318,20 @@ test("PATCH /v1/messages/:messageId updates message", async () => {
   });
 });
 
+test("PATCH /v1/messages/:messageId answers 404 when no row was updated", async () => {
+  // PostgREST reports an UPDATE that RLS filters to zero rows as "no row", and
+  // the repository returns null for it. A 200 with a null body read as success.
+  const repo = { ...fakeRepo(), async patchMessage() { return null; } };
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/messages/message-1",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ metadata: { trace: {} } }),
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 404);
+});
+
 test("DELETE /v1/messages/:messageId removes message", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({

@@ -17,6 +17,33 @@ use serde_json::Value;
 
 use super::error::SyncError;
 
+/// PUT `body` to a presigned storage URL. Shared by team sync and turn traces;
+/// the error text names the host that rejected the PUT.
+pub(crate) async fn put_presigned(
+    client: &Client,
+    presigned_url: &str,
+    body: bytes::Bytes,
+) -> Result<(), String> {
+    let resp = client
+        .put(presigned_url)
+        // Always explicit. For an empty body hyper writes no Content-Length
+        // at all, and OSS refuses a PUT without one (411 Length Required),
+        // so every 0-byte file — a note just created, a `.gitkeep` — never
+        // uploaded.
+        .header(reqwest::header::CONTENT_LENGTH, body.len())
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        // Include the host that rejected the PUT (after any redirects) so a
+        // 413/403 surfaces which hop returned it, not just the status.
+        let host = resp.url().host_str().unwrap_or("<unknown host>");
+        return Err(format!("PUT blob failed ({host}): HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// A single manifest item returned by /sync/manifest.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -243,28 +270,9 @@ impl FcClient {
 
     /// PUT blob to presigned URL.
     pub async fn put_blob(&self, presigned_url: &str, data: Vec<u8>) -> Result<(), SyncError> {
-        let resp = self
-            .client
-            .put(presigned_url)
-            // Always explicit. For an empty body hyper writes no Content-Length
-            // at all, and OSS refuses a PUT without one (411 Length Required),
-            // so every 0-byte file — a note just created, a `.gitkeep` — never
-            // uploaded.
-            .header(reqwest::header::CONTENT_LENGTH, data.len())
-            .body(data)
-            .send()
+        put_presigned(&self.client, presigned_url, bytes::Bytes::from(data))
             .await
-            .map_err(|e| SyncError::Network(e.to_string()))?;
-        if !resp.status().is_success() {
-            // Include the host that rejected the PUT (after any redirects) so a
-            // 413/403 surfaces which hop returned it, not just the status.
-            let host = resp.url().host_str().unwrap_or("<unknown host>");
-            return Err(SyncError::Network(format!(
-                "PUT blob failed ({host}): HTTP {}",
-                resp.status()
-            )));
-        }
-        Ok(())
+            .map_err(SyncError::Network)
     }
 
     /// POST /sync/upload/complete

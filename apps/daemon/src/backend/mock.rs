@@ -106,7 +106,8 @@ pub struct MockState {
     pub upserted_workspaces: Vec<RecordedWorkspaceUpsert>,
     pub session_participants_upserted: Vec<(String, String)>,
     pub messages_inserted: Vec<RecordedMessageInsert>,
-    pub message_metadata_patches: Vec<(String, String)>,
+    /// `(message_id, size, sha256, status)` per `complete_turn_trace_upload`.
+    pub turn_trace_completions: Vec<(String, u64, String, super::TurnTraceStatus)>,
     pub gateway_messages_inserted: Vec<RecordedGatewayMessage>,
     pub external_actors_upserted: Vec<RecordedExternalActor>,
     pub runtime_cursors_updated: Vec<(String, String)>,
@@ -834,28 +835,33 @@ impl Backend for MockBackend {
 
     async fn prepare_turn_trace_upload(
         &self,
-        session_id: &str,
-        turn_id: &str,
-        team_id: &str,
-        _size: u64,
-        _sha256: &str,
-    ) -> BackendResult<super::TurnTracePrepare> {
-        Ok(super::TurnTracePrepare {
-            oss_key: format!("turns/{team_id}/{session_id}/{turn_id}.jsonl.gz"),
-            presigned_put: "https://example.test/put".into(),
-        })
+        upload: &super::TurnTraceUpload<'_>,
+    ) -> BackendResult<String> {
+        Ok(format!(
+            "https://example.test/put/{}/{}",
+            upload.session_id, upload.turn_id
+        ))
     }
 
-    async fn patch_message_metadata(
+    async fn put_turn_trace_blob(
         &self,
-        message_id: &str,
-        metadata_json: &str,
+        _presigned_put: &str,
+        _blob: bytes::Bytes,
     ) -> BackendResult<()> {
-        self.state
-            .lock()
-            .unwrap()
-            .message_metadata_patches
-            .push((message_id.to_string(), metadata_json.to_string()));
+        Ok(())
+    }
+
+    async fn complete_turn_trace_upload(
+        &self,
+        upload: &super::TurnTraceUpload<'_>,
+        status: super::TurnTraceStatus,
+    ) -> BackendResult<()> {
+        self.state.lock().unwrap().turn_trace_completions.push((
+            upload.message_id.to_string(),
+            upload.size,
+            upload.sha256.to_string(),
+            status,
+        ));
         Ok(())
     }
 

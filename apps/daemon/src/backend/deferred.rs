@@ -581,24 +581,26 @@ impl Backend for DeferredBackend {
 
     async fn prepare_turn_trace_upload(
         &self,
-        session_id: &str,
-        turn_id: &str,
-        team_id: &str,
-        size: u64,
-        sha256: &str,
-    ) -> BackendResult<super::TurnTracePrepare> {
-        self.inner()?
-            .prepare_turn_trace_upload(session_id, turn_id, team_id, size, sha256)
-            .await
+        upload: &super::TurnTraceUpload<'_>,
+    ) -> BackendResult<String> {
+        self.inner()?.prepare_turn_trace_upload(upload).await
     }
 
-    async fn patch_message_metadata(
+    async fn put_turn_trace_blob(
         &self,
-        message_id: &str,
-        metadata_json: &str,
+        presigned_put: &str,
+        blob: bytes::Bytes,
+    ) -> BackendResult<()> {
+        self.inner()?.put_turn_trace_blob(presigned_put, blob).await
+    }
+
+    async fn complete_turn_trace_upload(
+        &self,
+        upload: &super::TurnTraceUpload<'_>,
+        status: super::TurnTraceStatus,
     ) -> BackendResult<()> {
         self.inner()?
-            .patch_message_metadata(message_id, metadata_json)
+            .complete_turn_trace_upload(upload, status)
             .await
     }
 

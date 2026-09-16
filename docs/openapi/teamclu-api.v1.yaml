@@ -1516,41 +1516,77 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/turns/{turnId}/trace:
+    get:
+      operationId: getTurnTrace
+      summary: Presign GET for a turn execution trace blob
+      description: >-
+        Returns a short-lived download URL for the turn's gzipped JSONL trace
+        once the daemon has completed its upload, with the size and SHA-256
+        recorded at completion so the client can verify what it downloads.
+        Session participants only; 404 when there is no uploaded trace.
+      tags: [Messages]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TurnId"
+        - name: teamId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Presigned download URL.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ossKey, downloadUrl, expiresIn, size, sha256]
+                properties:
+                  ossKey:
+                    type: string
+                  downloadUrl:
+                    type: string
+                    format: uri
+                  expiresIn:
+                    type: integer
+                  size:
+                    type: integer
+                    minimum: 1
+                    description: Compressed size in bytes, confirmed against storage at completion.
+                  sha256:
+                    type: string
+                    pattern: "^[0-9a-f]{64}$"
+                    description: SHA-256 hex of the compressed bytes.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/turns/{turnId}/trace/prepare:
     post:
       operationId: prepareTurnTraceUpload
       summary: Presign PUT for a turn execution trace blob
       description: >-
-        Returns a presigned URL for uploading `turns/<team>/<session>/<turnId>.jsonl.gz`.
-        The daemon writes the blob after turn end; clients fetch it via a future read
-        endpoint (Phase 2 follow-up).
+        Returns a presigned URL for uploading the turn's trace. Only the agent
+        that sent `messageId` may call this. On S3 storage the claimed `size` is
+        bound into the signature, so the PUT must send exactly that
+        `Content-Length`. 409 `conflict` once the message's trace is uploaded.
       tags: [Messages]
       parameters:
         - $ref: "#/components/parameters/SessionId"
-        - name: turnId
-          in: path
-          required: true
-          schema:
-            type: string
-            minLength: 1
+        - $ref: "#/components/parameters/TurnId"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [teamId]
-              properties:
-                teamId:
-                  type: string
-                  format: uuid
-                size:
-                  type: integer
-                  minimum: 0
-                  description: Compressed blob size in bytes (informational).
-                sha256:
-                  type: string
-                  description: SHA-256 hex of the compressed blob (informational).
+              $ref: "#/components/schemas/TurnTraceClaim"
       responses:
         "200":
           description: Presigned upload URL.
@@ -1574,7 +1610,63 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
         "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/turns/{turnId}/trace/complete:
+    post:
+      operationId: completeTurnTraceUpload
+      summary: Record the outcome of a turn trace upload
+      description: >-
+        Writes `metadata.trace` on `messageId`, and only that key, merged
+        server-side. For `uploaded`, the stored object's size must equal the
+        claimed `size`; on a mismatch the object is deleted, the trace is
+        recorded as `failed`, and the call answers 422. A `failed` report never
+        replaces an `uploaded` trace. Only the agent that sent `messageId` may
+        call this.
+      tags: [Messages]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TurnId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/TurnTraceClaim"
+                - type: object
+                  required: [status]
+                  properties:
+                    status:
+                      type: string
+                      enum: [uploaded, failed]
+      responses:
+        "200":
+          description: The pointer now stored on the message.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [trace]
+                properties:
+                  trace:
+                    $ref: "#/components/schemas/TurnTracePointer"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
           $ref: "#/components/responses/Error"
   /v1/messages/{messageId}:
     patch:
@@ -1615,6 +1707,8 @@ paths:
         "400":
           $ref: "#/components/responses/Error"
         "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
     delete:
       operationId: deleteMessage
@@ -7892,6 +7986,13 @@ components:
       required: true
       schema:
         type: string
+    TurnId:
+      name: turnId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     AppId:
       name: appId
       in: path
@@ -9419,6 +9520,43 @@ components:
           type:
             - string
             - "null"
+    TurnTraceClaim:
+      type: object
+      description: >-
+        One turn trace blob as the uploading agent claims it. The object key is
+        derived from the path ids, never sent.
+      required: [teamId, messageId, size, sha256]
+      properties:
+        teamId:
+          type: string
+          format: uuid
+        messageId:
+          type: string
+          format: uuid
+          description: The turn-final reply the trace attaches to; the caller must be its sender.
+        size:
+          type: integer
+          minimum: 1
+          maximum: 16777216
+          description: Compressed size in bytes.
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: SHA-256 hex of the compressed bytes.
+    TurnTracePointer:
+      type: object
+      description: What `messages.metadata.trace` holds.
+      required: [key, size, sha256, status]
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+        sha256:
+          type: string
+        status:
+          type: string
+          enum: [uploaded, failed]
     Message:
       type: object
       required: [id, teamId, sessionId, kind, content, createdAt]
