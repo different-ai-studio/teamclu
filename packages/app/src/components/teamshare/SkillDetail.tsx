@@ -24,6 +24,9 @@ import { PublishVersionSheet } from './skill-detail/PublishVersionSheet'
 import { ShareSheet } from './skill-detail/ShareSheet'
 import { UsageBoundary } from './skill-detail/UsageBoundary'
 import { VersionHistory } from './skill-detail/VersionHistory'
+import { TeamSkillAdminActions } from './TeamSkillAdminActions'
+import { DeleteTeamSkillDialog } from '@/components/sidebar/TeamShareListColumn'
+import { useTeamPermissions } from '@/lib/team/team-permissions'
 
 type SkillConfirmAction = 'delete' | 'uninstall'
 
@@ -78,7 +81,11 @@ export function SkillDetail({ slug }: { slug: string }) {
   const select = useTeamShareBrowserStore((s) => s.select)
   const openDetail = useTeamShareBrowserStore((s) => s.openDetail)
   const detachMarketplaceSkill = useTeamShareBrowserStore((s) => s.detachMarketplaceSkill)
+  const deprecateTeamSkill = useTeamShareBrowserStore((s) => s.deprecateTeamSkill)
+  const restoreTeamSkill = useTeamShareBrowserStore((s) => s.restoreTeamSkill)
+  const deleteTeamSkill = useTeamShareBrowserStore((s) => s.deleteTeamSkill)
   const subjectActorId = useTeamShareBrowserStore((s) => s.subjectActorId)
+  const { canManageTeam } = useTeamPermissions()
   useActorPresenceStore((s) =>
     subjectActorId ? s.byActorId[subjectActorId]?.online : undefined,
   )
@@ -99,6 +106,8 @@ export function SkillDetail({ slug }: { slug: string }) {
   const [diffLoading, setDiffLoading] = React.useState(false)
   const [teamDiffLoading, setTeamDiffLoading] = React.useState(false)
   const [confirmAction, setConfirmAction] = React.useState<SkillConfirmAction | null>(null)
+  const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null)
+  const [deleting, setDeleting] = React.useState(false)
   const [versions, setVersions] = React.useState<TeamSkillVersion[]>([])
   const [versionsLoading, setVersionsLoading] = React.useState(false)
   const [recoveries, setRecoveries] = React.useState<DraftRecoveryRecord[]>([])
@@ -653,6 +662,41 @@ export function SkillDetail({ slug }: { slug: string }) {
     [loadSkillPublishPreview, item?.slug, slug],
   )
 
+  const runDeleteTeamSkill = React.useCallback(async () => {
+    if (!deleteTarget || deleting) return
+    setDeleting(true)
+    try {
+      await deleteTeamSkill(deleteTarget)
+      setDeleteTarget(null)
+      toast.success(t('teamShare.skillDeleteTeamDone', '已从团队移除'))
+    } catch (e) {
+      if (e instanceof SkillMutationRefreshError) {
+        setDeleteTarget(null)
+        toastSkillMutationRefreshFailed(t, e, retrySkillsRuntimeRefresh)
+        return
+      }
+      toast.error(
+        t('teamShare.skillDeleteTeamFailed', '移除失败：{{msg}}', {
+          msg: e instanceof Error ? e.message : String(e),
+        }),
+      )
+    } finally {
+      setDeleting(false)
+    }
+  }, [deleteTarget, deleting, deleteTeamSkill, retrySkillsRuntimeRefresh, t])
+
+  const adminActionError = React.useCallback(
+    (fallbackKey: string, fallback: string, e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg === 'team owner or admin access required') {
+        toast.error(msg)
+        return
+      }
+      toast.error(t(fallbackKey, fallback, { msg }))
+    },
+    [t],
+  )
+
   if (!item) return null
 
   const conflicted =
@@ -1064,6 +1108,32 @@ export function SkillDetail({ slug }: { slug: string }) {
         />
       )}
 
+      {isRegistry && (
+        <TeamSkillAdminActions
+          canManageTeam={canManageTeam}
+          origin={item.origin}
+          status={item.status}
+          slug={item.slug}
+          publishedSlugs={allSkills
+            .filter((s) => s.origin === 'registry' && s.status === 'published' && s.slug !== item.slug)
+            .map((s) => s.slug)}
+          busy={busy || deleting}
+          onDeprecate={(supersededBy) => {
+            void deprecateTeamSkill(item.slug, supersededBy)
+              .then(() => toast.success(t('teamShare.skillDeprecateDone', '已退役')))
+              .catch((e) => adminActionError('teamShare.skillDeprecateFailed', '退役失败：{{msg}}', e))
+          }}
+          onRestore={() => {
+            void restoreTeamSkill(item.slug)
+              .then(() => toast.success(t('teamShare.skillRestorePublishedDone', '已恢复发布')))
+              .catch((e) =>
+                adminActionError('teamShare.skillRestorePublishedFailed', '恢复失败：{{msg}}', e),
+              )
+          }}
+          onDelete={() => setDeleteTarget(item.slug)}
+        />
+      )}
+
       <div className="min-h-0 flex-1">
         {canEdit ? (
           <Suspense
@@ -1178,6 +1248,16 @@ export function SkillDetail({ slug }: { slug: string }) {
           onDiffTabChange={setDiffTab}
           isDark={isDark}
           onClose={() => setDiffOpen(false)}
+        />
+      )}
+
+      {deleteTarget && (
+        <DeleteTeamSkillDialog
+          slug={deleteTarget}
+          open={deleteTarget !== null}
+          busy={deleting}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => void runDeleteTeamSkill()}
         />
       )}
 
