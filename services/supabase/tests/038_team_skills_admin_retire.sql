@@ -15,6 +15,13 @@ begin
 end;
 $$;
 
+create or replace function pg_temp.as_service()
+returns void language plpgsql as $$
+begin
+  perform set_config('role', 'service_role', true);
+end;
+$$;
+
 create temporary table skill_fixture (
   team_id    uuid not null,
   admin_uid  uuid not null,
@@ -38,8 +45,11 @@ begin
 end;
 $$;
 
+select pg_temp.as_service();
+
 do $$
 declare
+  v_org         uuid := gen_random_uuid();
   v_team        uuid := gen_random_uuid();
   v_owner_uid   uuid := gen_random_uuid();
   v_admin_uid   uuid := gen_random_uuid();
@@ -48,6 +58,8 @@ declare
   v_admin_mem   uuid := gen_random_uuid();
   v_member_mem  uuid := gen_random_uuid();
 begin
+  insert into public.orgs (id, name) values (v_org, 'Skill Retire Fixture');
+
   insert into auth.users (id, email, aud, role, instance_id, is_anonymous)
   values
     (v_owner_uid,  'skill-owner@amux.test',  'authenticated', 'authenticated',
@@ -58,8 +70,14 @@ begin
      '00000000-0000-0000-0000-000000000000', false)
   on conflict do nothing;
 
-  insert into amux.teams (id, slug, name)
-  values (v_team, 'skill-retire-' || left(v_team::text, 8), 'Skill Retire');
+  -- roles_users.user_id → public.users(id); store auth uid as users.id.
+  insert into public.users (id, auth_user_id, org_id, email) values
+    (v_owner_uid,  v_owner_uid,  v_org, 'skill-owner@amux.test'),
+    (v_admin_uid,  v_admin_uid,  v_org, 'skill-admin@amux.test'),
+    (v_member_uid, v_member_uid, v_org, 'skill-member@amux.test');
+
+  insert into amux.teams (id, slug, name, oid)
+  values (v_team, 'skill-retire-' || left(v_team::text, 8), 'Skill Retire', v_org);
 
   insert into amux.actors (id, team_id, actor_type, display_name, user_id)
   values
@@ -79,18 +97,22 @@ begin
     (v_team, v_admin_mem,  'admin'),
     (v_team, v_member_mem, 'member');
 
-  execute 'reset role';
-  insert into amux.team_skills (
-    team_id, slug, summary, category, when_to_use, when_not_to_use, status
-  ) values (
-    v_team, 'deploy-check', 'Deploy check skill', 'devops',
-    'Before deploy', 'After deploy', 'published'
-  );
-
   insert into skill_fixture (team_id, admin_uid, member_uid)
   values (v_team, v_admin_uid, v_member_uid);
 end;
 $$;
+
+-- current_team_role reads roles_users only (no team_members.role fallback).
+select amux.backfill_roles_users_from_team_members();
+
+execute 'reset role';
+insert into amux.team_skills (
+  team_id, slug, summary, category, when_to_use, when_not_to_use, status
+)
+select
+  team_id, 'deploy-check', 'Deploy check skill', 'devops',
+  'Before deploy', 'After deploy', 'published'
+from skill_fixture;
 
 -- (1) Member DELETE is a no-op under RLS (row survives).
 select pg_temp.as_member((select member_uid from skill_fixture));
