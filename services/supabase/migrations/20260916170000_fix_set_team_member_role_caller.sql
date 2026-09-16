@@ -1,5 +1,8 @@
--- Owner/admin can set another member's role to admin or member.
--- Cannot change own role, cannot change an owner, cannot mint a new owner.
+-- Repair set_team_member_role: the first cut called amux.current_actor_id(),
+-- which 20260804020000 dropped. Self-host skips already-applied files by name,
+-- so DBs that ran 20260916010000 still have the broken body until this replace.
+--
+-- Same body as the corrected 20260916010000 — CREATE OR REPLACE is idempotent.
 
 create or replace function amux.set_team_member_role(p_actor_id uuid, p_role text)
 returns void
