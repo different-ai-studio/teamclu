@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Star, User as UserIcon, UserMinus } from 'lucide-react'
+import { toast } from 'sonner'
+import { Copy, Shield, ShieldOff, Star, User as UserIcon, UserMinus } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -9,10 +10,18 @@ import {
   ContextMenuSeparator,
 } from '@/components/ui/context-menu'
 import type { ActorRow } from '@/stores/actor-directory-store'
+import { patchMemberTeamRole } from '@/stores/actor-directory-store'
 import { cn } from '@/lib/utils'
+import { getBackend } from '@/lib/backend'
+import { formatSetTeamMemberRoleError } from '@/lib/actor/actor-set-role-error'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import { canRemoveTeamActor, useTeamPermissions } from '@/lib/team/team-permissions'
+import {
+  canRemoveTeamActor,
+  canSetTeamMemberRole,
+  nextTeamMemberRole,
+  useTeamPermissions,
+} from '@/lib/team/team-permissions'
 
 interface Props {
   actor: ActorRow
@@ -36,7 +45,7 @@ interface Props {
  * Shared right-click menu for any actor row (recents, the local-daemon row,
  * etc.) so every actor exposes the same actions. Wraps its `children` (the row
  * trigger) and renders the View profile / Copy name / Copy ID / Set-or-remove
- * default agent / Remove-from-team items.
+ * default agent / Set-or-remove admin / Remove-from-team items.
  */
 export function ActorContextMenu({
   actor,
@@ -54,6 +63,8 @@ export function ActorContextMenu({
   const currentMemberId = useCurrentTeamStore((s) => s.currentMember?.id ?? null)
   const teamPermissions = useTeamPermissions()
   const canRemove = canRemoveTeamActor(teamPermissions, actor, currentMemberId)
+  const canChangeRole = canSetTeamMemberRole(teamPermissions, actor, currentMemberId)
+  const nextRole = canChangeRole ? nextTeamMemberRole(actor.team_role) : null
   const setDefaultAgent = useMemberPreferencesStore((s) => s.setDefaultAgent)
   const onToggleDefault = React.useCallback(() => {
     if (!teamId) return
@@ -61,6 +72,28 @@ export function ActorContextMenu({
       console.error('[ActorContextMenu] set default agent failed', e)
     })
   }, [teamId, isDefault, actor.id, setDefaultAgent])
+
+  const onToggleAdmin = React.useCallback(() => {
+    if (!teamId || !nextRole) return
+    void (async () => {
+      try {
+        await getBackend().teams.setTeamMemberRole(teamId, actor.id, nextRole)
+        patchMemberTeamRole(teamId, actor.id, nextRole)
+        toast.success(
+          nextRole === 'admin'
+            ? t('actors.roleChanged.setAdmin', '{{name}} is now an admin', {
+                name: actor.display_name,
+              })
+            : t('actors.roleChanged.removeAdmin', '{{name}} is no longer an admin', {
+                name: actor.display_name,
+              }),
+        )
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        toast.error(formatSetTeamMemberRoleError(msg, t))
+      }
+    })()
+  }, [teamId, nextRole, actor.id, actor.display_name, t])
 
   return (
     <ContextMenu>
@@ -86,6 +119,21 @@ export function ActorContextMenu({
               {isDefault
                 ? t('actors.contextMenu.removeDefault', 'Remove as default agent')
                 : t('actors.contextMenu.setDefault', 'Set as default agent')}
+            </ContextMenuItem>
+          </>
+        )}
+        {nextRole && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={onToggleAdmin} disabled={!teamId}>
+              {nextRole === 'admin' ? (
+                <Shield className="h-4 w-4" />
+              ) : (
+                <ShieldOff className="h-4 w-4" />
+              )}
+              {nextRole === 'admin'
+                ? t('actors.contextMenu.setAdmin', 'Set as admin')
+                : t('actors.contextMenu.removeAdmin', 'Remove admin')}
             </ContextMenuItem>
           </>
         )}

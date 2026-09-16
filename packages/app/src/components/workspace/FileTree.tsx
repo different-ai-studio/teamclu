@@ -23,6 +23,7 @@ import { isIgnoredSyncKey } from "@/lib/knowledge/knowledge-ignored";
 import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team/team-sync-badges";
 import { teamSyncKeyForPath } from "@/lib/team/team-skill-paths";
+import { proposeDocumentToKnowledge } from "@/lib/knowledge/propose-from-document";
 import {
   hasSystemClipboardFiles,
   writeSystemClipboardFiles,
@@ -697,6 +698,30 @@ export function FileTree({
     await refreshFileTree();
   }, [aclTeamId, syncRoot, workspacePath, refreshKnown, refreshFileTree, t]);
 
+  const handleSaveToKnowledge = useCallback(
+    (path: string) => {
+      const key = teamSyncKeyForPath(path, { syncRoot, workspacePath });
+      if (!key || !key.startsWith('documents/') || !workspacePath) return;
+      void proposeDocumentToKnowledge({
+        absPath: path,
+        documentPath: key,
+        workspacePath,
+        needsFetch: knownDocs.has(key),
+        teamId: aclTeamId ?? undefined,
+        readText: readFileContent,
+      })
+        .then(() => {
+          toast.success(
+            t('knowledgeReview.opened', '已打开审稿页，确认后才会写入知识库'),
+          );
+        })
+        .catch((err: unknown) => {
+          toast.error(err instanceof Error ? err.message : String(err));
+        });
+    },
+    [aclTeamId, knownDocs, syncRoot, workspacePath, t],
+  );
+
   /**
    * Copy local files or folders into a documents directory.
    *
@@ -1118,6 +1143,8 @@ export function FileTree({
         // do by accident for something that looks like deleting.
         onReleaseLocal:
           node.type !== 'directory' && !listedOnly ? handleReleaseLocal : undefined,
+        onSaveToKnowledge:
+          node.type !== 'directory' ? handleSaveToKnowledge : undefined,
       };
     })(),
     // 资料库 only — see the prop's own note for why 知识库 does not get this.

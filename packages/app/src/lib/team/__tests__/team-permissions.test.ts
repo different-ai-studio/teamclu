@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import {
   canRemoveTeamActor,
+  canSetTeamMemberRole,
   highestRoleCode,
+  nextTeamMemberRole,
   permissionsForRoles,
   useTeamPermissions,
 } from '@/lib/team/team-permissions'
@@ -168,5 +170,58 @@ describe('canRemoveTeamActor', () => {
     }
     expect(canRemoveTeamActor(adminPerms, agent, 'actor-a')).toBe(false)
     expect(canRemoveTeamActor(memberPerms, agent, 'actor-a')).toBe(false)
+  })
+})
+
+describe('canSetTeamMemberRole', () => {
+  const ownerPerms = permissionsForRoles([{ code: 'owner' }])
+  const adminPerms = permissionsForRoles([{ code: 'admin' }])
+  const memberPerms = permissionsForRoles([{ code: 'member' }])
+  const memberTarget = { id: 'actor-b', actor_type: 'member' as const, team_role: 'member' }
+  const adminTarget = { id: 'actor-b', actor_type: 'member' as const, team_role: 'admin' }
+  const ownerTarget = { id: 'actor-b', actor_type: 'member' as const, team_role: 'owner' }
+
+  it('allows owner and admin to promote a member', () => {
+    expect(canSetTeamMemberRole(ownerPerms, memberTarget, 'actor-a')).toBe(true)
+    expect(canSetTeamMemberRole(adminPerms, memberTarget, 'actor-a')).toBe(true)
+  })
+
+  it('allows owner and admin to demote an admin', () => {
+    expect(canSetTeamMemberRole(ownerPerms, adminTarget, 'actor-a')).toBe(true)
+    expect(canSetTeamMemberRole(adminPerms, adminTarget, 'actor-a')).toBe(true)
+  })
+
+  it('denies a regular member from changing roles', () => {
+    expect(canSetTeamMemberRole(memberPerms, memberTarget, 'actor-a')).toBe(false)
+  })
+
+  it('denies changing own role', () => {
+    expect(canSetTeamMemberRole(adminPerms, { ...memberTarget, id: 'actor-a' }, 'actor-a')).toBe(false)
+  })
+
+  it('denies changing an owner', () => {
+    expect(canSetTeamMemberRole(adminPerms, ownerTarget, 'actor-a')).toBe(false)
+    expect(canSetTeamMemberRole(ownerPerms, ownerTarget, 'actor-a')).toBe(false)
+  })
+
+  it('denies agents and external contacts', () => {
+    expect(canSetTeamMemberRole(adminPerms, { id: 'agent-1', actor_type: 'agent', team_role: null }, 'actor-a')).toBe(false)
+    expect(canSetTeamMemberRole(adminPerms, { id: 'ext-1', actor_type: 'external', team_role: null }, 'actor-a')).toBe(false)
+  })
+
+  it('denies when the current member is unknown', () => {
+    expect(canSetTeamMemberRole(adminPerms, memberTarget, null)).toBe(false)
+  })
+})
+
+describe('nextTeamMemberRole', () => {
+  it('promotes members and demotes admins', () => {
+    expect(nextTeamMemberRole('member')).toBe('admin')
+    expect(nextTeamMemberRole(null)).toBe('admin')
+    expect(nextTeamMemberRole('admin')).toBe('member')
+  })
+
+  it('refuses to change owner', () => {
+    expect(nextTeamMemberRole('owner')).toBeNull()
   })
 })

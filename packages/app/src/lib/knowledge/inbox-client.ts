@@ -13,6 +13,7 @@ export type ProposeKnowledgeInput = {
   source?: KnowledgeCandidate['source']
   summary?: string
   suggestions?: KnowledgeSuggestion[]
+  documentPath?: string
 }
 
 export async function listKnowledgeInbox(): Promise<KnowledgeCandidate[]> {
@@ -37,6 +38,7 @@ export async function proposeKnowledgeCandidate(
       source: input.source ?? 'session-header',
       summary: input.summary,
       suggestions: input.suggestions,
+      documentPath: input.documentPath,
     }),
   })
 }
