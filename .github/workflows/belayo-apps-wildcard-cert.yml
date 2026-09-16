@@ -102,8 +102,18 @@ jobs:
           git clone --quiet --depth 1 --branch "$ACME_SH_VERSION" https://github.com/acmesh-official/acme.sh "$src"
           server=letsencrypt
           if [ "$STAGING" = "true" ]; then server=letsencrypt_test; fi
+          # --dnssleep replaces acme.sh's own DNS check with a fixed wait.
+          # DNSPod does not serve a write from both of its nameservers at the
+          # same moment: right after a delete, easy.dnspod.net still answered
+          # with the record gene.dnspod.net had already dropped. acme.sh checks
+          # one resolver, sees the value and hands the order to Let's Encrypt,
+          # which asks a nameserver that has not caught up yet and fails the
+          # order with "Incorrect TXT record" — that is the 2026-09-16 failure,
+          # and the run before it only passed by luck. 180s also outlasts the
+          # 180s negative-cache TTL from mx5.cn's SOA.
           "$src/acme.sh" --home "$home" --config-home "$home" --cert-home "$home/certs" \
-            --issue --dns dns_tencent -d "$DOMAIN" --server "$server" --keylength ec-256
+            --issue --dns dns_tencent -d "$DOMAIN" --server "$server" --keylength ec-256 \
+            --dnssleep 180
 
           dir=$(find "$home/certs" -mindepth 1 -maxdepth 1 -type d -name '*apps.mx5.cn*' | head -1)
           key=$(find "$dir" -maxdepth 1 -type f -name '*.key' | head -1)
