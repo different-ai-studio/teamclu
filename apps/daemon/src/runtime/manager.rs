@@ -756,7 +756,12 @@ impl RuntimeManager {
         if let Some(h) = self.agents.get_mut(&agent_id) {
             h.available_models = startup.available_models;
             h.acp_session_id = startup.acp_session_id.clone();
-            h.status = amux::AgentStatus::Active;
+            // Match resume_agent: attach/warm without a prompt is not an open turn.
+            h.status = if prompt.trim().is_empty() {
+                amux::AgentStatus::Idle
+            } else {
+                amux::AgentStatus::Active
+            };
         }
         if resume_requested {
             info!(
@@ -3645,9 +3650,30 @@ mod tests {
     }
 
     #[test]
-    fn needs_synthetic_idle_detach_true_when_handle_active() {
+    fn needs_synthetic_idle_detach_false_when_handle_active_but_no_turn_activity() {
+        let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-warm");
+        mgr.get_handle_mut("rt-warm").unwrap().status = amux::AgentStatus::Active;
+        assert!(
+            !mgr.needs_synthetic_idle_detach("rt-warm"),
+            "warm attach must not emit idle_timeout AGENT_REPLY"
+        );
+    }
+
+    #[test]
+    fn needs_synthetic_idle_detach_true_when_handle_active_and_turn_had_activity() {
+        use crate::runtime::turn_aggregator::TurnAggregator;
+
         let mut mgr = RuntimeManager::test_dummy_with_runtime("rt-active");
         mgr.get_handle_mut("rt-active").unwrap().status = amux::AgentStatus::Active;
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&amux::AcpEvent {
+            event: Some(amux::acp_event::Event::Output(amux::AcpOutput {
+                text: "hi".into(),
+                is_complete: false,
+            })),
+            model: String::new(),
+        });
+        mgr.aggregators.insert("rt-active".to_string(), agg);
         assert!(mgr.needs_synthetic_idle_detach("rt-active"));
     }
 

@@ -176,21 +176,25 @@ impl RuntimeManager {
     /// Idle sweeper only evicts handles that still own `event_rx`, so this
     /// deliberately ignores the checkout (`event_rx == None`) branch of
     /// `runtime_has_active_turn`.
+    /// Synthetic Active→Idle + cloud AGENT_REPLY only when idle evict interrupts
+    /// real turn work. Warm attach (no prompt, no ACP activity) detaches silently.
     pub fn needs_synthetic_idle_detach(&self, agent_id: &str) -> bool {
-        let Some(handle) = self.agents.get(agent_id) else {
+        let Some(agg) = self.aggregators.get(agent_id) else {
             return false;
         };
-        matches!(handle.status, crate::proto::amux::AgentStatus::Active)
-            || self
-                .aggregators
-                .get(agent_id)
-                .and_then(|agg| agg.current_turn_id())
-                .is_some()
+        if !agg.turn_had_activity() {
+            return false;
+        }
+        let handle_active = self.agents.get(agent_id).is_some_and(|h| {
+            matches!(h.status, crate::proto::amux::AgentStatus::Active)
+        });
+        let turn_open = agg.current_turn_id().is_some();
+        handle_active || turn_open
     }
 
-    pub fn prepare_idle_timeout_detach(&mut self, agent_id: &str) {
+    pub fn prepare_idle_timeout_detach(&mut self, agent_id: &str, approval_pending: bool) {
         if let Some(agg) = self.aggregators.get_mut(agent_id) {
-            agg.mark_idle_timeout_detach(false);
+            agg.mark_idle_timeout_detach(approval_pending);
         }
     }
 
