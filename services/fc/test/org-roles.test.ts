@@ -593,6 +593,26 @@ function makeStubHost(opts: {
           insert(payload: Record<string, unknown>) {
             return rolesUsersQuery("insert", payload);
           },
+          update(patch: Record<string, unknown>) {
+            const filters: Filter[] = [];
+            const api: any = {
+              eq(col: string, val: unknown) {
+                filters.push({ col, val });
+                return api;
+              },
+              is(col: string, val: unknown) {
+                filters.push({ col, val, op: "is" });
+                return api;
+              },
+              then(resolve: (v: unknown) => void) {
+                for (const row of bindings) {
+                  if (matchBindingFilters(row, filters)) Object.assign(row, patch);
+                }
+                return Promise.resolve({ error: null }).then(resolve);
+              },
+            };
+            return api;
+          },
           delete() {
             return rolesUsersQuery("delete");
           },
@@ -1089,6 +1109,112 @@ describe("makeOrgRolesRepo", () => {
       "admin",
     );
     assert.equal(deriveHighestTeamRole([]), null);
+  });
+
+  test("shared tenant (DEFAULT_ORG_ID) never receives an automatic role above member", async () => {
+    // The shared org is an identity namespace, not a company: on self-host it
+    // holds 56 unrelated teams. roles_users is org-scoped, so an automatic
+    // `owner` there would own every other team in the bucket.
+    const host = makeStubHost({ teamRole: "owner", roles: systemCatalog, bindings: [] });
+    const previous = process.env.DEFAULT_ORG_ID;
+    process.env.DEFAULT_ORG_ID = ORG;
+    try {
+      await assignSystemOrgRole(host.supabase, { teamId: TEAM, userId: USER, code: "owner" });
+    } finally {
+      if (previous === undefined) delete process.env.DEFAULT_ORG_ID;
+      else process.env.DEFAULT_ORG_ID = previous;
+    }
+    assert.equal(host._bindings.length, 1);
+    assert.equal(host._bindings[0].role_id, MEMBER_ROLE);
+    assert.equal(host._teamMembers[0].role, "member");
+  });
+
+  test("a real tenant still receives owner (the clamp is scoped to the shared org)", async () => {
+    const host = makeStubHost({ teamRole: "owner", roles: systemCatalog, bindings: [] });
+    const previous = process.env.DEFAULT_ORG_ID;
+    process.env.DEFAULT_ORG_ID = "99999999-9999-9999-9999-999999999999";
+    try {
+      await assignSystemOrgRole(host.supabase, { teamId: TEAM, userId: USER, code: "owner" });
+    } finally {
+      if (previous === undefined) delete process.env.DEFAULT_ORG_ID;
+      else process.env.DEFAULT_ORG_ID = previous;
+    }
+    assert.equal(host._bindings[0].role_id, SYSTEM_ROLE);
+    assert.equal(host._teamMembers[0].role, "owner");
+  });
+
+  test("assignSystemOrgRole reactivates an inactive binding instead of no-op'ing", async () => {
+    // current_team_role filters status='active'; the old existence probe did
+    // not, so an inactive row meant "granted" while the user held nothing.
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: systemCatalog,
+      bindings: [
+        {
+          id: "ru-inactive",
+          user_id: USER,
+          role_id: MEMBER_ROLE,
+          org_id: ORG,
+          status: "inactive",
+          store_id: null,
+        },
+      ],
+    });
+    await assignSystemOrgRole(host.supabase, { teamId: TEAM, userId: USER, code: "member" });
+    assert.equal(host._bindings.length, 1);
+    assert.equal(host._bindings[0].status, "active");
+  });
+
+  test("assignSystemOrgRole mirrors the full role set, so it never demotes an owner", async () => {
+    // join_public_team is idempotent and re-runs with code 'member' for a
+    // caller who already owns the team. Mirroring only that code rewrote
+    // team_members.role to 'member' — the column remove_team_actor's
+    // last-owner guard reads.
+    const host = makeStubHost({
+      teamRole: "owner",
+      roles: systemCatalog,
+      bindings: [
+        {
+          id: "ru-owner",
+          user_id: USER,
+          role_id: SYSTEM_ROLE,
+          org_id: ORG,
+          status: "active",
+          store_id: null,
+        },
+      ],
+    });
+    await assignSystemOrgRole(host.supabase, { teamId: TEAM, userId: USER, code: "member" });
+    assert.equal(host._teamMembers[0].role, "owner");
+  });
+
+  test("assignSystemOrgRole maps a missing public.users row to a diagnosable error", async () => {
+    // roles_users.user_id FKs public.users(id) while actors.user_id is an auth
+    // id; phone-auth identities have no matching row and used to surface a bare
+    // 23503 from a path whose invite/team RPC had already committed.
+    const host = makeStubHost({ teamRole: "owner", roles: systemCatalog, bindings: [] });
+    const fkClient = {
+      ...host.supabase,
+      from(table: string) {
+        const real = host.supabase.from(table);
+        if (table !== "roles_users") return real;
+        return {
+          ...real,
+          insert: () =>
+            Promise.resolve({
+              data: null,
+              error: { code: "23503", message: 'violates foreign key "roles_users_user_id_fkey"' },
+            }),
+        };
+      },
+    };
+    await assert.rejects(
+      () => assignSystemOrgRole(fkClient, { teamId: TEAM, userId: USER, code: "member" }),
+      (err: any) =>
+        err instanceof ApiError &&
+        err.statusCode === 409 &&
+        /public\.users/.test(err.message),
+    );
   });
 
   test("mirrorTeamMembersRole maps finance/custom to member; empty → null", () => {

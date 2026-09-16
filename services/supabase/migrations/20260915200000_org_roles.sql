@@ -229,7 +229,9 @@ BEGIN
     r.id,
     t.oid,
     'active',
-    NULL,
+    -- Typed: a bare NULL in a SELECT list resolves to text and the INSERT
+    -- fails with "column store_id is of type uuid but expression is of type text".
+    NULL::uuid,
     false
   FROM amux.team_members tm
   JOIN amux.teams t ON t.id = tm.team_id

@@ -135,6 +135,42 @@ async function dualWriteTeamMembersRole(
 }
 
 /**
+ * The shared tenant (`DEFAULT_ORG_ID`) is an identity NAMESPACE, not a company.
+ * Every org-less / phone sign-up is stamped with it, so its members are
+ * strangers to one another — on self-host it holds 56 unrelated teams. Because
+ * `roles_users` is org-scoped, an automatic `owner` grant there would make one
+ * person owner of every other team in the bucket. Nothing above `member` is
+ * ever granted automatically in that org; real tenants are unaffected.
+ */
+function clampSharedTenantRole(orgId: string, code: string): string {
+  const sharedOrg = (process.env.DEFAULT_ORG_ID ?? "").trim();
+  if (!sharedOrg || orgId !== sharedOrg) return code;
+  return code === "member" ? code : "member";
+}
+
+/** Active role refs for a user in one org. Shared by assign + repo listing. */
+async function activeOrgRolesForUser(
+  client: any,
+  orgId: string,
+  userId: string,
+): Promise<MemberRoleRef[]> {
+  const { data: bindings, error } = await publicFrom(client, "roles_users")
+    .select("role_id")
+    .eq("org_id", orgId)
+    .eq("user_id", userId)
+    .eq("status", "active");
+  if (error) throw error;
+  const roleIds = [...new Set((bindings ?? []).map((b: any) => b.role_id).filter(Boolean))];
+  if (!roleIds.length) return [];
+  const { data: roles, error: rolesErr } = await publicFrom(client, "roles")
+    .select("id, code, name, status")
+    .in("id", roleIds)
+    .eq("status", "active");
+  if (rolesErr) throw rolesErr;
+  return (roles ?? []).map(mapMemberRoleRef);
+}
+
+/**
  * Assign a system org role (`owner` / `member` / …) for a user under a team's org.
  * Idempotent: existing active row is a no-op. Used by team create / invite claim.
  *
@@ -174,25 +210,37 @@ export async function assignSystemOrgRole(
     );
   }
 
+  const effectiveCode = clampSharedTenantRole(orgId, code);
+
   const { data: role, error: roleErr } = await publicFrom(admin, "roles")
     .select("id")
     .eq("org_id", orgId)
-    .eq("code", code)
+    .eq("code", effectiveCode)
     .eq("is_system", true)
     .maybeSingle();
   if (roleErr) throw roleErr;
   if (!role?.id) {
-    throw new ApiError(500, "internal_error", `system role ${code} missing for org`);
+    throw new ApiError(500, "internal_error", `system role ${effectiveCode} missing for org`);
   }
 
+  // `status` matters: an inactive binding satisfied the old existence probe, so
+  // the grant no-op'd while current_team_role (which filters status='active')
+  // still saw nothing — a member with no effective role and no error raised.
   const { data: existing, error: existErr } = await publicFrom(admin, "roles_users")
-    .select("id")
+    .select("id, status")
     .eq("user_id", userId)
     .eq("role_id", role.id)
     .is("store_id", null)
     .maybeSingle();
   if (existErr) throw existErr;
-  if (!existing?.id) {
+  if (existing?.id) {
+    if (existing.status !== "active") {
+      const { error: reviveErr } = await publicFrom(admin, "roles_users")
+        .update({ status: "active" })
+        .eq("id", existing.id);
+      if (reviveErr) throw reviveErr;
+    }
+  } else {
     const { error: insertErr } = await publicFrom(admin, "roles_users").insert({
       user_id: userId,
       role_id: role.id,
@@ -203,6 +251,19 @@ export async function assignSystemOrgRole(
       expires_at: null,
     });
     if (insertErr) {
+      if (insertErr.code === "23503") {
+        // roles_users.user_id FKs public.users(id), but actors.user_id — and
+        // auth.uid() — is an auth.users id. Phone-auth identities have a
+        // public.users row whose id is NOT the auth id (auth_user_id is
+        // unpopulated), so they cannot hold an org role at all. Say that,
+        // rather than surfacing a bare foreign-key violation from a path the
+        // caller already committed an invite/team RPC on.
+        throw new ApiError(
+          409,
+          "user_profile_missing",
+          `no public.users row for ${userId}; this identity cannot hold org roles`,
+        );
+      }
       // Unique race: another writer won — still mirror below.
       if (insertErr.code !== "23505") throw insertErr;
     }
@@ -217,7 +278,15 @@ export async function assignSystemOrgRole(
     .maybeSingle();
   if (actorErr) throw actorErr;
   if (typeof actor?.id === "string" && actor.id) {
-    await dualWriteTeamMembersRole(admin, { teamId, actorId: actor.id, roleCode: code });
+    // Mirror the user's FULL active role set, not just the code being granted.
+    // Mirroring `code` alone demoted a re-entering owner to 'member' in the
+    // legacy column that remove_team_actor's last-owner guard reads.
+    const active = await activeOrgRolesForUser(admin, orgId, userId);
+    await dualWriteTeamMembersRole(admin, {
+      teamId,
+      actorId: actor.id,
+      roleCode: deriveHighestTeamRole(active) ?? effectiveCode,
+    });
   }
 }
 
@@ -225,10 +294,19 @@ export async function assignSystemOrgRole(
  * Batch-load active org roles for actors that have a `userId`.
  * Mutates each actor with `roles` + derived `teamRole` (and `role` when present).
  */
+export type WithOrgRoles<T> = T & { roles: MemberRoleRef[]; teamRole: string | null };
+
 export async function enrichActorsWithOrgRoles<
-  T extends { userId?: string | null; kind?: string | null; roles?: MemberRoleRef[]; teamRole?: string | null; role?: string | null },
->(supabase: any, teamId: string, actors: T[]): Promise<T[]> {
-  if (!actors.length) return actors;
+  T extends {
+    id?: string;
+    userId?: string | null;
+    kind?: string | null;
+    roles?: MemberRoleRef[];
+    teamRole?: string | null;
+    role?: string | null;
+  },
+>(supabase: any, teamId: string, actors: T[]): Promise<Array<WithOrgRoles<T>>> {
+  if (!actors.length) return [];
 
   const { data: team, error: teamErr } = await supabase
     .from("teams")
@@ -285,9 +363,9 @@ export async function enrichActorsWithOrgRoles<
     }
     const roles = actor.userId ? (byUser.get(actor.userId) ?? []) : [];
     const teamRole = deriveHighestTeamRole(roles);
-    const next: T = { ...actor, roles, teamRole };
+    const next: WithOrgRoles<T> = { ...actor, roles, teamRole };
     if ("role" in actor || actor.role !== undefined) {
-      (next as T & { role: string | null }).role = teamRole;
+      (next as WithOrgRoles<T> & { role: string | null }).role = teamRole;
     }
     return next;
   });
