@@ -197,14 +197,9 @@ fn run_clone(
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         // git prints the URL back in most failures; that is the user's own
-        // input, and it can carry a token in the userinfo field, so only the
-        // last line goes into the error the desktop shows.
-        let reason = stderr
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .next_back()
-            .unwrap_or("git clone failed")
-            .trim();
+        // input, and it can carry a token in the userinfo field, so only one
+        // line goes into the error the desktop shows.
+        let reason = app_git::git_failure_reason(&stderr).unwrap_or("git clone failed");
         anyhow::bail!("git clone failed: {reason}");
     }
     Ok(())
