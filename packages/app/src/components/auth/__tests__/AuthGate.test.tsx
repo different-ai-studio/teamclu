@@ -47,6 +47,7 @@ const { authState, currentTeamMock, backendMock } = vi.hoisted(() => ({
   currentTeamMock: {
     reloadAndSwitchTo: vi.fn(),
     setActiveTeam: vi.fn(),
+    enterTeam: vi.fn(),
     switchToTeam: vi.fn(),
     team: null as null | { id: string },
     teamUserId: null as null | string,
@@ -172,6 +173,8 @@ beforeEach(() => {
   backendMock.teams.bootstrapTeam.mockReset();
   currentTeamMock.reloadAndSwitchTo.mockReset();
   currentTeamMock.setActiveTeam.mockReset();
+  currentTeamMock.enterTeam.mockReset();
+  currentTeamMock.enterTeam.mockResolvedValue(undefined);
   currentTeamMock.switchToTeam.mockReset();
   currentTeamMock.team = null;
   currentTeamMock.teamUserId = null;
@@ -430,6 +433,9 @@ describe("AuthGate", () => {
       ),
     );
 
+    // Activate before setting the client team: bootstrap can move the caller's
+    // org, and current_org_id() reads the JWT claim before public.users.org_id.
+    await waitFor(() => expect(currentTeamMock.enterTeam).toHaveBeenCalledWith("team-new"));
     await waitFor(() =>
       expect(currentTeamMock.setActiveTeam).toHaveBeenCalledWith({
         id: "team-new",

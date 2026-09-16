@@ -6,6 +6,10 @@
 -- The desktop first-run screen now asks for a name — a company name, or the
 -- name of a personal small team — and passes it down.
 --
+-- It also retires the shared-tenant bootstrap branch: a caller who is not an
+-- employee of that org now gets their own org instead of a private team inside
+-- someone else's company.
+--
 -- The name is applied to BOTH public.orgs.name and amux.teams.name, keeping
 -- the "team name equals org name" invariant from
 -- docs/plans/2026-08-17-login-org-team-redesign.md. Absent / blank falls back
@@ -172,63 +176,45 @@ $function$;
 
 GRANT EXECUTE ON FUNCTION amux.ensure_org_public_team(uuid, text, text) TO authenticated, service_role;
 
--- ── bootstrap_current_org_team: same, for the shared-tenant branch ──────────
--- Body otherwise verbatim from 20260817020000_org_naming_and_login_bootstrap.sql.
--- Here the team name does NOT touch the org: the shared tenant's org is a real
--- company (belayo's DEFAULT_ORG_ID is Betly 倍拓) and a phone sign-up naming
--- their own first team must not rename it.
+-- ── move_caller_to_own_org ──────────────────────────────────────────────────
+-- Mint an org for a caller who already has one. ensure_personal_org cannot do
+-- this: it early-returns as soon as public.users.org_id is set, which is
+-- exactly the state a shared-tenant identity is in.
 
-DROP FUNCTION IF EXISTS amux.bootstrap_current_org_team(uuid, text);
-
-CREATE OR REPLACE FUNCTION amux.bootstrap_current_org_team(
-  p_fallback_org uuid DEFAULT NULL,
-  p_display_name text DEFAULT NULL,
-  p_team_name text DEFAULT NULL
-)
-RETURNS TABLE(team_id uuid, team_name text, team_slug text, member_id uuid, role text, workspace_id uuid, workspace_name text)
+CREATE OR REPLACE FUNCTION amux.move_caller_to_own_org(p_name text DEFAULT NULL)
+RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path TO 'amux', 'public', 'auth', 'extensions'
 AS $function$
 declare
-  v_user_id uuid := auth.uid();
-  v_org_id  uuid;
-  v_org_name text;
+  v_user uuid := auth.uid();
+  v_org  uuid;
+  v_name text;
 begin
-  if v_user_id is null then
-    raise exception 'bootstrap_current_org_team requires an authenticated user' using errcode = '42501';
+  if v_user is null then
+    raise exception 'move_caller_to_own_org requires an authenticated user' using errcode = '42501';
   end if;
 
-  perform pg_advisory_xact_lock(hashtextextended(v_user_id::text, 0));
-  if exists (select 1 from amux.actors where user_id = v_user_id) then
-    raise exception 'bootstrap_current_org_team currently supports first-team onboarding only'
-      using errcode = '23514';
+  v_name := coalesce(
+    nullif(btrim(p_name), ''),
+    nullif(btrim(amux.resolve_caller_display_name()), ''),
+    'Personal'
+  );
+
+  insert into public.orgs (name) values (v_name) returning id into v_org;
+
+  update public.users set org_id = v_org, updated_at = now() where id = v_user;
+  if not found then
+    insert into public.users (id, org_id, mobile) values (v_user, v_org, '');
   end if;
 
-  v_org_id := coalesce(amux.current_org_id(), p_fallback_org);
-  if v_org_id is null then
-    raise exception 'current organization is required for team bootstrap' using errcode = '23514';
-  end if;
-
-  select name into v_org_name from public.orgs where id = v_org_id;
-  v_org_name := coalesce(nullif(btrim(p_team_name), ''), nullif(btrim(v_org_name), ''));
-  if v_org_name is null then
-    raise exception 'current organization has no name' using errcode = '23514';
-  end if;
-
-  return query
-    select c.team_id, c.team_name, c.team_slug, c.member_id, c.role, c.workspace_id, c.workspace_name
-      from amux.create_team(
-        p_name => v_org_name,
-        p_display_name => p_display_name,
-        p_oid => v_org_id
-      ) c;
+  return v_org;
 end;
 $function$;
 
-GRANT EXECUTE ON FUNCTION amux.bootstrap_current_org_team(uuid, text, text) TO authenticated, service_role;
-
--- ── bootstrap_login_team: plumb the name through both branches ──────────────
+REVOKE ALL ON FUNCTION amux.move_caller_to_own_org(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION amux.move_caller_to_own_org(text) TO authenticated, service_role;
 
 DROP FUNCTION IF EXISTS amux.bootstrap_login_team(boolean, uuid, text);
 
@@ -264,12 +250,26 @@ begin
     raise exception 'current organization is required for team bootstrap' using errcode = '23514';
   end if;
 
-  -- 共享租户（partner）留在老路上：各自建私有团队，不给它建 public 默认团队。
-  if p_shared_org is not null and v_org_id = p_shared_org then
-    return query
-      select c.team_id, c.team_name, c.team_slug, c.member_id, c.role, c.workspace_id, c.workspace_name
-        from amux.bootstrap_current_org_team(v_org_id, p_display_name, p_team_name) c;
-    return;
+  -- 共享租户（DEFAULT_ORG_ID）是身份命名空间，不是这个人的公司：每一个 org-less
+  -- 或手机号注册都被盖上它。真正属于它的只有它的员工 —— belayo 上
+  -- DEFAULT_ORG_ID 指的是 Betly 倍拓 这家真公司，self-host 上是 56 个互不相关
+  -- 团队的杂物间。
+  --
+  -- 所以这里只分一次：是这个 org 的员工就照常走（加入它的 public 默认团队），
+  -- 不是就给自己建一个 org，和任何其他没有 org 的人走同一条路。以前这条分支是
+  -- 「在共享 org 里建个私有团队」，那正是让陌生人堆进同一个租户的原因。
+  --
+  -- 员工判定共用 amux.caller_employee_orgs()（admin_type >= 2，含同手机号身份），
+  -- 与 list_teams_for_picker / join_public_team 同一个定义，不能各写一套。
+  if p_shared_org is not null and v_org_id = p_shared_org
+     and not exists (
+       select 1 from amux.caller_employee_orgs() eo where eo = p_shared_org
+     ) then
+    -- Minting an org IS self-registration, same gate as the no-org branch.
+    if not coalesce(p_allow_new_org, true) then
+      raise exception 'self-registration is disabled on this deployment' using errcode = '42501';
+    end if;
+    v_org_id := amux.move_caller_to_own_org(p_team_name);
   end if;
 
   return query

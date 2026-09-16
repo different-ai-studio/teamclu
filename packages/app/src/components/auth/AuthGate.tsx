@@ -434,6 +434,13 @@ export function AuthGate({ children }: AuthGateProps) {
         const displayName = await resolveDefaultDisplayName(session?.user?.email);
         const created = await getBackend().teams.bootstrapTeam({ displayName, teamName });
         if (!created?.id) throw new Error("bootstrap returned no team id");
+        // enterTeam, not setActiveTeam: bootstrap can MOVE the caller's org —
+        // a shared-tenant identity that is not an employee of that tenant gets
+        // its own org minted — and amux.current_org_id() reads the JWT claim
+        // before public.users.org_id. Without the activate + adoptSession round
+        // trip the session still authenticates as the old org and
+        // teams_org_guard hides the team that was just created.
+        await useCurrentTeamStore.getState().enterTeam(created.id);
         await useCurrentTeamStore.getState().setActiveTeam({
           id: created.id,
           name: created.name,
