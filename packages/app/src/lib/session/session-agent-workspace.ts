@@ -34,6 +34,34 @@ export class WorkspaceHeldByAnotherAgentError extends Error {
   }
 }
 
+/**
+ * Whether the files pane may offer to bind a folder for the agent: its seat in
+ * the session is confirmed to hold no workspace, or one there is nothing to run
+ * in any more.
+ *
+ * All the pane knows is that the session resolved to no folder, and a failed
+ * participant read or a workspace missing from this machine's list ends there
+ * too. A pick made then would overwrite a seat that is bound, so anything short
+ * of a confirmed answer is false — and a failed read throws.
+ */
+export async function localSeatNeedsWorkspace(args: {
+  teamId: string
+  sessionId: string
+  agentId: string
+}): Promise<boolean> {
+  const backend = getBackend()
+  const participants = await backend.sessions.getSessionParticipants(args.sessionId)
+  const seat = participants.find((p) => p.actor_id === args.agentId)
+  if (!seat) return false
+  const workspaceId = seat.workspaceId?.trim()
+  if (!workspaceId) return true
+
+  const [row] = await backend.workspaces.listWorkspacesByIds(args.teamId, [workspaceId])
+  // Gone, archived, or never given a directory. `archived` is missing from an
+  // older Cloud API; missing counts as live.
+  return !row || row.archived === true || !row.path
+}
+
 /** The agent's live workspace for `path`, registering the folder when it is not one yet. */
 export async function ensureAgentWorkspaceForPath(args: {
   teamId: string
@@ -110,6 +138,8 @@ export async function bindSessionAgentWorkspace(args: {
 
   // A runtime the fallbacks started elsewhere is superseded by a start in the
   // seat's folder; with none running this starts one, as adding the agent does.
+  // An ensure still running from opening the session read the seat before it
+  // moved, so this one waits for it and starts again rather than joining it.
   const { ensureAgentRuntimesForSession } = await import('@/lib/teamclu/ensure-agent-runtime')
   void ensureAgentRuntimesForSession({
     sessionId,
@@ -117,5 +147,6 @@ export async function bindSessionAgentWorkspace(args: {
     agentActorIds: [agentId],
     workspaceIdHint: workspace.id,
     reason: 'session_workspace_bound',
+    afterInFlight: true,
   }).catch((e) => console.warn('[session-agent-workspace] runtime start failed (non-fatal):', e))
 }

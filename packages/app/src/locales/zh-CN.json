@@ -1072,6 +1072,7 @@
   "fileExplorer": {
     "agentNotStarted": "Agent 尚未启动",
     "noWorkspaceBound": "该会话没有工作目录",
+    "workspaceUnavailable": "读取不到该会话的工作目录",
     "pickWorkspaceHint": "为 {{agent}} 选择一个工作目录",
     "pickWorkspaceHintNoName": "为本机 Agent 选择一个工作目录",
     "workspacesLoading": "加载中…",

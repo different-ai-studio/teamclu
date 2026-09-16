@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   setParticipantWorkspace: vi.fn(),
+  getSessionParticipants: vi.fn(),
+  listWorkspacesByIds: vi.fn(),
   listDaemonWorkspaces: vi.fn(),
   createDaemonWorkspace: vi.fn(),
   upsertSessionWorkspacesBatch: vi.fn(),
@@ -14,6 +16,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/backend', () => ({
   getBackend: () => ({
     sessionMembers: { setParticipantWorkspace: mocks.setParticipantWorkspace },
+    sessions: { getSessionParticipants: mocks.getSessionParticipants },
+    workspaces: { listWorkspacesByIds: mocks.listWorkspacesByIds },
   }),
 }))
 
@@ -47,6 +51,7 @@ vi.mock('@/stores/session-selection-store', () => ({
 import {
   bindSessionAgentWorkspace,
   ensureAgentWorkspaceForPath,
+  localSeatNeedsWorkspace,
   WorkspaceHeldByAnotherAgentError,
 } from '../session-agent-workspace'
 import { sessionWorkspaceRebindRevision } from '../session-workspace-rebind'
@@ -65,6 +70,57 @@ function workspaceRow(overrides: Record<string, unknown> = {}) {
     ...overrides,
   }
 }
+
+describe('localSeatNeedsWorkspace', () => {
+  const args = { teamId: 'team-1', sessionId: 'sess-1', agentId: 'agent-local' }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('is true for a seat with no workspace', async () => {
+    mocks.getSessionParticipants.mockResolvedValue([
+      { session_id: 'sess-1', actor_id: 'agent-local', workspaceId: null },
+    ])
+    await expect(localSeatNeedsWorkspace(args)).resolves.toBe(true)
+    expect(mocks.listWorkspacesByIds).not.toHaveBeenCalled()
+  })
+
+  it('is false for a seat on a live workspace, even one this machine could not map', async () => {
+    mocks.getSessionParticipants.mockResolvedValue([
+      { session_id: 'sess-1', actor_id: 'agent-local', workspaceId: 'ws-1' },
+    ])
+    mocks.listWorkspacesByIds.mockResolvedValue([
+      { id: 'ws-1', name: 'project', path: '/Users/me/project', agentId: 'agent-local', archived: false },
+    ])
+    await expect(localSeatNeedsWorkspace(args)).resolves.toBe(false)
+    expect(mocks.listWorkspacesByIds).toHaveBeenCalledWith('team-1', ['ws-1'])
+  })
+
+  it.each([
+    ['archived', [{ id: 'ws-1', name: 'p', path: '/Users/me/p', agentId: 'agent-local', archived: true }]],
+    ['without a directory', [{ id: 'ws-1', name: 'p', path: null }]],
+    ['gone', []],
+  ])('is true for a seat on a workspace that is %s', async (_label, rows) => {
+    mocks.getSessionParticipants.mockResolvedValue([
+      { session_id: 'sess-1', actor_id: 'agent-local', workspaceId: 'ws-1' },
+    ])
+    mocks.listWorkspacesByIds.mockResolvedValue(rows)
+    await expect(localSeatNeedsWorkspace(args)).resolves.toBe(true)
+  })
+
+  it('is false when the agent has no seat in the session', async () => {
+    mocks.getSessionParticipants.mockResolvedValue([
+      { session_id: 'sess-1', actor_id: 'member-1', workspaceId: null },
+    ])
+    await expect(localSeatNeedsWorkspace(args)).resolves.toBe(false)
+  })
+
+  it('throws rather than guess when the roster cannot be read', async () => {
+    mocks.getSessionParticipants.mockRejectedValue(new Error('502'))
+    await expect(localSeatNeedsWorkspace(args)).rejects.toThrow('502')
+  })
+})
 
 describe('ensureAgentWorkspaceForPath', () => {
   beforeEach(() => {
@@ -164,6 +220,7 @@ describe('bindSessionAgentWorkspace', () => {
         teamId: 'team-1',
         agentActorIds: ['agent-local'],
         workspaceIdHint: 'ws-1',
+        afterInFlight: true,
       }),
     )
   })

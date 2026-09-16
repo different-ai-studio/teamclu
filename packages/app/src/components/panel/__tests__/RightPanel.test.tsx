@@ -63,6 +63,7 @@ const mockLocalWorkspace = {
   path: '/Volumes/openbeta/workspace/teamclu' as string | null,
   bindingResolved: true,
   boundPath: '/Volumes/openbeta/workspace/teamclu' as string | null,
+  needsWorkspace: false,
 }
 vi.mock('@/hooks/use-session-local-workspace', () => ({
   useSessionLocalWorkspace: () => mockLocalWorkspace,
@@ -78,6 +79,7 @@ beforeEach(() => {
   mockLocalWorkspace.path = '/Volumes/openbeta/workspace/teamclu'
   mockLocalWorkspace.bindingResolved = true
   mockLocalWorkspace.boundPath = '/Volumes/openbeta/workspace/teamclu'
+  mockLocalWorkspace.needsWorkspace = false
 })
 
 describe('RightPanel', () => {
@@ -120,6 +122,7 @@ describe('RightPanel', () => {
     mockLocalWorkspace.path = null
     mockLocalWorkspace.bindingResolved = true
     mockLocalWorkspace.boundPath = null
+    mockLocalWorkspace.needsWorkspace = true
     render(React.createElement(RightPanel))
     expect(screen.getByTestId('files-no-workspace')).toBeDefined()
     expect(screen.getByTestId('files-no-workspace').textContent).toContain('该会话没有工作目录')
@@ -134,9 +137,24 @@ describe('RightPanel', () => {
     mockLocalWorkspace.path = null
     mockLocalWorkspace.bindingResolved = true
     mockLocalWorkspace.boundPath = null
+    mockLocalWorkspace.needsWorkspace = true
     render(React.createElement(RightPanel))
     expect(screen.getByTestId('files-no-workspace').textContent).toContain('为 {{agent}} 选择一个工作目录')
     expect(screen.getByTestId('session-workspace-picker').getAttribute('data-agent-id')).toBe('agent-local')
+  })
+
+  // No folder resolved, but the seat was not confirmed empty — a failed read, or
+  // a workspace this machine's list does not carry. A pick would overwrite it.
+  it('files tab offers no picker when the seat is not confirmed empty', () => {
+    mockStoreState.activeTab = 'files'
+    mockLocalWorkspace.path = null
+    mockLocalWorkspace.bindingResolved = true
+    mockLocalWorkspace.boundPath = null
+    mockLocalWorkspace.needsWorkspace = false
+    render(React.createElement(RightPanel))
+    expect(screen.getByTestId('files-workspace-unavailable').textContent).toContain('读取不到该会话的工作目录')
+    expect(screen.queryByTestId('session-workspace-picker')).toBeNull()
+    expect(screen.queryByTestId('files-no-workspace')).toBeNull()
   })
 
   it('files tab offers no picker while a known binding is still pending', () => {

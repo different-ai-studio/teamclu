@@ -13,6 +13,7 @@ import {
   type LocalDaemonWorkspaceBinding,
 } from '@/lib/session/session-create'
 import { invalidateViewerWorkspaceContext } from '@/lib/session/session-viewer-workspace'
+import { noteSessionWorkspaceRebound } from '@/lib/session/session-workspace-rebind'
 import { resolveCurrentMemberActorId } from '@/lib/actor/current-actor'
 import { upsertSessionWorkspacesBatch } from '@/lib/cache/local-cache'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -357,6 +358,10 @@ async function bindAppWorkspace(
   // The viewer resolver keeps this machine's workspace list for a few seconds,
   // and the checkout's row may be newer than that.
   invalidateViewerWorkspaceContext(ctx.teamId)
+  // The files pane resolved this session before its binding was written. When
+  // the window is already on the checkout nothing else changes to make it look
+  // again, and it stayed on "no workspace" beside a correctly bound seat.
+  noteSessionWorkspaceRebound(sessionId)
 
   return checkout.workspaceId !== null && seatBound
 }

@@ -252,6 +252,17 @@ describe("the local daemon's seat", () => {
     expect(mocks.setParticipantWorkspace).toHaveBeenCalledWith('seat-on-default', 'daemon-1', 'ws-mine')
   })
 
+  // With the window already on the checkout nothing else moves, and the files
+  // pane kept the "no workspace" answer it resolved before the seat did.
+  it('tells the files pane to resolve again once the seat is on the checkout', async () => {
+    const { sessionWorkspaceRebindRevision } = await import('@/lib/session/session-workspace-rebind')
+    const before = sessionWorkspaceRebindRevision('seat-rebind-note')
+    const { openAppSession } = await import('@/lib/apps/app-session')
+    await openAppSession(app as never, 'seat-rebind-note')
+
+    expect(sessionWorkspaceRebindRevision('seat-rebind-note')).toBe(before + 1)
+  })
+
   it('is moved again on the next open when the move failed', async () => {
     mocks.setParticipantWorkspace.mockRejectedValueOnce(new Error('offline'))
     const { openAppSession } = await import('@/lib/apps/app-session')

@@ -194,6 +194,12 @@ type EnsureAgentRuntimeArgs = {
   workspaceIdHint?: string;
   reason?: string;
   /**
+   * The caller's intent postdates any ensure already running for these agents —
+   * the seat moved under it. Wait for that ensure, then start again, instead of
+   * sharing a result resolved from the seat as it was.
+   */
+  afterInFlight?: boolean;
+  /**
    * Session-scoped agent → runtime_id bindings. Wake/skip uses these so a
    * live spawn on another session cannot suppress ensure for this session.
    */
@@ -442,7 +448,10 @@ export async function ensureAgentRuntimesForSession(args: EnsureAgentRuntimeArgs
   const key = `${args.sessionId}::${agentActorIds.slice().sort().join(",")}`;
 
   const existing = inFlight.get(key);
-  if (existing) return existing.promise;
+  if (existing) {
+    if (!args.afterInFlight) return existing.promise;
+    await existing.promise.catch(() => {});
+  }
 
   const errorContext: RuntimeErrorContext = {
     sessionId: args.sessionId,

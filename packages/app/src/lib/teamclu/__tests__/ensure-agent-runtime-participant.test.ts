@@ -152,3 +152,67 @@ describe('ensureAgentRuntimesForSession — participant failures', () => {
     expect(mocks.reportRuntimeStartFailure).not.toHaveBeenCalled()
   })
 })
+
+describe('ensureAgentRuntimesForSession — an ensure already in flight', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.waitForTeamcluRpcReady.mockResolvedValue(true)
+    mocks.resolveAgentDevicePresence.mockResolvedValue('online')
+    mocks.listParticipants.mockResolvedValue([{ id: 'agent-1' }])
+    mocks.resolveSessionWorkspaceHintForRuntimeStart.mockResolvedValue('ws-1')
+  })
+
+  function holdFirstStart() {
+    let release: () => void = () => {}
+    mocks.startAgentRuntimesAsync
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve({ failures: [], runtimeIdsByAgent: {} })
+          }),
+      )
+      .mockResolvedValue({ failures: [], runtimeIdsByAgent: {} })
+    return () => release()
+  }
+
+  async function waitForStarts(n: number) {
+    for (let i = 0; i < 50 && mocks.startAgentRuntimesAsync.mock.calls.length < n; i += 1) {
+      await flush()
+    }
+  }
+
+  it('shares the running ensure by default', async () => {
+    const release = holdFirstStart()
+    const { ensureAgentRuntimesForSession } = await import('@/lib/teamclu/ensure-agent-runtime')
+    const first = ensureAgentRuntimesForSession({ sessionId: 'sess-inflight-a', teamId: 'team-1', agentActorIds: ['agent-1'] })
+    await waitForStarts(1)
+    const second = ensureAgentRuntimesForSession({ sessionId: 'sess-inflight-a', teamId: 'team-1', agentActorIds: ['agent-1'] })
+    release()
+    await Promise.all([first, second])
+    expect(mocks.startAgentRuntimesAsync).toHaveBeenCalledTimes(1)
+  })
+
+  // The running ensure read the seat before it moved, so its start lands in the
+  // old folder. Joining it left the runtime there.
+  it('starts again after the running ensure when the caller asks to', async () => {
+    const release = holdFirstStart()
+    const { ensureAgentRuntimesForSession } = await import('@/lib/teamclu/ensure-agent-runtime')
+    const first = ensureAgentRuntimesForSession({ sessionId: 'sess-inflight-b', teamId: 'team-1', agentActorIds: ['agent-1'] })
+    await waitForStarts(1)
+    const second = ensureAgentRuntimesForSession({
+      sessionId: 'sess-inflight-b',
+      teamId: 'team-1',
+      agentActorIds: ['agent-1'],
+      workspaceIdHint: 'ws-new',
+      afterInFlight: true,
+    })
+    await flush()
+    expect(mocks.startAgentRuntimesAsync).toHaveBeenCalledTimes(1)
+    release()
+    await Promise.all([first, second])
+    expect(mocks.startAgentRuntimesAsync).toHaveBeenCalledTimes(2)
+    expect(mocks.startAgentRuntimesAsync).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceIdHint: 'ws-new' }),
+    )
+  })
+})

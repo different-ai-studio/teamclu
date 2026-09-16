@@ -40,6 +40,9 @@ export function SessionWorkspacePicker({ agentId }: SessionWorkspacePickerProps)
   // Null while loading.
   const [workspaces, setWorkspaces] = React.useState<SeatableWorkspace[] | null>(null)
   const [bindingKey, setBindingKey] = React.useState<string | null>(null)
+  // The guard. `bindingKey` only disables the rows once React has re-rendered,
+  // and a double click lands both clicks before that.
+  const bindingRef = React.useRef(false)
 
   React.useEffect(() => {
     if (!teamId) return
@@ -67,7 +70,8 @@ export function SessionWorkspacePicker({ agentId }: SessionWorkspacePickerProps)
     key: string,
     pick: () => Promise<{ id: string; path: string } | null>,
   ) => {
-    if (!sessionId || !teamId || bindingKey) return
+    if (!sessionId || !teamId || bindingRef.current) return
+    bindingRef.current = true
     setBindingKey(key)
     try {
       const workspace = await pick()
@@ -89,6 +93,7 @@ export function SessionWorkspacePicker({ agentId }: SessionWorkspacePickerProps)
             }),
       )
     } finally {
+      bindingRef.current = false
       setBindingKey(null)
     }
   }

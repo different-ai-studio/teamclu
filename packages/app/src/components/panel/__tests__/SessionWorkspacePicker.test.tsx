@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import React from 'react'
 
 const mocks = vi.hoisted(() => ({
@@ -103,6 +103,25 @@ describe('SessionWorkspacePicker', () => {
       }),
     )
     expect(mocks.ensureAgentWorkspaceForPath).not.toHaveBeenCalled()
+  })
+
+  it('binds once when a row is clicked twice before the pane re-renders', async () => {
+    let release: () => void = () => {}
+    mocks.bindSessionAgentWorkspace.mockImplementation(
+      () => new Promise<void>((resolve) => { release = resolve }),
+    )
+    render(<SessionWorkspacePicker agentId="agent-local" />)
+    const oldRow = await screen.findByTitle('/Users/me/old')
+    const projectRow = screen.getByTitle('/Users/me/project')
+    // One batch: no render between the clicks, as with a fast double click.
+    act(() => {
+      oldRow.click()
+      projectRow.click()
+    })
+    await waitFor(() => expect(mocks.bindSessionAgentWorkspace).toHaveBeenCalledTimes(1))
+    release()
+    await waitFor(() => expect((oldRow as HTMLButtonElement).disabled).toBe(false))
+    expect(mocks.bindSessionAgentWorkspace).toHaveBeenCalledTimes(1)
   })
 
   it('registers a browsed folder and binds it', async () => {

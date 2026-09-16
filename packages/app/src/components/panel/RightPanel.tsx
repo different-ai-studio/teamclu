@@ -23,16 +23,29 @@ interface RightPanelProps {
  *
  * The tab only opens for a session the local agent is in (App gates the header
  * entry on the same hook). Empty states:
- * - binding resolved with no folder → session has no workspace_id; the pane
- *   offers the local agent's workspaces (or a folder to browse to) to bind
+ * - binding resolved with no folder, seat confirmed empty → the pane offers
+ *   the local agent's workspaces (or a folder to browse to) to bind
+ * - binding resolved with no folder, seat not confirmed empty → say the folder
+ *   could not be read; a picker there could overwrite a bound seat
  * - otherwise no settled path → waiting on runtime / workspace switch
  * Rendering the previous session's tree in that gap is the bug this replaces.
  */
 function WorkspaceFilesPane() {
   const { t } = useTranslation()
-  const { agentId, agentName, path, bindingResolved, boundPath } = useSessionLocalWorkspace()
+  const { agentId, agentName, path, bindingResolved, boundPath, needsWorkspace } =
+    useSessionLocalWorkspace()
 
   if (!path) {
+    if (bindingResolved && !boundPath && !needsWorkspace) {
+      return (
+        <div
+          data-testid="files-workspace-unavailable"
+          className="flex h-full items-center justify-center px-6 text-center text-[12.5px] text-muted-foreground"
+        >
+          {t('fileExplorer.workspaceUnavailable', '读取不到该会话的工作目录')}
+        </div>
+      )
+    }
     if (bindingResolved && !boundPath) {
       return (
         <div
