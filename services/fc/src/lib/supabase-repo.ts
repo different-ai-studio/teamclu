@@ -6088,14 +6088,11 @@ export function createSupabaseBusinessRepository(options) {
     async requireTeamAdmin(teamId) {
       const actor = await this.resolveCallerActorForTeam(teamId);
       if (!actor) throw new ApiError(403, "forbidden", "not a member of this team");
-      const { data, error } = await supabase
-        .from("team_members")
-        .select("role")
-        .eq("team_id", teamId)
-        .eq("member_id", actor.id)
-        .maybeSingle();
+      const { data, error } = await supabase.rpc("current_team_role", {
+        target_team_id: teamId,
+      });
       if (error) throw error;
-      if (data?.role !== "owner" && data?.role !== "admin") {
+      if (data !== "owner" && data !== "admin") {
         throw new ApiError(403, "forbidden", "team owner or admin access required");
       }
       return actor.id;

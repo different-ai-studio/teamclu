@@ -34,6 +34,12 @@ function repoFor(role: "member" | "admin" | "owner" | null) {
         return { data: { user: { id: "user-1" } }, error: null };
       },
     },
+    async rpc(fn: string, args: { target_team_id?: string }) {
+      if (fn === "current_team_role" && args.target_team_id === TEAM) {
+        return { data: role, error: null };
+      }
+      return { data: null, error: null };
+    },
     from(table: string) {
       const filters: Record<string, unknown> = {};
       const builder: any = {
@@ -42,9 +48,6 @@ function repoFor(role: "member" | "admin" | "owner" | null) {
         limit() { return builder; },
         async maybeSingle() {
           if (table === "actors") return { data: { id: ACTOR }, error: null };
-          if (table === "team_members") {
-            return { data: role ? { role } : null, error: null };
-          }
           if (table === "team_skills") {
             if (lastUpdate) {
               return {
