@@ -801,6 +801,13 @@ export interface ActorsBackend {
     displayName: string;
     avatarUrl?: string | null;
   }): Promise<ActorDirectoryEntry>;
+  /** Store an avatar image for the calling user's own member actor and return
+   * its public URL. Storage only accepts it under that actor's id, and it is not
+   * shown anywhere until `updateCurrentActorProfile` saves the URL. */
+  uploadCurrentActorAvatar(input: {
+    actorId: string;
+    image: Blob;
+  }): Promise<string>;
   updateAgentDefaults(input: {
     agentId: string;
     agentTypes?: string[] | null;

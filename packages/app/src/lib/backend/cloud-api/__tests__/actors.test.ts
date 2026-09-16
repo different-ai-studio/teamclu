@@ -258,4 +258,38 @@ describe("actors module", () => {
     const mod = createActorsModule(client);
     expect(await mod.getEffectiveDefaultAgent("team-1")).toBeNull();
   });
+
+  it("uploadCurrentActorAvatar stores the image under the actor id in the avatars bucket", async () => {
+    const calls: Array<{ path: string; body: BodyInit; contentType?: string }> = [];
+    const client = {
+      ...mockClient({}),
+      async postRaw(path: string, body: BodyInit, options?: { contentType?: string }) {
+        calls.push({ path, body, contentType: options?.contentType });
+        return { path: "actor-1/avatar.jpg", url: "https://cdn.example.test/avatars/actor-1/avatar.jpg" };
+      },
+    } as unknown as CloudApiClient;
+    const mod = createActorsModule(client);
+    const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/jpeg" });
+
+    const url = await mod.uploadCurrentActorAvatar({ actorId: "actor-1", image });
+
+    expect(url).toBe("https://cdn.example.test/avatars/actor-1/avatar.jpg");
+    expect(calls).toHaveLength(1);
+    const [path, query] = calls[0].path.split("?");
+    expect(path).toBe("/v1/attachments");
+    const params = new URLSearchParams(query);
+    expect(params.get("bucket")).toBe("avatars");
+    // The first path segment is what the storage policy checks against the caller.
+    expect(params.get("path")).toMatch(/^actor-1\/avatar-\d+\.jpg$/);
+    expect(calls[0].contentType).toBe("image/jpeg");
+  });
+
+  it("uploadCurrentActorAvatar refuses a type the avatars bucket does not store", async () => {
+    const client = mockClient({});
+    const mod = createActorsModule(client);
+    const image = new Blob([new Uint8Array([1])], { type: "image/gif" });
+    await expect(mod.uploadCurrentActorAvatar({ actorId: "actor-1", image })).rejects.toThrow(
+      /unsupported avatar content type: image\/gif/,
+    );
+  });
 });

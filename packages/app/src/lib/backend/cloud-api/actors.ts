@@ -10,6 +10,13 @@ import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 import { createCoalescedRead } from "@/lib/backend/cloud-api/coalesced-read";
 import { deriveHighestTeamRole, type MemberRoleRef } from "@/lib/backend/cloud-api/org-roles";
 
+/** The image types the `avatars` bucket stores, and the extension each gets. */
+const AVATAR_EXTENSIONS: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
+
 type CloudActor = {
   id: string;
   teamId: string;
@@ -200,6 +207,21 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
           }),
         ),
       );
+    },
+    async uploadCurrentActorAvatar(input) {
+      const ext = AVATAR_EXTENSIONS[input.image.type];
+      if (!ext) throw new Error(`unsupported avatar content type: ${input.image.type || "unknown"}`);
+      // The avatars bucket only lets a user write under their own member actor's
+      // id, and the timestamp gives every upload a fresh URL so no cache serves
+      // the previous picture.
+      const path = `${input.actorId}/avatar-${Date.now()}.${ext}`;
+      const out = await client.postRaw<{ path: string; url?: string }>(
+        `/v1/attachments?path=${encodeURIComponent(path)}&bucket=avatars`,
+        await input.image.arrayBuffer(),
+        { contentType: input.image.type },
+      );
+      if (!out?.url) throw new Error("Avatar upload succeeded but returned no URL");
+      return out.url;
     },
     async updateAgentDefaults(input) {
       const body: Record<string, unknown> = {};

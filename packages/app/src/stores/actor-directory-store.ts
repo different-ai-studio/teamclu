@@ -111,6 +111,18 @@ export function patchMemberTeamRole(teamId: string, memberActorId: string, teamR
   })
 }
 
+/** Show a just-saved avatar in the directory without waiting for a reconcile. */
+export function patchActorAvatar(teamId: string, actorId: string, avatarUrl: string | null): void {
+  useActorDirectoryStore.setState((s) => {
+    const slice = s.byTeam[teamId]
+    if (!slice) return s
+    const actors = slice.actors.map((row) =>
+      row.id === actorId ? { ...row, avatar_url: avatarUrl } : row,
+    )
+    return { byTeam: { ...s.byTeam, [teamId]: { ...slice, actors } } }
+  })
+}
+
 interface TeamSlice {
   actors: ActorRow[]
   loading: boolean

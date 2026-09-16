@@ -3636,7 +3636,15 @@
       "removeMember": "Remove member",
       "removeAgent": "Remove agent",
       "removeMemberHint": "Permanently remove this member from the team. They will lose access to all sessions and shared resources.",
-      "removeAgentHint": "Permanently remove this agent and its credentials from the team."
+      "removeAgentHint": "Permanently remove this agent and its credentials from the team.",
+      "avatarUpload": "Upload photo",
+      "avatarChange": "Change photo",
+      "avatarUploading": "Uploading…",
+      "avatarUpdated": "Profile photo updated",
+      "avatarUnsupportedType": "Choose a JPG, PNG or WebP image",
+      "avatarTooLarge": "That image is too large (20 MB max)",
+      "avatarDecodeFailed": "Couldn't read that image",
+      "avatarUpdateFailed": "Failed to update profile photo: {{msg}}"
     },
     "removeConfirm": {
       "titleAgent": "Remove agent?",
