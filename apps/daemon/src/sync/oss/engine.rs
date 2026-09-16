@@ -245,26 +245,10 @@ pub async fn tick_with_progress(
     let mut pull_items: Vec<PullItem> = Vec::new();
 
     for item in &all_items {
-        // `.mcp/` and `_secrets/` moved to the Cloud API. A team synced before the
-        // migration still has rows for them; skip rather than write them back to
-        // disk, where they would shadow the cloud copy. Skipped before `validate`
-        // so the two never have to agree about them.
-        if super::path_validator::is_retired(&item.path) {
-            continue;
-        }
-        // Conflict copies live under `.conflicts/` and must never be pulled —
-        // even if a buggy older client somehow pushed one. `continue`, never
-        // `return Err` (§4.5): rejecting a single manifest row used to abort
-        // the whole apply.
-        if super::conflict::is_under_conflicts_dir(&item.path) {
-            continue;
-        }
-        // Ignored here means "this device does not want this file on disk" —
-        // an older client, or one with looser rules, can still have pushed it.
-        // `continue`, never `?`: the retired-prefix comment above records what
-        // happens when a per-item rejection aborts the manifest apply, and this
-        // would be the same failure with a different trigger.
-        if rules.is_ignored_with_ancestors(&item.path) {
+        // Nothing this device pulls, for any of three reasons — see
+        // `skipped_by_pull`. `continue`, never `?` (§4.5): rejecting a single
+        // manifest row used to abort the whole apply.
+        if skipped_by_pull(&item.path, &rules) {
             continue;
         }
         // Spec §4.3: path-validate all manifest items (defense vs. malicious remote).
@@ -358,6 +342,10 @@ pub async fn tick_with_progress(
             version: item.version,
         });
     }
+
+    // Before anything is counted or retried: a path this device does not pull
+    // has no business sitting in `quarantined`. See `forget_unpullable`.
+    forget_unpullable(&mut state, &rules);
 
     let retried = state.quarantined.len();
     let pull_items = with_quarantined_retries(pull_items, &state);
@@ -727,9 +715,7 @@ fn apply_revocations(
                 && !manifest_paths.contains(path.as_str())
                 // Paths the pull loop skips by design never appear in the
                 // manifest set, and treating them as revoked would delete them.
-                && !super::path_validator::is_retired(path)
-                && !super::conflict::is_under_conflicts_dir(path)
-                && !rules.is_ignored_with_ancestors(path)
+                && !skipped_by_pull(path, rules)
         })
         .map(|(path, _)| path.clone())
         .collect();
@@ -904,6 +890,73 @@ fn with_quarantined_retries(items: Vec<PullItem>, state: &LocalSyncState) -> Vec
     retries.sort_by(|a, b| a.path.cmp(&b.path));
     retries.extend(items);
     retries
+}
+
+/// Paths the pull loop never writes to this device's disk.
+///
+/// Three kinds, and why each one is skipped rather than fetched:
+///
+/// - A retired prefix (`RETIRED_PREFIXES`: `skills/`, `.mcp/`, `_secrets/`,
+///   `_meta/`, `_feedback/`) is carried by something other than the file sync
+///   now. A team synced before the move still has rows for it, and writing those
+///   back to disk would shadow the copy that owns them. Answered before
+///   `validate` so the two never have to agree about them.
+/// - Conflict copies live under `.conflicts/` and must never be pulled, even if
+///   a buggy older client somehow pushed one.
+/// - Ignored means "this device does not want this file on disk" — an older
+///   client, or one with looser rules, can still have pushed it.
+///
+/// `apply_revocations` asks the same question for the opposite reason: these
+/// paths are absent from the manifest set by design, so reading that absence as
+/// lost access would delete them.
+fn skipped_by_pull(path: &str, rules: &IgnoreRules) -> bool {
+    super::path_validator::is_retired(path)
+        || super::conflict::is_under_conflicts_dir(path)
+        || rules.is_ignored_with_ancestors(path)
+}
+
+/// Drop the pull bookkeeping for every path this device will never pull.
+///
+/// A [`skipped_by_pull`] path leaves the manifest loop above the branch that
+/// applies a tombstone, so nothing there can ever clear a quarantine entry for
+/// one. Nor does the entry stop being retried: `with_quarantined_retries` reads
+/// `quarantined` directly, and the path it names is missing from this tick's
+/// pull items precisely because the loop skipped it — so it is re-fetched every
+/// tick, forever, long after the server has forgotten the row.
+///
+/// In the field that was a `.DS_Store` an older client had pushed into
+/// `knowledge/`: three files "cannot sync", thousands of retries each, and no
+/// daemon upgrade could clear them, because the branch that clears a quarantine
+/// entry never ran for those paths.
+///
+/// Sweeping `quarantined` is the point of doing it here rather than at the skip.
+/// Dropping the entry where the row is skipped would only help a device that has
+/// not passed the row yet, and a device is stuck precisely because its cursor
+/// has: once past, an incremental manifest never mentions the path again.
+fn forget_unpullable(state: &mut LocalSyncState, rules: &IgnoreRules) {
+    if state.quarantined.is_empty() {
+        return;
+    }
+    let unpullable: Vec<String> = state
+        .quarantined
+        .keys()
+        .filter(|path| skipped_by_pull(path, rules))
+        .cloned()
+        .collect();
+    if unpullable.is_empty() {
+        return;
+    }
+    for path in &unpullable {
+        state.quarantined.remove(path);
+        // Nothing else can put one there — `note_known` runs below the skip, and
+        // only for `documents/` — but an older daemon's state file can, and a
+        // listing this device will never fetch is not worth keeping.
+        state.clear_known(path);
+    }
+    tracing::info!(
+        count = unpullable.len(),
+        "dropped stuck entries for paths this device does not pull"
+    );
 }
 
 /// Apply one server tombstone to this device.
@@ -3080,6 +3133,101 @@ mod tests {
             !state.files.contains_key("knowledge/stuck.md"),
             "no entry is invented for a file that never landed"
         );
+    }
+
+    // ── paths this device never pulls ─────────────────────────────────────────
+
+    #[test]
+    fn a_quarantined_path_this_device_ignores_is_dropped() {
+        // Regression: an older client pushed `.DS_Store` into `knowledge/`, this
+        // device could not fetch the blob, and the ignore rules then kept the
+        // manifest row from ever reaching the branch that clears a quarantine
+        // entry. "3 files cannot sync", retried every tick, forever.
+        let dir = tempfile::tempdir().unwrap();
+        let rules = IgnoreRules::load(dir.path());
+        let mut state = empty_state();
+        state.quarantine("knowledge/.DS_Store", "hash-a", 5, "download 404".into());
+        state.quarantine(
+            "knowledge/FAQ/.DS_Store",
+            "hash-b",
+            2,
+            "download 404".into(),
+        );
+        state.quarantine("knowledge/real.md", "hash-c", 3, "download 404".into());
+
+        forget_unpullable(&mut state, &rules);
+
+        assert_eq!(
+            state
+                .quarantined
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["knowledge/real.md"],
+            "only the file this device actually wants stays stuck"
+        );
+        let retried: Vec<String> = with_quarantined_retries(Vec::new(), &state)
+            .into_iter()
+            .map(|i| i.path)
+            .collect();
+        assert_eq!(
+            retried,
+            vec!["knowledge/real.md".to_string()],
+            "and it is the only one still fetched every tick"
+        );
+    }
+
+    #[test]
+    fn a_quarantined_path_the_pull_loop_retired_is_dropped() {
+        // `_secrets/` and `.mcp/` moved to the Cloud API, and `.conflicts/` is
+        // never pulled. Same shape as the ignore case: the manifest row is
+        // skipped above the tombstone branch, so nothing else can clear these.
+        let dir = tempfile::tempdir().unwrap();
+        let rules = IgnoreRules::load(dir.path());
+        let mut state = empty_state();
+        state.quarantine("_secrets/team.env", "hash-a", 1, "download 404".into());
+        state.quarantine(
+            "knowledge/.conflicts/a.conflict.1.ab",
+            "hash-b",
+            1,
+            "download 404".into(),
+        );
+
+        forget_unpullable(&mut state, &rules);
+
+        assert!(state.quarantined.is_empty());
+    }
+
+    #[test]
+    fn a_dropped_entry_takes_its_stale_listing_with_it() {
+        // `note_known` runs below the skip, so only an older daemon's state file
+        // can pair a listing with an unpullable path — but when one does, the
+        // listing goes too.
+        let dir = tempfile::tempdir().unwrap();
+        let rules = IgnoreRules::load(dir.path());
+        let mut state = empty_state();
+        state.quarantine("knowledge/.DS_Store", "hash-a", 1, "download 404".into());
+        state.note_known("knowledge/.DS_Store", 1, "hash-a", 6);
+
+        forget_unpullable(&mut state, &rules);
+
+        assert!(state.quarantined.is_empty());
+        assert!(state.known.is_empty());
+    }
+
+    #[test]
+    fn a_wanted_path_survives_the_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = IgnoreRules::load(dir.path());
+        let mut state = empty_state();
+        state.quarantine("knowledge/a.md", "hash-a", 2, "decrypt failed".into());
+
+        forget_unpullable(&mut state, &rules);
+
+        let kept = &state.quarantined["knowledge/a.md"];
+        assert_eq!(kept.cipher_hash, "hash-a", "the sweep touches nothing else");
+        assert_eq!(kept.version, 2);
+        assert_eq!(kept.reason, "decrypt failed");
     }
 
     #[tokio::test]
