@@ -926,6 +926,18 @@ test("removeTeamActor calls amux.remove_team_actor explicitly", async () => {
   assert.equal(rpc.schema, "amux", "must call amux.remove_team_actor explicitly");
 });
 
+test("setTeamMemberRole calls amux.set_team_member_role", async () => {
+  const rpcCalls: any[] = [];
+  const repo = createRepo(fakeSupabase({ rpcCalls, rpcData: { set_team_member_role: null } }));
+
+  await repo.setTeamMemberRole("team-12", "actor-12", "admin");
+
+  const rpc = rpcCalls.find((c) => c.name === "set_team_member_role");
+  assert.ok(rpc, "expected set_team_member_role RPC call");
+  assert.equal(rpc.schema, "amux");
+  assert.deepEqual(rpc.args, { p_actor_id: "actor-12", p_role: "admin" });
+});
+
 test("getWorkspaceConfig merges teams + team_workspace_config rows", async () => {
   const repo = createRepo(fakeSupabase({
     tableData: {

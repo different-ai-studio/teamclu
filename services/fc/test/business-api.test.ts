@@ -1414,6 +1414,43 @@ test("DELETE /v1/teams/:teamId/actors/:actorId removes team actor (scoped path)"
   assert.deepEqual(repo.calls[0], { method: "removeTeamActor", teamId: "team-1", actorId: "actor-1" });
 });
 
+test("PATCH /v1/teams/:teamId/members/:actorId sets member role", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/teams/team-1/members/actor-1",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ role: "admin" }),
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 204);
+  assert.deepEqual(repo.calls[0], { method: "setTeamMemberRole", teamId: "team-1", actorId: "actor-1", role: "admin" });
+});
+
+test("PATCH /v1/teams/:teamId/members/:actorId rejects a missing role", async () => {
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/teams/team-1/members/actor-1",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({}),
+  }, { createRepository: () => fakeRepo() });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(JSON.parse(response.body).error.code, "validation_failed");
+});
+
+test("PATCH /v1/teams/:teamId/members/:actorId rejects owner role", async () => {
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PATCH",
+    path: "/v1/teams/team-1/members/actor-1",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ role: "owner" }),
+  }, { createRepository: () => fakeRepo() });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(JSON.parse(response.body).error.code, "validation_failed");
+});
+
 test("GET /v1/sessions/muted returns muted session IDs", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
@@ -2056,6 +2093,7 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async renameTeam(teamId, input) { calls.push({ method: "renameTeam", teamId, input }); if (error) throw error; return { id: teamId, name: input.name, slug: null, createdAt: null }; },
     async createTeamInvite(teamId, input) { calls.push({ method: "createTeamInvite", teamId, input }); if (error) throw error; return { token: "invite-token", inviteId: "invite-1", expiresAt: input.expiresAt ?? null }; },
     async removeTeamActor(teamId, actorId) { calls.push({ method: "removeTeamActor", teamId, actorId }); if (error) throw error; },
+    async setTeamMemberRole(teamId, actorId, role) { calls.push({ method: "setTeamMemberRole", teamId, actorId, role }); if (error) throw error; },
     async getNotificationPrefs() { calls.push({ method: "getNotificationPrefs" }); if (error) throw error; return { userId: null, pushEnabled: true, emailEnabled: false, digestFrequency: "off" }; },
     async putNotificationPrefs(input) { calls.push({ method: "putNotificationPrefs", input }); if (error) throw error; return { userId: input.userId ?? "user-1", pushEnabled: input.pushEnabled ?? true, emailEnabled: input.emailEnabled ?? false, digestFrequency: input.digestFrequency ?? "off" }; },
     async muteSession(sessionId, input) { calls.push({ method: "muteSession", sessionId, input }); if (error) throw error; },

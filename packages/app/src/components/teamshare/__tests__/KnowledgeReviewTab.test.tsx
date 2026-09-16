@@ -82,6 +82,25 @@ describe('KnowledgeReviewTab', () => {
     })
   })
 
+  it('shows the 资料库 path when the candidate came from a document', async () => {
+    getKnowledgeCandidate.mockResolvedValue({
+      id: 'cand-1',
+      teamId: 't',
+      sessionId: '',
+      title: '合同',
+      body: '来自资料库 documents/hr/合同.pdf',
+      suggestedPath: '20-domains/合同.md',
+      source: 'document',
+      documentPath: 'documents/hr/合同.pdf',
+      createdAt: '2026-09-11T00:00:00Z',
+      status: 'pending',
+      summary: '来自资料库 documents/hr/合同.pdf',
+      suggestions: [],
+    })
+    render(<KnowledgeReviewTab candidateId="cand-1" />)
+    expect(await screen.findByText('来自资料 {{path}}')).toBeTruthy()
+  })
+
   it('does not overwrite a hand-edited body until rewrite is clicked', async () => {
     render(<KnowledgeReviewTab candidateId="cand-1" />)
     const textarea = (await screen.findByRole('textbox', { name: '正文' })) as HTMLTextAreaElement

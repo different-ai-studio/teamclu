@@ -97,6 +97,19 @@ export function mapDefaultAgentError(error: any) {
   }
 }
 
+export function mapSetTeamMemberRoleError(error: any) {
+  switch (error?.code) {
+    case "42501":
+      return new ApiError(403, "forbidden", error.message ?? "forbidden");
+    case "23514":
+      return new ApiError(400, "validation_failed", error.message ?? "invalid role");
+    case "23503":
+      return new ApiError(404, "not_found", error.message ?? "not found");
+    default:
+      return error;
+  }
+}
+
 
 // --- Apps helpers ---
 
