@@ -8,6 +8,7 @@ import { useWorkspaceStore } from "@/stores/workspace"
 import { useCronStore } from "@/stores/cron"
 import { useAuthStore } from "@/stores/auth-store"
 import { useCurrentTeamStore } from "@/stores/current-team"
+import { useActorDirectory } from "@/stores/actor-directory-store"
 import {
   Sidebar,
   SidebarContent,
@@ -229,12 +230,22 @@ function SidebarUserAccountMenu() {
   // known to be down; `null` (still probing) shows nothing.
   const appMqttConnected = useMqttConnected()
   const appMqttDown = appMqttConnected === false
+  const { actors: directoryActors } = useActorDirectory()
+  const [failedAvatarUrls, setFailedAvatarUrls] = React.useState<string[]>([])
 
 
   if (!authSession) return null
 
   const meta = authSession.user.userMetadata ?? undefined
-  const avatarUrl = typeof meta?.avatar_url === 'string' ? meta.avatar_url : null
+  // The photo set on your own contact profile wins over the sign-in provider's.
+  // It comes from the directory, which the upload patches, so a new photo shows
+  // here straight away. A picture that fails to load drops to the next one.
+  const memberAvatarUrl = currentMember
+    ? directoryActors.find((a) => a.id === currentMember.id)?.avatar_url ?? null
+    : null
+  const providerAvatarUrl = typeof meta?.avatar_url === 'string' ? meta.avatar_url : null
+  const avatarUrl =
+    [memberAvatarUrl, providerAvatarUrl].find((url) => !!url && !failedAvatarUrls.includes(url)) ?? null
   const email = authSession.user.email || ""
   const fallbackName =
     (typeof meta?.full_name === 'string' && meta.full_name) ||
@@ -265,7 +276,12 @@ function SidebarUserAccountMenu() {
         >
           <span className="relative flex h-4 w-4 shrink-0">
             {avatarUrl ? (
-              <img src={avatarUrl} alt="" className="h-4 w-4 rounded-full object-cover" />
+              <img
+                src={avatarUrl}
+                alt=""
+                className="h-4 w-4 rounded-full object-cover"
+                onError={() => setFailedAvatarUrls((urls) => [...urls, avatarUrl])}
+              />
             ) : (
               <div className="flex h-4 w-4 items-center justify-center rounded-full bg-muted text-[9px] font-medium text-foreground">
                 {(userName?.[0] || "?").toUpperCase()}
