@@ -119,4 +119,31 @@ public enum TimelineSwiftDataSync {
         event.diffNewText = entry.diffNewText
         return event
     }
+
+    /// The inverse of `makeAgentEvent`, used to rebuild the reducer state
+    /// from stored rows. Every field `apply(entry:to:)` writes must be read
+    /// here: the next sync writes the entry back over the row, so a field
+    /// left out is erased from SwiftData.
+    static func makeEntry(from event: AgentEvent) -> TimelineEntry {
+        TimelineEntry(
+            id: event.id,
+            sequence: UInt64(max(event.sequence, 0)),
+            eventType: event.eventType,
+            text: event.text,
+            toolID: event.toolId,
+            toolName: event.toolName,
+            isComplete: event.isComplete,
+            success: event.success,
+            senderActorID: event.senderActorID,
+            timestamp: event.timestamp,
+            model: event.model,
+            supabaseMessageID: event.supabaseMessageId,
+            outboxMessageID: event.outboxMessageID,
+            turnID: event.turnID,
+            resultSummary: event.resultSummary,
+            diffPath: event.diffPath,
+            diffOldText: event.diffOldText,
+            diffNewText: event.diffNewText
+        )
+    }
 }

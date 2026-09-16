@@ -2999,24 +2999,7 @@ public final class SessionDetailViewModel {
     /// entries in `state.entries`, and bleeds into every subsequent
     /// completedTurn's `runtimeEvents`.
     private func rehydrateTimelineStateFromEvents() {
-        timelineState.entries = events.map { event in
-            TimelineEntry(
-                id: event.id,
-                sequence: UInt64(max(event.sequence, 0)),
-                eventType: event.eventType,
-                text: event.text,
-                toolID: event.toolId,
-                toolName: event.toolName,
-                isComplete: event.isComplete,
-                success: event.success,
-                senderActorID: event.senderActorID,
-                timestamp: event.timestamp,
-                model: event.model,
-                supabaseMessageID: event.supabaseMessageId,
-                outboxMessageID: event.outboxMessageID,
-                turnID: event.turnID
-            )
-        }
+        timelineState.entries = events.map(TimelineSwiftDataSync.makeEntry(from:))
         timelineState.streamingTextByAgent = [:]
         timelineState.streamingModelByAgent = [:]
         timelineState.streamingAgentSet = []
