@@ -1,8 +1,9 @@
 # Renew the *.apps.mx5.cn wildcard certificate on belayo's Dokploy Traefik.
 #
 # Every app's vanity host and login.apps.mx5.cn are served with a FILE
-# certificate on the Dokploy manager (dynamic/certificates/teamclu-apps-wildcard,
-# referenced by its certificate.yml). Traefik cannot renew it itself: a
+# certificate on the Dokploy manager (the PEMs in
+# dynamic/certificates/teamclu-apps-wildcard, declared by the TOP-LEVEL
+# dynamic/teamclu-apps-wildcard-cert.yml). Traefik cannot renew it itself: a
 # wildcard needs a DNS-01 challenge, mx5.cn is on DNSPod, and giving the shared
 # Traefik DNS credentials would mean restarting the ingress for everything on
 # that Swarm, saas-mono included. So the renewal happens here and Traefik only
@@ -11,9 +12,16 @@
 # Weekly: read the certificate clients are served. With more than RENEW_DAYS
 # left, stop. Otherwise issue a new one with acme.sh over DNSPod, check the key
 # matches, swap the files on the manager (the old pair stays as *.prev),
-# rewrite certificate.yml so Traefik reloads, and confirm clients now get the
-# new certificate — restoring the old pair if they do not. Any failure pings
-# WeCom while the served certificate still has weeks to run.
+# rewrite the top-level declaration so Traefik reloads, and confirm clients now
+# get the new certificate — restoring the old pair if they do not. Any failure
+# pings WeCom while the served certificate still has weeks to run.
+#
+# The declaration has to be the top-level file: Traefik's file provider watches
+# dynamic/ and the files directly inside it and skips subdirectories outright
+# ("ignore sub-dir", pkg/provider/file/file.go), while any event there reloads
+# everything recursively. Rewriting the copy that used to sit beside the PEMs
+# changed nothing, and the 2026-09-15 run swapped a certificate clients never
+# received.
 #
 # DNS credentials: BELAYO_DNSPOD_SECRET_ID / BELAYO_DNSPOD_SECRET_KEY, a
 # Tencent Cloud CAM sub-account key that can edit mx5.cn records (the same key
@@ -55,6 +63,8 @@ jobs:
       # the one guaranteed to exist.
       PROBE_HOST: login.apps.mx5.cn
       CERT_DIR: /etc/dokploy/traefik/dynamic/certificates/teamclu-apps-wildcard
+      # Top level on purpose — see the note above.
+      TLS_FILE: /etc/dokploy/traefik/dynamic/teamclu-apps-wildcard-cert.yml
       RENEW_DAYS: '30'
       ACME_SH_VERSION: '3.1.4'
     steps:
@@ -128,13 +138,13 @@ jobs:
           set -euo pipefail
           scp -q "$RUNNER_TEMP/fullchain.pem" "root@$MGR:/tmp/teamclu-apps-wildcard.fullchain.pem"
           scp -q "$RUNNER_TEMP/privkey.pem" "root@$MGR:/tmp/teamclu-apps-wildcard.privkey.pem"
-          ssh "root@$MGR" bash -s -- "$CERT_DIR" <<'EOF'
+          ssh "root@$MGR" bash -s -- "$CERT_DIR" "$TLS_FILE" <<'EOF'
             set -euo pipefail
             dir=$1
+            tls_file=$2
             new_chain=/tmp/teamclu-apps-wildcard.fullchain.pem
             new_key=/tmp/teamclu-apps-wildcard.privkey.pem
             trap 'rm -f "$new_chain" "$new_key"' EXIT
-            test -f "$dir/certificate.yml"
             test -f "$dir/fullchain.pem"
             test -f "$dir/privkey.pem"
             cp -p "$dir/fullchain.pem" "$dir/fullchain.pem.prev"
@@ -145,11 +155,18 @@ jobs:
             chmod --reference="$dir/privkey.pem" "$dir/privkey.pem.new"
             mv "$dir/fullchain.pem.new" "$dir/fullchain.pem"
             mv "$dir/privkey.pem.new" "$dir/privkey.pem"
-            # Traefik reloads a file certificate when its dynamic config changes,
-            # not when the PEM underneath does, so the stamp is what makes it look.
+            # Rewriting this file is what makes Traefik re-read the PEMs: it is
+            # directly inside dynamic/, which is watched, and a reload reads the
+            # whole tree. Written elsewhere and moved into place, so a reload can
+            # never catch a half-written declaration.
             stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             printf '# Renewed by .github/workflows/belayo-apps-wildcard-cert.yml at %s\ntls:\n  certificates:\n    - certFile: %s/fullchain.pem\n      keyFile: %s/privkey.pem\n' \
-              "$stamp" "$dir" "$dir" > "$dir/certificate.yml"
+              "$stamp" "$dir" "$dir" > "$tls_file.tmp"
+            mv "$tls_file.tmp" "$tls_file"
+            # One-time migration, idempotent: the declaration used to sit beside
+            # the PEMs, where nothing ever reloaded it. Two copies of the same
+            # certificate would only mislead whoever reads this next.
+            rm -f "$dir/certificate.yml"
             echo "swapped at $stamp"
           EOF
 
@@ -179,14 +196,16 @@ jobs:
         env:
           MGR: ${{ secrets.BELAYO_DOKPLOY_HOST }}
         run: |
-          ssh "root@$MGR" bash -s -- "$CERT_DIR" <<'EOF'
+          ssh "root@$MGR" bash -s -- "$CERT_DIR" "$TLS_FILE" <<'EOF'
             set -euo pipefail
             dir=$1
+            tls_file=$2
             mv "$dir/fullchain.pem.prev" "$dir/fullchain.pem"
             mv "$dir/privkey.pem.prev" "$dir/privkey.pem"
             stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             printf '# Restored by .github/workflows/belayo-apps-wildcard-cert.yml at %s\ntls:\n  certificates:\n    - certFile: %s/fullchain.pem\n      keyFile: %s/privkey.pem\n' \
-              "$stamp" "$dir" "$dir" > "$dir/certificate.yml"
+              "$stamp" "$dir" "$dir" > "$tls_file.tmp"
+            mv "$tls_file.tmp" "$tls_file"
             echo "restored previous certificate at $stamp"
           EOF
 
