@@ -32,6 +32,17 @@ export const VIRTUAL_MSG_THRESHOLD = 80;
 const INITIAL_VISIBLE_MESSAGE_COUNT = 80;
 const LOAD_EARLIER_MESSAGE_COUNT = 60;
 
+/** Stable TanStack Virtual row identity — not array index (window slides on append). */
+export function getVirtualMessageKey(
+  messages: readonly Message[],
+  index: number,
+): string | number {
+  const message = messages[index];
+  if (!message) return index;
+  const sessionId = message.sessionId ?? "";
+  return sessionId ? `${sessionId}:${message.id}` : message.id;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface MessageListProps {
@@ -304,10 +315,16 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     // ── Virtual scrolling ────────────────────────────────────────────────
     const useVirtualMessages = messages.length > VIRTUAL_MSG_THRESHOLD;
 
+    const getVirtualItemKey = React.useCallback(
+      (index: number) => getVirtualMessageKey(renderedMessages, index),
+      [renderedMessages],
+    );
+
     const messageVirtualizer = useVirtualizer({
       count: useVirtualMessages ? renderedMessages.length : 0,
       getScrollElement: () => scrollRef.current,
       estimateSize: () => 150,
+      getItemKey: getVirtualItemKey,
       overscan: 5,
       gap: 4,
     });
@@ -639,11 +656,12 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
 
                           return (
                             <div
-                              key={message.id}
+                              key={virtualItem.key}
                               ref={(el) => {
                                 if (el) messageVirtualizer.measureElement(el);
                               }}
                               data-index={virtualItem.index}
+                              data-message-id={message.id}
                               style={{
                                 position: "absolute",
                                 top: 0,
