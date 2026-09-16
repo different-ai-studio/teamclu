@@ -1530,11 +1530,11 @@ export function createSupabaseBusinessRepository(options) {
                    .limit(limit);
       const { data, error } = await query;
       if (error) throw error;
-      const items = await enrichActorsWithOrgRoles(
-        supabase,
-        teamId,
-        (data ?? []).map(mapDirectoryActor),
-      );
+      // Typed explicitly: `data` is `any`, so an inline map left T to fall back
+      // to enrichActorsWithOrgRoles' constraint and the result lost every actor
+      // field but the few that constraint names.
+      const actors: Array<ReturnType<typeof mapDirectoryActor>> = (data ?? []).map(mapDirectoryActor);
+      const items = await enrichActorsWithOrgRoles(supabase, teamId, actors);
       return { items };
     },
 
