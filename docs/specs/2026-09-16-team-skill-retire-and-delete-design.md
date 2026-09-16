@@ -38,7 +38,7 @@ Registry、删除 API、成员/daemon 对账、输入 slug 确认框都已经存
 |---|---|---|
 | D1 | 两级生命周期：退役默认，硬删高摩擦 | 原架构把 `deprecated` 写成主退休路径，正是因为「正在跑的流程突然失能，比多留一个废 skill 更糟」。硬删管线已经存在，不必再造一套。 |
 | D2 | 允许跳过退役直接硬删 | 测用 slug、发错的包不值得先打标。摩擦靠输入 slug，不靠强制两步。 |
-| D3 | 「团队管理员」= `team_members.role` 为 `owner` 或 `admin` | 与知识库 ACL、环境变量同一道门：前端 `canManageTeam`，后端 `requireTeamAdmin`。不是 owner-only，也不是 `admin` 不含 owner。 |
+| D3 | 「团队管理员」= owner 或 admin（`current_team_role` RPC；`roles_users` SoT，不是直接读 `team_members.role`） | 与知识库 ACL 同一道门：前端 `canManageTeam`，后端 `requireTeamAdmin`。不是 owner-only，也不是 `admin` 不含 owner。 |
 | D4 | `owner_actor_id` 不能退役、不能硬删 | 那是负责人展示，不是写 ACL。比 issue-1026「创建者或 admin」更紧，也比 2026-08-13「任意成员」更紧。 |
 | D5 | 只收口退役和硬删。发布 / 发新版 / revert / 改 summary 等仍对成员开放 | 2026-08-13 翻案的理由仍成立：registry 是团队资产，成员发现错步却改不了，唯一出口是换 slug 发重复品。发布门是必填字段，不是审批人。 |
 | D6 | 卸载仍是 per-actor | 「我不要」和「团队不要了」必须分开。管理员卸自己的包，不等于删 registry。 |
@@ -93,9 +93,9 @@ Daemon 以 agent actor 鉴权，不是 `team_members` 里的 owner/admin，不�
 
 在 repository 上实现与 knowledge ACL 相同谓词的 `requireTeamAdmin(teamId)`：
 
-1. `resolveCallerActorForTeam`
-2. 读 `team_members.role` where `team_id` + `member_id = actor.id`
-3. `role` 不是 `owner`/`admin` → `ApiError(403, "forbidden", "team owner or admin access required")`
+1. `resolveCallerActorForTeam(teamId)` — 解析调用者 actor
+2. `rpc("current_team_role", { target_team_id: teamId })` — 与 knowledge ACL 相同，`roles_users` 为 SoT
+3. 返回值不是 `owner`/`admin` → `ApiError(403, "forbidden", "team owner or admin access required")`
 
 调用点：
 
