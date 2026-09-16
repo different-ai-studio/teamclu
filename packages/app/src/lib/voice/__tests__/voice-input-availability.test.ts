@@ -45,13 +45,13 @@ describe("VOICE_MODEL_OPTIONS", () => {
       {
         id: "q8",
         modelBytes: 254_208_320,
-        downloadBytes: 284_853_824,
+        downloadBytes: 283_133_312,
         recommended: true,
       },
       {
         id: "f16",
         modelBytes: 470_197_600,
-        downloadBytes: 500_843_104,
+        downloadBytes: 499_122_592,
         recommended: false,
       },
     ]);

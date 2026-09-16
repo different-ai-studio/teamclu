@@ -20,17 +20,12 @@ const Q8_MODEL_SHA256: &str = "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c344
 #[cfg(target_os = "macos")]
 const F16_MODEL_SHA256: &str = "2389039651f4574dbd674f1f1e296b8b1147b2e19a5fd9c2cd69e82669c78d8e";
 #[cfg(target_os = "macos")]
-const VAD_URL: &str = "https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/6840bae4c5c92ee8c04faaf4db23dd0105098d7f/fsmn-vad.gguf";
-#[cfg(target_os = "macos")]
-const VAD_SHA256: &str = "1270f2559c495f4e7b6e739541151027d360761a3fda43fc147034f5719f5479";
-#[cfg(target_os = "macos")]
 const SPEAKER_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx";
 #[cfg(target_os = "macos")]
 const SPEAKER_MODEL_SHA256: &str =
     "f682b514c05d947ee3fa91cd6ec6c5c7543479a128373fa29b1faedccd21fd11";
-/// Silero VAD v4, 16kHz branch, exported to ONNX by k2-fsa. This is what draws
-/// the segment boundaries; `VAD_URL` below is the FunASR-side GGUF that only
-/// trims inside a segment we already cut.
+/// Silero VAD v4, 16kHz branch, exported to ONNX by k2-fsa. This draws every
+/// segment boundary, and nothing downstream trims inside one.
 #[cfg(target_os = "macos")]
 const SEGMENTER_MODEL_URL: &str =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
@@ -42,8 +37,6 @@ const SEGMENTER_MODEL_SHA256: &str =
 const Q8_MODEL_BYTES: u64 = 254_208_320;
 #[cfg(target_os = "macos")]
 const F16_MODEL_BYTES: u64 = 470_197_600;
-#[cfg(target_os = "macos")]
-const VAD_BYTES: u64 = 1_720_512;
 #[cfg(target_os = "macos")]
 const SPEAKER_MODEL_BYTES: u64 = 28_281_138;
 #[cfg(target_os = "macos")]
@@ -129,10 +122,6 @@ fn model_path(root: &std::path::Path, variant: VoiceModelVariant) -> std::path::
     root.join(variant.spec().file_name)
 }
 
-fn vad_path(root: &std::path::Path) -> std::path::PathBuf {
-    root.join("fsmn-vad.gguf")
-}
-
 fn speaker_model_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("3dspeaker-campplus-zh-common.onnx")
 }
@@ -146,7 +135,7 @@ fn model_marker_path(root: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn base_installed_variant(root: &std::path::Path) -> Option<VoiceModelVariant> {
-    if !runtime_path(root).is_file() || !vad_path(root).is_file() {
+    if !runtime_path(root).is_file() {
         return None;
     }
     let marked = std::fs::read_to_string(model_marker_path(root)).ok();
@@ -357,7 +346,7 @@ fn install_engine(app: &AppHandle, model_variant: VoiceModelVariant) -> Result<(
         return Ok(());
     }
     let model = model_variant.spec();
-    let total_bytes = model.bytes + VAD_BYTES + SPEAKER_MODEL_BYTES + SEGMENTER_MODEL_BYTES;
+    let total_bytes = model.bytes + SPEAKER_MODEL_BYTES + SEGMENTER_MODEL_BYTES;
     let parent = final_dir
         .parent()
         .ok_or("invalid voice install directory")?;
@@ -385,23 +374,12 @@ fn install_engine(app: &AppHandle, model_variant: VoiceModelVariant) -> Result<(
     )?;
     stage_or_download_checked(
         app,
-        &vad_path(&final_dir),
-        VAD_URL,
-        VAD_SHA256,
-        VAD_BYTES,
-        &vad_path(temp.path()),
-        model.bytes,
-        total_bytes,
-        "vad",
-    )?;
-    stage_or_download_checked(
-        app,
         &speaker_model_path(&final_dir),
         SPEAKER_MODEL_URL,
         SPEAKER_MODEL_SHA256,
         SPEAKER_MODEL_BYTES,
         &speaker_model_path(temp.path()),
-        model.bytes + VAD_BYTES,
+        model.bytes,
         total_bytes,
         "speaker",
     )?;
@@ -412,7 +390,7 @@ fn install_engine(app: &AppHandle, model_variant: VoiceModelVariant) -> Result<(
         SEGMENTER_MODEL_SHA256,
         SEGMENTER_MODEL_BYTES,
         &segmenter_model_path(temp.path()),
-        model.bytes + VAD_BYTES + SPEAKER_MODEL_BYTES,
+        model.bytes + SPEAKER_MODEL_BYTES,
         total_bytes,
         "segmenter",
     )?;
@@ -1177,8 +1155,6 @@ mod macos {
         let output = std::process::Command::new(runtime_path(root))
             .arg("-m")
             .arg(model_path(root, model_variant))
-            .arg("--vad")
-            .arg(vad_path(root))
             .arg("-a")
             .arg(temp.path())
             .output()
@@ -1295,7 +1271,6 @@ mod macos {
         fn installed_variant_requires_every_model_and_preserves_legacy_model_choice() {
             let root = tempfile::tempdir().expect("temp voice root");
             std::fs::write(runtime_path(root.path()), []).expect("runtime");
-            std::fs::write(vad_path(root.path()), []).expect("vad");
             std::fs::write(model_path(root.path(), VoiceModelVariant::Q8), []).expect("q8");
             assert_eq!(
                 base_installed_variant(root.path()),
