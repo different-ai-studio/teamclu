@@ -5,6 +5,10 @@ import {
   subscribeLocalDaemonActorId,
 } from '@/lib/daemon/local-daemon-identity'
 import { resolveSessionWorkspacePath } from '@/lib/session/session-by-workspace'
+import {
+  sessionWorkspaceRebindRevision,
+  subscribeSessionWorkspaceRebind,
+} from '@/lib/session/session-workspace-rebind'
 import { workspacePathsMatch } from '@/stores/session-utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useSessionParticipantStore } from '@/stores/session-participant-store'
@@ -14,6 +18,8 @@ import { useWorkspaceStore } from '@/stores/workspace'
 export type SessionLocalWorkspace = {
   /** The agent running on this machine is seated in the active session. */
   hasLocalAgent: boolean
+  /** That agent's actor id — the seat a folder picked in the files pane is written to. */
+  agentId: string | null
   /** That agent's display name, for the file-tree footer. */
   agentName: string | null
   /**
@@ -36,6 +42,7 @@ export type SessionLocalWorkspace = {
 
 const EMPTY: SessionLocalWorkspace = {
   hasLocalAgent: false,
+  agentId: null,
   agentName: null,
   path: null,
   bindingResolved: false,
@@ -52,8 +59,16 @@ const EMPTY: SessionLocalWorkspace = {
  */
 const inFlight = new Map<string, Promise<string | null>>()
 
-function resolveOnce(teamId: string, sessionId: string): Promise<string | null> {
-  const key = `${teamId}:${sessionId}`
+function resolveOnce(
+  teamId: string,
+  sessionId: string,
+  /**
+   * Part of the key: a resolve started before the seat moved must not be
+   * joined by the one asking because it moved.
+   */
+  rebindRevision: number,
+): Promise<string | null> {
+  const key = `${teamId}:${sessionId}:${rebindRevision}`
   const existing = inFlight.get(key)
   if (existing) return existing
   const promise = resolveSessionWorkspacePath(teamId, sessionId)
@@ -113,6 +128,11 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
     return () => { cancelled = true }
   }, [localAgentId, sessionId])
 
+  const rebindRevision = React.useSyncExternalStore(
+    subscribeSessionWorkspaceRebind,
+    () => sessionWorkspaceRebindRevision(sessionId),
+  )
+
   // Keyed by session so an in-flight resolve for the session we just left can
   // never be read as this one's answer.
   const [bound, setBound] = React.useState<{ sessionId: string; path: string | null } | null>(null)
@@ -127,18 +147,19 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
   // seat is moved onto the checkout after the session is already on screen —
   // and the store following it there is the sign that it did. Keeping the
   // answer from before the move left the pane on "Agent 尚未启动" beside the
-  // right folder's tree.
+  // right folder's tree. A seat bound from the files pane may not move the
+  // store at all (the folder is the window's own), so a rebind asks as well.
   React.useEffect(() => {
     if (!sessionId || !teamId) {
       setBound(null)
       return
     }
     let cancelled = false
-    void resolveOnce(teamId, sessionId).then((path) => {
+    void resolveOnce(teamId, sessionId, rebindRevision).then((path) => {
       if (!cancelled) setBound({ sessionId, path: path?.trim() || null })
     })
     return () => { cancelled = true }
-  }, [sessionId, teamId, workspacePath])
+  }, [sessionId, teamId, workspacePath, rebindRevision])
 
   return React.useMemo(() => {
     if (!sessionId || !localAgentId) return EMPTY
@@ -152,6 +173,7 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
 
     return {
       hasLocalAgent: true,
+      agentId: localAgentId,
       agentName: participant.displayName || null,
       path: settled ? boundPath : null,
       bindingResolved,

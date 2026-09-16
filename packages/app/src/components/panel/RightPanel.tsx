@@ -3,6 +3,7 @@ import { SessionActorPanel } from '@/components/chat/SessionActorSheet'
 import { ShortcutsPanel } from './ShortcutsPanel'
 import { FileBrowser } from '@/components/workspace/FileBrowser'
 import { ActorsView } from '@/components/panel/ActorsView'
+import { SessionWorkspacePicker } from '@/components/panel/SessionWorkspacePicker'
 import { useWorkspaceStore, type RightPanelTab } from '@/stores/workspace'
 import { useSessionSelectionStore } from '@/stores/session-selection-store'
 import { useSessionListStore } from '@/stores/session-list-store'
@@ -22,24 +23,44 @@ interface RightPanelProps {
  *
  * The tab only opens for a session the local agent is in (App gates the header
  * entry on the same hook). Empty states:
- * - binding resolved with no folder → session has no workspace_id
+ * - binding resolved with no folder → session has no workspace_id; the pane
+ *   offers the local agent's workspaces (or a folder to browse to) to bind
  * - otherwise no settled path → waiting on runtime / workspace switch
  * Rendering the previous session's tree in that gap is the bug this replaces.
  */
 function WorkspaceFilesPane() {
   const { t } = useTranslation()
-  const { agentName, path, bindingResolved, boundPath } = useSessionLocalWorkspace()
+  const { agentId, agentName, path, bindingResolved, boundPath } = useSessionLocalWorkspace()
 
   if (!path) {
-    const unbound = bindingResolved && !boundPath
+    if (bindingResolved && !boundPath) {
+      return (
+        <div
+          data-testid="files-no-workspace"
+          className="flex h-full flex-col items-center justify-center overflow-y-auto px-4 py-6 text-center"
+        >
+          <div className="text-[12.5px] text-muted-foreground">
+            {t('fileExplorer.noWorkspaceBound', '该会话没有工作目录')}
+          </div>
+          {agentId ? (
+            <>
+              <div className="mt-1 text-[12px] text-faint">
+                {agentName
+                  ? t('fileExplorer.pickWorkspaceHint', '为 {{agent}} 选择一个工作目录', { agent: agentName })
+                  : t('fileExplorer.pickWorkspaceHintNoName', '为本机 Agent 选择一个工作目录')}
+              </div>
+              <SessionWorkspacePicker agentId={agentId} />
+            </>
+          ) : null}
+        </div>
+      )
+    }
     return (
       <div
-        data-testid={unbound ? 'files-no-workspace' : 'files-agent-not-started'}
+        data-testid="files-agent-not-started"
         className="flex h-full items-center justify-center px-6 text-center text-[12.5px] text-muted-foreground"
       >
-        {unbound
-          ? t('fileExplorer.noWorkspaceBound', '该会话没有工作目录')
-          : t('fileExplorer.agentNotStarted', 'Agent 尚未启动')}
+        {t('fileExplorer.agentNotStarted', 'Agent 尚未启动')}
       </div>
     )
   }

@@ -46,6 +46,11 @@ vi.mock('@/components/panel/ActorsView', () => ({
   ActorsView: () => React.createElement('div', { 'data-testid': 'actors-view' }),
 }))
 
+vi.mock('@/components/panel/SessionWorkspacePicker', () => ({
+  SessionWorkspacePicker: ({ agentId }: { agentId: string }) =>
+    React.createElement('div', { 'data-testid': 'session-workspace-picker', 'data-agent-id': agentId }),
+}))
+
 vi.mock('@/components/chat/SessionActorSheet', () => ({
   SessionActorPanel: ({ sessionId, teamId }: { sessionId: string; teamId: string | null }) =>
     React.createElement('div', { 'data-testid': 'session-actor-panel' }, `${sessionId}:${teamId}`),
@@ -53,6 +58,7 @@ vi.mock('@/components/chat/SessionActorSheet', () => ({
 
 const mockLocalWorkspace = {
   hasLocalAgent: true,
+  agentId: 'agent-local' as string | null,
   agentName: 'Mac-mini-3' as string | null,
   path: '/Volumes/openbeta/workspace/teamclu' as string | null,
   bindingResolved: true,
@@ -67,6 +73,7 @@ beforeEach(() => {
   mockStoreState.activeTab = 'shortcuts'
   mockSelection.activeSessionId = null
   mockLocalWorkspace.hasLocalAgent = true
+  mockLocalWorkspace.agentId = 'agent-local'
   mockLocalWorkspace.agentName = 'Mac-mini-3'
   mockLocalWorkspace.path = '/Volumes/openbeta/workspace/teamclu'
   mockLocalWorkspace.bindingResolved = true
@@ -118,6 +125,27 @@ describe('RightPanel', () => {
     expect(screen.getByTestId('files-no-workspace').textContent).toContain('该会话没有工作目录')
     expect(screen.queryByTestId('files-agent-not-started')).toBeNull()
     expect(screen.queryByTestId('file-browser')).toBeNull()
+  })
+
+  // Pulling a local agent into an existing session seats it with no folder, and
+  // the only way to give it one used to be leaving the session.
+  it('files tab offers to bind a folder for the local agent when the session has none', () => {
+    mockStoreState.activeTab = 'files'
+    mockLocalWorkspace.path = null
+    mockLocalWorkspace.bindingResolved = true
+    mockLocalWorkspace.boundPath = null
+    render(React.createElement(RightPanel))
+    expect(screen.getByTestId('files-no-workspace').textContent).toContain('为 {{agent}} 选择一个工作目录')
+    expect(screen.getByTestId('session-workspace-picker').getAttribute('data-agent-id')).toBe('agent-local')
+  })
+
+  it('files tab offers no picker while a known binding is still pending', () => {
+    mockStoreState.activeTab = 'files'
+    mockLocalWorkspace.path = null
+    mockLocalWorkspace.bindingResolved = false
+    mockLocalWorkspace.boundPath = null
+    render(React.createElement(RightPanel))
+    expect(screen.queryByTestId('session-workspace-picker')).toBeNull()
   })
 
   it('files tab still says agent not started while the store has not followed a known binding', () => {

@@ -42,6 +42,7 @@ vi.mock('@/lib/session/session-by-workspace', () => ({
   resolveSessionWorkspacePath: (...args: unknown[]) => mocks.resolveSessionWorkspacePath(...args),
 }))
 
+import { noteSessionWorkspaceRebound } from '@/lib/session/session-workspace-rebind'
 import {
   __resetLocalDaemonIdentityForTest,
   noteLocalDaemonActorId,
@@ -70,6 +71,7 @@ describe('useSessionLocalWorkspace', () => {
     const { result } = renderHook(() => useSessionLocalWorkspace())
     await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
     expect(result.current.hasLocalAgent).toBe(true)
+    expect(result.current.agentId).toBe('agent-local')
     expect(result.current.agentName).toBe('Mac-mini-3')
     expect(result.current.bindingResolved).toBe(true)
     expect(result.current.boundPath).toBe('/tmp/a')
@@ -112,6 +114,30 @@ describe('useSessionLocalWorkspace', () => {
     rerender()
 
     await waitFor(() => expect(result.current.path).toBe('/tmp/app'))
+  })
+
+  // A folder bound from the files pane can be the one the window already has,
+  // so the store never moves and only the rebind says to look again.
+  it('resolves again when the seat is rebound without the workspace store moving', async () => {
+    mocks.resolveSessionWorkspacePath.mockResolvedValue(null)
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.bindingResolved).toBe(true))
+    expect(result.current.boundPath).toBeNull()
+
+    mocks.resolveSessionWorkspacePath.mockResolvedValue('/tmp/a')
+    act(() => noteSessionWorkspaceRebound('sess-a'))
+
+    await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
+  })
+
+  it('ignores a rebind of another session', async () => {
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
+    const calls = mocks.resolveSessionWorkspacePath.mock.calls.length
+
+    act(() => noteSessionWorkspaceRebound('sess-other'))
+
+    expect(mocks.resolveSessionWorkspacePath).toHaveBeenCalledTimes(calls)
   })
 
   it('marks an empty resolve as unbound rather than pending', async () => {
