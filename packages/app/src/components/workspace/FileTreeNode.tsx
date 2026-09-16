@@ -25,6 +25,7 @@ import {
   AlertTriangle,
   Cloud,
   FolderSymlink,
+  BookmarkPlus,
 } from "lucide-react";
 
 import { cn } from '@/lib/utils';
@@ -291,6 +292,13 @@ export interface FileTreeItemProps {
   onDownload?: (path: string) => void;
   /** Give back the local copy, keeping the file listed. Never a delete. */
   onReleaseLocal?: (path: string) => void;
+  /**
+   * Distill this 资料库 file into a knowledge-inbox draft.
+   *
+   * Files only, and only supplied for paths under `documents/`. The file stays
+   * where it is; this opens the same review tab the session header uses.
+   */
+  onSaveToKnowledge?: (path: string) => void;
   onCopyPath: (path: string) => void;
   onCopyRelativePath: (path: string) => void;
   onReveal: (path: string) => void;
@@ -343,6 +351,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   downloadFailed,
   onDownload,
   onReleaseLocal,
+  onSaveToKnowledge,
   onCopyPath,
   onCopyRelativePath,
   onReveal,
@@ -591,6 +600,12 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           <MessageSquarePlus className="h-4 w-4" />
           {t("fileExplorer.addToAgent", "Add to Agent")}
         </ContextMenuItem>
+        {!isDirectory && onSaveToKnowledge && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onSaveToKnowledge(node.path))}>
+            <BookmarkPlus className="h-4 w-4" />
+            {t("knowledgeReview.headerAction", "整理到知识库")}
+          </ContextMenuItem>
+        )}
         {/*
           Only for directories inside the team knowledge tree, and only for
           someone who can manage the team: the caller decides both by passing

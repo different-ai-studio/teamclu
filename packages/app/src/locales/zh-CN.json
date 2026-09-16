@@ -3336,6 +3336,7 @@
     "fieldBody": "正文",
     "fieldPath": "知识库路径",
     "fieldTitle": "标题",
+    "fromDocument": "来自资料 {{path}}",
     "fromSession": "来自会话 {{id}}",
     "headerAction": "整理到知识库",
     "kicker": "审稿",
@@ -3347,6 +3348,10 @@
     "publish": "写入知识库",
     "published": "已写入知识库",
     "savedLocalOnly": "已写入本机，当前没有同步到团队",
+    "distillHint": "这是从会话里提炼的建议，不是聊天全文。勾选要留下的条目，再写入。",
+    "distillHintDocument": "这是从资料里提炼的建议，不是原文全文。勾选要留下的条目，再写入。",
+    "suggestions": "提炼建议",
+    "rewriteBody": "按所选建议重写正文",
     "tabLabel": "审稿",
     "title": "写入知识库前先看一遍",
     "untitled": "未命名",
@@ -3584,6 +3589,8 @@
       "copyId": "复制 ID",
       "setDefault": "设为默认 Agent",
       "removeDefault": "取消默认 Agent",
+      "setAdmin": "设为管理员",
+      "removeAdmin": "移除管理员",
       "remove": "从团队移除"
     },
     "detail": {
@@ -3639,6 +3646,18 @@
     },
     "copyFailed": "复制失败",
     "removed": "已从团队移除",
+    "roleChanged": {
+      "setAdmin": "已将 {{name}} 设为管理员",
+      "removeAdmin": "已移除 {{name}} 的管理员"
+    },
+    "roleFailed": {
+      "generic": "更新角色失败: {{msg}}",
+      "self": "不能修改自己的角色。",
+      "owner": "不能通过这种方式更改团队 Owner。",
+      "forbidden": "仅团队 Owner 和管理员可以更改成员角色。",
+      "notFound": "该成员已不在团队中。",
+      "notMember": "只能将团队成员设为管理员。"
+    },
     "removeFailed": {
       "generic": "移除失败: {{msg}}",
       "lastOwner": "无法移除最后一位团队 Owner，请先提升其他成员。",

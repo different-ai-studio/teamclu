@@ -10,6 +10,7 @@ export type KnowledgeCandidateSource =
   | 'session-header'
   | 'agent-propose'
   | 'message'
+  | 'document'
   | 'unknown'
 
 export type KnowledgeCandidateStatus = 'pending' | 'published' | 'discarded'
@@ -27,6 +28,8 @@ export type KnowledgeCandidate = {
   publishedPath?: string
   summary?: string
   suggestions?: KnowledgeSuggestion[]
+  /** Sync key of the 资料库 file this draft was distilled from, e.g. `documents/hr/合同.pdf`. */
+  documentPath?: string
 }
 
 export type KnowledgePublishResult = {

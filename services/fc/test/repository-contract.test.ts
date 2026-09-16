@@ -475,6 +475,11 @@ function contractRepo() {
     async removeTeamActor(teamId, actorId) {
       assert.ok(typeof actorId === "string");
     },
+    async setTeamMemberRole(teamId, actorId, role) {
+      assert.equal(teamId, "team-1");
+      assert.ok(typeof actorId === "string");
+      assert.ok(role === "admin" || role === "member");
+    },
     async updateCurrentActorProfile(actorId, { displayName, avatarUrl }) {
       return {
         id: actorId, teamId: "team-1", kind: "member",

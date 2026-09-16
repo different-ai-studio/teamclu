@@ -188,11 +188,21 @@ export function KnowledgeReviewTab({ candidateId }: { candidateId: string }) {
         </div>
         <div className="mt-1 text-[12px] text-muted-foreground">
           {t(
-            'knowledgeReview.distillHint',
-            '这是从会话里提炼的建议，不是聊天全文。勾选要留下的条目，再写入。',
+            candidate.source === 'document'
+              ? 'knowledgeReview.distillHintDocument'
+              : 'knowledgeReview.distillHint',
+            candidate.source === 'document'
+              ? '这是从资料里提炼的建议，不是原文全文。勾选要留下的条目，再写入。'
+              : '这是从会话里提炼的建议，不是聊天全文。勾选要留下的条目，再写入。',
           )}
         </div>
-        {candidate.sessionId ? (
+        {candidate.documentPath ? (
+          <div className="mt-1 text-[12px] text-faint">
+            {t('knowledgeReview.fromDocument', '来自资料 {{path}}', {
+              path: candidate.documentPath,
+            })}
+          </div>
+        ) : candidate.sessionId ? (
           <div className="mt-1 text-[12px] text-faint">
             {t('knowledgeReview.fromSession', '来自会话 {{id}}', {
               id: candidate.sessionId.slice(0, 8),
