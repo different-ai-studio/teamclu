@@ -55,7 +55,7 @@ Dokploy control-plane application's `dockerImage` field.
 | MQTT WebSocket | Caddy to emqx:8083 | Traefik to emqx:8083 | Aligned |
 | Registry | Caddy method-split auth | Traefik method-split auth | Aligned |
 | Gitea HTTP | Caddy to gitea:3000 | Traefik to the managed external server | Intentional |
-| App wildcard/custom domains | Caddy on-demand TLS | Traefik file routes; custom domains added by hand | Intentionally different |
+| App wildcard/custom domains | Caddy on-demand TLS | Traefik file routes; custom domains from the HTTP provider | Intentionally different |
 
 Do not change production DNS, scheduler ownership, MQTT client URLs, or
 database migrations as part of an environment-key parity change. Each needs
@@ -98,10 +98,27 @@ manager (`/etc/dokploy/traefik/dynamic/`), not through Dokploy's domain table:
 - `teamclu-apps-ingress.yml` routes `login.apps.mx5.cn` and every app vanity
   host (`<slug>-<id8>.apps.mx5.cn`) and declares the `teamclu-apps-cloud-api`
   service.
-- `app-custom-domains.yml` routes verified user custom domains to the same
-  service, one `Host` router per domain, with certificates from Traefik's
-  `letsencrypt` resolver (HTTP-01). A custom domain is served only after it is
-  added here and its DNS points at the manager.
+- Verified user custom domains are not in a file. Traefik's HTTP provider
+  polls the Cloud API's `/internal/traefik/dynamic`, which answers with one
+  `Host` router pair per verified domain whose DNS already reaches the ingress,
+  routed to `teamclu-apps-cloud-api@file` with certificates from the
+  `letsencrypt` resolver (HTTP-01). Binding and verifying a domain in the app
+  control panel is all it takes; unbinding removes the routes on the next poll.
+  The provider is configured once in `traefik.yml`:
+
+  ```yaml
+  providers:
+    http:
+      endpoint: http://teamclu-cloud-api-shadow-qjau6z:9000/internal/traefik/dynamic
+      pollInterval: 15s
+      headers:
+        Authorization: Bearer <APPS_TRAEFIK_PROVIDER_TOKEN>
+  ```
+
+  The same token is the Cloud API's `APPS_TRAEFIK_PROVIDER_TOKEN`. A failed poll
+  keeps Traefik's last routes, so the endpoint answers 503 on errors and never
+  an empty list. `app-custom-domains.yml` is the manual fallback and should stay
+  empty.
 - `teamclu-apps-wildcard-cert.yml` declares the `*.apps.mx5.cn` certificate,
   whose PEMs live in `certificates/teamclu-apps-wildcard/`. The declaration is
   top level because Traefik watches `dynamic/` and the files directly in it and

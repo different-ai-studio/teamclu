@@ -10,6 +10,7 @@ import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./l
 import { parseAppPublicHost } from "./lib/apps-public-host.js";
 import { handleLoginRequest, isLoginHost, type LookupLoginApp } from "./lib/apps-login-service.js";
 import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
+import { makeTraefikDynamicEndpoint, type ListTraefikCustomDomains } from "./lib/apps-traefik-provider.js";
 
 export type AppDeps = {
   createRepository: (args: { accessToken: string }) => unknown;
@@ -32,6 +33,11 @@ export type AppDeps = {
    * checks see an empty set (deny).
    */
   resolveVisitorRoles?: GateDeps["resolveVisitorRoles"];
+  /**
+   * Verified custom domains for Traefik's HTTP provider (belayo). Absent, the
+   * endpoint is not registered at all.
+   */
+  listTraefikCustomDomains?: ListTraefikCustomDomains;
 };
 
 /**
@@ -110,6 +116,20 @@ export function createApp(deps: AppDeps): Hono {
         secureCookies: forwardedProto(c) === "https",
       });
       return res ?? next();
+    });
+  }
+
+  // Traefik's HTTP provider on belayo polls this for the routers of verified
+  // custom domains — the Traefik counterpart of Caddy's ask gate below. It is
+  // registered ahead of the vanity middleware so a poll never pays for a host
+  // lookup, and ahead of CORS and the rate limiter like everything here. The
+  // token check and the "never an empty 200 on failure" rule live in
+  // apps-traefik-provider.ts.
+  if (deps.listTraefikCustomDomains) {
+    const serveTraefik = makeTraefikDynamicEndpoint({ listDomains: deps.listTraefikCustomDomains });
+    app.get("/internal/traefik/dynamic", async (c) => {
+      const result = await serveTraefik(c.req.header("authorization"));
+      return c.json(result.body as Record<string, unknown>, result.status);
     });
   }
 
