@@ -105,7 +105,7 @@ $$;
 -- current_team_role reads roles_users only (no team_members.role fallback).
 select amux.backfill_roles_users_from_team_members();
 
-execute 'reset role';
+reset role;
 insert into amux.team_skills (
   team_id, slug, summary, category, when_to_use, when_not_to_use, status
 )
