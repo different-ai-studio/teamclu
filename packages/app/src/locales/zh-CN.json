@@ -3594,8 +3594,6 @@
       "copyId": "复制 ID",
       "setDefault": "设为默认 Agent",
       "removeDefault": "取消默认 Agent",
-      "setAdmin": "设为管理员",
-      "removeAdmin": "移除管理员",
       "remove": "从团队移除"
     },
     "detail": {
@@ -3659,18 +3657,6 @@
     },
     "copyFailed": "复制失败",
     "removed": "已从团队移除",
-    "roleChanged": {
-      "setAdmin": "已将 {{name}} 设为管理员",
-      "removeAdmin": "已移除 {{name}} 的管理员"
-    },
-    "roleFailed": {
-      "generic": "更新角色失败: {{msg}}",
-      "self": "不能修改自己的角色。",
-      "owner": "不能通过这种方式更改团队 Owner。",
-      "forbidden": "仅团队 Owner 和管理员可以更改成员角色。",
-      "notFound": "该成员已不在团队中。",
-      "notMember": "只能将团队成员设为管理员。"
-    },
     "removeFailed": {
       "generic": "移除失败: {{msg}}",
       "lastOwner": "无法移除最后一位团队 Owner，请先提升其他成员。",

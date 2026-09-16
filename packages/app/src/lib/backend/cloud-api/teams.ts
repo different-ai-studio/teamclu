@@ -108,12 +108,6 @@ export function createTeamsModule(client: CloudApiClient): TeamsBackend {
         `/v1/teams/${encodeURIComponent(teamId)}/actors/${encodeURIComponent(actorId)}`,
       );
     },
-    async setTeamMemberRole(teamId: string, actorId: string, role: "admin" | "member") {
-      await client.patch<void>(
-        `/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(actorId)}`,
-        { role },
-      );
-    },
     async listAllMyTeams() {
       const page = await client.get<Page<CloudMembershipTeam>>(`/v1/teams?scope=all`);
       return page.items.map((r) => ({

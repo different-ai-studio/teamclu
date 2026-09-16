@@ -563,8 +563,6 @@ export interface TeamsBackend {
   upgradeAccount(input: { teamId: string; orgName: string; contact?: string | null }): Promise<{ orgId: string; teamId: string; teamName: string }>;
   createTeamInvite(input: TeamInviteInput): Promise<TeamInviteResult>;
   removeTeamActor(teamId: string, actorId: string): Promise<void>;
-  /** Owner/admin: set another member's role to `admin` or `member`. */
-  setTeamMemberRole(teamId: string, actorId: string, role: "admin" | "member"): Promise<void>;
   listAllMyTeams(): Promise<MembershipTeam[]>;
   /**
    * Self-service join of a PUBLIC team in the caller's own org (offered in the

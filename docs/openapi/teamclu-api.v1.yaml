@@ -394,46 +394,6 @@ paths:
         "403":
           $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/members/{actorId}:
-    patch:
-      operationId: setTeamMemberRole
-      summary: Set team member role
-      description: |
-        Owner or admin grants or revokes the org `admin` role (`roles_users`)
-        for another member. Cannot change the caller's own role, cannot
-        change an owner, and cannot promote anyone to owner. Idempotent
-        when the target already has the requested role. Dual-writes
-        `team_members.role` for legacy readers.
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-        - name: actorId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [role]
-              properties:
-                role:
-                  type: string
-                  enum: [admin, member]
-      responses:
-        "204":
-          description: OK
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
     delete:
       operationId: removeTeamActor
       summary: Remove team actor
