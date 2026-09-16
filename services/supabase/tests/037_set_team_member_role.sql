@@ -23,7 +23,13 @@ declare
   v_admin_mem   uuid := gen_random_uuid();
   v_member_mem  uuid := gen_random_uuid();
   v_role        text;
+  v_def         text;
 begin
+  v_def := pg_get_functiondef('amux.set_team_member_role(uuid,text)'::regprocedure);
+  if v_def like '%amux.current_actor_id()%' then
+    raise exception 'set_team_member_role must not call dropped amux.current_actor_id()';
+  end if;
+
   insert into auth.users (id, email, aud, role, instance_id, is_anonymous)
   values
     (v_owner_uid,  'role-owner@amux.test',  'authenticated', 'authenticated',
