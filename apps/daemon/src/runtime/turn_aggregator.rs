@@ -490,6 +490,11 @@ impl TurnAggregator {
     pub fn current_turn_id(&self) -> Option<&str> {
         self.current_turn_id.as_deref()
     }
+
+    /// Whether this turn produced user-visible ACP activity (output, tools, …).
+    pub fn turn_had_activity(&self) -> bool {
+        self.turn_had_activity
+    }
 }
 
 #[cfg(test)]

@@ -39,10 +39,15 @@ impl DaemonServer {
             return;
         }
 
+        let approval_pending = self
+            .permissions
+            .session_has_pending(&snapshot.session_id);
+        let needs_synthetic = needs_synthetic || approval_pending;
+
         if needs_synthetic && publish_live {
             {
                 let mut agents = self.agents.lock().await;
-                agents.prepare_idle_timeout_detach(agent_id);
+                agents.prepare_idle_timeout_detach(agent_id, approval_pending);
             }
 
             let frame = AcpEventFrame::new(
