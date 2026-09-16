@@ -54,8 +54,8 @@ const SESSION_ID_PREFIX: &str = "pi:";
 
 pub(crate) struct Route {
     pub(crate) event_tx: mpsc::Sender<AcpEventFrame>,
-    /// Permission handling for this session; `Full` (gateway / cron) means
-    /// confirmation requests are auto-approved instead of waiting on a human.
+    /// Permission handling for this session; `Full` auto-approves tool
+    /// confirmations instead of waiting on a human.
     pub(crate) permission: PermissionPolicy,
     /// Which pool child serves this session.
     pub(crate) pool_key: PoolKey,

@@ -1,10 +1,7 @@
-//! How a runtime handles tool-permission and question requests.
+//! How a runtime handles tool-permission requests.
 //!
-//! Interactive desktop sessions surface both to a human and wait. Unattended
-//! runs (gateway conversations, cron jobs) have nobody to answer: a request
-//! that waits for a client never resolves, the turn watchdog treats
-//! "waiting on the user" as healthy rather than stalled, and the run hangs
-//! until the cron timeout kills it. Those runtimes take [`Full`] instead.
+//! [`Full`] auto-approves tool confirmations. It does not skip `question`
+//! cards — those always go to a client.
 //!
 //! [`Full`]: PermissionPolicy::Full
 
@@ -13,17 +10,15 @@ use std::fmt;
 /// Permission handling for one runtime session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PermissionPolicy {
-    /// Forward permission + question requests to clients and wait for a human.
+    /// Forward permission requests to clients and wait for a human.
     #[default]
     Ask,
-    /// Full access: auto-approve every tool permission, and auto-reject
-    /// blocking `question` requests so the turn keeps moving instead of
-    /// waiting on a human who is not there.
+    /// Auto-approve every tool permission.
     Full,
 }
 
 impl PermissionPolicy {
-    /// True when the runtime must never block on a human.
+    /// True when tool confirmations are auto-approved.
     pub fn is_full_access(self) -> bool {
         matches!(self, Self::Full)
     }

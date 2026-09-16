@@ -36,7 +36,7 @@ pub enum AcpCommand {
         initial_prompt: String,
         event_tx: mpsc::Sender<AcpEventFrame>,
         startup_tx: oneshot::Sender<Result<AcpStartupMetadata, String>>,
-        /// How this session handles permission + question requests.
+        /// How this session handles tool-permission requests.
         permission: PermissionPolicy,
         /// When resuming, fail instead of falling back to a new session.
         forbid_new_session_fallback: bool,
