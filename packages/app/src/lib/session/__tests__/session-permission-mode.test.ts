@@ -33,13 +33,19 @@ vi.mock("@/stores/session-list-store", () => ({
   ),
 }));
 
+import { appStoragePrefix } from "@/lib/config/build-config";
 import {
+  getSessionDefaultPermissionMode,
   getSessionPermissionMode,
+  hasExplicitSessionPermissionMode,
   isUnattendedSessionSource,
   resetSessionPermissionModesForTests,
+  setSessionDefaultPermissionMode,
   setSessionPermissionMode,
   subscribeSessionPermissionModes,
 } from "@/lib/session/session-permission-mode";
+
+const DEFAULT_MODE_STORAGE_KEY = `${appStoragePrefix}-default-session-permission-mode`;
 
 describe("session-permission-mode", () => {
   beforeEach(() => {
@@ -73,13 +79,58 @@ describe("session-permission-mode", () => {
     expect(getSessionPermissionMode("sess-b")).toBe("default");
   });
 
-  it("removes key when set back to default", () => {
+  it("records an explicit ask when set back to default", () => {
     setSessionPermissionMode("sess-a", "fullAccess");
     setSessionPermissionMode("sess-a", "default");
     expect(getSessionPermissionMode("sess-a")).toBe("default");
+    expect(hasExplicitSessionPermissionMode("sess-a")).toBe(true);
     expect(mockLocalStorage.setItem).toHaveBeenCalled();
     const last = mockLocalStorage.setItem.mock.calls.at(-1)?.[1] as string;
-    expect(last).not.toContain("sess-a");
+    // The ask choice must persist (forceDefault), otherwise a global default
+    // of fullAccess would swallow it.
+    expect(last).toContain("sess-a");
+  });
+
+  it("resolves unknown sessions through the configurable global default", () => {
+    expect(getSessionDefaultPermissionMode()).toBe("default");
+    expect(getSessionPermissionMode("sess-1")).toBe("default");
+
+    setSessionDefaultPermissionMode("fullAccess");
+    expect(getSessionDefaultPermissionMode()).toBe("fullAccess");
+    expect(getSessionPermissionMode("sess-1")).toBe("fullAccess");
+    expect(hasExplicitSessionPermissionMode("sess-1")).toBe(false);
+
+    setSessionDefaultPermissionMode("default");
+    expect(getSessionPermissionMode("sess-1")).toBe("default");
+  });
+
+  it("explicit per-session choices override the global default", () => {
+    setSessionDefaultPermissionMode("fullAccess");
+    setSessionPermissionMode("sess-ask", "default");
+    expect(getSessionPermissionMode("sess-ask")).toBe("default");
+
+    setSessionDefaultPermissionMode("default");
+    setSessionPermissionMode("sess-full", "fullAccess");
+    expect(getSessionPermissionMode("sess-full")).toBe("fullAccess");
+  });
+
+  it("unattended sessions stay fullAccess regardless of the global default", () => {
+    setSessionDefaultPermissionMode("default");
+    expect(getSessionPermissionMode("gw-1", "gateway")).toBe("fullAccess");
+    expect(getSessionPermissionMode("cron-1", "cron")).toBe("fullAccess");
+  });
+
+  it("ignores unknown global default values", () => {
+    mockStore[DEFAULT_MODE_STORAGE_KEY] = "nonsense";
+    expect(getSessionDefaultPermissionMode()).toBe("default");
+  });
+
+  it("notifies subscribers when the global default changes", () => {
+    const cb = vi.fn();
+    const unsub = subscribeSessionPermissionModes(cb);
+    setSessionDefaultPermissionMode("fullAccess");
+    expect(cb).toHaveBeenCalled();
+    unsub();
   });
 
   it("keeps explicit default on a gateway session", () => {

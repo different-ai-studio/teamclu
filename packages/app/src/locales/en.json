@@ -780,7 +780,7 @@
       "unsupported": "Local voice input is not supported on this device"
     },
     "permissionMode": {
-      "default": "Default Permissions",
+      "default": "Ask",
       "fullAccess": "Full Access"
     },
     "mentionPopoverTitle": "Mention people or agents",
@@ -1902,6 +1902,10 @@
       "appearance": "Appearance",
       "language": "Language",
       "languageDesc": "Choose the app display language",
+      "defaultPermission": "Default permission",
+      "defaultPermissionDesc": "Permission mode used by new sessions. Changing it also applies to running sessions without an explicit per-session choice; sessions you set individually are unaffected.",
+      "defaultPermissionAsk": "Ask",
+      "defaultPermissionFullAccess": "Full access",
       "closeWindow": "When closing the window",
       "closeWindowDesc": "Choose what happens when you click the window close button. Cmd+Q always quits.",
       "closeWindowAsk": "Ask every time",

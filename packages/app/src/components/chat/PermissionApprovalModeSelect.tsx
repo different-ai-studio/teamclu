@@ -51,7 +51,7 @@ export function PermissionApprovalModeSelect({
   const label =
     mode === "fullAccess"
       ? t("chat.permissionMode.fullAccess", "完全访问权限")
-      : t("chat.permissionMode.default", "默认权限");
+      : t("chat.permissionMode.default", "询问");
 
   const Icon = mode === "fullAccess" ? Info : Hand;
 
@@ -84,7 +84,7 @@ export function PermissionApprovalModeSelect({
           onSelect={() => handleSelect("default")}
         >
           <Hand className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="flex-1">{t("chat.permissionMode.default", "默认权限")}</span>
+          <span className="flex-1">{t("chat.permissionMode.default", "询问")}</span>
           {mode === "default" ? <Check className="h-3.5 w-3.5" aria-hidden /> : null}
         </DropdownMenuItem>
         <DropdownMenuItem

@@ -55,10 +55,10 @@ describe("PermissionApprovalModeSelect", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("shows default label for session", () => {
+  it("shows ask label for session", () => {
     render(<PermissionApprovalModeSelect sessionId="sess-a" />);
     expect(screen.getByTestId("permission-approval-mode-trigger")).toHaveTextContent(
-      "默认权限",
+      "询问",
     );
   });
 

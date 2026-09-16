@@ -14,7 +14,13 @@ vi.mock("@/lib/agent/runtime-state-resolve", () => ({
 }));
 
 import {
+  resetSessionPermissionModesForTests,
+  setSessionDefaultPermissionMode,
+  setSessionPermissionMode,
+} from "@/lib/session/session-permission-mode";
+import {
   resolveSessionPermissionModeTargetActorIds,
+  syncDefaultPermissionModeToLiveSessions,
   syncSessionPermissionModeToDaemon,
 } from "@/lib/teamclu/sync-session-permission-mode";
 import { useRuntimeStateStore } from "@/stores/runtime-state-store";
@@ -91,5 +97,65 @@ describe("syncSessionPermissionModeToDaemon", () => {
     const result = await syncSessionPermissionModeToDaemon("sess-1", "fullAccess");
     expect(result.accepted).toBe(false);
     expect(mocks.sessionPermissionMode).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("syncDefaultPermissionModeToLiveSessions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSessionPermissionModesForTests();
+    useSessionParticipantStore.setState({ participantsBySession: {} });
+    mocks.sessionPermissionMode.mockResolvedValue({
+      accepted: true,
+      effectiveMode: "full_access",
+      rejectedReason: "",
+    });
+    mocks.runtimeTargetsForSession.mockImplementation(
+      (sessionId: string) =>
+        [
+          {
+            agent_id: `agent-${sessionId}`,
+            runtime_id: sessionId,
+          },
+        ] as Array<{ agent_id: string | null; runtime_id: string | null }>,
+    );
+    useRuntimeStateStore.setState({
+      byRuntimeId: {
+        "agent-sess-plain::sess-plain": {
+          info: {} as never,
+          daemonActorId: "agent-sess-plain",
+          lastUpdated: 0,
+        },
+        "agent-sess-picked::sess-picked": {
+          info: {} as never,
+          daemonActorId: "agent-sess-picked",
+          lastUpdated: 0,
+        },
+      } as never,
+    });
+  });
+
+  it("syncs the resolved mode to live sessions without an explicit pick", async () => {
+    setSessionPermissionMode("sess-picked", "fullAccess");
+    setSessionDefaultPermissionMode("fullAccess");
+
+    await syncDefaultPermissionModeToLiveSessions();
+
+    // sess-picked keeps its explicit pick — no RPC for it.
+    expect(mocks.sessionPermissionMode).toHaveBeenCalledTimes(1);
+    expect(mocks.sessionPermissionMode).toHaveBeenCalledWith({
+      targetActorId: "agent-sess-plain",
+      sessionId: "sess-plain",
+      permissionMode: "full_access",
+    });
+  });
+
+  it("skips everything when every live session has an explicit pick", async () => {
+    setSessionPermissionMode("sess-plain", "default");
+    setSessionPermissionMode("sess-picked", "fullAccess");
+
+    await syncDefaultPermissionModeToLiveSessions();
+
+    expect(mocks.sessionPermissionMode).not.toHaveBeenCalled();
   });
 });

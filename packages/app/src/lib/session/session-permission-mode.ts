@@ -5,6 +5,7 @@ import { useSessionListStore } from "@/stores/session-list-store";
 export type SessionPermissionMode = "default" | "fullAccess";
 
 const STORAGE_KEY = `${appStoragePrefix}-session-permission-modes`;
+const DEFAULT_MODE_STORAGE_KEY = `${appStoragePrefix}-default-session-permission-mode`;
 const CHANGE_EVENT = `${appStoragePrefix}-session-permission-modes-changed`;
 const MAX_ENTRIES = 200;
 
@@ -22,9 +23,10 @@ type StoredPayload = {
   /** Explicit fullAccess choices (and legacy seeded entries). */
   fullAccess: Record<string, true>;
   /**
-   * Explicit "ask" overrides for unattended sessions. Without this, switching
-   * a gateway session back to 默认权限 would immediately flip to fullAccess
-   * again via the source default.
+   * Explicit 默认权限 (ask) choices — recorded for any session, attended or
+   * not. Wins over both the unattended source default and the configurable
+   * global default, so an explicit ask sticks even when the global default is
+   * fullAccess.
    */
   forceDefault: Record<string, true>;
 };
@@ -94,6 +96,42 @@ export function subscribeSessionPermissionModes(cb: () => void): () => void {
   return () => window.removeEventListener(CHANGE_EVENT, handler);
 }
 
+/**
+ * Global default permission mode — configurable in Settings (询问 / 完全访问).
+ * A plain localStorage preference (ADR-0012): last-writer-wins across windows
+ * is fine, the user just picks again.
+ */
+export function getSessionDefaultPermissionMode(): SessionPermissionMode {
+  try {
+    const raw = localStorage.getItem(DEFAULT_MODE_STORAGE_KEY);
+    if (raw === "fullAccess") return "fullAccess";
+  } catch {
+    // localStorage unavailable
+  }
+  return "default";
+}
+
+export function setSessionDefaultPermissionMode(mode: SessionPermissionMode): void {
+  try {
+    localStorage.setItem(DEFAULT_MODE_STORAGE_KEY, mode);
+  } catch {
+    // localStorage unavailable
+  }
+  // Same event as per-session changes: resolved per-session modes shift with
+  // the new fallback, so every subscriber re-reads.
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(CHANGE_EVENT));
+  }
+}
+
+export function useSessionDefaultPermissionMode(): SessionPermissionMode {
+  return useSyncExternalStore(
+    subscribeSessionPermissionModes,
+    getSessionDefaultPermissionMode,
+    () => "default",
+  );
+}
+
 export function getSessionPermissionMode(
   sessionId: string,
   sourceHint?: string | null,
@@ -105,7 +143,15 @@ export function getSessionPermissionMode(
   if (fullAccess[id]) return "fullAccess";
   const source = sourceHint ?? lookupSessionSource(id);
   if (isUnattendedSessionSource(source)) return "fullAccess";
-  return "default";
+  return getSessionDefaultPermissionMode();
+}
+
+/** True when the user picked a mode for this session explicitly. */
+export function hasExplicitSessionPermissionMode(sessionId: string): boolean {
+  const id = sessionId.trim();
+  if (!id) return false;
+  const { fullAccess, forceDefault } = readPayload();
+  return Boolean(fullAccess[id] || forceDefault[id]);
 }
 
 export function setSessionPermissionMode(
@@ -116,22 +162,15 @@ export function setSessionPermissionMode(
   if (!id) return;
 
   const payload = readPayload();
-  const source = lookupSessionSource(id);
 
-  if (mode === "default") {
-    delete payload.fullAccess[id];
-    if (isUnattendedSessionSource(source)) {
-      payload.forceDefault[id] = true;
-      touchOrder(payload, id);
-    } else {
-      delete payload.forceDefault[id];
-      payload.order = payload.order.filter((s) => s !== id);
-    }
-  } else {
+  if (mode === "fullAccess") {
     delete payload.forceDefault[id];
     payload.fullAccess[id] = true;
-    touchOrder(payload, id);
+  } else {
+    delete payload.fullAccess[id];
+    payload.forceDefault[id] = true;
   }
+  touchOrder(payload, id);
 
   writePayload(payload);
 }
@@ -155,6 +194,7 @@ export function useSessionPermissionMode(
 export function resetSessionPermissionModesForTests(): void {
   try {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(DEFAULT_MODE_STORAGE_KEY);
   } catch {
     // ignore
   }
