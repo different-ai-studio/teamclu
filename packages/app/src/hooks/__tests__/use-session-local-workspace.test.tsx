@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   ensureParticipants: vi.fn(),
   getLocalDaemonActorId: vi.fn(),
   resolveSessionWorkspacePath: vi.fn(),
+  localSeatNeedsWorkspace: vi.fn(),
 }))
 
 vi.mock('@/stores/session-selection-store', () => ({
@@ -42,6 +43,11 @@ vi.mock('@/lib/session/session-by-workspace', () => ({
   resolveSessionWorkspacePath: (...args: unknown[]) => mocks.resolveSessionWorkspacePath(...args),
 }))
 
+vi.mock('@/lib/session/session-agent-workspace', () => ({
+  localSeatNeedsWorkspace: (...args: unknown[]) => mocks.localSeatNeedsWorkspace(...args),
+}))
+
+import { noteSessionWorkspaceRebound } from '@/lib/session/session-workspace-rebind'
 import {
   __resetLocalDaemonIdentityForTest,
   noteLocalDaemonActorId,
@@ -64,12 +70,14 @@ describe('useSessionLocalWorkspace', () => {
     mocks.resolveSessionWorkspacePath.mockImplementation(async (_team: string, id: string) =>
       id === 'sess-a' ? '/tmp/a' : '/tmp/b',
     )
+    mocks.localSeatNeedsWorkspace.mockResolvedValue(true)
   })
 
   it('reports the session folder once the workspace store agrees', async () => {
     const { result } = renderHook(() => useSessionLocalWorkspace())
     await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
     expect(result.current.hasLocalAgent).toBe(true)
+    expect(result.current.agentId).toBe('agent-local')
     expect(result.current.agentName).toBe('Mac-mini-3')
     expect(result.current.bindingResolved).toBe(true)
     expect(result.current.boundPath).toBe('/tmp/a')
@@ -98,6 +106,46 @@ describe('useSessionLocalWorkspace', () => {
     await waitFor(() => expect(result.current.path).toBe('/tmp/b'))
   })
 
+  // An app session's seat is moved onto the checkout after the session is on
+  // screen, and the workspace store following it is the only sign of that the
+  // hook gets.
+  it('resolves again when the workspace store moves under the open session', async () => {
+    mocks.workspacePath = '/tmp/default'
+    mocks.resolveSessionWorkspacePath.mockResolvedValue('/tmp/default')
+    const { result, rerender } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.path).toBe('/tmp/default'))
+
+    mocks.resolveSessionWorkspacePath.mockResolvedValue('/tmp/app')
+    mocks.workspacePath = '/tmp/app'
+    rerender()
+
+    await waitFor(() => expect(result.current.path).toBe('/tmp/app'))
+  })
+
+  // A folder bound from the files pane can be the one the window already has,
+  // so the store never moves and only the rebind says to look again.
+  it('resolves again when the seat is rebound without the workspace store moving', async () => {
+    mocks.resolveSessionWorkspacePath.mockResolvedValue(null)
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.bindingResolved).toBe(true))
+    expect(result.current.boundPath).toBeNull()
+
+    mocks.resolveSessionWorkspacePath.mockResolvedValue('/tmp/a')
+    act(() => noteSessionWorkspaceRebound('sess-a'))
+
+    await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
+  })
+
+  it('ignores a rebind of another session', async () => {
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
+    const calls = mocks.resolveSessionWorkspacePath.mock.calls.length
+
+    act(() => noteSessionWorkspaceRebound('sess-other'))
+
+    expect(mocks.resolveSessionWorkspacePath).toHaveBeenCalledTimes(calls)
+  })
+
   it('marks an empty resolve as unbound rather than pending', async () => {
     mocks.resolveSessionWorkspacePath.mockResolvedValue(null)
     const { result } = renderHook(() => useSessionLocalWorkspace())
@@ -105,6 +153,50 @@ describe('useSessionLocalWorkspace', () => {
     expect(result.current.boundPath).toBeNull()
     expect(result.current.path).toBeNull()
     expect(result.current.hasLocalAgent).toBe(true)
+    expect(result.current.needsWorkspace).toBe(true)
+    expect(mocks.localSeatNeedsWorkspace).toHaveBeenCalledWith({
+      teamId: 'team-1',
+      sessionId: 'sess-a',
+      agentId: 'agent-local',
+    })
+  })
+
+  it('does not ask about the seat when the session resolved to a folder', async () => {
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.path).toBe('/tmp/a'))
+    expect(result.current.needsWorkspace).toBe(false)
+    expect(mocks.localSeatNeedsWorkspace).not.toHaveBeenCalled()
+  })
+
+  // An empty resolve is also what a failed participant read produces. Offering
+  // to bind a folder then could overwrite a seat that is bound.
+  it('does not report a workspace as needed when the seat could not be confirmed empty', async () => {
+    mocks.resolveSessionWorkspacePath.mockResolvedValue(null)
+    mocks.localSeatNeedsWorkspace.mockRejectedValue(new Error('502'))
+    const { result } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(result.current.bindingResolved).toBe(true))
+    expect(result.current.boundPath).toBeNull()
+    expect(result.current.needsWorkspace).toBe(false)
+  })
+
+  // A resolve that started before the store moved answers for the binding as it
+  // was then; joining it left the pane on "Agent 尚未启动" beside the new tree.
+  it('does not join a resolve that started before the workspace store moved', async () => {
+    let releaseStale: (path: string) => void = () => {}
+    mocks.workspacePath = '/tmp/default'
+    mocks.resolveSessionWorkspacePath
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseStale = resolve }))
+      .mockResolvedValue('/tmp/app')
+    const { result, rerender } = renderHook(() => useSessionLocalWorkspace())
+    await waitFor(() => expect(mocks.resolveSessionWorkspacePath).toHaveBeenCalledTimes(1))
+
+    mocks.workspacePath = '/tmp/app'
+    rerender()
+    await waitFor(() => expect(mocks.resolveSessionWorkspacePath).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.path).toBe('/tmp/app'))
+
+    act(() => releaseStale('/tmp/default'))
+    await waitFor(() => expect(result.current.path).toBe('/tmp/app'))
   })
 
   it('reports no local agent when this machine has none in the session', async () => {

@@ -40,12 +40,21 @@ export function createWorkspacesModule(client: CloudApiClient): WorkspacesBacken
     async listWorkspacesByIds(teamId, workspaceIds) {
       if (workspaceIds.length === 0) return [];
       const out = await client.post<{
-        items: Array<{ id: string; name: string | null; path?: string | null; slug?: string | null }>;
+        items: Array<{
+          id: string;
+          name: string | null;
+          path?: string | null;
+          slug?: string | null;
+          agentId?: string | null;
+          archived?: boolean;
+        }>;
       }>(`/v1/workspaces/by-ids`, { teamId, ids: workspaceIds });
       return (out.items ?? []).map((r) => ({
         id: r.id,
         name: r.name ?? null,
         path: r.path?.trim() || r.slug?.trim() || null,
+        agentId: r.agentId,
+        archived: r.archived,
       }));
     },
     async listDaemonWorkspaces(teamId, agentId) {

@@ -5,6 +5,10 @@ import {
   subscribeLocalDaemonActorId,
 } from '@/lib/daemon/local-daemon-identity'
 import { resolveSessionWorkspacePath } from '@/lib/session/session-by-workspace'
+import {
+  sessionWorkspaceRebindRevision,
+  subscribeSessionWorkspaceRebind,
+} from '@/lib/session/session-workspace-rebind'
 import { workspacePathsMatch } from '@/stores/session-utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useSessionParticipantStore } from '@/stores/session-participant-store'
@@ -14,6 +18,8 @@ import { useWorkspaceStore } from '@/stores/workspace'
 export type SessionLocalWorkspace = {
   /** The agent running on this machine is seated in the active session. */
   hasLocalAgent: boolean
+  /** That agent's actor id — the seat a folder picked in the files pane is written to. */
+  agentId: string | null
   /** That agent's display name, for the file-tree footer. */
   agentName: string | null
   /**
@@ -32,32 +38,68 @@ export type SessionLocalWorkspace = {
    * workspace store has to agree. Null when the session has no workspace.
    */
   boundPath: string | null
+  /**
+   * With no `boundPath`: the agent's seat is confirmed to have no usable
+   * workspace, so a folder may be bound for it. False when that could not be
+   * confirmed — a failed read must not invite overwriting a bound seat.
+   */
+  needsWorkspace: boolean
 }
 
 const EMPTY: SessionLocalWorkspace = {
   hasLocalAgent: false,
+  agentId: null,
   agentName: null,
   path: null,
   bindingResolved: false,
   boundPath: null,
+  needsWorkspace: false,
 }
 
+type ResolvedBinding = { path: string | null; needsWorkspace: boolean }
+
 /**
- * One in-flight resolve per (team, session), shared by every hook instance.
+ * One in-flight resolve per (team, session) state, shared by every hook instance.
  *
  * This hook runs in two places at once (the app header and the files pane) and
  * each resolve reaches `getSessionParticipants`, which the 5s viewer-context
  * cache does not cover. Without this, one session click issued four identical
  * Cloud round trips.
  */
-const inFlight = new Map<string, Promise<string | null>>()
+const inFlight = new Map<string, Promise<ResolvedBinding>>()
 
-function resolveOnce(teamId: string, sessionId: string): Promise<string | null> {
-  const key = `${teamId}:${sessionId}`
+async function resolveBinding(
+  teamId: string,
+  sessionId: string,
+  localAgentId: string | null,
+): Promise<ResolvedBinding> {
+  const path = (await resolveSessionWorkspacePath(teamId, sessionId).catch(() => null))?.trim() || null
+  if (path || !localAgentId) return { path, needsWorkspace: false }
+  try {
+    const { localSeatNeedsWorkspace } = await import('@/lib/session/session-agent-workspace')
+    const needsWorkspace = await localSeatNeedsWorkspace({ teamId, sessionId, agentId: localAgentId })
+    return { path: null, needsWorkspace }
+  } catch {
+    return { path: null, needsWorkspace: false }
+  }
+}
+
+function resolveOnce(
+  teamId: string,
+  sessionId: string,
+  localAgentId: string | null,
+  /**
+   * The rest of the key says what changed since a resolve already running
+   * started: the store moving or the seat being rebound. Joining that resolve
+   * would hand back the binding from before the change.
+   */
+  workspacePath: string | null,
+  rebindRevision: number,
+): Promise<ResolvedBinding> {
+  const key = `${teamId}:${sessionId}:${localAgentId ?? ''}:${rebindRevision}:${workspacePath ?? ''}`
   const existing = inFlight.get(key)
   if (existing) return existing
-  const promise = resolveSessionWorkspacePath(teamId, sessionId)
-    .catch(() => null)
+  const promise = resolveBinding(teamId, sessionId, localAgentId)
     .finally(() => { inFlight.delete(key) })
   inFlight.set(key, promise)
   return promise
@@ -113,26 +155,38 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
     return () => { cancelled = true }
   }, [localAgentId, sessionId])
 
+  const rebindRevision = React.useSyncExternalStore(
+    subscribeSessionWorkspaceRebind,
+    () => sessionWorkspaceRebindRevision(sessionId),
+  )
+
   // Keyed by session so an in-flight resolve for the session we just left can
   // never be read as this one's answer.
-  const [bound, setBound] = React.useState<{ sessionId: string; path: string | null } | null>(null)
+  const [bound, setBound] = React.useState<({ sessionId: string } & ResolvedBinding) | null>(null)
 
   React.useEffect(() => {
     if (!sessionId) return
     void ensureParticipants([sessionId])
   }, [sessionId, ensureParticipants])
 
+  // Resolved again whenever the workspace store moves, not only on a session
+  // switch. The binding can change under an open session — an app session's
+  // seat is moved onto the checkout after the session is already on screen —
+  // and the store following it there is the sign that it did. Keeping the
+  // answer from before the move left the pane on "Agent 尚未启动" beside the
+  // right folder's tree. A seat bound from the files pane may not move the
+  // store at all (the folder is the window's own), so a rebind asks as well.
   React.useEffect(() => {
     if (!sessionId || !teamId) {
       setBound(null)
       return
     }
     let cancelled = false
-    void resolveOnce(teamId, sessionId).then((path) => {
-      if (!cancelled) setBound({ sessionId, path: path?.trim() || null })
+    void resolveOnce(teamId, sessionId, localAgentId, workspacePath, rebindRevision).then((binding) => {
+      if (!cancelled) setBound({ sessionId, ...binding })
     })
     return () => { cancelled = true }
-  }, [sessionId, teamId])
+  }, [sessionId, teamId, localAgentId, workspacePath, rebindRevision])
 
   return React.useMemo(() => {
     if (!sessionId || !localAgentId) return EMPTY
@@ -146,10 +200,12 @@ export function useSessionLocalWorkspace(): SessionLocalWorkspace {
 
     return {
       hasLocalAgent: true,
+      agentId: localAgentId,
       agentName: participant.displayName || null,
       path: settled ? boundPath : null,
       bindingResolved,
       boundPath,
+      needsWorkspace: bindingResolved && !boundPath && bound.needsWorkspace,
     }
   }, [sessionId, localAgentId, participants, bound, workspacePath])
 }

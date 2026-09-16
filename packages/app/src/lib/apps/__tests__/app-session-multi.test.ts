@@ -3,22 +3,33 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   listAppSessions: vi.fn(),
   addParticipant: vi.fn(),
+  setParticipantWorkspace: vi.fn(),
+  listWorkspacesByIds: vi.fn(),
   createSessionShell: vi.fn(),
+  createSessionWithFirstMessage: vi.fn(),
+  startAgentRuntimesAsync: vi.fn(),
   ensureAppCheckout: vi.fn(),
   bindAppWorkspaceInternals: vi.fn(),
   daemonAppWorkdir: vi.fn(),
   createDaemonWorkspace: vi.fn(),
+  listDaemonWorkspaces: vi.fn(),
 }))
 
 vi.mock('@/lib/backend', () => ({
   getBackend: () => ({
     apps: { listAppSessions: mocks.listAppSessions },
-    sessionMembers: { addParticipant: mocks.addParticipant },
+    sessionMembers: {
+      addParticipant: mocks.addParticipant,
+      setParticipantWorkspace: mocks.setParticipantWorkspace,
+    },
+    workspaces: { listWorkspacesByIds: mocks.listWorkspacesByIds },
   }),
 }))
 
 vi.mock('@/lib/session/session-create', () => ({
   createSessionShell: mocks.createSessionShell,
+  createSessionWithFirstMessage: mocks.createSessionWithFirstMessage,
+  startAgentRuntimesAsync: mocks.startAgentRuntimesAsync,
 }))
 
 vi.mock('@/stores/apps-store', () => ({
@@ -50,7 +61,7 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
 }))
 
 vi.mock('@/lib/daemon/daemon-workspaces', () => ({
-  listDaemonWorkspaces: vi.fn().mockResolvedValue([]),
+  listDaemonWorkspaces: mocks.listDaemonWorkspaces,
   createDaemonWorkspace: mocks.createDaemonWorkspace,
 }))
 
@@ -71,6 +82,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.daemonAppWorkdir.mockResolvedValue({ workdir: '/workdir/app-1', deviceName: 'test-host' })
   mocks.createDaemonWorkspace.mockResolvedValue({ id: 'ws-new' })
+  mocks.listWorkspacesByIds.mockResolvedValue([])
+  mocks.listDaemonWorkspaces.mockResolvedValue([])
+  mocks.setParticipantWorkspace.mockResolvedValue(undefined)
 })
 
 describe('ensureAppSession', () => {
@@ -187,5 +201,112 @@ describe('openAppSession', () => {
     await openAppSession(app as never, 'unknown-workdir')
 
     expect(mocks.daemonAppWorkdir).toHaveBeenCalledWith('app-1', 'team-1')
+  })
+})
+
+/**
+ * The daemon's seat names the folder the file tree and runtime-start resolve
+ * for it. A seat created without one gets the agent's default workspace, which
+ * is how an app session showed that folder while its agent worked in the
+ * checkout (#1430).
+ */
+describe("the local daemon's seat", () => {
+  const mine = { id: 'ws-mine', agentId: 'daemon-1', archived: false, path: '/workdir/app-1' }
+
+  beforeEach(() => {
+    mocks.ensureAppCheckout.mockResolvedValue('/workdir/app-1')
+    mocks.addParticipant.mockResolvedValue(undefined)
+    mocks.createDaemonWorkspace.mockResolvedValue(mine)
+  })
+
+  it('is created on the checkout with a new empty session', async () => {
+    mocks.createSessionShell.mockResolvedValue({ sessionId: 'seat-shell' })
+    const { createAppSessionShell } = await import('@/lib/apps/app-session')
+    await createAppSessionShell(app as never)
+
+    expect(mocks.createSessionShell).toHaveBeenCalledWith(
+      expect.objectContaining({
+        localWorkspace: { agentId: 'daemon-1', workspaceId: 'ws-mine', path: '/workdir/app-1' },
+      }),
+    )
+    // Already there, so nothing to move.
+    expect(mocks.setParticipantWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('is created on the checkout with the first session of a new app', async () => {
+    mocks.createSessionWithFirstMessage.mockResolvedValue({ sessionId: 'seat-first' })
+    mocks.startAgentRuntimesAsync.mockResolvedValue({ failures: [], runtimeIdsByAgent: {} })
+    const { startAppFirstSession } = await import('@/lib/apps/app-session')
+    await startAppFirstSession(app as never)
+
+    expect(mocks.createSessionWithFirstMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        localWorkspace: { agentId: 'daemon-1', workspaceId: 'ws-mine', path: '/workdir/app-1' },
+      }),
+    )
+    expect(mocks.setParticipantWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('is moved onto the checkout when an existing session is opened', async () => {
+    const { openAppSession } = await import('@/lib/apps/app-session')
+    await openAppSession(app as never, 'seat-on-default')
+
+    expect(mocks.setParticipantWorkspace).toHaveBeenCalledWith('seat-on-default', 'daemon-1', 'ws-mine')
+  })
+
+  // With the window already on the checkout nothing else moves, and the files
+  // pane kept the "no workspace" answer it resolved before the seat did.
+  it('tells the files pane to resolve again once the seat is on the checkout', async () => {
+    const { sessionWorkspaceRebindRevision } = await import('@/lib/session/session-workspace-rebind')
+    const before = sessionWorkspaceRebindRevision('seat-rebind-note')
+    const { openAppSession } = await import('@/lib/apps/app-session')
+    await openAppSession(app as never, 'seat-rebind-note')
+
+    expect(sessionWorkspaceRebindRevision('seat-rebind-note')).toBe(before + 1)
+  })
+
+  it('is moved again on the next open when the move failed', async () => {
+    mocks.setParticipantWorkspace.mockRejectedValueOnce(new Error('offline'))
+    const { openAppSession } = await import('@/lib/apps/app-session')
+    await openAppSession(app as never, 'seat-move-failed')
+    await openAppSession(app as never, 'seat-move-failed')
+
+    expect(mocks.setParticipantWorkspace).toHaveBeenCalledTimes(2)
+  })
+
+  // Both machines lay their home out identically and share the app's row. The
+  // seat can take it, but only by a move: a Cloud API from before shared-path
+  // seats refuses another agent's row at create time and fails the create.
+  it("is moved onto the row another machine's daemon registered for the same path", async () => {
+    mocks.listWorkspacesByIds.mockResolvedValue([
+      { id: 'ws-1', name: 'w', path: '/workdir/app-1', agentId: 'daemon-other', archived: false },
+    ])
+    mocks.createSessionShell.mockResolvedValue({ sessionId: 'seat-shared-row' })
+    const { createAppSessionShell, openAppSession } = await import('@/lib/apps/app-session')
+    await createAppSessionShell(app as never)
+    await openAppSession(app as never, 'seat-shared-row-opened')
+
+    expect(mocks.createSessionShell).toHaveBeenCalledWith(
+      expect.objectContaining({ localWorkspace: null }),
+    )
+    expect(mocks.setParticipantWorkspace).toHaveBeenCalledWith('seat-shared-row', 'daemon-1', 'ws-1')
+    expect(mocks.setParticipantWorkspace).toHaveBeenCalledWith('seat-shared-row-opened', 'daemon-1', 'ws-1')
+  })
+
+  it('takes a shared row found by path instead of posting the folder again', async () => {
+    // The app's own row names another machine's directory, so this machine
+    // looks for a row of its own directory — which another daemon registered.
+    mocks.listWorkspacesByIds.mockResolvedValue([
+      { id: 'ws-1', name: 'w', path: '/elsewhere/app-1', agentId: 'daemon-other', archived: false },
+    ])
+    mocks.listDaemonWorkspaces.mockResolvedValue([
+      { id: 'ws-shared', agentId: 'daemon-other', archived: false, path: '/workdir/app-1' },
+    ])
+    const { openAppSession } = await import('@/lib/apps/app-session')
+    await openAppSession(app as never, 'seat-shared-by-path')
+
+    expect(mocks.listDaemonWorkspaces).toHaveBeenCalledWith('team-1')
+    expect(mocks.createDaemonWorkspace).not.toHaveBeenCalled()
+    expect(mocks.setParticipantWorkspace).toHaveBeenCalledWith('seat-shared-by-path', 'daemon-1', 'ws-shared')
   })
 })

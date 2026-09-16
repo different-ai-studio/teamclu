@@ -71,4 +71,19 @@ describe("workspaces module", () => {
     const out = await mod.listWorkspacesByIds("t1", []);
     expect(out).toEqual([]);
   });
+
+  it("listWorkspacesByIds passes on who holds each row and whether it is archived", async () => {
+    // An app session is created with its daemon seat on a row only when that
+    // row is the daemon's own and live — what the Cloud API holds a seat to.
+    const client = mockClient({
+      "POST /v1/workspaces/by-ids": {
+        items: [{ id: "w1", name: "Alpha", path: "/Users/me/app", agentId: "agent-1", archived: false }],
+      },
+    });
+    const mod = createWorkspacesModule(client);
+    const out = await mod.listWorkspacesByIds("t1", ["w1"]);
+    expect(out).toEqual([
+      { id: "w1", name: "Alpha", path: "/Users/me/app", agentId: "agent-1", archived: false },
+    ]);
+  });
 });

@@ -1005,6 +1005,60 @@ paths:
           description: OK
         "401":
           $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/participants/{actorId}/workspace:
+    put:
+      operationId: setParticipantWorkspace
+      summary: Move an agent's seat to another workspace
+      description: |
+        Sets `session_participants.workspace_id` for one agent in one session,
+        addressed by (session, actor) like the cursor and model (ADR-0005).
+        The desktop file tree, runtime-start and the daemon's cold paths all
+        read the agent's folder from this column.
+
+        The seat is stamped when it is created, with the agent's default
+        workspace unless the creator names one. This endpoint moves it
+        afterwards. The desktop uses it to put an app session's local agent on
+        the app's checkout when the seat was created on the default folder
+        (#1430).
+
+        The caller must be able to see the session and must be the agent, its
+        owner, or one of its admins. The workspace must sit in the session's
+        team, carry a path and not be archived, which are the rules
+        `workspaceByActorId` is held to when a session is created. It need not
+        be the agent's own row: a workspace is one per (team, path), so agents
+        on machines whose folders share a path share its row.
+        Naming the workspace the seat already has changes nothing.
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: actorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceId]
+              properties:
+                workspaceId:
+                  type: string
+                  format: uuid
+      responses:
+        "204":
+          description: OK
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/participants/{actorId}/model:
     patch:
       operationId: updateParticipantModel
@@ -5506,7 +5560,7 @@ paths:
   /v1/workspaces/by-ids:
     post:
       operationId: listWorkspacesByIds
-      summary: Look up workspaces (id, name, path) by id list
+      summary: Look up workspaces (id, name, path, agentId, archived) by id list
       tags: [Workspaces]
       requestBody:
         required: true
@@ -5537,6 +5591,13 @@ paths:
                         id: { type: string }
                         name: { type: [string, "null"] }
                         path: { type: [string, "null"] }
+                        agentId:
+                          type: [string, "null"]
+                          description: |
+                            The agent that registered the row. Agents whose
+                            folders share a path share the row, so this is not
+                            necessarily the agent working in it.
+                        archived: { type: boolean }
         "400":
           $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/shortcut-roles:
@@ -9842,7 +9903,9 @@ components:
           description: |
             Cloud workspace UUID for each agent participant. Overrides
             `agents.default_workspace_id` for that actor. Member seats stay
-            unbound (workspace_id is not applicable).
+            unbound (workspace_id is not applicable). Each must be a live
+            workspace with a path in the session's team; it may be a row
+            another agent registered for the same path.
     SessionThreadSummary:
       type: object
       required: [threadSessionId, rootMessageId, messageCount, participantCount]
@@ -9914,6 +9977,7 @@ components:
             - string
             - "null"
           format: uuid
+          description: Set when the seat is created; moved by PUT …/participants/{actorId}/workspace.
         model:
           type:
             - string

@@ -7,7 +7,13 @@
  * it never creates one. Use {@link createAppSessionShell} for an empty session.
  */
 import { getBackend } from '@/lib/backend'
-import { createSessionShell, createSessionWithFirstMessage } from '@/lib/session/session-create'
+import {
+  createSessionShell,
+  createSessionWithFirstMessage,
+  type LocalDaemonWorkspaceBinding,
+} from '@/lib/session/session-create'
+import { invalidateViewerWorkspaceContext } from '@/lib/session/session-viewer-workspace'
+import { noteSessionWorkspaceRebound } from '@/lib/session/session-workspace-rebind'
 import { resolveCurrentMemberActorId } from '@/lib/actor/current-actor'
 import { upsertSessionWorkspacesBatch } from '@/lib/cache/local-cache'
 import { useCurrentTeamStore } from '@/stores/current-team'
@@ -109,6 +115,26 @@ async function loadContext(app: AppRow): Promise<AppSessionContext> {
   }
 }
 
+/** A workspace row standing for this machine's checkout of an app. */
+interface AppWorkspaceRow {
+  id: string
+  /**
+   * The local daemon's seat can be moved onto this row: it is live, which is
+   * what the Cloud API holds a seat's workspace to. It may be a row another
+   * machine registered for the same path. False when that is not known — an
+   * older Cloud API does not say — which costs the seat binding, never the
+   * session.
+   */
+  seatable: boolean
+  /**
+   * Also this daemon's own row, so the session can be created with its seat
+   * already on it. A shared row is only moved onto afterwards: a Cloud API from
+   * before shared-path seats refuses another agent's row at create time, and
+   * that fails the whole create, where a refused move costs only the binding.
+   */
+  seatableAtCreate: boolean
+}
+
 /**
  * The workspace row that stands for THIS machine's copy of the app, creating
  * or filling it in as needed.
@@ -133,18 +159,30 @@ async function loadContext(app: AppRow): Promise<AppSessionContext> {
  *
  * So the app's own row is claimed only when it is unclaimed (no path yet) or
  * already names this machine's directory. Anything else means another machine
- * holds it, and this machine gets a row of its own — found by path, or created.
- * `POST /v1/workspaces` dedupes on `(team, path)` before `(team, agent, name)`
- * and renames on a name collision, so creating one is safe.
+ * holds it, and this machine gets a row for its own directory — found by path
+ * across the team, or created.
+ *
+ * Two machines that lay their home out identically share one row, held by
+ * whichever claimed it first. It resolves correctly on both, and either daemon's
+ * seat can take it — see {@link AppWorkspaceRow.seatableAtCreate} for when.
+ * The row is looked up before anything is posted: `POST /v1/workspaces` would
+ * find the same row but rename it and put the caller down as its creator, which
+ * the workspaces update policy refuses when someone else created it.
  */
 async function ensureAppWorkspaceRow(
   app: AppRow,
   appWorkdir: string,
   ctx: AppSessionContext,
-): Promise<string | null> {
-  if (!ctx.localDaemonActorId) return null
+): Promise<AppWorkspaceRow | null> {
+  const localDaemonActorId = ctx.localDaemonActorId
+  if (!localDaemonActorId) return null
   const { listDaemonWorkspaces, createDaemonWorkspace } = await import('@/lib/daemon/daemon-workspaces')
   const { workspacePathsMatch } = await import('@/stores/session-utils')
+  const rowFor = (id: string, row: { agentId?: string | null; archived?: boolean }): AppWorkspaceRow => {
+    // `archived` is missing from an older Cloud API's by-ids response.
+    const seatable = row.archived === false
+    return { id, seatable, seatableAtCreate: seatable && row.agentId === localDaemonActorId }
+  }
 
   if (app.workspaceId) {
     try {
@@ -152,7 +190,9 @@ async function ensureAppWorkspaceRow(
       // Already this directory — either this machine claimed it, or both
       // machines happen to lay their amuxd home out identically, in which case
       // the path resolves correctly on each and one row is enough.
-      if (row?.path && workspacePathsMatch(row.path, appWorkdir)) return app.workspaceId
+      if (row?.path && workspacePathsMatch(row.path, appWorkdir)) {
+        return rowFor(app.workspaceId, row)
+      }
       if (row && !row.path) {
         // Unclaimed: the row the cloud API minted with the app, which no
         // machine has bound to a directory yet. Keep its existing name —
@@ -161,12 +201,12 @@ async function ensureAppWorkspaceRow(
         const saved = await createDaemonWorkspace({
           id: app.workspaceId,
           teamId: ctx.teamId,
-          agentId: ctx.localDaemonActorId,
+          agentId: localDaemonActorId,
           createdByMemberId: ctx.creatorActorId,
           name: row.name || app.name,
           path: appWorkdir,
         })
-        return saved.id
+        return rowFor(saved.id, saved)
       }
       // A row with a *different* path belongs to another machine's copy of this
       // app. Leave it exactly as it is and fall through to this machine's own.
@@ -176,18 +216,19 @@ async function ensureAppWorkspaceRow(
   }
 
   try {
-    const existing = (await listDaemonWorkspaces(ctx.teamId, ctx.localDaemonActorId)).find(
+    const matches = (await listDaemonWorkspaces(ctx.teamId)).filter(
       (w) => !w.archived && w.path && workspacePathsMatch(w.path, appWorkdir),
     )
-    if (existing) return existing.id
+    const existing = matches.find((w) => w.agentId === localDaemonActorId) ?? matches[0]
+    if (existing) return rowFor(existing.id, existing)
     const created = await createDaemonWorkspace({
       teamId: ctx.teamId,
-      agentId: ctx.localDaemonActorId,
+      agentId: localDaemonActorId,
       createdByMemberId: ctx.creatorActorId,
       name: app.name,
       path: appWorkdir,
     })
-    return created.id
+    return rowFor(created.id, created)
   } catch (e) {
     console.warn('[app-session] could not register app daemon workspace (non-fatal):', e)
     return null
@@ -207,43 +248,98 @@ export async function bindAppWorkdir(app: AppRow, workdir: string): Promise<stri
   if (!trimmed) return null
   try {
     const ctx = await loadContext(app)
-    return await ensureAppWorkspaceRow(app, trimmed, ctx)
+    return (await ensureAppWorkspaceRow(app, trimmed, ctx))?.id ?? null
   } catch (e) {
     console.warn('[app-session] could not record the app workdir (non-fatal):', e)
     return null
   }
 }
 
-/**
- * Point a session at the app's checkout, both locally and in the cloud.
- *
- * Two bindings, because two different things read them: the local libsql row
- * drives the desktop UI (file browser, workspace switch), and the cloud
- * workspace row is what runtime-start resolves to a path — without a path there
- * the daemon falls back to the desktop's current workspace and the agent runs
- * in the wrong directory.
- *
- * Returns this machine's cloud workspace id for the app, so the caller can hand
- * it to runtime-start directly instead of letting it be inferred. Null when it
- * could not be established — `apps.workspace_id` is deliberately NOT used as a
- * fallback, because on a second machine that row names another computer's
- * directory, and a wrong path is worse than none: runtime-start falls back to
- * the worktree it was given, while a wrong workspace resolves to a directory
- * that is not here.
- */
-async function bindAppWorkspace(
+/** This machine's checkout of an app, as far as it could be pinned down. */
+interface AppCheckout {
+  workdir: string
+  /**
+   * This machine's cloud workspace id for the checkout. Null when it could not
+   * be established — `apps.workspace_id` is deliberately NOT used as a
+   * fallback, because on a second machine that row names another computer's
+   * directory, and a wrong path is worse than none: runtime-start falls back to
+   * the worktree it was given, while a wrong workspace resolves to a directory
+   * that is not here.
+   */
+  workspaceId: string | null
+  /** `workspaceId`, when the local daemon's seat can be moved onto it; see {@link AppWorkspaceRow}. */
+  seatWorkspaceId: string | null
+  /** `workspaceId`, when a session can be created with the seat on it; see {@link AppWorkspaceRow}. */
+  createSeatWorkspaceId: string | null
+}
+
+/** Find the app's checkout on this machine and the workspace row that stands for it. */
+async function resolveAppCheckout(
   app: AppRow,
-  sessionId: string,
   ctx: AppSessionContext,
   /** The checkout directory when the caller already has it, so the daemon is not asked twice. */
   knownWorkdir?: string | null,
-): Promise<string | null> {
-  const appWorkdir = knownWorkdir ?? (await appWorkdirPath(app.id, app.teamId || ctx.teamId))
+): Promise<AppCheckout | null> {
+  if (!ctx.localDaemonActorId) return null
+  const workdir =
+    knownWorkdir ??
+    (await appWorkdirPath(app.id, app.teamId || ctx.teamId).catch((e) => {
+      console.warn('[app-session] could not ask the daemon where the checkout is (non-fatal):', e)
+      return null
+    }))
   // No directory from the daemon means nothing to bind. `apps.workspace_id` is
-  // not a stand-in for it: see the note above.
-  if (!appWorkdir || !ctx.localDaemonActorId) return null
+  // not a stand-in for it: see the note on `AppCheckout.workspaceId`.
+  if (!workdir) return null
+  const row = await ensureAppWorkspaceRow(app, workdir, ctx)
+  return {
+    workdir,
+    workspaceId: row?.id ?? null,
+    seatWorkspaceId: row?.seatable ? row.id : null,
+    createSeatWorkspaceId: row?.seatableAtCreate ? row.id : null,
+  }
+}
 
-  const workspaceId = await ensureAppWorkspaceRow(app, appWorkdir, ctx)
+/**
+ * The `localWorkspace` an app session is created with, so the local daemon's
+ * seat starts out on the checkout rather than on the agent's default folder.
+ */
+function seatBindingFor(
+  checkout: AppCheckout | null,
+  ctx: AppSessionContext,
+): LocalDaemonWorkspaceBinding | null {
+  if (!checkout?.createSeatWorkspaceId || !ctx.localDaemonActorId) return null
+  return {
+    agentId: ctx.localDaemonActorId,
+    workspaceId: checkout.createSeatWorkspaceId,
+    path: checkout.workdir,
+  }
+}
+
+/**
+ * Point a session at the app's checkout: the local daemon's seat, and this
+ * viewer's local binding.
+ *
+ * The seat (`session_participants.workspace_id`) is the binding that counts.
+ * The file tree, runtime-start and the daemon's cold paths all read the agent's
+ * folder from it (ADR-0005), and a seat created without a workspace named gets
+ * the agent's *default* folder. Only the local binding used to be written here,
+ * and the viewer resolver reads that only for a seat with no workspace at all —
+ * so an app session showed the default workspace while its agent, started by
+ * the outbox fast path from the local binding, worked in the checkout (#1430).
+ *
+ * True when both landed, or when the seat cannot take this machine's row (see
+ * {@link AppWorkspaceRow}) — retrying would not change that. Anything else is
+ * worth retrying on the next open.
+ */
+async function bindAppWorkspace(
+  sessionId: string,
+  ctx: AppSessionContext,
+  checkout: AppCheckout | null,
+  /** The session was created with its seat already on the checkout. */
+  seatAlreadyBound = false,
+): Promise<boolean> {
+  const localDaemonActorId = ctx.localDaemonActorId
+  if (!checkout || !localDaemonActorId) return false
 
   if (ctx.viewerMemberId) {
     try {
@@ -252,9 +348,9 @@ async function bindAppWorkspace(
           sessionId,
           teamId: ctx.teamId,
           viewerMemberId: ctx.viewerMemberId,
-          agentId: ctx.localDaemonActorId,
-          workspaceId: workspaceId ?? null,
-          workspacePath: appWorkdir,
+          agentId: localDaemonActorId,
+          workspaceId: checkout.workspaceId,
+          workspacePath: checkout.workdir,
           updatedAt: new Date().toISOString(),
         },
       ])
@@ -263,7 +359,28 @@ async function bindAppWorkspace(
     }
   }
 
-  return workspaceId
+  let seatBound = true
+  if (!seatAlreadyBound && checkout.seatWorkspaceId) {
+    try {
+      await getBackend().sessionMembers.setParticipantWorkspace(
+        sessionId,
+        localDaemonActorId,
+        checkout.seatWorkspaceId,
+      )
+    } catch (e) {
+      seatBound = false
+      console.warn('[app-session] could not move the daemon seat onto the checkout (non-fatal):', e)
+    }
+  }
+  // The viewer resolver keeps this machine's workspace list for a few seconds,
+  // and the checkout's row may be newer than that.
+  invalidateViewerWorkspaceContext(ctx.teamId)
+  // The files pane resolved this session before its binding was written. When
+  // the window is already on the checkout nothing else changes to make it look
+  // again, and it stayed on "no workspace" beside a correctly bound seat.
+  noteSessionWorkspaceRebound(sessionId)
+
+  return checkout.workspaceId !== null && seatBound
 }
 
 /**
@@ -273,10 +390,10 @@ async function bindAppWorkspace(
  * directory — is worth retrying on the next open, so it must not count as done.
  */
 async function seatDaemonAndBind(
-  app: AppRow,
   sessionId: string,
   ctx: AppSessionContext,
-  knownWorkdir?: string | null,
+  checkout: AppCheckout | null,
+  seatAlreadyBound = false,
 ): Promise<boolean> {
   let seated = false
   if (ctx.localDaemonActorId) {
@@ -287,12 +404,14 @@ async function seatDaemonAndBind(
       console.warn('[app-session] could not seat the local daemon (non-fatal):', e)
     }
   }
-  const workspaceId = await bindAppWorkspace(app, sessionId, ctx, knownWorkdir)
-  return seated && workspaceId !== null
+  // After the seat: moving it needs the row to exist.
+  const bound = await bindAppWorkspace(sessionId, ctx, checkout, seatAlreadyBound)
+  return seated && bound
 }
 
 /**
- * Open an existing app session: seat the daemon and bind the checkout.
+ * Open an existing app session: seat the daemon and bind the checkout —
+ * including moving a seat that was created on the agent's default folder.
  *
  * Once per session per launch — both halves are idempotent, and the session
  * list calls this on every switch. Callers need not await it before showing the
@@ -306,7 +425,7 @@ export function openAppSession(app: AppRow, sessionId: string): Promise<void> {
       loadContext(app),
       import('@/stores/apps-store').then(({ ensureAppCheckout }) => ensureAppCheckout(app)),
     ])
-    return seatDaemonAndBind(app, sessionId, ctx, workdir)
+    return seatDaemonAndBind(sessionId, ctx, await resolveAppCheckout(app, ctx, workdir))
   })
 }
 
@@ -327,7 +446,7 @@ export async function ensureAppSession(app: AppRow): Promise<string | null> {
   const recent = pickMostRecentSession(sessions)
   if (!recent) return null
 
-  await seatDaemonAndBind(app, recent.id, ctx, workdir)
+  await seatDaemonAndBind(recent.id, ctx, await resolveAppCheckout(app, ctx, workdir))
   return recent.id
 }
 
@@ -342,7 +461,10 @@ export async function createAppSessionShell(app: AppRow): Promise<string | null>
   }
 
   const { ensureAppCheckout } = await import('@/stores/apps-store')
-  const workdir = await ensureAppCheckout(app)
+  // Before the session exists, so its daemon seat is created on the checkout
+  // instead of on the agent's default folder and then moved.
+  const checkout = await resolveAppCheckout(app, ctx, await ensureAppCheckout(app))
+  const localWorkspace = seatBindingFor(checkout, ctx)
 
   const { sessionId } = await createSessionShell({
     teamId: ctx.teamId,
@@ -350,9 +472,10 @@ export async function createAppSessionShell(app: AppRow): Promise<string | null>
     title: app.name,
     additionalActorIds: ctx.localDaemonActorId ? [ctx.localDaemonActorId] : [],
     appId: app.id,
+    localWorkspace,
   })
   // Recorded here so the first switch to the new session does not repeat it.
-  if (await seatDaemonAndBind(app, sessionId, ctx, workdir)) {
+  if (await seatDaemonAndBind(sessionId, ctx, checkout, localWorkspace !== null)) {
     recordAppSessionSetup(app.id, sessionId)
   }
   return sessionId
@@ -375,6 +498,12 @@ export async function startAppFirstSession(app: AppRow): Promise<string | null> 
   }
   const agentIds = ctx.localDaemonActorId ? [ctx.localDaemonActorId] : []
 
+  // Before the session exists, so its daemon seat is created on the checkout.
+  // runtime-start resolves the seat, and a seat created without a workspace
+  // named gets the agent's default folder — the agent would start there.
+  const checkout = await resolveAppCheckout(app, ctx)
+  const localWorkspace = seatBindingFor(checkout, ctx)
+
   const { sessionId } = await createSessionWithFirstMessage({
     teamId: ctx.teamId,
     creatorActorId: ctx.creatorActorId,
@@ -384,11 +513,12 @@ export async function startAppFirstSession(app: AppRow): Promise<string | null> 
     title: app.name,
     appId: app.id,
     mentionActorIds: agentIds,
+    localWorkspace,
   })
 
-  // Bind before starting the runtime: runtime-start resolves the session's
-  // workspace, and an unbound session lands the agent in the default folder.
-  const workspaceId = await bindAppWorkspace(app, sessionId, ctx)
+  // Before starting the runtime, which the outbox fast path does from the
+  // local binding this writes.
+  await bindAppWorkspace(sessionId, ctx, checkout, localWorkspace !== null)
 
   if (agentIds.length > 0) {
     const { startAgentRuntimesAsync } = await import('@/lib/session/session-create')
@@ -396,11 +526,10 @@ export async function startAppFirstSession(app: AppRow): Promise<string | null> 
       sessionId,
       teamId: ctx.teamId,
       agentActorIds: agentIds,
-      // Name the app's workspace outright. This is the session's first runtime,
-      // so there is no prior `agent_runtimes.workspace_id` to resolve from, and
-      // without a hint the fallback chain ends at the desktop's currently open
-      // workspace — the first thing the agent wrote then landed there.
-      workspaceIdHint: workspaceId,
+      // The seat decides where the runtime starts; this is only checked against
+      // it, and a mismatch is logged — which is how a seat that could not take
+      // this machine's row shows up.
+      workspaceIdHint: checkout?.workspaceId ?? null,
     }).catch((e) => console.warn('[app-session] runtime start failed (non-fatal):', e))
   }
   return sessionId
