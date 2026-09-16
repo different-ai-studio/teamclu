@@ -541,6 +541,12 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     await repo.removeTeamActor("team-1", "actor-to-remove");
   });
 
+  test("repository contract: setTeamMemberRole accepts admin or member", async () => {
+    const repo = createRepository();
+    await repo.setTeamMemberRole("team-1", "actor-to-promote", "admin");
+    await repo.setTeamMemberRole("team-1", "actor-to-demote", "member");
+  });
+
   test("repository contract: getNotificationPrefs returns a snake_case prefs row or null", async () => {
     const repo = createRepository();
     const prefs = await repo.getNotificationPrefs();

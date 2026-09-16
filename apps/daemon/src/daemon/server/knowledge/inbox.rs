@@ -26,6 +26,7 @@ pub(super) enum CandidateSource {
     SessionHeader,
     AgentPropose,
     Message,
+    Document,
     Unknown,
 }
 
@@ -35,6 +36,7 @@ impl CandidateSource {
             "session-header" => Self::SessionHeader,
             "agent-propose" => Self::AgentPropose,
             "message" => Self::Message,
+            "document" => Self::Document,
             _ => Self::Unknown,
         }
     }
@@ -77,6 +79,8 @@ pub(super) struct KnowledgeCandidate {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<KnowledgeSuggestion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_path: Option<String>,
 }
 
 pub(crate) fn inbox_dir(team_id: &str) -> PathBuf {
@@ -175,6 +179,11 @@ pub(crate) fn propose(team_id: &str, inbox: &Path, payload: &Value) -> String {
         published_path: None,
         summary,
         suggestions: parse_suggestions(payload),
+        document_path: str_field(payload, "documentPath")
+            .or_else(|| str_field(payload, "document_path"))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     };
     match write_candidate(inbox, &candidate) {
         Ok(()) => ok(candidate_json(&candidate)),
@@ -236,11 +245,30 @@ fn with_md(path: &str) -> String {
     }
 }
 
-fn published_page(session_id: &str, title: &str, body: &str) -> String {
-    let today = today_iso();
+fn yaml_double_quoted(s: &str) -> String {
     format!(
-        "---\ntype: page\nsource: session\nsession-id: {session_id}\nreviewed: {today}\n---\n\n# {title}\n\n{body}\n"
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
     )
+}
+
+fn published_page(candidate: &KnowledgeCandidate, title: &str, body: &str) -> String {
+    let today = today_iso();
+    match candidate.source {
+        CandidateSource::Document => {
+            let path = candidate.document_path.as_deref().unwrap_or("");
+            format!(
+                "---\ntype: page\nsource: document\ndocument-path: {}\nreviewed: {today}\n---\n\n# {title}\n\n{body}\n",
+                yaml_double_quoted(path)
+            )
+        }
+        _ => format!(
+            "---\ntype: page\nsource: session\nsession-id: {}\nreviewed: {today}\n---\n\n# {title}\n\n{body}\n",
+            candidate.session_id
+        ),
+    }
 }
 
 /// `publish` — write the candidate into the vault. Desktop review tab only.
@@ -284,7 +312,7 @@ pub(crate) fn publish(
         .get("overwrite")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let page = published_page(&candidate.session_id, title, body);
+    let page = published_page(&candidate, title, body);
     let write_payload = json!({
         "path": path,
         "title": title,
@@ -527,6 +555,38 @@ mod tests {
         assert_eq!(reply["ok"], true, "{reply}");
         assert!(inbox_get(&inbox, &json!({ "id": id })).contains("not_found"));
         assert_eq!(fs::read_to_string(vault.join("existing.md")).unwrap(), "stay");
+    }
+
+    #[test]
+    fn publish_of_a_document_writes_document_frontmatter() {
+        let (_tmp, inbox, vault) = tmp_pair();
+        let proposed = parse(&propose(
+            "team-1",
+            &inbox,
+            &json!({
+                "title": "合同",
+                "content": "来自资料库 documents/hr/合同.pdf",
+                "source": "document",
+                "documentPath": "documents/hr/合同.pdf",
+                "suggestedPath": "20-domains/合同",
+            }),
+        ));
+        assert_eq!(proposed["ok"], true, "{proposed}");
+        assert_eq!(proposed["result"]["source"], "document");
+        assert_eq!(proposed["result"]["documentPath"], "documents/hr/合同.pdf");
+        let id = proposed["result"]["id"].as_str().unwrap();
+        let reply = publish(
+            &inbox,
+            &vault,
+            &json!({ "id": id }),
+            &ForbiddenPaths::default(),
+        );
+        let v = parse(&reply);
+        assert_eq!(v["ok"], true, "{v}");
+        let raw = fs::read_to_string(vault.join("20-domains/合同.md")).unwrap();
+        assert!(raw.contains("source: document"));
+        assert!(raw.contains("document-path: \"documents/hr/合同.pdf\""));
+        assert!(!raw.contains("source: session"));
     }
 
     #[test]
