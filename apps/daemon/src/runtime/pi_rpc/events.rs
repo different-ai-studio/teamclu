@@ -573,29 +573,13 @@ async fn handle_ui_request(
                     .await;
                 return;
             };
-            let (permission, event_tx, reply_to) = {
+            let (event_tx, reply_to) = {
                 let routes = shared.routes.lock();
                 let Some(route) = routes.get(&session_id) else {
                     return;
                 };
-                (
-                    route.permission,
-                    route.event_tx.clone(),
-                    route.turn_reply_to.clone(),
-                )
+                (route.event_tx.clone(), route.turn_reply_to.clone())
             };
-            if permission.is_full_access() {
-                // Same policy as opencode's question handling: unattended
-                // sessions auto-reject — the tool reports "dismissed" and the
-                // agent proceeds, instead of parking a card nobody will answer.
-                info!(session_id, ui_id = %id, "auto-cancel full-access pi question");
-                let _ = client
-                    .notify(serde_json::json!({
-                        "type": "extension_ui_response", "id": id, "cancelled": true
-                    }))
-                    .await;
-                return;
-            }
             shared
                 .questions
                 .lock()
@@ -978,6 +962,41 @@ mod tests {
                 assert_eq!(body["questions"][0]["question"], "Deploy?");
             }
             other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn full_access_still_forwards_question_asked() {
+        use crate::runtime::permission_policy::PermissionPolicy;
+
+        let shared = test_shared();
+        let key = super::super::process::test_pool_key("/w");
+        let (mut route, mut rx) = test_route(key.clone(), "/s/a.jsonl");
+        route.permission = PermissionPolicy::Full;
+        shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
+        let client = test_client();
+
+        let payload = serde_json::json!({
+            "toolCallId": "call_9",
+            "questions": [{"question": "Deploy?", "options": [{"label": "yes"}]}]
+        });
+        let title = format!("{}{}", translate::QUESTION_MARKER, payload);
+        let ev = serde_json::json!({
+            "type": "extension_ui_request", "id": "ui_full", "sessionId": "pi:/s/a.jsonl",
+            "method": "select", "title": title, "options": ["yes"]
+        });
+        handle_event(&shared, &key, &client, &ev).await;
+
+        assert_eq!(
+            shared.questions.lock().get("ui_full").map(String::as_str),
+            Some("pi:/s/a.jsonl"),
+            "Full access auto-approves tool permissions only; questions still wait"
+        );
+        let frame = rx.try_recv().expect("question_asked forwarded");
+        match frame.event.event.as_ref().unwrap() {
+            amux::acp_event::Event::Raw(raw) => assert_eq!(raw.method, "question_asked"),
+            other => panic!("expected question_asked, got {other:?}"),
         }
     }
 
