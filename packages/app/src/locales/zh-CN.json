@@ -1484,13 +1484,27 @@
       "baseline": "其余所有页面",
       "noRules": "还没有单独设置的页面 —— 全站都按上面这条。",
       "addPage": "添加一个页面",
-      "audienceHint": "「任何用户」是任何人用邮箱注册后都能进；「仅员工」只有与这个应用同属一个组织的人能进，在登录页注册的路人进不来。",
+      "rolesHint": "需要登录且未选角色时，任意已登录用户都可进入；选了角色则仅持有其中任一角色的成员可进入。",
       "nothingProtected": "其余页面设为公开时，至少要有一个页面需要登录 —— 否则这道墙什么也没挡。",
       "blankPath": "有一行还没填路径。",
+      "col": {
+        "path": "页面地址",
+        "login": "是否需要登录",
+        "roles": "角色"
+      },
+      "login": {
+        "public": "不需要登录",
+        "required": "需要登录"
+      },
+      "roles": {
+        "any": "任意用户",
+        "empty": "还没有可分配的角色"
+      },
       "access": {
         "public": "不需要登录",
-        "any": "需要登录 · 任何用户",
-        "org": "需要登录 · 仅员工"
+        "any": "需要登录 · 任意用户",
+        "org": "需要登录 · 组织角色",
+        "roles": "需要登录 · {{roles}}"
       }
     },
     "env": {
@@ -1674,7 +1688,6 @@
       "summaryMembers_one": "{{count}} 位成员",
       "summaryMembers_other": "{{count}} 位成员",
       "summaryNoLogin": "不需要登录",
-      "summaryAllPages": "全站一条规则",
       "summaryRules_one": "{{count}} 条页面规则",
       "summaryRules_other": "{{count}} 条页面规则",
       "summaryTables_one": "{{count}} 张表",
@@ -1907,7 +1920,11 @@
       "rolesSkills": "角色与技能",
       "deps": "依赖",
       "billing": "账单",
+      "teamRoles": "团队角色",
       "knowledgeAcl": "知识库权限"
+    },
+    "navGroup": {
+      "teamManagement": "团队管理"
     },
     "general": {
       "title": "通用",
@@ -3269,6 +3286,27 @@
         "refund": "退款"
       }
     },
+    "teamRoles": {
+      "title": "团队角色",
+      "description": "组织级角色，同组织下各团队共用。系统角色不可编辑。",
+      "noTeam": "加入或创建团队后才能管理角色。",
+      "newRole": "新建角色",
+      "createTitle": "新建角色",
+      "name": "名称",
+      "code": "代码",
+      "descriptionField": "描述",
+      "create": "创建",
+      "edit": "编辑",
+      "delete": "删除",
+      "system": "系统",
+      "status": "状态",
+      "statusActive": "active",
+      "statusInactive": "inactive",
+      "sort": "排序",
+      "empty": "暂无角色。",
+      "invalidCode": "代码须以字母开头，且只能包含小写字母、数字和下划线。",
+      "deleteBound": "无法删除：仍有 {{count}} 个成员绑定此角色。"
+    },
     "knowledgeAcl": {
       "title": "知识库权限",
       "description": "将某个知识库目录限定给指定成员。未列出的人将不再收到它。",
@@ -3551,6 +3589,12 @@
       "lastActive": "最近活跃 {{when}}",
       "details": "详情",
       "role": "角色",
+      "editRoles": "编辑角色",
+      "editRolesHint": "为 {{name}} 选择角色。",
+      "editRolesLoadFailed": "加载角色失败：{{msg}}",
+      "editRolesFailed": "更新角色失败：{{msg}}",
+      "rolesSaved": "角色已更新",
+      "lastOwnerBlocked": "无法移除最后一位拥有者，请先提升其他成员。",
       "type": "类型",
       "visibility": "可见性",
       "agentType": "Agent 类型",

@@ -429,6 +429,60 @@ export function appOrgsLookup() {
   };
 }
 
+/**
+ * Active role codes for a visitor in an org — gateway role admit + legacy
+ * `audience: org` (any `roles_users` row).
+ *
+ * Service-role for the same tokenless reason as {@link appOrgsLookup}: the
+ * request carries an app-session cookie, not a Supabase JWT.
+ */
+const ROLE_CACHE_TTL_MS = 60_000;
+const ROLE_CACHE_MAX = 5_000;
+const visitorRoleCache = new Map<string, { value: string[]; expiresAt: number }>();
+
+export function visitorRolesLookup() {
+  return async (userId: string, orgId: string): Promise<string[]> => {
+    if (!UUID_RE.test(userId) || !orgId) return [];
+
+    const key = `${userId}|${orgId}`;
+    const now = Date.now();
+    const hit = visitorRoleCache.get(key);
+    if (hit && hit.expiresAt > now) return hit.value;
+
+    const admin = createServiceRoleClient();
+    const { data: bindings, error: bindErr } = await admin
+      .schema("public")
+      .from("roles_users")
+      .select("role_id")
+      .eq("org_id", orgId)
+      .eq("user_id", userId)
+      .eq("status", "active");
+    if (bindErr) throw new Error(`visitor roles lookup failed: ${bindErr.message}`);
+
+    const roleIds = [...new Set((bindings ?? []).map((b: any) => b.role_id).filter(Boolean))];
+    let codes: string[] = [];
+    if (roleIds.length > 0) {
+      const { data: roles, error: rolesErr } = await admin
+        .schema("public")
+        .from("roles")
+        .select("id, code, status")
+        .in("id", roleIds)
+        .eq("status", "active");
+      if (rolesErr) throw new Error(`visitor role codes lookup failed: ${rolesErr.message}`);
+      codes = (roles ?? [])
+        .map((r: any) => r.code)
+        .filter((c: unknown): c is string => typeof c === "string" && c.length > 0);
+    }
+
+    if (visitorRoleCache.size >= ROLE_CACHE_MAX) {
+      for (const [k, v] of visitorRoleCache) if (v.expiresAt <= now) visitorRoleCache.delete(k);
+      if (visitorRoleCache.size >= ROLE_CACHE_MAX) visitorRoleCache.clear();
+    }
+    visitorRoleCache.set(key, { value: codes, expiresAt: now + ROLE_CACHE_TTL_MS });
+    return codes;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Repository factories. Built lazily per request so importing this module
 // needs no environment.
@@ -504,6 +558,7 @@ const app = createApp({
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
   resolveAppOrgs: appOrgsLookup(),
+  resolveVisitorRoles: visitorRolesLookup(),
 });
 
 const honoHandler = handle(app);

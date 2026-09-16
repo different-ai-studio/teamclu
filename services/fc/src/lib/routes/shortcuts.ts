@@ -74,7 +74,10 @@ export function registerShortcuts(router) {
     return { statusCode: 204, body: null };
   });
 
-  router.get("/v1/teams/:teamId/roles", async (ctx) => {
+  // Relocated from /v1/teams/:teamId/roles — that path is now org roles
+  // (docs/specs/2026-09-15-org-roles-permissions-design.md). Shortcuts RBAC
+  // still reads amux.team_roles via listTeamRoles.
+  router.get("/v1/teams/:teamId/shortcut-roles", async (ctx) => {
     const items = await ctx.repository.listTeamRoles(ctx.params.teamId);
     return { body: { items } };
   });

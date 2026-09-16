@@ -279,6 +279,8 @@ export function mapDirectoryActor(row) {
     avatarUrl: row?.avatar_url ?? null,
     userId: row?.user_id ?? null,
     invitedByActorId: row?.invited_by_actor_id ?? null,
+    // Prefer roles[] from enrichActorsWithOrgRoles; team_role column is legacy.
+    roles: row?.roles ?? [],
     teamRole: row?.team_role ?? null,
     memberStatus: row?.member_status ?? null,
     agentStatus: row?.agent_status ?? null,
@@ -433,7 +435,10 @@ export function mapActor(row) {
     kind: row?.kind ?? "user",
     displayName: row?.display_name ?? "",
     avatarUrl: row?.avatar_url ?? null,
+    userId: row?.user_id ?? null,
     metadata: row?.metadata ?? null,
+    roles: row?.roles ?? [],
+    teamRole: row?.team_role ?? null,
   };
 }
 
@@ -441,7 +446,9 @@ export function mapTeamMember(row) {
   return {
     actorId: requiredString(row?.actor_id, "teamMembers.mapTeamMember", "actor_id"),
     teamId: requiredString(row?.team_id, "teamMembers.mapTeamMember", "team_id"),
-    role: row?.role ?? "member",
+    // Derived from roles_users after enrich; legacy team_members.role is unused.
+    roles: row?.roles ?? [],
+    role: row?.role ?? null,
     joinedAt: row?.joined_at ?? null,
   };
 }

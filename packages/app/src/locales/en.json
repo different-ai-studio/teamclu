@@ -1484,13 +1484,27 @@
       "baseline": "Every other page",
       "noRules": "No page has its own setting yet — the whole site follows the line above.",
       "addPage": "Add a page",
-      "audienceHint": "\"Anyone signed in\" lets anybody register with an email and enter. \"Staff only\" admits people in the same organisation as this app; someone who registered on the login page stays out.",
+      "rolesHint": "With login required and no roles selected, any signed-in user may enter. Selected roles admit members who hold any one of them.",
       "nothingProtected": "When every other page is public, at least one page has to require a login — otherwise this wall stops nothing.",
       "blankPath": "One row still has no path.",
+      "col": {
+        "path": "Path",
+        "login": "Login required",
+        "roles": "Roles"
+      },
+      "login": {
+        "public": "No login needed",
+        "required": "Login required"
+      },
+      "roles": {
+        "any": "Anyone signed in",
+        "empty": "No roles to choose from yet"
+      },
       "access": {
         "public": "No login needed",
         "any": "Sign in · anyone",
-        "org": "Sign in · staff only"
+        "org": "Sign in · org roles",
+        "roles": "Sign in · {{roles}}"
       }
     },
     "env": {
@@ -1674,7 +1688,6 @@
       "summaryMembers_one": "{{count}} member",
       "summaryMembers_other": "{{count}} members",
       "summaryNoLogin": "No login required",
-      "summaryAllPages": "One rule, whole site",
       "summaryRules_one": "{{count}} page rule",
       "summaryRules_other": "{{count}} page rules",
       "summaryTables_one": "{{count}} table",
@@ -1907,7 +1920,11 @@
       "rolesSkills": "Roles & Skills",
       "deps": "Dependencies",
       "billing": "Billing",
+      "teamRoles": "Team Roles",
       "knowledgeAcl": "Knowledge Access"
+    },
+    "navGroup": {
+      "teamManagement": "Team management"
     },
     "general": {
       "title": "General",
@@ -3269,6 +3286,27 @@
         "refund": "Refund"
       }
     },
+    "teamRoles": {
+      "title": "Team Roles",
+      "description": "Org-scoped roles shared across teams in this organization. System roles cannot be edited.",
+      "noTeam": "Join or create a team to manage roles.",
+      "newRole": "New role",
+      "createTitle": "New role",
+      "name": "Name",
+      "code": "Code",
+      "descriptionField": "Description",
+      "create": "Create",
+      "edit": "Edit",
+      "delete": "Delete",
+      "system": "System",
+      "status": "Status",
+      "statusActive": "active",
+      "statusInactive": "inactive",
+      "sort": "Sort",
+      "empty": "No roles yet.",
+      "invalidCode": "Code must start with a letter and use only lowercase letters, digits, and underscores.",
+      "deleteBound": "Cannot delete: {{count}} member binding(s) still use this role."
+    },
     "knowledgeAcl": {
       "title": "Knowledge Access",
       "description": "Restrict a knowledge directory to specific members. Anyone not listed stops receiving it.",
@@ -3551,6 +3589,12 @@
       "lastActive": "Last active {{when}}",
       "details": "Details",
       "role": "Role",
+      "editRoles": "Edit roles",
+      "editRolesHint": "Select the roles assigned to {{name}}.",
+      "editRolesLoadFailed": "Failed to load roles: {{msg}}",
+      "editRolesFailed": "Failed to update roles: {{msg}}",
+      "rolesSaved": "Roles updated",
+      "lastOwnerBlocked": "Cannot remove the last owner. Promote another member first.",
       "type": "Type",
       "visibility": "Visibility",
       "agentType": "Agent type",

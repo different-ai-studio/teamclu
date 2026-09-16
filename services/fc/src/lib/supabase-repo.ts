@@ -35,6 +35,11 @@ function assertNewOrgAllowed(): void {
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
+import {
+  assignSystemOrgRole,
+  enrichActorsWithOrgRoles,
+  makeOrgRolesRepo,
+} from "./supabase-repo/org-roles.js";
 import { isLegalStatusTransition } from "./validation/app-status.js";
 import { parseAppType } from "./validation/app-type.js";
 import { assertTimeZone, computeNextRun, parseCronExpression } from "./app-cron-schedule.js";
@@ -647,14 +652,12 @@ export function createSupabaseBusinessRepository(options) {
       throw new ApiError(403, "forbidden", "not a member of this team");
     }
 
-    const { data: membership, error: memberErr } = await supabase
-      .from("team_members")
-      .select("role")
-      .eq("team_id", targetTeamId)
-      .eq("member_id", actor.id)
-      .maybeSingle();
-    if (memberErr) throw memberErr;
-    if (!membership || membership.role !== "owner") {
+    // Authz SoT is roles_users via current_team_role (not team_members.role).
+    const { data: role, error: roleErr } = await supabase.rpc("current_team_role", {
+      target_team_id: targetTeamId,
+    });
+    if (roleErr) throw roleErr;
+    if (role !== "owner") {
       throw new ApiError(403, "forbidden", "only team owners may change team share mode");
     }
   }
@@ -993,6 +996,10 @@ export function createSupabaseBusinessRepository(options) {
       // `p_default_org_id` names the shared tenant, as in listAllMyTeams: the
       // RPC's own-org check (CS-4) passes for every phone sign-up there, so the
       // shared org needs the extra employee test the picker now applies.
+      const { data: caller, error: callerErr } = await getCurrentUser();
+      if (callerErr || !caller?.user?.id) {
+        throw new ApiError(401, "missing_auth", "authenticated user required");
+      }
       const { data, error } = await supabase.rpc("join_public_team", {
         p_team_id: teamId,
         p_default_org_id: process.env.DEFAULT_ORG_ID || null,
@@ -1004,8 +1011,16 @@ export function createSupabaseBusinessRepository(options) {
         throw error;
       }
       const row = requiredRow(data, "teams.joinPublicTeam");
+      const joinedTeamId = requiredString(row.team_id ?? row.id, "teams.joinPublicTeam", "team_id");
+      // RPC still mirrors team_members.role='member'; authz SoT is roles_users.
+      const admin = await serviceRoleClient("assign member org role on public team join");
+      await assignSystemOrgRole(admin, {
+        teamId: joinedTeamId,
+        userId: caller.user.id,
+        code: "member",
+      });
       return mapTeam({
-        id: row.team_id ?? row.id,
+        id: joinedTeamId,
         name: row.team_name ?? row.name,
         slug: row.team_slug ?? row.slug,
       });
@@ -1064,8 +1079,17 @@ export function createSupabaseBusinessRepository(options) {
       });
       if (error) throw error;
       const row = requiredRow(data, "teams.createTeam");
+      const teamId = requiredString(row.team_id ?? row.id, "teams.createTeam", "team_id");
+      // roles_users is the authz source of truth; creator gets owner (Task 4).
+      // Service-role: caller JWT cannot INSERT (is_org_role_manager chicken-egg).
+      const admin = await serviceRoleClient("assign owner org role on team create");
+      await assignSystemOrgRole(admin, {
+        teamId,
+        userId: caller.user.id,
+        code: "owner",
+      });
       return mapTeam({
-        id: row.team_id ?? row.id,
+        id: teamId,
         name: row.team_name ?? row.name,
         slug: row.team_slug ?? row.slug,
         created_at: row.created_at ?? null,
@@ -1105,7 +1129,15 @@ export function createSupabaseBusinessRepository(options) {
         throw error;
       }
       const row = requiredRow(data, "teams.bootstrapTeam");
-      return mapTeam({ id: row.team_id ?? row.id, name: row.team_name ?? row.name, slug: row.team_slug ?? row.slug });
+      const teamId = requiredString(row.team_id ?? row.id, "teams.bootstrapTeam", "team_id");
+      // Service-role: same chicken-egg as createTeam (roles_users RLS).
+      const admin = await serviceRoleClient("assign owner org role on team bootstrap");
+      await assignSystemOrgRole(admin, {
+        teamId,
+        userId: caller.user.id,
+        code: "owner",
+      });
+      return mapTeam({ id: teamId, name: row.team_name ?? row.name, slug: row.team_slug ?? row.slug });
     },
 
     async getTeam(teamId) {
@@ -1457,7 +1489,12 @@ export function createSupabaseBusinessRepository(options) {
                    .limit(limit);
       const { data, error } = await query;
       if (error) throw error;
-      return { items: (data ?? []).map(mapDirectoryActor) };
+      const items = await enrichActorsWithOrgRoles(
+        supabase,
+        teamId,
+        (data ?? []).map(mapDirectoryActor),
+      );
+      return { items };
     },
 
     async getTeamDirectory(teamId) {
@@ -1470,20 +1507,34 @@ export function createSupabaseBusinessRepository(options) {
       const [actorsRes, membersRes] = await Promise.all([
         supabase
           .from("actor_directory")
-          .select("id, team_id, kind:actor_type, display_name, avatar_url")
+          .select("id, team_id, kind:actor_type, display_name, avatar_url, user_id")
           .eq("team_id", teamId)
           .or(LISTABLE_AGENT_STATUS_OR_FILTER),
         supabase
           .from("team_members")
-          .select("actor_id:member_id, team_id, role, joined_at")
+          .select("actor_id:member_id, team_id, joined_at")
           .eq("team_id", teamId),
       ]);
       if (actorsRes.error) throw actorsRes.error;
       if (membersRes.error) throw membersRes.error;
-      return {
-        actors: (actorsRes.data ?? []).map(mapActor),
-        members: (membersRes.data ?? []).map(mapTeamMember),
-      };
+      const actors = await enrichActorsWithOrgRoles(
+        supabase,
+        teamId,
+        (actorsRes.data ?? []).map(mapActor),
+      );
+      const rolesByActorId = new Map(
+        actors.map((a) => [a.id, { roles: a.roles ?? [], teamRole: a.teamRole ?? null }]),
+      );
+      const members = (membersRes.data ?? []).map((row) => {
+        const base = mapTeamMember(row);
+        const enriched = rolesByActorId.get(base.actorId);
+        return {
+          ...base,
+          roles: enriched?.roles ?? [],
+          role: enriched?.teamRole ?? null,
+        };
+      });
+      return { actors, members };
     },
 
     async listSessions({ limit = 50, cursor = null, teamId = null, ideaId = null, kind = "all" }: any = {}) {
@@ -2381,7 +2432,7 @@ export function createSupabaseBusinessRepository(options) {
     async getCurrentTeamMember(teamId, userId) {
       const { data: actorRows, error: actorError } = await supabase
         .from("actor_directory")
-        .select("id, display_name, team_role")
+        .select("id, display_name, user_id, actor_type")
         .eq("team_id", teamId)
         .eq("user_id", userId)
         .eq("actor_type", "member")
@@ -2395,10 +2446,18 @@ export function createSupabaseBusinessRepository(options) {
         .eq("team_id", teamId)
         .eq("member_id", actor.id)
         .limit(1);
+      const [enriched] = await enrichActorsWithOrgRoles(supabase, teamId, [
+        {
+          id: actor.id,
+          userId: actor.user_id ?? userId,
+          kind: actor.actor_type ?? "member",
+        },
+      ]);
       return {
         id: actor.id,
         displayName: actor.display_name || "",
-        role: actor.team_role ?? null,
+        roles: enriched?.roles ?? [],
+        role: enriched?.teamRole ?? null,
         joinedAt: memberError ? null : memberRows?.[0]?.joined_at ?? null,
       };
     },
@@ -4013,8 +4072,39 @@ export function createSupabaseBusinessRepository(options) {
         const scope = nextScope ?? ((cur?.auth_scope ?? "all") as AuthScope);
         const rules = nextRules ?? parseAuthRules(cur?.auth_rules ?? []);
         validateAuthPathConfig(scope, rules);
+        if (nextRules !== undefined) {
+          // Refuse role codes that are not in the team's active org catalog.
+          const wanted = [
+            ...new Set(rules.flatMap((r) => (Array.isArray(r.roles) ? r.roles : []))),
+          ];
+          if (wanted.length > 0 && cur?.team_id) {
+            const orgId = await this.resolveTeamOrgId(cur.team_id);
+            if (orgId) {
+              const rolesClient =
+                typeof supabase?.schema === "function"
+                  ? supabase.schema("public")
+                  : supabase;
+              const { data: catalog, error: catalogErr } = await rolesClient
+                .from("roles")
+                .select("code")
+                .eq("org_id", orgId)
+                .eq("status", "active");
+              if (catalogErr) throw catalogErr;
+              const known = new Set((catalog ?? []).map((r: { code: string }) => r.code));
+              const unknown = wanted.filter((c) => !known.has(c));
+              if (unknown.length > 0) {
+                throw new ApiError(
+                  400,
+                  "validation_failed",
+                  `unknown auth rule role codes: ${unknown.join(", ")}`,
+                  { details: { unknown } },
+                );
+              }
+            }
+          }
+          set.auth_rules = rules;
+        }
         if (nextScope !== undefined) set.auth_scope = scope;
-        if (nextRules !== undefined) set.auth_rules = rules;
       }
 
       if (typeof patch.provisionStatus === "string") {
@@ -6386,6 +6476,28 @@ export function createSupabaseBusinessRepository(options) {
     ...makeKnowledgeAclRepo({
       supabase,
       serviceRoleClient,
+      resolveCallerActorForTeam: async (teamId: string) => {
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw userErr;
+        const userId = userData?.user?.id;
+        if (!userId) return null;
+        const { data, error } = await supabase
+          .from("actors")
+          .select("id")
+          .eq("team_id", teamId)
+          .eq("user_id", userId)
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { id: data.id } : null;
+      },
+    }),
+
+    // ─── Org roles catalog ───────────────────────────────────────────────────
+    // docs/specs/2026-09-15-org-roles-permissions-design.md
+    // Authz: current_team_role (owner/admin) + system immutable + binding 409.
+    ...makeOrgRolesRepo({
+      supabase,
       resolveCallerActorForTeam: async (teamId: string) => {
         const { data: userData, error: userErr } = await supabase.auth.getUser();
         if (userErr) throw userErr;

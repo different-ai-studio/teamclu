@@ -57,22 +57,38 @@ const actorNameCollator = new Intl.Collator(['zh-Hans-CN', 'en'], {
   numeric: true,
 })
 
+function memberHasRoleCode(
+  actor: Pick<ActorRow, 'roles' | 'team_role'>,
+  code: string,
+): boolean {
+  if (actor.roles?.some((r) => r.code === code)) return true
+  // Cold cache / legacy rows may only carry the derived highest role.
+  if (!actor.roles?.length && actor.team_role === code) return true
+  return false
+}
+
 /** Elevated team roles shown as a pill beside the display name (not in subtitle). */
 export function memberTeamRolePill(
-  teamRole: string | null | undefined,
+  actor: Pick<ActorRow, 'roles' | 'team_role'> | string | null | undefined,
 ): 'owner' | 'admin' | null {
-  if (teamRole === 'owner' || teamRole === 'admin') return teamRole
+  // Legacy call sites passed a bare team_role string.
+  if (typeof actor === 'string' || actor == null) {
+    if (actor === 'owner' || actor === 'admin') return actor
+    return null
+  }
+  if (memberHasRoleCode(actor, 'owner')) return 'owner'
+  if (memberHasRoleCode(actor, 'admin')) return 'admin'
   return null
 }
 
-/** Members sort: owner → admin → everyone else, alphabetical within each tier. */
+/** Members sort: has owner → has admin → everyone else, alphabetical within each tier. */
 export function compareMembersByRoleThenName(a: ActorRow, b: ActorRow): number {
-  const roleRank = (role: string | null | undefined) => {
-    if (role === 'owner') return 0
-    if (role === 'admin') return 1
+  const roleRank = (actor: ActorRow) => {
+    if (memberHasRoleCode(actor, 'owner')) return 0
+    if (memberHasRoleCode(actor, 'admin')) return 1
     return 2
   }
-  const rankDiff = roleRank(a.team_role) - roleRank(b.team_role)
+  const rankDiff = roleRank(a) - roleRank(b)
   if (rankDiff !== 0) return rankDiff
   return actorNameCollator.compare(a.display_name, b.display_name)
 }
@@ -106,7 +122,7 @@ function MemberActorRowView({
   const { t } = useTranslation()
   const currentMemberActorId = useCurrentTeamStore((s) => s.currentMember?.id ?? null)
   const online = resolveActorOnlineStatus(actor, { currentMemberActorId })
-  const rolePill = memberTeamRolePill(actor.team_role)
+  const rolePill = memberTeamRolePill(actor)
   const initial = actor.display_name?.trim().slice(0, 1).toUpperCase() || ''
   const colors = actorAvatarColor(actor.id)
   const lastActive = actor.last_active_at ? formatRelativeTimeShort(new Date(actor.last_active_at)) : ''

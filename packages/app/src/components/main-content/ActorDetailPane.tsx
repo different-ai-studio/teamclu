@@ -57,6 +57,7 @@ export function ActorDetailPane({ actorId }: Props) {
           agent_status: entry.agent_status ?? null,
           last_active_at: entry.last_active_at ?? null,
           created_at: entry.created_at ?? null,
+          roles: entry.roles ?? [],
           team_role: entry.team_role ?? null,
           visibility: entry.visibility ?? null,
           owner_member_id: entry.agent_owner_member_id ?? null,

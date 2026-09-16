@@ -12,9 +12,20 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { getBackend } from '@/lib/backend'
+import type { MemberRoleRef, OrgRole } from '@/lib/backend/cloud-api/org-roles'
+import { deriveHighestTeamRole } from '@/lib/backend/cloud-api/org-roles'
 import { buildInviteDeeplink } from '@/lib/team/invite-deeplink'
 import { getEffectiveServerConfigSync } from '@/lib/config/server-config'
 import { formatActorRemoveError } from '@/lib/actor/actor-remove-error'
@@ -24,7 +35,7 @@ import { formatDate, formatRelativeTime } from '@/lib/ui/date-format'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { useUIStore } from '@/stores/ui'
 import { resolveActorOnlineStatus } from '@/lib/actor/actor-online'
-import type { ActorRow } from '@/stores/actor-directory-store'
+import { useActorDirectory, type ActorRow } from '@/stores/actor-directory-store'
 import { cn } from '@/lib/utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { canRemoveTeamActor, useTeamPermissions } from '@/lib/team/team-permissions'
@@ -47,6 +58,11 @@ interface Props {
   extraSections?: React.ReactNode
 }
 
+function memberIsOwner(roles: MemberRoleRef[] | null | undefined, teamRole?: string | null): boolean {
+  if (roles?.some((r) => r.code === 'owner')) return true
+  return !roles?.length && teamRole === 'owner'
+}
+
 /**
  * The actor profile itself — avatar, presence, the details grid, client
  * versions, re-invite and remove — with no opinion about what contains it.
@@ -59,6 +75,7 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
   const enterActorDraft = useUIStore((s) => s.enterActorDraft)
   const currentMemberId = useCurrentTeamStore((s) => s.currentMember?.id ?? null)
   const teamPermissions = useTeamPermissions()
+  const { actors: directoryActors, refetch: refetchDirectory } = useActorDirectory()
   const displayActor = actor
 
   const isAgent = displayActor.actor_type === 'agent'
@@ -75,6 +92,16 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
   const [reinvite, setReinvite] = React.useState<{ deeplink: string; expiresAt: string } | null>(null)
   const [removeConfirmOpen, setRemoveConfirmOpen] = React.useState(false)
   const [removing, setRemoving] = React.useState(false)
+  // Local copy of roles so a successful putMemberRoles paints immediately
+  // without waiting for the directory refetch.
+  const [memberRoles, setMemberRoles] = React.useState<MemberRoleRef[]>(
+    () => displayActor.roles ?? [],
+  )
+  const [editRolesOpen, setEditRolesOpen] = React.useState(false)
+  const [catalogRoles, setCatalogRoles] = React.useState<OrgRole[]>([])
+  const [selectedRoleIds, setSelectedRoleIds] = React.useState<Set<string>>(new Set())
+  const [loadingCatalog, setLoadingCatalog] = React.useState(false)
+  const [savingRoles, setSavingRoles] = React.useState(false)
   // Per-device client versions live only on the single-actor detail fetch (the
   // directory list cache doesn't carry them), so we fetch lazily when the dialog
   // opens and enrich the cached row once it lands. Never blocks first paint.
@@ -88,7 +115,14 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
     setReinviting(false)
     setRemoveConfirmOpen(false)
     setRemoving(false)
+    setMemberRoles(actor.roles ?? [])
+    setEditRolesOpen(false)
+    setSavingRoles(false)
   }, [actor.id])
+
+  React.useEffect(() => {
+    setMemberRoles(actor.roles ?? [])
+  }, [actor.roles])
 
   // Fetch the full actor detail (client versions + freshest avatar). Guarded so
   // a backend hiccup never breaks render.
@@ -104,6 +138,7 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
         if (cancelled || !entry) return
         setClientVersions(entry.client_versions ?? [])
         if (entry.avatar_url) setDetailAvatarUrl(entry.avatar_url)
+        if (entry.roles) setMemberRoles(entry.roles)
       } catch {
         // Detail enrichment is best-effort; keep the cached-row view.
       }
@@ -116,6 +151,76 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
   const canRemove = teamId
     ? canRemoveTeamActor(teamPermissions, displayActor, currentMemberId)
     : false
+  const canEditRoles = isMember && !!teamId && teamPermissions.canManageTeam
+
+  const openEditRoles = async () => {
+    if (!teamId || !canEditRoles) return
+    setEditRolesOpen(true)
+    setSelectedRoleIds(new Set(memberRoles.map((r) => r.id)))
+    setLoadingCatalog(true)
+    try {
+      const items = await getBackend().orgRoles.list(teamId)
+      setCatalogRoles(items.filter((r) => r.status === 'active' || !r.status))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.error(t('actors.detail.editRolesLoadFailed', 'Failed to load roles: {{msg}}', { msg }))
+      setEditRolesOpen(false)
+    } finally {
+      setLoadingCatalog(false)
+    }
+  }
+
+  const toggleRoleId = (role: OrgRole, next: boolean) => {
+    const isOwnerRole = role.code === 'owner'
+    // Admins cannot grant or revoke owner — checkbox is disabled, but guard anyway.
+    if (isOwnerRole && !teamPermissions.isOwner) return
+    if (isOwnerRole && !next) {
+      const currentlyOwner =
+        selectedRoleIds.has(role.id) || memberIsOwner(memberRoles, displayActor.team_role)
+      const ownersBesidesSelf = directoryActors.filter(
+        (a) =>
+          a.id !== displayActor.id &&
+          a.actor_type === 'member' &&
+          memberIsOwner(a.roles, a.team_role),
+      ).length
+      if (currentlyOwner && ownersBesidesSelf === 0) {
+        toast.error(
+          t(
+            'actors.detail.lastOwnerBlocked',
+            'Cannot remove the last owner. Promote another member first.',
+          ),
+        )
+        return
+      }
+    }
+    setSelectedRoleIds((prev) => {
+      const nextSet = new Set(prev)
+      if (next) nextSet.add(role.id)
+      else nextSet.delete(role.id)
+      return nextSet
+    })
+  }
+
+  const saveRoles = async () => {
+    if (!teamId || savingRoles) return
+    setSavingRoles(true)
+    try {
+      const items = await getBackend().orgRoles.putMemberRoles(
+        teamId,
+        displayActor.id,
+        Array.from(selectedRoleIds),
+      )
+      setMemberRoles(items)
+      setEditRolesOpen(false)
+      toast.success(t('actors.detail.rolesSaved', 'Roles updated'))
+      refetchDirectory()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.error(t('actors.detail.editRolesFailed', 'Failed to update roles: {{msg}}', { msg }))
+    } finally {
+      setSavingRoles(false)
+    }
+  }
 
   const confirmRemove = async () => {
     if (!teamId || !canRemove || removing) return
@@ -152,11 +257,18 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
     : (lastActive
       ? t('actors.detail.lastActive', 'Last active {{when}}', { when: lastActive })
       : t('actors.detail.offline', 'Offline'))
-  // Members carry a team role; agents carry a Team/Personal visibility. They are
-  // mutually exclusive — never show a member's status string in the "role" slot.
-  const roleLabel = !isAgent && displayActor.team_role
-    ? t(`actors.role.${displayActor.team_role}`, displayActor.team_role)
+  // Prefer roles[]; fall back to derived team_role for cold-cache rows.
+  const highestRole =
+    deriveHighestTeamRole(memberRoles) ??
+    (!isAgent ? displayActor.team_role ?? null : null)
+  const roleLabel = !isAgent && highestRole
+    ? t(`actors.role.${highestRole}`, highestRole)
     : null
+  const roleChips: MemberRoleRef[] = isMember
+    ? (memberRoles.length > 0
+      ? memberRoles
+      : [{ id: '_fallback-member', code: 'member', name: t('actors.role.member', 'Member') }])
+    : []
   const visibilityLabel = isAgent && displayActor.visibility
     ? (displayActor.visibility === 'personal'
       ? t('actors.visibility.personal', 'Personal')
@@ -315,7 +427,29 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
               {isMember && (
                 <>
                   <dt className="text-muted-foreground">{t('actors.detail.role', 'Role')}</dt>
-                  <dd className="min-w-0 truncate text-foreground">{roleLabel ?? '—'}</dd>
+                  <dd className="min-w-0 text-foreground">
+                    <div className="flex flex-wrap items-center gap-1.5" data-testid="member-role-chips">
+                      {roleChips.map((role) => (
+                        <span
+                          key={role.id}
+                          className="rounded-md border border-border-soft bg-paper px-2 py-0.5 text-[11.5px] text-ink-2"
+                        >
+                          {role.name || t(`actors.role.${role.code}`, role.code)}
+                        </span>
+                      ))}
+                      {canEditRoles && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void openEditRoles()}
+                          className="h-7 rounded-[7px] border-border-soft bg-background px-2.5 text-[12px]"
+                        >
+                          {t('actors.detail.editRoles', '编辑角色')}
+                        </Button>
+                      )}
+                    </div>
+                  </dd>
                 </>
               )}
               {!isAgent && displayActor.email && (
@@ -589,6 +723,67 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={editRolesOpen} onOpenChange={setEditRolesOpen}>
+        <DialogContent className="max-w-md border-border bg-paper">
+          <DialogHeader>
+            <DialogTitle>{t('actors.detail.editRoles', '编辑角色')}</DialogTitle>
+            <DialogDescription>
+              {t(
+                'actors.detail.editRolesHint',
+                'Select the roles assigned to {{name}}.',
+                { name: displayActor.display_name },
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          {loadingCatalog ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+            </div>
+          ) : (
+            <ul className="flex max-h-[320px] flex-col gap-2 overflow-y-auto py-1">
+              {catalogRoles.map((role) => {
+                const checked = selectedRoleIds.has(role.id)
+                const ownerLocked = role.code === 'owner' && !teamPermissions.isOwner
+                const id = `edit-role-${role.id}`
+                return (
+                  <li key={role.id} className="flex items-start gap-3 rounded-[8px] px-2 py-1.5 hover:bg-selected">
+                    <Checkbox
+                      id={id}
+                      checked={checked}
+                      disabled={ownerLocked || savingRoles}
+                      onCheckedChange={(v) => toggleRoleId(role, v === true)}
+                    />
+                    <label htmlFor={id} className="min-w-0 flex-1 cursor-pointer leading-5">
+                      <span className="block text-[13px] font-medium text-foreground">{role.name}</span>
+                      <span className="block font-mono text-[11px] text-faint">{role.code}</span>
+                    </label>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setEditRolesOpen(false)}
+              disabled={savingRoles}
+            >
+              {t('common.cancel', 'Cancel')}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void saveRoles()}
+              disabled={savingRoles || loadingCatalog}
+              className="bg-coral text-white hover:bg-coral/90"
+            >
+              {savingRoles ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t('common.save', 'Save')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

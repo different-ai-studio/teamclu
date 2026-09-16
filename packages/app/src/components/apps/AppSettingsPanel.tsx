@@ -27,6 +27,10 @@ import { APP_TYPES, IMPORTED_APP_TYPE, resolveAppType, type AppTypeId } from '@/
 import { forgetAppSessionSetups } from '@/lib/apps/app-session-setup'
 import { isHttpGitUrl } from '@/lib/apps/git-url-credentials'
 import { daemonAppWorkdir, moveDaemonAppWorkdir } from '@/lib/daemon/daemon-local-client'
+import {
+  APP_AUTH_ACCESS_FALLBACKS,
+  summarizeAppAuthBaseline,
+} from '@/lib/apps/app-auth-access'
 import { openAppAuth } from '@/lib/tabs/app-tabs'
 import { useActorDirectory } from '@/stores/actor-directory-store'
 import { useAppsStore } from '@/stores/apps-store'
@@ -103,12 +107,6 @@ const AUTH_MODE_FALLBACKS: Record<AppRow['authMode'], string> = {
   platform: 'TeamClu 账号登录',
   third: '第三方登录（暂不支持）',
 }
-
-const ACCESS_FALLBACKS = {
-  public: '不需要登录',
-  any: '需要登录 · 任何用户',
-  org: '需要登录 · 仅员工',
-} as const
 
 function formatWhen(iso: string | null | undefined): string | null {
   if (!iso) return null
@@ -567,8 +565,16 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
   // Strict defaults, as the auth tab reads them: an older server omits these,
   // and an unknown server must never make an app look more open than it is.
   const authRules = app.authRules ?? []
-  const baselineAccess = (app.authScope ?? 'all') === 'paths' ? 'public' : (app.authAudience ?? 'org')
-  const baselineAccessLabel = t(`apps.auth.access.${baselineAccess}`, ACCESS_FALLBACKS[baselineAccess])
+  const baselineSummary = summarizeAppAuthBaseline(app)
+  const baselineAccessLabel = !baselineSummary.requiresLogin
+    ? t('apps.auth.access.public', APP_AUTH_ACCESS_FALLBACKS.public)
+    : baselineSummary.roleCodes === null
+      ? t('apps.auth.access.org', APP_AUTH_ACCESS_FALLBACKS.orgLegacy)
+      : baselineSummary.roleCodes.length === 0
+        ? t('apps.auth.access.any', APP_AUTH_ACCESS_FALLBACKS.any)
+        : t('apps.auth.access.roles', '需要登录 · {{roles}}', {
+            roles: baselineSummary.roleCodes.join(', '),
+          })
 
   return (
     <div className="space-y-7 pb-8" data-testid="app-settings">

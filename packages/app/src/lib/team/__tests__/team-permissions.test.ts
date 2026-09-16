@@ -1,39 +1,82 @@
 import { describe, it, expect } from 'vitest'
-import { canRemoveTeamActor, permissionsForRole } from '@/lib/team/team-permissions'
+import { renderHook } from '@testing-library/react'
+import {
+  canRemoveTeamActor,
+  highestRoleCode,
+  permissionsForRoles,
+  useTeamPermissions,
+} from '@/lib/team/team-permissions'
+import { useCurrentTeamStore } from '@/stores/current-team'
 import type { RemovableActorTarget } from '@/lib/team/team-permissions'
 
-describe('permissionsForRole', () => {
-  it('owner can do everything', () => {
-    expect(permissionsForRole('owner')).toEqual({
+describe('highestRoleCode', () => {
+  it('picks owner over member', () => {
+    expect(highestRoleCode([{ code: 'owner' }, { code: 'member' }])).toBe('owner')
+  })
+  it('returns admin', () => {
+    expect(highestRoleCode([{ code: 'admin' }])).toBe('admin')
+  })
+  it('returns member', () => {
+    expect(highestRoleCode([{ code: 'member' }])).toBe('member')
+  })
+  it('finance alone is not a CloudRole', () => {
+    expect(highestRoleCode([{ code: 'finance' }])).toBeNull()
+  })
+  it('empty → null', () => {
+    expect(highestRoleCode([])).toBeNull()
+  })
+})
+
+describe('permissionsForRoles', () => {
+  it('owner+member codes: owner privileges', () => {
+    expect(permissionsForRoles([{ code: 'owner' }, { code: 'member' }])).toEqual({
       role: 'owner', isOwner: true, canManageTeam: true, canEditFiles: true,
     })
   })
   it('admin manages + edits but is not owner', () => {
-    expect(permissionsForRole('admin')).toEqual({
+    expect(permissionsForRoles([{ code: 'admin' }])).toEqual({
       role: 'admin', isOwner: false, canManageTeam: true, canEditFiles: true,
     })
   })
   it('member is read-only and cannot manage', () => {
-    expect(permissionsForRole('member')).toEqual({
+    expect(permissionsForRoles([{ code: 'member' }])).toEqual({
       role: 'member', isOwner: false, canManageTeam: false, canEditFiles: false,
     })
   })
-  it('null / unknown role: no team — management denied, editing allowed (solo case)', () => {
-    expect(permissionsForRole(null)).toEqual({
+  it('finance alone: can edit files, cannot manage', () => {
+    expect(permissionsForRoles([{ code: 'finance' }])).toEqual({
       role: null, isOwner: false, canManageTeam: false, canEditFiles: true,
     })
-    expect(permissionsForRole('bogus')).toEqual({
+  })
+  it('null / empty: no team — management denied, editing allowed (solo case)', () => {
+    expect(permissionsForRoles(null)).toEqual({
+      role: null, isOwner: false, canManageTeam: false, canEditFiles: true,
+    })
+    expect(permissionsForRoles([])).toEqual({
+      role: null, isOwner: false, canManageTeam: false, canEditFiles: true,
+    })
+    expect(permissionsForRoles([{ code: 'bogus' }])).toEqual({
       role: null, isOwner: false, canManageTeam: false, canEditFiles: true,
     })
   })
   it('normalizes case', () => {
-    expect(permissionsForRole('Owner').isOwner).toBe(true)
+    expect(permissionsForRoles([{ code: 'Owner' }]).isOwner).toBe(true)
+  })
+})
+
+describe('useTeamPermissions', () => {
+  it('empty roles[] falls back to legacy role string', () => {
+    useCurrentTeamStore.setState({
+      currentMember: { roles: [], role: 'owner' },
+    } as never)
+    const { result } = renderHook(() => useTeamPermissions())
+    expect(result.current.isOwner).toBe(true)
   })
 })
 
 describe('canRemoveTeamActor', () => {
-  const adminPerms = permissionsForRole('admin')
-  const memberPerms = permissionsForRole('member')
+  const adminPerms = permissionsForRoles([{ code: 'admin' }])
+  const memberPerms = permissionsForRoles([{ code: 'member' }])
 
   const memberTarget: RemovableActorTarget = {
     id: 'actor-b',
@@ -103,7 +146,7 @@ describe('canRemoveTeamActor', () => {
       visibility: 'team',
       owner_member_id: 'actor-b',
     }
-    expect(canRemoveTeamActor(permissionsForRole('owner'), teamAgent, 'actor-a')).toBe(true)
+    expect(canRemoveTeamActor(permissionsForRoles([{ code: 'owner' }]), teamAgent, 'actor-a')).toBe(true)
   })
 
   it('requires owner_member_id for personal agent delete', () => {

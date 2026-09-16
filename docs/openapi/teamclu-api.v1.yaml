@@ -411,6 +411,221 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/roles:
+    get:
+      operationId: listOrgRoles
+      summary: List org roles for the team's organization
+      description: |
+        Returns the org role catalog for `teams.oid`. Any team member may call.
+        Includes seeded system roles (`owner`, `admin`, `member`, `finance`) and
+        any custom roles defined for the org.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Org roles.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgRole"
+        "401":
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createOrgRole
+      summary: Create a custom org role
+      description: |
+        Requires team owner or admin. Returns 403 when the caller lacks
+        `canManageTeam`. Returns 400 when `code` fails format validation;
+        409 when the code is already taken in the org.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgRoleCreate"
+      responses:
+        "201":
+          description: Created org role.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgRole"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/roles/{roleId}:
+    patch:
+      operationId: patchOrgRole
+      summary: Update a custom org role
+      description: |
+        Requires team owner or admin. System roles are fully read-only — returns
+        403 (系统角色不可修改). Soft-deactivate via `status: inactive`; hard delete
+        is `DELETE` on this path. Returns 403 when the caller lacks
+        `canManageTeam`.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgRolePatch"
+      responses:
+        "200":
+          description: Updated org role.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgRole"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteOrgRole
+      summary: Hard-delete a custom org role
+      description: |
+        Requires team owner or admin. System roles cannot be deleted — returns
+        403 (系统角色不可修改). Returns 409 when the role still has member
+        bindings (response includes binding count). Use `PATCH` with
+        `status: inactive` to retire a role without deleting it.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/members/{actorId}/roles:
+    get:
+      operationId: getMemberOrgRoles
+      summary: Get a member's org roles
+      description: |
+        Returns the caller-visible org role assignments for the member actor.
+        Any team member may call. Agents and external actors return an empty
+        list.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: actorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Member org roles.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MemberRoleRef"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: putMemberOrgRoles
+      summary: Replace a member's org role set
+      description: |
+        Requires team owner or admin. Replaces the member's full org role set
+        with `{ roleIds }`. Returns 403 when the caller lacks `canManageTeam`,
+        or when an admin attempts to grant or revoke `owner`. Returns 409 when
+        the update would remove the org's last active `owner` assignment.
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: actorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemberRolesPut"
+      responses:
+        "200":
+          description: Updated member org roles.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MemberRoleRef"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Error"
   /v1/sessions:
     get:
       operationId: listSessions
@@ -4480,31 +4695,6 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
-  /v1/teams/{teamId}/roles:
-    get:
-      operationId: listTeamRoles
-      summary: List team roles
-      tags: [Teams]
-      parameters:
-        - $ref: "#/components/parameters/TeamId"
-      responses:
-        "200":
-          description: Team roles.
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/TeamRole"
-        "401":
-          $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/permissions:
     get:
       operationId: listTeamPermissions
@@ -5004,7 +5194,14 @@ paths:
                 properties:
                   id: { type: string }
                   displayName: { type: string }
-                  role: { type: [string, "null"] }
+                  roles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MemberRoleRef"
+                  role:
+                    type: [string, "null"]
+                    description: >-
+                      Transitional derived highest privilege among `roles`.
                   joinedAt: { type: [string, "null"] }
         "400":
           $ref: "#/components/responses/Error"
@@ -5332,6 +5529,35 @@ paths:
                         name: { type: [string, "null"] }
                         path: { type: [string, "null"] }
         "400":
+          $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/shortcut-roles:
+    get:
+      operationId: listTeamRoles
+      summary: List shortcuts RBAC roles for a team
+      description: |
+        Returns `amux.team_roles` rows used by shortcuts visibility RBAC.
+        Relocated from `GET /v1/teams/{teamId}/roles`, which now lists org roles
+        (`listOrgRoles`).
+      tags: [Shortcuts]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Shortcuts team roles.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TeamRole"
+        "401":
           $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/shortcut-role-bindings:
     get:
@@ -8448,15 +8674,24 @@ components:
         auth:
           type: string
           enum: [required, public]
+        roles:
+          type: array
+          items: { type: string }
+          description: >-
+            Role codes that may access this path when auth=required.
+            Empty or omitted = any authenticated user. Ignored when auth=public.
+            Prefer this over audience; audience is legacy-read only.
         audience:
           type: string
           enum: [any, org]
+          deprecated: true
           description: >-
-            Who satisfies the login on this path. Only meaningful with
-            `auth: required`, and OPTIONAL: an absent `audience` means "use the
-            app's own `authAudience`", never a default of its own. Reading it as
-            `org` when absent would tighten the wall on every app currently set
-            to `any` — every rule stored before this field existed is absent.
+            Legacy read-only. Who satisfied the login on this path before
+            `roles` existed. Only meaningful with `auth: required`, and
+            OPTIONAL: an absent `audience` means "use the app's own
+            `authAudience`", never a default of its own. New writes should emit
+            `roles` instead. `audience: any` maps to `roles: []`; `audience:
+            org` maps to any active org role assignment.
     AppEnvVar:
       type: object
       required: [key, isSecret, value, updatedAt]
@@ -9450,12 +9685,22 @@ components:
           type:
             - string
             - "null"
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemberRoleRef"
+          description: >-
+            Member's org role assignments. Empty for agents/external. Source of
+            truth for permission UI; prefer over `teamRole`.
         teamRole:
-          description: Member's role in the team. Null for agents/external.
+          description: >-
+            Transitional derived highest privilege among active org roles
+            (`owner > admin > finance > member`). Null for agents/external.
+            Legacy callers may read this; new UI must use `roles`.
           type:
             - string
             - "null"
-          enum: [owner, admin, member, null]
+          enum: [owner, admin, finance, member, null]
         visibility:
           description: Agent visibility scope. Null for members/external.
           type:
@@ -9901,8 +10146,17 @@ components:
         teamId:
           type: string
           format: uuid
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemberRoleRef"
+          description: Member's org role assignments. Source of truth for permission UI.
         role:
           type: string
+          description: >-
+            Transitional derived highest privilege among `roles`
+            (`owner > admin > finance > member`). Legacy callers may read this;
+            new UI must use `roles`.
         joinedAt:
           type:
             - string
@@ -10055,6 +10309,48 @@ components:
           items:
             type: string
             format: uuid
+    OrgRole:
+      type: object
+      required: [id, orgId, name, code, isSystem, status, sort]
+      properties:
+        id: { type: string, format: uuid }
+        orgId: { type: string, format: uuid }
+        name: { type: string }
+        code: { type: string, pattern: '^[a-z][a-z0-9_]*$' }
+        description: { type: [string, "null"] }
+        isSystem: { type: boolean }
+        status: { type: string, enum: [active, inactive] }
+        sort: { type: integer }
+        parentRoleId: { type: [string, "null"], format: uuid }
+    MemberRoleRef:
+      type: object
+      required: [id, code, name]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+    OrgRoleCreate:
+      type: object
+      required: [name, code]
+      properties:
+        name: { type: string }
+        code: { type: string, pattern: '^[a-z][a-z0-9_]*$' }
+        description: { type: string }
+        sort: { type: integer, default: 50 }
+    OrgRolePatch:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: [string, "null"] }
+        status: { type: string, enum: [active, inactive] }
+        sort: { type: integer }
+    MemberRolesPut:
+      type: object
+      required: [roleIds]
+      properties:
+        roleIds:
+          type: array
+          items: { type: string, format: uuid }
     TeamRole:
       type: object
       required: [id, teamId, code, name]

@@ -1,8 +1,14 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Loader2, Plus, RefreshCw, X } from 'lucide-react'
+import { ChevronDown, Loader2, Plus, RefreshCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import {
   Select,
   SelectContent,
@@ -10,70 +16,128 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { getBackend } from '@/lib/backend'
+import type { OrgRole } from '@/lib/backend/cloud-api/org-roles'
+import {
+  type AppAuthRowState,
+  baselineToRowState,
+  buildAuthPolicyPatch,
+  exceptionRulesToRowState,
+} from '@/lib/apps/app-auth-access'
 import { useAppsStore } from '@/stores/apps-store'
 import { AppTabShell } from './AppTabShell'
-import type {
-  AppAuthAudience,
-  AppAuthMode,
-  AppAuthRule,
-  AppRow,
-} from '@/lib/backend/types'
+import type { AppAuthMode, AppRow } from '@/lib/backend/types'
 
 /**
  * Who on the internet may open the deployed site, page by page.
  *
- * The three stored values — `authScope`, `authAudience`, `authRules` — are
- * presented as ONE question asked repeatedly: for this page, may anyone in, or
- * must they sign in, and if so must they be staff? A visitor either gets the
- * page or does not; splitting that across a scope dropdown, an audience
- * dropdown and a rules table (which is how the control panel had it) makes the
- * reader assemble the answer themselves.
- *
- * The top row is the baseline — every path no rule mentions — and is exactly
- * `authScope` + `authAudience`. Each row below overrides one path prefix.
+ * Each row is three columns: path, whether login is required, and which org
+ * roles may pass (only when login is on). Empty roles = any signed-in user.
+ * The top row is the baseline — every path no rule mentions.
  */
 
-/** The one choice a row makes. */
-type Access = 'public' | 'any' | 'org'
-
-const ACCESS_OPTIONS: Access[] = ['public', 'any', 'org']
-
-/** Read by `t` as the fallback, so the choice is legible in the source too. */
-const ACCESS_FALLBACKS: Record<Access, string> = {
-  public: '不需要登录',
-  any: '需要登录 · 任何用户',
-  org: '需要登录 · 仅员工',
+function LoginSelect({
+  value,
+  onChange,
+  disabled,
+  testId,
+}: {
+  value: boolean
+  onChange: (next: boolean) => void
+  disabled?: boolean
+  testId?: string
+}) {
+  const { t } = useTranslation()
+  return (
+    <Select
+      value={value ? 'required' : 'public'}
+      onValueChange={(v) => onChange(v === 'required')}
+      disabled={disabled}
+    >
+      <SelectTrigger
+        className="h-9 w-[128px] shrink-0 rounded-[7px] text-[13px]"
+        data-testid={testId}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="public" className="text-[13px]">
+          {t('apps.auth.login.public', '不需要登录')}
+        </SelectItem>
+        <SelectItem value="required" className="text-[13px]">
+          {t('apps.auth.login.required', '需要登录')}
+        </SelectItem>
+      </SelectContent>
+    </Select>
+  )
 }
 
-function accessOf(rule: AppAuthRule, appAudience: AppAuthAudience): Access {
-  if (rule.auth === 'public') return 'public'
-  // A rule with no audience inherits the app's, so the EFFECTIVE value is what
-  // the row shows — the reader is asking "who gets this page", and the answer
-  // is not "it depends on a field further up".
-  //
-  // `appAudience` MUST be the pending baseline, not the saved one. An
-  // inheriting rule follows the baseline, so moving the baseline moves that
-  // rule too — and rendering it against the saved value showed 仅员工 on a row
-  // the pending save was about to open to anyone with an email address. A live
-  // access boundary widening while the UI says it did not is the one outcome
-  // this whole tab exists to prevent.
-  //
-  // Inheritance is only broken when the row is CHANGED (ruleOf writes the
-  // audience explicitly). An untouched rule is saved exactly as it was read, so
-  // opening this tab and pressing Save cannot quietly pin an audience nobody
-  // chose.
-  return rule.audience ?? appAudience
-}
+function RolesMultiSelect({
+  roleCodes,
+  options,
+  disabled,
+  testId,
+  onChange,
+}: {
+  roleCodes: string[]
+  options: OrgRole[]
+  disabled?: boolean
+  testId?: string
+  onChange: (next: string[]) => void
+}) {
+  const { t } = useTranslation()
+  const label =
+    roleCodes.length === 0
+      ? t('apps.auth.roles.any', '任意用户')
+      : roleCodes.join(', ')
 
-function ruleOf(path: string, access: Access): AppAuthRule {
-  if (access === 'public') return { path, auth: 'public' }
-  return { path, auth: 'required', audience: access }
-}
+  const toggle = (code: string, checked: boolean) => {
+    if (checked) onChange([...roleCodes, code].sort())
+    else onChange(roleCodes.filter((c) => c !== code))
+  }
 
-function sameRules(a: AppAuthRule[], b: AppAuthRule[]): boolean {
-  if (a.length !== b.length) return false
-  return a.every(
-    (r, i) => r.path === b[i].path && r.auth === b[i].auth && r.audience === b[i].audience,
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          data-testid={testId}
+          className="h-9 min-w-[140px] max-w-[220px] shrink-0 justify-between gap-1 rounded-[7px] px-2.5 text-[12.5px] font-normal"
+        >
+          <span className="truncate">{label}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-faint" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[220px] p-2">
+        {options.length === 0 ? (
+          <p className="px-1 py-2 text-[12.5px] text-muted-foreground">
+            {t('apps.auth.roles.empty', '还没有可分配的角色')}
+          </p>
+        ) : (
+          <ul className="max-h-[220px] space-y-0.5 overflow-y-auto">
+            {options.map((role) => {
+              const checked = roleCodes.includes(role.code)
+              return (
+                <li key={role.id}>
+                  <label className="flex cursor-pointer items-center gap-2 rounded-[6px] px-1.5 py-1.5 text-[12.5px] hover:bg-selected">
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(v) => toggle(role.code, v === true)}
+                    />
+                    <span className="min-w-0 truncate">
+                      <span className="text-foreground">{role.name}</span>
+                      <span className="ml-1 font-mono text-[11px] text-faint">{role.code}</span>
+                    </span>
+                  </label>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -93,89 +157,118 @@ export function AppAuthTabContent({ appId }: { appId: string }) {
   )
 }
 
-function AccessSelect({
-  value,
-  onChange,
-  disabled,
-  testId,
-}: {
-  value: Access
-  onChange: (next: Access) => void
-  disabled?: boolean
-  testId?: string
-}) {
-  const { t } = useTranslation()
-  return (
-    <Select value={value} onValueChange={(v) => onChange(v as Access)} disabled={disabled}>
-      <SelectTrigger className="h-9 w-[168px] shrink-0 rounded-[7px] text-[13px]" data-testid={testId}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {ACCESS_OPTIONS.map((option) => (
-          <SelectItem key={option} value={option} className="text-[13px]">
-            {t(`apps.auth.access.${option}`, ACCESS_FALLBACKS[option])}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  )
-}
-
 function AuthBody({ app }: { app: AppRow }) {
   const { t } = useTranslation()
   const updateAuthPolicy = useAppsStore((s) => s.updateAuthPolicy)
   const deploy = useAppsStore((s) => s.deploy)
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
 
-  // Defaults applied on READ, not trusted from the type: an older server omits
-  // these fields entirely, and reading `.length` off that row would take the
-  // whole tab down. The fallbacks are the strict ones, so an unknown server
-  // never makes an app look more open than it is.
-  const rowAudience = app.authAudience ?? 'org'
-  const rowScope = app.authScope ?? 'all'
-  const rowRules = React.useMemo(() => app.authRules ?? [], [app.authRules])
-
   const [mode, setMode] = React.useState<AppAuthMode>(app.authMode)
-  const [baseline, setBaseline] = React.useState<Access>(
-    rowScope === 'paths' ? 'public' : rowAudience,
-  )
-  const [rules, setRules] = React.useState<AppAuthRule[]>(rowRules)
+  const [orgRoles, setOrgRoles] = React.useState<OrgRole[]>([])
+  const [rolesLoaded, setRolesLoaded] = React.useState(false)
+  const [baseline, setBaseline] = React.useState<AppAuthRowState>({
+    path: '/',
+    requiresLogin: true,
+    roleCodes: [],
+  })
+  const [rules, setRules] = React.useState<AppAuthRowState[]>([])
+  const [loadedMode, setLoadedMode] = React.useState<AppAuthMode>(app.authMode)
+  const [loadedBaseline, setLoadedBaseline] = React.useState<AppAuthRowState | null>(null)
+  const [loadedRules, setLoadedRules] = React.useState<AppAuthRowState[] | null>(null)
   const [saving, setSaving] = React.useState(false)
 
+  const allRoleCodes = React.useMemo(
+    () => orgRoles.map((r) => r.code).sort(),
+    [orgRoles],
+  )
+
   React.useEffect(() => {
+    let cancelled = false
+    setRolesLoaded(false)
+    void (async () => {
+      try {
+        const items = await getBackend().orgRoles.list(app.teamId)
+        if (cancelled) return
+        setOrgRoles(items.filter((r) => r.status === 'active' || !r.status))
+      } catch {
+        if (cancelled) return
+        setOrgRoles([])
+      } finally {
+        if (!cancelled) setRolesLoaded(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [app.teamId])
+
+  React.useEffect(() => {
+    if (!rolesLoaded) return
+    const nextBaseline = baselineToRowState(app, allRoleCodes)
+    const nextRules = exceptionRulesToRowState(app, allRoleCodes)
     setMode(app.authMode)
-    setBaseline(rowScope === 'paths' ? 'public' : rowAudience)
-    setRules(rowRules)
-  }, [app.id, app.authMode, rowScope, rowAudience, rowRules])
+    setBaseline(nextBaseline)
+    setRules(nextRules)
+    setLoadedMode(app.authMode)
+    setLoadedBaseline(nextBaseline)
+    setLoadedRules(nextRules)
+  }, [app, allRoleCodes, rolesLoaded])
 
   const walled = mode === 'platform'
-  const scope = baseline === 'public' ? 'paths' : 'all'
-  const audience: AppAuthAudience = baseline === 'public' ? rowAudience : baseline
+  const pendingPatch = React.useMemo(
+    () => buildAuthPolicyPatch(baseline, rules),
+    [baseline, rules],
+  )
 
-  // The server refuses `paths` with nothing protected — it would mean "this app
-  // requires a login" next to a site where every URL is open. Said here rather
-  // than discovered through a 400.
-  const nothingProtected = walled && scope === 'paths' && !rules.some((r) => r.auth === 'required')
+  const nothingProtected =
+    walled &&
+    !baseline.requiresLogin &&
+    !rules.some((r) => r.requiresLogin)
   const blankPath = rules.some((r) => !r.path.trim())
 
+  const sameRow = (a: AppAuthRowState, b: AppAuthRowState) =>
+    a.path === b.path &&
+    a.requiresLogin === b.requiresLogin &&
+    a.roleCodes.length === b.roleCodes.length &&
+    a.roleCodes.every((c, i) => c === b.roleCodes[i])
+
   const dirty =
-    mode !== app.authMode ||
-    (walled && (scope !== rowScope || audience !== rowAudience || !sameRules(rules, rowRules)))
+    mode !== loadedMode ||
+    (walled &&
+      loadedBaseline !== null &&
+      loadedRules !== null &&
+      (!sameRow(baseline, loadedBaseline) ||
+        rules.length !== loadedRules.length ||
+        rules.some((r, i) => !sameRow(r, loadedRules[i]!))))
 
   const save = async () => {
     setSaving(true)
     try {
       await updateAuthPolicy(app.id, {
         authMode: mode,
-        ...(walled ? { authAudience: audience, authScope: scope, authRules: rules } : {}),
+        ...(walled ? pendingPatch : {}),
       })
     } finally {
       setSaving(false)
     }
   }
 
-  const setRule = (index: number, patch: Partial<AppAuthRule>) =>
-    setRules((rs) => rs.map((r, i) => (i === index ? { ...r, ...patch } : r)))
+  const setRule = (index: number, patch: Partial<AppAuthRowState>) =>
+    setRules((rs) =>
+      rs.map((r, i) => {
+        if (i !== index) return r
+        const next = { ...r, ...patch }
+        if (patch.requiresLogin === false) next.roleCodes = []
+        return next
+      }),
+    )
+
+  const setBaselineLogin = (requiresLogin: boolean) =>
+    setBaseline((b) => ({
+      ...b,
+      requiresLogin,
+      roleCodes: requiresLogin ? b.roleCodes : [],
+    }))
 
   return (
     <div className="space-y-6" data-testid="app-auth-tab">
@@ -221,15 +314,32 @@ function AuthBody({ app }: { app: AppRow }) {
           </h2>
 
           <div className="overflow-hidden rounded-lg border border-border-soft">
-            <div className="flex items-center gap-2 border-b border-border-soft bg-surface-2/40 px-3 py-2.5">
-              <span className="min-w-0 flex-1 text-[13px] text-foreground">
+            <div className="grid grid-cols-[minmax(0,1fr)_128px_minmax(140px,220px)_36px] items-center gap-2 border-b border-border-soft bg-surface-2/40 px-3 py-2 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-faint">
+              <span>{t('apps.auth.col.path', '页面地址')}</span>
+              <span>{t('apps.auth.col.login', '是否需要登录')}</span>
+              <span>{t('apps.auth.col.roles', '角色')}</span>
+              <span aria-hidden />
+            </div>
+
+            <div
+              className="grid grid-cols-[minmax(0,1fr)_128px_minmax(140px,220px)_36px] items-center gap-2 border-b border-border-soft px-3 py-2.5"
+              data-testid="app-auth-baseline"
+            >
+              <span className="min-w-0 text-[13px] text-foreground">
                 {t('apps.auth.baseline', '其余所有页面')}
               </span>
-              <AccessSelect
-                value={baseline}
-                onChange={setBaseline}
+              <LoginSelect
+                value={baseline.requiresLogin}
+                onChange={setBaselineLogin}
                 disabled={saving}
-                testId="app-auth-baseline"
+                testId="app-auth-baseline-login"
+              />
+              <RolesMultiSelect
+                roleCodes={baseline.roleCodes}
+                options={orgRoles}
+                disabled={saving || !baseline.requiresLogin}
+                testId="app-auth-baseline-roles"
+                onChange={(roleCodes) => setBaseline((b) => ({ ...b, roleCodes }))}
               />
               <span className="w-9 shrink-0" aria-hidden />
             </div>
@@ -241,20 +351,30 @@ function AuthBody({ app }: { app: AppRow }) {
             ) : (
               <ul className="divide-y divide-border-soft" data-testid="app-auth-rules">
                 {rules.map((rule, i) => (
-                  <li key={i} className="flex items-center gap-2 px-3 py-2.5">
+                  <li
+                    key={i}
+                    className="grid grid-cols-[minmax(0,1fr)_128px_minmax(140px,220px)_36px] items-center gap-2 px-3 py-2.5"
+                  >
                     <Input
                       value={rule.path}
                       onChange={(e) => setRule(i, { path: e.target.value })}
                       placeholder="/admin"
                       disabled={saving}
-                      className="h-9 min-w-0 flex-1 rounded-[7px] font-mono text-[12.5px]"
+                      className="h-9 min-w-0 rounded-[7px] font-mono text-[12.5px]"
+                      data-testid={`app-auth-rule-path-${i}`}
                     />
-                    <AccessSelect
-                      value={accessOf(rule, audience)}
-                      onChange={(next) => setRules((rs) =>
-                        rs.map((r, j) => (j === i ? ruleOf(r.path, next) : r)),
-                      )}
+                    <LoginSelect
+                      value={rule.requiresLogin}
+                      onChange={(requiresLogin) => setRule(i, { requiresLogin })}
                       disabled={saving}
+                      testId={`app-auth-rule-login-${i}`}
+                    />
+                    <RolesMultiSelect
+                      roleCodes={rule.roleCodes}
+                      options={orgRoles}
+                      disabled={saving || !rule.requiresLogin}
+                      testId={`app-auth-rule-roles-${i}`}
+                      onChange={(roleCodes) => setRule(i, { roleCodes })}
                     />
                     <Button
                       type="button"
@@ -279,7 +399,16 @@ function AuthBody({ app }: { app: AppRow }) {
             variant="outline"
             disabled={saving}
             className="mt-2 h-9 gap-1.5 rounded-[7px] text-[13px]"
-            onClick={() => setRules((rs) => [...rs, { path: '/', auth: 'required', audience }])}
+            onClick={() =>
+              setRules((rs) => [
+                ...rs,
+                {
+                  path: '',
+                  requiresLogin: true,
+                  roleCodes: [...baseline.roleCodes],
+                },
+              ])
+            }
             data-testid="app-auth-add-rule"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -294,12 +423,10 @@ function AuthBody({ app }: { app: AppRow }) {
           </p>
           <p className="mt-1.5 text-[12px] text-faint">
             {t(
-              'apps.auth.audienceHint',
-              '「任何用户」是任何人用邮箱注册后都能进；「仅员工」只有与这个应用同属一个组织的人能进，在登录页注册的路人进不来。',
+              'apps.auth.rolesHint',
+              '需要登录且未选角色时，任意已登录用户都可进入；选了角色则仅持有其中任一角色的成员可进入。',
             )}
           </p>
-          {/* The limit that is easiest to misjudge, so it is stated where the
-              rules are written rather than in documentation nobody opens. */}
           <p className="mt-1.5 text-[12px] text-signal">
             {t(
               'apps.controlPanel.authRulesClientRoutingWarning',
@@ -313,7 +440,7 @@ function AuthBody({ app }: { app: AppRow }) {
         <Button
           type="button"
           className="h-9 rounded-[7px] text-[13px]"
-          disabled={saving || !dirty || mode === 'third' || nothingProtected || blankPath}
+          disabled={saving || !dirty || mode === 'third' || nothingProtected || blankPath || !rolesLoaded}
           onClick={() => void save()}
           data-testid="app-auth-save"
         >
@@ -339,10 +466,6 @@ function AuthBody({ app }: { app: AppRow }) {
           className="rounded-lg border border-border-soft bg-surface-2/40 p-3"
           data-testid="app-auth-pending-redeploy"
         >
-          {/* The wall itself lives in the proxy and every change here is live
-              immediately. What lags is the function's env — the Supabase
-              variables an app may use ITSELF. Saying "the site is still public"
-              would be false, and false in the direction that matters. */}
           <p className="mb-2 text-[12.5px] text-muted-foreground">
             {t(
               'apps.controlPanel.authEnvPending',

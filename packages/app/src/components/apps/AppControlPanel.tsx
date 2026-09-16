@@ -6,6 +6,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
+import {
+  APP_AUTH_ACCESS_FALLBACKS,
+  summarizeAppAuthBaseline,
+} from '@/lib/apps/app-auth-access'
 import { appStatusMeta } from '@/lib/apps/app-list-helpers'
 import {
   openAppSettings,
@@ -348,10 +352,23 @@ export function AppControlPanel({ app }: AppControlPanelProps) {
     if (app.authMode !== 'platform') {
       return t('apps.controlPanel.summaryNoLogin', '不需要登录')
     }
-    const count = app.authRules?.length ?? 0
+    const summary = summarizeAppAuthBaseline(app)
+    const baseline = !summary.requiresLogin
+      ? t('apps.auth.access.public', APP_AUTH_ACCESS_FALLBACKS.public)
+      : summary.roleCodes === null
+        ? t('apps.auth.access.org', APP_AUTH_ACCESS_FALLBACKS.orgLegacy)
+        : summary.roleCodes.length === 0
+          ? t('apps.auth.access.any', APP_AUTH_ACCESS_FALLBACKS.any)
+          : t('apps.auth.access.roles', '需要登录 · {{roles}}', {
+              roles: summary.roleCodes.join(', '),
+            })
+    // A `/` rule encodes the baseline under the new model — don't count it as
+    // an exception when summarising the side panel.
+    const exceptions = (app.authRules ?? []).filter((r) => !(r.path === '/' && r.auth === 'required'))
+    const count = exceptions.length
     return count === 0
-      ? t('apps.controlPanel.summaryAllPages', '全站一条规则')
-      : t('apps.controlPanel.summaryRules', '{{count}} 条页面规则', { count })
+      ? baseline
+      : `${baseline} · ${t('apps.controlPanel.summaryRules', '{{count}} 条页面规则', { count })}`
   })()
 
   const tablesValue = (() => {

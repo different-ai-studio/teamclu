@@ -12,8 +12,22 @@ const storeMocks = vi.hoisted(() => ({
   deploy: vi.fn(),
 }))
 
+const orgRolesList = vi.hoisted(() =>
+  vi.fn(async () => [
+    { id: 'r-admin', orgId: 'o1', name: '管理员', code: 'admin', description: null, isSystem: true, status: 'active', sort: 1, parentRoleId: null },
+    { id: 'r-finance', orgId: 'o1', name: '财务', code: 'finance', description: null, isSystem: true, status: 'active', sort: 2, parentRoleId: null },
+    { id: 'r-member', orgId: 'o1', name: '成员', code: 'member', description: null, isSystem: true, status: 'active', sort: 3, parentRoleId: null },
+  ]),
+)
+
 vi.mock('@/stores/apps-store', () => ({
   useAppsStore: (sel: (s: typeof storeMocks) => unknown) => sel(storeMocks),
+}))
+
+vi.mock('@/lib/backend', () => ({
+  getBackend: () => ({
+    orgRoles: { list: orgRolesList },
+  }),
 }))
 
 vi.mock('react-i18next', () => ({
@@ -41,16 +55,16 @@ const baseApp = {
   provisionStatus: 'ready',
 } as unknown as AppRow
 
-function renderWith(over: Partial<AppRow> = {}) {
+async function renderWith(over: Partial<AppRow> = {}) {
   storeMocks.items = [{ ...baseApp, ...over } as AppRow]
-  return render(<AppAuthTabContent appId="app-1" />)
-}
-
-/** The per-page selectors: everything that is not the mode or the baseline. */
-function ruleSelects() {
-  return screen
-    .getAllByRole('combobox')
-    .filter((el) => !['app-auth-mode', 'app-auth-baseline'].includes(el.getAttribute('data-testid') ?? ''))
+  const result = render(<AppAuthTabContent appId="app-1" />)
+  await waitFor(() => expect(orgRolesList).toHaveBeenCalled())
+  if ((over.authMode ?? baseApp.authMode) === 'platform') {
+    await waitFor(() => expect(screen.getByTestId('app-auth-baseline-login')).toBeTruthy())
+  } else {
+    await waitFor(() => expect(screen.getByTestId('app-auth-mode')).toBeTruthy())
+  }
+  return result
 }
 
 describe('AppAuthTabContent', () => {
@@ -58,67 +72,63 @@ describe('AppAuthTabContent', () => {
     vi.clearAllMocks()
     storeMocks.deployingIds = []
     storeMocks.updateAuthPolicy.mockResolvedValue(true)
+    orgRolesList.mockResolvedValue([
+      { id: 'r-admin', orgId: 'o1', name: '管理员', code: 'admin', description: null, isSystem: true, status: 'active', sort: 1, parentRoleId: null },
+      { id: 'r-finance', orgId: 'o1', name: '财务', code: 'finance', description: null, isSystem: true, status: 'active', sort: 2, parentRoleId: null },
+      { id: 'r-member', orgId: 'o1', name: '成员', code: 'member', description: null, isSystem: true, status: 'active', sort: 3, parentRoleId: null },
+    ])
   })
 
-  it('shows the baseline as one choice, not a scope plus an audience', async () => {
-    renderWith({ authScope: 'all', authAudience: 'org' })
-    expect(screen.getByTestId('app-auth-baseline').textContent).toContain('需要登录 · 仅员工')
+  it('shows three columns: path, login, and roles', async () => {
+    await renderWith({ authScope: 'all', authAudience: 'any' })
+    expect(screen.getByText('页面地址')).toBeTruthy()
+    expect(screen.getByText('是否需要登录')).toBeTruthy()
+    expect(screen.getByText('角色')).toBeTruthy()
+    expect(screen.getByTestId('app-auth-baseline-login').textContent).toContain('需要登录')
+    expect(screen.getByTestId('app-auth-baseline-roles').textContent).toContain('任意用户')
   })
 
-  it('reads scope=paths as a public baseline', async () => {
-    renderWith({
+  it('reads scope=paths as a public baseline and disables roles', async () => {
+    await renderWith({
       authScope: 'paths',
       authAudience: 'org',
-      authRules: [{ path: '/admin', auth: 'required' }],
+      authRules: [{ path: '/admin', auth: 'required', roles: ['admin'] }],
     })
-    expect(screen.getByTestId('app-auth-baseline').textContent).toContain('不需要登录')
+    expect(screen.getByTestId('app-auth-baseline-login').textContent).toContain('不需要登录')
+    expect(screen.getByTestId('app-auth-baseline-roles')).toHaveProperty('disabled', true)
+    expect(screen.getByTestId('app-auth-rule-roles-0')).not.toHaveProperty('disabled', true)
   })
 
-  it('shows a keyless rule at the audience that is actually in force', async () => {
-    // A rule saved before per-path audiences existed inherits the app's. Showing
-    // it as anything else would tell the reader the wall is somewhere it is not.
-    renderWith({
-      authAudience: 'any',
-      authRules: [{ path: '/reports', auth: 'required' }],
-    })
-    expect(ruleSelects()[0].textContent).toContain('需要登录 · 任何用户')
-  })
-
-  it('moves an inheriting rule on screen when the baseline moves', async () => {
-    // An audience-less rule FOLLOWS the baseline. Rendering it against the saved
-    // value showed 仅员工 on a row the pending save was about to open to anyone
-    // — the boundary widening while the UI said it had not.
-    renderWith({
+  it('prefills all org role codes for legacy audience org', async () => {
+    await renderWith({
       authScope: 'all',
       authAudience: 'org',
       authRules: [{ path: '/reports', auth: 'required' }],
     })
-    expect(ruleSelects()[0].textContent).toContain('需要登录 · 仅员工')
-
-    // Re-render as the store would after the baseline is saved as `any`; the
-    // rule text has to follow, because the wall does.
-    storeMocks.items = [
-      {
-        ...baseApp,
-        authAudience: 'any',
-        authRules: [{ path: '/reports', auth: 'required' }],
-      } as AppRow,
-    ]
-    render(<AppAuthTabContent appId="app-1" />)
-    expect(ruleSelects().at(-1)!.textContent).toContain('需要登录 · 任何用户')
+    expect(screen.getByTestId('app-auth-baseline-roles').textContent).toContain('admin')
+    expect(screen.getByTestId('app-auth-baseline-roles').textContent).toContain('finance')
+    expect(screen.getByTestId('app-auth-baseline-roles').textContent).toContain('member')
+    expect(screen.getByTestId('app-auth-rule-roles-0').textContent).toContain('admin')
   })
 
-  it('saves scope, audience and rules in one request', async () => {
-    // The server validates them as a pair — `paths` with nothing required is
-    // refused — so two PATCHes would be rejected on the intermediate state.
-    renderWith({
+  it('maps audience any to empty role codes', async () => {
+    await renderWith({
+      authAudience: 'any',
+      authRules: [{ path: '/reports', auth: 'required' }],
+    })
+    expect(screen.getByTestId('app-auth-rule-roles-0').textContent).toContain('任意用户')
+  })
+
+  it('saves path rules with roles and injects a / baseline rule', async () => {
+    await renderWith({
       authAudience: 'any',
       authScope: 'all',
-      authRules: [{ path: '/admin', auth: 'required', audience: 'org' }],
+      authRules: [{ path: '/admin', auth: 'required', roles: ['admin'] }],
     })
     const user = userEvent.setup()
 
     await user.click(screen.getByTestId('app-auth-add-rule'))
+    await user.type(screen.getByTestId('app-auth-rule-path-1'), '/reports')
     await user.click(screen.getByTestId('app-auth-save'))
 
     await waitFor(() => expect(storeMocks.updateAuthPolicy).toHaveBeenCalled())
@@ -128,21 +138,17 @@ describe('AppAuthTabContent', () => {
     expect(patch.authScope).toBe('all')
     expect(patch.authAudience).toBe('any')
     expect(patch.authRules).toEqual([
-      { path: '/admin', auth: 'required', audience: 'org' },
-      // A new row starts at the app's own audience, so adding one changes who
-      // gets in nowhere else.
-      { path: '/', auth: 'required', audience: 'any' },
+      { path: '/', auth: 'required', roles: [] },
+      { path: '/admin', auth: 'required', roles: ['admin'] },
+      { path: '/reports', auth: 'required', roles: [] },
     ])
   })
 
   it('refuses to save a public baseline with nothing protected', async () => {
-    // Deleting the only protected page leaves "every other page is public" with
-    // nothing behind the wall — which the server rejects. Saying so here means
-    // the user does not have to read a 400 to find out.
-    renderWith({
+    await renderWith({
       authScope: 'paths',
       authAudience: 'any',
-      authRules: [{ path: '/admin', auth: 'required', audience: 'org' }],
+      authRules: [{ path: '/admin', auth: 'required', roles: ['admin'] }],
     })
     expect(screen.queryByTestId('app-auth-nothing-protected')).toBeNull()
 
@@ -153,34 +159,28 @@ describe('AppAuthTabContent', () => {
     expect(storeMocks.updateAuthPolicy).not.toHaveBeenCalled()
   })
 
-  it('saves an untouched inherited rule exactly as it was read', async () => {
-    // Opening this tab and pressing Save must not pin an audience nobody chose:
-    // the row DISPLAYS the effective value, it does not write it.
-    renderWith({
-      authAudience: 'any',
-      authRules: [{ path: '/reports', auth: 'required' }],
+  it('disables roles when a rule is public', async () => {
+    await renderWith({
+      authScope: 'paths',
+      authRules: [{ path: '/health', auth: 'public' }],
     })
-    const user = userEvent.setup()
-    await user.click(screen.getByTestId('app-auth-add-rule'))
-    await user.click(screen.getByTestId('app-auth-save'))
-
-    await waitFor(() => expect(storeMocks.updateAuthPolicy).toHaveBeenCalled())
-    const [, patch] = storeMocks.updateAuthPolicy.mock.calls[0]
-    expect(patch.authRules[0]).toEqual({ path: '/reports', auth: 'required' })
+    expect(screen.getByTestId('app-auth-rule-login-0').textContent).toContain('不需要登录')
+    expect(screen.getByTestId('app-auth-rule-roles-0')).toHaveProperty('disabled', true)
+    expect(screen.getByTestId('app-auth-rule-roles-0').textContent).toContain('任意用户')
   })
 
   it('leaves the page list out entirely when there is no wall', async () => {
-    renderWith({ authMode: 'none' })
+    await renderWith({ authMode: 'none' })
     expect(screen.queryByTestId('app-auth-add-rule')).toBeNull()
   })
 
   it('offers a redeploy only while the function env lags', async () => {
-    const { rerender } = renderWith({ authModePendingRedeploy: false })
+    const { rerender } = await renderWith({ authModePendingRedeploy: false })
     expect(screen.queryByTestId('app-auth-redeploy-now')).toBeNull()
 
     storeMocks.items = [{ ...baseApp, authModePendingRedeploy: true } as AppRow]
     rerender(<AppAuthTabContent appId="app-1" />)
-    expect(screen.getByTestId('app-auth-redeploy-now')).toBeTruthy()
+    await waitFor(() => expect(screen.getByTestId('app-auth-redeploy-now')).toBeTruthy())
   })
 
   it('says the app is gone rather than rendering an empty form', async () => {

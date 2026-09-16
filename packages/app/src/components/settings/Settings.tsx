@@ -23,6 +23,8 @@ import {
   Bot,
   Laptop,
   LifeBuoy,
+  Users,
+  Building2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -48,11 +50,16 @@ interface Section {
 const primarySections: Section[] = [
   { id: 'general', label: 'General', labelKey: 'settings.nav.general', icon: Settings2 },
   { id: 'shortcuts', label: 'Shortcuts', labelKey: 'settings.nav.shortcuts', icon: Bookmark },
-  { id: 'billing', label: 'Billing', labelKey: 'settings.nav.billing', icon: Wallet },
-  { id: 'tokenUsage', label: 'Token Usage', labelKey: 'settings.nav.tokenUsage', icon: Coins },
   { id: 'privacy', label: 'Privacy & Telemetry', labelKey: 'settings.nav.privacy', icon: Shield },
   { id: 'cache', label: 'Local Cache', labelKey: 'settings.nav.cache', icon: Database },
   { id: 'diagnostics', label: 'Diagnostics', labelKey: 'settings.nav.diagnostics', icon: LifeBuoy },
+]
+
+// Team management: billing, usage, org roles (moved out of primary).
+const teamManagementSections: Section[] = [
+  { id: 'billing', label: 'Billing', labelKey: 'settings.nav.billing', icon: Wallet },
+  { id: 'tokenUsage', label: 'Token Usage', labelKey: 'settings.nav.tokenUsage', icon: Coins },
+  { id: 'teamRoles', label: '团队角色', labelKey: 'settings.nav.teamRoles', icon: Users },
 ]
 
 // Daemon-owned sections (the amuxd process for this machine).
@@ -149,6 +156,7 @@ export function Settings(_props?: SettingsProps) {
   // first paint re-filters instead of leaving a stale nav.
   const features = useFeatures()
   const filteredPrimarySections = primarySections
+  const filteredTeamManagementSections = teamManagementSections
   const filteredDaemonSections = React.useMemo(() =>
     daemonSections.filter(s => s.id !== 'channels' || hasAnyChannel(features.channels)),
     [features]
@@ -158,8 +166,9 @@ export function Settings(_props?: SettingsProps) {
     [],
   )
 
-  type AccordionGroup = 'client' | 'daemon' | 'localAgent'
+  type AccordionGroup = 'client' | 'teamManagement' | 'daemon' | 'localAgent'
   const groupForSection = (id: SettingsSection): AccordionGroup => {
+    if (filteredTeamManagementSections.some(s => s.id === id)) return 'teamManagement'
     if (filteredDaemonSections.some(s => s.id === id)) return 'daemon'
     if (filteredLocalAgentSections.some(s => s.id === id)) return 'localAgent'
     return 'client'
@@ -177,12 +186,20 @@ export function Settings(_props?: SettingsProps) {
     }
   }, [settingsInitialSection])
 
-  // Single Settings dialog: Desktop + Daemon + Local Agent groups together.
+  // Single Settings dialog: Desktop + 团队管理 + Daemon + Local Agent.
   // Deep links (e.g. openSettings('daemonGeneral')) still expand the matching group.
   const clientGroup = { id: 'client' as const, label: 'Desktop', labelKey: 'settings.nav.client', icon: Laptop, sections: filteredPrimarySections, testid: 'client-subnav' }
+  const teamManagementGroup = {
+    id: 'teamManagement' as const,
+    label: '团队管理',
+    labelKey: 'settings.navGroup.teamManagement',
+    icon: Building2,
+    sections: filteredTeamManagementSections,
+    testid: 'team-management-subnav',
+  }
   const daemonGroup = { id: 'daemon' as const, label: 'Daemon', labelKey: 'settings.nav.daemon', icon: Server, sections: filteredDaemonSections, testid: 'daemon-subnav' }
   const localAgentGroup = { id: 'localAgent' as const, label: 'Local Agent', labelKey: 'settings.nav.localAgent', icon: SlidersHorizontal, sections: filteredLocalAgentSections, testid: 'local-agent-subnav' }
-  const navGroups = [clientGroup, daemonGroup, localAgentGroup]
+  const navGroups = [clientGroup, teamManagementGroup, daemonGroup, localAgentGroup]
   const [expandedGroup, setExpandedGroup] = React.useState<AccordionGroup | null>(() => groupForSection(activeView))
   const toggleGroup = (group: AccordionGroup) => {
     setExpandedGroup(prev => (prev === group ? null : group))

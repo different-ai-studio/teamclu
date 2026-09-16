@@ -20,13 +20,18 @@ export type AppDeps = {
   /** Resolves an app id for the central login service; same injection reason. */
   lookupLoginApp?: LookupLoginApp;
   /**
-   * Reads the visitor's and the app's org for the `org` audience.
+   * Reads the visitor's and the app's org for role / legacy-org checks.
    *
-   * Absent, every `org`-gated app answers "team has no org" rather than opening
-   * — fail closed, because the alternative is serving a page that was marked as
-   * staff-only to whoever asks.
+   * Absent, every org-/role-gated app answers "team has no org" rather than
+   * opening — fail closed, because the alternative is serving a page that was
+   * marked as staff-only to whoever asks.
    */
   resolveAppOrgs?: GateDeps["resolveOrgs"];
+  /**
+   * Active role codes for a visitor in an org. Absent, role / legacy-org
+   * checks see an empty set (deny).
+   */
+  resolveVisitorRoles?: GateDeps["resolveVisitorRoles"];
 };
 
 /**
@@ -174,6 +179,7 @@ export function createApp(deps: AppDeps): Hono {
         resolveOrgs:
           deps.resolveAppOrgs ??
           (async () => ({ visitorOrgId: null, appOrgId: null })),
+        resolveVisitorRoles: deps.resolveVisitorRoles ?? (async () => []),
         secureCookies: forwardedProto(c) === "https",
       });
       if (gate.response) return gate.response;

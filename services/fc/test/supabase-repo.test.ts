@@ -292,13 +292,29 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
   // Member claims arrive authenticated: the joining user's bearer must reach
   // PostgREST so the RPC resolves auth.uid(). The repo builds a per-token client
   // with an Authorization header instead of using the shared anon client.
+  // roles_users member binding is written with service-role (RLS chicken-egg).
   const createCalls = [];
+  const adminCalls: any[] = [];
+  const admin = fakeSupabase({
+    tableCalls: adminCalls,
+    tableData: {
+      teams: [{ id: "team-9", oid: "org-9" }],
+      roles: [{ id: "role-member", org_id: "org-9", code: "member", is_system: true }],
+      roles_users: [],
+    },
+  });
   const repo = createSupabaseAuthRepository({
     supabaseUrl: "https://example.supabase.co",
     publishableKey: "publishable-key",
+    createServiceRoleClient: () => admin,
     createClient(url, key, options) {
       createCalls.push({ url, key, options });
       return fakeSupabase({
+        auth: {
+          async getUser() {
+            return { data: { user: { id: "joiner-user-1" } }, error: null };
+          },
+        },
         rpcData: {
           claim_team_invite: [{
             actor_id: "actor-9",
@@ -323,6 +339,41 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
   // authed client carrying the caller bearer.
   assert.equal(createCalls.length, 2);
   assert.equal(createCalls[1].options.global.headers.Authorization, "Bearer member-jwt");
+  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  assert.ok(insert, "member roles_users must be inserted via service-role");
+  assert.equal(insert.row.user_id, "joiner-user-1");
+  assert.equal(insert.row.role_id, "role-member");
+});
+
+test("auth repo claimInvite fails loud when member claim has no authenticated user", async () => {
+  const repo = createSupabaseAuthRepository({
+    supabaseUrl: "https://example.supabase.co",
+    publishableKey: "publishable-key",
+    createServiceRoleClient: () => fakeSupabase(),
+    createClient() {
+      return fakeSupabase({
+        auth: {
+          async getUser() {
+            return { data: { user: null }, error: null };
+          },
+        },
+        rpcData: {
+          claim_team_invite: [{
+            actor_id: "actor-9",
+            team_id: "team-9",
+            actor_type: "member",
+            display_name: "Joiner",
+            refresh_token: null,
+          }],
+        },
+      });
+    },
+  });
+
+  await assert.rejects(
+    () => repo.claimInvite("invite-token", { accessToken: "member-jwt" }),
+    (err: any) => err?.statusCode === 401 && /member org role/.test(err.message),
+  );
 });
 
 test("repository throws upstream errors without hiding Supabase error codes", async () => {
@@ -426,10 +477,12 @@ const OWNER_AUTH = {
 function fakeSupabaseForOwnerRpc(rpcData, rpcCalls = []) {
   return fakeSupabase({
     rpcCalls,
-    rpcData,
+    rpcData: {
+      current_team_role: "owner",
+      ...rpcData,
+    },
     tableData: {
       actors: [{ id: "actor-owner-1" }],
-      team_members: [{ role: "owner" }],
     },
     auth: OWNER_AUTH.auth,
   });
@@ -562,7 +615,8 @@ test("createTeam routes to create_team with the caller's JWT org as fallback", a
   const prev = process.env.DEFAULT_ORG_ID;
   process.env.DEFAULT_ORG_ID = "org-default";
   try {
-    const repo = createRepo(fakeSupabase({
+    const ownerRoleId = "role-owner-1";
+    const caller = fakeSupabase({
       rpcCalls,
       auth: {
         async getUser() {
@@ -578,7 +632,17 @@ test("createTeam routes to create_team with the caller's JWT org as fallback", a
           role: "member",
         }],
       },
-    }));
+    });
+    const adminCalls: any[] = [];
+    const admin = fakeSupabase({
+      tableCalls: adminCalls,
+      tableData: {
+        teams: [{ id: "team-9", oid: "org-real" }],
+        roles: [{ id: ownerRoleId, org_id: "org-real", code: "owner", is_system: true }],
+        roles_users: [],
+      },
+    });
+    const repo = createRepo(caller, { createServiceRoleClient: () => admin });
 
     const team = await repo.createTeam({ displayName: "梁江" });
 
@@ -598,6 +662,12 @@ test("createTeam routes to create_team with the caller's JWT org as fallback", a
     assert.equal(team.id, "team-9");
     assert.equal(team.name, "香蕉攀岩");
     assert.equal(team.slug, "banana");
+    // Owner binding must go through service-role (not caller JWT / RLS).
+    const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+    assert.ok(insert, "roles_users owner insert must use service-role client");
+    assert.equal(insert.row.user_id, "u1");
+    assert.equal(insert.row.role_id, ownerRoleId);
+    assert.equal(insert.row.org_id, "org-real");
   } finally {
     if (prev === undefined) delete process.env.DEFAULT_ORG_ID;
     else process.env.DEFAULT_ORG_ID = prev;
@@ -611,7 +681,7 @@ test("createTeam mints a personal org when the caller carries none — never DEF
   // It serves phone-auth only.
   process.env.DEFAULT_ORG_ID = "org-default";
   try {
-    const repo = createRepo(fakeSupabase({
+    const caller = fakeSupabase({
       rpcCalls,
       auth: {
         async getUser() {
@@ -628,7 +698,15 @@ test("createTeam mints a personal org when the caller carries none — never DEF
           role: "owner",
         }],
       },
-    }));
+    });
+    const admin = fakeSupabase({
+      tableData: {
+        teams: [{ id: "team-solo", oid: "org-mine" }],
+        roles: [{ id: "role-owner", org_id: "org-mine", code: "owner", is_system: true }],
+        roles_users: [],
+      },
+    });
+    const repo = createRepo(caller, { createServiceRoleClient: () => admin });
 
     await repo.createTeam({ name: "My Team", slug: "my-team" });
 
@@ -638,6 +716,53 @@ test("createTeam mints a personal org when the caller carries none — never DEF
     assert.equal(rpcCalls[1].args.p_oid, "org-mine");
     assert.equal(rpcCalls[1].args.p_name, "My Team");
     assert.equal(rpcCalls[1].args.p_slug, "my-team");
+  } finally {
+    if (prev === undefined) delete process.env.DEFAULT_ORG_ID;
+    else process.env.DEFAULT_ORG_ID = prev;
+  }
+});
+
+test("joinPublicTeam assigns member roles_users via service-role", async () => {
+  const rpcCalls = [];
+  const prev = process.env.DEFAULT_ORG_ID;
+  process.env.DEFAULT_ORG_ID = "org-default";
+  try {
+    const memberRoleId = "role-member-1";
+    const caller = fakeSupabase({
+      rpcCalls,
+      auth: {
+        async getUser() {
+          return { data: { user: { id: "u-join" } }, error: null };
+        },
+      },
+      rpcData: {
+        join_public_team: [{
+          team_id: "team-public",
+          team_name: "Public",
+          team_slug: "public",
+        }],
+      },
+    });
+    const adminCalls: any[] = [];
+    const admin = fakeSupabase({
+      tableCalls: adminCalls,
+      tableData: {
+        teams: [{ id: "team-public", oid: "org-real" }],
+        roles: [{ id: memberRoleId, org_id: "org-real", code: "member", is_system: true }],
+        roles_users: [],
+      },
+    });
+    const repo = createRepo(caller, { createServiceRoleClient: () => admin });
+
+    const team = await repo.joinPublicTeam("team-public");
+
+    assert.equal(rpcCalls[0]?.name, "join_public_team");
+    assert.equal(team.id, "team-public");
+    const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+    assert.ok(insert, "roles_users member insert must use service-role client");
+    assert.equal(insert.row.user_id, "u-join");
+    assert.equal(insert.row.role_id, memberRoleId);
+    assert.equal(insert.row.org_id, "org-real");
   } finally {
     if (prev === undefined) delete process.env.DEFAULT_ORG_ID;
     else process.env.DEFAULT_ORG_ID = prev;
@@ -664,7 +789,8 @@ async function trustedExternalToken(claims: Record<string, unknown> = {}) {
 
 test("bootstrapTeam verifies a trusted external JWT without a local GoTrue lookup", async () => {
   const rpcCalls: any[] = [];
-  const repo = createRepo(fakeSupabase({
+  const adminCalls: any[] = [];
+  const caller = fakeSupabase({
     rpcCalls,
     auth: {
       async getUser() {
@@ -674,9 +800,19 @@ test("bootstrapTeam verifies a trusted external JWT without a local GoTrue looku
     rpcData: {
       bootstrap_login_team: [{ team_id: "team-bootstrap", team_name: "Betly", team_slug: "betly" }],
     },
-  }), {
+  });
+  const admin = fakeSupabase({
+    tableCalls: adminCalls,
+    tableData: {
+      teams: [{ id: "team-bootstrap", oid: "betly-org-1" }],
+      roles: [{ id: "role-owner", org_id: "betly-org-1", code: "owner", is_system: true }],
+      roles_users: [],
+    },
+  });
+  const repo = createRepo(caller, {
     accessToken: await trustedExternalToken(),
     trustedExternalJwtSecret: TRUSTED_SECRET,
+    createServiceRoleClient: () => admin,
   });
 
   const team = await repo.bootstrapTeam({ displayName: "Betly User" });
@@ -690,6 +826,9 @@ test("bootstrapTeam verifies a trusted external JWT without a local GoTrue looku
     },
   }]);
   assert.equal(team.id, "team-bootstrap");
+  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  assert.ok(insert, "bootstrap must assign owner via service-role");
+  assert.equal(insert.row.user_id, "betly-user-1");
 });
 
 test("bootstrapTeam passes the shared tenant so the partner org stays on the old path", async () => {
@@ -697,14 +836,23 @@ test("bootstrapTeam passes the shared tenant so the partner org stays on the old
   const prev = process.env.DEFAULT_ORG_ID;
   process.env.DEFAULT_ORG_ID = "betly-org-1";
   try {
-    const repo = createRepo(fakeSupabase({
+    const caller = fakeSupabase({
       rpcCalls,
       rpcData: {
         bootstrap_login_team: [{ team_id: "t", team_name: "Betly", team_slug: "betly" }],
       },
-    }), {
+    });
+    const admin = fakeSupabase({
+      tableData: {
+        teams: [{ id: "t", oid: "betly-org-1" }],
+        roles: [{ id: "role-owner", org_id: "betly-org-1", code: "owner", is_system: true }],
+        roles_users: [],
+      },
+    });
+    const repo = createRepo(caller, {
       accessToken: await trustedExternalToken(),
       trustedExternalJwtSecret: TRUSTED_SECRET,
+      createServiceRoleClient: () => admin,
     });
 
     await repo.bootstrapTeam({ displayName: "Betly User" });
