@@ -9,6 +9,7 @@ const setTeamMemberRole = vi.fn()
 vi.mock('@/lib/backend', () => ({
   getBackend: () => ({
     teams: { setTeamMemberRole },
+    actors: { listActorDirectory: vi.fn().mockResolvedValue([]) },
   }),
 }))
 
@@ -89,6 +90,17 @@ describe('ActorContextMenu admin role', () => {
 
   it('lets an admin remove another admin', async () => {
     renderMenu(member({ team_role: 'admin' }))
+    fireEvent.click(screen.getByRole('button', { name: /Remove admin/i }))
+    await waitFor(() => {
+      expect(setTeamMemberRole).toHaveBeenCalledWith('team-1', 'actor-b', 'member')
+    })
+  })
+
+  it('removes admin from roles[] even when team_role is stale', async () => {
+    renderMenu(member({
+      team_role: 'member',
+      roles: [{ id: 'r-admin', code: 'admin', name: '管理员' }],
+    }))
     fireEvent.click(screen.getByRole('button', { name: /Remove admin/i }))
     await waitFor(() => {
       expect(setTeamMemberRole).toHaveBeenCalledWith('team-1', 'actor-b', 'member')

@@ -10,7 +10,7 @@ import {
   ContextMenuSeparator,
 } from '@/components/ui/context-menu'
 import type { ActorRow } from '@/stores/actor-directory-store'
-import { patchMemberTeamRole } from '@/stores/actor-directory-store'
+import { patchMemberTeamRole, useActorDirectoryStore } from '@/stores/actor-directory-store'
 import { cn } from '@/lib/utils'
 import { getBackend } from '@/lib/backend'
 import { formatSetTeamMemberRoleError } from '@/lib/actor/actor-set-role-error'
@@ -19,6 +19,7 @@ import { useCurrentTeamStore } from '@/stores/current-team'
 import {
   canRemoveTeamActor,
   canSetTeamMemberRole,
+  effectiveTeamRole,
   nextTeamMemberRole,
   useTeamPermissions,
 } from '@/lib/team/team-permissions'
@@ -64,7 +65,7 @@ export function ActorContextMenu({
   const teamPermissions = useTeamPermissions()
   const canRemove = canRemoveTeamActor(teamPermissions, actor, currentMemberId)
   const canChangeRole = canSetTeamMemberRole(teamPermissions, actor, currentMemberId)
-  const nextRole = canChangeRole ? nextTeamMemberRole(actor.team_role) : null
+  const nextRole = canChangeRole ? nextTeamMemberRole(effectiveTeamRole(actor)) : null
   const setDefaultAgent = useMemberPreferencesStore((s) => s.setDefaultAgent)
   const onToggleDefault = React.useCallback(() => {
     if (!teamId) return
@@ -79,6 +80,7 @@ export function ActorContextMenu({
       try {
         await getBackend().teams.setTeamMemberRole(teamId, actor.id, nextRole)
         patchMemberTeamRole(teamId, actor.id, nextRole)
+        void useActorDirectoryStore.getState().refetch(teamId)
         toast.success(
           nextRole === 'admin'
             ? t('actors.roleChanged.setAdmin', '{{name}} is now an admin', {
