@@ -436,6 +436,13 @@
       "retry": "重新检查邀请",
       "checking": "正在检查…"
     },
+    "nameYourTeam": {
+      "title": "给你的团队起个名字",
+      "subtitle": "公司名，或者你自己小队的名字。之后可以在设置里改。",
+      "placeholder": "例如：倍拓科技",
+      "continue": "继续",
+      "creating": "正在创建…"
+    },
     "signIn": "登录",
     "willEmailCode": "我们将向你的邮箱发送 6 位验证码。",
     "email": "邮箱",

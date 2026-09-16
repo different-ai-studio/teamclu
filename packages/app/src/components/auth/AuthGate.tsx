@@ -21,6 +21,7 @@ import { TeamPicker } from "./TeamPicker";
 import { PendingInvitesDialog } from "@/components/auth/PendingInvitesDialog";
 import { extensionTeamOnboarding } from "@/lib/config/build-config";
 import { NoTeamScreen } from "./NoTeamScreen";
+import { NameYourTeamScreen } from "./NameYourTeamScreen";
 import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
 import type { MembershipTeam } from "@/lib/backend";
 import { useShallow } from "zustand/react/shallow";
@@ -33,13 +34,38 @@ interface AuthGateProps {
   children: React.ReactNode;
 }
 
-type BootstrapState = "idle" | "checking" | "ready" | "no_team" | "error";
+type BootstrapState =
+  | "idle"
+  | "checking"
+  | "ready"
+  | "need_team_name"
+  | "no_team"
+  | "error";
 
 function memberTeams(teams: MembershipTeam[]): MembershipTeam[] {
   return teams.filter((team) => team.isMember !== false);
 }
 
 /** True when the user must explicitly pick: several teams, or a joinable public one. */
+/**
+ * Seed for the first-run name field.
+ *
+ * Mirrors the server's own derivation as far as the client can see it — OAuth
+ * full name, then the email local part. The server's first arm,
+ * `public.users.nickname`, is not reachable here and is empty for a fresh
+ * account. An empty result is fine: the field is simply blank and the user
+ * types their own.
+ */
+export function suggestTeamName(user: { email?: string | null; userMetadata?: Record<string, unknown> | null } | null | undefined): string {
+  const meta = user?.userMetadata ?? null;
+  for (const key of ["full_name", "name"]) {
+    const value = meta?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  const local = (user?.email ?? "").split("@")[0]?.trim();
+  return local || "";
+}
+
 function needsTeamPicker(teams: MembershipTeam[]): boolean {
   return memberTeams(teams).length > 1 || teams.some((team) => team.isMember === false);
 }
@@ -76,6 +102,8 @@ export function AuthGate({ children }: AuthGateProps) {
     useShallow((s) => ({ session: s.session, loading: s.loading, authFlow: s.authFlow, hydrate: s.hydrate, signOut: s.signOut })),
   );
   const [bootstrap, setBootstrap] = useState<BootstrapState>("idle");
+  const [suggestedTeamName, setSuggestedTeamName] = useState("");
+  const [creatingFirstTeam, setCreatingFirstTeam] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [bootstrapNonce, setBootstrapNonce] = useState(0);
   const [retrying, setRetrying] = useState(false);
@@ -321,30 +349,18 @@ export function AuthGate({ children }: AuthGateProps) {
           setMyTeams(allTeams);
           teamSet = true;
         } else {
-          // Login onboarding. The server resolves the org — minting one named
-          // after the caller when they have none — and returns that org's
-          // public default team, creating it on first use.
-          //
-          // `displayName` seeds the OWNER ACTOR only, never the org or team
-          // name: it resolves OS-account-name first, which on a fleet-imaged
-          // machine is the IT admin. The server names the org from the account
-          // (nickname → OAuth full name → email local part).
-          const displayName = await resolveDefaultDisplayName(session?.user?.email);
-          const created = await getBackend().teams.bootstrapTeam({ displayName });
-          if (created?.id) {
-            await useCurrentTeamStore.getState().setActiveTeam({
-              id: created.id,
-              name: created.name,
-              slug: created.slug ?? "",
-            });
-            // The bootstrap response is the only possible team by definition,
-            // so it is already an explicit onboarding outcome.
-            setTeamChosen(true);
-            teamSet = true;
-            console.log("[AuthGate] auto-created team", created.name);
-          } else {
-            bootErr = new Error("bootstrap returned no team id");
-          }
+          // Login onboarding. The server CAN name the org and its default team
+          // by itself, and still does when the field comes back blank — but
+          // that derivation names a company's workspace after whoever signed
+          // up first. Ask instead, seeded with the same derivation so a
+          // personal user just presses Enter. `createFirstTeam` below does the
+          // actual bootstrap once the name is in.
+          setSuggestedTeamName(suggestTeamName(session?.user));
+          setBootstrapError(null);
+          setRetrying(false);
+          markStartup("team-bootstrap:end");
+          setBootstrap("need_team_name");
+          return;
         }
       } catch (err) {
         // The deployment has self-registration off and this caller has no org
@@ -399,6 +415,49 @@ export function AuthGate({ children }: AuthGateProps) {
     bootstrappedUserId.current = null;
     setRetrying(true);
     setBootstrapNonce((n) => n + 1);
+  };
+
+  /**
+   * Finish onboarding with the name the first-run screen collected.
+   *
+   * Split out of the bootstrap effect so the name can be retyped after a
+   * failure without re-running the whole team-list probe. `displayName` still
+   * seeds the OWNER ACTOR only — it prefers the OS account name, which on a
+   * fleet-imaged machine is the IT admin, so it must never name the team.
+   */
+  const createFirstTeam = (teamName: string) => {
+    if (creatingFirstTeam) return;
+    setCreatingFirstTeam(true);
+    setBootstrapError(null);
+    void (async () => {
+      try {
+        const displayName = await resolveDefaultDisplayName(session?.user?.email);
+        const created = await getBackend().teams.bootstrapTeam({ displayName, teamName });
+        if (!created?.id) throw new Error("bootstrap returned no team id");
+        await useCurrentTeamStore.getState().setActiveTeam({
+          id: created.id,
+          name: created.name,
+          slug: created.slug ?? "",
+        });
+        // The bootstrap response is the only possible team by definition, so it
+        // is already an explicit onboarding outcome.
+        setTeamChosen(true);
+        setBootstrap("ready");
+      } catch (err) {
+        // Same 403 meaning as the bootstrap effect: self-registration is off
+        // and this caller has no org, so the way out is an invite, not a retry.
+        if (err instanceof CloudApiError && err.status === 403) {
+          setMyTeams([]);
+          await useAuthStore.getState().refreshPendingInvites();
+          setBootstrap("no_team");
+          return;
+        }
+        console.warn("[AuthGate] first team creation failed", err);
+        setBootstrapError(humanizeFcError(err));
+      } finally {
+        setCreatingFirstTeam(false);
+      }
+    })();
   };
 
   const retryNoTeamInvites = () => {
@@ -482,6 +541,22 @@ export function AuthGate({ children }: AuthGateProps) {
         onRetry={retryBootstrap}
         onSignOut={() => void signOut()}
       />
+    );
+  }
+
+  if (bootstrap === "need_team_name") {
+    removeStartupSkeleton();
+    return (
+      <>
+        <NameYourTeamScreen
+          defaultName={suggestedTeamName}
+          busy={creatingFirstTeam}
+          error={bootstrapError}
+          onSubmit={createFirstTeam}
+          onSignOut={() => void signOut()}
+        />
+        <PendingInvitesDialog onAccepted={finishPendingInvite} />
+      </>
     );
   }
 

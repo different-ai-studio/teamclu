@@ -185,6 +185,15 @@ paths:
                     account name, which on a fleet-imaged machine is not the
                     user.
                   type: [string, "null"]
+                teamName:
+                  description: >-
+                    Name the caller chose on the first-run screen — a company
+                    name, or the name of a personal small team. Applied to BOTH
+                    the organization and its default team, keeping the two in
+                    step. Absent or blank keeps the server-side derivation
+                    (nickname, then OAuth full name, then email local part), so
+                    an older client behaves exactly as before.
+                  type: [string, "null"]
       responses:
         "200":
           description: Bootstrapped team.

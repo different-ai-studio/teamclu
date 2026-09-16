@@ -436,6 +436,13 @@
       "retry": "Check invitations again",
       "checking": "Checking…"
     },
+    "nameYourTeam": {
+      "title": "Name your team",
+      "subtitle": "Your company name, or the name of your own small team. You can change it later in settings.",
+      "placeholder": "e.g. Acme Inc.",
+      "continue": "Continue",
+      "creating": "Creating…"
+    },
     "signIn": "Sign in",
     "willEmailCode": "We'll email you a 6-digit code.",
     "email": "Email",

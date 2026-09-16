@@ -63,6 +63,9 @@ export function registerTeams(router) {
     const body = ctx.json;
     const team = await ctx.repository.bootstrapTeam({
       displayName: optionalStringOrNull(body.displayName, "displayName"),
+      // What the first-run screen asked for. Names the org AND its default
+      // team; blank / absent falls back to the server-side derivation.
+      teamName: optionalStringOrNull(body.teamName, "teamName"),
     });
     return { body: team };
   });

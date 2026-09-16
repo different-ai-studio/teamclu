@@ -1114,6 +1114,10 @@ export function createSupabaseBusinessRepository(options) {
       if (callerErr || !caller?.user?.id) {
         throw new ApiError(401, "missing_auth", "authenticated user required");
       }
+      const teamName =
+        typeof input?.teamName === "string" && input.teamName.trim()
+          ? input.teamName.trim()
+          : null;
       const { data, error } = await supabase.rpc("bootstrap_login_team", {
         // FC-layer enforcement, deliberately. See FeatureFlags.allowNewOrg.
         p_allow_new_org: newOrgAllowed(),
@@ -1122,6 +1126,10 @@ export function createSupabaseBusinessRepository(options) {
         // funnelled into one shared default team.
         p_shared_org: process.env.DEFAULT_ORG_ID || null,
         p_display_name: input?.displayName ?? null,
+        // Names the org and its default team. Null keeps the old derivation
+        // (nickname → OAuth full name → email local part), so an older client
+        // that does not send it behaves exactly as before.
+        p_team_name: teamName,
       });
       if (error) {
         if (error.code === "42501" && /self-registration is disabled/i.test(error.message ?? "")) {

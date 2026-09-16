@@ -397,6 +397,13 @@ describe("AuthGate", () => {
     await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
   });
 
+  /** Onboarding now stops at the first-run naming screen; get past it. */
+  async function nameTheTeam(name = "Trial Team") {
+    const input = await screen.findByLabelText("给你的团队起个名字");
+    fireEvent.change(input, { target: { value: name } });
+    fireEvent.click(screen.getByRole("button", { name: "继续" }));
+  }
+
   it("bootstraps a first org team and switches to it before rendering the shell", async () => {
     backendMock.teams.listCurrentUserTeams.mockResolvedValueOnce([]);
     backendMock.teams.listAllMyTeams.mockResolvedValueOnce([]);
@@ -413,6 +420,16 @@ describe("AuthGate", () => {
       </AuthGate>,
     );
 
+    // No team is created until the user has named one.
+    await nameTheTeam();
+    // The submit resolves the actor display name first, so the call lands on a
+    // later tick.
+    await waitFor(() =>
+      expect(backendMock.teams.bootstrapTeam).toHaveBeenCalledWith(
+        expect.objectContaining({ teamName: "Trial Team" }),
+      ),
+    );
+
     await waitFor(() =>
       expect(currentTeamMock.setActiveTeam).toHaveBeenCalledWith({
         id: "team-new",
@@ -420,6 +437,44 @@ describe("AuthGate", () => {
         slug: "trial-team",
       }),
     );
+    await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
+  });
+
+  it("does not create anything until the name is submitted", async () => {
+    backendMock.teams.listAllMyTeams.mockResolvedValueOnce([]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await screen.findByLabelText("给你的团队起个名字");
+    expect(backendMock.teams.bootstrapTeam).not.toHaveBeenCalled();
+    expect(screen.queryByText("App shell")).not.toBeInTheDocument();
+  });
+
+  it("lets the user retype after a failed creation instead of restarting onboarding", async () => {
+    backendMock.teams.listAllMyTeams.mockResolvedValueOnce([]);
+    backendMock.teams.bootstrapTeam.mockRejectedValueOnce(new Error("boom"));
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await nameTheTeam("First Try");
+    // Still on the naming screen, with the team list probe not re-run.
+    await screen.findByLabelText("给你的团队起个名字");
+    expect(backendMock.teams.listAllMyTeams).toHaveBeenCalledTimes(1);
+
+    backendMock.teams.bootstrapTeam.mockResolvedValueOnce({
+      id: "team-2",
+      name: "Second Try",
+      slug: "second-try",
+    });
+    await nameTheTeam("Second Try");
     await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
   });
 
@@ -470,6 +525,7 @@ describe("AuthGate", () => {
       </AuthGate>,
     );
 
+    await nameTheTeam();
     await waitFor(() => expect(screen.getByText("暂未加入团队")).toBeInTheDocument());
     expect(screen.getByText("请联系管理员邀请你加入团队。")).toBeInTheDocument();
     expect(authState.refreshPendingInvites).toHaveBeenCalled();
@@ -486,13 +542,17 @@ describe("AuthGate", () => {
       </AuthGate>,
     );
 
+    await nameTheTeam("Acme");
     await waitFor(() => expect(backendMock.teams.bootstrapTeam).toHaveBeenCalled());
     // No orgId, no deviceId — the server owns the whole decision now. The
     // display name is best-effort (undefined when the OS name and email are
-    // both unavailable, as in this environment) and seeds the actor only.
-    expect(Object.keys(backendMock.teams.bootstrapTeam.mock.calls[0][0])).toEqual([
+    // both unavailable, as in this environment) and seeds the ACTOR only;
+    // teamName is what names the org and its default team.
+    expect(Object.keys(backendMock.teams.bootstrapTeam.mock.calls[0][0]).sort()).toEqual([
       "displayName",
+      "teamName",
     ]);
+    expect(backendMock.teams.bootstrapTeam.mock.calls[0][0].teamName).toBe("Acme");
   });
 
   it("asks before claiming a stashed invite the user has not confirmed (SEC-3)", async () => {
@@ -638,6 +698,9 @@ describe("AuthGate", () => {
 
     resolveTeams([]);
 
+    // An empty list is now the first-run naming screen, not an auto-created
+    // team — but it is still real, interactive UI, so the skeleton comes down.
+    await nameTheTeam();
     await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
     expect(removeStartupSkeletonMock).toHaveBeenCalled();
   });
