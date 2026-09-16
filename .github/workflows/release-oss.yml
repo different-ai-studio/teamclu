@@ -87,6 +87,11 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
+      # Stable GHA cache namespace across brands and nightly version bumps.
+      # Measured hit rate was ~13% when the key effectively thrashed; pin by
+      # rustc target only so teamclu/copilot361 share deps and beta.N→N+1
+      # still hits. Objects are target-specific, so the target MUST be in the key.
+      SCCACHE_GHA_VERSION: release-oss-1.97.1-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -217,27 +222,23 @@ jobs:
           ) > /tmp/frontend.log 2>&1 &
           PID_FRONTEND=$!
 
+          # One cargo invocation for both sidecars: shared deps compile once.
+          # Two parallel `cargo build -p …` used to double-schedule the same
+          # crates when sccache was cold (hit rate ~13%).
           (
             set -e
-            echo "Building teamclu-introspect for ${{ matrix.target }}..."
-            TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/desktop/Cargo.toml | jq -r .target_directory)"
-            cargo build --release --locked --manifest-path apps/desktop/Cargo.toml -p teamclu-introspect --target ${{ matrix.target }}
+            echo "Building amuxd + teamclu-introspect for ${{ matrix.target }}..."
+            TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+            cargo build --release --locked \
+              -p amuxd -p teamclu-introspect \
+              --target ${{ matrix.target }}
             cp "$TARGET_DIR/${{ matrix.target }}/release/teamclu-introspect" apps/desktop/binaries/teamclu-introspect-${{ matrix.target }}
-            chmod +x apps/desktop/binaries/teamclu-introspect-${{ matrix.target }}
-            echo "teamclu-introspect ready"
-          ) > /tmp/introspect.log 2>&1 &
-          PID_INTROSPECT=$!
-
-          (
-            set -e
-            echo "Building amuxd for ${{ matrix.target }}..."
-            TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/daemon/Cargo.toml | jq -r .target_directory)"
-            cargo build --release --locked --manifest-path apps/daemon/Cargo.toml -p amuxd --target ${{ matrix.target }}
             cp "$TARGET_DIR/${{ matrix.target }}/release/amuxd" apps/desktop/binaries/amuxd-${{ matrix.target }}
+            chmod +x apps/desktop/binaries/teamclu-introspect-${{ matrix.target }}
             chmod +x apps/desktop/binaries/amuxd-${{ matrix.target }}
-            echo "amuxd ready"
-          ) > /tmp/amuxd.log 2>&1 &
-          PID_AMUXD=$!
+            echo "sidecars ready"
+          ) > /tmp/sidecars.log 2>&1 &
+          PID_SIDECARS=$!
 
           (
             set -e
@@ -269,14 +270,14 @@ jobs:
           PID_CERT=$!
 
           FAILED=0
-          wait $PID_FRONTEND   || { echo "::error::Frontend build failed:"; cat /tmp/frontend.log; FAILED=1; }
-          wait $PID_INTROSPECT || { echo "::error::introspect build failed:"; cat /tmp/introspect.log; FAILED=1; }
-          wait $PID_AMUXD      || { echo "::error::amuxd build failed:"; cat /tmp/amuxd.log; FAILED=1; }
-          wait $PID_FUNASR     || { echo "::error::FunASR sidecar preparation failed:"; cat /tmp/funasr.log; FAILED=1; }
-          wait $PID_CERT       || { echo "::error::Certificate import failed:"; cat /tmp/cert.log; FAILED=1; }
+          wait $PID_FRONTEND || { echo "::error::Frontend build failed:"; cat /tmp/frontend.log; FAILED=1; }
+          wait $PID_SIDECARS || { echo "::error::sidecar build failed:"; cat /tmp/sidecars.log; FAILED=1; }
+          wait $PID_FUNASR   || { echo "::error::FunASR sidecar preparation failed:"; cat /tmp/funasr.log; FAILED=1; }
+          wait $PID_CERT     || { echo "::error::Certificate import failed:"; cat /tmp/cert.log; FAILED=1; }
           if [ "$FAILED" -ne 0 ]; then exit 1; fi
           echo "All parallel tasks completed"
           ls -lh apps/desktop/binaries/
+          sccache --show-stats || true
 
       - name: Sign nested Mach-O in bundled sidecars (notarization)
         shell: bash
@@ -286,6 +287,12 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: python3 scripts/finalize-oss-release-conf.py
+
+      # finalize rewrites build.config.json (updater endpoints) which invalidates
+      # teamclu's build.rs — compile the desktop binary here so tauri-action is
+      # mostly bundle + notarize instead of another full rustc pass.
+      - name: Prebuild teamclu desktop binary
+        run: cargo build --release --locked -p teamclu --target ${{ matrix.target }}
 
       # Build only — no tagName, so tauri-action does NOT create a GitHub Release.
       - uses: tauri-apps/tauri-action@v1
@@ -433,6 +440,8 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
+      # See build-macos: stable key by target so brands + nightly bumps share deps.
+      SCCACHE_GHA_VERSION: release-oss-1.97.1-x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v7
         with:
@@ -542,29 +551,39 @@ jobs:
           export OSS_BASE_URL="https://${OSS_BUCKET}.${host}"
           node scripts/update-tauri-config.js
 
-      - name: Build frontend
-        shell: bash
-        run: pnpm --filter @teamclu/app build
-
-      - name: Prepare binaries directory
-        shell: bash
-        run: mkdir -p apps/desktop/binaries
-
-      - name: Build teamclu-introspect sidecar
+      # Match macOS: frontend ∥ unified sidecar cargo. Windows used to run these
+      # three steps serially (~0.5 + 2 + 12 min); amuxd dominates, so parallel
+      # hides frontend+introspect under it.
+      - name: Build frontend + sidecars (parallel)
         shell: bash
         run: |
-          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/desktop/Cargo.toml | jq -r .target_directory)"
-          cargo build --release --locked --manifest-path apps/desktop/Cargo.toml -p teamclu-introspect
-          cp "$TARGET_DIR/release/teamclu-introspect.exe" apps/desktop/binaries/teamclu-introspect-x86_64-pc-windows-msvc.exe
-          echo "teamclu-introspect ready"
+          mkdir -p apps/desktop/binaries
 
-      - name: Build amuxd sidecar
-        shell: bash
-        run: |
-          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/daemon/Cargo.toml | jq -r .target_directory)"
-          cargo build --release --locked --manifest-path apps/daemon/Cargo.toml -p amuxd
-          cp "$TARGET_DIR/release/amuxd.exe" apps/desktop/binaries/amuxd-x86_64-pc-windows-msvc.exe
-          echo "amuxd sidecar ready"
+          (
+            set -e
+            pnpm --filter @teamclu/app build
+            echo "frontend build done"
+          ) > /tmp/frontend.log 2>&1 &
+          PID_FRONTEND=$!
+
+          (
+            set -e
+            echo "Building amuxd + teamclu-introspect..."
+            TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+            cargo build --release --locked -p amuxd -p teamclu-introspect
+            cp "$TARGET_DIR/release/teamclu-introspect.exe" apps/desktop/binaries/teamclu-introspect-x86_64-pc-windows-msvc.exe
+            cp "$TARGET_DIR/release/amuxd.exe" apps/desktop/binaries/amuxd-x86_64-pc-windows-msvc.exe
+            echo "sidecars ready"
+          ) > /tmp/sidecars.log 2>&1 &
+          PID_SIDECARS=$!
+
+          FAILED=0
+          wait $PID_FRONTEND || { echo "::error::Frontend build failed:"; cat /tmp/frontend.log; FAILED=1; }
+          wait $PID_SIDECARS || { echo "::error::sidecar build failed:"; cat /tmp/sidecars.log; FAILED=1; }
+          if [ "$FAILED" -ne 0 ]; then exit 1; fi
+          echo "All parallel tasks completed"
+          ls -lh apps/desktop/binaries/ || ls -lh apps/desktop/binaries
+          sccache --show-stats || true
 
       - name: Finalize tauri.conf.json (version from tag + frontend prebuilt + OSS updater endpoint)
         shell: bash
@@ -575,6 +594,12 @@ jobs:
           # displayName into the mojibake window title of #1403.
           PYTHONUTF8: "1"
         run: python3 scripts/finalize-oss-release-conf.py
+
+      # Must follow finalize (build.config.json updater rewrite invalidates build.rs).
+      # Match tauri-action's `--no-default-features` so this artifact is reused.
+      - name: Prebuild teamclu desktop binary
+        shell: bash
+        run: cargo build --release --locked -p teamclu --no-default-features
 
       # Build only — no tagName, so tauri-action does NOT create a GitHub Release.
       - uses: tauri-apps/tauri-action@v1
