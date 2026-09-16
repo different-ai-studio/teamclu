@@ -33,6 +33,18 @@ function assertNewOrgAllowed(): void {
   }
 }
 
+/** Map the turn-trace RPCs' SQLSTATEs onto HTTP errors. */
+function turnTraceRpcError(error: { code?: string; message?: string }): unknown {
+  if (error.code === "P0002") return new ApiError(404, "not_found", "message not found");
+  if (error.code === "42501") {
+    return new ApiError(403, "forbidden", "only the agent that wrote this reply may attach its trace");
+  }
+  if (error.code === "22023") {
+    return new ApiError(400, "validation_failed", error.message ?? "invalid trace");
+  }
+  return error;
+}
+
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import {
@@ -1667,6 +1679,48 @@ export function createSupabaseBusinessRepository(options) {
         .delete()
         .eq("id", messageId);
       if (error) throw error;
+    },
+
+    // Turn execution traces (#1455 §7.2). amux.messages has no UPDATE policy, so
+    // the pointer is written by SECURITY DEFINER functions that admit only the
+    // agent that authored the reply and touch only `metadata.trace`, merged in
+    // SQL (20260916120000_message_turn_trace.sql).
+    async authorizeTurnTraceUpload({ teamId, sessionId, turnId, messageId }) {
+      const { data, error } = await supabase.rpc("authorize_turn_trace_upload", {
+        p_team_id: teamId,
+        p_session_id: sessionId,
+        p_turn_id: turnId,
+        p_message_id: messageId,
+      });
+      if (error) throw turnTraceRpcError(error);
+      return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+    },
+
+    async recordTurnTrace({ teamId, sessionId, turnId, messageId }, trace) {
+      const { data, error } = await supabase.rpc("record_turn_trace", {
+        p_team_id: teamId,
+        p_session_id: sessionId,
+        p_turn_id: turnId,
+        p_message_id: messageId,
+        p_trace: trace,
+      });
+      if (error) throw turnTraceRpcError(error);
+      return data;
+    },
+
+    async getTurnTrace({ teamId, sessionId, turnId }) {
+      // Only agent rows carry a turn_id, and a turn has one cloud reply per
+      // session, so this reads a row or two off messages_turn_id_idx. RLS limits
+      // it to session participants.
+      const { data, error } = await supabase
+        .from("messages")
+        .select("trace:metadata->trace")
+        .eq("team_id", teamId)
+        .eq("session_id", sessionId)
+        .eq("turn_id", turnId)
+        .limit(10);
+      if (error) throw error;
+      return (data ?? []).map((row: any) => row.trace).find((trace) => trace) ?? null;
     },
 
     async listWorkspaces({ teamId, limit = 50, cursor = null, agentId = null }: any = {}) {

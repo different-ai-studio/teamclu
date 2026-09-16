@@ -129,9 +129,20 @@ export interface MultipartSupport {
   abort(objectPath: string, uploadId: string): Promise<void>;
 }
 
+/** Constraints a presigned upload can carry. */
+export interface UploadUrlOptions {
+  /**
+   * Exact body length, bound into the signature where the backend supports it
+   * (S3: `content-length` becomes a signed header, so any other length fails
+   * the signature). Supabase signed upload URLs cannot carry it; callers that
+   * need the guarantee must still check `stat` after the upload.
+   */
+  contentLength?: number;
+}
+
 /** What sync-handlers and the skills routes need from a blob store. */
 export interface BlobStorage {
-  createUploadUrl(objectPath: string): Promise<string>;
+  createUploadUrl(objectPath: string, options?: UploadUrlOptions): Promise<string>;
   createDownloadUrl(objectPath: string, expiresIn?: number): Promise<string>;
   /** `null` when the object does not exist. */
   stat(objectPath: string): Promise<{ size: number } | null>;
@@ -258,13 +269,17 @@ export function s3BlobStorage(bucket: () => string, prefix: () => string): BlobS
     return p ? `${p}/${objectPath}` : objectPath;
   };
   return {
-    async createUploadUrl(objectPath) {
+    async createUploadUrl(objectPath, options = {}) {
       // `as any`: two @aws-sdk major versions coexist in the tree, so the
       // presigner's `Client` and this `S3Client` have separate declarations of
       // a private field. Same cast `index.ts` uses for app-bundle uploads.
       return getSignedUrl(
         getS3Client() as any,
-        new PutObjectCommand({ Bucket: bucket(), Key: key(objectPath) }),
+        new PutObjectCommand({
+          Bucket: bucket(),
+          Key: key(objectPath),
+          ContentLength: options.contentLength,
+        }),
         { expiresIn: 900 },
       );
     },

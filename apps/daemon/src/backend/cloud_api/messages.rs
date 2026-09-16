@@ -1,4 +1,4 @@
-use super::super::{BackendResult, StoredMessage};
+use super::super::{BackendError, BackendResult, StoredMessage, TurnTraceStatus, TurnTraceUpload};
 use super::client::empty_to_none;
 use super::CloudApiBackend;
 use chrono::{DateTime, Utc};
@@ -243,6 +243,91 @@ impl CloudApiBackend {
             out.push(row);
         }
         out
+    }
+
+    pub(super) async fn prepare_turn_trace_upload_impl(
+        &self,
+        upload: &TurnTraceUpload<'_>,
+    ) -> BackendResult<String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Body<'a> {
+            team_id: &'a str,
+            message_id: &'a str,
+            size: u64,
+            sha256: &'a str,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Resp {
+            presigned_put: String,
+        }
+        let resp: Resp = self
+            .post(
+                &format!(
+                    "/v1/sessions/{}/turns/{}/trace/prepare",
+                    upload.session_id, upload.turn_id
+                ),
+                &Body {
+                    team_id: &self.cfg.team_id,
+                    message_id: upload.message_id,
+                    size: upload.size,
+                    sha256: upload.sha256,
+                },
+                None,
+            )
+            .await?;
+        Ok(resp.presigned_put)
+    }
+
+    /// Straight to storage on the backend's shared client, so the upload gets
+    /// its connection pool and request timeout rather than a fresh client that
+    /// could hang forever.
+    pub(super) async fn put_turn_trace_blob_impl(
+        &self,
+        presigned_put: &str,
+        blob: bytes::Bytes,
+    ) -> BackendResult<()> {
+        crate::sync::oss::fc_client::put_presigned(&self.http, presigned_put, blob)
+            .await
+            .map_err(|message| BackendError::Provider {
+                provider: "cloud_api",
+                code: None,
+                message: format!("turn trace {message}"),
+            })
+    }
+
+    pub(super) async fn complete_turn_trace_upload_impl(
+        &self,
+        upload: &TurnTraceUpload<'_>,
+        status: TurnTraceStatus,
+    ) -> BackendResult<()> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Body<'a> {
+            team_id: &'a str,
+            message_id: &'a str,
+            size: u64,
+            sha256: &'a str,
+            status: &'static str,
+        }
+        let _: serde::de::IgnoredAny = self
+            .post(
+                &format!(
+                    "/v1/sessions/{}/turns/{}/trace/complete",
+                    upload.session_id, upload.turn_id
+                ),
+                &Body {
+                    team_id: &self.cfg.team_id,
+                    message_id: upload.message_id,
+                    size: upload.size,
+                    sha256: upload.sha256,
+                    status: status.as_str(),
+                },
+                None,
+            )
+            .await?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

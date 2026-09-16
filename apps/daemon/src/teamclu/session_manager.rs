@@ -1162,9 +1162,7 @@ impl SessionManager {
     /// session/live as `message.created`, and (if `persist_backend`) write
     /// to backend `messages`.
     ///
-    /// Returns `true` when a requested cloud persist succeeded (or was not
-    /// requested). Returns `false` when `persist_backend` was requested but
-    /// `insert_message` failed — callers must not advance catchup cursors.
+    /// See [`CloudPersist`] for what the result means.
     #[allow(clippy::too_many_arguments)]
     pub async fn emit_agent_message(
         &self,
@@ -1179,7 +1177,7 @@ impl SessionManager {
         sequence: u64,
         persist_backend: bool,
         backend: Option<&std::sync::Arc<dyn Backend>>,
-    ) -> bool {
+    ) -> CloudPersist {
         // An agent reply addresses no one, and it is written by the same daemon
         // that would answer a mention — so there is nothing to claim either.
         self.emit_session_message(
@@ -1222,7 +1220,7 @@ impl SessionManager {
         &self,
         write: SessionMessageWrite<'_>,
         backend: Option<&std::sync::Arc<dyn Backend>>,
-    ) -> bool {
+    ) -> CloudPersist {
         let SessionMessageWrite {
             session_id,
             sender_actor_id,
@@ -1296,35 +1294,59 @@ impl SessionManager {
         // Await the insert: catchup after restart reads cloud messages, so a
         // fire-and-forget write can race with daemon shutdown and leave an
         // @mention unanswered (re-prompt after interrupt).
-        if persist_backend {
-            let Some(sb) = backend else {
-                warn!(session_id, "persist_backend requested but no backend");
-                return false;
-            };
-            let team_id = self.team_id.clone();
-            // message_kind_to_string is the pub(crate) fn defined later in this file.
-            let kind_str = message_kind_to_string(kind as i32);
-            if let Err(e) = sb
-                .insert_message(
-                    &message_id,
-                    &team_id,
-                    session_id,
-                    sender_actor_id,
-                    &kind_str,
-                    content,
-                    metadata_json,
-                    model,
-                    turn_id,
-                    reply_to_message_id,
-                    sequence,
-                )
-                .await
-            {
-                warn!(?e, "backend insert_message failed");
-                return false;
-            }
+        if !persist_backend {
+            return CloudPersist::NotRequested;
         }
-        true
+        let Some(sb) = backend else {
+            warn!(session_id, "persist_backend requested but no backend");
+            return CloudPersist::Failed;
+        };
+        let team_id = self.team_id.clone();
+        // message_kind_to_string is the pub(crate) fn defined later in this file.
+        let kind_str = message_kind_to_string(kind as i32);
+        if let Err(e) = sb
+            .insert_message(
+                &message_id,
+                &team_id,
+                session_id,
+                sender_actor_id,
+                &kind_str,
+                content,
+                metadata_json,
+                model,
+                turn_id,
+                reply_to_message_id,
+                sequence,
+            )
+            .await
+        {
+            warn!(?e, "backend insert_message failed");
+            return CloudPersist::Failed;
+        }
+        CloudPersist::Persisted { message_id }
+    }
+}
+
+/// What happened to the cloud half of a session message write.
+///
+/// Three states, not an `Option`: "the caller did not ask for a cloud row" and
+/// "the cloud row failed" must not look alike, or a local-only write reads as a
+/// failure (or a failure as success) depending on which way the caller tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudPersist {
+    /// `persist_backend` was false; nothing was sent.
+    NotRequested,
+    /// The row was inserted under this id.
+    Persisted { message_id: String },
+    /// A cloud row was requested and did not land. Callers must not advance
+    /// catchup cursors past it.
+    Failed,
+}
+
+impl CloudPersist {
+    /// False only for a requested write that did not land.
+    pub fn ok(&self) -> bool {
+        !matches!(self, CloudPersist::Failed)
     }
 }
 

@@ -31,6 +31,10 @@ pub(crate) struct CronTurnOutcome {
     pub(crate) reply: crate::runtime::turn_aggregator::EmittedMessage,
     /// True when wall-clock or idle silence budget expired (possibly with salvaged text).
     pub(crate) timed_out: bool,
+    /// The execution trace of `reply`'s turn. The turn task owns the event
+    /// channel for the whole turn, so it records the trace itself rather than
+    /// leaving it to the run loop, which only sees best-effort live copies.
+    pub(crate) trace: Option<crate::runtime::turn_trace::TurnTrace>,
 }
 
 pub(crate) struct CronTurnDone {
@@ -375,7 +379,11 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
 
         let result = match turn_result {
             Ok(outcome) => {
-                let reply = outcome.reply;
+                let CronTurnOutcome {
+                    reply,
+                    timed_out,
+                    trace,
+                } = outcome;
                 // `send_prompt_and_await_reply` drains the ACP channel directly,
                 // bypassing `forward_agent_event`, so we must persist the finalized
                 // AgentReply here — same path as collab chat (TOML + live + cloud).
@@ -397,26 +405,48 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                                 .unwrap_or_default();
                             (model, seq, reply_to)
                         };
-                        tc.emit_agent_message(
-                            &remote_session_id,
-                            &actor_id,
-                            crate::proto::teamclu::MessageKind::AgentReply,
-                            &reply.content,
-                            &reply.metadata_json,
-                            &model,
-                            &reply.turn_id,
-                            &reply_to,
-                            seq,
-                            true,
-                            Some(&self.backend),
-                        )
-                        .await;
-                        info!(
-                            session_id = %remote_session_id,
-                            turn_id = %reply.turn_id,
-                            bytes = reply.content.len(),
-                            "cron: persisted AgentReply to session/live and cloud"
-                        );
+                        let persisted = tc
+                            .emit_agent_message(
+                                &remote_session_id,
+                                &actor_id,
+                                crate::proto::teamclu::MessageKind::AgentReply,
+                                &reply.content,
+                                &reply.metadata_json,
+                                &model,
+                                &reply.turn_id,
+                                &reply_to,
+                                seq,
+                                true,
+                                Some(&self.backend),
+                            )
+                            .await;
+                        match persisted {
+                            crate::teamclu::session_manager::CloudPersist::Persisted {
+                                message_id,
+                            } => {
+                                info!(
+                                    session_id = %remote_session_id,
+                                    turn_id = %reply.turn_id,
+                                    bytes = reply.content.len(),
+                                    "cron: persisted AgentReply to session/live and cloud"
+                                );
+                                if let Some(trace) = trace {
+                                    crate::runtime::turn_trace::spawn_trace_upload(
+                                        self.backend.clone(),
+                                        trace,
+                                        vec![crate::runtime::turn_trace::TraceTarget {
+                                            session_id: remote_session_id.clone(),
+                                            message_id,
+                                        }],
+                                    );
+                                }
+                            }
+                            _ => warn!(
+                                session_id = %remote_session_id,
+                                turn_id = %reply.turn_id,
+                                "cron: AgentReply reached session/live but not the cloud"
+                            ),
+                        }
                     } else {
                         warn!(
                             session_id = %remote_session_id,
@@ -429,7 +459,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                     "result": {
                         "text": reply.content,
                         "session_id": remote_session_id,
-                        "timed_out": outcome.timed_out,
+                        "timed_out": timed_out,
                     },
                 })
             }
@@ -631,7 +661,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             serde_json::json!({ "mention_actor_ids": [self.actor_id.clone()] }).to_string();
 
         let backend = self.backend.clone();
-        let ok = {
+        let persisted = {
             let tc = self.teamclu.as_ref().expect("checked above");
             tc.emit_session_message(
                 crate::teamclu::session_manager::SessionMessageWrite {
@@ -659,7 +689,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             .await
         };
 
-        if ok {
+        if persisted.ok() {
             info!(
                 session_id,
                 bytes = prompt.len(),
@@ -777,6 +807,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         let mut segments: Vec<String> = Vec::new();
         let mut live = String::new();
         let mut timed_out = false;
+        let mut trace: Option<crate::runtime::turn_trace::TurnTrace> = None;
         let result: anyhow::Result<CronTurnOutcome> = loop {
             let now = std::time::Instant::now();
             let wall_remaining = wall_deadline.saturating_duration_since(now);
@@ -793,6 +824,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                     .map(|reply| CronTurnOutcome {
                         reply,
                         timed_out: true,
+                        trace: None,
                     })
                     .map_err(anyhow::Error::msg);
             }
@@ -813,6 +845,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                         Ok(reply) => Ok(CronTurnOutcome {
                             reply,
                             timed_out: false,
+                            trace: None,
                         }),
                         Err(_) => Err(anyhow::anyhow!("ACP event channel closed before reply")),
                     };
@@ -823,6 +856,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                         .map(|reply| CronTurnOutcome {
                             reply,
                             timed_out: true,
+                            trace: None,
                         })
                         .map_err(anyhow::Error::msg);
                 }
@@ -839,6 +873,12 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                 &event,
             );
 
+            let child_session = if event.acp_session_id == acp_sid {
+                ""
+            } else {
+                event.acp_session_id.as_str()
+            };
+
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
                 match crate::runtime::turn_reply::gateway_error_action(err, &segments, &live) {
                     crate::runtime::turn_reply::GatewayErrorAction::Continue => {
@@ -853,12 +893,17 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                     }
                     crate::runtime::turn_reply::GatewayErrorAction::ReturnReply(_) => {
                         tracing::warn!("ACP error after reply text; salvaging for cron");
+                        // Not ingested below, so record it into the open turn here.
+                        if let Some(trace) = trace.as_mut() {
+                            trace.record(0, child_session, &event.event);
+                        }
                         break crate::runtime::turn_reply::salvage_timeout_emitted(
                             &segments, &live,
                         )
                         .map(|reply| CronTurnOutcome {
                             reply,
                             timed_out: false,
+                            trace: None,
                         })
                         .map_err(anyhow::Error::msg);
                     }
@@ -879,12 +924,28 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                         && sc.new_status == crate::proto::amux::AgentStatus::Idle as i32
             );
 
-            let emitted = {
+            let (emitted, trace_turn_id) = {
                 let mut mgr = agents.lock().await;
                 mgr.aggregator_mut(&agent_id)
-                    .map(|agg| agg.ingest(&event.event))
+                    .map(|agg| {
+                        let before = agg.current_turn_id().map(str::to_owned);
+                        let emitted = agg.ingest(&event.event);
+                        // The event that opens a turn only has an id after ingest.
+                        let turn_id = before.or_else(|| agg.current_turn_id().map(str::to_owned));
+                        (emitted, turn_id)
+                    })
                     .unwrap_or_default()
             };
+            if let Some(turn_id) =
+                trace_turn_id.filter(|_| crate::runtime::turn_trace::is_traced(&event.event))
+            {
+                if trace.as_ref().is_none_or(|t| t.turn_id() != turn_id) {
+                    trace = Some(crate::runtime::turn_trace::TurnTrace::new(turn_id));
+                }
+                if let Some(trace) = trace.as_mut() {
+                    trace.record(0, child_session, &event.event);
+                }
+            }
             if turn_ended {
                 crate::runtime::turn_reply::absorb_emitted(
                     emitted.clone(),
@@ -896,10 +957,16 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                         &segments, &live, &emitted,
                     ),
                     timed_out: false,
+                    trace: None,
                 });
             }
             crate::runtime::turn_reply::absorb_emitted(emitted, &mut segments, &mut live);
         };
+
+        let result = result.map(|mut outcome| {
+            outcome.trace = trace.filter(|t| t.turn_id() == outcome.reply.turn_id);
+            outcome
+        });
 
         // 4. Stop occupying the workspace when the budget expired but the
         //    model is still going. ACP cancel alone leaves status Active.

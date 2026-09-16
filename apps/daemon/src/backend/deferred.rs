@@ -579,6 +579,31 @@ impl Backend for DeferredBackend {
             .await
     }
 
+    async fn prepare_turn_trace_upload(
+        &self,
+        upload: &super::TurnTraceUpload<'_>,
+    ) -> BackendResult<String> {
+        self.inner()?.prepare_turn_trace_upload(upload).await
+    }
+
+    async fn put_turn_trace_blob(
+        &self,
+        presigned_put: &str,
+        blob: bytes::Bytes,
+    ) -> BackendResult<()> {
+        self.inner()?.put_turn_trace_blob(presigned_put, blob).await
+    }
+
+    async fn complete_turn_trace_upload(
+        &self,
+        upload: &super::TurnTraceUpload<'_>,
+        status: super::TurnTraceStatus,
+    ) -> BackendResult<()> {
+        self.inner()?
+            .complete_turn_trace_upload(upload, status)
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn insert_message(
         &self,

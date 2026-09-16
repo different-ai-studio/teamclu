@@ -72,6 +72,36 @@ pub struct BootstrapMqttOverride {
 #[cfg(test)]
 pub mod mock;
 
+/// One turn trace blob, as the daemon claims it to FC (#1455 §7.2). FC derives
+/// the object key from the ids, so the daemon never builds one.
+#[derive(Debug, Clone, Copy)]
+pub struct TurnTraceUpload<'a> {
+    pub session_id: &'a str,
+    pub turn_id: &'a str,
+    /// The turn-final reply the trace hangs off.
+    pub message_id: &'a str,
+    /// Compressed size in bytes.
+    pub size: u64,
+    /// SHA-256 hex of the compressed bytes.
+    pub sha256: &'a str,
+}
+
+/// Outcome reported on `complete_turn_trace_upload`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnTraceStatus {
+    Uploaded,
+    Failed,
+}
+
+impl TurnTraceStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TurnTraceStatus::Uploaded => "uploaded",
+            TurnTraceStatus::Failed => "failed",
+        }
+    }
+}
+
 /// One model exposed by the team's managed LLM gateway.
 #[derive(Debug, Clone)]
 pub struct ManagedLlmModelInfo {
@@ -779,6 +809,29 @@ pub trait Backend: Send + Sync {
         title: &str,
         cron_job_id: Option<&str>,
     ) -> BackendResult<String>;
+
+    /// Presign the PUT for a turn trace blob (#1455 §7.2); returns the URL.
+    /// FC only signs for the author of `upload.message_id`, and answers
+    /// `conflict` once that message's trace is already uploaded.
+    async fn prepare_turn_trace_upload(
+        &self,
+        upload: &TurnTraceUpload<'_>,
+    ) -> BackendResult<String>;
+
+    /// PUT the compressed trace to the URL `prepare_turn_trace_upload` returned.
+    async fn put_turn_trace_blob(
+        &self,
+        presigned_put: &str,
+        blob: bytes::Bytes,
+    ) -> BackendResult<()>;
+
+    /// Record the outcome on the message. FC writes `metadata.trace` itself,
+    /// merging that one key server-side, so nothing else in the row is touched.
+    async fn complete_turn_trace_upload(
+        &self,
+        upload: &TurnTraceUpload<'_>,
+        status: TurnTraceStatus,
+    ) -> BackendResult<()>;
 
     /// Insert one row into `public.messages` from the daemon's runtime.
     #[allow(clippy::too_many_arguments)]

@@ -483,7 +483,7 @@ impl DaemonServer {
         // emitted messages (cloud `messages.sequence`). The envelope
         // append below uses the same value, keeping a 1:1 link between an
         // ACP event boundary and the messages that flowed from it.
-        let (mut emitted, turn_id, seq, reply_to_message_id, clear_reply_to) = {
+        let (mut emitted, turn_id, turn_id_opened, seq, reply_to_message_id, clear_reply_to) = {
             let mut agents = self.agents.lock().await;
             let seq = agents
                 .get_handle_mut(agent_id)
@@ -524,6 +524,15 @@ impl DaemonServer {
                 Some(agg) if !is_child_event => agg.ingest(&acp_event),
                 _ => Vec::new(),
             };
+            // The event that opens a turn has no turn id until it is ingested.
+            let turn_id_opened = if turn_id_before.is_none() {
+                agents
+                    .aggregator(agent_id)
+                    .and_then(|a| a.current_turn_id())
+                    .map(str::to_string)
+            } else {
+                None
+            };
             if !violations.is_empty() {
                 if let Some(handle) = agents.get_handle(agent_id) {
                     tracing::warn!(
@@ -538,8 +547,24 @@ impl DaemonServer {
                 crate::runtime::apply_violations_to_emitted(&mut emitted, &violations, &tid);
             }
             let turn_id = turn_id_before.unwrap_or_default();
-            (emitted, turn_id, seq, reply_to_message_id, clear_reply_to)
+            (
+                emitted,
+                turn_id,
+                turn_id_opened,
+                seq,
+                reply_to_message_id,
+                clear_reply_to,
+            )
         };
+        // Record before emitting: the Active→Idle that ends a turn is also the
+        // event that hands its trace over below.
+        self.turn_traces.record(
+            agent_id,
+            turn_id_opened.as_deref().unwrap_or(&turn_id),
+            seq,
+            if is_child_event { &acp_session_id } else { "" },
+            &acp_event,
+        );
         if !collab_sessions.is_empty() && !emitted.is_empty() {
             if let Some(tc) = self.teamclu.as_ref() {
                 let actor_id = self.actor_id.clone();
@@ -583,8 +608,9 @@ impl DaemonServer {
                         }
                     }
                     let mut cloud_ok = true;
+                    let mut trace_targets = Vec::new();
                     for sid in &collab_sessions {
-                        let ok = tc
+                        let persisted = tc
                             .emit_agent_message(
                                 sid,
                                 &actor_id,
@@ -599,7 +625,25 @@ impl DaemonServer {
                                 Some(&self.backend),
                             )
                             .await;
-                        cloud_ok = cloud_ok && ok;
+                        cloud_ok = cloud_ok && persisted.ok();
+                        if let crate::teamclu::session_manager::CloudPersist::Persisted {
+                            message_id,
+                        } = persisted
+                        {
+                            trace_targets.push(crate::runtime::turn_trace::TraceTarget {
+                                session_id: sid.clone(),
+                                message_id,
+                            });
+                        }
+                    }
+                    if persist {
+                        if let Some(trace) = self.turn_traces.take(agent_id, &turn_id) {
+                            crate::runtime::turn_trace::spawn_trace_upload(
+                                self.backend.clone(),
+                                trace,
+                                trace_targets,
+                            );
+                        }
                     }
                     // Harden cursor when a turn ends as interrupted: send_prompt
                     // may have returned Err and skipped persist_runtime_cursor.
@@ -616,6 +660,18 @@ impl DaemonServer {
             if let Some(handle) = self.agents.lock().await.get_handle_mut(agent_id) {
                 handle.pending_reply_to_message_id = None;
             }
+        }
+        // A turn that ended without a persisted reply keeps no trace around;
+        // one that had a reply already handed its trace over above.
+        if !is_child_event
+            && matches!(
+                acp_event.event.as_ref(),
+                Some(amux::acp_event::Event::StatusChange(sc))
+                    if sc.new_status == amux::AgentStatus::Idle as i32
+                        || sc.new_status == amux::AgentStatus::Stopped as i32
+            )
+        {
+            self.turn_traces.discard(agent_id);
         }
 
         if defer_idle_status_update {
@@ -1605,5 +1661,102 @@ mod external_mention_tests {
         );
         // A bracket that is not a header is content and stays put.
         assert_eq!(outbound_body("A", "[TODO] ship it"), "A：[TODO] ship it");
+    }
+}
+
+#[cfg(test)]
+mod turn_trace_tests {
+    use crate::backend::mock::MockBackend;
+    use crate::backend::{Backend, TurnTraceStatus};
+    use crate::daemon::server::tests::test_server_with_cloud_api;
+    use crate::proto::amux;
+    use crate::proto::amux::acp_event::Event;
+    use crate::runtime::acp_event_frame::AcpEventFrame;
+    use crate::runtime::turn_aggregator::TurnAggregator;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn frame(event: Event) -> AcpEventFrame {
+        AcpEventFrame::new(
+            "",
+            amux::AcpEvent {
+                event: Some(event),
+                model: String::new(),
+            },
+        )
+    }
+
+    fn status(old: amux::AgentStatus, new: amux::AgentStatus) -> Event {
+        Event::StatusChange(amux::AcpStatusChange {
+            old_status: old as i32,
+            new_status: new as i32,
+        })
+    }
+
+    /// The whole path: events recorded as they pass, the turn-final reply
+    /// persisted, and the trace uploaded against that reply's id — without the
+    /// turn end ever reading the agent's history file.
+    #[tokio::test]
+    async fn a_finished_turn_uploads_its_trace_against_the_persisted_reply() {
+        let mock = MockBackend::with_identity("team-test", "agent-actor");
+        let backend: Arc<dyn Backend> = Arc::new(mock.clone());
+        let mut ts = test_server_with_cloud_api(backend);
+        ts.server
+            .agents
+            .lock()
+            .await
+            .aggregators
+            .insert("session-1".to_string(), TurnAggregator::new());
+
+        let turn = [
+            status(amux::AgentStatus::Idle, amux::AgentStatus::Active),
+            Event::Thinking(amux::AcpThinking {
+                text: "look first".into(),
+            }),
+            Event::ToolUse(amux::AcpToolUse {
+                tool_id: "t1".into(),
+                tool_name: "read".into(),
+                ..Default::default()
+            }),
+            Event::ToolResult(amux::AcpToolResult {
+                tool_id: "t1".into(),
+                success: true,
+                summary: "ok".into(),
+                ..Default::default()
+            }),
+            Event::Output(amux::AcpOutput {
+                text: "done".into(),
+                is_complete: false,
+            }),
+            status(amux::AgentStatus::Active, amux::AgentStatus::Idle),
+        ];
+        for event in turn {
+            ts.server.forward_agent_event("session-1", frame(event)).await;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while mock.state().turn_trace_completions.is_empty() {
+            assert!(Instant::now() < deadline, "trace upload never completed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let st = mock.state();
+        assert_eq!(st.messages_inserted.len(), 1, "one turn-final reply");
+        assert_eq!(st.turn_trace_completions.len(), 1);
+        let (message_id, size, sha256, outcome) = &st.turn_trace_completions[0];
+        assert_eq!(message_id, &st.messages_inserted[0].id);
+        assert_eq!(*outcome, TurnTraceStatus::Uploaded);
+        assert!(*size > 0);
+        assert_eq!(sha256.len(), 64);
+        assert!(
+            !st.messages_inserted[0].metadata_json.contains("\"trace\""),
+            "the daemon never writes the pointer itself"
+        );
+        drop(st);
+        assert_eq!(
+            ts.server.turn_traces.active_len(),
+            0,
+            "the finished turn left nothing buffered"
+        );
     }
 }
