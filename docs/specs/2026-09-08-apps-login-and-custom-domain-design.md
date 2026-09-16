@@ -240,6 +240,9 @@ pending 机制。变的是 `platform` 的**实现**（OAuth 2.1 动态注册 →
 ⚠️⚠️ **这条决策只对 self-host 形态成立。** 产品有两种部署形态，而「走我们自己的 Caddy」
 是其中一种独有的能力 —— 另一种形态下自定义域名**不可用**。见 §5.8。
 
+> **2026-09-16 更新**：belayo 已迁到 Dokploy + Traefik，自定义域名改由 Traefik 的 HTTP provider
+> 从 Cloud API 拉取，不再不可用。见 §5.8。
+
 ### D6 · 集中的登录服务，用一次性 code 回跳到 app 域名
 
 登录页集中到一个专用域名（`login.<base domain>`）。它带来两件事：登录页只有一份，以及
@@ -618,6 +621,32 @@ api/supabase/mqtt 共享）。
 
 新增 locale key 走文本编辑，**不要 parse-and-dump**（会炸重复 key 守卫）。
 
+
+### 5.8 belayo：Traefik HTTP provider（2026-09-16）
+
+belayo 的入口是 Dokploy 上的 Traefik，没有 Caddy 那种握手时回调 `ask` 的按需签发：一个域名
+只有在某个 provider 声明了路由时才会被服务，也只有路由里点名的域名才会去签证书。之前每个
+自定义域名都要手写一条路由。
+
+现在 Traefik 通过 HTTP provider 每 15 秒拉取 Cloud API 的 `GET /internal/traefik/dynamic`
+（`services/fc/src/lib/apps-traefik-provider.ts`），返回所有已校验自定义域名的路由（HTTP 跳转
+HTTPS + HTTPS 用 `letsencrypt` 解析器），都指向 `teamclu-apps-cloud-api@file`。
+用 Bearer token（`APPS_TRAEFIK_PROVIDER_TOKEN`）鉴权；没配 token 的部署答 404，self-host 不受影响。
+
+以下三条行为直接读 Traefik v3.6.7 源码确认，规则都由它们推出：
+
+- **拉取失败时保留上一份配置**（传输错误、非 200、无法解析都不会推送新配置）→ 出错必须答
+  503，**绝不能答空的 200**，否则会一次性下线所有自定义域名。
+- **ACME 只在收到新配置时行动，内容相同的配置按哈希去重** → 签发失败不会自动重试。
+  因此一个域名要等 DNS 已经指向入口（CNAME 到应用默认域名，或与它共享 A 记录）才**首次**下发，
+  保证第一次签发就能成功；已下发的域名只要仍在校验状态就一直保留，一次 DNS 抖动不会让线上
+  网站下线。
+- **签发前会跳过已经有证书的域名**（`getUncheckedDomains`）→ 路由名带上当前小时，没拿到证书的
+  域名每小时重试一次（低于 Let's Encrypt 每小时 5 次失败验证的限制），已有证书的域名不受影响。
+
+一次性配置：在 `traefik.yml` 加 `providers.http`（endpoint、`pollInterval: 15s`、`Authorization`
+头），重启一次 Traefik；Cloud API 配上同一个 token。上线后原先手写在
+`app-custom-domains.yml` 的路由应删除，该文件留空作人工兜底。
 
 ## 6. 变更清单
 

@@ -6,6 +6,7 @@ import {
   makeSystemRepoFactory,
   vanityLookup,
   loginAppLookup,
+  traefikCustomDomainsLookup,
   appOrgsLookup,
   visitorRolesLookup,
 } from "./index.js";
@@ -20,6 +21,9 @@ const app = createApp({
   // hostnames, because the reverse proxy in front of it is the self-host one.
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
+  // Registers /internal/traefik/dynamic; it answers 404 until
+  // APPS_TRAEFIK_PROVIDER_TOKEN is set, which only belayo does.
+  listTraefikCustomDomains: traefikCustomDomainsLookup(),
   resolveAppOrgs: appOrgsLookup(),
   resolveVisitorRoles: visitorRolesLookup(),
 });

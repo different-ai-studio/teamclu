@@ -454,6 +454,10 @@ services:
       # keeps apps on their *.fcapp.run trigger URL, which refuses to forward
       # any 3xx (ExternalRedirectForbidden).
       APPS_FC_ROUTE_DOMAIN: "${APPS_FC_ROUTE_DOMAIN:-}"
+      # Belayo only: the bearer token Traefik's HTTP provider sends to
+      # /internal/traefik/dynamic for verified custom domains. Blank keeps the
+      # endpoint off; self-host serves custom domains through Caddy instead.
+      APPS_TRAEFIK_PROVIDER_TOKEN: "${APPS_TRAEFIK_PROVIDER_TOKEN:-}"
       # Hostname of the central login service for deployed apps. Blank = the
       # login wall is off: FC claims no hostname, and an app with
       # auth_mode=platform is served without one. Must be a name of its own

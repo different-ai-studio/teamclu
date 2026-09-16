@@ -42,6 +42,7 @@ import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { makeSupabaseLoginAppLookup } from "./lib/apps-login-service.js";
+import { makeSupabaseTraefikDomainLookup } from "./lib/apps-traefik-provider.js";
 import { createServiceRoleClient } from "./lib/supabase.js";
 
 // ---------------------------------------------------------------------------
@@ -370,6 +371,14 @@ export function loginAppLookup() {
 }
 
 /**
+ * Verified custom domains for Traefik's HTTP provider. Service role for the
+ * same tokenless reason as {@link vanityLookup}: Traefik is the caller.
+ */
+export function traefikCustomDomainsLookup() {
+  return makeSupabaseTraefikDomainLookup(createServiceRoleClient);
+}
+
+/**
  * Org ids for the `org` audience: the visitor's and the app's.
  *
  * Two reads, both with the service role for the same tokenless reason as
@@ -557,6 +566,7 @@ const app = createApp({
   createSystemRepository: makeSystemRepoFactory(),
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
+  listTraefikCustomDomains: traefikCustomDomainsLookup(),
   resolveAppOrgs: appOrgsLookup(),
   resolveVisitorRoles: visitorRolesLookup(),
 });
