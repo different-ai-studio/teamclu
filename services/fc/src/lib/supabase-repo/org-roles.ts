@@ -251,19 +251,6 @@ export async function assignSystemOrgRole(
       expires_at: null,
     });
     if (insertErr) {
-      if (insertErr.code === "23503") {
-        // roles_users.user_id FKs public.users(id), but actors.user_id — and
-        // auth.uid() — is an auth.users id. Phone-auth identities have a
-        // public.users row whose id is NOT the auth id (auth_user_id is
-        // unpopulated), so they cannot hold an org role at all. Say that,
-        // rather than surfacing a bare foreign-key violation from a path the
-        // caller already committed an invite/team RPC on.
-        throw new ApiError(
-          409,
-          "user_profile_missing",
-          `no public.users row for ${userId}; this identity cannot hold org roles`,
-        );
-      }
       // Unique race: another writer won — still mirror below.
       if (insertErr.code !== "23505") throw insertErr;
     }

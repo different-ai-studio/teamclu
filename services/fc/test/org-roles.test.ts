@@ -1188,35 +1188,6 @@ describe("makeOrgRolesRepo", () => {
     assert.equal(host._teamMembers[0].role, "owner");
   });
 
-  test("assignSystemOrgRole maps a missing public.users row to a diagnosable error", async () => {
-    // roles_users.user_id FKs public.users(id) while actors.user_id is an auth
-    // id; phone-auth identities have no matching row and used to surface a bare
-    // 23503 from a path whose invite/team RPC had already committed.
-    const host = makeStubHost({ teamRole: "owner", roles: systemCatalog, bindings: [] });
-    const fkClient = {
-      ...host.supabase,
-      from(table: string) {
-        const real = host.supabase.from(table);
-        if (table !== "roles_users") return real;
-        return {
-          ...real,
-          insert: () =>
-            Promise.resolve({
-              data: null,
-              error: { code: "23503", message: 'violates foreign key "roles_users_user_id_fkey"' },
-            }),
-        };
-      },
-    };
-    await assert.rejects(
-      () => assignSystemOrgRole(fkClient, { teamId: TEAM, userId: USER, code: "member" }),
-      (err: any) =>
-        err instanceof ApiError &&
-        err.statusCode === 409 &&
-        /public\.users/.test(err.message),
-    );
-  });
-
   test("mirrorTeamMembersRole maps finance/custom to member; empty → null", () => {
     assert.equal(mirrorTeamMembersRole("owner"), "owner");
     assert.equal(mirrorTeamMembersRole("admin"), "admin");

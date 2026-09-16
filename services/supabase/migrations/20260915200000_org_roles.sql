@@ -32,9 +32,24 @@ CREATE INDEX IF NOT EXISTS idx_roles_parent_role_id ON public.roles (parent_role
 CREATE INDEX IF NOT EXISTS idx_roles_org_status ON public.roles (org_id, status);
 
 -- store_id: no FK to stores — TeamClu has no public.stores mirror.
+--
+-- user_id references auth.users, NOT public.users as in saas-mono. TeamClu has
+-- two id namespaces: auth.users.id (what auth.uid() returns, what
+-- amux.actors.user_id references) and public.users.id (its own
+-- uuid_generate_v4 business-profile key, linked back by the nullable
+-- auth_user_id). Every consumer of this table already speaks the auth
+-- namespace — current_team_role / has_org_role_code / is_org_role_manager all
+-- compare `ru.user_id = auth.uid()`, the backfill inserts `actors.user_id`,
+-- FC passes the caller's auth id and the app gateway passes a session `sub`.
+-- Pointing the FK at public.users only appeared to work because the dominant
+-- writer (`insert into public.users (id, ...) values (auth_uid, ...)`) makes
+-- the two coincide; identities whose org comes from the JWT never get that row
+-- at all (25 of 153 members on self-host, all in the shared tenant), and
+-- phone-auth rows key on auth_user_id instead. Same divergence rationale as
+-- store_id above.
 CREATE TABLE IF NOT EXISTS public.roles_users (
     id UUID PRIMARY KEY DEFAULT extensions.uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES public.users (id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
     role_id UUID NOT NULL REFERENCES public.roles (id) ON DELETE RESTRICT,
     store_id UUID,
     org_id UUID NOT NULL DEFAULT '5f7cb659-7302-4465-85b1-68a64bb3322e'::UUID
@@ -236,7 +251,6 @@ BEGIN
   FROM amux.team_members tm
   JOIN amux.teams t ON t.id = tm.team_id
   JOIN amux.actors a ON a.id = tm.member_id
-  JOIN public.users u ON u.id = a.user_id
   JOIN public.roles r
     ON r.org_id = t.oid
    AND r.code = lower(tm.role)

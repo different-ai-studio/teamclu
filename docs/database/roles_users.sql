@@ -9,7 +9,9 @@
 -- =====================================================
 CREATE TABLE IF NOT EXISTS public.roles_users (
     id UUID PRIMARY KEY DEFAULT extensions.uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES public.users (id) ON DELETE CASCADE,
+    -- auth.users, not public.users as in saas-mono: every consumer compares
+    -- against auth.uid() / amux.actors.user_id. See the migration header.
+    user_id UUID NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
     role_id UUID NOT NULL REFERENCES public.roles (id) ON DELETE RESTRICT,
     store_id UUID,
     org_id UUID NOT NULL DEFAULT '5f7cb659-7302-4465-85b1-68a64bb3322e'::UUID
