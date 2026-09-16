@@ -2012,7 +2012,9 @@ public final class SessionDetailViewModel {
 
         // Hand-rolled raw tool_title_update parser. The reducer
         // explicitly leaves `.raw` alone (see TimelineInput.swift
-        // contract); patch the matching tool_use entry in place.
+        // contract); patch the matching tool_use entry in place — in the
+        // reducer state as well as the row, since the next sync writes
+        // the state back over the row.
         if case .raw(let raw) = acp.event, raw.method == "tool_title_update" {
             let payload = String(data: raw.jsonPayload, encoding: .utf8) ?? ""
             if let pipeIdx = payload.firstIndex(of: "|") {
@@ -2020,6 +2022,10 @@ public final class SessionDetailViewModel {
                 let newTitle = String(payload[payload.index(after: pipeIdx)...])
                 if let idx = events.firstIndex(where: { $0.eventType == "tool_use" && $0.toolId == toolId }) {
                     events[idx].toolName = newTitle
+                    let rowID = events[idx].id
+                    if let entryIdx = timelineState.entries.firstIndex(where: { $0.id == rowID }) {
+                        timelineState.entries[entryIdx].toolName = newTitle
+                    }
                     try? modelContext.save()
                     return true
                 }
@@ -2999,24 +3005,7 @@ public final class SessionDetailViewModel {
     /// entries in `state.entries`, and bleeds into every subsequent
     /// completedTurn's `runtimeEvents`.
     private func rehydrateTimelineStateFromEvents() {
-        timelineState.entries = events.map { event in
-            TimelineEntry(
-                id: event.id,
-                sequence: UInt64(max(event.sequence, 0)),
-                eventType: event.eventType,
-                text: event.text,
-                toolID: event.toolId,
-                toolName: event.toolName,
-                isComplete: event.isComplete,
-                success: event.success,
-                senderActorID: event.senderActorID,
-                timestamp: event.timestamp,
-                model: event.model,
-                supabaseMessageID: event.supabaseMessageId,
-                outboxMessageID: event.outboxMessageID,
-                turnID: event.turnID
-            )
-        }
+        timelineState.entries = events.map(TimelineSwiftDataSync.makeEntry(from:))
         timelineState.streamingTextByAgent = [:]
         timelineState.streamingModelByAgent = [:]
         timelineState.streamingAgentSet = []
