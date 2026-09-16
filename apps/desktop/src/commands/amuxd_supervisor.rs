@@ -817,6 +817,42 @@ impl AmuxdSupervisor {
         }
     }
 
+    /// Mark app exiting and kill amuxd **without waiting for anything**.
+    ///
+    /// For the Windows update path only, where the NSIS installer is already
+    /// running and every millisecond this process stays alive is a millisecond
+    /// it still maps `<install dir>\<main binary>.exe` — which the installer is
+    /// about to overwrite (see `updater::relaunch_and_exit`).
+    ///
+    /// The three things [`Self::shutdown_blocking`] does that this one must not:
+    /// wait out `EXIT_CHILD_GRACE` (on Windows nothing signalled the child, so
+    /// that grace is spent in full), wait again after `start_kill`, and run
+    /// `<install dir>\amuxd.exe stop` — which executes a binary from the very
+    /// directory being replaced. The installer's PREINSTALL hook taskkills the
+    /// sidecars anyway, so dropping all three loses no cleanup.
+    ///
+    /// Flips the same once-only flag, so the later `RunEvent::Exit` handler
+    /// returns immediately instead of running the blocking stop after all.
+    #[cfg(target_os = "windows")]
+    pub fn shutdown_fast_no_wait(&self) {
+        self.app_exiting.store(true, Ordering::SeqCst);
+        if self.shutdown_done.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // No spin for the lock: a contended lock means some ensure is mid-flight,
+        // and waiting for it is exactly what this path cannot afford. The hook's
+        // taskkill is the backstop.
+        if let Ok(mut inner) = self.inner.try_lock() {
+            if let Some(mut child) = inner.child.take() {
+                let _ = child.start_kill();
+            }
+        } else {
+            log::warn!(
+                "[amuxd-supervisor] lock busy on update exit; leaving amuxd to the installer"
+            );
+        }
+    }
+
     /// Catch Ctrl+C / SIGTERM so terminal `pnpm tauri:dev` does not orphan amuxd.
     /// Cmd+Q still goes through `RunEvent::Exit`; both share `shutdown_done`.
     /// A second signal while cleanup runs forces process exit.
