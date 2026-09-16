@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { isListableActor, mapCacheRow, toActorKind } from '@/stores/actor-directory-store'
+import {
+  isListableActor,
+  mapCacheRow,
+  patchMemberTeamRole,
+  toActorKind,
+  useActorDirectoryStore,
+} from '@/stores/actor-directory-store'
 
 describe('mapCacheRow', () => {
   it('maps ownerMemberId from libsql cache for personal-agent delete gating', () => {
@@ -78,5 +84,30 @@ describe('isListableActor', () => {
     expect(isListableActor({ actor_type: 'member', agent_status: null })).toBe(true)
     // A row cached before agent_status was carried must not vanish.
     expect(isListableActor({ actor_type: 'agent', agent_status: null })).toBe(true)
+  })
+})
+
+describe('patchMemberTeamRole', () => {
+  it('updates the member row in the directory slice', () => {
+    useActorDirectoryStore.setState({
+      byTeam: {
+        'team-1': {
+          actors: [{
+            id: 'actor-b',
+            actor_type: 'member',
+            display_name: 'Bob',
+            member_status: null,
+            agent_status: null,
+            last_active_at: null,
+            team_role: 'member',
+          }],
+          loading: false,
+          error: false,
+          started: true,
+        },
+      },
+    })
+    patchMemberTeamRole('team-1', 'actor-b', 'admin')
+    expect(useActorDirectoryStore.getState().byTeam['team-1'].actors[0].team_role).toBe('admin')
   })
 })

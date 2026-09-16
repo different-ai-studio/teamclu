@@ -3336,6 +3336,7 @@
     "fieldBody": "Body",
     "fieldPath": "Knowledge path",
     "fieldTitle": "Title",
+    "fromDocument": "From document {{path}}",
     "fromSession": "From session {{id}}",
     "headerAction": "Save to knowledge",
     "kicker": "Review",
@@ -3347,6 +3348,10 @@
     "publish": "Write to knowledge",
     "published": "Written to knowledge",
     "savedLocalOnly": "Saved on this machine; not synced to the team yet",
+    "distillHint": "These are distilled suggestions from the session, not the full transcript. Check what to keep, then write.",
+    "distillHintDocument": "These are distilled suggestions from the document, not the original file. Check what to keep, then write.",
+    "suggestions": "Suggestions",
+    "rewriteBody": "Rewrite the body from the selected suggestions",
     "tabLabel": "Review",
     "title": "Review before writing to knowledge",
     "untitled": "Untitled",
@@ -3584,6 +3589,8 @@
       "copyId": "Copy ID",
       "setDefault": "Set as default agent",
       "removeDefault": "Remove as default agent",
+      "setAdmin": "Set as admin",
+      "removeAdmin": "Remove admin",
       "remove": "Remove from team"
     },
     "detail": {
@@ -3639,6 +3646,18 @@
     },
     "copyFailed": "Copy failed",
     "removed": "Removed from team",
+    "roleChanged": {
+      "setAdmin": "{{name}} is now an admin",
+      "removeAdmin": "{{name}} is no longer an admin"
+    },
+    "roleFailed": {
+      "generic": "Could not update role: {{msg}}",
+      "self": "You cannot change your own role.",
+      "owner": "The team owner role cannot be changed this way.",
+      "forbidden": "Only team owners and admins can change member roles.",
+      "notFound": "This member is no longer in the team.",
+      "notMember": "Only team members can be made admin."
+    },
     "removeFailed": {
       "generic": "Remove failed: {{msg}}",
       "lastOwner": "Cannot remove the last team owner. Promote another member first.",

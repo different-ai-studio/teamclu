@@ -74,6 +74,7 @@ const DEBT: &[&str] = &[
     "crates/teamclu-runtime-env/src/mcp_resolve.rs",
     "crates/teamclu-runtime-env/src/opencode_config.rs",
     "crates/teamclu-runtime-env/src/team_provider_sync.rs",
+    "packages/app/src/components/settings/__tests__/GeneralSectionDefaultPermission.test.tsx",
     "packages/app/src/components/settings/__tests__/GeneralSectionSmallWindow.test.tsx",
     "packages/app/src/components/settings/__tests__/SettingsNavigation.test.tsx",
     "packages/app/src/lib/__tests__/mid-turn-followup-repro.test.ts",

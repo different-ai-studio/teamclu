@@ -99,6 +99,18 @@ export function patchMemberLastActive(teamId: string, memberActorId: string, las
   })
 }
 
+/** Optimistically update a member's team role after a successful admin toggle. */
+export function patchMemberTeamRole(teamId: string, memberActorId: string, teamRole: string): void {
+  useActorDirectoryStore.setState((s) => {
+    const slice = s.byTeam[teamId]
+    if (!slice) return s
+    const actors = slice.actors.map((row) =>
+      row.id === memberActorId ? { ...row, team_role: teamRole } : row,
+    )
+    return { byTeam: { ...s.byTeam, [teamId]: { ...slice, actors } } }
+  })
+}
+
 interface TeamSlice {
   actors: ActorRow[]
   loading: boolean
