@@ -2949,13 +2949,18 @@
       "feedbackCount": "反馈数",
       "you": "你",
       "skillRank": "Skill 排名",
-      "skillInvocations": "Skill 调用",
-      "totalSkills_one": "{{count}} 次 skill",
-      "totalSkills_other": "{{count}} 次 skill",
       "topSkills": "团队最常用 Skills",
       "calls": "次",
       "usedBy": "{{n}} 人用过",
-      "totalSkills": "{{count}} 个技能"
+      "appRank": "App 排名",
+      "skillsPublished": "发布 Skill",
+      "appsCreated": "创建 App",
+      "skillsPublishedCount": "{{count}} 个 skill",
+      "appsCreatedCount": "{{count}} 个 app",
+      "skillsPublishedCount_one": "{{count}} 个 skill",
+      "skillsPublishedCount_other": "{{count}} 个 skill",
+      "appsCreatedCount_one": "{{count}} 个 app",
+      "appsCreatedCount_other": "{{count}} 个 app"
     },
     "cache": {
       "title": "本地缓存",

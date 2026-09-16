@@ -1461,7 +1461,8 @@ test("submitFeedback writes team_id, session_id, skill and no note column", asyn
 test("getTeamLeaderboard calls the team_leaderboard rpc with period and maps enriched rows", async () => {
   let rpcArgs = null;
   const repo = createRepo(fakeSupabase({
-    onRpc: (fn, args) => { rpcArgs = { fn, args }; },
+    // The contributions rpc runs alongside; capture the leaderboard call itself.
+    onRpc: (fn, args) => { if (fn === "team_leaderboard") rpcArgs = { fn, args }; },
     rpcData: {
       team_leaderboard: [{
         team_id: "t1", actor_id: "a1", display_name: "Alice", period: "week",
@@ -1476,6 +1477,60 @@ test("getTeamLeaderboard calls the team_leaderboard rpc with period and maps enr
   assert.equal(out.items[0].tokensUsed, 1000);
   assert.equal(out.items[0].displayName, "Alice");
   assert.deepEqual(out.items[0].skillUsage, { "sentry-fix": 2 });
+});
+
+const LEADERBOARD_ROW = {
+  team_id: "t1", period: "week", tokens_used: 0, cost_usd: 0, positive_feedback: 0,
+  negative_feedback: 0, session_count: 0, skill_usage: {}, score: 0,
+};
+
+test("getTeamLeaderboard merges published skills and created apps per actor", async () => {
+  const rpcCalls = [];
+  const repo = createRepo(fakeSupabase({
+    rpcCalls,
+    rpcData: {
+      team_leaderboard: [
+        { ...LEADERBOARD_ROW, actor_id: "a1", display_name: "Alice" },
+        { ...LEADERBOARD_ROW, actor_id: "a2", display_name: "Bob" },
+      ],
+      team_leaderboard_contributions: [{ actor_id: "a1", skills_published: 4, apps_created: 2 }],
+    },
+  }));
+
+  const out = await repo.getTeamLeaderboard("t1", { period: "week" });
+
+  assert.deepEqual(
+    rpcCalls.find((c) => c.name === "team_leaderboard_contributions")?.args,
+    { p_team_id: "t1" },
+  );
+  const byActor = Object.fromEntries(out.items.map((i) => [i.actorId, [i.skillsPublished, i.appsCreated]]));
+  assert.deepEqual(byActor, { a1: [4, 2], a2: [0, 0] });
+});
+
+test("getTeamLeaderboard counts zero contributions when the database lacks the function", async () => {
+  const repo = createRepo(fakeSupabase({
+    rpcData: { team_leaderboard: [{ ...LEADERBOARD_ROW, actor_id: "a1", display_name: "Alice" }] },
+    rpcErrors: {
+      team_leaderboard_contributions: { code: "PGRST202", message: "Could not find the function" },
+    },
+  }));
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const out = await repo.getTeamLeaderboard("t1", { period: "week" });
+    assert.equal(out.items[0].skillsPublished, 0);
+    assert.equal(out.items[0].appsCreated, 0);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("getTeamLeaderboard still fails on any other contributions error", async () => {
+  const repo = createRepo(fakeSupabase({
+    rpcData: { team_leaderboard: [{ ...LEADERBOARD_ROW, actor_id: "a1", display_name: "Alice" }] },
+    rpcErrors: { team_leaderboard_contributions: { code: "42501", message: "permission denied" } },
+  }));
+  await assert.rejects(repo.getTeamLeaderboard("t1", { period: "week" }), { code: "42501" });
 });
 
 test("submitSessionReport inserts a report row and expands skillUsage into skill rows", async () => {

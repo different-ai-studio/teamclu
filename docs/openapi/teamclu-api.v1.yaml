@@ -10669,5 +10669,15 @@ components:
           type: object
           additionalProperties:
             type: integer
+        skillsPublished:
+          type: integer
+          description: >-
+            Team skills this member has published (all-time, drafts excluded),
+            including those published by agents they own.
+        appsCreated:
+          type: integer
+          description: >-
+            Apps this member has created in the team (all-time, any
+            visibility), including those created by agents they own.
         score:
           type: number

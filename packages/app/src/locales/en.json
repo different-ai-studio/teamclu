@@ -2949,13 +2949,18 @@
       "feedbackCount": "Feedback Count",
       "you": "You",
       "skillRank": "Skill Rank",
-      "skillInvocations": "Skill Invocations",
-      "totalSkills_one": "{{count}} skill",
-      "totalSkills_other": "{{count}} skills",
       "topSkills": "Top Skills This Team",
       "calls": "calls",
       "usedBy": "{{n}} members",
-      "totalSkills": "{{count}} skills"
+      "appRank": "App Rank",
+      "skillsPublished": "Skills Published",
+      "appsCreated": "Apps Created",
+      "skillsPublishedCount": "{{count}} skills",
+      "appsCreatedCount": "{{count}} apps",
+      "skillsPublishedCount_one": "{{count}} skill",
+      "skillsPublishedCount_other": "{{count}} skills",
+      "appsCreatedCount_one": "{{count}} app",
+      "appsCreatedCount_other": "{{count}} apps"
     },
     "cache": {
       "title": "Local Cache",

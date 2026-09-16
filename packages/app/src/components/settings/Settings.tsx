@@ -25,6 +25,7 @@ import {
   LifeBuoy,
   Users,
   Building2,
+  Trophy,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -55,10 +56,11 @@ const primarySections: Section[] = [
   { id: 'diagnostics', label: 'Diagnostics', labelKey: 'settings.nav.diagnostics', icon: LifeBuoy },
 ]
 
-// Team management: billing, usage, org roles (moved out of primary).
+// Team management: billing, usage, leaderboard, org roles (moved out of primary).
 const teamManagementSections: Section[] = [
   { id: 'billing', label: 'Billing', labelKey: 'settings.nav.billing', icon: Wallet },
   { id: 'tokenUsage', label: 'Token Usage', labelKey: 'settings.nav.tokenUsage', icon: Coins },
+  { id: 'leaderboard', label: 'Leaderboard', labelKey: 'settings.nav.leaderboard', icon: Trophy },
   { id: 'teamRoles', label: '团队角色', labelKey: 'settings.nav.teamRoles', icon: Users },
 ]
 

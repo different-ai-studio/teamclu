@@ -19,6 +19,10 @@ export async function fetchTeamLeaderboard(teamId: string, period: Period = "wee
       memberName: (r.displayName as string | null) ?? String(r.actorId ?? "Unknown"),
       exportedAt: "",
       updateAt: "",
+      // All-time, not windowed by `period`; absent from Cloud API builds that
+      // predate them.
+      skillsPublished: Number(r.skillsPublished ?? 0),
+      appsCreated: Number(r.appsCreated ?? 0),
       workspaces: {
         cloud: {
           totalFeedbacks: positive + negative,
