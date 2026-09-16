@@ -1012,12 +1012,17 @@ export function createSupabaseBusinessRepository(options) {
       }
       const row = requiredRow(data, "teams.joinPublicTeam");
       const joinedTeamId = requiredString(row.team_id ?? row.id, "teams.joinPublicTeam", "team_id");
-      // RPC still mirrors team_members.role='member'; authz SoT is roles_users.
-      const admin = await serviceRoleClient("assign member org role on public team join");
+      // Honour the role the RPC returned. `join_public_team` is idempotent and
+      // reports 'owner' for a caller who already owns this team; hardcoding
+      // 'member' mirrored that owner back down in team_members.role — the
+      // column remove_team_actor's last-owner guard still reads.
+      const joinedRole =
+        typeof row.role === "string" && row.role.trim() ? row.role.trim() : "member";
+      const admin = await serviceRoleClient("assign org role on public team join");
       await assignSystemOrgRole(admin, {
         teamId: joinedTeamId,
         userId: caller.user.id,
-        code: "member",
+        code: joinedRole,
       });
       return mapTeam({
         id: joinedTeamId,
@@ -1109,6 +1114,10 @@ export function createSupabaseBusinessRepository(options) {
       if (callerErr || !caller?.user?.id) {
         throw new ApiError(401, "missing_auth", "authenticated user required");
       }
+      const teamName =
+        typeof input?.teamName === "string" && input.teamName.trim()
+          ? input.teamName.trim()
+          : null;
       const { data, error } = await supabase.rpc("bootstrap_login_team", {
         // FC-layer enforcement, deliberately. See FeatureFlags.allowNewOrg.
         p_allow_new_org: newOrgAllowed(),
@@ -1117,6 +1126,10 @@ export function createSupabaseBusinessRepository(options) {
         // funnelled into one shared default team.
         p_shared_org: process.env.DEFAULT_ORG_ID || null,
         p_display_name: input?.displayName ?? null,
+        // Names the org and its default team. Null keeps the old derivation
+        // (nickname → OAuth full name → email local part), so an older client
+        // that does not send it behaves exactly as before.
+        p_team_name: teamName,
       });
       if (error) {
         if (error.code === "42501" && /self-registration is disabled/i.test(error.message ?? "")) {
@@ -1130,12 +1143,20 @@ export function createSupabaseBusinessRepository(options) {
       }
       const row = requiredRow(data, "teams.bootstrapTeam");
       const teamId = requiredString(row.team_id ?? row.id, "teams.bootstrapTeam", "team_id");
+      // Use the role the orchestrator returned, never a hardcoded 'owner'.
+      // `ensure_org_public_team` JOINS the caller into an org's EXISTING public
+      // team as a plain member and says so (role='member'); only its create
+      // branch reports 'owner'. Granting owner unconditionally made the second
+      // and every later employee an owner of the org — and, because roles_users
+      // is org-scoped, of every team under it.
       // Service-role: same chicken-egg as createTeam (roles_users RLS).
-      const admin = await serviceRoleClient("assign owner org role on team bootstrap");
+      const bootstrapRole =
+        typeof row.role === "string" && row.role.trim() ? row.role.trim() : "member";
+      const admin = await serviceRoleClient("assign org role on team bootstrap");
       await assignSystemOrgRole(admin, {
         teamId,
         userId: caller.user.id,
-        code: "owner",
+        code: bootstrapRole,
       });
       return mapTeam({ id: teamId, name: row.team_name ?? row.name, slug: row.team_slug ?? row.slug });
     },

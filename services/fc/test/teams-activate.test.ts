@@ -86,9 +86,11 @@ test("POST /v1/teams/bootstrap delegates atomic first-team creation", async () =
     body: JSON.stringify({ displayName: "Boss" }),
   });
   assert.equal(res.status, 200);
-  // displayName is the whole input now: `orgId` went with the empty-org picker
-  // row and `deviceId` with the guest-team reuse the anonymous path needed.
-  assert.deepEqual(input, { displayName: "Boss" });
+  // `orgId` went with the empty-org picker row and `deviceId` with the
+  // guest-team reuse the anonymous path needed. `teamName` is what the
+  // first-run screen collects — null here because this body omits it, which is
+  // the older-client shape and must keep working.
+  assert.deepEqual(input, { displayName: "Boss", teamName: null });
   assert.equal((await res.json() as any).name, "Org One");
 });
 

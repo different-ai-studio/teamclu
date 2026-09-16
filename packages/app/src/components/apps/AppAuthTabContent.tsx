@@ -166,6 +166,7 @@ function AuthBody({ app }: { app: AppRow }) {
   const [mode, setMode] = React.useState<AppAuthMode>(app.authMode)
   const [orgRoles, setOrgRoles] = React.useState<OrgRole[]>([])
   const [rolesLoaded, setRolesLoaded] = React.useState(false)
+  const [rolesError, setRolesError] = React.useState(false)
   const [baseline, setBaseline] = React.useState<AppAuthRowState>({
     path: '/',
     requiresLogin: true,
@@ -185,16 +186,23 @@ function AuthBody({ app }: { app: AppRow }) {
   React.useEffect(() => {
     let cancelled = false
     setRolesLoaded(false)
+    setRolesError(false)
     void (async () => {
       try {
         const items = await getBackend().orgRoles.list(app.teamId)
         if (cancelled) return
         setOrgRoles(items.filter((r) => r.status === 'active' || !r.status))
+        setRolesLoaded(true)
       } catch {
         if (cancelled) return
-        setOrgRoles([])
-      } finally {
-        if (!cancelled) setRolesLoaded(true)
+        // Deliberately NOT `setOrgRoles([]); setRolesLoaded(true)`. An empty
+        // catalog is indistinguishable from "this app restricts nobody": it
+        // makes `baselineToRowState` render a legacy `audience: org` app as
+        // "any signed-in user", and saving from that state writes `roles: []`,
+        // which the gateway admits every authenticated visitor on. One failed
+        // request would silently open a staff-only app. Surface it and block
+        // the save instead.
+        setRolesError(true)
       }
     })()
     return () => {
@@ -440,12 +448,20 @@ function AuthBody({ app }: { app: AppRow }) {
         <Button
           type="button"
           className="h-9 rounded-[7px] text-[13px]"
-          disabled={saving || !dirty || mode === 'third' || nothingProtected || blankPath || !rolesLoaded}
+          disabled={saving || !dirty || mode === 'third' || nothingProtected || blankPath || !rolesLoaded || rolesError}
           onClick={() => void save()}
           data-testid="app-auth-save"
         >
           {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t('common.save', 'Save')}
         </Button>
+        {rolesError && (
+          <span className="text-[12.5px] text-destructive" data-testid="app-auth-roles-error">
+            {t(
+              'apps.auth.rolesLoadFailed',
+              '角色列表加载失败，暂时无法保存 —— 否则会把已设的角色限制清空。请重试。',
+            )}
+          </span>
+        )}
         {nothingProtected && (
           <span className="text-[12.5px] text-destructive" data-testid="app-auth-nothing-protected">
             {t(

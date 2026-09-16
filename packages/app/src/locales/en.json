@@ -436,6 +436,13 @@
       "retry": "Check invitations again",
       "checking": "Checking…"
     },
+    "nameYourTeam": {
+      "title": "Name your team",
+      "subtitle": "Your company name, or the name of your own small team. You can change it later in settings.",
+      "placeholder": "e.g. Acme Inc.",
+      "continue": "Continue",
+      "creating": "Creating…"
+    },
     "signIn": "Sign in",
     "willEmailCode": "We'll email you a 6-digit code.",
     "email": "Email",
@@ -1485,6 +1492,7 @@
       "noRules": "No page has its own setting yet — the whole site follows the line above.",
       "addPage": "Add a page",
       "rolesHint": "With login required and no roles selected, any signed-in user may enter. Selected roles admit members who hold any one of them.",
+      "rolesLoadFailed": "Could not load the role list, so saving is blocked — otherwise it would clear the roles this app restricts to. Please retry.",
       "nothingProtected": "When every other page is public, at least one page has to require a login — otherwise this wall stops nothing.",
       "blankPath": "One row still has no path.",
       "col": {

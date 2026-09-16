@@ -7,7 +7,9 @@
 //   - the auth user is an EMAIL user with synthetic email
 //     `<phone>@<phoneEmailDomain>`; `auth.users.phone` stays empty.
 //   - the phone↔user mapping lives in `public.users.mobile`, scoped by `org_id`.
-//   - new users join the DEFAULT_ORG (`defaultOrgId`, = the partner's default tenant).
+//   - LOGIN resolves by mobile alone; the org comes from the row that matches.
+//   - a brand-new sign-up still lands in DEFAULT_ORG (`defaultOrgId`) — giving
+//     it its own org belongs with the team-name onboarding step.
 //   - verification codes live in the shared `public.auth_verify_code` table.
 //   - sessions are minted via admin magiclink (`generateSessionByEmail`).
 //
@@ -257,11 +259,22 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
         throw new ApiError(400, "validation_failed", "验证码错误或已过期");
       }
 
-      // Resolve partner user(s) for (defaultOrg, mobile). Include org name for picker UI.
+      // Resolve partner user(s) by MOBILE ALONE — deliberately not scoped to
+      // defaultOrgId.
+      //
+      // The org filter made a phone number mean "that one row in the shared
+      // tenant", which forced every phone identity to keep org_id =
+      // DEFAULT_ORG forever. Anything that moved it — switch_active_team
+      // rewrites public.users.org_id to the team's oid — made the next login
+      // miss and register the person again as a brand-new user. That is what
+      // blocked giving phone sign-ups their own org.
+      //
+      // A phone number can legitimately have a row per org (that is how a
+      // cross-tenant employee is represented); more than one row is not an
+      // error, it is the account picker below.
       let q = admin
         .from("users")
         .select("*, orgs(id, name, logo)")
-        .eq("org_id", defaultOrgId)
         .eq("mobile", phone)
         .is("deleted_at", null);
       if (userId && userId.trim() !== "") q = q.eq("id", userId);
@@ -292,11 +305,23 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
 
       if (users && users.length === 1) {
         const user = users[0];
-        const { data: authUser, error: authErr } = await admin.auth.admin.getUserById(
-          user.auth_user_id || user.id,
-        );
+        const authId = user.auth_user_id || user.id;
+        const { data: authUser, error: authErr } = await admin.auth.admin.getUserById(authId);
         if (authErr || !authUser?.user?.email) {
           throw new ApiError(500, "internal", `auth user lookup failed: ${authErr?.message ?? "no email"}`);
+        }
+        // amux.current_org_id() reads app_metadata.org_id BEFORE falling back to
+        // public.users.org_id, so a stale claim would pin the session to
+        // whichever org was stamped at sign-up no matter which account the
+        // picker resolved. Sync it to the row we actually logged in as.
+        const claimedOrg = (authUser.user.app_metadata as any)?.org_id ?? null;
+        if (user.org_id && claimedOrg !== user.org_id) {
+          const { error: syncErr } = await admin.auth.admin.updateUserById(authId, {
+            app_metadata: { org_id: user.org_id },
+          });
+          if (syncErr) {
+            throw new ApiError(500, "internal", `org claim sync failed: ${syncErr.message}`);
+          }
         }
         const session = await generateSessionByEmail(authUser.user.email);
         await markUsed();

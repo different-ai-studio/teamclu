@@ -549,7 +549,11 @@ export interface TeamsBackend {
    * Throws 403 `registration_disabled` when the deployment has self-registration
    * turned off and the caller has no org yet.
    */
-  bootstrapTeam(input?: { displayName?: string | null }): Promise<TeamSummary>;
+  bootstrapTeam(input?: {
+    displayName?: string | null;
+    /** First-run name for the org AND its default team. Null = derive server-side. */
+    teamName?: string | null;
+  }): Promise<TeamSummary>;
   renameTeam(teamId: string, name: string): Promise<TeamSummary>;
   /**
    * Graduate the caller out of the shared DEFAULT_ORG into their own org:

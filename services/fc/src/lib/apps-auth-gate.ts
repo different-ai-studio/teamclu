@@ -283,7 +283,7 @@ export async function applyAuthGate(
   // protected one need the SAME answer to "may this person be named to the
   // app" — they only differ in what happens when the answer is no.
   const admission = session
-    ? await admit(session, app, deps, policy.audience, policy.roles)
+    ? await admit(session, app, deps, policy.audience, policy.roles, policy.unreadable)
     : { ok: false, denial: "anonymous" as const, orgId: null };
 
   if (!protectedPath) {
@@ -338,7 +338,17 @@ async function admit(
   deps: GateDeps,
   pathAudience: AuthAudience | null = null,
   pathRoles: string[] | null = null,
+  unreadable = false,
 ): Promise<Admission> {
+  // The fail-safe verdict must not be answered out of `auth_audience`. That
+  // column is written as `any` by the current editor (WHO moved into the `/`
+  // rule's `roles`), so reading it here turned "I could not parse this path,
+  // protect it" into "admit every signed-in visitor" — the widest possible
+  // answer reached only by the strictest branch. Require an org role instead,
+  // which is what an unset `auth_audience` has always meant.
+  if (unreadable) {
+    return admitByRoles(session, app, deps, null);
+  }
   if (pathRoles !== null) {
     if (pathRoles.length === 0) {
       return { ok: true, denial: "none", orgId: null };

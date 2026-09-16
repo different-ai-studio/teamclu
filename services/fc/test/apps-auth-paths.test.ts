@@ -277,7 +277,14 @@ test("an unreadable audience invalidates the set, like an unreadable verdict", (
   const policy = resolvePathPolicy("/anything", "paths", [
     { path: "/x", auth: "required", audience: "everyone" },
   ]);
-  assert.deepEqual(policy, { requiresLogin: true, audience: null, roles: null });
+  // `unreadable` marks the fail-safe verdict so the gate does not answer it
+  // out of auth_audience — see apps-auth-gate admit().
+  assert.deepEqual(policy, {
+    requiresLogin: true,
+    audience: null,
+    roles: null,
+    unreadable: true,
+  });
 });
 
 test("the login verdict is exactly what it used to be", () => {
@@ -351,5 +358,12 @@ test("an unreadable roles value invalidates the set", () => {
   const policy = resolvePathPolicy("/anything", "paths", [
     { path: "/x", auth: "required", roles: ["Bad"] },
   ]);
-  assert.deepEqual(policy, { requiresLogin: true, audience: null, roles: null });
+  // `unreadable` marks the fail-safe verdict so the gate does not answer it
+  // out of auth_audience — see apps-auth-gate admit().
+  assert.deepEqual(policy, {
+    requiresLogin: true,
+    audience: null,
+    roles: null,
+    unreadable: true,
+  });
 });

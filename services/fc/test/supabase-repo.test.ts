@@ -823,6 +823,8 @@ test("bootstrapTeam verifies a trusted external JWT without a local GoTrue looku
       p_allow_new_org: true,
       p_shared_org: process.env.DEFAULT_ORG_ID || null,
       p_display_name: "Betly User",
+      // No first-run name in this call — the server keeps its own derivation.
+      p_team_name: null,
     },
   }]);
   assert.equal(team.id, "team-bootstrap");
