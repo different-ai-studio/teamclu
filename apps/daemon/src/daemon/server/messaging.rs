@@ -581,10 +581,21 @@ impl DaemonServer {
                                     );
                             }
                         }
+                        metadata_json = crate::runtime::turn_trace::stamp_cloud_message_metadata(
+                            &metadata_json,
+                            seq,
+                        );
                     }
+                    let trace_events = if persist && !turn_id.is_empty() {
+                        self.history.read_turn(agent_id, &turn_id)
+                    } else {
+                        Vec::new()
+                    };
+                    let team_id = self.backend.team_id().to_string();
+                    let backend = self.backend.clone();
                     let mut cloud_ok = true;
                     for sid in &collab_sessions {
-                        let ok = tc
+                        let cloud_message_id = tc
                             .emit_agent_message(
                                 sid,
                                 &actor_id,
@@ -599,7 +610,31 @@ impl DaemonServer {
                                 Some(&self.backend),
                             )
                             .await;
-                        cloud_ok = cloud_ok && ok;
+                        cloud_ok = cloud_ok && (!persist || cloud_message_id.is_some());
+                        if persist {
+                            if let Some(message_id) = cloud_message_id {
+                                if !trace_events.is_empty() {
+                                    let events = trace_events.clone();
+                                    let sid = sid.clone();
+                                    let turn_id = turn_id.clone();
+                                    let metadata_json = metadata_json.clone();
+                                    let team_id = team_id.clone();
+                                    let backend = backend.clone();
+                                    tokio::spawn(async move {
+                                        crate::runtime::turn_trace::upload_turn_trace(
+                                            backend,
+                                            &team_id,
+                                            &sid,
+                                            &turn_id,
+                                            &message_id,
+                                            &metadata_json,
+                                            events,
+                                        )
+                                        .await;
+                                    });
+                                }
+                            }
+                        }
                     }
                     // Harden cursor when a turn ends as interrupted: send_prompt
                     // may have returned Err and skipped persist_runtime_cursor.

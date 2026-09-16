@@ -72,6 +72,13 @@ pub struct BootstrapMqttOverride {
 #[cfg(test)]
 pub mod mock;
 
+/// Presigned upload target for a turn trace blob.
+#[derive(Debug, Clone)]
+pub struct TurnTracePrepare {
+    pub oss_key: String,
+    pub presigned_put: String,
+}
+
 /// One model exposed by the team's managed LLM gateway.
 #[derive(Debug, Clone)]
 pub struct ManagedLlmModelInfo {
@@ -779,6 +786,23 @@ pub trait Backend: Send + Sync {
         title: &str,
         cron_job_id: Option<&str>,
     ) -> BackendResult<String>;
+
+    /// Presign a PUT for a turn execution trace blob (#1455 §7.2).
+    async fn prepare_turn_trace_upload(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        team_id: &str,
+        size: u64,
+        sha256: &str,
+    ) -> BackendResult<TurnTracePrepare>;
+
+    /// Merge-replace message metadata after a turn trace upload.
+    async fn patch_message_metadata(
+        &self,
+        message_id: &str,
+        metadata_json: &str,
+    ) -> BackendResult<()>;
 
     /// Insert one row into `public.messages` from the daemon's runtime.
     #[allow(clippy::too_many_arguments)]

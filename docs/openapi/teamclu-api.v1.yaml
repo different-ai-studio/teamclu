@@ -1516,6 +1516,66 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/turns/{turnId}/trace/prepare:
+    post:
+      operationId: prepareTurnTraceUpload
+      summary: Presign PUT for a turn execution trace blob
+      description: >-
+        Returns a presigned URL for uploading `turns/<team>/<session>/<turnId>.jsonl.gz`.
+        The daemon writes the blob after turn end; clients fetch it via a future read
+        endpoint (Phase 2 follow-up).
+      tags: [Messages]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: turnId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [teamId]
+              properties:
+                teamId:
+                  type: string
+                  format: uuid
+                size:
+                  type: integer
+                  minimum: 0
+                  description: Compressed blob size in bytes (informational).
+                sha256:
+                  type: string
+                  description: SHA-256 hex of the compressed blob (informational).
+      responses:
+        "200":
+          description: Presigned upload URL.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ossKey, presignedPut, expiresIn]
+                properties:
+                  ossKey:
+                    type: string
+                  presignedPut:
+                    type: string
+                    format: uri
+                  expiresIn:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/messages/{messageId}:
     patch:
       operationId: patchMessage

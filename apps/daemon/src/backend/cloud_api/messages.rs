@@ -1,4 +1,4 @@
-use super::super::{BackendResult, StoredMessage};
+use super::super::{BackendResult, StoredMessage, TurnTracePrepare};
 use super::client::empty_to_none;
 use super::CloudApiBackend;
 use chrono::{DateTime, Utc};
@@ -243,6 +243,62 @@ impl CloudApiBackend {
             out.push(row);
         }
         out
+    }
+
+    pub(super) async fn prepare_turn_trace_upload_impl(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        team_id: &str,
+        size: u64,
+        sha256: &str,
+    ) -> BackendResult<TurnTracePrepare> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            #[serde(rename = "teamId")]
+            team_id: &'a str,
+            size: u64,
+            sha256: &'a str,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            #[serde(rename = "ossKey")]
+            oss_key: String,
+            #[serde(rename = "presignedPut")]
+            presigned_put: String,
+        }
+        let resp: Resp = self
+            .post(
+                &format!("/v1/sessions/{session_id}/turns/{turn_id}/trace/prepare"),
+                &Body {
+                    team_id,
+                    size,
+                    sha256,
+                },
+                None,
+            )
+            .await?;
+        Ok(TurnTracePrepare {
+            oss_key: resp.oss_key,
+            presigned_put: resp.presigned_put,
+        })
+    }
+
+    pub(super) async fn patch_message_metadata_impl(
+        &self,
+        message_id: &str,
+        metadata_json: &str,
+    ) -> BackendResult<()> {
+        let metadata = serde_json::from_str(metadata_json).unwrap_or(Value::Null);
+        #[derive(Serialize)]
+        struct Patch {
+            metadata: Value,
+        }
+        self.patch_no_content(
+            &format!("/v1/messages/{message_id}"),
+            &Patch { metadata },
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]

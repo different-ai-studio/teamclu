@@ -579,6 +579,29 @@ impl Backend for DeferredBackend {
             .await
     }
 
+    async fn prepare_turn_trace_upload(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        team_id: &str,
+        size: u64,
+        sha256: &str,
+    ) -> BackendResult<super::TurnTracePrepare> {
+        self.inner()?
+            .prepare_turn_trace_upload(session_id, turn_id, team_id, size, sha256)
+            .await
+    }
+
+    async fn patch_message_metadata(
+        &self,
+        message_id: &str,
+        metadata_json: &str,
+    ) -> BackendResult<()> {
+        self.inner()?
+            .patch_message_metadata(message_id, metadata_json)
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn insert_message(
         &self,

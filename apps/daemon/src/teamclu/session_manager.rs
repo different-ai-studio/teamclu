@@ -1162,9 +1162,9 @@ impl SessionManager {
     /// session/live as `message.created`, and (if `persist_backend`) write
     /// to backend `messages`.
     ///
-    /// Returns `true` when a requested cloud persist succeeded (or was not
-    /// requested). Returns `false` when `persist_backend` was requested but
-    /// `insert_message` failed — callers must not advance catchup cursors.
+    /// Returns the cloud `message_id` when a requested cloud persist succeeded.
+    /// Returns `None` when cloud persist was not requested or `insert_message`
+    /// failed — callers must not advance catchup cursors on failure.
     #[allow(clippy::too_many_arguments)]
     pub async fn emit_agent_message(
         &self,
@@ -1179,7 +1179,7 @@ impl SessionManager {
         sequence: u64,
         persist_backend: bool,
         backend: Option<&std::sync::Arc<dyn Backend>>,
-    ) -> bool {
+    ) -> Option<String> {
         // An agent reply addresses no one, and it is written by the same daemon
         // that would answer a mention — so there is nothing to claim either.
         self.emit_session_message(
@@ -1222,7 +1222,7 @@ impl SessionManager {
         &self,
         write: SessionMessageWrite<'_>,
         backend: Option<&std::sync::Arc<dyn Backend>>,
-    ) -> bool {
+    ) -> Option<String> {
         let SessionMessageWrite {
             session_id,
             sender_actor_id,
@@ -1299,11 +1299,13 @@ impl SessionManager {
         if persist_backend {
             let Some(sb) = backend else {
                 warn!(session_id, "persist_backend requested but no backend");
-                return false;
+                return None;
             };
             let team_id = self.team_id.clone();
             // message_kind_to_string is the pub(crate) fn defined later in this file.
             let kind_str = message_kind_to_string(kind as i32);
+            let cloud_metadata_json =
+                crate::runtime::turn_trace::stamp_cloud_message_metadata(metadata_json, sequence);
             if let Err(e) = sb
                 .insert_message(
                     &message_id,
@@ -1312,7 +1314,7 @@ impl SessionManager {
                     sender_actor_id,
                     &kind_str,
                     content,
-                    metadata_json,
+                    &cloud_metadata_json,
                     model,
                     turn_id,
                     reply_to_message_id,
@@ -1321,10 +1323,11 @@ impl SessionManager {
                 .await
             {
                 warn!(?e, "backend insert_message failed");
-                return false;
+                return None;
             }
+            return Some(message_id);
         }
-        true
+        None
     }
 }
 

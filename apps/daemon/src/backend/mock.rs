@@ -106,6 +106,7 @@ pub struct MockState {
     pub upserted_workspaces: Vec<RecordedWorkspaceUpsert>,
     pub session_participants_upserted: Vec<(String, String)>,
     pub messages_inserted: Vec<RecordedMessageInsert>,
+    pub message_metadata_patches: Vec<(String, String)>,
     pub gateway_messages_inserted: Vec<RecordedGatewayMessage>,
     pub external_actors_upserted: Vec<RecordedExternalActor>,
     pub runtime_cursors_updated: Vec<(String, String)>,
@@ -829,6 +830,33 @@ impl Backend for MockBackend {
             st.session_participants_upserted.push((sid.clone(), actor));
         }
         Ok(sid)
+    }
+
+    async fn prepare_turn_trace_upload(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        team_id: &str,
+        _size: u64,
+        _sha256: &str,
+    ) -> BackendResult<super::TurnTracePrepare> {
+        Ok(super::TurnTracePrepare {
+            oss_key: format!("turns/{team_id}/{session_id}/{turn_id}.jsonl.gz"),
+            presigned_put: "https://example.test/put".into(),
+        })
+    }
+
+    async fn patch_message_metadata(
+        &self,
+        message_id: &str,
+        metadata_json: &str,
+    ) -> BackendResult<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .message_metadata_patches
+            .push((message_id.to_string(), metadata_json.to_string()));
+        Ok(())
     }
 
     async fn insert_message(

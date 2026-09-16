@@ -38,6 +38,7 @@ pub mod team_skills;
 pub(crate) mod test_support;
 pub mod turn_aggregator;
 pub mod turn_reply;
+pub mod turn_trace;
 pub mod well_known_bin;
 mod workspace_runtime;
 

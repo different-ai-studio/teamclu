@@ -5,6 +5,7 @@ import {
   decodeMessageCursor,
   nextMessageCursor,
 } from "../routing-utils.js";
+import { prepareTurnTraceUpload } from "../turn-trace.js";
 
 export function registerMessages(router) {
   // Paginated backward from the newest message. `nextCursor` was hardcoded to
@@ -48,5 +49,24 @@ export function registerMessages(router) {
   router.delete("/v1/messages/:messageId", async (ctx) => {
     await ctx.repository.deleteMessage(decodeURIComponent(ctx.params.messageId));
     return { statusCode: 204 };
+  });
+
+  // Turn execution trace upload (#1455 Phase 2). Daemon reads local history,
+  // gzip-jsonl's it, presigns here, PUTs directly to blob storage.
+  router.post("/v1/sessions/:sessionId/turns/:turnId/trace/prepare", async (ctx) => {
+    const sessionId = decodeURIComponent(ctx.params.sessionId);
+    const turnId = decodeURIComponent(ctx.params.turnId);
+    requireString(turnId, "turnId");
+    const body = ctx.json ?? {};
+    const teamId = requireString(
+      typeof body.teamId === "string" ? body.teamId : ctx.query.get("teamId"),
+      "teamId",
+    );
+    const session = await ctx.repository.getSession(sessionId, { teamId });
+    if (!session) {
+      throw new ApiError(404, "not_found", "session not found");
+    }
+    const prepared = await prepareTurnTraceUpload(teamId, sessionId, turnId);
+    return { body: prepared };
   });
 }

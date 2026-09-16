@@ -659,7 +659,7 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             .await
         };
 
-        if ok {
+        if ok.is_some() {
             info!(
                 session_id,
                 bytes = prompt.len(),
