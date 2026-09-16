@@ -20,7 +20,7 @@ function mapRow(r: ActorDirectorySyncRow): cache.ActorRow {
     teamId: r.team_id,
     actorType: r.actor_type,
     displayName: r.display_name,
-    avatarUrl: null,
+    avatarUrl: r.avatar_url ?? null,
     memberStatus: r.member_status ?? null,
     agentStatus: r.agent_status ?? null,
     lastActiveAt: r.last_active_at ?? null,

@@ -801,6 +801,13 @@ export interface ActorsBackend {
     displayName: string;
     avatarUrl?: string | null;
   }): Promise<ActorDirectoryEntry>;
+  /** Store an avatar image for the calling user's own member actor and return
+   * its public URL. Storage only accepts it under that actor's id, and it is not
+   * shown anywhere until `updateCurrentActorProfile` saves the URL. */
+  uploadCurrentActorAvatar(input: {
+    actorId: string;
+    image: Blob;
+  }): Promise<string>;
   updateAgentDefaults(input: {
     agentId: string;
     agentTypes?: string[] | null;
@@ -1678,6 +1685,8 @@ export interface ActorDirectorySyncRow {
   team_id: string;
   actor_type: string;
   display_name: string;
+  /** Absent from Cloud API builds that predate it; treated as no photo. */
+  avatar_url?: string | null;
   member_status?: string | null;
   agent_status?: string | null;
   last_active_at?: string | null;

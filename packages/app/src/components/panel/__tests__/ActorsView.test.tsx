@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ActorsView, compareMembersByRoleThenName, matchesActorTypeFilter, memberTeamRolePill } from '../ActorsView'
-import type { ActorRow } from '@/stores/actor-directory-store'
+import { patchActorAvatar, useActorDirectoryStore, type ActorRow } from '@/stores/actor-directory-store'
 import { useActorDetailStore } from '@/stores/actor-detail-store'
 import { useUIStore } from '@/stores/ui'
 
@@ -323,6 +323,64 @@ describe('ActorsView', () => {
     fireEvent.click(row)
 
     expect(useActorDetailStore.getState().actorId).toBe('x-9')
+  })
+
+  describe('member photos', () => {
+    const PHOTO = 'https://cdn.example.test/avatars/a-1/avatar-1.jpg'
+
+    function member(id: string, name: string, avatarUrl: string | null) {
+      return {
+        id,
+        actor_type: 'member',
+        display_name: name,
+        avatar_url: avatarUrl,
+        member_status: 'active',
+        agent_status: null,
+        last_active_at: null,
+      }
+    }
+
+    function rowAvatar(name: RegExp): HTMLImageElement | null {
+      return screen.getByRole('button', { name }).querySelector('img')
+    }
+
+    beforeEach(() => {
+      // The directory store is a module singleton and only loads a team once.
+      useActorDirectoryStore.setState({ byTeam: {}, activeTeamId: null })
+    })
+
+    it('shows a member photo, and the initial for members without one', async () => {
+      mockActorsRows([member('a-1', 'Alice', PHOTO), member('a-2', 'Bob', null)])
+      render(<ActorsView />)
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /Alice/ })).toBeInTheDocument())
+      expect(rowAvatar(/Alice/)?.src).toBe(PHOTO)
+      expect(rowAvatar(/Bob/)).toBeNull()
+      expect(screen.getByRole('button', { name: /Bob/ })).toHaveTextContent(/^B/)
+    })
+
+    it('goes back to the initial when the photo fails to load', async () => {
+      mockActorsRows([member('a-1', 'Alice', PHOTO)])
+      render(<ActorsView />)
+
+      await waitFor(() => expect(rowAvatar(/Alice/)).not.toBeNull())
+      fireEvent.error(rowAvatar(/Alice/)!)
+
+      expect(rowAvatar(/Alice/)).toBeNull()
+      expect(screen.getByRole('button', { name: /Alice/ })).toHaveTextContent(/^A/)
+    })
+
+    it('picks up a photo saved from the profile without reloading the list', async () => {
+      mockActorsRows([member('a-1', 'Alice', null)])
+      render(<ActorsView />)
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /Alice/ })).toBeInTheDocument())
+      expect(rowAvatar(/Alice/)).toBeNull()
+
+      act(() => patchActorAvatar('team-1', 'a-1', PHOTO))
+
+      expect(rowAvatar(/Alice/)?.src).toBe(PHOTO)
+    })
   })
 })
 

@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { Copy, Link2, Loader2, MessageCircle, Sparkles, User as UserIcon, UserMinus, X } from 'lucide-react'
+import { Camera, Copy, Link2, Loader2, MessageCircle, Sparkles, User as UserIcon, UserMinus, X } from 'lucide-react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,7 +35,8 @@ import { formatDate, formatRelativeTime } from '@/lib/ui/date-format'
 import { useActorPresenceStore } from '@/stores/actor-presence-store'
 import { useUIStore } from '@/stores/ui'
 import { resolveActorOnlineStatus } from '@/lib/actor/actor-online'
-import { useActorDirectory, type ActorRow } from '@/stores/actor-directory-store'
+import { patchActorAvatar, useActorDirectory, type ActorRow } from '@/stores/actor-directory-store'
+import { AvatarImageError, AVATAR_SOURCE_TYPES, prepareAvatarImage } from '@/lib/actor/avatar-image'
 import { cn } from '@/lib/utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { canRemoveTeamActor, useTeamPermissions } from '@/lib/team/team-permissions'
@@ -74,6 +75,7 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
   const { t } = useTranslation()
   const enterActorDraft = useUIStore((s) => s.enterActorDraft)
   const currentMemberId = useCurrentTeamStore((s) => s.currentMember?.id ?? null)
+  const currentMemberName = useCurrentTeamStore((s) => s.currentMember?.displayName ?? null)
   const teamPermissions = useTeamPermissions()
   const { actors: directoryActors, refetch: refetchDirectory } = useActorDirectory()
   const displayActor = actor
@@ -84,6 +86,9 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
   // with — the conversation lives in the channel they wrote from.
   const isExternal = displayActor.actor_type === 'external'
   const isMember = displayActor.actor_type === 'member'
+  // Only your own member profile takes a new photo: storage and the profile RPC
+  // both refuse any other actor.
+  const isSelf = isMember && !!currentMemberId && displayActor.id === currentMemberId
   const agentPresence = useActorPresenceStore((s) =>
     isAgent ? s.byActorId[displayActor.id] : undefined,
   )
@@ -108,9 +113,15 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
   const [clientVersions, setClientVersions] = React.useState<ClientVersionEntry[]>([])
   const [detailAvatarUrl, setDetailAvatarUrl] = React.useState<string | null>(null)
   const [avatarFailed, setAvatarFailed] = React.useState(false)
+  const [uploadingAvatar, setUploadingAvatar] = React.useState(false)
+  const avatarInputRef = React.useRef<HTMLInputElement>(null)
+  // The actor on screen now, so an upload that finishes after the host switched
+  // to someone else does not paint its photo onto them.
+  const shownActorIdRef = React.useRef(actor.id)
   // Reset the re-invite result whenever this targets a different actor (or is
   // reopened) so a stale link from a previous actor never leaks through.
   React.useEffect(() => {
+    shownActorIdRef.current = actor.id
     setReinvite(null)
     setReinviting(false)
     setRemoveConfirmOpen(false)
@@ -137,7 +148,8 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
         const entry = await getBackend().actors.getActorDirectoryEntry(id)
         if (cancelled || !entry) return
         setClientVersions(entry.client_versions ?? [])
-        if (entry.avatar_url) setDetailAvatarUrl(entry.avatar_url)
+        // A photo uploaded while this fetch was in flight is newer; keep it.
+        if (entry.avatar_url) setDetailAvatarUrl((prev) => prev ?? entry.avatar_url ?? null)
         if (entry.roles) setMemberRoles(entry.roles)
       } catch {
         // Detail enrichment is best-effort; keep the cached-row view.
@@ -302,6 +314,60 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
     return (b.lastReportedAt ?? '').localeCompare(a.lastReportedAt ?? '')
   })
 
+  const openAvatarPicker = () => {
+    if (!isSelf || uploadingAvatar) return
+    avatarInputRef.current?.click()
+  }
+
+  const onAvatarFileChosen = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    // Clear it so picking the same file again still fires a change.
+    event.target.value = ''
+    if (!file || !isSelf || uploadingAvatar) return
+    const actorId = displayActor.id
+    setUploadingAvatar(true)
+    try {
+      const image = await prepareAvatarImage(file)
+      const backend = getBackend()
+      const uploadedUrl = await backend.actors.uploadCurrentActorAvatar({ actorId, image })
+      // The profile RPC writes the name too, so send the one the user has now:
+      // a rename in Settings reaches the current-team store before the directory.
+      const updated = await backend.actors.updateCurrentActorProfile({
+        actorId,
+        displayName: currentMemberName?.trim() || displayActor.display_name,
+        avatarUrl: uploadedUrl,
+      })
+      const nextUrl = updated.avatar_url ?? uploadedUrl
+      if (teamId) patchActorAvatar(teamId, actorId, nextUrl)
+      if (shownActorIdRef.current === actorId) {
+        setDetailAvatarUrl(nextUrl)
+        setAvatarFailed(false)
+      }
+      toast.success(t('actors.detail.avatarUpdated', 'Profile photo updated'))
+    } catch (e) {
+      if (e instanceof AvatarImageError) {
+        toast.error(
+          e.code === 'unsupported_type'
+            ? t('actors.detail.avatarUnsupportedType', 'Choose a JPG, PNG or WebP image')
+            : e.code === 'too_large'
+              ? t('actors.detail.avatarTooLarge', 'That image is too large (20 MB max)')
+              : t('actors.detail.avatarDecodeFailed', "Couldn't read that image"),
+        )
+      } else {
+        const msg = e instanceof Error ? e.message : String(e)
+        toast.error(t('actors.detail.avatarUpdateFailed', 'Failed to update profile photo: {{msg}}', { msg }))
+      }
+    } finally {
+      setUploadingAvatar(false)
+    }
+  }
+
+  const avatarActionLabel = uploadingAvatar
+    ? t('actors.detail.avatarUploading', 'Uploading…')
+    : avatarUrl
+      ? t('actors.detail.avatarChange', 'Change photo')
+      : t('actors.detail.avatarUpload', 'Upload photo')
+
   const copyId = async () => {
     try {
       await navigator.clipboard.writeText(displayActor.id)
@@ -390,9 +456,27 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
                     || (isAgent ? <Sparkles className="h-9 w-9" /> : <UserIcon className="h-9 w-9" />)
                 )}
               </div>
+              {isSelf && (
+                // A shortcut onto the photo itself; the labelled button below is
+                // the keyboard / screen-reader path, so this one stays out of tab order.
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={openAvatarPicker}
+                  disabled={uploadingAvatar}
+                  title={avatarActionLabel}
+                  aria-label={avatarActionLabel}
+                  className={cn(
+                    'absolute inset-0 flex items-center justify-center rounded-full bg-black/40 text-white transition-opacity',
+                    uploadingAvatar ? 'cursor-default opacity-100' : 'cursor-pointer opacity-0 hover:opacity-100',
+                  )}
+                >
+                  {uploadingAvatar ? <Loader2 className="h-6 w-6 animate-spin" /> : <Camera className="h-6 w-6" />}
+                </button>
+              )}
               <span
                 className={cn(
-                  'absolute bottom-1 right-1 h-4 w-4 rounded-full ring-[3px] ring-background',
+                  'pointer-events-none absolute bottom-1 right-1 h-4 w-4 rounded-full ring-[3px] ring-background',
                   online ? 'bg-emerald-500' : 'bg-faint',
                 )}
                 aria-label={online ? t('actors.detail.online', 'Online') : t('actors.detail.offline', 'Offline')}
@@ -415,6 +499,27 @@ export function ActorDetailContent({ actor, teamId, onRemoved, onClose, extraSec
                 </>
               )}
             </div>
+            {isSelf && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={openAvatarPicker}
+                  disabled={uploadingAvatar}
+                  className="mt-4 h-8 rounded-[8px] border-border-soft bg-background px-3 text-[12.5px] text-ink-2"
+                >
+                  {uploadingAvatar ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Camera className="h-3.5 w-3.5" />}
+                  {avatarActionLabel}
+                </Button>
+                <input
+                  ref={avatarInputRef}
+                  type="file"
+                  accept={AVATAR_SOURCE_TYPES.join(',')}
+                  className="hidden"
+                  data-testid="actor-avatar-file-input"
+                  onChange={(e) => void onAvatarFileChosen(e)}
+                />
+              </>
+            )}
           </div>
 
           <div className="mt-8 border-t border-border-soft pt-5">

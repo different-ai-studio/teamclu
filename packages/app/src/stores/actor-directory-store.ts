@@ -51,7 +51,8 @@ export type ActorRow = {
   actor_type: ActorKind
   display_name: string
   // Real avatar image URL; the detail dialog falls back to display-name initials
-  // when absent. Carried on the network directory row (not the libsql cache).
+  // when absent. Persisted in the libsql cache too, so a cold start paints the
+  // photo (e.g. the sidebar account menu) before the network reconcile lands.
   avatar_url?: string | null
   member_status: string | null
   agent_status: string | null
@@ -125,6 +126,18 @@ export function patchMemberTeamRole(teamId: string, memberActorId: string, teamR
   })
 }
 
+/** Show a just-saved avatar in the directory without waiting for a reconcile. */
+export function patchActorAvatar(teamId: string, actorId: string, avatarUrl: string | null): void {
+  useActorDirectoryStore.setState((s) => {
+    const slice = s.byTeam[teamId]
+    if (!slice) return s
+    const actors = slice.actors.map((row) =>
+      row.id === actorId ? { ...row, avatar_url: avatarUrl } : row,
+    )
+    return { byTeam: { ...s.byTeam, [teamId]: { ...slice, actors } } }
+  })
+}
+
 interface TeamSlice {
   actors: ActorRow[]
   loading: boolean
@@ -164,6 +177,7 @@ export function mapCacheRow(r: CachedActorRow): ActorRow {
     id: r.id,
     actor_type: toActorKind(r.actorType),
     display_name: r.displayName,
+    avatar_url: r.avatarUrl ?? null,
     member_status: r.memberStatus ?? null,
     agent_status: r.agentStatus ?? null,
     last_active_at: r.lastActiveAt ?? null,
@@ -195,6 +209,7 @@ async function writeCache(teamId: string, rows: ActorRow[]): Promise<void> {
     teamId,
     actorType: r.actor_type,
     displayName: r.display_name,
+    avatarUrl: r.avatar_url ?? null,
     memberStatus: r.member_status,
     agentStatus: r.agent_status,
     lastActiveAt: r.last_active_at,

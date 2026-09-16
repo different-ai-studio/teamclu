@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ActorDetailDialog } from '../ActorDetailDialog'
+import { useActorDirectoryStore } from '@/stores/actor-directory-store'
+import { AvatarImageError } from '@/lib/actor/avatar-image'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -26,6 +28,17 @@ const mockGetActorDirectoryEntry = vi.fn()
 const mockListOrgRoles = vi.fn()
 const mockPutMemberRoles = vi.fn()
 const mockRefetchDirectory = vi.fn()
+const mockUploadCurrentActorAvatar = vi.fn()
+const mockUpdateCurrentActorProfile = vi.fn()
+const mockPrepareAvatarImage = vi.fn()
+const mockToastSuccess = vi.fn()
+const mockToastError = vi.fn()
+
+// Who is signed in. Most tests look at someone else's profile; the profile-photo
+// tests sign in as the actor they open.
+const signedIn = vi.hoisted(() => ({
+  currentMember: { id: 'me-1' } as { id: string; displayName?: string },
+}))
 
 const perms = vi.hoisted(() => ({
   canManageTeam: false,
@@ -51,10 +64,10 @@ vi.mock('@/stores/current-team', async (importOriginal) => {
   return {
     ...actual,
     useCurrentTeamStore: Object.assign(
-      (sel: (s: { currentMember: { id: string }; team: { id: string } }) => unknown) =>
-        sel({ currentMember: { id: 'me-1' }, team: { id: 'team-abc' } }),
+      (sel: (s: { currentMember: { id: string; displayName?: string }; team: { id: string } }) => unknown) =>
+        sel({ currentMember: signedIn.currentMember, team: { id: 'team-abc' } }),
       {
-        getState: () => ({ currentMember: { id: 'me-1' }, team: { id: 'team-abc' } }),
+        getState: () => ({ currentMember: signedIn.currentMember, team: { id: 'team-abc' } }),
         setState: actual.useCurrentTeamStore.setState,
         subscribe: actual.useCurrentTeamStore.subscribe,
       },
@@ -81,7 +94,11 @@ vi.mock('@/lib/backend', async (importOriginal) => {
   return {
     ...actual,
     getBackend: () => ({
-      actors: { getActorDirectoryEntry: mockGetActorDirectoryEntry },
+      actors: {
+        getActorDirectoryEntry: mockGetActorDirectoryEntry,
+        uploadCurrentActorAvatar: mockUploadCurrentActorAvatar,
+        updateCurrentActorProfile: mockUpdateCurrentActorProfile,
+      },
       orgRoles: {
         list: mockListOrgRoles,
         putMemberRoles: mockPutMemberRoles,
@@ -90,6 +107,20 @@ vi.mock('@/lib/backend', async (importOriginal) => {
     }),
   }
 })
+
+// jsdom cannot decode or encode images; the crop itself is covered in
+// lib/actor/__tests__/avatar-image.test.ts.
+vi.mock('@/lib/actor/avatar-image', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/actor/avatar-image')>()
+  return { ...actual, prepareAvatarImage: (file: File) => mockPrepareAvatarImage(file) }
+})
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: (...args: unknown[]) => mockToastSuccess(...args),
+    error: (...args: unknown[]) => mockToastError(...args),
+  },
+}))
 
 vi.mock('@/components/ui/dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) => open ? <div>{children}</div> : null,
@@ -145,6 +176,13 @@ beforeEach(() => {
   perms.canManageTeam = false
   perms.isOwner = false
   perms.role = 'member'
+  mockUploadCurrentActorAvatar.mockReset()
+  mockUpdateCurrentActorProfile.mockReset()
+  mockPrepareAvatarImage.mockReset()
+  mockToastSuccess.mockReset()
+  mockToastError.mockReset()
+  signedIn.currentMember = { id: 'me-1' }
+  useActorDirectoryStore.setState({ byTeam: {} })
 })
 
 describe('ActorDetailDialog', () => {
@@ -454,6 +492,133 @@ describe('ActorDetailDialog', () => {
         'actor-1',
         expect.arrayContaining(['r-admin', 'r-member']),
       )
+    })
+  })
+
+  describe('profile photo', () => {
+    const self = {
+      id: 'actor-1',
+      actor_type: 'member' as const,
+      display_name: 'Matt-iOS',
+      member_status: 'iOS',
+      agent_status: null,
+      last_active_at: new Date().toISOString(),
+    }
+
+    function signInAs(id: string, displayName = 'Matt-iOS') {
+      signedIn.currentMember = { id, displayName }
+    }
+
+    function pickFile(file: File) {
+      fireEvent.change(screen.getByTestId('actor-avatar-file-input'), { target: { files: [file] } })
+    }
+
+    it('offers no upload on someone else\'s profile', () => {
+      signInAs('someone-else')
+      render(<ActorDetailDialog actor={self} teamId="team-abc" onOpenChange={vi.fn()} />)
+
+      expect(screen.queryByRole('button', { name: /Upload photo|Change photo/ })).not.toBeInTheDocument()
+      expect(screen.queryByTestId('actor-avatar-file-input')).not.toBeInTheDocument()
+    })
+
+    it('offers no upload on an agent, even one with the current member\'s id', () => {
+      signInAs('agent-1')
+      render(
+        <ActorDetailDialog
+          actor={{ ...self, id: 'agent-1', actor_type: 'agent', display_name: 'amuxd' }}
+          teamId="team-abc"
+          onOpenChange={vi.fn()}
+        />,
+      )
+
+      expect(screen.queryByTestId('actor-avatar-file-input')).not.toBeInTheDocument()
+    })
+
+    it('labels the action by whether a photo is already set', () => {
+      signInAs('actor-1')
+      const { rerender } = render(<ActorDetailDialog actor={self} teamId="team-abc" onOpenChange={vi.fn()} />)
+      expect(screen.getAllByRole('button', { name: 'Upload photo' }).length).toBeGreaterThan(0)
+
+      rerender(
+        <ActorDetailDialog
+          actor={{ ...self, avatar_url: 'https://example.com/old.png' }}
+          teamId="team-abc"
+          onOpenChange={vi.fn()}
+        />,
+      )
+      expect(screen.getAllByRole('button', { name: 'Change photo' }).length).toBeGreaterThan(0)
+    })
+
+    it('uploads the picked photo, saves it on the profile and shows it', async () => {
+      signInAs('actor-1', 'Matt (renamed)')
+      useActorDirectoryStore.setState({
+        byTeam: { 'team-abc': { actors: [self], loading: false, error: false, started: true } },
+      })
+      const prepared = new Blob(['jpeg'], { type: 'image/jpeg' })
+      mockPrepareAvatarImage.mockResolvedValue(prepared)
+      mockUploadCurrentActorAvatar.mockResolvedValue('https://cdn.example.test/avatars/actor-1/avatar-1.jpg')
+      mockUpdateCurrentActorProfile.mockResolvedValue({
+        id: 'actor-1',
+        display_name: 'Matt (renamed)',
+        avatar_url: 'https://cdn.example.test/avatars/actor-1/avatar-1.jpg',
+      })
+
+      render(<ActorDetailDialog actor={self} teamId="team-abc" onOpenChange={vi.fn()} />)
+      const picked = new File(['png'], 'me.png', { type: 'image/png' })
+      pickFile(picked)
+
+      const img = (await screen.findByRole('img', { name: 'Matt-iOS' })) as HTMLImageElement
+      expect(img.src).toBe('https://cdn.example.test/avatars/actor-1/avatar-1.jpg')
+      expect(mockPrepareAvatarImage).toHaveBeenCalledWith(picked)
+      expect(mockUploadCurrentActorAvatar).toHaveBeenCalledWith({ actorId: 'actor-1', image: prepared })
+      // The profile RPC rewrites the name too, so it gets the current one.
+      expect(mockUpdateCurrentActorProfile).toHaveBeenCalledWith({
+        actorId: 'actor-1',
+        displayName: 'Matt (renamed)',
+        avatarUrl: 'https://cdn.example.test/avatars/actor-1/avatar-1.jpg',
+      })
+      expect(mockToastSuccess).toHaveBeenCalledWith('Profile photo updated')
+      expect(useActorDirectoryStore.getState().byTeam['team-abc'].actors[0].avatar_url).toBe(
+        'https://cdn.example.test/avatars/actor-1/avatar-1.jpg',
+      )
+      expect(screen.getAllByRole('button', { name: 'Change photo' }).length).toBeGreaterThan(0)
+    })
+
+    it('explains a rejected file and uploads nothing', async () => {
+      signInAs('actor-1')
+      mockPrepareAvatarImage.mockRejectedValue(new AvatarImageError('unsupported_type'))
+
+      render(<ActorDetailDialog actor={self} teamId="team-abc" onOpenChange={vi.fn()} />)
+      pickFile(new File(['gif'], 'anim.gif', { type: 'image/gif' }))
+
+      await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Choose a JPG, PNG or WebP image'))
+      expect(mockUploadCurrentActorAvatar).not.toHaveBeenCalled()
+      expect(mockUpdateCurrentActorProfile).not.toHaveBeenCalled()
+    })
+
+    it('reports a failed save and keeps the old picture', async () => {
+      signInAs('actor-1')
+      mockPrepareAvatarImage.mockResolvedValue(new Blob(['jpeg'], { type: 'image/jpeg' }))
+      mockUploadCurrentActorAvatar.mockResolvedValue('https://cdn.example.test/avatars/actor-1/avatar-2.jpg')
+      mockUpdateCurrentActorProfile.mockRejectedValue(new Error('actor profile update is not allowed'))
+
+      render(
+        <ActorDetailDialog
+          actor={{ ...self, avatar_url: 'https://example.com/old.png' }}
+          teamId="team-abc"
+          onOpenChange={vi.fn()}
+        />,
+      )
+      pickFile(new File(['png'], 'me.png', { type: 'image/png' }))
+
+      await waitFor(() =>
+        expect(mockToastError).toHaveBeenCalledWith(
+          'Failed to update profile photo: actor profile update is not allowed',
+        ),
+      )
+      const img = screen.getByRole('img', { name: 'Matt-iOS' }) as HTMLImageElement
+      expect(img.src).toBe('https://example.com/old.png')
+      expect(mockToastSuccess).not.toHaveBeenCalled()
     })
   })
 })

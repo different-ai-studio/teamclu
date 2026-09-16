@@ -3636,7 +3636,15 @@
       "removeMember": "移除成员",
       "removeAgent": "移除 Agent",
       "removeMemberHint": "永久移出该成员，其将无法访问团队内的会话与共享资源。",
-      "removeAgentHint": "永久移出该 Agent 及其凭证。"
+      "removeAgentHint": "永久移出该 Agent 及其凭证。",
+      "avatarUpload": "上传头像",
+      "avatarChange": "更换头像",
+      "avatarUploading": "上传中…",
+      "avatarUpdated": "头像已更新",
+      "avatarUnsupportedType": "请选择 JPG、PNG 或 WebP 图片",
+      "avatarTooLarge": "图片过大（最大 20 MB）",
+      "avatarDecodeFailed": "无法读取这张图片",
+      "avatarUpdateFailed": "头像更新失败：{{msg}}"
     },
     "removeConfirm": {
       "titleAgent": "移除代理?",

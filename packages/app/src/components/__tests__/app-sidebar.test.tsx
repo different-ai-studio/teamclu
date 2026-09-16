@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import React from 'react'
 
 const uiStoreMocks = vi.hoisted(() => ({
@@ -51,6 +51,10 @@ const currentTeamStoreMocks = vi.hoisted(() => ({
     role: 'owner',
     joinedAt: '2026-05-01T00:00:00.000Z',
   },
+}))
+
+const directoryMocks = vi.hoisted(() => ({
+  actors: [] as Array<{ id: string; avatar_url?: string | null }>,
 }))
 
 const sessionStoreMocks = vi.hoisted(() => ({
@@ -144,6 +148,20 @@ vi.mock('@/stores/current-team', () => ({
     sel(currentTeamStoreMocks as unknown as Record<string, unknown>),
 }))
 
+vi.mock('@/stores/actor-directory-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/stores/actor-directory-store')>()
+  return {
+    ...actual,
+    useActorDirectory: () => ({
+      actors: directoryMocks.actors,
+      loading: false,
+      error: false,
+      teamId: 'team-1',
+      refetch: vi.fn(),
+    }),
+  }
+})
+
 vi.mock('@/components/ui/sidebar', () => ({
   Sidebar: ({ children, ...props }: any) => <div data-testid="sidebar" {...props}>{children}</div>,
   SidebarContent: ({ children, className }: any) => (
@@ -236,6 +254,7 @@ describe('AppSidebar', () => {
       role: 'owner',
       joinedAt: '2026-05-01T00:00:00.000Z',
     }
+    directoryMocks.actors = []
   })
 
   it('renders sidebar container', () => {
@@ -277,5 +296,66 @@ describe('AppSidebar', () => {
     expect(screen.getAllByText('Matt').length).toBeGreaterThan(0)
     expect(screen.getByText('matt@example.com')).toBeDefined()
     expect(screen.getByText('OpenBeta')).toBeDefined()
+  })
+
+  describe('account menu avatar', () => {
+    const MEMBER_PHOTO = 'https://cdn.example.test/avatars/member-1/avatar-1.jpg'
+    const PROVIDER_PHOTO = 'https://lh3.example.test/provider.png'
+
+    function triggerAvatar(): HTMLImageElement | null {
+      return screen.getByTestId('sidebar-user-menu-trigger').querySelector('img')
+    }
+
+    function signInWithProviderPhoto() {
+      authStoreMocks.session = {
+        user: {
+          id: 'user-1',
+          email: 'matt@example.com',
+          userMetadata: { avatar_url: PROVIDER_PHOTO },
+        },
+      } as unknown as typeof authStoreMocks.session
+    }
+
+    it('shows the photo set on your own contact profile', () => {
+      directoryMocks.actors = [
+        { id: 'someone-else', avatar_url: 'https://cdn.example.test/avatars/other.jpg' },
+        { id: 'member-1', avatar_url: MEMBER_PHOTO },
+      ]
+      render(<AppSidebar />)
+      expect(triggerAvatar()?.src).toBe(MEMBER_PHOTO)
+    })
+
+    it('prefers that photo over the sign-in provider picture', () => {
+      signInWithProviderPhoto()
+      directoryMocks.actors = [{ id: 'member-1', avatar_url: MEMBER_PHOTO }]
+      render(<AppSidebar />)
+      expect(triggerAvatar()?.src).toBe(MEMBER_PHOTO)
+    })
+
+    it('uses the sign-in provider picture when no photo is set', () => {
+      signInWithProviderPhoto()
+      directoryMocks.actors = [{ id: 'member-1', avatar_url: null }]
+      render(<AppSidebar />)
+      expect(triggerAvatar()?.src).toBe(PROVIDER_PHOTO)
+    })
+
+    it('shows the initial when there is no picture at all', () => {
+      render(<AppSidebar />)
+      expect(triggerAvatar()).toBeNull()
+      expect(screen.getByText('M')).toBeDefined()
+    })
+
+    it('steps down to the next picture, then the initial, when one fails to load', () => {
+      signInWithProviderPhoto()
+      directoryMocks.actors = [{ id: 'member-1', avatar_url: MEMBER_PHOTO }]
+      render(<AppSidebar />)
+
+      fireEvent.error(triggerAvatar()!)
+      expect(triggerAvatar()?.src).toBe(PROVIDER_PHOTO)
+
+      fireEvent.error(triggerAvatar()!)
+      expect(triggerAvatar()).toBeNull()
+      expect(screen.getByText('M')).toBeDefined()
+    })
   })
 })

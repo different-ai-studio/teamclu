@@ -1360,6 +1360,32 @@ test("listTeamActors selects actor_directory columns without removed agent_kind"
   assert.equal(page.items[0].agentKind, null);
 });
 
+test("listActorDirectoryForSync carries avatar_url so the desktop cache keeps profile photos", async () => {
+  const tableCalls = [];
+  const row = {
+    id: "actor-1",
+    team_id: "team-1",
+    actor_type: "member",
+    display_name: "Alice",
+    avatar_url: "https://cdn.example.test/avatars/actor-1/avatar-1.jpg",
+    member_status: "active",
+    agent_status: null,
+    last_active_at: null,
+    created_at: "2026-05-27T01:00:00Z",
+    updated_at: "2026-05-27T01:00:00Z",
+  };
+  const repo = createRepo(fakeSupabase({ tableCalls, tableData: { actor_directory: [row] } }));
+
+  const items = await repo.listActorDirectoryForSync("team-1", null, { limit: 10 });
+  const selectCall = tableCalls.find((c) => c.table === "actor_directory" && c.op === "select");
+  assert.ok(selectCall, "expected actor_directory select");
+  assert.ok(
+    selectCall.columns.split(",").map((c) => c.trim()).includes("avatar_url"),
+    "sync must select avatar_url; the desktop cache writes whatever it is given",
+  );
+  assert.equal(items[0].avatar_url, row.avatar_url);
+});
+
 test("listTeamActors maps owner_member_id to agentOwnerMemberId", async () => {
   const tableCalls = [];
   const repo = createRepo(fakeSupabase({
