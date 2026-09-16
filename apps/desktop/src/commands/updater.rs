@@ -1058,17 +1058,33 @@ fn relaunch_and_exit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     // Then stop amuxd, before the installer gets as far as copying files.
     // Windows will not overwrite a running binary, and `amuxd.exe` sits in the
     // very directory being replaced — the NSIS template closes the app it knows
-    // about, not our sidecar. `RunEvent::Exit` would do this too, but only
-    // after the installer is already under way; the supervisor's shutdown is
-    // once-only, so doing it here just moves it earlier.
+    // about, not our sidecar.
+    //
+    // It has to be the *non-waiting* stop. From here the installer is racing us
+    // to `<install dir>\<main binary>.exe`, which Windows refuses to overwrite
+    // while this process still maps it, and Tauri's NSIS template gives that
+    // barely any slack: it sleeps 500 ms after terminating the app it finds,
+    // and skips even that when the process is already gone. "Still exiting" is
+    // therefore the one state that breaks the install — the user sees "Error
+    // opening file for writing", and Retry clears it because a human click
+    // takes longer than the rundown.
+    //
+    // `shutdown_blocking` puts us squarely in that state: on Windows
+    // `signal_child_stop` is a no-op, so it waits out the full child grace,
+    // waits again after `start_kill`, and then re-runs
+    // `<install dir>\amuxd.exe stop` — launching a binary out of the directory
+    // being replaced. The PREINSTALL hook already taskkills the sidecars, so
+    // none of that buys anything here. Kill the child and leave.
     if let Some(supervisor) = app.try_state::<crate::commands::amuxd_supervisor::AmuxdSupervisor>()
     {
-        supervisor.shutdown_blocking();
+        supervisor.shutdown_fast_no_wait();
     }
 
     // `/R` brings the app back once the install finishes, so this exit is the
     // end of our part. Exit through Tauri rather than `process::exit` so the
-    // terminal registry and the rest of `RunEvent::Exit` still run.
+    // terminal registry and the rest of `RunEvent::Exit` still run;
+    // `shutdown_fast_no_wait` has already flipped the supervisor's once-only
+    // flag, so the handler there will not re-enter the blocking stop.
     app.exit(0);
     Ok(())
 }
