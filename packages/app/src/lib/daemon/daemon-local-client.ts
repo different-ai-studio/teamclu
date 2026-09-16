@@ -901,7 +901,7 @@ export async function deleteDaemonRole(
  * Returns a three-state outcome plus that path (never throws):
  * - `"seeded"`    — the daemon accepted and completed the seed/clone.
  * - `"failed"`    — the daemon was reachable but it failed (terminal); `error`
- *   carries what it said, which for a clone is git's own reason.
+ *   is the `detail` of what it said, which for a clone is git's own reason.
  * - `"unreachable"` — the daemon is down/unreachable (status 0 or thrown);
  *   the caller should leave the app row untouched so a reseed stays available.
  */
@@ -978,7 +978,7 @@ export async function cloneDaemonApp(
       return { outcome: "unreachable", workdir: null, error: null }
     }
     console.warn('[daemon-local-client] app clone failed:', result.error)
-    return { outcome: "failed", workdir: null, error: result.error ?? null }
+    return { outcome: "failed", workdir: null, error: problemDetailFromErrorBody(result.error).detail || null }
   } catch (err) {
     console.warn('[daemon-local-client] app clone unavailable (non-fatal):', err)
     return { outcome: "unreachable", workdir: null, error: null }
@@ -1026,7 +1026,7 @@ export async function seedDaemonApp(
       return { outcome: "unreachable", workdir: null, error: null }
     }
     console.warn('[daemon-local-client] app seed failed (non-fatal):', result.error)
-    return { outcome: "failed", workdir: null, error: result.error ?? null }
+    return { outcome: "failed", workdir: null, error: problemDetailFromErrorBody(result.error).detail || null }
   } catch (err) {
     console.warn('[daemon-local-client] app seed unavailable (non-fatal):', err)
     return { outcome: "unreachable", workdir: null, error: null }
@@ -1295,7 +1295,7 @@ export async function moveDaemonAppWorkdir(
     if (result.status === 0) {
       return { outcome: 'unreachable', workdir: null, error: null }
     }
-    return { outcome: 'failed', workdir: null, error: result.error ?? null }
+    return { outcome: 'failed', workdir: null, error: problemDetailFromErrorBody(result.error).detail }
   } catch (err) {
     console.warn('[daemon-local-client] app workdir move unavailable:', err)
     return { outcome: 'unreachable', workdir: null, error: null }
@@ -1339,7 +1339,13 @@ export async function buildDaemonApp(
       return { outcome: "unreachable", error: null, gitCommitSha: null, declaration: null, image: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
-    return { outcome: "failed", error: result.error ?? null, gitCommitSha: null, declaration: null, image: null }
+    return {
+      outcome: "failed",
+      error: problemDetailFromErrorBody(result.error).detail || null,
+      gitCommitSha: null,
+      declaration: null,
+      image: null,
+    }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
     return { outcome: "unreachable", error: null, gitCommitSha: null, declaration: null, image: null }
