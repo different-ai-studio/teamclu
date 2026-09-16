@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Trophy, Flame, MessageSquareHeart, Sparkles, RefreshCw, Loader2 } from 'lucide-react'
+import { Trophy, Flame, MessageSquareHeart, Sparkles, RefreshCw, Loader2, AppWindow } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
 import { buildSharedRankMap } from '@/lib/team/team-leaderboard-ranks'
 import { Button } from '@/components/ui/button'
 import { fetchTeamLeaderboard } from '@/lib/telemetry/cloud-leaderboard'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { useActorDirectory } from '@/stores/actor-directory-store'
 
 function formatTokens(tokens: number | undefined | null): string {
   if (tokens == null || tokens === 0) {
@@ -39,6 +40,10 @@ interface MemberLeaderboardExport {
   exportedAt: string
   updateAt: string
   workspaces: Record<string, LeaderboardStats>  // workspace path -> stats
+  /** Team skills published (all-time). */
+  skillsPublished?: number
+  /** Apps created in the team (all-time). */
+  appsCreated?: number
 }
 
 export interface TeamLeaderboard {
@@ -46,17 +51,21 @@ export interface TeamLeaderboard {
 }
 
 interface MemberStats {
+  id: string
   name: string
   overallRank: number
   overallScore: number
   tokenRank: number
   feedbackRank: number
   skillRank: number
+  appRank: number
   totalTokens: number
   totalFeedbacks: number
   totalCost: number
   sessionCount: number
   totalSkillInvocations: number
+  skillsPublished: number
+  appsCreated: number
   isCurrentUser?: boolean
 }
 
@@ -67,6 +76,11 @@ export function LeaderboardSection() {
   const [leaderboard, setLeaderboard] = React.useState<TeamLeaderboard | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const { actors: directoryActors } = useActorDirectory()
+  const avatarByActorId = React.useMemo(
+    () => new Map(directoryActors.map((a) => [a.id, a.avatar_url ?? null])),
+    [directoryActors],
+  )
 
   const load = React.useCallback(async () => {
     const teamId = useCurrentTeamStore.getState().team?.id
@@ -146,10 +160,17 @@ export function LeaderboardSection() {
       getKey: (member) => member.memberName,
       getScore: (member) => member.aggregated.totalFeedbacks,
     })
+    // Skills rank by what a member has published to the team, not by how often
+    // they invoke skills; the invocations still feed Top Skills below.
     const skillRanks = buildSharedRankMap({
       items: membersWithAggregated,
       getKey: (member) => member.memberName,
-      getScore: (member) => member.aggregated.totalSkillInvocations,
+      getScore: (member) => member.skillsPublished ?? 0,
+    })
+    const appRanks = buildSharedRankMap({
+      items: membersWithAggregated,
+      getKey: (member) => member.memberName,
+      getScore: (member) => member.appsCreated ?? 0,
     })
 
     const overallScores = membersWithAggregated.map((member) => ({
@@ -157,7 +178,8 @@ export function LeaderboardSection() {
       overallScore:
         ((tokenRanks.get(member.memberName) ?? 0) +
           (feedbackRanks.get(member.memberName) ?? 0) +
-          (skillRanks.get(member.memberName) ?? 0)) / 3,
+          (skillRanks.get(member.memberName) ?? 0) +
+          (appRanks.get(member.memberName) ?? 0)) / 4,
     }))
     const overallScoreMap = new Map(
       overallScores.map((member) => [member.memberName, member.overallScore])
@@ -170,17 +192,21 @@ export function LeaderboardSection() {
     })
 
     return membersWithAggregated.map((member) => ({
+      id: member.memberId,
       name: member.memberName || 'Unknown',
       overallRank: overallRanks.get(member.memberName) ?? 0,
       overallScore: overallScoreMap.get(member.memberName) ?? 0,
       tokenRank: tokenRanks.get(member.memberName) ?? 0,
       feedbackRank: feedbackRanks.get(member.memberName) ?? 0,
       skillRank: skillRanks.get(member.memberName) ?? 0,
+      appRank: appRanks.get(member.memberName) ?? 0,
       totalTokens: member.aggregated.totalTokens,
       totalFeedbacks: member.aggregated.totalFeedbacks,
       totalCost: member.aggregated.totalCost,
       sessionCount: member.aggregated.sessionCount,
       totalSkillInvocations: member.aggregated.totalSkillInvocations,
+      skillsPublished: member.skillsPublished ?? 0,
+      appsCreated: member.appsCreated ?? 0,
     }))
   }, [leaderboard, aggregateWorkspaceStats])
 
@@ -272,12 +298,13 @@ export function LeaderboardSection() {
         <>
           <div className="rounded-xl border bg-card overflow-hidden">
             {/* Table header */}
-            <div className="grid grid-cols-[40px_1fr_72px_72px_72px_112px] items-center gap-2 px-4 py-2.5 bg-muted/30 border-b text-[11px] font-medium text-muted-foreground">
+            <div className="grid grid-cols-[40px_1fr_72px_72px_72px_72px_128px] items-center gap-2 px-4 py-2.5 bg-muted/30 border-b text-[11px] font-medium text-muted-foreground">
               <span className="text-center">{t('settings.leaderboard.rank', '#')}</span>
               <span>{t('settings.leaderboard.member', 'Member')}</span>
               <span className="text-center">{t('settings.leaderboard.tokenRank', 'Token Rank')}</span>
               <span className="text-center">{t('settings.leaderboard.feedbackRank', 'Feedback Rank')}</span>
               <span className="text-center">{t('settings.leaderboard.skillRank', 'Skill Rank')}</span>
+              <span className="text-center">{t('settings.leaderboard.appRank', 'App Rank')}</span>
               <span className="text-right">{t('settings.leaderboard.totalTokens', 'Total Tokens')}</span>
             </div>
 
@@ -295,7 +322,7 @@ export function LeaderboardSection() {
                   <div
                     key={member.name}
                     className={cn(
-                      "grid grid-cols-[40px_1fr_72px_72px_72px_112px] items-center gap-2 px-4 py-2.5 border-b last:border-b-0 transition-colors",
+                      "grid grid-cols-[40px_1fr_72px_72px_72px_72px_128px] items-center gap-2 px-4 py-2.5 border-b last:border-b-0 transition-colors",
                       member.isCurrentUser
                         ? "bg-indigo-500/[0.06]"
                         : "hover:bg-muted/30"
@@ -316,14 +343,11 @@ export function LeaderboardSection() {
 
                     {/* Name */}
                     <div className="flex items-center gap-2 min-w-0">
-                      <div className={cn(
-                        "shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold",
-                        member.isCurrentUser
-                          ? "bg-indigo-500 text-white"
-                          : "bg-muted text-muted-foreground"
-                      )}>
-                        {member.name[0]}
-                      </div>
+                      <MemberAvatar
+                        name={member.name}
+                        avatarUrl={avatarByActorId.get(member.id) ?? null}
+                        highlighted={!!member.isCurrentUser}
+                      />
                       <div className="min-w-0 flex-1">
                         <span className={cn(
                           "text-[13px] truncate block",
@@ -348,6 +372,9 @@ export function LeaderboardSection() {
                     {/* Skill Rank */}
                     <RankCell rank={member.skillRank} />
 
+                    {/* App Rank */}
+                    <RankCell rank={member.appRank} />
+
                     {/* Total Tokens */}
                     <div className="text-right">
                       <span className="text-[13px] font-medium tabular-nums">
@@ -356,7 +383,9 @@ export function LeaderboardSection() {
                       <div className="text-[10px] text-muted-foreground">
                         {member.totalFeedbacks} {t('settings.leaderboard.feedbacks', 'feedbacks')}
                         {' · '}
-                        {t('settings.leaderboard.totalSkills', { count: member.totalSkillInvocations, defaultValue: '{{count}} skills' })}
+                        {t('settings.leaderboard.skillsPublishedCount', { count: member.skillsPublished, defaultValue: '{{count}} skills' })}
+                        {' · '}
+                        {t('settings.leaderboard.appsCreatedCount', { count: member.appsCreated, defaultValue: '{{count}} apps' })}
                       </div>
                     </div>
                   </div>
@@ -369,7 +398,8 @@ export function LeaderboardSection() {
             {[
               { key: 'token', label: t('settings.leaderboard.tokenUsage', 'Token Usage'), icon: Flame, color: 'text-amber-500' },
               { key: 'feedback', label: t('settings.leaderboard.feedbackCount', 'Feedback Count'), icon: MessageSquareHeart, color: 'text-pink-500' },
-              { key: 'skill', label: t('settings.leaderboard.skillInvocations', 'Skill Invocations'), icon: Sparkles, color: 'text-violet-500' },
+              { key: 'skill', label: t('settings.leaderboard.skillsPublished', 'Skills Published'), icon: Sparkles, color: 'text-violet-500' },
+              { key: 'app', label: t('settings.leaderboard.appsCreated', 'Apps Created'), icon: AppWindow, color: 'text-sky-500' },
             ].map((col) => {
               const Icon = col.icon
               return (
@@ -439,6 +469,40 @@ export function computeTopSkills(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+
+function MemberAvatar({
+  name,
+  avatarUrl,
+  highlighted,
+}: {
+  name: string
+  avatarUrl: string | null
+  highlighted: boolean
+}) {
+  // Remember which URL failed, so a newly uploaded photo gets its own try.
+  const [failedUrl, setFailedUrl] = React.useState<string | null>(null)
+  const src = avatarUrl && avatarUrl !== failedUrl ? avatarUrl : null
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt=""
+        className="shrink-0 w-7 h-7 rounded-full object-cover"
+        onError={() => setFailedUrl(src)}
+      />
+    )
+  }
+  return (
+    <div className={cn(
+      "shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold",
+      highlighted
+        ? "bg-indigo-500 text-white"
+        : "bg-muted text-muted-foreground"
+    )}>
+      {name[0]}
+    </div>
+  )
+}
 
 function RankCell({ rank }: { rank: number | undefined }) {
   const safeRank = rank ?? 0

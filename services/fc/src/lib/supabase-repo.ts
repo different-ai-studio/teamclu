@@ -2286,11 +2286,25 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async getTeamLeaderboard(teamId, { period = "week" } = {}) {
-      const { data, error } = await supabase
-        .rpc("team_leaderboard", { p_team_id: teamId, p_period: period });
-      if (error) throw error;
-      const rows = (data ?? []).slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-      return { items: rows.map(mapLeaderboardRow) };
+      const [board, contributions] = await Promise.all([
+        supabase.rpc("team_leaderboard", { p_team_id: teamId, p_period: period }),
+        // Published skills + created apps. A separate SECURITY DEFINER function
+        // (see migration 20260916190000) so personal apps count for every viewer.
+        supabase.rpc("team_leaderboard_contributions", { p_team_id: teamId }),
+      ]);
+      if (board.error) throw board.error;
+      const contributionsByActor = new Map();
+      if (contributions.error) {
+        // A database that has not run the migration yet: show zero
+        // contributions rather than failing the whole leaderboard.
+        const code = contributions.error?.code;
+        if (code !== "PGRST202" && code !== "42883") throw contributions.error;
+        console.warn("[leaderboard] team_leaderboard_contributions missing; counting 0", { code });
+      } else {
+        for (const row of contributions.data ?? []) contributionsByActor.set(row.actor_id, row);
+      }
+      const rows = (board.data ?? []).slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      return { items: rows.map((row) => mapLeaderboardRow(row, contributionsByActor.get(row.actor_id))) };
     },
 
     async submitSessionReport(body) {

@@ -159,7 +159,7 @@ describe('Settings navigation', () => {
     vi.doUnmock('@/stores/ui')
   })
 
-  it('团队管理 group lists billing, tokenUsage, teamRoles; Desktop no longer has them', async () => {
+  it('团队管理 group lists billing, tokenUsage, leaderboard, teamRoles; Desktop no longer has them', async () => {
     vi.resetModules()
     vi.doMock('@/stores/ui', () => ({
       useUIStore: (selector: (state: unknown) => unknown) =>
@@ -182,7 +182,7 @@ describe('Settings navigation', () => {
     const teamSubnav = screen.getByTestId('team-management-subnav')
     expect(
       within(teamSubnav).getAllByRole('button').map((button) => button.textContent),
-    ).toEqual(['Billing', 'Token Usage', '团队角色'])
+    ).toEqual(['Billing', 'Token Usage', 'Leaderboard', '团队角色'])
 
     vi.doUnmock('@/stores/ui')
   })

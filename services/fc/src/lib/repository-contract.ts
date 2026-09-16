@@ -845,8 +845,8 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     if (out.items.length > 0) {
       const row = out.items[0];
       assert.deepEqual(Object.keys(row).sort(), [
-        "actorId", "costUsd", "displayName", "negativeFeedback", "period",
-        "positiveFeedback", "score", "sessionCount", "skillUsage", "teamId", "tokensUsed",
+        "actorId", "appsCreated", "costUsd", "displayName", "negativeFeedback", "period",
+        "positiveFeedback", "score", "sessionCount", "skillUsage", "skillsPublished", "teamId", "tokensUsed",
       ].sort());
       assert.equal(row.period, "week");
       assert.equal(typeof row.skillUsage, "object");
@@ -921,8 +921,8 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     const row = lb.items.find((r) => r.actorId === ACTOR);
     assert.ok(row, "submitted actor must appear in leaderboard");
     assert.deepEqual(Object.keys(row).sort(), [
-      "actorId", "costUsd", "displayName", "negativeFeedback", "period",
-      "positiveFeedback", "score", "sessionCount", "skillUsage", "teamId", "tokensUsed",
+      "actorId", "appsCreated", "costUsd", "displayName", "negativeFeedback", "period",
+      "positiveFeedback", "score", "sessionCount", "skillUsage", "skillsPublished", "teamId", "tokensUsed",
     ].sort());
     assert.equal(row.tokensUsed, 1000);
     assert.equal(row.sessionCount, 1);

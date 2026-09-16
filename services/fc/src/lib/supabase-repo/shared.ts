@@ -535,7 +535,7 @@ export function mapFeedbackRow(row) {
   };
 }
 
-export function mapLeaderboardRow(row) {
+export function mapLeaderboardRow(row, contribution = null) {
   return {
     actorId: requiredString(row?.actor_id, "leaderboard.mapLeaderboardRow", "actor_id"),
     teamId: row?.team_id ?? null,
@@ -547,6 +547,8 @@ export function mapLeaderboardRow(row) {
     negativeFeedback: Number(row?.negative_feedback ?? 0),
     sessionCount: Number(row?.session_count ?? 0),
     skillUsage: row?.skill_usage ?? {},
+    skillsPublished: Number(contribution?.skills_published ?? 0),
+    appsCreated: Number(contribution?.apps_created ?? 0),
     score: Number(row?.score ?? 0),
   };
 }

@@ -662,7 +662,7 @@ function contractRepo() {
           byActor.set(actorId, {
             actorId, teamId, displayName: null, period,
             tokensUsed: 0, costUsd: 0, positiveFeedback: 0, negativeFeedback: 0,
-            sessionCount: 0, skillUsage: {}, score: 0,
+            sessionCount: 0, skillUsage: {}, skillsPublished: 0, appsCreated: 0, score: 0,
           });
         }
         return byActor.get(actorId);
