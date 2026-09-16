@@ -99,13 +99,27 @@ export function patchMemberLastActive(teamId: string, memberActorId: string, las
   })
 }
 
+function rolesAfterAdminToggle(
+  roles: MemberRoleRef[] | undefined,
+  teamRole: string,
+): MemberRoleRef[] | undefined {
+  if (!roles?.length) return roles
+  if (teamRole === 'member') return roles.filter((r) => r.code !== 'admin')
+  if (teamRole === 'admin' && !roles.some((r) => r.code === 'admin')) {
+    return [...roles, { id: '_optimistic-admin', code: 'admin', name: '管理员' }]
+  }
+  return roles
+}
+
 /** Optimistically update a member's team role after a successful admin toggle. */
 export function patchMemberTeamRole(teamId: string, memberActorId: string, teamRole: string): void {
   useActorDirectoryStore.setState((s) => {
     const slice = s.byTeam[teamId]
     if (!slice) return s
     const actors = slice.actors.map((row) =>
-      row.id === memberActorId ? { ...row, team_role: teamRole } : row,
+      row.id === memberActorId
+        ? { ...row, team_role: teamRole, roles: rolesAfterAdminToggle(row.roles, teamRole) }
+        : row,
     )
     return { byTeam: { ...s.byTeam, [teamId]: { ...slice, actors } } }
   })
