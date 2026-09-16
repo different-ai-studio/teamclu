@@ -5,6 +5,7 @@ import i18n from '@/lib/i18n'
 const h = vi.hoisted(() => ({
   isTauriVal: true,
   currentTeam: null as { id: string } | null,
+  currentMemberName: null as string | null,
   daemonTeam: null as string | null,
   // Successive probe results; the last entry persists once the queue drains.
   probeQueue: [] as Array<{ ok: boolean; reason?: string; baseUrl?: string }>,
@@ -77,7 +78,12 @@ vi.mock('@/stores/member-preferences-store', () => ({
   },
 }))
 vi.mock('@/stores/current-team', () => ({
-  useCurrentTeamStore: { getState: () => ({ team: h.currentTeam, currentMember: { id: 'member-1' } }) },
+  useCurrentTeamStore: {
+    getState: () => ({
+      team: h.currentTeam,
+      currentMember: { id: 'member-1', displayName: h.currentMemberName },
+    }),
+  },
 }))
 vi.mock('@/lib/daemon/daemon-workspaces', () => ({
   createDaemonWorkspace: vi.fn(async (input: { path: string; name: string }) => ({
@@ -184,6 +190,7 @@ const reset = () =>
 beforeEach(() => {
   h.isTauriVal = true
   h.currentTeam = null
+  h.currentMemberName = null
   h.daemonTeam = null
   h.probeQueue = []
   h.invokeCalls = []
@@ -226,7 +233,26 @@ describe('daemon-onboarding refresh() orchestration', () => {
     expect(useDaemonOnboardingStore.getState().status).toBe('unknown')
   })
 
+  it('the suggested agent name is the signed-in member plus Bot', async () => {
+    // Not the hostname: `zhoujinliangs-Mac-mini-3` is whatever the OS calls the
+    // box and says nothing about whose agent it is, which is the one thing the
+    // actor list needs it to say.
+    h.currentTeam = { id: 't1' }
+    h.currentMemberName = '周金亮'
+    h.daemonTeam = null
+    h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]
+
+    await useDaemonOnboardingStore.getState().refresh()
+
+    expect(useDaemonOnboardingStore.getState().pendingName).toMatchObject({
+      suggested: '周金亮Bot',
+    })
+  })
+
   it('a machine new to the team asks for a name and writes nothing yet', async () => {
+    // No member name resolved yet — falls back to the hostname rather than
+    // creating an agent called "", which the server rejects.
+    h.currentMemberName = null
     h.currentTeam = { id: 't1' }
     h.daemonTeam = null
     h.probeQueue = [{ ok: true, baseUrl: 'http://127.0.0.1:1' }]

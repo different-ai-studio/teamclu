@@ -304,8 +304,20 @@ async function runStep<T>(step: OnboardingStep, fn: () => Promise<T>): Promise<T
   }
 }
 
-/** The machine's own name, used as the agent's display name. */
+/**
+ * The local agent's default display name: the signed-in member's own name with
+ * a `Bot` suffix, no separator — 「周金亮Bot」.
+ *
+ * It used to be the machine's hostname, which is whatever the OS happens to
+ * call the box. `zhoujinliangs-Mac-mini-3` says nothing about whose agent it
+ * is, and this name is what everyone reads in the actor list.
+ *
+ * The hostname stays as the fallback: `currentMember` can still be null the
+ * first time this runs, and an agent with an empty name is rejected outright.
+ */
 async function deviceDisplayName(): Promise<string> {
+  const member = useCurrentTeamStore.getState().currentMember?.displayName?.trim()
+  if (member) return `${member}Bot`
   const { invoke } = await import('@tauri-apps/api/core')
   const host = (await invoke<string>('get_device_hostname'))?.trim()
   // A nameless machine would create an agent called "" — the server rejects that,
