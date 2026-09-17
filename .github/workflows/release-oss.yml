@@ -181,6 +181,15 @@ jobs:
           # version after (or alongside) a GitHub Release tag push.
           ./scripts/verify-release-version-bump.sh "$VERSION" "$VERSION"
 
+      # Gate before any cargo build: the unified sidecar invocation below must
+      # resolve reqwest rustls-only — one default-features reqwest anywhere in
+      # the `-p amuxd -p teamclu-introspect` union flips Client::new() to
+      # native-tls (the beta.63 auth-refresh breakage). Runs after the version
+      # sync above because that step rewrites Cargo.toml + Cargo.lock and the
+      # gate resolves --locked. See scripts/verify-reqwest-rustls.sh.
+      - name: Gate: unified sidecar reqwest features (rustls only)
+        run: ./scripts/verify-reqwest-rustls.sh
+
       # Apply OS-level white-label branding BEFORE the frontend build.
       # tauri-action runs `tauri build` directly and never invokes the
       # `pnpm tauri:build` npm script, so scripts/update-tauri-config.js (which
@@ -540,6 +549,12 @@ jobs:
           # Second arg excludes the tag being published so OSS can ship the same
           # version after (or alongside) a GitHub Release tag push.
           ./scripts/verify-release-version-bump.sh "$VERSION" "$VERSION"
+
+      # See build-macos: gate the unified sidecar reqwest graph before any
+      # cargo build. bash because the gate is a shell script.
+      - name: Gate: unified sidecar reqwest features (rustls only)
+        shell: bash
+        run: ./scripts/verify-reqwest-rustls.sh
 
       # See build-macos: brands the OS-level app name/identifier/icons before Vite
       # bundles the in-app logo. No BUILD_ENV — the brand config is authoritative.
