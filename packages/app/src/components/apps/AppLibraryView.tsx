@@ -12,7 +12,7 @@ import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appGitKind } from '@/lib/apps/app-list-helpers'
 import { openCreateApp } from '@/lib/tabs/app-tabs'
-import { countAppsByRelationship, filterAppsByRelationship } from '@/lib/apps/app-relationship'
+import { countAppsByRelationship, filterAppsByRelationship, isSharedByMe } from '@/lib/apps/app-relationship'
 import { useAppRelationshipLabel, type AppRelationshipLabel } from '@/lib/apps/use-app-relationship-label'
 import { AppRelationshipChips } from '@/components/apps/AppRelationshipChips'
 import { useAppRelationshipFilter, useMyMemberActorId } from '@/stores/app-relationship-filter'
@@ -57,7 +57,8 @@ function AppMeta({ app, creator }: { app: AppRow; creator: string | null }) {
   )
 }
 
-function AppName({ app, relationLabel }: { app: AppRow; relationLabel: AppRelationshipLabel | null }) {
+function AppName({ app, relationLabel, shared }: { app: AppRow } & Omit<CardProps, 'app' | 'creator'>) {
+  const { t } = useTranslation()
   return (
     <span className="flex min-w-0 flex-1 items-center gap-1.5">
       <span className="truncate text-[13px] font-semibold text-foreground">{app.name}</span>
@@ -73,6 +74,19 @@ function AppName({ app, relationLabel }: { app: AppRow; relationLabel: AppRelati
           className="shrink-0 rounded border border-border px-1 py-px text-[10.5px] text-muted-foreground"
         >
           {relationLabel.label}
+        </span>
+      )}
+      {/* Who else can see my app — the half of the old badge that was worth
+          keeping. A hairline lighter than the relationship mark next to it:
+          the relationship is what the list is organised by, this is a property
+          of one app. It survives a filter, because 我的 does not imply it. */}
+      {shared && (
+        <span
+          data-testid="app-card-shared"
+          title={t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')}
+          className="shrink-0 rounded border border-border-soft px-1 py-px text-[10.5px] text-faint"
+        >
+          {t('apps.sharedBadge', '已共享')}
         </span>
       )}
     </span>
@@ -100,10 +114,12 @@ interface CardProps {
   app: AppRow
   creator: string | null
   relationLabel: AppRelationshipLabel | null
+  /** My own app, visible to the whole team. */
+  shared: boolean
 }
 
 /** A card for an app that is already here — clicking it opens it in column two. */
-function LocalRow({ app, creator, relationLabel }: CardProps) {
+function LocalRow({ app, creator, relationLabel, shared }: CardProps) {
   const open = React.useCallback(() => {
     useAppsStore.getState().selectApp(app.id)
     useUIStore.getState().setSidebarFilter({ kind: 'apps' })
@@ -113,7 +129,7 @@ function LocalRow({ app, creator, relationLabel }: CardProps) {
     <button type="button" onClick={open} className={cn(CARD, 'hover:bg-selected/30')}>
       <span className="flex w-full items-center gap-2.5">
         <TypeMark app={app} />
-        <AppName app={app} relationLabel={relationLabel} />
+        <AppName app={app} relationLabel={relationLabel} shared={shared} />
         <span className={TRAILING}>
           <ChevronRight className="h-4 w-4 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
         </span>
@@ -128,12 +144,12 @@ function LocalRow({ app, creator, relationLabel }: CardProps) {
  * answered yet. No action, because the only two on offer (open it, fetch it)
  * both depend on the answer.
  */
-function PendingRow({ app, creator, relationLabel }: CardProps) {
+function PendingRow({ app, creator, relationLabel, shared }: CardProps) {
   return (
     <div className={cn(CARD, 'opacity-70')}>
       <span className="flex w-full items-center gap-2.5">
         <TypeMark app={app} />
-        <AppName app={app} relationLabel={relationLabel} />
+        <AppName app={app} relationLabel={relationLabel} shared={shared} />
       </span>
       <AppMeta app={app} creator={creator} />
     </div>
@@ -145,6 +161,7 @@ function RemoteRow({
   app,
   creator,
   relationLabel,
+  shared,
   busy,
   onDownload,
 }: CardProps & {
@@ -156,7 +173,7 @@ function RemoteRow({
     <div className={CARD}>
       <span className="flex w-full items-center gap-2.5">
         <TypeMark app={app} />
-        <AppName app={app} relationLabel={relationLabel} />
+        <AppName app={app} relationLabel={relationLabel} shared={shared} />
         <span className={TRAILING}>
           <Button
             variant="ghost"
@@ -359,22 +376,18 @@ export function AppLibraryView() {
                     // No word under a filter: the pressed chip says it once for
                     // every card below it.
                     const relationLabel = filter === 'all' ? relationLabelFor(app) : null
+                    const shared = isSharedByMe(app, myActorId)
+                    const common = { app, creator: creatorFor(app), relationLabel, shared }
                     if (group.key === 'here') {
-                      return (
-                        <LocalRow key={app.id} app={app} creator={creatorFor(app)} relationLabel={relationLabel} />
-                      )
+                      return <LocalRow key={app.id} {...common} />
                     }
                     if (group.key === 'unknown') {
-                      return (
-                        <PendingRow key={app.id} app={app} creator={creatorFor(app)} relationLabel={relationLabel} />
-                      )
+                      return <PendingRow key={app.id} {...common} />
                     }
                     return (
                       <RemoteRow
                         key={app.id}
-                        app={app}
-                        creator={creatorFor(app)}
-                        relationLabel={relationLabel}
+                        {...common}
                         busy={downloading === app.id}
                         onDownload={() => void handleDownload(app)}
                       />

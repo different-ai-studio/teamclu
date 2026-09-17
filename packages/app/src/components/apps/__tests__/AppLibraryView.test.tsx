@@ -217,6 +217,26 @@ describe('AppLibraryView', () => {
     render(<AppLibraryView />)
     expect(screen.getByText('Mine shared')).toBeInTheDocument()
     expect(screen.queryByTestId('app-card-relationship')).not.toBeInTheDocument()
+    // 已共享 stays: the pressed 我的 chip does not say who else can see it.
+    expect(screen.getByTestId('app-card-shared')).toHaveTextContent('已共享')
+  })
+
+  it('marks my own apps the whole team can see, and only those', () => {
+    useAppsStore.setState({
+      items: [
+        mkApp('app-1', 'Mine shared', { relationship: 'owner', visibility: 'team' }),
+        mkApp('app-2', 'Mine alone', { relationship: 'owner' }),
+        mkApp('app-3', 'Theirs', { relationship: 'team', visibility: 'team' }),
+      ],
+      localAppIds: ['app-1', 'app-2', 'app-3'],
+    })
+    render(<AppLibraryView />)
+
+    const marks = screen.getAllByTestId('app-card-shared')
+    expect(marks).toHaveLength(1)
+    // On the card that owns it, and saying what sharing means on hover.
+    expect(marks[0].closest('button')).toHaveTextContent('Mine shared')
+    expect(marks[0]).toHaveAttribute('title', '团队里每个人都能在应用列表里看到它。')
   })
 
   it('renders nothing for a creator who is not in the directory', () => {

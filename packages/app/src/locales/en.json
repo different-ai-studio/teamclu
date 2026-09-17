@@ -1437,6 +1437,7 @@
       "clearFailed": "Could not clear the credential",
       "denied": "Only an app admin can change the repository credential."
     },
+    "sharedBadge": "Shared",
     "visibilityLabel": "Visibility",
     "visibilityTeamHint": "Everyone on the team sees it in their app list.",
     "visibilityPersonalHint": "Only you and the members granted access under Collaborators can see it. The local daemon cannot see it either.",

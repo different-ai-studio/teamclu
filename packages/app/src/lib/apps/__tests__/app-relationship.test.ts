@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   appRelationship,
   countAppsByRelationship,
+  isSharedByMe,
   filterAppsByRelationship,
   keepRelationship,
 } from '@/lib/apps/app-relationship'
@@ -70,5 +71,20 @@ describe('keepRelationship', () => {
     const prev = app({ relationship: 'invited', invitedByActorId: 'actor-lin' })
     const next = app({ relationship: 'team', invitedByActorId: null })
     expect(keepRelationship(prev, next)).toBe(next)
+  })
+})
+
+describe('isSharedByMe', () => {
+  it('marks my own app that the whole team can see', () => {
+    expect(isSharedByMe(app({ relationship: 'owner', visibility: 'team' }), ME)).toBe(true)
+    expect(isSharedByMe(app({ createdByActorId: ME, visibility: 'team' }), ME)).toBe(true)
+  })
+
+  it('says nothing where the visibility is already implied', () => {
+    // A team app is team-visible by definition, and an invited app is a
+    // personal app with a grant — neither tells the viewer anything new.
+    expect(isSharedByMe(app({ relationship: 'team', visibility: 'team' }), ME)).toBe(false)
+    expect(isSharedByMe(app({ relationship: 'invited', visibility: 'personal' }), ME)).toBe(false)
+    expect(isSharedByMe(app({ relationship: 'owner', visibility: 'personal' }), ME)).toBe(false)
   })
 })
