@@ -128,6 +128,27 @@ describe('FileTreeItem documents actions', () => {
     expect(await screen.findByText('整理到知识库')).toBeTruthy()
   })
 
+  // A listed row has nothing on disk behind it. Delete, rename, reveal and the
+  // rest would only fail — and "Delete" on a teammate's document reads as
+  // deleting it for the team — so the menu keeps only what needs no local copy.
+  it('offers only what needs no local copy on a row that is not downloaded', async () => {
+    render(
+      <FileTreeItem
+        {...props({
+          node: { name: '合同.pdf', path: '/vault/documents/hr/合同.pdf', type: 'file' },
+          isNotDownloaded: true,
+          onDownload: vi.fn(),
+        })}
+      />,
+    )
+    fireEvent.contextMenu(screen.getByText('合同.pdf'))
+    expect(await screen.findByText('Download')).toBeTruthy()
+    expect(screen.getByText('Copy Path')).toBeTruthy()
+    for (const diskOnly of ['Delete', 'Rename', 'Duplicate', 'Reveal in Finder', 'Open with Default App', 'Add to Agent']) {
+      expect(screen.queryByText(diskOnly), diskOnly).toBeNull()
+    }
+  })
+
   it('does not offer "Save to knowledge" on a directory, even if the handler is passed', async () => {
     render(<FileTreeItem {...props({ onSaveToKnowledge: vi.fn() })} />)
     openMenu()

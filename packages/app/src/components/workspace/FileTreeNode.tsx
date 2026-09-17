@@ -278,10 +278,12 @@ export interface FileTreeItemProps {
    */
   onImportLocal?: (path: string) => void;
   /**
-   * This documents file is listed but not on this device.
+   * This documents row is listed but not on this device — a file not fetched,
+   * or a folder with nothing fetched beneath it.
    *
    * Nothing is written to disk for one, so its row comes from the manifest
-   * rather than the scan. Distinct from a path the caller has no permission to
+   * rather than the scan, and the menu offers nothing that needs the local
+   * copy. Distinct from a path the caller has no permission to
    * see: that one never reaches the manifest at all, so it is absent rather
    * than marked — "not downloaded" and "not allowed" must not look alike.
    */
@@ -376,6 +378,9 @@ export const FileTreeItem = React.memo(function FileTreeItem({
 }: FileTreeItemProps) {
   const { t } = useTranslation();
   const isDirectory = node.type === "directory";
+  // Only the manifest knows about this row. Anything that reads, moves or opens
+  // the local file would just fail, so none of it is offered.
+  const onDisk = !isNotDownloaded;
   // Every role gets the full context menu, team files included — file ops are
   // not role-gated in the tree.
   const isCutTarget = clipboardPaths?.includes(node.path) && isClipboardCut;
@@ -454,13 +459,13 @@ export const FileTreeItem = React.memo(function FileTreeItem({
 
   const rowContent = (
     <button
-      draggable
+      draggable={onDisk}
       onClick={handleClick}
       onDragStart={(e) => onDragStart(e, node.path)}
       onDragEnd={onDragEnd}
-      onDragOver={(e) => isDirectory ? onDragOver(e, node.path) : undefined}
-      onDragLeave={(e) => isDirectory ? onDragLeave(e) : undefined}
-      onDrop={(e) => isDirectory ? onDrop(e, node.path) : undefined}
+      onDragOver={(e) => isDirectory && onDisk ? onDragOver(e, node.path) : undefined}
+      onDragLeave={(e) => isDirectory && onDisk ? onDragLeave(e) : undefined}
+      onDrop={(e) => isDirectory && onDisk ? onDrop(e, node.path) : undefined}
       onContextMenu={() => {
         contextMenuOpenedAtRef.current = Date.now();
         window.getSelection()?.removeAllRanges();
@@ -582,7 +587,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
     <ContextMenu>
       <ContextMenuTrigger asChild>{rowContent}</ContextMenuTrigger>
       <ContextMenuContent className="w-56">
-        {isDirectory && !disallowCreate && (
+        {isDirectory && onDisk && !disallowCreate && (
           <>
             <ContextMenuItem onSelect={guardedMenuAction(() => onNewFile(node.path))}>
               <FilePlus className="h-4 w-4" />
@@ -596,10 +601,12 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             <ContextMenuSeparator />
           </>
         )}
-        <ContextMenuItem onSelect={guardedMenuAction(() => onAddToAgent(node.path))}>
-          <MessageSquarePlus className="h-4 w-4" />
-          {t("fileExplorer.addToAgent", "Add to Agent")}
-        </ContextMenuItem>
+        {onDisk && (
+          <ContextMenuItem onSelect={guardedMenuAction(() => onAddToAgent(node.path))}>
+            <MessageSquarePlus className="h-4 w-4" />
+            {t("fileExplorer.addToAgent", "Add to Agent")}
+          </ContextMenuItem>
+        )}
         {!isDirectory && onSaveToKnowledge && (
           <ContextMenuItem onSelect={guardedMenuAction(() => onSaveToKnowledge(node.path))}>
             <BookmarkPlus className="h-4 w-4" />
@@ -626,7 +633,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             {t("fileExplorer.releaseLocal", "Remove local copy")}
           </ContextMenuItem>
         )}
-        {isDirectory && onImportLocal && (
+        {isDirectory && onDisk && onImportLocal && (
           <ContextMenuItem onSelect={guardedMenuAction(() => onImportLocal(node.path))}>
             <FolderInput className="h-4 w-4" />
             {t("fileExplorer.importLocal", "Add files…")}
@@ -638,7 +645,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             {t("fileExplorer.managePermissions", "Permissions…")}
           </ContextMenuItem>
         )}
-        {!isDirectory && (
+        {!isDirectory && onDisk && (
           <ContextMenuItem onSelect={guardedMenuAction(() => onOpenDefault(node.path))}>
             <AppWindow className="h-4 w-4" />
             {t("fileExplorer.openWithDefault", "Open with Default App")}
@@ -654,30 +661,34 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           {t("fileExplorer.copyRelativePath", "Copy Relative Path")}
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={guardedMenuAction(() => onCopy([node.path]))}>
-          <Copy className="h-4 w-4" />
-          {t("fileExplorer.copyFile", "Copy")}
-          <ContextMenuShortcut>⌘C</ContextMenuShortcut>
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={guardedMenuAction(() => onCut([node.path]))}>
-          <Scissors className="h-4 w-4" />
-          {t("fileExplorer.cutFile", "Cut")}
-          <ContextMenuShortcut>⌘X</ContextMenuShortcut>
-        </ContextMenuItem>
-        {hasClipboard && (
-          <ContextMenuItem onSelect={guardedMenuAction(() => onPaste(
-            isDirectory ? node.path : node.path.substring(0, node.path.lastIndexOf("/"))
-          ))}>
-            <ClipboardPaste className="h-4 w-4" />
-            {t("fileExplorer.pasteFile", "Paste")}
-            <ContextMenuShortcut>⌘V</ContextMenuShortcut>
-          </ContextMenuItem>
+        {onDisk && (
+          <>
+            <ContextMenuItem onSelect={guardedMenuAction(() => onCopy([node.path]))}>
+              <Copy className="h-4 w-4" />
+              {t("fileExplorer.copyFile", "Copy")}
+              <ContextMenuShortcut>⌘C</ContextMenuShortcut>
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={guardedMenuAction(() => onCut([node.path]))}>
+              <Scissors className="h-4 w-4" />
+              {t("fileExplorer.cutFile", "Cut")}
+              <ContextMenuShortcut>⌘X</ContextMenuShortcut>
+            </ContextMenuItem>
+            {hasClipboard && (
+              <ContextMenuItem onSelect={guardedMenuAction(() => onPaste(
+                isDirectory ? node.path : node.path.substring(0, node.path.lastIndexOf("/"))
+              ))}>
+                <ClipboardPaste className="h-4 w-4" />
+                {t("fileExplorer.pasteFile", "Paste")}
+                <ContextMenuShortcut>⌘V</ContextMenuShortcut>
+              </ContextMenuItem>
+            )}
+            <ContextMenuItem onSelect={guardedMenuAction(() => onDuplicate(node.path))}>
+              <CopyPlus className="h-4 w-4" />
+              {t("fileExplorer.duplicate", "Duplicate")}
+              <ContextMenuShortcut>⌘D</ContextMenuShortcut>
+            </ContextMenuItem>
+          </>
         )}
-        <ContextMenuItem onSelect={guardedMenuAction(() => onDuplicate(node.path))}>
-          <CopyPlus className="h-4 w-4" />
-          {t("fileExplorer.duplicate", "Duplicate")}
-          <ContextMenuShortcut>⌘D</ContextMenuShortcut>
-        </ContextMenuItem>
         {needsConflictDecision && (
           <ContextMenuItem
             onSelect={guardedMenuAction(() => openKnowledgeConflict(node.path, t('knowledgeConflict.tabLabel', 'Conflict')))}
@@ -702,29 +713,33 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             {t("versionHistory.title", "Version history")}
           </ContextMenuItem>
         )}
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={guardedMenuAction(() => onRename(node.path))}>
-          <Pencil className="h-4 w-4" />
-          {t("fileExplorer.rename", "Rename")}
-          <ContextMenuShortcut>F2</ContextMenuShortcut>
-        </ContextMenuItem>
-        <ContextMenuItem
-          variant="destructive"
-          onSelect={guardedMenuAction(() => onDelete(node.path, isDirectory))}
-        >
-          <Trash2 className="h-4 w-4" />
-          {t("fileExplorer.delete", "Delete")}
-          <ContextMenuShortcut>⌫</ContextMenuShortcut>
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={guardedMenuAction(() => onOpenTerminal(terminalPath))}>
-          <Terminal className="h-4 w-4" />
-          {t("fileExplorer.openInTerminal", "Open in Terminal")}
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={guardedMenuAction(() => onReveal(node.path))}>
-          <ExternalLink className="h-4 w-4" />
-          {t("fileExplorer.revealInFinder", "Reveal in Finder")}
-        </ContextMenuItem>
+        {onDisk && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={guardedMenuAction(() => onRename(node.path))}>
+              <Pencil className="h-4 w-4" />
+              {t("fileExplorer.rename", "Rename")}
+              <ContextMenuShortcut>F2</ContextMenuShortcut>
+            </ContextMenuItem>
+            <ContextMenuItem
+              variant="destructive"
+              onSelect={guardedMenuAction(() => onDelete(node.path, isDirectory))}
+            >
+              <Trash2 className="h-4 w-4" />
+              {t("fileExplorer.delete", "Delete")}
+              <ContextMenuShortcut>⌫</ContextMenuShortcut>
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={guardedMenuAction(() => onOpenTerminal(terminalPath))}>
+              <Terminal className="h-4 w-4" />
+              {t("fileExplorer.openInTerminal", "Open in Terminal")}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={guardedMenuAction(() => onReveal(node.path))}>
+              <ExternalLink className="h-4 w-4" />
+              {t("fileExplorer.revealInFinder", "Reveal in Finder")}
+            </ContextMenuItem>
+          </>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );
