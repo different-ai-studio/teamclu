@@ -57,6 +57,9 @@ function AppMeta({ app, creator }: { app: AppRow; creator: string | null }) {
   )
 }
 
+/** Both marks beside the name wear the same pill — see AppName. */
+const MARK = 'shrink-0 rounded border border-border px-1 py-px text-[10.5px] text-muted-foreground'
+
 function AppName({ app, relationLabel, shared }: { app: AppRow } & Omit<CardProps, 'app' | 'creator'>) {
   const { t } = useTranslation()
   return (
@@ -68,23 +71,20 @@ function AppName({ app, relationLabel, shared }: { app: AppRow } & Omit<CardProp
           two different things. Dropped under a filter, where the chip above
           already says it on every card. */}
       {relationLabel && (
-        <span
-          data-testid="app-card-relationship"
-          title={relationLabel.hint ?? undefined}
-          className="shrink-0 rounded border border-border px-1 py-px text-[10.5px] text-muted-foreground"
-        >
+        <span data-testid="app-card-relationship" title={relationLabel.hint ?? undefined} className={MARK}>
           {relationLabel.label}
         </span>
       )}
       {/* Who else can see my app — the half of the old badge that was worth
-          keeping. A hairline lighter than the relationship mark next to it:
-          the relationship is what the list is organised by, this is a property
-          of one app. It survives a filter, because 我的 does not imply it. */}
+          keeping. Same ink and hairline as the relationship mark: one step
+          quieter was a difference you had to look for, and two marks that read
+          as two kinds of thing is worse than two that read as one. It survives
+          a filter, because 我的 does not imply it. */}
       {shared && (
         <span
           data-testid="app-card-shared"
           title={t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')}
-          className="shrink-0 rounded border border-border-soft px-1 py-px text-[10.5px] text-faint"
+          className={MARK}
         >
           {t('apps.sharedBadge', '已共享')}
         </span>
