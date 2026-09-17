@@ -21,6 +21,13 @@ import {
 } from "@/lib/ui/chat-scroll-to-message";
 import { DEFAULT_INPUT_AREA_HEIGHT, SAFE_BOTTOM_SPACING } from "./layout-constants";
 import { canStartThreadFromNewestIndex } from "@/lib/session/thread-fork";
+import {
+  expandVisibleMessageCount,
+  LOAD_EARLIER_INTERSECTION_ROOT_MARGIN,
+  LOAD_EARLIER_SCROLL_TOP_THRESHOLD,
+} from "./message-list-load-earlier";
+
+export { LOAD_EARLIER_MESSAGE_COUNT } from "./message-list-load-earlier";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -32,8 +39,8 @@ export const VIRTUAL_MSG_THRESHOLD = 80;
 /** Extra rows kept mounted above/below the viewport — reduces markdown remount jank. */
 export const VIRTUAL_MSG_OVERSCAN = 12;
 const INITIAL_VISIBLE_MESSAGE_COUNT = 80;
-const LOAD_EARLIER_MESSAGE_COUNT = 60;
 const DEFAULT_VIRTUAL_ROW_ESTIMATE = 150;
+const VIRTUAL_ROW_GAP = 4;
 
 /** Stable TanStack Virtual row identity — not array index (window slides on append). */
 export function getVirtualMessageKey(
@@ -79,6 +86,25 @@ export function estimateVirtualMessageSize(message: Message): number {
     height += 120;
   }
   return Math.min(1800, height);
+}
+
+/** Estimated scroll delta when the tail window grows toward older messages. */
+export function estimatePrependedScrollDelta(
+  messages: readonly Message[],
+  previousVisible: number,
+  nextVisible: number,
+): number {
+  if (nextVisible <= previousVisible) return 0;
+  const total = messages.length;
+  const prevStart = Math.max(0, total - previousVisible);
+  const nextStart = Math.max(0, total - nextVisible);
+  let sum = 0;
+  for (let i = nextStart; i < prevStart; i++) {
+    const message = messages[i];
+    if (!message) continue;
+    sum += estimateVirtualMessageSize(message) + VIRTUAL_ROW_GAP;
+  }
+  return sum;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -168,14 +194,15 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     }, [messages.length]);
 
     const hiddenMessageCount = Math.max(0, messages.length - visibleMessageCount);
-    const loadEarlierCount = Math.min(LOAD_EARLIER_MESSAGE_COUNT, hiddenMessageCount);
-    const loadEarlierLabel = React.useMemo(
-      () =>
-        t("chat.loadEarlierMessages", "Load {{count}} earlier messages", {
-          count: loadEarlierCount,
-        }).replace("{{count}}", String(loadEarlierCount)),
-      [loadEarlierCount, t],
-    );
+    const [loadingEarlier, setLoadingEarlier] = React.useState(false);
+    const loadEarlierSentinelRef = React.useRef<HTMLDivElement>(null);
+    const loadEarlierInFlightRef = React.useRef(false);
+    const pendingScrollRestoreRef = React.useRef<{
+      prevScrollHeight: number;
+      prevScrollTop: number;
+      previousVisible: number;
+      nextVisible: number;
+    } | null>(null);
     const renderedMessages = React.useMemo(
       () => messages.slice(Math.max(0, messages.length - visibleMessageCount)),
       [messages, visibleMessageCount],
@@ -425,6 +452,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
         el.scrollTop = 0;
       }
       hasInitialScrolled.current = false;
+      loadEarlierInFlightRef.current = false;
+      pendingScrollRestoreRef.current = null;
+      setLoadingEarlier(false);
       if (virtualBottomPinTimerRef.current != null) {
         window.clearTimeout(virtualBottomPinTimerRef.current);
         virtualBottomPinTimerRef.current = null;
@@ -436,7 +466,6 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
 
       const raf = requestAnimationFrame(() => {
         messageVirtualizer.measure();
-        pinVirtualEndIndex();
         scrollToBottomIfAtBottom();
       });
 
@@ -445,8 +474,110 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       useVirtualMessages,
       messageAreaWidth,
       messageVirtualizer,
-      pinVirtualEndIndex,
       scrollToBottomIfAtBottom,
+    ]);
+
+    const requestLoadEarlierMessages = React.useCallback(() => {
+      if (loadEarlierInFlightRef.current || hiddenMessageCount <= 0) {
+        return;
+      }
+
+      const previousVisible = visibleMessageCount;
+      const nextVisible = expandVisibleMessageCount(
+        previousVisible,
+        messages.length,
+      );
+      if (nextVisible === previousVisible) {
+        return;
+      }
+
+      const el = scrollRef.current;
+      loadEarlierInFlightRef.current = true;
+      setLoadingEarlier(true);
+      stopAutoFollow();
+
+      pendingScrollRestoreRef.current = {
+        prevScrollHeight: el?.scrollHeight ?? 0,
+        prevScrollTop: el?.scrollTop ?? 0,
+        previousVisible,
+        nextVisible,
+      };
+
+      setVisibleMessageCount(nextVisible);
+    }, [
+      hiddenMessageCount,
+      messages.length,
+      stopAutoFollow,
+      visibleMessageCount,
+    ]);
+
+    React.useLayoutEffect(() => {
+      const pending = pendingScrollRestoreRef.current;
+      if (!pending) return;
+
+      pendingScrollRestoreRef.current = null;
+
+      const applyRestore = () => {
+        const el = scrollRef.current;
+        if (el) {
+          const heightDelta = el.scrollHeight - pending.prevScrollHeight;
+          if (heightDelta > 0) {
+            el.scrollTop = pending.prevScrollTop + heightDelta;
+          } else {
+            const estimatedDelta = estimatePrependedScrollDelta(
+              messages,
+              pending.previousVisible,
+              pending.nextVisible,
+            );
+            if (estimatedDelta > 0) {
+              el.scrollTop = pending.prevScrollTop + estimatedDelta;
+            }
+          }
+        }
+        if (useVirtualMessages) {
+          messageVirtualizer.measure();
+        }
+        loadEarlierInFlightRef.current = false;
+        setLoadingEarlier(false);
+      };
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(applyRestore);
+      });
+    }, [visibleMessageCount, messages, messageVirtualizer, useVirtualMessages]);
+
+    React.useEffect(() => {
+      const root = scrollRef.current;
+      const sentinel = loadEarlierSentinelRef.current;
+      if (
+        typeof IntersectionObserver === "undefined" ||
+        !root ||
+        !sentinel ||
+        hiddenMessageCount <= 0
+      ) {
+        return;
+      }
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) {
+            requestLoadEarlierMessages();
+          }
+        },
+        {
+          root,
+          rootMargin: LOAD_EARLIER_INTERSECTION_ROOT_MARGIN,
+          threshold: 0,
+        },
+      );
+
+      observer.observe(sentinel);
+      return () => observer.disconnect();
+    }, [
+      activeSessionId,
+      hiddenMessageCount,
+      requestLoadEarlierMessages,
+      renderedMessages.length,
     ]);
 
     React.useEffect(
@@ -633,6 +764,14 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       const handleScroll = () => {
         const atBottom = onScroll();
 
+        if (
+          el.scrollTop <= LOAD_EARLIER_SCROLL_TOP_THRESHOLD &&
+          hiddenMessageCount > 0 &&
+          !loadEarlierInFlightRef.current
+        ) {
+          requestLoadEarlierMessages();
+        }
+
         if (scrollRafRef.current != null)
           cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = requestAnimationFrame(() => {
@@ -647,7 +786,13 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
         if (scrollRafRef.current != null)
           cancelAnimationFrame(scrollRafRef.current);
       };
-    }, [messages.length, activeSessionId, onScroll]);
+    }, [
+      messages.length,
+      activeSessionId,
+      onScroll,
+      hiddenMessageCount,
+      requestLoadEarlierMessages,
+    ]);
 
     const handleScrollToBottom = () => {
       enableAutoFollow();
@@ -740,18 +885,23 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
             ) : (
               <div className="space-y-1">
                 {hiddenMessageCount > 0 && (
-                  <div className="flex justify-center pb-2">
-                    <button
-                      type="button"
-                      className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                      onClick={() =>
-                        setVisibleMessageCount((count) =>
-                          Math.min(messages.length, count + LOAD_EARLIER_MESSAGE_COUNT),
-                        )
-                      }
-                    >
-                      {loadEarlierLabel}
-                    </button>
+                  <div
+                    ref={loadEarlierSentinelRef}
+                    className="flex min-h-[28px] justify-center pb-2 pt-1"
+                    data-testid="load-earlier-sentinel"
+                    aria-busy={loadingEarlier}
+                  >
+                    {loadingEarlier ? (
+                      <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>
+                          {t(
+                            "chat.loadingEarlierMessages",
+                            "Loading earlier messages…",
+                          )}
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                 )}
                 {/* Find the last completed assistant message for star rating */}

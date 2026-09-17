@@ -5,6 +5,10 @@ globalThis.ResizeObserver = vi.fn().mockImplementation(function () {
   return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() }
 })
 
+globalThis.IntersectionObserver = vi.fn().mockImplementation(function () {
+  return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() }
+})
+
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { useSessionStore } from '@/stores/session-store';
@@ -174,7 +178,7 @@ describe('MessageList', () => {
     expect(queryByTestId('welcome-empty')).toBeNull();
   });
 
-  it('windows to the latest 80 messages and expands on demand', () => {
+  it('auto-loads earlier messages when scrolled near the top', async () => {
     const messages = Array.from({ length: 140 }, (_, index) =>
       makeMessage({
         id: `msg-${index.toString().padStart(3, '0')}`,
@@ -184,7 +188,7 @@ describe('MessageList', () => {
       }),
     );
 
-    render(
+    const { container } = render(
       <MessageList
         messages={messages}
         activeSessionId="sess-1"
@@ -193,14 +197,33 @@ describe('MessageList', () => {
       />,
     );
 
-    // 140 > VIRTUAL_MSG_THRESHOLD, so rows come from the virtualizer and are not
-    // individually assertable in jsdom (the scroll container measures 0px). The
-    // window size is still observable through the load-earlier affordance.
-    expect(screen.getByText('Load 60 earlier messages')).toBeTruthy();
+    expect(screen.getByTestId('load-earlier-sentinel')).toBeTruthy();
+    expect(screen.queryByText('Load 60 earlier messages')).toBeNull();
 
-    fireEvent.click(screen.getByText('Load 60 earlier messages'));
+    const scrollEl = container.querySelector(
+      '[data-testid="v2-message-list"]',
+    ) as HTMLDivElement;
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      value: 0,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'scrollHeight', {
+      value: 8000,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'clientHeight', {
+      value: 600,
+      writable: true,
+      configurable: true,
+    });
 
-    expect(screen.queryByText(/earlier messages/)).toBeNull();
+    fireEvent.scroll(scrollEl);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('load-earlier-sentinel')).toBeNull();
+    });
   });
 
   it('hides completed assistant token usage while the next assistant step is streaming', () => {

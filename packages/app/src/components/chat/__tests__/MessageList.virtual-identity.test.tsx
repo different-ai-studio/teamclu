@@ -7,6 +7,10 @@ globalThis.ResizeObserver = vi.fn().mockImplementation(function () {
   return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
 });
 
+globalThis.IntersectionObserver = vi.fn().mockImplementation(function () {
+  return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
+});
+
 type VirtualizerOptions = {
   count: number;
   getItemKey?: (index: number) => string | number;
@@ -172,6 +176,57 @@ describe("MessageList virtualizer identity", () => {
     vi.advanceTimersByTime(320);
     expect(scrollToIndexMock.mock.calls.length).toBeGreaterThan(1);
     vi.useRealTimers();
+  });
+
+  it("does not pin to the bottom when only expanding the visible window upward", () => {
+    const messages92 = buildMessages(92);
+    const { rerender } = render(
+      <MessageList
+        messages={messages92}
+        activeSessionId="sess-1"
+        isStreaming={false}
+        streamingMessageId={null}
+      />,
+    );
+
+    scrollToIndexMock.mockClear();
+
+    const messages140 = buildMessages(140);
+    rerender(
+      <MessageList
+        messages={messages140}
+        activeSessionId="sess-1"
+        isStreaming={false}
+        streamingMessageId={null}
+      />,
+    );
+
+    const scrollEl = document.querySelector(
+      '[data-testid="v2-message-list"]',
+    ) as HTMLDivElement | null;
+    if (scrollEl) {
+      Object.defineProperty(scrollEl, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(scrollEl, "scrollHeight", {
+        value: 12000,
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(scrollEl, "clientHeight", {
+        value: 600,
+        writable: true,
+        configurable: true,
+      });
+      scrollEl.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+
+    const endPins = scrollToIndexMock.mock.calls.filter(
+      (call) => call[0] === 79 && call[1]?.align === "end",
+    );
+    expect(endPins.length).toBe(0);
   });
 
   it("uses virtualItem.key on rendered virtual rows", () => {
