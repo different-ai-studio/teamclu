@@ -1437,7 +1437,6 @@
       "clearFailed": "凭证清除失败",
       "denied": "只有应用管理员可以修改仓库凭证。"
     },
-    "visibilityTeamBadge": "团队",
     "visibilityLabel": "可见性",
     "visibilityTeamHint": "团队里每个人都能在应用列表里看到它。",
     "visibilityPersonalHint": "只有你、以及在「协作权限」里被授权的成员看得到。本机 daemon 也看不到它。",

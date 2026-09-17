@@ -10,7 +10,8 @@ import type { AppRow } from '@/lib/backend/types'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string) => fallback ?? _key,
+    t: (_key: string, fallback?: string, values?: Record<string, string>) =>
+      (fallback ?? _key).replace(/\{\{(\w+)\}\}/g, (_m, name) => values?.[name] ?? ''),
   }),
 }))
 
@@ -187,15 +188,35 @@ describe('AppLibraryView', () => {
     expect(screen.getByText('Weigan')).toBeInTheDocument()
   })
 
-  it('marks team apps and says nothing about personal ones', () => {
-    // The badge has its own key (visibilityTeamBadge) precisely so it can stay
-    // one word: the picker's label had to become a sentence to say what the
-    // setting does, and a sentence is not a badge.
+  it('names my relationship to the app, not the app visibility', () => {
+    // The regression: the badge read `visibility`, so an app I own and shared
+    // with the team was marked 团队 here while column two called it 我的 — and
+    // 团队 is what the chips use for someone else's team app.
+    useAppsStore.setState({
+      items: [
+        mkApp('app-1', 'Mine shared', { relationship: 'owner', visibility: 'team' }),
+        mkApp('app-2', 'Theirs', { relationship: 'team', visibility: 'team' }),
+        mkApp('app-3', 'Granted', { relationship: 'invited', invitedByActorId: 'actor-2' }),
+      ],
+      localAppIds: ['app-1', 'app-2', 'app-3'],
+    })
     render(<AppLibraryView />)
-    // The 团队 quick-filter chip is not a badge on a card.
-    const badges = screen.getAllByText('团队').filter((el) => !el.closest('[role="group"]'))
-    expect(badges).toHaveLength(1)
+
+    const badges = screen.getAllByTestId('app-card-relationship')
+    expect(badges.map((el) => el.textContent)).toEqual(['我的', '团队', '受邀'])
+    // Who invited me is on hover, the way it is in column two.
+    expect(badges[2]).toHaveAttribute('title', 'Weigan 邀请')
     expect(screen.queryByText('个人')).not.toBeInTheDocument()
+  })
+
+  it('drops the badge under a filter, where every card would repeat the chip', () => {
+    useAppRelationshipFilterStore.setState({ byTeam: { 'team-1': 'owner' } })
+    useAppsStore.setState({
+      items: [mkApp('app-1', 'Mine shared', { relationship: 'owner', visibility: 'team' })],
+    })
+    render(<AppLibraryView />)
+    expect(screen.getByText('Mine shared')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-card-relationship')).not.toBeInTheDocument()
   })
 
   it('renders nothing for a creator who is not in the directory', () => {

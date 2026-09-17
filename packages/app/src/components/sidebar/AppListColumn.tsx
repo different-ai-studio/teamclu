@@ -13,13 +13,12 @@ import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appStatusMeta, showsPublicBadge } from '@/lib/apps/app-list-helpers'
 import { resolveAppLocality } from '@/lib/apps/app-locality'
 import {
-  appRelationship,
   countAppsByRelationship,
   filterAppsByRelationship,
   type AppRelationshipFilter,
 } from '@/lib/apps/app-relationship'
+import { useAppRelationshipLabel } from '@/lib/apps/use-app-relationship-label'
 import { AppRelationshipChips } from '@/components/apps/AppRelationshipChips'
-import { useActorDirectory } from '@/stores/actor-directory-store'
 import { useAppRelationshipFilter, useMyMemberActorId } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
 
@@ -187,28 +186,12 @@ export function AppListColumn() {
   const [downloadingId, setDownloadingId] = React.useState<string | null>(null)
   const [filter, setFilter] = useAppRelationshipFilter(teamId)
   const myActorId = useMyMemberActorId()
-  const { actors } = useActorDirectory()
+  const relationLabelFor = useAppRelationshipLabel()
 
   const counts = React.useMemo(() => countAppsByRelationship(items, myActorId), [items, myActorId])
   const visibleItems = React.useMemo(
     () => filterAppsByRelationship(items, filter, myActorId),
     [items, filter, myActorId],
-  )
-
-  const relationLabelFor = React.useCallback(
-    (app: AppRow) => {
-      const relationship = appRelationship(app, myActorId)
-      if (relationship === 'owner') return { label: t('apps.relationshipOwner', '我的'), hint: null }
-      if (relationship === 'team') return { label: t('apps.relationshipTeam', '团队'), hint: null }
-      const inviter = app.invitedByActorId
-        ? actors.find((a) => a.id === app.invitedByActorId)?.display_name
-        : null
-      return {
-        label: t('apps.relationshipInvited', '受邀'),
-        hint: inviter ? t('apps.relationshipInvitedBy', '{{name}} 邀请', { name: inviter }) : null,
-      }
-    },
-    [actors, myActorId, t],
   )
 
   const createLabel = t('apps.createTitle', '新建')
