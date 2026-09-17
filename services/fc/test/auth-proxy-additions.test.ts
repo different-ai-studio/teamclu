@@ -179,6 +179,23 @@ test("POST /v1/auth/signout requires bearer and forwards to /logout", async () =
   assert.equal(stub.calls[0].init.headers.Authorization, "Bearer caller-jwt");
 });
 
+test("POST /v1/auth/signout ends only the caller's session, not the user's other devices", async () => {
+  // GoTrue's /logout defaults to scope=global, which deletes every session the
+  // user has. Signing out of the desktop app used to sign the same person out
+  // of iOS as well.
+  const stub = stubGoTrue({
+    "POST /auth/v1/logout": () => new Response(null, { status: 204 }),
+  });
+  await handleBusinessApiRequest({
+    httpMethod: "POST",
+    path: "/v1/auth/signout",
+    headers: { Authorization: "Bearer caller-jwt" },
+    body: "{}",
+  }, authDeps(stub));
+  assert.equal(stub.calls.length, 1);
+  assert.equal(new URL(stub.calls[0].url).searchParams.get("scope"), "local");
+});
+
 test("POST /v1/auth/signout rejects without bearer", async () => {
   const stub = stubGoTrue({});
   const res = await handleBusinessApiRequest({
