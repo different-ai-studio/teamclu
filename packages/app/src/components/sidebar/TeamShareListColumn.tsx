@@ -90,6 +90,8 @@ import {
 } from '@/lib/knowledge/knowledge-file-names'
 import { useTeamSyncStatusStore } from '@/stores/team-sync-status'
 import { toastSkillMutationRefreshFailed } from '@/components/teamshare/skillMutationRefreshToast'
+import { useTeamPermissions } from '@/lib/team/team-permissions'
+import { teamSkillDeletableSlug } from '@/lib/skills/registry-deletable'
 
 const SECTION_META: Record<
   TeamShareSection,
@@ -172,7 +174,7 @@ export function DeleteTeamSkillDialog({
           <DialogDescription>
             {t(
               'teamShare.skillDeleteTeamConfirm',
-              '将「{{name}}」从团队 registry 移除？所有成员都会看不到它，下次同步时会从各自机器上卸载，版本历史一并删除，且无法撤销。',
+              '将「{{name}}」从团队 registry 移除？所有成员都会看不到它，通常 10 分钟内从各自机器卸载。本机未发布的改动会留下个人副本。版本历史一并删除，无法撤销。',
               { name: slug },
             )}
           </DialogDescription>
@@ -340,6 +342,7 @@ type SkillRow = {
 
 export function TeamShareListColumn({ section }: { section: TeamShareSection }) {
   const { t } = useTranslation()
+  const { canManageTeam } = useTeamPermissions()
   const { state: sidebarState } = useSidebar()
   const sidebarCollapsed = sidebarState === 'collapsed'
   const meta = SECTION_META[section]
@@ -686,7 +689,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             </span>
           ),
           dimmed: s.status === 'deprecated',
-          deletableSlug: undefined,
+          deletableSlug: teamSkillDeletableSlug(canManageTeam, s.origin, s.slug),
           // Three states, and only one of them is asking for anything.
           //
           // Behind on version is a transitional state that resolves itself
@@ -725,7 +728,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             ) : undefined,
         }
       })
-  }, [section, q, skills.items, localState, t])
+  }, [section, q, skills.items, localState, canManageTeam, t])
 
   /** Team and personal are different trust boundaries, so they get their own groups. */
   const skillGroups = React.useMemo(() => {
