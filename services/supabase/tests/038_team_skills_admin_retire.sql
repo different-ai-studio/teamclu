@@ -15,13 +15,6 @@ begin
 end;
 $$;
 
-create or replace function pg_temp.as_service()
-returns void language plpgsql as $$
-begin
-  perform set_config('role', 'service_role', true);
-end;
-$$;
-
 create temporary table skill_fixture (
   team_id    uuid not null,
   admin_uid  uuid not null,
@@ -45,7 +38,10 @@ begin
 end;
 $$;
 
-select pg_temp.as_service();
+-- Fixtures are written as the session role, like every other suite here.
+-- service_role has no INSERT on auth.users, so switching to it first aborted
+-- the whole transaction before a single assertion ran.
+reset role;
 
 do $$
 declare

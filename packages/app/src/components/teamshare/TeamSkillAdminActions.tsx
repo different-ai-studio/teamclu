@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
+import type { TeamSkillStatus } from '@/lib/backend/cloud-api/team-skills'
 import { DeprecateTeamSkillDialog } from './DeprecateTeamSkillDialog'
 
 export function TeamSkillAdminActions({
@@ -16,7 +17,11 @@ export function TeamSkillAdminActions({
 }: {
   canManageTeam: boolean
   origin: string
-  status: 'draft' | 'published' | 'deprecated' | string
+  /**
+   * `TeamSkillItem.status` as the store carries it — null when the row has no
+   * registry status. Neither retire nor restore applies then; removal still does.
+   */
+  status: TeamSkillStatus | null
   slug: string
   publishedSlugs: string[]
   busy?: boolean
