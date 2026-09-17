@@ -537,7 +537,7 @@ describe("apps-store", () => {
     );
     mocks.deleteApp.mockResolvedValueOnce(true);
     mocks.seedDaemonApp.mockResolvedValueOnce(
-      seedResult("failed", { error: "git clone failed: repository not found" }),
+      seedResult("failed", { error: "git clone failed: early EOF" }),
     );
     const { useAppsStore } = await import("./apps-store");
     await expect(
@@ -548,7 +548,7 @@ describe("apps-store", () => {
         visibility: "team",
         gitRemoteUrl: "https://github.com/owner/nope.git",
       }),
-    ).rejects.toThrow("git clone failed: repository not found");
+    ).rejects.toThrow("git clone failed: early EOF");
     expect(mocks.updateAppProvisionStatus.mock.calls.map((c) => c[1])).toEqual(["error"]);
     expect(mocks.deleteApp).toHaveBeenCalledWith("app-orphan");
     expect(useAppsStore.getState().items).toEqual([]);
@@ -575,7 +575,7 @@ describe("apps-store", () => {
   it("reseed: a failed clone toasts and keeps the app row", async () => {
     mocks.updateAppProvisionStatus.mockImplementation(async (_id, st) => appRow({ provisionStatus: st }));
     mocks.seedDaemonApp.mockResolvedValueOnce(
-      seedResult("failed", { error: "git clone failed: repository not found" }),
+      seedResult("failed", { error: "git clone failed: early EOF" }),
     );
     const { useAppsStore } = await import("./apps-store");
     useAppsStore.setState({
@@ -596,7 +596,7 @@ describe("apps-store", () => {
     expect(useAppsStore.getState().items).toHaveLength(1);
     expect(mocks.toastError).toHaveBeenCalledWith(
       "仓库克隆失败",
-      { description: "git clone failed: repository not found" },
+      { description: "git clone failed: early EOF" },
     );
   });
 
@@ -811,13 +811,13 @@ describe("ensureAppCheckout", () => {
 
   it("toasts when clone fails", async () => {
     mocks.cloneDaemonApp.mockResolvedValueOnce(
-      seedResult("failed", { error: "git clone failed: repository not found" }),
+      seedResult("failed", { error: "git clone failed: early EOF" }),
     );
     const { ensureAppCheckout } = await import("./apps-store");
     await ensureAppCheckout(readyGitea());
     expect(mocks.toastError).toHaveBeenCalledWith(
       "仓库克隆失败",
-      { description: "git clone failed: repository not found" },
+      { description: "git clone failed: early EOF" },
     );
     expect(mocks.bindAppWorkdir).not.toHaveBeenCalled();
   });
@@ -1424,6 +1424,47 @@ describe("apps-store: private repo credentials", () => {
     expect(mocks.cloneDaemonApp).toHaveBeenCalled();
     expect(mocks.updateAppProvisionStatus).toHaveBeenCalledWith("app-1", "ready");
     expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("download: a repository the forge will not show says which two things that means", async () => {
+    // What GitHub answers for a repo that is gone AND for a private one the
+    // caller has no token for — the same 404 either way. Git's own sentence
+    // names neither, and the two repairs are different.
+    mocks.cloneDaemonApp.mockResolvedValueOnce(
+      seedResult("failed", {
+        error:
+          "git clone failed: fatal: repository 'https://github.com/owner/gone.git/' not found",
+      }),
+    );
+    const { ensureAppCheckout } = await import("./apps-store");
+    const workdir = await ensureAppCheckout(
+      appRow({ provisionStatus: "ready", gitRemoteUrl: "https://github.com/owner/gone.git" }),
+      { surfaceErrors: true },
+    );
+    expect(workdir).toBeNull();
+    const [title, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
+    const description = String((opts as { description?: string })?.description);
+    expect(title).toBe("仓库克隆失败");
+    // The address it could not open, then both causes, then where to fix each.
+    expect(description).toContain("https://github.com/owner/gone.git");
+    expect(description).toContain("私有");
+    expect(description).not.toContain("fatal:");
+  });
+
+  it("download: a forge that says 'Repository not found' without an address still explains itself", async () => {
+    // The SSH wording. No URL to quote, so the sentence carries the causes only.
+    mocks.cloneDaemonApp.mockResolvedValueOnce(
+      seedResult("failed", { error: "git clone failed: ERROR: Repository not found." }),
+    );
+    const { ensureAppCheckout } = await import("./apps-store");
+    await ensureAppCheckout(
+      appRow({ provisionStatus: "ready", gitRemoteUrl: "https://github.com/owner/gone.git" }),
+      { surfaceErrors: true },
+    );
+    const [, opts] = mocks.toastError.mock.calls.at(-1) ?? [];
+    const description = String((opts as { description?: string })?.description);
+    expect(description).toContain("私有");
+    expect(description).not.toContain("Repository not found");
   });
 
   it("download: a hosted app that was never seeded is still refused", async () => {
