@@ -556,7 +556,10 @@
     "sendStatus": {
       "sending": "Sending…",
       "delivered": "Delivered",
-      "failedClickToRetry": "Failed — click to retry"
+      "failedClickToRetry": "Failed — click to retry",
+      "rejectedTitle": "Message not sent",
+      "rejectedNotParticipant": "You are not in this session, so the message cannot be sent. Add yourself back to its members, or ask whoever created it to add you.",
+      "rejectedForbidden": "The server refused this message: you are not allowed to post in this session."
     },
     "newChat": "New Chat",
     "advancedSession": "Advanced session",

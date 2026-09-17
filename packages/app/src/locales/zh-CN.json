@@ -556,7 +556,10 @@
     "sendStatus": {
       "sending": "发送中…",
       "delivered": "已送达",
-      "failedClickToRetry": "发送失败 — 点击重试"
+      "failedClickToRetry": "发送失败 — 点击重试",
+      "rejectedTitle": "消息没有发出去",
+      "rejectedNotParticipant": "你不在这个会话里，消息发不出去。请把自己加回会话成员，或让会话的创建者加你。",
+      "rejectedForbidden": "服务器拒绝了这条消息：你没有权限在这个会话里发言。"
     },
     "newChat": "新聊天",
     "advancedSession": "高级会话",

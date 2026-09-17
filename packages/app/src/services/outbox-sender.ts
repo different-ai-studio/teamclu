@@ -39,6 +39,8 @@ import { bumpSessionListLastMessage } from "@/lib/session/session-list-preview";
 import { maybeAutoTitleSessionFromFirstMessage } from "@/lib/session/session-auto-title";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { runtimeForkFromForSession } from "@/lib/session/thread-fork";
+import { permanentSendRejection } from "@/lib/messages/send-rejection";
+import i18n from "@/lib/i18n";
 
 const TICK_MS = 1000;
 const DELIVERED_GC_MS = 5000;
@@ -442,6 +444,18 @@ async function attemptRemotePath(
   });
 }
 
+/** Say it once, where the user is looking. Never fails a send attempt. */
+async function notifySendRejected(reason: string): Promise<void> {
+  try {
+    const { toast } = await import("sonner");
+    toast.error(i18n.t("chat.sendStatus.rejectedTitle", "消息没有发出去"), {
+      description: reason,
+    });
+  } catch (err) {
+    console.warn("[outbox] could not surface the rejection toast:", err);
+  }
+}
+
 async function attempt(entry: OutboxEntry): Promise<void> {
   const store = useOutboxStore.getState();
   const now = new Date().toISOString();
@@ -489,13 +503,30 @@ async function attempt(entry: OutboxEntry): Promise<void> {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const nextAttempt = entry.attemptCount + 1;
+    // A refusal is not a blip: the same answer is waiting at every attempt, so
+    // the backoff only delays telling the user by ten minutes.
+    const rejection = permanentSendRejection(e);
     sessionFlowError("outbox_sender.attempt.failed", e, {
       messageId: entry.messageId,
       sessionId: entry.sessionId,
       teamId: entry.teamId,
       nextAttempt,
-      willRetry: nextAttempt < OUTBOX_MAX_ATTEMPTS,
+      rejected: !!rejection,
+      willRetry: !rejection && nextAttempt < OUTBOX_MAX_ATTEMPTS,
     });
+    if (rejection) {
+      const reason = i18n.t(rejection.key, rejection.fallback);
+      await store.updateState(entry.messageId, {
+        state: "failed",
+        attemptCount: nextAttempt,
+        lastError: reason,
+        nextAttemptAt: null,
+      });
+      // The bubble's dot carries the reason too, but it is 14px in the corner
+      // of a message the user already stopped watching.
+      void notifySendRejected(reason);
+      return;
+    }
     if (nextAttempt >= OUTBOX_MAX_ATTEMPTS) {
       await store.updateState(entry.messageId, {
         state: "failed",
