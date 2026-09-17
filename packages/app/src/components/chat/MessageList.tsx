@@ -21,6 +21,14 @@ import {
 } from "@/lib/ui/chat-scroll-to-message";
 import { DEFAULT_INPUT_AREA_HEIGHT, SAFE_BOTTOM_SPACING } from "./layout-constants";
 import { canStartThreadFromNewestIndex } from "@/lib/session/thread-fork";
+import {
+  expandVisibleMessageCount,
+  isScrollAtTop,
+  LOAD_EARLIER_HOLD_MS,
+  LOAD_EARLIER_TOP_DEBOUNCE_MS,
+} from "./message-list-load-earlier";
+
+export { LOAD_EARLIER_MESSAGE_COUNT } from "./message-list-load-earlier";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -29,8 +37,91 @@ import { canStartThreadFromNewestIndex } from "@/lib/session/thread-fork";
 // Dynamic heights via measureElement + messageAreaWidth remeasure; smoke-test
 // open a >80-message session, toggle sidebar / resize, confirm no row overlap.
 export const VIRTUAL_MSG_THRESHOLD = 80;
+/** Extra rows kept mounted above/below the viewport — reduces markdown remount jank. */
+export const VIRTUAL_MSG_OVERSCAN = 24;
+/**
+ * How close to the end still counts as "at the end" for the virtualizer's own
+ * `followOnAppend` / size-change anchoring. Deliberately tight: the container's
+ * paddingBottom (composer height + safe spacing) already grants slack on top of
+ * this, and a loose value is what drags a reader back down.
+ */
+export const VIRTUAL_SCROLL_END_THRESHOLD = 24;
 const INITIAL_VISIBLE_MESSAGE_COUNT = 80;
-const LOAD_EARLIER_MESSAGE_COUNT = 60;
+const DEFAULT_VIRTUAL_ROW_ESTIMATE = 150;
+/** Cap on remembered row heights so a long-lived window does not grow forever. */
+const REMEMBERED_ROW_HEIGHT_LIMIT = 4000;
+const VIRTUAL_ROW_GAP = 4;
+
+/** Where a message row sits relative to the top edge of the scroll viewport. */
+function readRowViewportTop(
+  scrollEl: HTMLElement,
+  messageId: string,
+): number | null {
+  const row = scrollEl.querySelector(`[data-message-id="${messageId}"]`);
+  if (!row) return null;
+  return (
+    row.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top
+  );
+}
+
+/** Stable TanStack Virtual row identity — not array index (window slides on append). */
+export function getVirtualMessageKey(
+  messages: readonly Message[],
+  index: number,
+): string | number {
+  const message = messages[index];
+  if (!message) return index;
+  const sessionId = message.sessionId ?? "";
+  return sessionId ? `${sessionId}:${message.id}` : message.id;
+}
+
+/**
+ * Heuristic row height before measureElement — closer estimates reduce scroll-up
+ * blank gaps.
+ *
+ * Nothing here may be clamped. Message bodies are not truncated in the UI, so a
+ * single long agent reply genuinely is ten thousand pixels tall; capping its
+ * estimate puts every row after it off by that difference, which is a viewport
+ * with nothing in it and an anchor restore that cannot land. Height has to track
+ * content for as far as content goes.
+ */
+export function estimateVirtualMessageSize(message: Message): number {
+  if (
+    message.displayKind === "compaction" ||
+    message.displayKind === "compaction-summary"
+  ) {
+    return 40;
+  }
+  if (message.displayKind === "synthetic") {
+    return 32;
+  }
+
+  const toolCallCount = message.toolCalls?.length ?? 0;
+  const contentLen =
+    message.content?.length ??
+    message.parts.reduce(
+      (total, part) =>
+        total + (part.text?.length ?? part.content?.length ?? 0),
+      0,
+    );
+
+  if (message.role === "user") {
+    const lineEstimate = Math.ceil(contentLen / 42);
+    return Math.max(64, 48 + lineEstimate * 24);
+  }
+
+  let height = 72 + toolCallCount * 52;
+  if (contentLen > 0) {
+    // Erring high is the safe direction: an overestimate leaves a gap that
+    // measurement closes, an underestimate leaves viewport with nothing in it.
+    // 0.42px/char matches 13.5px/1.7 body text in a ~700px pane plus the block
+    // spacing markdown adds on top of raw characters.
+    height += Math.max(96, Math.round(contentLen * 0.42));
+  } else if ((message.parts?.length ?? 0) > 0) {
+    height += 120;
+  }
+  return height;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -119,14 +210,15 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     }, [messages.length]);
 
     const hiddenMessageCount = Math.max(0, messages.length - visibleMessageCount);
-    const loadEarlierCount = Math.min(LOAD_EARLIER_MESSAGE_COUNT, hiddenMessageCount);
-    const loadEarlierLabel = React.useMemo(
-      () =>
-        t("chat.loadEarlierMessages", "Load {{count}} earlier messages", {
-          count: loadEarlierCount,
-        }).replace("{{count}}", String(loadEarlierCount)),
-      [loadEarlierCount, t],
-    );
+    const [loadingEarlier, setLoadingEarlier] = React.useState(false);
+    const loadEarlierInFlightRef = React.useRef(false);
+    const loadEarlierHoldTimerRef = React.useRef<number | null>(null);
+    const loadEarlierDebounceTimerRef = React.useRef<number | null>(null);
+    const loadEarlierPendingRef = React.useRef(false);
+    const loadEarlierAnchorRef = React.useRef<{
+      messageId: string;
+      viewportTop: number;
+    } | null>(null);
     const renderedMessages = React.useMemo(
       () => messages.slice(Math.max(0, messages.length - visibleMessageCount)),
       [messages, visibleMessageCount],
@@ -224,6 +316,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     const messageAreaRef = React.useRef<HTMLDivElement>(null);
     const prevStreamingRef = React.useRef(false);
     const pendingScrollMessageIdRef = React.useRef<string | null>(null);
+    const hasInitialScrolled = React.useRef(false);
 
     const {
       scrollToBottom,
@@ -234,6 +327,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       enableAutoFollow,
       pauseAutoFollowIfReading,
       stopAutoFollow,
+      isFollowingBottom,
     } = useChatStickToBottom(scrollRef);
 
     const fulfillPendingScroll = React.useCallback(() => {
@@ -253,35 +347,6 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
      * SAFE_BOTTOM_SPACING` ensures the new bubble lands just above the
      * floating chat input — not behind it.
      */
-    const scrollToLatestMessage = React.useCallback(
-      (_messageId?: string) => {
-        scrollToBottomAfterCommit();
-      },
-      [scrollToBottomAfterCommit],
-    );
-
-    // ── Imperative handle ────────────────────────────────────────────────
-    const handleInputHeightChange = React.useCallback(
-      (height: number) => {
-        setInputAreaHeight((prev) => (prev === height ? prev : height));
-        // Composer chrome (approval, multiline) must not yank readers back to bottom.
-        requestAnimationFrame(() => {
-          scrollToBottomIfAtBottom();
-        });
-      },
-      [scrollToBottomIfAtBottom],
-    );
-
-    React.useImperativeHandle(
-      ref,
-      () => ({
-        handleInputHeightChange,
-        scrollToLatestMessage,
-        pauseAutoFollowIfReading,
-      }),
-      [handleInputHeightChange, scrollToLatestMessage, pauseAutoFollowIfReading],
-    );
-
     React.useLayoutEffect(() => {
       const el = messageAreaRef.current;
       if (!el) return;
@@ -304,23 +369,338 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     // ── Virtual scrolling ────────────────────────────────────────────────
     const useVirtualMessages = messages.length > VIRTUAL_MSG_THRESHOLD;
 
+    const getVirtualItemKey = React.useCallback(
+      (index: number) => getVirtualMessageKey(renderedMessages, index),
+      [renderedMessages],
+    );
+
+    /**
+     * Real heights of rows we have already rendered, keyed the same way the
+     * virtualizer keys them and kept across unmount.
+     *
+     * The virtualizer deliberately skips measuring while a scroll is in flight
+     * (`measureElement` no-ops when `isScrolling`), so during a fast fling every
+     * freshly mounted row is placed at whatever `estimateSize` guesses. A guess
+     * from content length is off by hundreds of px, and that geometry error is
+     * what shows up as an empty viewport until a nudge re-measures. A row that
+     * has been on screen once needs no guess.
+     */
+    // Key type mirrors the virtualizer's own `Key` (it is not re-exported).
+    const measuredRowHeightsRef = React.useRef(
+      new Map<number | string | bigint, number>(),
+    );
+
+    const estimateVirtualRowSize = React.useCallback(
+      (index: number) => {
+        const message = renderedMessages[index];
+        if (!message) return DEFAULT_VIRTUAL_ROW_ESTIMATE;
+        const remembered = measuredRowHeightsRef.current.get(
+          getVirtualMessageKey(renderedMessages, index),
+        );
+        return remembered ?? estimateVirtualMessageSize(message);
+      },
+      [renderedMessages],
+    );
+
+    // anchorTo/followOnAppend put bottom-pinning inside the virtualizer: row
+    // growth while at the end scrolls by the exact delta, and prepending older
+    // rows restores the anchor row's offset. Nothing outside may write scrollTop
+    // in virtual mode — two writers on one scroll position oscillate.
     const messageVirtualizer = useVirtualizer({
       count: useVirtualMessages ? renderedMessages.length : 0,
       getScrollElement: () => scrollRef.current,
-      estimateSize: () => 150,
-      overscan: 5,
-      gap: 4,
+      estimateSize: estimateVirtualRowSize,
+      getItemKey: getVirtualItemKey,
+      overscan: VIRTUAL_MSG_OVERSCAN,
+      gap: VIRTUAL_ROW_GAP,
+      useAnimationFrameWithResizeObserver: true,
+      anchorTo: "end",
+      followOnAppend: "auto",
+      scrollEndThreshold: VIRTUAL_SCROLL_END_THRESHOLD,
     });
 
+    // Runs after every commit: whatever the virtualizer measured this pass is
+    // now the estimate for the next time that row mounts.
+    React.useEffect(() => {
+      if (!useVirtualMessages) return;
+      const remembered = measuredRowHeightsRef.current;
+      for (const [key, size] of messageVirtualizer.itemSizeCache) {
+        if (size > 0) remembered.set(key, size);
+      }
+      // Insertion order is oldest-first, so trimming the front drops the rows
+      // least likely to be scrolled back to.
+      if (remembered.size > REMEMBERED_ROW_HEIGHT_LIMIT) {
+        for (const key of remembered.keys()) {
+          if (remembered.size <= REMEMBERED_ROW_HEIGHT_LIMIT) break;
+          remembered.delete(key);
+        }
+      }
+    });
+
+    const pinVirtualEndIndex = React.useCallback(() => {
+      if (!useVirtualMessages || renderedMessages.length === 0) return;
+      messageVirtualizer.scrollToEnd();
+    }, [messageVirtualizer, renderedMessages.length, useVirtualMessages]);
+
+    /** True when the viewport is parked at the newest row and may follow growth. */
+    const isViewportAtBottom = React.useCallback(() => {
+      if (useVirtualMessages) {
+        return messageVirtualizer.isAtEnd();
+      }
+      return isFollowingBottom();
+    }, [isFollowingBottom, messageVirtualizer, useVirtualMessages]);
+
+    /**
+     * Re-pin after something outside the virtualizer changed the scrollable
+     * height (composer chrome, container width). Row growth and appends are the
+     * virtualizer's job — do not call this from streaming or message effects.
+     */
+    const repinBottomIfAtBottom = React.useCallback(() => {
+      if (!isViewportAtBottom()) return;
+      if (useVirtualMessages) {
+        pinVirtualEndIndex();
+        return;
+      }
+      scrollToBottomIfAtBottom();
+    }, [
+      isViewportAtBottom,
+      pinVirtualEndIndex,
+      scrollToBottomIfAtBottom,
+      useVirtualMessages,
+    ]);
+
+    /** One-shot bottom pin when opening a session — one mechanism per list mode. */
+    const revealThreadAtBottom = React.useCallback(() => {
+      enableAutoFollow();
+      if (useVirtualMessages && renderedMessages.length > 0) {
+        requestAnimationFrame(() => {
+          pinVirtualEndIndex();
+        });
+        return;
+      }
+      scrollToBottomAfterCommit();
+    }, [
+      enableAutoFollow,
+      pinVirtualEndIndex,
+      renderedMessages.length,
+      scrollToBottomAfterCommit,
+      useVirtualMessages,
+    ]);
+
+    const scrollToLatestMessage = React.useCallback(
+      (_messageId?: string) => {
+        revealThreadAtBottom();
+      },
+      [revealThreadAtBottom],
+    );
+
+    const handleInputHeightChange = React.useCallback(
+      (height: number) => {
+        const wasAtBottom = isViewportAtBottom();
+        setInputAreaHeight((prev) => (prev === height ? prev : height));
+        if (!wasAtBottom) return;
+        requestAnimationFrame(() => {
+          repinBottomIfAtBottom();
+        });
+      },
+      [isViewportAtBottom, repinBottomIfAtBottom],
+    );
+
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        handleInputHeightChange,
+        scrollToLatestMessage,
+        pauseAutoFollowIfReading,
+      }),
+      [handleInputHeightChange, scrollToLatestMessage, pauseAutoFollowIfReading],
+    );
+
+    React.useLayoutEffect(() => {
+      const el = scrollRef.current;
+      if (el) {
+        el.scrollTop = 0;
+      }
+      hasInitialScrolled.current = false;
+      loadEarlierInFlightRef.current = false;
+      loadEarlierPendingRef.current = false;
+      loadEarlierAnchorRef.current = null;
+      setLoadingEarlier(false);
+      if (loadEarlierDebounceTimerRef.current != null) {
+        window.clearTimeout(loadEarlierDebounceTimerRef.current);
+        loadEarlierDebounceTimerRef.current = null;
+      }
+      if (loadEarlierHoldTimerRef.current != null) {
+        window.clearTimeout(loadEarlierHoldTimerRef.current);
+        loadEarlierHoldTimerRef.current = null;
+      }
+    }, [activeSessionId]);
+
+    // Width drives wrapping, so every row estimate is stale — this is the one
+    // legitimate `measure()`: it clears the size cache so rows re-report.
     React.useLayoutEffect(() => {
       if (!useVirtualMessages || messageAreaWidth <= 0) return;
 
       const raf = requestAnimationFrame(() => {
+        const wasAtBottom = messageVirtualizer.isAtEnd();
+        // Remembered heights were measured at the previous width — at a new one
+        // they are wrong in the same way the heuristic is.
+        measuredRowHeightsRef.current.clear();
         messageVirtualizer.measure();
+        if (wasAtBottom) {
+          messageVirtualizer.scrollToEnd();
+        }
       });
 
       return () => cancelAnimationFrame(raf);
     }, [useVirtualMessages, messageAreaWidth, messageVirtualizer]);
+
+    // The messages are on screen by the time this runs, so the spinner leaves
+    // now. Holding it any longer past the content is the other half of looking
+    // fake.
+    const finishLoadEarlierBatch = React.useCallback(() => {
+      loadEarlierInFlightRef.current = false;
+      setLoadingEarlier(false);
+    }, []);
+
+    const requestLoadEarlierMessages = React.useCallback(() => {
+      if (loadEarlierInFlightRef.current || hiddenMessageCount <= 0) {
+        return;
+      }
+
+      const scrollEl = scrollRef.current;
+      if (!scrollEl || !isScrollAtTop(scrollEl.scrollTop)) {
+        return;
+      }
+
+      const previousVisible = visibleMessageCount;
+      const nextVisible = expandVisibleMessageCount(
+        previousVisible,
+        messages.length,
+      );
+      if (nextVisible === previousVisible) {
+        return;
+      }
+
+      loadEarlierInFlightRef.current = true;
+      setLoadingEarlier(true);
+      stopAutoFollow();
+
+      // The spinner gets this commit to itself, and the list stays at the top
+      // for the hold. Prepending in the same batch is what made it read as
+      // fake: the messages it claims to be fetching were already on screen the
+      // moment it appeared.
+      loadEarlierHoldTimerRef.current = window.setTimeout(() => {
+        loadEarlierHoldTimerRef.current = null;
+
+        // Read the anchor now rather than at request time — the reader may have
+        // moved during the hold, and the correction has to undo this prepend
+        // from wherever they actually are.
+        const el = scrollRef.current;
+        const anchorId = renderedMessages[0]?.id ?? null;
+        const anchorTop =
+          el && anchorId ? readRowViewportTop(el, anchorId) : null;
+        loadEarlierAnchorRef.current =
+          anchorId && anchorTop !== null
+            ? { messageId: anchorId, viewportTop: anchorTop }
+            : null;
+
+        loadEarlierPendingRef.current = true;
+        setVisibleMessageCount(nextVisible);
+      }, LOAD_EARLIER_HOLD_MS);
+    }, [
+      hiddenMessageCount,
+      messages.length,
+      renderedMessages,
+      stopAutoFollow,
+      visibleMessageCount,
+    ]);
+
+    /**
+     * Hold the reader's place across the prepend. Older messages land above;
+     * nothing jumps and nothing is scrolled to. Reaching them is the reader's
+     * job.
+     *
+     * The correction is a difference of two DOM readings of the same row, taken
+     * before and after the batch, so it is exact no matter how far off the
+     * estimates for the newly prepended rows are — and both `anchorTo: "end"`
+     * and any offset we could compute ourselves are only as good as those
+     * estimates. Running before paint means the row never visibly moves.
+     */
+    React.useLayoutEffect(() => {
+      if (!loadEarlierPendingRef.current) return;
+      loadEarlierPendingRef.current = false;
+
+      const anchor = loadEarlierAnchorRef.current;
+      loadEarlierAnchorRef.current = null;
+      const scrollEl = scrollRef.current;
+
+      if (anchor && scrollEl) {
+        const nextTop = readRowViewportTop(scrollEl, anchor.messageId);
+        if (nextTop !== null) {
+          const drift = nextTop - anchor.viewportTop;
+          if (Math.abs(drift) > 0.5) {
+            const target = scrollEl.scrollTop + drift;
+            // Going through the virtualizer keeps its own scroll offset in step
+            // with the DOM. A bare scrollTop write leaves the two disagreeing
+            // until the next scroll event, and the range it renders in between
+            // is the one for the old position.
+            if (useVirtualMessages) {
+              messageVirtualizer.scrollToOffset(target);
+            } else {
+              scrollEl.scrollTop = target;
+            }
+          }
+        }
+      }
+
+      finishLoadEarlierBatch();
+    }, [
+      visibleMessageCount,
+      finishLoadEarlierBatch,
+      messageVirtualizer,
+      useVirtualMessages,
+    ]);
+
+    const scheduleLoadEarlierAtTop = React.useCallback(() => {
+      if (
+        loadEarlierInFlightRef.current ||
+        hiddenMessageCount <= 0 ||
+        loadEarlierDebounceTimerRef.current != null
+      ) {
+        return;
+      }
+
+      loadEarlierDebounceTimerRef.current = window.setTimeout(() => {
+        loadEarlierDebounceTimerRef.current = null;
+        const scrollEl = scrollRef.current;
+        if (
+          scrollEl &&
+          isScrollAtTop(scrollEl.scrollTop) &&
+          !loadEarlierInFlightRef.current
+        ) {
+          requestLoadEarlierMessages();
+        }
+      }, LOAD_EARLIER_TOP_DEBOUNCE_MS);
+    }, [hiddenMessageCount, requestLoadEarlierMessages]);
+
+    const cancelLoadEarlierDebounce = React.useCallback(() => {
+      if (loadEarlierDebounceTimerRef.current != null) {
+        window.clearTimeout(loadEarlierDebounceTimerRef.current);
+        loadEarlierDebounceTimerRef.current = null;
+      }
+    }, []);
+
+    React.useEffect(
+      () => () => {
+        cancelLoadEarlierDebounce();
+        if (loadEarlierHoldTimerRef.current != null) {
+          window.clearTimeout(loadEarlierHoldTimerRef.current);
+          loadEarlierHoldTimerRef.current = null;
+        }
+      },
+      [cancelLoadEarlierDebounce],
+    );
 
     React.useEffect(() => {
       const onScrollRequest = (event: Event) => {
@@ -385,40 +765,41 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
 
     // Primary auto-scroll driver: when content grows (messages or streaming),
     // scroll to the absolute bottom if we're currently "at bottom".
-    React.useEffect(
-      () => observeContentResize(messageAreaRef),
-      [observeContentResize, activeSessionId],
-    );
+    React.useEffect(() => {
+      if (useVirtualMessages) return;
+      return observeContentResize(messageAreaRef);
+    }, [observeContentResize, activeSessionId, useVirtualMessages]);
 
-    // When v1 streaming starts, scroll to bottom if already following.
+    // Non-virtual only. In virtual mode row growth is handled by `anchorTo:
+    // "end"`, which scrolls by the exact size delta and only while at the end.
     React.useEffect(() => {
       const wasStreaming = prevStreamingRef.current;
+      prevStreamingRef.current = isStreaming;
+      if (useVirtualMessages) return;
       if (isStreaming && !wasStreaming) {
         scrollToBottomIfAtBottom();
       }
-      prevStreamingRef.current = isStreaming;
-    }, [isStreaming, scrollToBottomIfAtBottom]);
+    }, [isStreaming, scrollToBottomIfAtBottom, useVirtualMessages]);
 
-    // When v2 / child streaming content updates, scroll if following.
-    // ResizeObserver is the primary driver in real browsers; this is the
-    // fallback for JSDOM (tests) where ResizeObserver does not fire.
     React.useEffect(() => {
+      if (useVirtualMessages) return;
       if (v2StreamScrollTrigger > 0) {
         scrollToBottomIfAtBottom();
       }
-    }, [v2StreamScrollTrigger, scrollToBottomIfAtBottom]);
+    }, [v2StreamScrollTrigger, scrollToBottomIfAtBottom, useVirtualMessages]);
 
-    // After a persisted agent reply lands in the list, re-pin to the bottom
-    // once layout commits (stream bubble may shrink/move in the same tick).
-    const prevMessageCountRef = React.useRef(messages.length);
+    // Non-virtual only. In virtual mode appends are handled by `followOnAppend`,
+    // which follows the new tail only when the viewport was already at the end.
     React.useEffect(() => {
+      if (useVirtualMessages) return;
       const grew = messages.length > prevMessageCountRef.current;
       prevMessageCountRef.current = messages.length;
       if (grew) {
         scrollToBottomAfterCommit();
       }
-    }, [messages.length, scrollToBottomAfterCommit]);
+    }, [messages.length, scrollToBottomAfterCommit, useVirtualMessages]);
 
+    const prevMessageCountRef = React.useRef(messages.length);
     const prevSessionIdRef = React.useRef(activeSessionId);
     const needsScrollAfterLoadRef = React.useRef(false);
     React.useEffect(() => {
@@ -453,28 +834,29 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       prevLoadingRef.current = isLoading;
 
       const shouldReveal =
-        (wasLoading && !isLoading && needsScrollAfterLoadRef.current) ||
-        (!isLoading && needsScrollAfterLoadRef.current);
+        needsScrollAfterLoadRef.current &&
+        !isLoading &&
+        (wasLoading || messages.length > 0);
 
       if (shouldReveal) {
         needsScrollAfterLoadRef.current = false;
-        enableAutoFollow();
-        scrollToBottom();
+        hasInitialScrolled.current = true;
+        revealThreadAtBottom();
       }
-    }, [isLoading, messages.length, enableAutoFollow, scrollToBottom]);
+    }, [isLoading, messages.length, revealThreadAtBottom]);
 
-    const hasInitialScrolled = React.useRef(false);
     React.useEffect(() => {
       if (
-        !hasInitialScrolled.current &&
-        messages.length > 0 &&
-        !isLoading
+        hasInitialScrolled.current ||
+        messages.length === 0 ||
+        isLoading ||
+        needsScrollAfterLoadRef.current
       ) {
-        hasInitialScrolled.current = true;
-        enableAutoFollow();
-        scrollToBottom();
+        return;
       }
-    }, [messages.length, isLoading, enableAutoFollow, scrollToBottom]);
+      hasInitialScrolled.current = true;
+      revealThreadAtBottom();
+    }, [messages.length, isLoading, revealThreadAtBottom]);
 
     const scrollRafRef = React.useRef<number | undefined>(undefined);
     React.useEffect(() => {
@@ -482,7 +864,17 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       if (!el) return;
 
       const handleScroll = () => {
-        const atBottom = onScroll();
+        // Virtual mode owns its own follow state — the handler only reads, so a
+        // scroll the virtualizer itself performed cannot flip anything.
+        const atBottom = useVirtualMessages
+          ? messageVirtualizer.isAtEnd()
+          : onScroll();
+
+        if (isScrollAtTop(el.scrollTop) && hiddenMessageCount > 0) {
+          scheduleLoadEarlierAtTop();
+        } else {
+          cancelLoadEarlierDebounce();
+        }
 
         if (scrollRafRef.current != null)
           cancelAnimationFrame(scrollRafRef.current);
@@ -498,10 +890,23 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
         if (scrollRafRef.current != null)
           cancelAnimationFrame(scrollRafRef.current);
       };
-    }, [messages.length, activeSessionId, onScroll]);
+    }, [
+      messages.length,
+      activeSessionId,
+      onScroll,
+      hiddenMessageCount,
+      scheduleLoadEarlierAtTop,
+      cancelLoadEarlierDebounce,
+      useVirtualMessages,
+      messageVirtualizer,
+    ]);
 
     const handleScrollToBottom = () => {
       enableAutoFollow();
+      if (useVirtualMessages && renderedMessages.length > 0) {
+        pinVirtualEndIndex();
+        return;
+      }
       scrollToBottom();
     };
 
@@ -590,21 +995,6 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
               )
             ) : (
               <div className="space-y-1">
-                {hiddenMessageCount > 0 && (
-                  <div className="flex justify-center pb-2">
-                    <button
-                      type="button"
-                      className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                      onClick={() =>
-                        setVisibleMessageCount((count) =>
-                          Math.min(messages.length, count + LOAD_EARLIER_MESSAGE_COUNT),
-                        )
-                      }
-                    >
-                      {loadEarlierLabel}
-                    </button>
-                  </div>
-                )}
                 {/* Find the last completed assistant message for star rating */}
                 {(() => {
                   // Star rating only on the last non-streaming assistant message with tokens
@@ -639,11 +1029,12 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
 
                           return (
                             <div
-                              key={message.id}
+                              key={virtualItem.key}
                               ref={(el) => {
                                 if (el) messageVirtualizer.measureElement(el);
                               }}
                               data-index={virtualItem.index}
+                              data-message-id={message.id}
                               style={{
                                 position: "absolute",
                                 top: 0,
@@ -726,6 +1117,29 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
             )}
           </div>
         </div>
+
+        {/* Floated, never in the scrolled flow: an in-flow loading row changes
+            the offset of every virtual item when it mounts or unmounts, which
+            reads as the visible messages jumping. */}
+        {(hiddenMessageCount > 0 || loadingEarlier) && (
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-2"
+            data-testid="load-earlier-sentinel"
+            aria-busy={loadingEarlier}
+          >
+            {loadingEarlier ? (
+              <div className="flex items-center gap-2 rounded-full border border-border bg-paper px-3 py-1.5 text-[12px] text-muted-foreground shadow-sm">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span>
+                  {t(
+                    "chat.loadingEarlierMessages",
+                    "Loading earlier messages…",
+                  )}
+                </span>
+              </div>
+            ) : null}
+          </div>
+        )}
 
         {/* Scroll to bottom button */}
         {showScrollButton && (

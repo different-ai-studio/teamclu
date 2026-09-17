@@ -603,7 +603,7 @@
     "askAboutFile": "询问关于文件的问题",
     "askAnything": "向我提问",
     "planningMoves": "规划下一步",
-    "loadEarlierMessages": "加载前 {{count}} 条消息",
+    "loadingEarlierMessages": "正在加载更早的消息…",
     "compaction": {
       "title": "已自动压缩上下文",
       "inProgressTitle": "正在自动压缩上下文...",

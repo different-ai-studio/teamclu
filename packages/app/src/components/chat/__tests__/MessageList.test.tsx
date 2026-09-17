@@ -1,7 +1,11 @@
 import * as React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 globalThis.ResizeObserver = vi.fn().mockImplementation(function () {
+  return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() }
+})
+
+globalThis.IntersectionObserver = vi.fn().mockImplementation(function () {
   return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() }
 })
 
@@ -14,6 +18,10 @@ import {
   type AgentStreamEntry,
 } from '@/stores/v2-streaming-store';
 import { MessageList } from '../MessageList';
+import {
+  LOAD_EARLIER_HOLD_MS,
+  LOAD_EARLIER_TOP_DEBOUNCE_MS,
+} from '../message-list-load-earlier';
 import type { Message } from '@/stores/session-types';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -74,6 +82,10 @@ function makeAssistantWithTokens(
 // ── Tests ──────────────────────────────────────────────────────────────
 
 describe('MessageList', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     readFileMock.mockResolvedValue(new Uint8Array([1, 2, 3]));
     useSessionListStore.setState({ loading: false });
@@ -174,7 +186,21 @@ describe('MessageList', () => {
     expect(queryByTestId('welcome-empty')).toBeNull();
   });
 
-  it('windows to the latest 80 messages and expands on demand', () => {
+  it('auto-loads earlier messages only when scrolled to the top', async () => {
+    vi.useFakeTimers();
+    const rafQueue: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+
+    const flushRaf = (maxPasses = 16) => {
+      for (let pass = 0; pass < maxPasses && rafQueue.length > 0; pass += 1) {
+        const batch = rafQueue.splice(0, rafQueue.length);
+        batch.forEach((cb) => cb(0));
+      }
+    };
+
     const messages = Array.from({ length: 140 }, (_, index) =>
       makeMessage({
         id: `msg-${index.toString().padStart(3, '0')}`,
@@ -184,7 +210,7 @@ describe('MessageList', () => {
       }),
     );
 
-    render(
+    const { container } = render(
       <MessageList
         messages={messages}
         activeSessionId="sess-1"
@@ -193,14 +219,49 @@ describe('MessageList', () => {
       />,
     );
 
-    // 140 > VIRTUAL_MSG_THRESHOLD, so rows come from the virtualizer and are not
-    // individually assertable in jsdom (the scroll container measures 0px). The
-    // window size is still observable through the load-earlier affordance.
-    expect(screen.getByText('Load 60 earlier messages')).toBeTruthy();
+    expect(screen.getByTestId('load-earlier-sentinel')).toBeTruthy();
+    expect(screen.queryByText('Load 60 earlier messages')).toBeNull();
 
-    fireEvent.click(screen.getByText('Load 60 earlier messages'));
+    const scrollEl = container.querySelector(
+      '[data-testid="v2-message-list"]',
+    ) as HTMLDivElement;
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      value: 0,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'scrollHeight', {
+      value: 8000,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, 'clientHeight', {
+      value: 600,
+      writable: true,
+      configurable: true,
+    });
 
-    expect(screen.queryByText(/earlier messages/)).toBeNull();
+    await act(async () => {
+      fireEvent.scroll(scrollEl);
+      vi.advanceTimersByTime(LOAD_EARLIER_TOP_DEBOUNCE_MS + 50);
+    });
+    // The spinner comes up on its own, before the batch it stands for. If the
+    // earliest message were already on screen here, it would be decoration.
+    expect(screen.getByText('Loading earlier messages…')).toBeTruthy();
+    expect(screen.queryByText('Message 0')).toBeNull();
+
+    await act(async () => {
+      flushRaf();
+      vi.advanceTimersByTime(LOAD_EARLIER_HOLD_MS + 50);
+      flushRaf();
+    });
+
+    await act(async () => {
+      flushRaf();
+    });
+    expect(screen.queryByText('Loading earlier messages…')).toBeNull();
+    expect(screen.queryByTestId('load-earlier-sentinel')).toBeNull();
+    vi.useRealTimers();
   });
 
   it('hides completed assistant token usage while the next assistant step is streaming', () => {

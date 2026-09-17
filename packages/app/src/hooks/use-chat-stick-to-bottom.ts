@@ -3,13 +3,18 @@ import * as React from "react";
 import { NEAR_BOTTOM_THRESHOLD } from "@/components/chat/layout-constants";
 
 /**
- * Stick-to-bottom for the chat thread.
+ * Stick-to-bottom for the chat thread — **short threads only**.
+ *
+ * Once the thread virtualizes (see VIRTUAL_MSG_THRESHOLD) bottom-pinning belongs
+ * to the virtualizer's `anchorTo: "end"` / `followOnAppend`, and MessageList stops
+ * driving follow state from here. Two writers on one scrollTop oscillate: the
+ * virtualizer re-targets across frames as rows are measured, and every one of
+ * those scrolls looks exactly like a user gesture from a scroll listener.
  *
  * Single source of truth: scroll to `scrollHeight - clientHeight` whenever we
  * want to be "at the bottom". The scroll container's content has a
  * `paddingBottom = inputAreaHeight + SAFE_BOTTOM_SPACING`, so scrolling to the
- * absolute bottom leaves the last real content (latest user message / agent
- * stream / threadEnd) just above the floating chat input overlay.
+ * absolute bottom leaves the last real content just above the floating input.
  *
  * Rules:
  *   - On send:        force isAtBottom=true and scroll to bottom after React commits.
@@ -148,6 +153,8 @@ export function useChatStickToBottom(
     isAtBottomRef.current = false;
   }, []);
 
+  const isFollowingBottom = React.useCallback(() => isAtBottomRef.current, []);
+
   return {
     scrollToBottom,
     scrollToBottomIfAtBottom,
@@ -157,5 +164,6 @@ export function useChatStickToBottom(
     enableAutoFollow,
     pauseAutoFollowIfReading,
     stopAutoFollow,
+    isFollowingBottom,
   };
 }
