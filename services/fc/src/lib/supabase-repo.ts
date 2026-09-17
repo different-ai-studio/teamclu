@@ -1539,6 +1539,35 @@ export function createSupabaseBusinessRepository(options) {
       }
       return { userId: authData.user.id, operator: isPlatformOperator(authData.user.id) };
     },
+
+    // The AI gateway's provider keys: which serve, which are benched and why.
+    // Passed through as the gateway reports it — the shape is the gateway's,
+    // and a copy here would drift from it.
+    async getProviderPools() {
+      await requirePlatformOperator();
+      return aiGateway.providerPools();
+    },
+
+    // Put benched keys back into service now — after funding an account, rather
+    // than waiting out the backoff. `keyId` narrows it to one key.
+    async resetProviderPool(providerId: string, input: any) {
+      const operatorId = await requirePlatformOperator();
+      // Checked here rather than left to the gateway: path params arrive raw,
+      // and a provider id is a catalog slug, never anything that needs escaping.
+      if (!/^[A-Za-z0-9_.-]{1,64}$/.test(providerId)) {
+        throw new ApiError(400, "invalid_request", "providerId must be a catalog provider id");
+      }
+      const keyId = input?.keyId;
+      if (keyId !== undefined && (typeof keyId !== "string" || !/^[0-9a-f]{8}$/.test(keyId))) {
+        throw new ApiError(400, "invalid_request", "keyId must be a key id from the pool listing");
+      }
+      const result = await aiGateway.resetProviderPool(providerId, keyId);
+      console.log(
+        `[admin] operator ${operatorId} reset provider pool ${providerId}` +
+          `${keyId ? ` key ${keyId}` : ""}: cleared ${result?.cleared}`,
+      );
+      return result;
+    },
     async listCreditPackages(teamId: string) {
       await requireCallerTeamMember(teamId);
       // Resolves to the `./stripe.js` import, not to this method: a property of

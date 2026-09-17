@@ -2434,6 +2434,84 @@ paths:
                   userId: { type: string, format: uuid }
                   operator: { type: boolean }
         "401": { $ref: "#/components/responses/Error" }
+  /v1/admin/ai/provider-pools:
+    get:
+      operationId: getProviderPools
+      summary: The AI gateway's upstream provider keys, and which are benched
+      tags: [Admin]
+      description: |
+        Platform operators only (see `GET /v1/admin/whoami`).
+
+        A provider can hold several keys. When one answers 402, 429 or 401 the
+        gateway benches it for a while and serves from the next key, so a dead
+        key never shows up as a failed request. This listing is where it shows
+        up instead.
+
+        Keys are identified by `id` (a sha256 prefix) and `hint` (the last four
+        characters, which is how provider consoles list keys). The key itself
+        never leaves the gateway.
+
+        The state lives in the memory of one gateway process and starts empty
+        when the gateway restarts. Both deployments run a single replica today.
+        With more replicas, each would report only its own state.
+      responses:
+        "200":
+          description: Every provider in the gateway's catalog, and its keys.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderPools" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/ai/provider-pools/{providerId}/reset:
+    post:
+      operationId: resetProviderPool
+      summary: Put benched provider keys back into service now
+      tags: [Admin]
+      description: |
+        Platform operators only. Clears the cooldowns of every key of the
+        provider, or only of `keyId`. Use it right after funding an account,
+        instead of waiting out a backoff of up to 30 minutes.
+
+        A key that is still broken is benched again by the next request it
+        fails, so a reset cannot do lasting harm.
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_.-]{1,64}$" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keyId:
+                  type: string
+                  pattern: "^[0-9a-f]{8}$"
+                  description: A key `id` from the pool listing. Omit to reset every key.
+      responses:
+        "200":
+          description: How many cooldowns were cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cleared]
+                properties:
+                  cleared: { type: integer, minimum: 0 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404":
+          description: The gateway's catalog has no such provider.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/admin/marketplace/skills:
     post:
       operationId: createMarketplaceSkill
@@ -8134,6 +8212,56 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    ProviderPools:
+      type: object
+      required: [providers]
+      properties:
+        providers:
+          type: array
+          items:
+            type: object
+            required: [providerId, keys]
+            properties:
+              providerId: { type: string }
+              keys:
+                type: array
+                description: In priority order. The gateway tries a lower `position` first.
+                items: { $ref: "#/components/schemas/ProviderPoolKey" }
+    ProviderPoolKey:
+      type: object
+      required: [id, hint, position, ok, failed, lastUsedAt, cooldowns]
+      properties:
+        id: { type: string, pattern: "^[0-9a-f]{8}$", description: "sha256 prefix of the key." }
+        hint: { type: string, description: "The last four characters of the key, after an ellipsis." }
+        position: { type: integer, minimum: 0 }
+        ok: { type: integer, minimum: 0, description: "Successful calls since the gateway started." }
+        failed: { type: integer, minimum: 0, description: "Calls that benched this key since the gateway started." }
+        lastUsedAt: { type: [string, "null"], format: date-time }
+        cooldowns:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderPoolCooldown" }
+    ProviderPoolCooldown:
+      type: object
+      description: |
+        A bench on the whole key (`model` null) or on one model on it. An
+        inactive entry has expired: the key is back in rotation, and the entry
+        stays until the key serves again so repeated failures keep backing off.
+      required: [model, class, active, until, strikes, status, error, at]
+      properties:
+        model: { type: [string, "null"], description: "Upstream model id, or null for the whole key." }
+        class:
+          type: string
+          enum: [exhausted, rate_limited, invalid]
+          description: |
+            `exhausted` is out of balance or quota (402, or a 429 that says so),
+            `rate_limited` is a plain 429 throttle, and `invalid` is a rejected
+            key (401).
+        active: { type: boolean }
+        until: { type: string, format: date-time }
+        strikes: { type: integer, minimum: 1, description: "Consecutive failures of this class." }
+        status: { type: integer, description: "The upstream HTTP status that benched it." }
+        error: { type: string, description: "The start of the upstream error body." }
+        at: { type: string, format: date-time }
     InboxItemKind:
       type: string
       description: >-

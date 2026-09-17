@@ -13,4 +13,15 @@ export function registerAdmin(router) {
   router.get("/v1/admin/whoami", async (ctx) => {
     return { body: await ctx.repository.getAdminWhoami() };
   });
+
+  // The AI gateway's provider key pools. Operators only; the repository checks.
+  router.get("/v1/admin/ai/provider-pools", async (ctx) => {
+    return { body: await ctx.repository.getProviderPools() };
+  });
+
+  router.post("/v1/admin/ai/provider-pools/:providerId/reset", async (ctx) => {
+    return {
+      body: await ctx.repository.resetProviderPool(ctx.params.providerId, ctx.json ?? {}),
+    };
+  });
 }

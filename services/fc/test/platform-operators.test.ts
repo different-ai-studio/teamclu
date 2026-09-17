@@ -146,3 +146,122 @@ test("a partner-issued session is recognised as the operator it names", async (t
   } as any) as any;
   assert.deepEqual(await repo.getAdminWhoami(), { userId: OPERATOR, operator: true });
 });
+
+// ── AI gateway provider pools ───────────────────────────────────────────────
+
+const POOLS = {
+  providers: [
+    {
+      providerId: "deepseek",
+      keys: [{ id: "1a2b3c4d", hint: "…aaaa", position: 0, ok: 3, failed: 1, lastUsedAt: null, cooldowns: [] }],
+    },
+  ],
+};
+
+test("a team owner who is not an operator cannot see the provider keys", async (t) => {
+  withOperators(t, OPERATOR);
+  const pools = t.mock.method(aiGateway, "providerPools", async () => POOLS);
+  await assert.rejects(repoFor(OWNER).getProviderPools(), (e: any) => e.statusCode === 403);
+  assert.equal(pools.mock.callCount(), 0);
+});
+
+test("an operator gets the gateway's pool snapshot as the gateway reports it", async (t) => {
+  withOperators(t, OPERATOR);
+  t.mock.method(aiGateway, "providerPools", async () => POOLS);
+  assert.deepEqual(await repoFor(OPERATOR).getProviderPools(), POOLS);
+});
+
+test("a non-operator cannot reset a pool", async (t) => {
+  withOperators(t, OPERATOR);
+  const reset = t.mock.method(aiGateway, "resetProviderPool", async () => ({ cleared: 1 }));
+  await assert.rejects(repoFor(OWNER).resetProviderPool("deepseek", {}), (e: any) => e.statusCode === 403);
+  assert.equal(reset.mock.callCount(), 0);
+});
+
+test("an operator resets one key or the whole provider", async (t) => {
+  withOperators(t, OPERATOR);
+  t.mock.method(console, "log", () => {});
+  const reset = t.mock.method(aiGateway, "resetProviderPool", async () => ({ cleared: 2 }));
+
+  assert.deepEqual(await repoFor(OPERATOR).resetProviderPool("deepseek", { keyId: "1a2b3c4d" }), { cleared: 2 });
+  await repoFor(OPERATOR).resetProviderPool("deepseek", {});
+  assert.deepEqual(reset.mock.calls.map((c) => c.arguments), [["deepseek", "1a2b3c4d"], ["deepseek", undefined]]);
+});
+
+test("a malformed provider or key id is refused before the gateway is asked", async (t) => {
+  withOperators(t, OPERATOR);
+  const reset = t.mock.method(aiGateway, "resetProviderPool", async () => ({ cleared: 0 }));
+  for (const [providerId, input] of [
+    ["deep%2Fseek", {}],
+    ["", {}],
+    ["deepseek", { keyId: "sk-live-whole-key" }],
+    ["deepseek", { keyId: 42 }],
+  ] as const) {
+    await assert.rejects(repoFor(OPERATOR).resetProviderPool(providerId, input), (e: any) => {
+      assert.equal(e.statusCode, 400, `${providerId} ${JSON.stringify(input)}`);
+      return true;
+    });
+  }
+  assert.equal(reset.mock.callCount(), 0);
+});
+
+test("the provider pool routes reach their repository methods", async () => {
+  const calls: unknown[][] = [];
+  const repo = {
+    getProviderPools: async (...args: unknown[]) => { calls.push(["getProviderPools", ...args]); return POOLS; },
+    resetProviderPool: async (...args: unknown[]) => { calls.push(["resetProviderPool", ...args]); return { cleared: 1 }; },
+  };
+  const deps = { createRepository: () => repo, createAuthRepository: () => repo } as any;
+  const headers = { Authorization: "Bearer caller-token" };
+
+  const list = await handleBusinessApiRequest({ httpMethod: "GET", path: "/v1/admin/ai/provider-pools", headers } as any, deps);
+  assert.equal(list.statusCode, 200);
+  assert.deepEqual(JSON.parse(list.body), POOLS);
+
+  const reset = await handleBusinessApiRequest(
+    {
+      httpMethod: "POST",
+      path: "/v1/admin/ai/provider-pools/deepseek/reset",
+      headers,
+      body: JSON.stringify({ keyId: "1a2b3c4d" }),
+    } as any,
+    deps,
+  );
+  assert.equal(reset.statusCode, 200);
+  assert.deepEqual(calls, [["getProviderPools"], ["resetProviderPool", "deepseek", { keyId: "1a2b3c4d" }]]);
+});
+
+test("the gateway client calls the internal pool endpoints with the service token", async (t) => {
+  const prev = { url: process.env.AI_GATEWAY_INTERNAL_URL, token: process.env.AI_GATEWAY_SERVICE_TOKEN };
+  process.env.AI_GATEWAY_INTERNAL_URL = "http://gw:4001/";
+  process.env.AI_GATEWAY_SERVICE_TOKEN = "svc";
+  t.after(() => {
+    for (const [k, v] of [["AI_GATEWAY_INTERNAL_URL", prev.url], ["AI_GATEWAY_SERVICE_TOKEN", prev.token]] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+  const seen: { url: string; method: string; auth: string; body: unknown }[] = [];
+  let reply = new Response(JSON.stringify(POOLS), { status: 200 });
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    seen.push({
+      url: String(url),
+      method: init.method ?? "GET",
+      auth: (init.headers as Record<string, string>).Authorization,
+      body: init.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    return reply;
+  });
+
+  assert.deepEqual(await aiGateway.providerPools(), POOLS);
+  reply = new Response(JSON.stringify({ cleared: 1 }), { status: 200 });
+  await aiGateway.resetProviderPool("deepseek", "1a2b3c4d");
+  assert.deepEqual(seen, [
+    { url: "http://gw:4001/internal/provider-pools", method: "GET", auth: "Bearer svc", body: undefined },
+    { url: "http://gw:4001/internal/provider-pools/deepseek/reset", method: "POST", auth: "Bearer svc", body: { keyId: "1a2b3c4d" } },
+  ]);
+
+  // The gateway's own 404 for an unknown provider reaches the caller as a 404.
+  reply = new Response(JSON.stringify({ error: { code: "not_found", message: 'unknown provider "nope"' } }), { status: 404 });
+  await assert.rejects(aiGateway.resetProviderPool("nope"), (e: any) => e.statusCode === 404 && e.code === "not_found");
+});

@@ -79,4 +79,12 @@ export const aiGateway = {
   setQuotas: (teamId: string, body: unknown) =>
     call(`/teams/${encodeURIComponent(teamId)}/quotas`, { method: "PUT", body: JSON.stringify(body) }),
   models: () => call("/models"),
+  // Upstream provider keys (services/ai-gateway/src/key-pool.ts). Platform
+  // operators only — FC checks that; the gateway only knows the service token.
+  providerPools: () => call("/provider-pools"),
+  resetProviderPool: (providerId: string, keyId?: string) =>
+    call(`/provider-pools/${encodeURIComponent(providerId)}/reset`, {
+      method: "POST",
+      body: JSON.stringify(keyId ? { keyId } : {}),
+    }),
 };

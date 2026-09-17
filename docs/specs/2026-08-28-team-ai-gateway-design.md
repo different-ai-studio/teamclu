@@ -777,7 +777,7 @@ baseURL 契约：客户端拿到的 baseURL 是 `<gateway>/v1/teams/<teamId>`，
 |------|------|
 | `GET` | `/v1/teams/:teamId/credits` — 余额 + 本周期用量 |
 | `GET` | `/v1/teams/:teamId/credits/usage` — 报表，替代 `/litellm/usage` |
-| `POST` | `/v1/teams/:teamId/credits/top-up` — owner only |
+| `POST` | `/v1/teams/:teamId/credits/top-up` — **仅平台运营**（原为 owner only，见下方「平台运营」） |
 | `GET`/`PUT` | `/v1/teams/:teamId/members/:actorId/quota` — owner only |
 
 **新增**（Phase 4，Stripe，见 §4.9）：
@@ -792,6 +792,21 @@ Stripe 路由单独放 `services/fc/src/lib/routes/stripe.ts`（不混进 team-c
 新增路由文件 `services/fc/src/lib/routes/team-credits.ts`，在 `routes/index.ts` 里 **注册在 `registerWorkspaces` 之前**（和 `registerTeamShare` / `registerTeamSkills` 同理，否则被 workspaces 的宽匹配 `/v1/teams/:teamId/*` 遮蔽 —— 那个文件里已有三处注释在讲这件事）。
 
 设置页对这些端点的具体消费方式见 §12。
+
+**平台运营**（2026-09-17）：
+
+平台运营是运营这个部署的人，不是团队角色，也不是 org 角色。名单是 FC 的环境变量 `PLATFORM_OPERATOR_USER_IDS`（auth.users id，逗号分隔，不配置就没有运营），代码在 `services/fc/src/lib/platform-operators.ts`。
+
+- **为什么用环境变量，不用表或 JWT 声明**：授予这个权限需要的访问级别，和读 provider key、网关 service token 一样，应用里的任何漏洞都没法把人提成运营；Belayo 的库要手工迁移、还和 saas-mono 共用，这样不用动 schema。代价是改名单要重启 FC。
+- **充值接口原先是 owner only**，而自注册用户都是自己团队的 owner，等于任何账号都能给自己充值。付费充值本来就不走这个接口（Stripe webhook 在 FC 内部直接调网关）。
+
+| 方法 | 路径 |
+|------|------|
+| `GET` | `/v1/admin/whoami` — 任何登录用户可调，返回 `{ userId, operator }` |
+| `GET` | `/v1/admin/ai/provider-pools` — 网关 key 池状态，转调 `/internal/provider-pools`，仅运营 |
+| `POST` | `/v1/admin/ai/provider-pools/:providerId/reset` — 解除冷却，可带 `keyId`，仅运营 |
+
+权限都在 repository 里检查（`requirePlatformOperator`），身份走 `getCurrentUser()`，合作方签发的会话也能认。运营操作打 `[admin]` 日志，记录运营的 user id。
 
 **删除**（Phase 3，不是更早）：`routes/team-litellm.ts` 全部 5 条、`lib/litellm.ts`、`lib/litellm-usage.ts`，以及 repository contract 里对应的 `setupLiteLlm` / `ensureMemberKey` / `getLiteLlmUsage` / `listLiteLlmKeys` / `setLiteLlmBudget`。
 
