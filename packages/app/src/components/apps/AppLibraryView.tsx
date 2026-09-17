@@ -12,7 +12,8 @@ import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appGitKind } from '@/lib/apps/app-list-helpers'
 import { openCreateApp } from '@/lib/tabs/app-tabs'
-import { countAppsByRelationship, filterAppsByRelationship } from '@/lib/apps/app-relationship'
+import { countAppsByRelationship, filterAppsByRelationship, isSharedByMe } from '@/lib/apps/app-relationship'
+import { useAppRelationshipLabel, type AppRelationshipLabel } from '@/lib/apps/use-app-relationship-label'
 import { AppRelationshipChips } from '@/components/apps/AppRelationshipChips'
 import { useAppRelationshipFilter, useMyMemberActorId } from '@/stores/app-relationship-filter'
 import type { AppRow } from '@/lib/backend/types'
@@ -56,16 +57,36 @@ function AppMeta({ app, creator }: { app: AppRow; creator: string | null }) {
   )
 }
 
-function AppName({ app }: { app: AppRow }) {
+/** Both marks beside the name wear the same pill — see AppName. */
+const MARK = 'shrink-0 rounded border border-border px-1 py-px text-[10.5px] text-muted-foreground'
+
+function AppName({ app, relationLabel, shared }: { app: AppRow } & Omit<CardProps, 'app' | 'creator'>) {
   const { t } = useTranslation()
   return (
     <span className="flex min-w-0 flex-1 items-center gap-1.5">
       <span className="truncate text-[13px] font-semibold text-foreground">{app.name}</span>
-      {/* Only the exception is marked. Personal is the default and labelling
-          it put a fourth identical word on every row. */}
-      {app.visibility === 'team' && (
-        <span className="shrink-0 rounded border border-border px-1 py-px text-[10.5px] text-muted-foreground">
-          {t('apps.visibilityTeamBadge', '团队')}
+      {/* My relationship to the app, the same word column two puts under the
+          icon. It used to be the app's visibility instead, which marked an app
+          I own and shared 团队 while the sidebar called it 我的 — one word for
+          two different things. Dropped under a filter, where the chip above
+          already says it on every card. */}
+      {relationLabel && (
+        <span data-testid="app-card-relationship" title={relationLabel.hint ?? undefined} className={MARK}>
+          {relationLabel.label}
+        </span>
+      )}
+      {/* Who else can see my app — the half of the old badge that was worth
+          keeping. Same ink and hairline as the relationship mark: one step
+          quieter was a difference you had to look for, and two marks that read
+          as two kinds of thing is worse than two that read as one. It survives
+          a filter, because 我的 does not imply it. */}
+      {shared && (
+        <span
+          data-testid="app-card-shared"
+          title={t('apps.visibilityTeamHint', '团队里每个人都能在应用列表里看到它。')}
+          className={MARK}
+        >
+          {t('apps.sharedBadge', '已共享')}
         </span>
       )}
     </span>
@@ -88,8 +109,17 @@ const GRID = 'grid gap-2.5 @[520px]:grid-cols-2 @[880px]:grid-cols-3'
 /** Top-right of the card: the download button, or the chevron on hover. */
 const TRAILING = 'flex shrink-0 items-center justify-end'
 
+/** What every card needs on top of the app row itself. */
+interface CardProps {
+  app: AppRow
+  creator: string | null
+  relationLabel: AppRelationshipLabel | null
+  /** My own app, visible to the whole team. */
+  shared: boolean
+}
+
 /** A card for an app that is already here — clicking it opens it in column two. */
-function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
+function LocalRow({ app, creator, relationLabel, shared }: CardProps) {
   const open = React.useCallback(() => {
     useAppsStore.getState().selectApp(app.id)
     useUIStore.getState().setSidebarFilter({ kind: 'apps' })
@@ -99,7 +129,7 @@ function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
     <button type="button" onClick={open} className={cn(CARD, 'hover:bg-selected/30')}>
       <span className="flex w-full items-center gap-2.5">
         <TypeMark app={app} />
-        <AppName app={app} />
+        <AppName app={app} relationLabel={relationLabel} shared={shared} />
         <span className={TRAILING}>
           <ChevronRight className="h-4 w-4 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
         </span>
@@ -114,12 +144,12 @@ function LocalRow({ app, creator }: { app: AppRow; creator: string | null }) {
  * answered yet. No action, because the only two on offer (open it, fetch it)
  * both depend on the answer.
  */
-function PendingRow({ app, creator }: { app: AppRow; creator: string | null }) {
+function PendingRow({ app, creator, relationLabel, shared }: CardProps) {
   return (
     <div className={cn(CARD, 'opacity-70')}>
       <span className="flex w-full items-center gap-2.5">
         <TypeMark app={app} />
-        <AppName app={app} />
+        <AppName app={app} relationLabel={relationLabel} shared={shared} />
       </span>
       <AppMeta app={app} creator={creator} />
     </div>
@@ -130,11 +160,11 @@ function PendingRow({ app, creator }: { app: AppRow; creator: string | null }) {
 function RemoteRow({
   app,
   creator,
+  relationLabel,
+  shared,
   busy,
   onDownload,
-}: {
-  app: AppRow
-  creator: string | null
+}: CardProps & {
   busy: boolean
   onDownload: () => void
 }) {
@@ -143,7 +173,7 @@ function RemoteRow({
     <div className={CARD}>
       <span className="flex w-full items-center gap-2.5">
         <TypeMark app={app} />
-        <AppName app={app} />
+        <AppName app={app} relationLabel={relationLabel} shared={shared} />
         <span className={TRAILING}>
           <Button
             variant="ghost"
@@ -203,6 +233,7 @@ export function AppLibraryView() {
   const { actors } = useActorDirectory()
   const [filter, setFilter] = useAppRelationshipFilter(teamId)
   const myActorId = useMyMemberActorId()
+  const relationLabelFor = useAppRelationshipLabel()
   const counts = React.useMemo(() => countAppsByRelationship(items, myActorId), [items, myActorId])
 
   const creatorById = React.useMemo(() => {
@@ -342,17 +373,21 @@ export function AppLibraryView() {
                 {group.label && <GroupHeading label={group.label} count={group.apps.length} />}
                 <div className={cn(GRID, !group.label && 'pt-4')}>
                   {group.apps.map((app) => {
+                    // No word under a filter: the pressed chip says it once for
+                    // every card below it.
+                    const relationLabel = filter === 'all' ? relationLabelFor(app) : null
+                    const shared = isSharedByMe(app, myActorId)
+                    const common = { app, creator: creatorFor(app), relationLabel, shared }
                     if (group.key === 'here') {
-                      return <LocalRow key={app.id} app={app} creator={creatorFor(app)} />
+                      return <LocalRow key={app.id} {...common} />
                     }
                     if (group.key === 'unknown') {
-                      return <PendingRow key={app.id} app={app} creator={creatorFor(app)} />
+                      return <PendingRow key={app.id} {...common} />
                     }
                     return (
                       <RemoteRow
                         key={app.id}
-                        app={app}
-                        creator={creatorFor(app)}
+                        {...common}
                         busy={downloading === app.id}
                         onDownload={() => void handleDownload(app)}
                       />

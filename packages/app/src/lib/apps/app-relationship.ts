@@ -30,6 +30,21 @@ export function appRelationship(
   return myActorId ? 'invited' : 'owner'
 }
 
+/**
+ * My own app that the whole team can see.
+ *
+ * The only case worth marking: a team app is team-visible by definition, and an
+ * app I was invited to is personal-visible with a grant behind it — in neither
+ * does the visibility tell the viewer anything they do not already know. On my
+ * own app it does, and it is the one thing the relationship word cannot say.
+ */
+export function isSharedByMe(
+  app: Pick<AppRow, 'relationship' | 'createdByActorId' | 'visibility'>,
+  myActorId: string | null,
+): boolean {
+  return app.visibility === 'team' && appRelationship(app, myActorId) === 'owner'
+}
+
 export function countAppsByRelationship(
   apps: readonly AppRow[],
   myActorId: string | null,
