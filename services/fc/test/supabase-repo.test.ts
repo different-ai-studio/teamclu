@@ -1412,6 +1412,68 @@ test("listTeamActors selects actor_directory columns without removed agent_kind"
   assert.equal(page.items[0].agentKind, null);
 });
 
+// An org admin whose legacy team_members.role still reads "member".
+const ORG_ADMIN_DIRECTORY_ROW = {
+  id: "actor-admin",
+  team_id: "team-1",
+  actor_type: "member",
+  user_id: "user-admin",
+  display_name: "Admin",
+  team_role: "member",
+  member_status: "active",
+};
+const ORG_ROLE_TABLES = {
+  teams: [{ oid: "org-1" }],
+  roles_users: [{ user_id: "user-admin", role_id: "role-admin" }],
+  roles: [{ id: "role-admin", code: "admin", name: "管理员", status: "active" }],
+};
+
+test("getActor carries org roles like listTeamActors, not the legacy team_role", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: {
+      actor_directory: [ORG_ADMIN_DIRECTORY_ROW],
+      actor_client_versions: [],
+      ...ORG_ROLE_TABLES,
+    },
+  }));
+
+  const actor = await repo.getActor("actor-admin");
+  assert.deepEqual(actor.roles, [{ id: "role-admin", code: "admin", name: "管理员" }]);
+  assert.equal(actor.teamRole, "admin");
+  assert.deepEqual(
+    tableCalls.find((c) => c.table === "teams" && c.op === "eq"),
+    { table: "teams", op: "eq", column: "id", value: "team-1" },
+    "roles must resolve through the actor's own team",
+  );
+});
+
+test("listActorDirectoryByIds carries org roles per team and keeps row order", async () => {
+  const tableCalls = [];
+  const repo = createRepo(fakeSupabase({
+    tableCalls,
+    tableData: {
+      actor_directory: [
+        { id: "agent-1", team_id: "team-2", actor_type: "agent", user_id: null, display_name: "Bot" },
+        ORG_ADMIN_DIRECTORY_ROW,
+      ],
+      ...ORG_ROLE_TABLES,
+    },
+  }));
+
+  const items = await repo.listActorDirectoryByIds(["agent-1", "actor-admin"], null);
+  assert.deepEqual(items.map((a) => a.id), ["agent-1", "actor-admin"]);
+  assert.deepEqual(items[0].roles, []);
+  assert.equal(items[0].teamRole, null);
+  assert.deepEqual(items[1].roles, [{ id: "role-admin", code: "admin", name: "管理员" }]);
+  assert.equal(items[1].teamRole, "admin");
+  assert.deepEqual(
+    tableCalls.filter((c) => c.table === "teams" && c.op === "eq").map((c) => c.value).sort(),
+    ["team-1", "team-2"],
+  );
+});
+
 test("listActorDirectoryForSync carries avatar_url so the desktop cache keeps profile photos", async () => {
   const tableCalls = [];
   const row = {

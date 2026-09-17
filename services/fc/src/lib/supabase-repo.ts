@@ -2620,7 +2620,17 @@ export function createSupabaseBusinessRepository(options) {
         if (error) throw error;
         return data ?? [];
       });
-      return rows.map(mapDirectoryActor);
+      // Roles live in roles_users, not in actor_directory, and without teamId the
+      // ids can span teams (and so orgs): enrich each team's rows on its own.
+      const actors = rows.map(mapDirectoryActor);
+      const enrichedById = new Map();
+      for (const tid of new Set(actors.map((a) => a.teamId).filter(Boolean))) {
+        const group = actors.filter((a) => a.teamId === tid);
+        for (const a of await enrichActorsWithOrgRoles(supabase, tid, group)) {
+          enrichedById.set(a.id, a);
+        }
+      }
+      return actors.map((a) => enrichedById.get(a.id) ?? a);
     },
 
     async removeAgentAccessById(accessId) {
@@ -3667,7 +3677,13 @@ export function createSupabaseBusinessRepository(options) {
         .maybeSingle();
       if (error) throw error;
       if (!data) return null;
-      const actor = mapDirectoryActor(data);
+      // Same roles as listTeamActors: actor_directory has no roles column and its
+      // team_role is the legacy team_members.role, so without this a detail view
+      // reads "member" for an org admin the list shows correctly.
+      const mapped = mapDirectoryActor(data);
+      const [actor] = mapped.teamId
+        ? await enrichActorsWithOrgRoles(supabase, mapped.teamId, [mapped])
+        : [mapped];
       const { data: versions, error: vErr } = await supabase
         .from("actor_client_versions")
         .select("client_type, version, device_id, build, last_reported_at")
