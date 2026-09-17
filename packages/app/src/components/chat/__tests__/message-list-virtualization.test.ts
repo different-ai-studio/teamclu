@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  estimateVirtualMessageSize,
   getVirtualMessageKey,
+  VIRTUAL_MSG_OVERSCAN,
   VIRTUAL_MSG_THRESHOLD,
 } from "../MessageList";
 import type { Message } from "@/stores/session-types";
@@ -79,6 +81,27 @@ function simulateIndexKeyedOverlap(): {
 describe("MessageList virtualization gate", () => {
   it("enables virtualization above 80 messages", () => {
     expect(VIRTUAL_MSG_THRESHOLD).toBe(80);
+  });
+
+  it("keeps a wider overscan band to reduce scroll remount churn", () => {
+    expect(VIRTUAL_MSG_OVERSCAN).toBeGreaterThanOrEqual(10);
+  });
+});
+
+describe("estimateVirtualMessageSize", () => {
+  it("estimates short user rows smaller than long agent markdown", () => {
+    const user = makeMessage("u1");
+    user.role = "user";
+    user.content = "ok";
+
+    const agent = makeMessage("a1");
+    agent.role = "assistant";
+    agent.content = "x".repeat(4000);
+
+    expect(estimateVirtualMessageSize(user)).toBeLessThan(
+      estimateVirtualMessageSize(agent),
+    );
+    expect(estimateVirtualMessageSize(agent)).toBeGreaterThan(500);
   });
 });
 

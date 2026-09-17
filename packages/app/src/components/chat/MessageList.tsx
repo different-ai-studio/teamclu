@@ -29,8 +29,11 @@ import { canStartThreadFromNewestIndex } from "@/lib/session/thread-fork";
 // Dynamic heights via measureElement + messageAreaWidth remeasure; smoke-test
 // open a >80-message session, toggle sidebar / resize, confirm no row overlap.
 export const VIRTUAL_MSG_THRESHOLD = 80;
+/** Extra rows kept mounted above/below the viewport — reduces markdown remount jank. */
+export const VIRTUAL_MSG_OVERSCAN = 12;
 const INITIAL_VISIBLE_MESSAGE_COUNT = 80;
 const LOAD_EARLIER_MESSAGE_COUNT = 60;
+const DEFAULT_VIRTUAL_ROW_ESTIMATE = 150;
 
 /** Stable TanStack Virtual row identity — not array index (window slides on append). */
 export function getVirtualMessageKey(
@@ -41,6 +44,41 @@ export function getVirtualMessageKey(
   if (!message) return index;
   const sessionId = message.sessionId ?? "";
   return sessionId ? `${sessionId}:${message.id}` : message.id;
+}
+
+/** Heuristic row height before measureElement — closer estimates reduce scroll-up blank gaps. */
+export function estimateVirtualMessageSize(message: Message): number {
+  if (
+    message.displayKind === "compaction" ||
+    message.displayKind === "compaction-summary"
+  ) {
+    return 40;
+  }
+  if (message.displayKind === "synthetic") {
+    return 32;
+  }
+
+  const toolCallCount = message.toolCalls?.length ?? 0;
+  const contentLen =
+    message.content?.length ??
+    message.parts.reduce(
+      (total, part) =>
+        total + (part.text?.length ?? part.content?.length ?? 0),
+      0,
+    );
+
+  if (message.role === "user") {
+    const lineEstimate = Math.ceil(contentLen / 42);
+    return Math.min(420, Math.max(64, 48 + lineEstimate * 24));
+  }
+
+  let height = 72 + toolCallCount * 52;
+  if (contentLen > 0) {
+    height += Math.min(1400, Math.max(96, Math.round(contentLen * 0.28)));
+  } else if ((message.parts?.length ?? 0) > 0) {
+    height += 120;
+  }
+  return Math.min(1800, height);
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -320,13 +358,24 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       [renderedMessages],
     );
 
+    const estimateVirtualRowSize = React.useCallback(
+      (index: number) => {
+        const message = renderedMessages[index];
+        return message
+          ? estimateVirtualMessageSize(message)
+          : DEFAULT_VIRTUAL_ROW_ESTIMATE;
+      },
+      [renderedMessages],
+    );
+
     const messageVirtualizer = useVirtualizer({
       count: useVirtualMessages ? renderedMessages.length : 0,
       getScrollElement: () => scrollRef.current,
-      estimateSize: () => 150,
+      estimateSize: estimateVirtualRowSize,
       getItemKey: getVirtualItemKey,
-      overscan: 5,
+      overscan: VIRTUAL_MSG_OVERSCAN,
       gap: 4,
+      useAnimationFrameWithResizeObserver: true,
     });
 
     React.useLayoutEffect(() => {
