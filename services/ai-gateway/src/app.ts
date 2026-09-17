@@ -54,6 +54,66 @@ function defaultMaxOutput(catalog: Catalog, publicId: string): number {
   return caps.length ? Math.max(...caps) : 16_000;
 }
 
+/**
+ * Upstream statuses that move a `failover` tier on to its next route.
+ *
+ * 5xx is the upstream being down. 429 and 402 are OUR account with that
+ * provider being throttled or out of money — 402 is DeepSeek's "Insufficient
+ * Balance", and a Codex subscription at its limit answers 429
+ * `usage_limit_reached`. The next route is a different provider account, so it
+ * can still serve: that is the reason `max` keeps a DeepSeek backstop behind the
+ * mx5 relay, and design §4.3 always listed 429. Only 5xx was implemented, so the
+ * backstop missed the likeliest way a subscription relay fails.
+ *
+ * 401 and 403 still do NOT fail over: a wrong or revoked key should be loud,
+ * not quietly served from the backstop.
+ */
+const failsOver = (status: number) => status >= 500 || status === 429 || status === 402;
+
+/**
+ * The message for an upstream 402. Keeps the word "billing" on purpose: pi
+ * retries any error that mentions 503 but never one that mentions billing
+ * (pi-ai `utils/retry.js`), and retrying an unfunded account only delays the
+ * error by the length of the backoff.
+ */
+const UPSTREAM_BILLING_MESSAGE =
+  "The AI provider account serving this model is out of balance (upstream billing error). " +
+  "This is not your team's credits: the operator has to fund the provider account.";
+
+/**
+ * The response for an upstream call that failed.
+ *
+ * Verbatim, because agent runtimes branch on the provider's own status and
+ * body — with one exception. 402 is THIS gateway's answer for "your team is out
+ * of credits" (`insufficient_credits`, `quota_exceeded`), while an upstream 402
+ * means our own provider account is out of money. Passed through, a team with
+ * plenty of credits is told to top up, and the operator who actually has to
+ * top up hears nothing. It becomes a 503: from the caller's side the tier is
+ * unavailable until someone funds the account.
+ */
+function upstreamFailure(
+  status: number,
+  text: string,
+  contentType: string | null,
+  where: { publicId: string; backendId: string },
+): Response {
+  if (status !== 402) {
+    return new Response(text, {
+      status,
+      headers: { "Content-Type": contentType ?? "application/json" },
+    });
+  }
+  // The caller only sees a generic 503, so this line is how an operator learns
+  // which provider account needs funding.
+  console.error(
+    `[upstream] ${where.backendId} (tier ${where.publicId}) is out of balance: ${text.slice(0, 300)}`,
+  );
+  return new Response(JSON.stringify(err("upstream_billing_error", UPSTREAM_BILLING_MESSAGE, 503)), {
+    status: 503,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export function createApp(deps: Deps) {
   const { cfg, catalog, sql, tokens } = deps;
   const env = deps.env ?? process.env;
@@ -175,10 +235,12 @@ export function createApp(deps: Deps) {
     const maxAttempts = tier.routing === "failover" ? tier.routes.length : 1;
     let lastStatus = 502;
     let lastText = "upstream unavailable";
+    let lastBackendId = "";
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const picked = pickRoute(catalog, publicId, attempt);
       if (!picked) break;
+      lastBackendId = picked.backendId;
       const apiKey = env[picked.provider.api_key_env] ?? "";
       const prepared = prepareUpstream(
         catalog, picked.provider, picked.backendId, picked.backend, body, apiKey, c.req.raw.signal,
@@ -196,17 +258,26 @@ export function createApp(deps: Deps) {
       if (!res.ok) {
         lastStatus = res.status;
         lastText = await res.text();
-        // Only failover retries; a 4xx from a healthy upstream is the client's
-        // problem and retrying it just burns another call.
-        if (tier.routing === "failover" && res.status >= 500) continue;
-        // Pass the upstream error through verbatim — agent runtimes depend on
-        // these semantics — and do not settle anything. The hold has to go
-        // back, though: the customer got no tokens, so charging or holding
-        // against a failed call is money they never spent.
+        // Only failover retries, and only on statuses another route can fix
+        // (see `failsOver`). Any other 4xx is the client's problem or a broken
+        // key, and retrying it just burns another call.
+        if (tier.routing === "failover" && failsOver(res.status)) {
+          // Without this line a dead primary is invisible: the backstop
+          // answers, and every request looks fine.
+          console.warn(
+            `[upstream] ${picked.backendId} (tier ${publicId}) answered ${res.status}` +
+              `${attempt + 1 < maxAttempts ? ", trying the next route" : ""}: ${lastText.slice(0, 300)}`,
+          );
+          continue;
+        }
+        // Pass the upstream error through — agent runtimes depend on these
+        // semantics — and do not settle anything. The hold has to go back,
+        // though: the customer got no tokens, so charging or holding against a
+        // failed call is money they never spent.
         await release(sql, reservationId).catch(() => {});
-        return new Response(lastText, {
-          status: res.status,
-          headers: { "Content-Type": res.headers.get("content-type") ?? "application/json" },
+        return upstreamFailure(res.status, lastText, res.headers.get("content-type"), {
+          publicId,
+          backendId: picked.backendId,
         });
       }
 
@@ -274,6 +345,11 @@ export function createApp(deps: Deps) {
     }
 
     await release(sql, reservationId).catch(() => {});
+    // Every route failed. A 402 on the last one is still our provider account,
+    // not the team's credits, and must not reach the caller as a 402.
+    if (lastStatus === 402) {
+      return upstreamFailure(402, lastText, null, { publicId, backendId: lastBackendId });
+    }
     return c.json(err("upstream_error", lastText.slice(0, 500), lastStatus), lastStatus as any);
   });
 
@@ -368,14 +444,15 @@ export function createApp(deps: Deps) {
     }
 
     if (!res.ok) {
-      // Verbatim, like chat: the caller branches on the provider's own errors
-      // (content moderation especially). Nothing is charged for an image that
-      // was never produced.
+      // Like chat: the caller branches on the provider's own errors (content
+      // moderation especially), except an upstream 402, which is our account
+      // and not the team's credits. Nothing is charged for an image that was
+      // never produced.
       const text = await res.text();
       await release(sql, reservationId).catch(() => {});
-      return new Response(text, {
-        status: res.status,
-        headers: { "Content-Type": res.headers.get("content-type") ?? "application/json" },
+      return upstreamFailure(res.status, text, res.headers.get("content-type"), {
+        publicId,
+        backendId: picked.backendId,
       });
     }
 

@@ -166,7 +166,7 @@
 |-----------|------|
 | `priority` | 按 `routes` 顺序，第一条可用即用 |
 | `weighted` | 在可用路由中按 `weight` 随机（如某档大部分走 flash、少部分走 pro） |
-| `failover` | 先试第一条，上游 429/5xx/超时则试下一条 |
+| `failover` | 先试第一条，上游 402/429/5xx 或请求没发出去（连接失败）则试下一条；401/403 不切，key 配错要直接暴露。网关自己没有首字节超时，上游挂住不会触发切换 |
 
 团队 `llm_models` / 设置页只存 **public id**，不出现 `deepseek-v4-pro`。
 
@@ -724,6 +724,8 @@ baseURL 契约：客户端拿到的 baseURL 是 `<gateway>/v1/teams/<teamId>`，
 **SSE 处理**：下行必须逐 chunk 直通（不 buffer 整个响应），同时旁路解析出末尾的 `usage`。实现上是「一边 pipe 一边 tee 出最后一帧」，不是「收完再转」—— 后者会毁掉 agent 的流式体验。
 
 **上游错误**：4xx/5xx 原样透传给客户端（agent runtime 依赖这些语义），但**不结算 credits**，预留直接置 `expired`。只有 `failover` 策略下才换下一条路由重试。
+
+**唯一例外是上游 402**。402 在网关这里的意思是「团队积分不够」（`insufficient_credits` / `quota_exceeded`），而上游的 402 是**我们自己的 provider 账号**没钱了（DeepSeek 的 `Insufficient Balance`）。原样透传的话，积分充足的团队会被告知去充值，真正该去充值的运维却什么都收不到。所以网关把它改写成 503 `upstream_billing_error`，同时打一条 `console.error` 写明是哪个 backend。报错文案里特意带上 billing 这个词：pi 碰到含 503 的错误会重试，碰到含 billing 的就不重试，而账号没钱时重试只会把报错拖晚几秒。
 
 ---
 

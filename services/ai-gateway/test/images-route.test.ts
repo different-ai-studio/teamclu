@@ -111,6 +111,16 @@ test("an upstream error passes through verbatim and charges nothing", async () =
   assert.equal((sql as any).usageValues, undefined, "no usage row for an image never produced");
 });
 
+test("an upstream 402 is our provider account, so it is not passed through as the team's 402", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const { app, sql } = build((async () =>
+    new Response(JSON.stringify({ error: { message: "Insufficient Balance" } }), { status: 402 })) as unknown as typeof fetch);
+  const r = await post(app, { model: "image", prompt: "x" });
+  assert.equal(r.status, 503);
+  assert.equal((await r.json() as any).error.code, "upstream_billing_error");
+  assert.equal((sql as any).usageValues, undefined, "no usage row for an image never produced");
+});
+
 test("a 200 with no images charges zero", async () => {
   const { app, sql } = build((async () =>
     new Response(JSON.stringify({ data: [] }), { status: 200 })) as unknown as typeof fetch);
