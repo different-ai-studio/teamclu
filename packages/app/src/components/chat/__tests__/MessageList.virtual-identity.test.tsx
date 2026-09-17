@@ -13,6 +13,9 @@ type VirtualizerOptions = {
 };
 
 const capturedOptions: VirtualizerOptions[] = [];
+const { scrollToIndexMock } = vi.hoisted(() => ({
+  scrollToIndexMock: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: (options: VirtualizerOptions) => {
@@ -29,7 +32,8 @@ vi.mock("@tanstack/react-virtual", () => ({
       getVirtualItems: () => items,
       measureElement: vi.fn(),
       measure: vi.fn(),
-      scrollToIndex: vi.fn(),
+      scrollToIndex: scrollToIndexMock,
+      scrollToOffset: vi.fn(),
     };
   },
 }));
@@ -82,6 +86,7 @@ function latestVirtualizerOptions(): VirtualizerOptions {
 describe("MessageList virtualizer identity", () => {
   beforeEach(() => {
     capturedOptions.length = 0;
+    scrollToIndexMock.mockClear();
     useSessionListStore.setState({ loading: false });
     useSessionStore.setState({
       isLoading: false,
@@ -121,6 +126,52 @@ describe("MessageList virtualizer identity", () => {
     const opts93 = latestVirtualizerOptions();
     expect(opts93.getItemKey!(78)).toBe(msg92KeyBeforeAppend);
     expect(opts93.getItemKey!(79)).toBe("sess-1:msg-093");
+  });
+
+  it("pins to the last virtual row when opening or returning to a long thread", () => {
+    vi.useFakeTimers();
+    const messages = buildMessages(92);
+    const { rerender } = render(
+      <MessageList
+        messages={messages}
+        activeSessionId="sess-1"
+        isStreaming={false}
+        streamingMessageId={null}
+      />,
+    );
+
+    expect(scrollToIndexMock).toHaveBeenCalledWith(
+      79,
+      expect.objectContaining({ align: "end" }),
+    );
+
+    rerender(
+      <MessageList
+        messages={buildMessages(40)}
+        activeSessionId="sess-2"
+        isStreaming={false}
+        streamingMessageId={null}
+      />,
+    );
+    scrollToIndexMock.mockClear();
+
+    rerender(
+      <MessageList
+        messages={messages}
+        activeSessionId="sess-1"
+        isStreaming={false}
+        streamingMessageId={null}
+      />,
+    );
+
+    expect(scrollToIndexMock).toHaveBeenCalledWith(
+      79,
+      expect.objectContaining({ align: "end" }),
+    );
+
+    vi.advanceTimersByTime(320);
+    expect(scrollToIndexMock.mock.calls.length).toBeGreaterThan(1);
+    vi.useRealTimers();
   });
 
   it("uses virtualItem.key on rendered virtual rows", () => {

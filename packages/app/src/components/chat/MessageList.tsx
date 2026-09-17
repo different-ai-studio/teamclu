@@ -273,6 +273,8 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     const messageAreaRef = React.useRef<HTMLDivElement>(null);
     const prevStreamingRef = React.useRef(false);
     const pendingScrollMessageIdRef = React.useRef<string | null>(null);
+    const hasInitialScrolled = React.useRef(false);
+    const virtualBottomPinTimerRef = React.useRef<number | null>(null);
 
     const {
       scrollToBottom,
@@ -378,15 +380,83 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       useAnimationFrameWithResizeObserver: true,
     });
 
+    const pinVirtualEndIndex = React.useCallback(() => {
+      if (!useVirtualMessages || renderedMessages.length === 0) return;
+      messageVirtualizer.scrollToIndex(renderedMessages.length - 1, {
+        align: "end",
+        behavior: "auto",
+      });
+    }, [
+      messageVirtualizer,
+      renderedMessages.length,
+      useVirtualMessages,
+    ]);
+
+    /** Pin viewport to latest row — virtual lists need scrollToIndex before DOM height settles. */
+    const pinThreadToBottom = React.useCallback(() => {
+      pinVirtualEndIndex();
+      scrollToBottomAfterCommit();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          pinVirtualEndIndex();
+          scrollToBottom();
+        });
+      });
+    }, [
+      pinVirtualEndIndex,
+      scrollToBottom,
+      scrollToBottomAfterCommit,
+    ]);
+
+    const scheduleVirtualBottomRepin = React.useCallback(() => {
+      if (!useVirtualMessages) return;
+      if (virtualBottomPinTimerRef.current != null) {
+        window.clearTimeout(virtualBottomPinTimerRef.current);
+      }
+      virtualBottomPinTimerRef.current = window.setTimeout(() => {
+        virtualBottomPinTimerRef.current = null;
+        pinThreadToBottom();
+      }, 320);
+    }, [pinThreadToBottom, useVirtualMessages]);
+
+    React.useLayoutEffect(() => {
+      const el = scrollRef.current;
+      if (el) {
+        el.scrollTop = 0;
+      }
+      hasInitialScrolled.current = false;
+      if (virtualBottomPinTimerRef.current != null) {
+        window.clearTimeout(virtualBottomPinTimerRef.current);
+        virtualBottomPinTimerRef.current = null;
+      }
+    }, [activeSessionId]);
+
     React.useLayoutEffect(() => {
       if (!useVirtualMessages || messageAreaWidth <= 0) return;
 
       const raf = requestAnimationFrame(() => {
         messageVirtualizer.measure();
+        pinVirtualEndIndex();
+        scrollToBottomIfAtBottom();
       });
 
       return () => cancelAnimationFrame(raf);
-    }, [useVirtualMessages, messageAreaWidth, messageVirtualizer]);
+    }, [
+      useVirtualMessages,
+      messageAreaWidth,
+      messageVirtualizer,
+      pinVirtualEndIndex,
+      scrollToBottomIfAtBottom,
+    ]);
+
+    React.useEffect(
+      () => () => {
+        if (virtualBottomPinTimerRef.current != null) {
+          window.clearTimeout(virtualBottomPinTimerRef.current);
+        }
+      },
+      [],
+    );
 
     React.useEffect(() => {
       const onScrollRequest = (event: Event) => {
@@ -525,11 +595,17 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       if (shouldReveal) {
         needsScrollAfterLoadRef.current = false;
         enableAutoFollow();
-        scrollToBottom();
+        pinThreadToBottom();
+        scheduleVirtualBottomRepin();
       }
-    }, [isLoading, messages.length, enableAutoFollow, scrollToBottom]);
+    }, [
+      isLoading,
+      messages.length,
+      enableAutoFollow,
+      pinThreadToBottom,
+      scheduleVirtualBottomRepin,
+    ]);
 
-    const hasInitialScrolled = React.useRef(false);
     React.useEffect(() => {
       if (
         !hasInitialScrolled.current &&
@@ -538,9 +614,16 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       ) {
         hasInitialScrolled.current = true;
         enableAutoFollow();
-        scrollToBottom();
+        pinThreadToBottom();
+        scheduleVirtualBottomRepin();
       }
-    }, [messages.length, isLoading, enableAutoFollow, scrollToBottom]);
+    }, [
+      messages.length,
+      isLoading,
+      enableAutoFollow,
+      pinThreadToBottom,
+      scheduleVirtualBottomRepin,
+    ]);
 
     const scrollRafRef = React.useRef<number | undefined>(undefined);
     React.useEffect(() => {
