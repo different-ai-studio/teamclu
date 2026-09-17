@@ -482,7 +482,8 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
         .eq("org_id", orgId)
         .order("sort", { ascending: true });
       if (error) throw error;
-      return (data ?? []).map(mapRole);
+      // System roles first, each group still in sort order (Array#sort is stable).
+      return (data ?? []).map(mapRole).sort((a, b) => Number(b.isSystem) - Number(a.isSystem));
     },
 
     async createOrgRole(teamId: string, input: OrgRoleCreate = {} as OrgRoleCreate): Promise<OrgRole> {

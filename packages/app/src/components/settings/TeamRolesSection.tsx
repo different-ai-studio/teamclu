@@ -42,7 +42,8 @@ export function TeamRolesSection() {
     setError(null)
     try {
       const items = await getBackend().orgRoles.list(teamId)
-      setRoles([...items].sort((a, b) => a.sort - b.sort || a.code.localeCompare(b.code)))
+      setRoles([...items].sort((a, b) =>
+        Number(b.isSystem) - Number(a.isSystem) || a.sort - b.sort || a.code.localeCompare(b.code)))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setRoles([])

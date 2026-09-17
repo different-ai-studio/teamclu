@@ -700,6 +700,22 @@ describe("makeOrgRolesRepo", () => {
     assert.equal(items[0].orgId, ORG);
   });
 
+  test("listOrgRoles puts system roles first, each group in sort order", async () => {
+    const earlyCustom: RoleRow = { ...seededCustom, id: "role-investor", code: "investor", name: "投资人", sort: 5 };
+    // The fake returns rows as given, so hand them over the way `order by sort` would.
+    const host = makeStubHost({
+      teamRole: "member",
+      roles: [earlyCustom, seededSystem, seededAdmin, seededMember, seededCustom],
+      member: true,
+    });
+    const repo = makeOrgRolesRepo(host);
+    const items = await repo.listOrgRoles(TEAM);
+    assert.deepEqual(
+      items.map((r) => r.code),
+      ["owner", "admin", "member", "investor", "auditor"],
+    );
+  });
+
   test("createOrgRole inserts a custom role for admin", async () => {
     const host = makeStubHost({ teamRole: "admin", roles: [seededSystem] });
     const repo = makeOrgRolesRepo(host);
