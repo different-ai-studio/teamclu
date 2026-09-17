@@ -170,6 +170,18 @@ public protocol AppOnboardingStore: Sendable {
     /// hits its expiry (~1h on Supabase default config) and the user is
     /// left with a dead-looking app that needs a relogin to recover.
     nonisolated func tokenRefreshes() -> AsyncStream<Void>
+
+    /// Emits when the auth provider drops the session because the server
+    /// refused its refresh token — the session was ended elsewhere. After
+    /// this every authenticated call fails, so the app must return to
+    /// sign-in. Defaulted to a stream that never emits.
+    nonisolated func sessionRevocations() -> AsyncStream<Void>
+}
+
+public extension AppOnboardingStore {
+    func sessionRevocations() -> AsyncStream<Void> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 /// An invite addressed to the caller's verified email/phone, still pending.
@@ -565,6 +577,13 @@ public final class AppOnboardingCoordinator {
     /// The ones we don't actively reload (other-team rows) never get cleared
     /// otherwise.
     public func signOutAndWipeCache(modelContext: ModelContext) async {
+        await wipeLocalCache(modelContext: modelContext)
+        await signOut()
+    }
+
+    /// Delete every cached row and downloaded trace that belongs to the
+    /// signed-in account. See `signOutAndWipeCache`.
+    public func wipeLocalCache(modelContext: ModelContext) async {
         do {
             try modelContext.delete(model: AgentAttachment.self)
             try modelContext.delete(model: AgentEvent.self)
@@ -581,7 +600,6 @@ public final class AppOnboardingCoordinator {
         }
         // Downloaded turn traces are this account's session content too.
         await TurnTraceCache.shared.removeAll()
-        await signOut()
     }
 
     public func bootstrap(preferringTeamID: String? = nil) async {
@@ -1005,6 +1023,29 @@ public final class AppOnboardingCoordinator {
         currentUserEmail = nil
         route = .needsAuth
         isBusy = false
+    }
+
+    /// The server ended this session (it refused the refresh token), so
+    /// nothing signed-in can load any more. Unlike `signOut()` there is no
+    /// remote session left to end, so the store is not called. The remembered
+    /// team is kept: the same person is the likeliest to sign back in, and
+    /// bootstrap re-checks membership before honoring it.
+    ///
+    /// Returns false when already on sign-in, where there is nothing to leave
+    /// and an in-progress sign-in's own message must not be replaced.
+    @discardableResult
+    public func handleSessionRevoked() -> Bool {
+        guard route != .needsAuth else { return false }
+        currentContext = nil
+        teamRuntimeContext = nil
+        pendingCreatedTeam = nil
+        pendingEmailOTPEmail = nil
+        upgradeCollision = nil
+        isAnonymous = false
+        currentUserEmail = nil
+        errorMessage = String(localized: "You were signed out. Sign in again to continue.")
+        route = .needsAuth
+        return true
     }
 
     public func handleAuthCallback(url: URL) async {

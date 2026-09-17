@@ -331,7 +331,10 @@ export function createSupabaseAuthRepository(options) {
         supabaseUrl,
         apiKey: publishableKey,
         method: "POST",
-        path: "/auth/v1/logout",
+        // GoTrue's default scope is `global`: it deletes every session the
+        // user holds, so signing out on one device signed them out of all the
+        // others. `local` ends only the session behind this bearer.
+        path: "/auth/v1/logout?scope=local",
         bearerToken: accessToken,
         body: null,
         operation: "auth.signOut",

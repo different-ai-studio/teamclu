@@ -211,6 +211,20 @@ struct ContentView: View {
                 forceReconnect()
             }
         }
+        .task(id: backendEpoch) {
+            // The server refused the refresh token: the session was ended
+            // somewhere else. Every screen would otherwise sit on a spinner
+            // until its request failed with a bare AuthRequired, so go back to
+            // sign-in and clear this account's data like a sign-out does.
+            for await _ in onboarding.store.sessionRevocations() {
+                guard onboarding.handleSessionRevoked() else { continue }
+                logger.info("Auth session was revoked; returning to sign-in")
+                connectTask?.cancel()
+                isConnecting = false
+                await mqtt.disconnect()
+                await onboarding.wipeLocalCache(modelContext: modelContext)
+            }
+        }
         .onChange(of: onboarding.pendingCreatedTeam) { _, createdTeam in
             guard let createdTeam else { return }
             OnboardingLocalCacheBootstrapper.prime(createdTeam: createdTeam, modelContext: modelContext)

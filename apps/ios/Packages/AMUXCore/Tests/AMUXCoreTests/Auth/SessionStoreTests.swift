@@ -91,6 +91,59 @@ final class SessionStoreTests: XCTestCase {
         return "\(header).\(payload).signature"
     }
 
+    /// The server no longer knows the refresh token — the session was ended
+    /// elsewhere (another device signing out used to do this to every device).
+    /// The store must drop the session and say so, so the app can go back to
+    /// sign-in instead of leaving every screen failing on AuthRequired.
+    func testRefreshRejectedByServerClearsSessionAndEmitsRevocation() async throws {
+        let storage = InMemorySessionStorage()
+        try storage.save(StoredSession(accessToken: "old", refreshToken: "rt",
+            expiresAt: Date().addingTimeInterval(3600), isAnonymous: false, email: nil))
+        let store = SessionStore(baseURL: URL(string: "https://c")!, storage: storage, send: { req in
+            let json = #"{"error":{"code":"refresh_token_not_found","message":"Invalid Refresh Token: Refresh Token Not Found"}}"#
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 400, httpVersion: nil, headerFields: nil)!
+            return (json.data(using: .utf8)!, resp)
+        })
+        await store.start()
+
+        let revoked = expectation(description: "sessionRevocations emits")
+        let stream = store.sessionRevocations()
+        Task { for await _ in stream { revoked.fulfill(); break } }
+        try await Task.sleep(for: .milliseconds(50))
+
+        do { try await store.forceRefresh(); XCTFail("expected throw") }
+        catch AuthRequired.notAuthenticated {}
+        catch { XCTFail("wrong error: \(error)") }
+
+        await fulfillment(of: [revoked], timeout: 2)
+        let remaining = await store.currentSession()
+        XCTAssertNil(remaining)
+    }
+
+    func testRefreshNetworkFailureKeepsSessionWithoutRevocation() async throws {
+        let storage = InMemorySessionStorage()
+        try storage.save(StoredSession(accessToken: "old", refreshToken: "rt",
+            expiresAt: Date().addingTimeInterval(3600), isAnonymous: false, email: nil))
+        let store = SessionStore(baseURL: URL(string: "https://c")!, storage: storage, send: { _ in
+            throw URLError(.notConnectedToInternet)
+        })
+        await store.start()
+
+        let revoked = expectation(description: "sessionRevocations stays silent")
+        revoked.isInverted = true
+        let stream = store.sessionRevocations()
+        Task { for await _ in stream { revoked.fulfill(); break } }
+        try await Task.sleep(for: .milliseconds(50))
+
+        do { try await store.forceRefresh(); XCTFail("expected throw") }
+        catch is URLError {}
+        catch { XCTFail("wrong error: \(error)") }
+
+        await fulfillment(of: [revoked], timeout: 0.3)
+        let remaining = await store.currentSession()
+        XCTAssertNotNil(remaining)
+    }
+
     func testAccessTokenWithNoSessionThrowsNotAuthenticated() async {
         let store = SessionStore(baseURL: URL(string: "https://c")!, storage: InMemorySessionStorage(),
             send: { _ in (Data(), HTTPURLResponse(url: URL(string: "https://c")!, statusCode: 200, httpVersion: nil, headerFields: nil)!) })

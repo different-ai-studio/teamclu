@@ -6000,6 +6000,9 @@ paths:
     post:
       operationId: signOut
       summary: Proxy to Supabase GoTrue /auth/v1/logout
+      description: |
+        Ends only the session behind the caller's bearer (GoTrue scope=local).
+        The user's sessions on other devices stay signed in.
       tags: [Auth]
       responses:
         "200":
