@@ -11,7 +11,11 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
+# default-features off, rustls only: release-oss builds this sidecar in the
+# same cargo invocation as amuxd, and reqwest's `default` (native-tls) would
+# unify into amuxd's build — the beta.63 TLS-backend drift. Gate:
+# scripts/verify-reqwest-rustls.sh.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }

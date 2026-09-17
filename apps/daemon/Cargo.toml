@@ -84,7 +84,17 @@ rustls = "0.22"
 tokio-rustls = "0.25"
 
 # HTTP / JWT / crypto (Cloud API client + team_shared_env)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+#
+# default-features MUST stay off and the TLS backend rustls-only: release-oss
+# builds amuxd and teamclu-introspect in ONE cargo invocation, so reqwest's
+# features unify across the selection. Any crate leaving reqwest's `default`
+# on merges native-tls into that union, and reqwest then defaults
+# Client::new() to native-tls instead of rustls (the beta.63
+# /v1/auth/refresh breakage). scripts/verify-reqwest-rustls.sh gates the
+# unified graph in CI; scripts/lib/reqwest-default-features.test.js guards
+# the manifests. Native roots (not the webpki bundle) to match the desktop
+# app and honor OS-level corporate proxy roots.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 base64 = "0.22"
 # Attachment image downscale before base64-inlining into ACP prompts (issue #710)
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
