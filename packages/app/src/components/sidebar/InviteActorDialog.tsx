@@ -20,7 +20,6 @@ import { cn } from '@/lib/utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
 
 type InviteKind = 'member' | 'agent'
-type TeamRole = 'member' | 'admin'
 
 interface InviteCreated {
   token: string
@@ -40,7 +39,6 @@ export function InviteActorDialog({ open, onOpenChange, teamId }: InviteActorDia
   const effectiveTeamId = currentTeamId ?? teamId ?? null
   const [kind, setKind] = React.useState<InviteKind>('member')
   const [name, setName] = React.useState('')
-  const [teamRole, setTeamRole] = React.useState<TeamRole>('member')
   // Optional. When either is filled the invitee sees this invite waiting for
   // them after signing in, so the link below becomes a convenience rather than
   // the only way in.
@@ -57,7 +55,6 @@ export function InviteActorDialog({ open, onOpenChange, teamId }: InviteActorDia
   const reset = React.useCallback(() => {
     setKind('member')
     setName('')
-    setTeamRole('member')
     setEmail('')
     setPhone('')
     setSubmitting(false)
@@ -83,7 +80,9 @@ export function InviteActorDialog({ open, onOpenChange, teamId }: InviteActorDia
             teamId: effectiveTeamId,
             kind: 'member',
             displayName: trimmed,
-            teamRole,
+            // Invites always join as member; roles are granted afterwards from the
+            // member's detail (Edit roles).
+            teamRole: 'member',
             ttlSeconds: null,
             targetActorId: null,
             inviteEmail: email.trim() || null,
@@ -191,29 +190,6 @@ export function InviteActorDialog({ open, onOpenChange, teamId }: InviteActorDia
                 disabled={submitting}
               />
             </div>
-            {kind === 'member' && (
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  {t('invite.roleLabel', 'Role')}
-                </label>
-                <div className="inline-flex gap-1 rounded-md bg-muted p-1">
-                  {(['member', 'admin'] as const).map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => setTeamRole(r)}
-                      className={cn(
-                        'rounded px-3 py-1 text-xs font-medium transition-colors',
-                        teamRole === r ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-                      )}
-                      disabled={submitting}
-                    >
-                      {r === 'member' ? t('invite.roleMember', 'Member') : t('invite.roleAdmin', 'Admin')}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
             {kind === 'member' && (
               <div className="flex flex-col gap-3 rounded-md border border-border p-3">
                 <p className="text-[11px] text-muted-foreground">

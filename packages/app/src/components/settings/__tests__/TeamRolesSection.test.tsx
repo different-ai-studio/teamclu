@@ -88,6 +88,22 @@ describe('TeamRolesSection', () => {
     expect(list).toHaveBeenCalledWith('team-1')
   })
 
+  it('lists system roles before custom ones, whatever their sort', async () => {
+    const earlyCustom: OrgRole = { ...CUSTOM, id: 'role-investor', name: 'Investor', code: 'investor', sort: 0 }
+    const member: OrgRole = { ...SYSTEM, id: 'role-member', name: 'Member', code: 'member', sort: 30 }
+    list.mockResolvedValue([earlyCustom, CUSTOM, member, SYSTEM])
+    render(<TeamRolesSection />)
+    await screen.findByText('Owner')
+
+    const ids = screen.getAllByTestId(/^org-role-row-/).map((el) => el.dataset.testid)
+    expect(ids).toEqual([
+      'org-role-row-role-owner',
+      'org-role-row-role-member',
+      'org-role-row-role-investor',
+      'org-role-row-role-custom',
+    ])
+  })
+
   it('system rows have no edit or delete actions', async () => {
     render(<TeamRolesSection />)
     await screen.findByText('Owner')
