@@ -187,7 +187,7 @@ jobs:
       # native-tls (the beta.63 auth-refresh breakage). Runs after the version
       # sync above because that step rewrites Cargo.toml + Cargo.lock and the
       # gate resolves --locked. See scripts/verify-reqwest-rustls.sh.
-      - name: Gate: unified sidecar reqwest features (rustls only)
+      - name: "Gate: unified sidecar reqwest features (rustls only)"
         run: ./scripts/verify-reqwest-rustls.sh
 
       # Apply OS-level white-label branding BEFORE the frontend build.
@@ -552,7 +552,7 @@ jobs:
 
       # See build-macos: gate the unified sidecar reqwest graph before any
       # cargo build. bash because the gate is a shell script.
-      - name: Gate: unified sidecar reqwest features (rustls only)
+      - name: "Gate: unified sidecar reqwest features (rustls only)"
         shell: bash
         run: ./scripts/verify-reqwest-rustls.sh
 

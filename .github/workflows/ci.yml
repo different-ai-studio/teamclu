@@ -317,7 +317,7 @@ jobs:
       # beta.63 /v1/auth/refresh breakage. Every job in this file builds amuxd
       # ALONE, so none of them can ever catch that; resolve the release's
       # exact selection instead, before anything compiles.
-      - name: Gate: unified sidecar reqwest features (rustls only)
+      - name: "Gate: unified sidecar reqwest features (rustls only)"
         run: ./scripts/verify-reqwest-rustls.sh
 
       # The runtime tests spawn the real pi host (apply_start_runtime success
