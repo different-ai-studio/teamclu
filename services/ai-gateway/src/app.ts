@@ -9,6 +9,8 @@ import {
   prepareUpstream, readImageUsage, readUsage, teeSseUsage,
 } from "./proxy.js";
 import { pickImageRoute } from "./catalog.js";
+import { KeyPools } from "./key-pool.js";
+import { callUpstream } from "./upstream.js";
 import { creditLedger, usageReport, type UsageRange } from "./report.js";
 import {
   backfillSignupGrants,
@@ -28,6 +30,8 @@ export type Deps = {
   tokens: TokenCache;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
+  /** Built from `catalog` + `env` when absent; tests pass one with a fake clock. */
+  pools?: KeyPools;
 };
 
 const err = (code: string, message: string, status: number) =>
@@ -54,70 +58,11 @@ function defaultMaxOutput(catalog: Catalog, publicId: string): number {
   return caps.length ? Math.max(...caps) : 16_000;
 }
 
-/**
- * Upstream statuses that move a `failover` tier on to its next route.
- *
- * 5xx is the upstream being down. 429 and 402 are OUR account with that
- * provider being throttled or out of money — 402 is DeepSeek's "Insufficient
- * Balance", and a Codex subscription at its limit answers 429
- * `usage_limit_reached`. The next route is a different provider account, so it
- * can still serve: that is the reason `max` keeps a DeepSeek backstop behind the
- * mx5 relay, and design §4.3 always listed 429. Only 5xx was implemented, so the
- * backstop missed the likeliest way a subscription relay fails.
- *
- * 401 and 403 still do NOT fail over: a wrong or revoked key should be loud,
- * not quietly served from the backstop.
- */
-const failsOver = (status: number) => status >= 500 || status === 429 || status === 402;
-
-/**
- * The message for an upstream 402. Keeps the word "billing" on purpose: pi
- * retries any error that mentions 503 but never one that mentions billing
- * (pi-ai `utils/retry.js`), and retrying an unfunded account only delays the
- * error by the length of the backoff.
- */
-const UPSTREAM_BILLING_MESSAGE =
-  "The AI provider account serving this model is out of balance (upstream billing error). " +
-  "This is not your team's credits: the operator has to fund the provider account.";
-
-/**
- * The response for an upstream call that failed.
- *
- * Verbatim, because agent runtimes branch on the provider's own status and
- * body — with one exception. 402 is THIS gateway's answer for "your team is out
- * of credits" (`insufficient_credits`, `quota_exceeded`), while an upstream 402
- * means our own provider account is out of money. Passed through, a team with
- * plenty of credits is told to top up, and the operator who actually has to
- * top up hears nothing. It becomes a 503: from the caller's side the tier is
- * unavailable until someone funds the account.
- */
-function upstreamFailure(
-  status: number,
-  text: string,
-  contentType: string | null,
-  where: { publicId: string; backendId: string },
-): Response {
-  if (status !== 402) {
-    return new Response(text, {
-      status,
-      headers: { "Content-Type": contentType ?? "application/json" },
-    });
-  }
-  // The caller only sees a generic 503, so this line is how an operator learns
-  // which provider account needs funding.
-  console.error(
-    `[upstream] ${where.backendId} (tier ${where.publicId}) is out of balance: ${text.slice(0, 300)}`,
-  );
-  return new Response(JSON.stringify(err("upstream_billing_error", UPSTREAM_BILLING_MESSAGE, 503)), {
-    status: 503,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
 export function createApp(deps: Deps) {
   const { cfg, catalog, sql, tokens } = deps;
   const env = deps.env ?? process.env;
   const doFetch = deps.fetchImpl ?? fetch;
+  const pools = deps.pools ?? new KeyPools(catalog, env);
   const app = new Hono();
 
   app.get("/healthz", (c) => c.json({ ok: true }));
@@ -232,125 +177,86 @@ export function createApp(deps: Deps) {
     const clientAskedForUsage =
       (body.stream_options as { include_usage?: boolean } | undefined)?.include_usage === true;
 
-    const maxAttempts = tier.routing === "failover" ? tier.routes.length : 1;
-    let lastStatus = 502;
-    let lastText = "upstream unavailable";
-    let lastBackendId = "";
+    const up = await callUpstream({
+      pools,
+      failover: tier.routing === "failover",
+      routeCount: tier.routing === "failover" ? tier.routes.length : 1,
+      pick: (attempt) => pickRoute(catalog, publicId, attempt),
+      prepare: (route, apiKey) =>
+        prepareUpstream(catalog, route.provider, route.backendId, route.backend, body, apiKey, c.req.raw.signal),
+      fetch: doFetch,
+      signal: c.req.raw.signal,
+    });
+    if (!up.ok) {
+      // Nothing is settled for a call that produced no tokens, but the hold has
+      // to go back: charging or holding against a failed call is money the
+      // customer never spent.
+      await release(sql, reservationId).catch(() => {});
+      return up.response;
+    }
+    const { res, route: picked, prepared } = up;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const picked = pickRoute(catalog, publicId, attempt);
-      if (!picked) break;
-      lastBackendId = picked.backendId;
-      const apiKey = env[picked.provider.api_key_env] ?? "";
-      const prepared = prepareUpstream(
-        catalog, picked.provider, picked.backendId, picked.backend, body, apiKey, c.req.raw.signal,
-      );
-
-      let res: Response;
-      try {
-        res = await doFetch(prepared.url, prepared.init);
-      } catch (e) {
-        lastStatus = 502;
-        lastText = `upstream request failed: ${(e as Error).message}`;
-        continue;
-      }
-
-      if (!res.ok) {
-        lastStatus = res.status;
-        lastText = await res.text();
-        // Only failover retries, and only on statuses another route can fix
-        // (see `failsOver`). Any other 4xx is the client's problem or a broken
-        // key, and retrying it just burns another call.
-        if (tier.routing === "failover" && failsOver(res.status)) {
-          // Without this line a dead primary is invisible: the backstop
-          // answers, and every request looks fine.
-          console.warn(
-            `[upstream] ${picked.backendId} (tier ${publicId}) answered ${res.status}` +
-              `${attempt + 1 < maxAttempts ? ", trying the next route" : ""}: ${lastText.slice(0, 300)}`,
-          );
-          continue;
-        }
-        // Pass the upstream error through — agent runtimes depend on these
-        // semantics — and do not settle anything. The hold has to go back,
-        // though: the customer got no tokens, so charging or holding against a
-        // failed call is money they never spent.
-        await release(sql, reservationId).catch(() => {});
-        return upstreamFailure(res.status, lastText, res.headers.get("content-type"), {
-          publicId,
-          backendId: picked.backendId,
-        });
-      }
-
-      const log = async (
-        u: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null,
-        source: "upstream" | "estimated",
-      ) => {
-        const credits = u ? computeCredits(tier.pricing, u.inputTokens, u.outputTokens) : 0;
-        const usageLogId = await recordUsage(sql, {
+    const log = async (
+      u: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null,
+      source: "upstream" | "estimated",
+    ) => {
+      const credits = u ? computeCredits(tier.pricing, u.inputTokens, u.outputTokens) : 0;
+      const usageLogId = await recordUsage(sql, {
+        teamId: a.teamId,
+        actorId: a.actor.id,
+        publicModelId: publicId,
+        backendModelId: picked.backendId,
+        providerId: picked.backend.provider,
+        inputTokens: u?.inputTokens ?? 0,
+        cachedInputTokens: u?.cachedInputTokens ?? 0,
+        outputTokens: u?.outputTokens ?? 0,
+        credits,
+        usageSource: source,
+        statusCode: res.status,
+        stream: wantsStream,
+        latencyMs: Date.now() - started,
+        requestId: c.req.header("x-request-id") ?? null,
+      });
+      if (!cfg.creditsEnforced) return;
+      // No usage row means the charge cannot be attributed, so release the
+      // hold rather than debit something the ledger cannot point at.
+      if (usageLogId) {
+        await settle(sql, {
+          reservationId,
           teamId: a.teamId,
           actorId: a.actor.id,
-          publicModelId: publicId,
-          backendModelId: picked.backendId,
-          providerId: picked.backend.provider,
-          inputTokens: u?.inputTokens ?? 0,
-          cachedInputTokens: u?.cachedInputTokens ?? 0,
-          outputTokens: u?.outputTokens ?? 0,
           credits,
-          usageSource: source,
-          statusCode: res.status,
-          stream: wantsStream,
-          latencyMs: Date.now() - started,
-          requestId: c.req.header("x-request-id") ?? null,
-        });
-        if (!cfg.creditsEnforced) return;
-        // No usage row means the charge cannot be attributed, so release the
-        // hold rather than debit something the ledger cannot point at.
-        if (usageLogId) {
-          await settle(sql, {
-            reservationId,
-            teamId: a.teamId,
-            actorId: a.actor.id,
-            credits,
-            usageLogId,
-          }).catch((e) => console.error("[credits] settle failed", e));
-        } else {
-          await release(sql, reservationId).catch(() => {});
-        }
-      };
-
-      if (!wantsStream || !res.body) {
-        const json = await res.json().catch(() => null);
-        const usage = readUsage(json);
-        void log(usage, usage ? "upstream" : "estimated");
-        return c.json(json as any, res.status as any);
+          usageLogId,
+        }).catch((e) => console.error("[credits] settle failed", e));
+      } else {
+        await release(sql, reservationId).catch(() => {});
       }
+    };
 
-      let seen: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null = null;
-      const stream = teeSseUsage(res.body, {
-        dropUsageOnlyFrame: prepared.injectedUsageOption && !clientAskedForUsage,
-        onUsage: (u) => { seen = u; },
-      });
-      // The usage frame is the last thing on the wire, so the log write is
-      // queued after the stream drains rather than before it starts.
-      const done = new TransformStream<Uint8Array, Uint8Array>({
-        flush() { void log(seen, seen ? "upstream" : "estimated"); },
-      });
-      return new Response(stream.pipeThrough(done), {
-        status: res.status,
-        headers: {
-          "Content-Type": res.headers.get("content-type") ?? "text/event-stream",
-          "Cache-Control": "no-cache",
-        },
-      });
+    if (!wantsStream || !res.body) {
+      const json = await res.json().catch(() => null);
+      const usage = readUsage(json);
+      void log(usage, usage ? "upstream" : "estimated");
+      return c.json(json as any, res.status as any);
     }
 
-    await release(sql, reservationId).catch(() => {});
-    // Every route failed. A 402 on the last one is still our provider account,
-    // not the team's credits, and must not reach the caller as a 402.
-    if (lastStatus === 402) {
-      return upstreamFailure(402, lastText, null, { publicId, backendId: lastBackendId });
-    }
-    return c.json(err("upstream_error", lastText.slice(0, 500), lastStatus), lastStatus as any);
+    let seen: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null = null;
+    const stream = teeSseUsage(res.body, {
+      dropUsageOnlyFrame: prepared.injectedUsageOption && !clientAskedForUsage,
+      onUsage: (u) => { seen = u; },
+    });
+    // The usage frame is the last thing on the wire, so the log write is
+    // queued after the stream drains rather than before it starts.
+    const done = new TransformStream<Uint8Array, Uint8Array>({
+      flush() { void log(seen, seen ? "upstream" : "estimated"); },
+    });
+    return new Response(stream.pipeThrough(done), {
+      status: res.status,
+      headers: {
+        "Content-Type": res.headers.get("content-type") ?? "text/event-stream",
+        "Cache-Control": "no-cache",
+      },
+    });
   });
 
 
@@ -416,45 +322,34 @@ export function createApp(deps: Deps) {
       reservationId = held.reservationId;
     }
 
-    const picked = pickImageRoute(catalog, publicId, 0);
-    if (!picked) {
-      await release(sql, reservationId).catch(() => {});
-      return c.json(err("upstream_error", "image tier has no usable route", 502), 502);
-    }
-    const apiKey = env[picked.provider.api_key_env] ?? "";
-
     // An image has no streaming first byte to prove the upstream is alive, and
-    // a hung one would otherwise hold credits until the 10-minute sweep.
+    // a hung one would otherwise hold credits until the 10-minute sweep. One
+    // budget for the whole call, however many keys it goes through.
     const timeout = AbortSignal.timeout(cfg.imageTimeoutMs);
-    const prepared = prepareImageUpstream(
-      catalog, picked.provider, picked.backend, body, apiKey,
-      AbortSignal.any([c.req.raw.signal, timeout]),
-    );
-
-    let res: Response;
-    try {
-      res = await doFetch(prepared.url, prepared.init);
-    } catch (e) {
-      await release(sql, reservationId).catch(() => {});
-      const aborted = (e as Error)?.name === "TimeoutError" || timeout.aborted;
-      return c.json(
-        err("upstream_error", aborted ? "image generation timed out" : `upstream request failed: ${(e as Error).message}`, 504),
-        aborted ? 504 : 502,
-      );
-    }
-
-    if (!res.ok) {
+    const signal = AbortSignal.any([c.req.raw.signal, timeout]);
+    const up = await callUpstream({
+      pools,
+      // No route failover for images: the only image backend has no stand-in.
+      // Keys still rotate.
+      failover: false,
+      routeCount: 1,
+      pick: (attempt) => pickImageRoute(catalog, publicId, attempt),
+      prepare: (route, apiKey) => prepareImageUpstream(catalog, route.provider, route.backend, body, apiKey, signal),
+      fetch: doFetch,
+      signal,
+    });
+    if (!up.ok) {
       // Like chat: the caller branches on the provider's own errors (content
-      // moderation especially), except an upstream 402, which is our account
-      // and not the team's credits. Nothing is charged for an image that was
-      // never produced.
-      const text = await res.text();
+      // moderation especially). Nothing is charged for an image that was never
+      // produced.
       await release(sql, reservationId).catch(() => {});
-      return upstreamFailure(res.status, text, res.headers.get("content-type"), {
-        publicId,
-        backendId: picked.backendId,
-      });
+      const e = up.transportError;
+      if (e && (e.name === "TimeoutError" || timeout.aborted)) {
+        return c.json(err("upstream_error", "image generation timed out", 504), 504);
+      }
+      return up.response;
     }
+    const { res, route: picked } = up;
 
     const json = await res.json().catch(() => null);
     // Bill what was DELIVERED. A partial result (moderation dropped one of n)
@@ -520,6 +415,22 @@ export function createApp(deps: Deps) {
       })),
     }),
   );
+  // Provider keys: which are serving and which are benched, and why
+  // (key-pool.ts). What an operator screen reads. This process only — each
+  // replica keeps its own view.
+  internal.get("/provider-pools", (c) => c.json({ providers: pools.snapshot() }));
+
+  // Put benched keys back into service now, e.g. right after funding the
+  // account, instead of waiting out the backoff. `keyId` narrows it to one key.
+  internal.post("/provider-pools/:providerId/reset", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { keyId?: string } | null;
+    const cleared = pools.reset(c.req.param("providerId"), body?.keyId);
+    if (cleared === null) {
+      return c.json(err("not_found", `unknown provider "${c.req.param("providerId")}"`, 404), 404);
+    }
+    return c.json({ cleared });
+  });
+
   internal.get("/teams/:teamId/credits/summary", async (c) => {
     const teamId = c.req.param("teamId");
     return c.json({ teamId, balanceCredits: await getBalance(sql, teamId) });

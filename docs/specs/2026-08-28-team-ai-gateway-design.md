@@ -166,7 +166,36 @@
 |-----------|------|
 | `priority` | 按 `routes` 顺序，第一条可用即用 |
 | `weighted` | 在可用路由中按 `weight` 随机（如某档大部分走 flash、少部分走 pro） |
-| `failover` | 先试第一条，上游 402/429/5xx 或请求没发出去（连接失败）则试下一条；401/403 不切，key 配错要直接暴露。网关自己没有首字节超时，上游挂住不会触发切换 |
+| `failover` | 先试第一条，这条路由上的 key 都用不了（见下方 key 池）、上游 5xx 或请求没发出去（连接失败）时，试下一条；所有 key 都被拒（401）时不切，key 配错要直接暴露。网关自己没有首字节超时，上游挂住不会触发切换 |
+
+**同一个 provider 的多个 key（key 池）**
+
+`api_key_env` 指向的变量里可以放多个 key，用逗号分隔，顺序就是优先级（`DEEPSEEK_API_KEY=sk-a,sk-b`）。没有新增变量名：compose 的 `environment:` 是白名单，新名字要在两个部署目标上都声明一遍。
+
+切换分两层，顺序固定：
+
+1. **换 key**：同一个 provider、同一个模型，调用方感知不到。上游回 402、429、401 时，这把 key 进入冷却，请求立刻用下一把 key 重发。
+2. **换路由**：这条路由上没有能用的 key 了，`failover` 档才换到下一条路由，那是另一个模型。上游 5xx 或连不上时直接换路由，因为每把 key 连的都是同一个坏掉的服务。
+
+| 上游返回 | 判定 | 冷却范围 | 冷却时长 |
+|---|---|---|---|
+| 402 | 余额耗尽 | 整把 key（余额属于账号） | 1、2、4… 分钟翻倍，封顶 30 分钟 |
+| 429，文本含 quota / usage limit / balance / billing / credit / spend / insufficient，或 Retry-After ≥ 5 分钟 | 额度耗尽 | 这把 key 上的这个模型（订阅额度按模型计） | 同上 |
+| 其他 429 | 限流 | 这把 key 上的这个模型 | Retry-After，没有则 10 秒，限制在 1–60 秒之间 |
+| 401 | key 被拒 | 整把 key | 同 402 |
+| 5xx / 连不上 | 上游故障 | 不冷却 key | — |
+| 其他 4xx（400/403/422…） | 请求本身的问题 | 不冷却 | 原样透传 |
+
+几条要点：
+
+- **Retry-After 只会缩短耗尽类的冷却，不会延长。** OpenCode Go 平台故障时对所有账号回 429，Retry-After 长达 10 小时以上（opencode issue #47613）；照单全收的话，服务恢复很久之后整个池子还在冷却。一把真的没额度的 key，最多每 30 分钟白试一次，这是更便宜的错。
+- **冷却到期自动回到候选里**，下一次成功就清掉记录。所以给账号充值后不用重启，也可以调 `POST /internal/provider-pools/:providerId/reset` 立刻恢复。
+- **按优先级选 key，不轮询。** provider 的 prompt 缓存属于账号，轮询会把缓存命中变成全价输入。
+- **没有健康 key 时，限流中的 key 仍然会试**：只有一把 key 时，一次 429 不该让整档停摆。耗尽和被拒的 key 不试。
+- 一次请求在一条路由上最多试 3 把 key。
+- 所有 key 都在冷却时直接返回 503 `upstream_keys_unavailable`，带 `Retry-After`，不打上游。报错文案里带 quota exceeded，pi 碰到就不重试。
+- 冷却状态在进程内存里。多副本各自发现坏 key，代价是每个副本多一次被拒的请求（额度类拒绝很快，也不耗 token），不值得为此引入共享存储。
+- 日志：耗尽和被拒打 `console.error`，限流和上游故障打 `console.warn`，都带 key 的末四位和 sha256 前缀，从不打印 key 本身。
 
 团队 `llm_models` / 设置页只存 **public id**，不出现 `deepseek-v4-pro`。
 
@@ -689,6 +718,8 @@ baseURL 契约：客户端拿到的 baseURL 是 `<gateway>/v1/teams/<teamId>`，
 | `GET` | `/internal/teams/:teamId/credits/summary` |
 | `PUT` | `/internal/teams/:teamId/members/:actorId/quota` |
 | `GET` | `/internal/models` |
+| `GET` | `/internal/provider-pools`（每把 key 的状态和冷却，只有末四位，不含 key；仅本进程） |
+| `POST` | `/internal/provider-pools/:providerId/reset`（可带 `keyId`，立刻解除冷却） |
 
 **`/internal/models` 是必需的**，别漏：FC 的 `getWorkspaceConfig` 今天用 `LITELLM_MASTER_KEY` 去拉模型目录填 `availableModels`（`services/fc/src/lib/pg-repo/teams.ts:159-186`）。换成网关后 FC 没有终端用户 JWT，只能走内网 token 拿 catalog 的 public 层。
 

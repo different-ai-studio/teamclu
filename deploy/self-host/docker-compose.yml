@@ -202,7 +202,8 @@ services:
       CREDITS_ENFORCED: "${CREDITS_ENFORCED:-false}"
       TOKEN_CACHE_TTL_MS: "${TOKEN_CACHE_TTL_MS:-60000}"
       AI_IMAGE_TIMEOUT_MS: "${AI_IMAGE_TIMEOUT_MS:-180000}"
-      # Upstream provider keys.
+      # Upstream provider keys. Each may list several, comma-separated, as a
+      # pool the gateway rotates through when one runs dry (key-pool.ts).
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"

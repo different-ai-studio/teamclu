@@ -17,6 +17,12 @@
 providers:
   deepseek:
     api_base: https://api.deepseek.com
+    # The variable may hold SEVERAL keys, comma-separated, in priority order:
+    #   DEEPSEEK_API_KEY=sk-first,sk-second
+    # A key that answers 402/429/401 is benched and the request moves on to the
+    # next key of this provider, invisibly to the caller (key-pool.ts). A route
+    # only fails over once none of its keys can serve. Status of every key:
+    # GET /internal/provider-pools.
     api_key_env: DEEPSEEK_API_KEY
     # How this provider reports token usage on a STREAMING response.
     #   always               — usage arrives unprompted, riding the last normal
