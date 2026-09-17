@@ -37,7 +37,7 @@ export { LOAD_EARLIER_MESSAGE_COUNT } from "./message-list-load-earlier";
 // open a >80-message session, toggle sidebar / resize, confirm no row overlap.
 export const VIRTUAL_MSG_THRESHOLD = 80;
 /** Extra rows kept mounted above/below the viewport — reduces markdown remount jank. */
-export const VIRTUAL_MSG_OVERSCAN = 12;
+export const VIRTUAL_MSG_OVERSCAN = 18;
 const INITIAL_VISIBLE_MESSAGE_COUNT = 80;
 const DEFAULT_VIRTUAL_ROW_ESTIMATE = 150;
 const VIRTUAL_ROW_GAP = 4;
@@ -302,6 +302,7 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
     const pendingScrollMessageIdRef = React.useRef<string | null>(null);
     const hasInitialScrolled = React.useRef(false);
     const virtualBottomPinTimerRef = React.useRef<number | null>(null);
+    const virtualScrollMeasureTimerRef = React.useRef<number | null>(null);
 
     const {
       scrollToBottom,
@@ -405,6 +406,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       overscan: VIRTUAL_MSG_OVERSCAN,
       gap: 4,
       useAnimationFrameWithResizeObserver: true,
+      // Scroll updates row transforms on the DOM directly — avoids blank gaps on fast flick.
+      directDomUpdates: true,
+      directDomUpdatesMode: "transform",
     });
 
     const pinVirtualEndIndex = React.useCallback(() => {
@@ -520,17 +524,21 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       const applyRestore = () => {
         const el = scrollRef.current;
         if (el) {
-          const heightDelta = el.scrollHeight - pending.prevScrollHeight;
-          if (heightDelta > 0) {
-            el.scrollTop = pending.prevScrollTop + heightDelta;
-          } else {
-            const estimatedDelta = estimatePrependedScrollDelta(
-              messages,
-              pending.previousVisible,
-              pending.nextVisible,
-            );
-            if (estimatedDelta > 0) {
-              el.scrollTop = pending.prevScrollTop + estimatedDelta;
+          const userMovedAwayFromAnchor =
+            Math.abs(el.scrollTop - pending.prevScrollTop) > 80;
+          if (!userMovedAwayFromAnchor) {
+            const heightDelta = el.scrollHeight - pending.prevScrollHeight;
+            if (heightDelta > 0) {
+              el.scrollTop = pending.prevScrollTop + heightDelta;
+            } else {
+              const estimatedDelta = estimatePrependedScrollDelta(
+                messages,
+                pending.previousVisible,
+                pending.nextVisible,
+              );
+              if (estimatedDelta > 0) {
+                el.scrollTop = pending.prevScrollTop + estimatedDelta;
+              }
             }
           }
         }
@@ -584,6 +592,9 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       () => () => {
         if (virtualBottomPinTimerRef.current != null) {
           window.clearTimeout(virtualBottomPinTimerRef.current);
+        }
+        if (virtualScrollMeasureTimerRef.current != null) {
+          window.clearTimeout(virtualScrollMeasureTimerRef.current);
         }
       },
       [],
@@ -772,6 +783,16 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
           requestLoadEarlierMessages();
         }
 
+        if (useVirtualMessages) {
+          if (virtualScrollMeasureTimerRef.current != null) {
+            window.clearTimeout(virtualScrollMeasureTimerRef.current);
+          }
+          virtualScrollMeasureTimerRef.current = window.setTimeout(() => {
+            virtualScrollMeasureTimerRef.current = null;
+            messageVirtualizer.measure();
+          }, 120);
+        }
+
         if (scrollRafRef.current != null)
           cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = requestAnimationFrame(() => {
@@ -792,6 +813,8 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
       onScroll,
       hiddenMessageCount,
       requestLoadEarlierMessages,
+      useVirtualMessages,
+      messageVirtualizer,
     ]);
 
     const handleScrollToBottom = () => {
@@ -918,8 +941,8 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
 
                   return useVirtualMessages ? (
                     <div
+                      ref={messageVirtualizer.containerRef}
                       style={{
-                        height: `${messageVirtualizer.getTotalSize()}px`,
                         width: "100%",
                         position: "relative",
                       }}
@@ -949,7 +972,6 @@ const MessageListInner = React.forwardRef<MessageListHandle, MessageListProps>(
                                 top: 0,
                                 left: 0,
                                 width: "100%",
-                                transform: `translateY(${virtualItem.start}px)`,
                               }}
                             >
                               <ErrorBoundary scope="Message" inline>
