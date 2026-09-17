@@ -22,8 +22,9 @@ xcap = "0.8"
 # Image processing
 image = "0.25"
 
-# HTTP client (Qwen3-VL API)
-reqwest = { version = "0.12", features = ["json"] }
+# HTTP client (Qwen3-VL API). Repo-wide reqwest policy: default-features off,
+# rustls only (enforced by scripts/lib/reqwest-default-features.test.js).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 
 # Clipboard (cross-platform Unicode paste)
 arboard = "3"

@@ -310,6 +310,16 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
+      # The release unified sidecar invocation (`cargo build -p amuxd -p
+      # teamclu-introspect`, release-oss.yml) unifies reqwest's features
+      # across BOTH crates; one manifest leaving reqwest's `default` on merges
+      # native-tls into the union and flips Client::new() to native-tls — the
+      # beta.63 /v1/auth/refresh breakage. Every job in this file builds amuxd
+      # ALONE, so none of them can ever catch that; resolve the release's
+      # exact selection instead, before anything compiles.
+      - name: Gate: unified sidecar reqwest features (rustls only)
+        run: ./scripts/verify-reqwest-rustls.sh
+
       # The runtime tests spawn the real pi host (apply_start_runtime success
       # paths), which runs on the amuxd-managed Node.js. `install-pi` puts the
       # pinned Node and the `npm ci` tree under ~/.amuxd/cache exactly as a
