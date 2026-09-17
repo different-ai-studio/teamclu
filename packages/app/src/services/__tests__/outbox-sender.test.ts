@@ -384,6 +384,47 @@ describe('outbox sender', () => {
     expect(mocks.mqttPublish).toHaveBeenCalled()
   })
 
+  it('stops at once when the server refuses the message, instead of retrying a no', async () => {
+    // A session whose roster lost the sender answers 403 for every attempt, so
+    // the backoff only bought ten minutes of spinner before the same answer.
+    const { CloudApiError } = await import('@/lib/backend/cloud-api/http')
+    mocks.insertOutgoingMessage.mockRejectedValue(
+      new CloudApiError(
+        403,
+        'forbidden',
+        'new row violates row-level security policy for table "messages"',
+        null,
+      ),
+    )
+
+    const { useOutboxStore } = await import('@/stores/outbox-store')
+    const { startOutboxSender } = await import('../outbox-sender')
+
+    await useOutboxStore.getState().enqueue({
+      messageId: 'msg-refused',
+      teamId: 'team-1',
+      sessionId: 'session-1',
+      senderActorId: 'member-1',
+      content: 'Hi here',
+      model: null,
+      mentionActorIds: [],
+      attachmentUrls: [],
+    })
+
+    startOutboxSender()
+
+    await vi.waitFor(() => {
+      const entry = useOutboxStore.getState().byId['msg-refused']
+      expect(entry.state).toBe('failed')
+    })
+    const entry = useOutboxStore.getState().byId['msg-refused']
+    expect(entry.attemptCount).toBe(1)
+    expect(entry.nextAttemptAt).toBeNull()
+    // The reason, not the Postgres sentence the user cannot act on.
+    expect(entry.lastError).toContain('你不在这个会话里')
+    expect(mocks.insertOutgoingMessage).toHaveBeenCalledTimes(1)
+  })
+
   it('kickOutboxSender flushes a pending row without waiting for the interval', async () => {
     vi.useFakeTimers()
     const { useOutboxStore } = await import('@/stores/outbox-store')
