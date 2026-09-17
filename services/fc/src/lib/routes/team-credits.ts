@@ -3,7 +3,9 @@
  *
  * Permission split follows design §12.6 — balance and usage are visible to
  * every member (an exhausted wallet stops their work, so they need to be able
- * to see why), while the ledger and any mutation are owner-only.
+ * to see why), while the ledger and member quotas are owner-only. Adding
+ * credits by hand is for platform operators only (platform-operators.ts): an
+ * owner who could do it could pay themselves.
  *
  * The repository does the authz; this file only shapes requests. Both backend
  * paths reach the same gateway, so the credits data is identical either way.

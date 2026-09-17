@@ -32,6 +32,8 @@ tags:
     description: Runtime configuration delivered to authenticated clients (MQTT broker, feature flags).
   - name: Apps
     description: Per-app repo provisioning and the deploy pipeline (FC function + Postgres schema).
+  - name: Admin
+    description: Platform operators of this deployment. Not a team or org role.
 paths:
   /v1/auth/refresh:
     post:
@@ -2405,6 +2407,33 @@ paths:
           description: Verified.
         "401": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/admin/whoami:
+    get:
+      operationId: getAdminWhoami
+      summary: Whether the caller is a platform operator of this deployment
+      tags: [Admin]
+      description: |
+        Answers any signed-in caller, operator or not. `userId` is what goes into
+        the deployment's `PLATFORM_OPERATOR_USER_IDS`; `operator` decides whether
+        a client shows the operator screens.
+
+        Showing a screen is all `operator` decides. Every operator endpoint
+        checks the caller again on its own.
+
+        A platform operator runs the deployment itself. It is not a team or org
+        role, and no team or org role makes someone an operator.
+      responses:
+        "200":
+          description: The caller's user id and operator status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, operator]
+                properties:
+                  userId: { type: string, format: uuid }
+                  operator: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
   /v1/admin/marketplace/skills:
     post:
       operationId: createMarketplaceSkill
@@ -3452,8 +3481,13 @@ paths:
     post:
       operationId: topUpCredits
       tags: [teams]
-      summary: Add credits to a team (owner only)
+      summary: Add credits to a team by hand (platform operators only)
       description: |
+        Platform operators only (see `GET /v1/admin/whoami`), not team owners.
+        It used to be owner-only, and every self-registered user owns the team
+        they create, so anyone could credit themselves. Paid top-ups do not use
+        this endpoint: the Stripe webhook credits the team server-side.
+
         `idempotencyKey` is required, not optional. A retried delivery must not
         credit twice, and the server cannot invent the key — one generated per
         request is a new key on every retry, which defeats the purpose.
@@ -3491,7 +3525,7 @@ paths:
                     type: boolean
                     description: false when this idempotencyKey was already recorded
                   balanceCredits: { type: integer }
-        '403': { description: Only team owners may top up }
+        '403': { description: 'Caller is not a platform operator (`not_platform_operator`)' }
 
   /v1/teams/{teamId}/credits/packages:
     get:

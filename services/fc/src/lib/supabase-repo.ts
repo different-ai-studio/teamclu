@@ -9,6 +9,7 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
+import { isPlatformOperator } from "./platform-operators.js";
 import { DEFAULT_LIST_LIMIT, DEFAULT_MESSAGE_LIST_LIMIT } from "./routing-utils.js";
 
 import { resolveFeatures } from "./routes/config.js";
@@ -653,6 +654,27 @@ export function createSupabaseBusinessRepository(options) {
     } catch (cause) {
       return { data: { user: null }, error: cause };
     }
+  }
+
+  /**
+   * The caller must be a platform operator of this deployment
+   * (platform-operators.ts). Returns their user id, for the audit line.
+   *
+   * Deliberately independent of every team and org role: an operator acts on
+   * teams they do not belong to, and no team role, however high, makes someone
+   * an operator.
+   */
+  async function requirePlatformOperator(): Promise<string> {
+    // getCurrentUser, not supabase.auth.getUser: a partner-issued session has no
+    // GoTrue session behind it, and an operator may be signed in that way.
+    const { data: authData, error: authErr } = await getCurrentUser();
+    if (authErr || !authData?.user?.id) {
+      throw new ApiError(401, "missing_auth", "authenticated user required");
+    }
+    if (!isPlatformOperator(authData.user.id)) {
+      throw new ApiError(403, "not_platform_operator", "only platform operators may do this");
+    }
+    return authData.user.id;
   }
 
   async function requireCallerTeamOwner(targetTeamId) {
@@ -1477,7 +1499,11 @@ export function createSupabaseBusinessRepository(options) {
       return aiGateway.ledger(teamId, opts.limit);
     },
     async topUpCredits(teamId: string, input: any) {
-      await requireCallerTeamOwner(teamId);
+      // Operators only. This used to be owner-only, and every self-registered
+      // user owns the team they create — so any account could mint itself
+      // credits for nothing. Paid top-ups do not come through here at all:
+      // the Stripe webhook calls the gateway directly (routes/stripe.ts).
+      const operatorId = await requirePlatformOperator();
       const amount = Number(input?.amountCredits);
       if (!Number.isSafeInteger(amount) || amount <= 0) {
         throw new ApiError(400, "invalid_request", "amountCredits must be a positive integer");
@@ -1487,12 +1513,31 @@ export function createSupabaseBusinessRepository(options) {
       if (!input?.idempotencyKey) {
         throw new ApiError(400, "invalid_request", "idempotencyKey is required");
       }
-      return aiGateway.topUp(teamId, {
+      const result = await aiGateway.topUp(teamId, {
         amountCredits: amount,
         kind: input.kind ?? "top_up",
         idempotencyKey: input.idempotencyKey,
         note: input.note ?? null,
       });
+      // Who granted what. Not in the ledger note, which the team owner reads.
+      console.log(
+        `[admin] operator ${operatorId} credited team ${teamId}: ${amount} (${input.kind ?? "top_up"}, ` +
+          `key ${input.idempotencyKey}, applied=${result?.applied})`,
+      );
+      return result;
+    },
+
+    // ── platform operators ──────────────────────────────────────────────────
+    // Answers for ANY signed-in caller: whether they are an operator, and their
+    // user id — which is what goes into PLATFORM_OPERATOR_USER_IDS. The client
+    // shows the operator screens only when `operator` is true; every operator
+    // endpoint checks again on its own.
+    async getAdminWhoami() {
+      const { data: authData, error: authErr } = await getCurrentUser();
+      if (authErr || !authData?.user?.id) {
+        throw new ApiError(401, "missing_auth", "authenticated user required");
+      }
+      return { userId: authData.user.id, operator: isPlatformOperator(authData.user.id) };
     },
     async listCreditPackages(teamId: string) {
       await requireCallerTeamMember(teamId);
