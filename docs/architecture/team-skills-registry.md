@@ -157,16 +157,18 @@
 | POST | `/v1/teams/:id/skills/:slug/versions` | 发新版本 |
 | POST | `/v1/teams/:id/skills/:slug/versions/:v/revert` | 把 `v` 版的内容重发为 `latest+1`（一键撤回，见 §8.2） |
 | PATCH | `/v1/teams/:id/skills/:slug` | 改元数据 / 转交 owner / 标记 deprecated |
+| DELETE | `/v1/teams/:id/skills/:slug` | 从 registry 硬删（仅 owner/admin） |
 | GET | `/v1/teams/:id/skills/:slug/versions/:v/download` | 返回 Supabase Storage 签名 URL |
 | PUT | `/v1/teams/:id/skills/:slug/install` | 记录安装（`actorId` + version + scope） |
 | DELETE | `/v1/teams/:id/skills/:slug/install` | 记录卸载 |
 
-鉴权：**全部只要求团队成员身份**。发版 / 撤回 / 改元数据 / 删除都对任何成员开放。
+鉴权：**全部只要求团队成员身份**。发版 / 撤回 / 改元数据仍对任何成员开放；**删除和 PATCH 的 `status` / `supersededBy` 仅 owner/admin**（见 `docs/specs/2026-09-16-team-skill-retire-and-delete-design.md`）。
 
 > 2026-08-13 翻掉了此前「`PATCH` 和 `POST versions` 额外要求 `owner_actor_id`
 > 本人或团队 owner」的写法。理由：registry 是团队资产，不是发布者的私产。成员
 > 发现共享 skill 里有一步是错的却改不了，唯一的出口是换个 slug 发一个近似重复
 > 品——那正是本设计要消灭的重复。发布门是必填字段（§6），从来不是审批人。
+> 该理由仍适用于发版与元数据编辑，但不再覆盖删除与退役（status 变更）。
 >
 > `owner_actor_id` 保留，含义仍是「谁负责这个 skill」，用于展示和认领，不再是
 > 权限。落地在三处，必须同时改：`pg-repo/team-skills.ts`（应用层，postgres 后端

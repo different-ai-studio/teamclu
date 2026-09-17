@@ -287,15 +287,18 @@ interface TeamShareBrowserState {
   /**
    * Delete a skill from the team registry — for the whole team, not just here.
    *
-   * Deliberately ungated: any member can delete, the same way any member can
-   * publish, patch and revert (see the pg-repo header). The registry is team
-   * property; `ownerActorId` answers "who is responsible", not "who may write".
+   * The API rejects non-admins; the UI hides the entry behind `canManageTeam`.
+   * This store does not read roles — callers rely on the API gate.
    *
    * Every member's next auto-follow tick sees the row gone and uninstalls the
    * pack, so this reaches other machines on its own — a pack with local edits
    * is held back as `blocked` there, as with any other removal.
    */
   deleteTeamSkill: (slug: string) => Promise<void>
+  /** Mark a registry skill deprecated without removing its pack from disk. */
+  deprecateTeamSkill: (slug: string, supersededBy?: string | null) => Promise<void>
+  /** Restore a deprecated registry skill to published status. */
+  restoreTeamSkill: (slug: string) => Promise<void>
   /** Re-notify the daemon after a successful mutation whose refresh failed. */
   retrySkillsRuntimeRefresh: () => Promise<void>
   /** Install a team MCP server for yourself — there is no install-for-others. */
@@ -1411,6 +1414,34 @@ export const useTeamShareBrowserStore = create<TeamShareBrowserState>((set, get)
     await get().loadSection('skills', { force: true })
     window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
     await refreshAfterMutation('delete-team', slug)
+  },
+
+  deprecateTeamSkill: async (slug, supersededBy = null) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const skill = get().skills.items.find((s) => s.origin === 'registry' && s.slug === slug)
+    if (!skill) throw new Error(`${slug} is not a team skill`)
+
+    await getBackend().teamSkills.updateTeamSkill(teamId, slug, {
+      status: 'deprecated',
+      supersededBy,
+    })
+    await get().loadSection('skills', { force: true })
+    window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
+  },
+
+  restoreTeamSkill: async (slug) => {
+    const teamId = currentTeamId()
+    if (!teamId) throw new Error('no current team')
+    const skill = get().skills.items.find((s) => s.origin === 'registry' && s.slug === slug)
+    if (!skill) throw new Error(`${slug} is not a team skill`)
+
+    await getBackend().teamSkills.updateTeamSkill(teamId, slug, {
+      status: 'published',
+      supersededBy: null,
+    })
+    await get().loadSection('skills', { force: true })
+    window.dispatchEvent(new CustomEvent(SKILLS_CHANGED_EVENT))
   },
 
   retrySkillsRuntimeRefresh: async () => {
