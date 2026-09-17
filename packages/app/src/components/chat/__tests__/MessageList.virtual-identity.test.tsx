@@ -1,6 +1,6 @@
 import * as React from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, waitFor } from "@testing-library/react";
 import type { Message } from "@/stores/session-types";
 
 globalThis.ResizeObserver = vi.fn().mockImplementation(function () {
@@ -14,12 +14,19 @@ globalThis.IntersectionObserver = vi.fn().mockImplementation(function () {
 type VirtualizerOptions = {
   count: number;
   getItemKey?: (index: number) => string | number;
+  anchorTo?: string;
+  followOnAppend?: string | boolean;
+  scrollEndThreshold?: number;
 };
 
 const capturedOptions: VirtualizerOptions[] = [];
-const { scrollToIndexMock } = vi.hoisted(() => ({
-  scrollToIndexMock: vi.fn(),
-}));
+const { scrollToEndMock, scrollToIndexMock, isAtEndMock, measureMock } =
+  vi.hoisted(() => ({
+    scrollToEndMock: vi.fn(),
+    scrollToIndexMock: vi.fn(),
+    isAtEndMock: vi.fn(() => true),
+    measureMock: vi.fn(),
+  }));
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: (options: VirtualizerOptions) => {
@@ -35,9 +42,12 @@ vi.mock("@tanstack/react-virtual", () => ({
       getTotalSize: () => count * 154,
       getVirtualItems: () => items,
       measureElement: vi.fn(),
-      measure: vi.fn(),
+      measure: measureMock,
       scrollToIndex: scrollToIndexMock,
       scrollToOffset: vi.fn(),
+      scrollToEnd: scrollToEndMock,
+      isAtEnd: isAtEndMock,
+      itemSizeCache: new Map<string | number, number>(),
       containerRef: vi.fn(),
     };
   },
@@ -61,7 +71,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionListStore } from "@/stores/session-list-store";
 import { useV2StreamingStore } from "@/stores/v2-streaming-store";
-import { MessageList } from "../MessageList";
+import { MessageList, VIRTUAL_SCROLL_END_THRESHOLD } from "../MessageList";
+import {
+  LOAD_EARLIER_HOLD_MS,
+  LOAD_EARLIER_TOP_DEBOUNCE_MS,
+} from "../message-list-load-earlier";
 
 function makeMessage(index: number): Message {
   return {
@@ -91,7 +105,15 @@ function latestVirtualizerOptions(): VirtualizerOptions {
 describe("MessageList virtualizer identity", () => {
   beforeEach(() => {
     capturedOptions.length = 0;
+    scrollToEndMock.mockClear();
     scrollToIndexMock.mockClear();
+    measureMock.mockClear();
+    isAtEndMock.mockClear();
+    isAtEndMock.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
     useSessionListStore.setState({ loading: false });
     useSessionStore.setState({
       isLoading: false,
@@ -133,8 +155,23 @@ describe("MessageList virtualizer identity", () => {
     expect(opts93.getItemKey!(79)).toBe("sess-1:msg-093");
   });
 
-  it("pins to the last virtual row when opening or returning to a long thread", () => {
-    vi.useFakeTimers();
+  it("delegates bottom-following to the virtualizer instead of hand-rolled pinning", () => {
+    render(
+      <MessageList
+        messages={buildMessages(92)}
+        activeSessionId="sess-1"
+        isStreaming={false}
+        streamingMessageId={null}
+      />,
+    );
+
+    const opts = latestVirtualizerOptions();
+    expect(opts.anchorTo).toBe("end");
+    expect(opts.followOnAppend).toBe("auto");
+    expect(opts.scrollEndThreshold).toBe(VIRTUAL_SCROLL_END_THRESHOLD);
+  });
+
+  it("pins to the end when opening or returning to a long thread", async () => {
     const messages = buildMessages(92);
     const { rerender } = render(
       <MessageList
@@ -145,10 +182,9 @@ describe("MessageList virtualizer identity", () => {
       />,
     );
 
-    expect(scrollToIndexMock).toHaveBeenCalledWith(
-      79,
-      expect.objectContaining({ align: "end" }),
-    );
+    await waitFor(() => {
+      expect(scrollToEndMock).toHaveBeenCalled();
+    });
 
     rerender(
       <MessageList
@@ -158,7 +194,7 @@ describe("MessageList virtualizer identity", () => {
         streamingMessageId={null}
       />,
     );
-    scrollToIndexMock.mockClear();
+    scrollToEndMock.mockClear();
 
     rerender(
       <MessageList
@@ -169,17 +205,12 @@ describe("MessageList virtualizer identity", () => {
       />,
     );
 
-    expect(scrollToIndexMock).toHaveBeenCalledWith(
-      79,
-      expect.objectContaining({ align: "end" }),
-    );
-
-    vi.advanceTimersByTime(320);
-    expect(scrollToIndexMock.mock.calls.length).toBeGreaterThan(1);
-    vi.useRealTimers();
+    await waitFor(() => {
+      expect(scrollToEndMock).toHaveBeenCalled();
+    });
   });
 
-  it("does not pin to the bottom when only expanding the visible window upward", () => {
+  it("never re-measures or re-pins from the scroll handler", () => {
     const messages92 = buildMessages(92);
     const { rerender } = render(
       <MessageList
@@ -189,8 +220,6 @@ describe("MessageList virtualizer identity", () => {
         streamingMessageId={null}
       />,
     );
-
-    scrollToIndexMock.mockClear();
 
     const messages140 = buildMessages(140);
     rerender(
@@ -202,32 +231,88 @@ describe("MessageList virtualizer identity", () => {
       />,
     );
 
+    // The user has scrolled up into history.
+    isAtEndMock.mockReturnValue(false);
+    scrollToEndMock.mockClear();
+    measureMock.mockClear();
+
     const scrollEl = document.querySelector(
       '[data-testid="v2-message-list"]',
-    ) as HTMLDivElement | null;
-    if (scrollEl) {
-      Object.defineProperty(scrollEl, "scrollTop", {
-        value: 0,
+    ) as HTMLDivElement;
+    Object.defineProperty(scrollEl, "scrollTop", {
+      value: 4000,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, "scrollHeight", {
+      value: 12000,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(scrollEl, "clientHeight", {
+      value: 600,
+      writable: true,
+      configurable: true,
+    });
+
+    vi.useFakeTimers();
+    scrollEl.dispatchEvent(new Event("scroll", { bubbles: true }));
+    vi.advanceTimersByTime(1000);
+    vi.useRealTimers();
+
+    // measure() wipes the size cache; calling it from the scroll path makes the
+    // total size flip between estimated and measured sums, which oscillates.
+    expect(measureMock).not.toHaveBeenCalled();
+    expect(scrollToEndMock).not.toHaveBeenCalled();
+  });
+
+  it("never scrolls anywhere on a load-earlier prepend", () => {
+    render(
+      <MessageList
+        messages={buildMessages(140)}
+        activeSessionId="sess-1"
+        isStreaming={false}
+        streamingMessageId={null}
+      />,
+    );
+
+    const scrollEl = document.querySelector(
+      '[data-testid="v2-message-list"]',
+    ) as HTMLDivElement;
+    for (const [prop, value] of [
+      ["scrollTop", 0],
+      ["scrollHeight", 12000],
+      ["clientHeight", 600],
+    ] as const) {
+      Object.defineProperty(scrollEl, prop, {
+        value,
         writable: true,
         configurable: true,
       });
-      Object.defineProperty(scrollEl, "scrollHeight", {
-        value: 12000,
-        writable: true,
-        configurable: true,
-      });
-      Object.defineProperty(scrollEl, "clientHeight", {
-        value: 600,
-        writable: true,
-        configurable: true,
-      });
-      scrollEl.dispatchEvent(new Event("scroll", { bubbles: true }));
     }
 
-    const endPins = scrollToIndexMock.mock.calls.filter(
-      (call) => call[0] === 79 && call[1]?.align === "end",
-    );
-    expect(endPins.length).toBe(0);
+    const countBefore = latestVirtualizerOptions().count;
+    scrollToIndexMock.mockClear();
+    scrollToEndMock.mockClear();
+
+    vi.useFakeTimers();
+    scrollEl.dispatchEvent(new Event("scroll", { bubbles: true }));
+    act(() => {
+      vi.advanceTimersByTime(LOAD_EARLIER_TOP_DEBOUNCE_MS + 50);
+    });
+    // The spinner holds the top on its own before the batch arrives.
+    expect(latestVirtualizerOptions().count).toBe(countBefore);
+    act(() => {
+      vi.advanceTimersByTime(LOAD_EARLIER_HOLD_MS + 50);
+    });
+    vi.useRealTimers();
+
+    // Older messages arrive above and the reader's place is held by correcting
+    // the offset. Taking them anywhere — to the anchor row or to the end — is a
+    // jump they did not ask for.
+    expect(latestVirtualizerOptions().count).toBeGreaterThan(countBefore);
+    expect(scrollToIndexMock).not.toHaveBeenCalled();
+    expect(scrollToEndMock).not.toHaveBeenCalled();
   });
 
   it("uses virtualItem.key on rendered virtual rows", () => {

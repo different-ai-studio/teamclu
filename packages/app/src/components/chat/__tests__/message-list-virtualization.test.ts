@@ -103,6 +103,33 @@ describe("estimateVirtualMessageSize", () => {
     );
     expect(estimateVirtualMessageSize(agent)).toBeGreaterThan(500);
   });
+
+  it("keeps growing with content instead of clamping tall rows", () => {
+    // Message bodies are never truncated in the UI, so one very long agent
+    // reply really is many screens tall. A clamped estimate puts every row
+    // after it off by the difference the clamp threw away, which is a blank
+    // viewport on fast scroll and an anchor restore that cannot land.
+    const long = makeMessage("long");
+    long.role = "assistant";
+    long.content = "x".repeat(40_000);
+
+    const longer = makeMessage("longer");
+    longer.role = "assistant";
+    longer.content = "x".repeat(80_000);
+
+    expect(estimateVirtualMessageSize(long)).toBeGreaterThan(10_000);
+    expect(estimateVirtualMessageSize(longer)).toBeGreaterThan(
+      estimateVirtualMessageSize(long) * 1.5,
+    );
+  });
+
+  it("keeps growing with content for a pasted user wall of text", () => {
+    const pasted = makeMessage("pasted");
+    pasted.role = "user";
+    pasted.content = "字".repeat(20_000);
+
+    expect(estimateVirtualMessageSize(pasted)).toBeGreaterThan(5_000);
+  });
 });
 
 describe("getVirtualMessageKey", () => {

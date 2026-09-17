@@ -591,6 +591,7 @@
     "planningMoves": "规划下一步",
     "loadEarlierMessages": "加载前 {{count}} 条消息",
     "loadingEarlierMessages": "正在加载更早的消息…",
+    "scrollToTopForEarlier": "滑到顶部加载更早消息",
     "compaction": {
       "title": "已自动压缩上下文",
       "inProgressTitle": "正在自动压缩上下文...",

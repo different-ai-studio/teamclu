@@ -97,4 +97,27 @@ describe("useChatStickToBottom", () => {
 
     expect(el.scrollTop).toBe(600);
   });
+
+  it("onScroll clears follow once the reader leaves the near-bottom zone", () => {
+    const scrollRef = React.createRef<HTMLDivElement>();
+    const el = mockScrollEl({
+      scrollHeight: 2000,
+      clientHeight: 400,
+      scrollTop: 2000 - 400 - (NEAR_BOTTOM_THRESHOLD + 50),
+    });
+    scrollRef.current = el;
+
+    const { result } = renderHook(() => useChatStickToBottom(scrollRef));
+
+    act(() => {
+      result.current.enableAutoFollow();
+      expect(result.current.onScroll()).toBe(false);
+    });
+
+    act(() => {
+      result.current.scrollToBottomIfAtBottom();
+    });
+
+    expect(el.scrollTop).toBe(2000 - 400 - (NEAR_BOTTOM_THRESHOLD + 50));
+  });
 });
