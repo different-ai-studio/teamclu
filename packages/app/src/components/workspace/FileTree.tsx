@@ -9,6 +9,7 @@ import { useWorkspaceStore, type FileNode } from "@/stores/workspace";
 import { useTeamConflictsStore } from "@/stores/team-conflicts";
 import { withDefaultExtension } from "@/lib/knowledge/knowledge-file-names";
 import { pruneKnowledgeNoise } from "@/lib/knowledge/knowledge-tree-pruning";
+import { mergeKnownDocuments } from "@/lib/knowledge/known-documents-tree";
 import { useTeamPermissions } from "@/lib/team/team-permissions";
 import { lazyNamed } from "@/lib/lazy-component";
 
@@ -21,6 +22,7 @@ import { getBackend } from "@/lib/backend";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { isIgnoredSyncKey } from "@/lib/knowledge/knowledge-ignored";
 import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
+import { useOssSyncStore } from "@/stores/oss-sync";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team/team-sync-badges";
 import { teamSyncKeyForPath } from "@/lib/team/team-skill-paths";
 import { proposeDocumentToKnowledge } from "@/lib/knowledge/propose-from-document";
@@ -202,10 +204,58 @@ export function FileTree({
   const expandDirectory = useWorkspaceStore(s => s.expandDirectory);
   const collapseDirectory = useWorkspaceStore(s => s.collapseDirectory);
   const setFocusedPath = useWorkspaceStore(s => s.setFocusedPath);
-  const fileTree = useMemo(
-    () => pruneKnowledgeNoise(rawFileTree, { syncRoot, workspacePath }),
-    [rawFileTree, syncRoot, workspacePath],
-  );
+
+  /**
+   * Documents listed by the manifest but not on this device.
+   *
+   * Keyed by sync key (`documents/…`). Nothing is written to disk for these, so
+   * the scan cannot reveal them — this is the only thing that makes them
+   * visible at all.
+   */
+  const [knownDocs, setKnownDocs] = useState<Map<string, number>>(new Map());
+  const [failedDownloads, setFailedDownloads] = useState<Set<string>>(new Set());
+
+  const refreshKnown = useCallback(async () => {
+    if (!isTauri() || !aclTeamId || !syncRoot) {
+      setKnownDocs(new Map());
+      return;
+    }
+    try {
+      const { listKnownDocuments } = await import('@/lib/daemon/daemon-local-client');
+      const items = await listKnownDocuments(aclTeamId);
+      setKnownDocs(new Map(items.map((i) => [i.path, i.size])));
+    } catch {
+      // A tree that cannot list unfetched documents is still a usable tree; it
+      // simply shows what is on disk, which is the pre-lazy behaviour.
+      setKnownDocs(new Map());
+    }
+  }, [aclTeamId, syncRoot]);
+
+  // A sync is what adds to the listing, and it writes nothing to disk for a new
+  // document — so the file watcher that refreshes the rest of the tree never
+  // fires for one. Re-read on every sync this window hears about, and on focus,
+  // since a background tick is otherwise invisible here (the sync footer
+  // re-reads its status on focus for the same reason). The read is local: the
+  // daemon answers from its state file, with no network behind it.
+  const lastSyncAt = useOssSyncStore(s => s.lastSyncAt);
+  useEffect(() => {
+    void refreshKnown();
+  }, [refreshKnown, lastSyncAt]);
+  useEffect(() => {
+    const onFocus = () => void refreshKnown();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshKnown]);
+
+  const { fileTree, placeholderPaths } = useMemo(() => {
+    const merged = mergeKnownDocuments(rawFileTree, knownDocs.keys(), (p) =>
+      teamSyncKeyForPath(p, { syncRoot, workspacePath }),
+    );
+    return {
+      fileTree: pruneKnowledgeNoise(merged.nodes, { syncRoot, workspacePath }),
+      placeholderPaths: merged.placeholderPaths,
+    };
+  }, [rawFileTree, knownDocs, syncRoot, workspacePath]);
   // One badge per document, folded from the three things that can be true of
   // it: a conflict sidecar on disk, a local change not yet pushed, a cloud
   // version not yet pulled.
@@ -289,10 +339,27 @@ export function FileTree({
     useWorkspaceStore.setState({ expandedPaths: nextExpanded });
   }, []);
 
+  /**
+   * Expand a folder — without reading the disk when the folder is only listed.
+   *
+   * A placeholder folder already carries its whole subtree from the manifest,
+   * and there is no directory behind it to read: the store's load would fail,
+   * log an error and change nothing.
+   */
+  const expandTreeDirectory = useCallback(async (path: string) => {
+    if (!placeholderPaths.has(path)) {
+      await expandDirectory(path);
+      return;
+    }
+    const nextExpanded = new Set(useWorkspaceStore.getState().expandedPaths);
+    nextExpanded.add(path);
+    useWorkspaceStore.setState({ expandedPaths: nextExpanded });
+  }, [placeholderPaths, expandDirectory]);
+
   const handleExpandDirectory = useCallback((path: string) => {
     setFocusedPath(path);
-    expandDirectory(path);
-  }, [setFocusedPath, expandDirectory]);
+    void expandTreeDirectory(path);
+  }, [setFocusedPath, expandTreeDirectory]);
 
   const handleCollapseDirectory = useCallback((path: string) => {
     setFocusedPath(path);
@@ -529,36 +596,6 @@ export function FileTree({
   }, [setClipboard]);
 
   /**
-   * Documents listed by the manifest but not on this device.
-   *
-   * Keyed by sync key (`documents/…`). Nothing is written to disk for these, so
-   * the scan cannot reveal them — this is the only thing that makes them
-   * visible at all.
-   */
-  const [knownDocs, setKnownDocs] = useState<Map<string, number>>(new Map());
-  const [failedDownloads, setFailedDownloads] = useState<Set<string>>(new Set());
-
-  const refreshKnown = useCallback(async () => {
-    if (!isTauri() || !aclTeamId || !syncRoot) {
-      setKnownDocs(new Map());
-      return;
-    }
-    try {
-      const { listKnownDocuments } = await import('@/lib/daemon/daemon-local-client');
-      const items = await listKnownDocuments(aclTeamId);
-      setKnownDocs(new Map(items.map((i) => [i.path, i.size])));
-    } catch {
-      // A tree that cannot list unfetched documents is still a usable tree; it
-      // simply shows what is on disk, which is the pre-lazy behaviour.
-      setKnownDocs(new Map());
-    }
-  }, [aclTeamId, syncRoot]);
-
-  useEffect(() => {
-    void refreshKnown();
-  }, [refreshKnown]);
-
-  /**
    * Cancel flag for an in-flight folder download.
    *
    * A ref rather than state: the loop below reads it between chunks, and a
@@ -581,35 +618,43 @@ export function FileTree({
    *
    * Reports failure rather than queueing: offline means "not now", and a hidden
    * queue would deliver the file long after the person stopped wanting it.
+   *
+   * Resolves true only when everything asked for landed, so a caller that
+   * wants to open the file next knows whether there is one to open.
    */
-  const handleDownload = useCallback(async (path: string) => {
-    if (!aclTeamId) return;
+  const handleDownload = useCallback(async (path: string): Promise<boolean> => {
+    if (!aclTeamId) return false;
     const key = teamSyncKeyForPath(path, { syncRoot, workspacePath });
-    if (!key) return;
+    if (!key) return false;
     // A directory has no entry of its own; everything listed beneath it does.
     const targets = knownDocs.has(key)
       ? [key]
       : [...knownDocs.keys()].filter((k) => k.startsWith(`${key}/`));
-    if (targets.length === 0) return;
+    if (targets.length === 0) return false;
 
     const { fetchDocuments } = await import('@/lib/daemon/daemon-local-client');
 
     // One file needs no progress reporting; the row's own state is enough.
     if (targets.length === 1) {
-      try {
-        await fetchDocuments(aclTeamId, targets);
+      // The daemon answers 200 for a pull that failed — it quarantines the path
+      // and counts only what it wrote — so the count is the verdict.
+      const landed = await fetchDocuments(aclTeamId, targets).then(
+        (fetched) => fetched > 0,
+        () => false,
+      );
+      if (landed) {
         setFailedDownloads((prev) => {
           const next = new Set(prev);
           next.delete(targets[0]);
           return next;
         });
-      } catch {
+      } else {
         setFailedDownloads((prev) => new Set([...prev, targets[0]]));
         toast.error(t('fileExplorer.downloadFailedToast', 'Download failed — check your connection'));
       }
       await refreshKnown();
       await refreshFileTree();
-      return;
+      return landed;
     }
 
     const toastId = `download-${key}`;
@@ -671,7 +716,21 @@ export function FileTree({
 
     await refreshKnown();
     await refreshFileTree();
+    return !downloadCancelRef.current && failed === 0;
   }, [aclTeamId, syncRoot, workspacePath, knownDocs, refreshKnown, refreshFileTree, t]);
+
+  /**
+   * Open a file — fetching it first when it is only listed.
+   *
+   * A listed file has nothing on disk, so opening it directly would show an
+   * editor with nothing to read. Clicking it is asking for it, which is the
+   * whole point of fetching on demand; a failed fetch has already said so, and
+   * leaves nothing to open.
+   */
+  const openTreeFile = useCallback(async (path: string) => {
+    if (placeholderPaths.has(path) && !(await handleDownload(path))) return;
+    await selectFile(path);
+  }, [placeholderPaths, handleDownload, selectFile]);
 
   /**
    * Give back the local copy. The server keeps it and nobody else is affected;
@@ -918,10 +977,10 @@ export function FileTree({
     treeRoot,
     selectedFiles,
     setFocusedPath,
-    expandDirectory,
+    expandDirectory: expandTreeDirectory,
     collapseDirectory,
     collapseCompacted,
-    selectFile,
+    selectFile: openTreeFile,
     handleDelete,
     handleDuplicate,
     handleCopy,
@@ -1089,7 +1148,7 @@ export function FileTree({
     isTeamKnowledge:
       node.type !== 'directory' &&
       teamSyncKeyForPath(node.path, { syncRoot, workspacePath }) !== null,
-    onSelectFile: selectFile,
+    onSelectFile: openTreeFile,
     onSelectFileRange: selectFileRange,
     onToggleFileSelection: toggleFileSelection,
     onExpandDirectory: handleExpandDirectory,
@@ -1135,7 +1194,9 @@ export function FileTree({
       const hasListedBelow =
         node.type === 'directory' && [...knownDocs.keys()].some((k) => k.startsWith(`${key}/`));
       return {
-        isNotDownloaded: listedOnly,
+        // The row, not the key: a folder drawn only from the listing is just as
+        // absent from disk as a listed file, and is marked the same way.
+        isNotDownloaded: placeholderPaths.has(node.path),
         downloadFailed: failedDownloads.has(key),
         onDownload: listedOnly || hasListedBelow ? handleDownload : undefined,
         // Only what is actually held locally can be given back. A directory is

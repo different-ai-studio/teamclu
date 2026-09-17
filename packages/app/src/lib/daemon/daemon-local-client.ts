@@ -1438,7 +1438,8 @@ interface KnownDocument {
  */
 export async function listKnownDocuments(teamId: string): Promise<KnownDocument[]> {
   return daemonFetchData<KnownDocument[]>(
-    `/v1/team/documents/known?team_id=${encodeURIComponent(teamId)}`,
+    // camelCase: the daemon reads this as `StatusQuery`, and `team_id` is a 400.
+    `/v1/team/documents/known?teamId=${encodeURIComponent(teamId)}`,
   )
 }
 
