@@ -589,9 +589,7 @@
     "askAboutFile": "Ask questions about the file",
     "askAnything": "Ask me anything",
     "planningMoves": "Planning next moves",
-    "loadEarlierMessages": "Load {{count}} earlier messages",
     "loadingEarlierMessages": "Loading earlier messages…",
-    "scrollToTopForEarlier": "Scroll to top to load earlier messages",
     "compaction": {
       "title": "Context automatically compacted",
       "inProgressTitle": "Compacting context automatically...",
