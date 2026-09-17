@@ -35,6 +35,42 @@ struct AppOnboardingCoordinatorTests {
     }
 
     @MainActor
+    @Test("a session ended by the server sends the user back to sign-in with a reason")
+    func revokedSessionReturnsToSignIn() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: "member-1", teams: [team])
+        )
+        let coordinator = AppOnboardingCoordinator(store: store)
+        await coordinator.bootstrap()
+        #expect(coordinator.route == .ready)
+
+        coordinator.handleSessionRevoked()
+
+        #expect(coordinator.route == .needsAuth)
+        #expect(coordinator.currentContext == nil)
+        #expect(coordinator.teamRuntimeContext == nil)
+        #expect(coordinator.errorMessage?.isEmpty == false)
+        // The server already ended the session: there is nothing left to sign out of.
+        #expect(await store.recordedSignOutCallCount() == 0)
+    }
+
+    @MainActor
+    @Test("a session ending while already on sign-in leaves that screen alone")
+    func revokedSessionWhileSignedOutIsIgnored() async throws {
+        let store = InMemoryOnboardingStore(bootstrap: AppBootstrap(memberActorID: nil, teams: []))
+        let coordinator = AppOnboardingCoordinator(store: store)
+        await coordinator.signOut()
+        #expect(coordinator.route == .needsAuth)
+        #expect(coordinator.errorMessage == nil)
+
+        coordinator.handleSessionRevoked()
+
+        #expect(coordinator.route == .needsAuth)
+        #expect(coordinator.errorMessage == nil)
+    }
+
+    @MainActor
     @Test("bootstrap routes users with a team into the app")
     func bootstrapWithTeamShowsApp() async throws {
         let team = TeamSummary(

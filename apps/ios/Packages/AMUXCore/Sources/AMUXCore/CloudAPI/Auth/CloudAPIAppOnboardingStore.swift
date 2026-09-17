@@ -85,6 +85,10 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
         sessionStore.tokenRefreshes()
     }
 
+    public nonisolated func sessionRevocations() -> AsyncStream<Void> {
+        sessionStore.sessionRevocations()
+    }
+
     // MARK: - Sign-in / sign-up
 
     public func signIn(email: String, password: String) async throws {

@@ -11,6 +11,7 @@ public actor SessionStore {
     private var session: StoredSession?
     private var refreshTask: Task<Void, Never>?
     private var continuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private var revocationContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     /// Refresh this many seconds before the JWT `exp` to absorb clock skew.
     private let refreshLeadSeconds: TimeInterval = 60
@@ -100,6 +101,30 @@ public actor SessionStore {
         for c in continuations.values { c.yield() }
     }
 
+    /// Emits when the server refuses the refresh token and the session is
+    /// dropped — it was ended somewhere else. Every later call throws
+    /// `AuthRequired`, so the app has to go back to sign-in rather than keep
+    /// showing screens that can no longer load.
+    public nonisolated func sessionRevocations() -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.registerRevocation(id: id, continuation: continuation) }
+            continuation.onTermination = { _ in Task { await self.unregisterRevocation(id: id) } }
+        }
+    }
+
+    private func registerRevocation(id: UUID, continuation: AsyncStream<Void>.Continuation) {
+        revocationContinuations[id] = continuation
+    }
+
+    private func unregisterRevocation(id: UUID) {
+        revocationContinuations[id] = nil
+    }
+
+    private func emitRevocation() {
+        for c in revocationContinuations.values { c.yield() }
+    }
+
     private func refreshLocked() async throws -> StoredSession {
         guard let s = session else { throw AuthRequired.notAuthenticated }
         struct Req: Encodable { let refreshToken: String }
@@ -120,6 +145,7 @@ public actor SessionStore {
             if case let .requestFailed(status, _, _) = apiError, (400..<500).contains(status) {
                 // Token is invalid/expired — clear session to force re-login.
                 clear()
+                emitRevocation()
                 throw AuthRequired.notAuthenticated
             }
             // Network or server error — keep the session alive so the next

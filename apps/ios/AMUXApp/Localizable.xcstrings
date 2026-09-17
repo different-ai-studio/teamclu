@@ -4447,6 +4447,16 @@
         }
       }
     },
+    "You were signed out. Sign in again to continue.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录已失效，请重新登录。"
+          }
+        }
+      }
+    },
     "Your Ally. Together.": {
       "localizations": {
         "zh-Hans": {
