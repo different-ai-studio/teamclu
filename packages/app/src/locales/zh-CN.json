@@ -1796,7 +1796,9 @@
     "seedErrorReason": {
       "cloneTimeout": "克隆超时。多半是这台机器的 git 凭证助手在等一个弹不出来的登录框；先在终端里 clone 一次这个仓库，再回来重试。",
       "authRequired": "这个仓库需要登录。填上用户名和访问令牌（Personal Access Token）再试。",
-      "authRejected": "仓库拒绝了这个凭证。检查访问令牌有没有过期、有没有读取这个仓库的权限。"
+      "authRejected": "仓库拒绝了这个凭证。检查访问令牌有没有过期、有没有读取这个仓库的权限。",
+      "repoNotFound": "打不开 {{url}}。仓库可能不存在或已改名；也可能是私有仓库，而这台机器没有它的凭证 —— 私有仓库对没有权限的人同样答「not found」。核对地址，或在应用设置里存一个访问令牌。",
+      "repoNotFoundNoUrl": "仓库地址打不开。它可能不存在或已改名；也可能是私有仓库，而这台机器没有它的凭证 —— 私有仓库对没有权限的人同样答「not found」。核对地址，或在应用设置里存一个访问令牌。"
     },
     "deployErrorReason": {
       "uncommitted": "工作区有未提交或未推送的改动，请先 commit 并 push 后再部署。",

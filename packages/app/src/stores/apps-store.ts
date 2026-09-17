@@ -396,6 +396,26 @@ function mapSeedErrorReason(raw: string | null): string | undefined {
       "这个仓库需要登录。填上用户名和访问令牌（Personal Access Token）再试。",
     );
   }
+  // A forge answers 404 both for a repository that is gone and for a private
+  // one the caller has no token for — GitHub deliberately will not say which,
+  // so neither can we. What we can do is name both, because the repairs differ
+  // (fix the address vs. store a token) and only the user knows which applies.
+  const notFound = /repository '([^']+)' not found|Repository not found/i.exec(raw);
+  if (notFound) {
+    // git prints the address with a trailing slash it added itself; the user is
+    // looking for the one they typed.
+    const url = notFound[1]?.replace(/\/+$/, "");
+    return url
+      ? i18n.t(
+          "apps.seedErrorReason.repoNotFound",
+          "打不开 {{url}}。仓库可能不存在或已改名；也可能是私有仓库，而这台机器没有它的凭证 —— 私有仓库对没有权限的人也答「not found」。核对地址，或在应用设置里存一个访问令牌。",
+          { url },
+        )
+      : i18n.t(
+          "apps.seedErrorReason.repoNotFoundNoUrl",
+          "仓库地址打不开。它可能不存在或已改名；也可能是私有仓库，而这台机器没有它的凭证 —— 私有仓库对没有权限的人也答「not found」。核对地址，或在应用设置里存一个访问令牌。",
+        );
+  }
   if (/Authentication failed|Invalid username or password|HTTP Basic: Access denied|returned error: 403/i.test(raw)) {
     return i18n.t(
       "apps.seedErrorReason.authRejected",

@@ -1796,7 +1796,9 @@
     "seedErrorReason": {
       "cloneTimeout": "The clone timed out. Most often this machine's git credential helper is waiting on a sign-in window that has nowhere to appear — clone the repo once in a terminal, then try again.",
       "authRequired": "This repository needs a login. Add a username and access token (personal access token), then try again.",
-      "authRejected": "The repository refused this credential. Check that the access token has not expired and can read this repository."
+      "authRejected": "The repository refused this credential. Check that the access token has not expired and can read this repository.",
+      "repoNotFound": "Could not open {{url}}. The repository may be gone or renamed — or it is private and this machine has no credential for it, since a forge answers “not found” to anyone without access too. Check the address, or store an access token in the app's settings.",
+      "repoNotFoundNoUrl": "Could not open the repository. It may be gone or renamed — or it is private and this machine has no credential for it, since a forge answers “not found” to anyone without access too. Check the address, or store an access token in the app's settings."
     },
     "deployErrorReason": {
       "uncommitted": "The workspace has uncommitted or unpushed changes. Commit and push, then deploy.",
