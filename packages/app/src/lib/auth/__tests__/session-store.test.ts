@@ -9,6 +9,9 @@ import {
 } from "@/lib/auth/session-store";
 import type { Session } from "@/lib/auth/types";
 
+const { logSignOutMock } = vi.hoisted(() => ({ logSignOutMock: vi.fn() }));
+vi.mock("@/lib/auth/sign-out-log", () => ({ logSignOut: logSignOutMock }));
+
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
     access_token: "atk",
@@ -53,6 +56,36 @@ describe("session-store", () => {
     expect(cb).toHaveBeenCalledWith("SIGNED_IN", s);
     setSession(null);
     expect(cb).toHaveBeenLastCalledWith("SIGNED_OUT", null);
+  });
+
+  it("records why a refused refresh token dropped the session", async () => {
+    logSignOutMock.mockReset();
+    const refused = Object.assign(new Error("Invalid Refresh Token: Refresh Token Not Found"), {
+      status: 400,
+      code: "refresh_token_not_found",
+    });
+    configureSessionStore({ refresher: vi.fn(async () => { throw refused; }) });
+    setSession(makeSession());
+
+    await expect(refreshSession()).rejects.toBe(refused);
+
+    expect(getSession()).toBeNull();
+    expect(logSignOutMock).toHaveBeenCalledWith("refresh_rejected", {
+      user: "u1",
+      status: "400",
+      code: "refresh_token_not_found",
+    });
+  });
+
+  it("does not record a sign-out when a refresh fails without ending the session", async () => {
+    logSignOutMock.mockReset();
+    configureSessionStore({ refresher: vi.fn(async () => { throw new Error("network down"); }) });
+    setSession(makeSession());
+
+    await expect(refreshSession()).rejects.toThrow("network down");
+
+    expect(getSession()).not.toBeNull();
+    expect(logSignOutMock).not.toHaveBeenCalled();
   });
 
   it("concurrent refresh callers share the same in-flight promise", async () => {

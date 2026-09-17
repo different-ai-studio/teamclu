@@ -13,6 +13,7 @@
 // cycle.
 
 import type { AuthChangeEvent, AuthListener, Session } from "@/lib/auth/types";
+import { logSignOut } from "@/lib/auth/sign-out-log";
 
 const STORAGE_KEY = "teamclu.session.v1";
 // Pre-rebrand key. A historical fact about what sits in users' localStorage, not
@@ -370,6 +371,7 @@ export function refreshSession(): Promise<Session> {
         e.status < 500 &&
         (e.code === "invalid_grant" || e.code === "refresh_token_not_found" || e.status === 401)
       ) {
+        logSignOut("refresh_rejected", { user: session.user?.id, status: String(e.status), code: e.code });
         setSession(null, "SIGNED_OUT");
       }
       throw err;

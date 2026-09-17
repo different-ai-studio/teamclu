@@ -538,6 +538,43 @@ describe("AuthGate", () => {
     expect(screen.queryByText("App shell")).not.toBeInTheDocument();
   });
 
+  it("says why when it signs the user out after a rejected team bootstrap", async () => {
+    backendMock.teams.listAllMyTeams.mockRejectedValueOnce(
+      new CloudApiError(401, "missing_auth", "Invalid or expired access token", null),
+    );
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() =>
+      expect(authState.signOut).toHaveBeenCalledWith(
+        "team_bootstrap_auth_rejected",
+        expect.stringContaining("401 missing_auth"),
+      ),
+    );
+  });
+
+  it("names the no-team screen when its sign-out button is used", async () => {
+    isTauriMock.mockReturnValue(false);
+    backendMock.teams.listAllMyTeams.mockResolvedValue([]);
+    backendMock.teams.bootstrapTeam.mockRejectedValueOnce(registrationDisabled());
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await nameTheTeam();
+    await waitFor(() => expect(screen.getByText("暂未加入团队")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "退出登录并使用其他账号" }));
+
+    expect(authState.signOut).toHaveBeenCalledWith("no_team_screen");
+  });
+
   it("still creates a team when the deployment allows self-registration", async () => {
     isTauriMock.mockReturnValue(false);
     backendMock.teams.listAllMyTeams.mockResolvedValue([]);

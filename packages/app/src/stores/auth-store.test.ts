@@ -5,6 +5,9 @@ vi.mock("@/lib/auth/web-sso", () => ({
   cancelWebSso: vi.fn(),
 }));
 
+const { logSignOutMock } = vi.hoisted(() => ({ logSignOutMock: vi.fn() }));
+vi.mock("@/lib/auth/sign-out-log", () => ({ logSignOut: logSignOutMock }));
+
 import { runWebSso, cancelWebSso } from "@/lib/auth/web-sso";
 import { CloudApiError } from "@/lib/backend/cloud-api/http";
 
@@ -244,7 +247,28 @@ describe("auth-store", () => {
     expect(useAuthStore.getState().otpPhone).toBeNull();
   });
 
+  it("signOut records why it happened, with the signed-out user", async () => {
+    logSignOutMock.mockReset();
+    useAuthStore.setState({ session: { user: { id: "u" } } });
+    authMock.signOut.mockResolvedValueOnce(undefined);
 
+    await useAuthStore.getState().signOut("team_bootstrap_auth_rejected", "401 missing_auth");
+
+    expect(logSignOutMock).toHaveBeenCalledWith(
+      "team_bootstrap_auth_rejected",
+      expect.objectContaining({ user: "u", detail: "401 missing_auth" }),
+    );
+  });
+
+  it("signOut without a reason is still recorded", async () => {
+    logSignOutMock.mockReset();
+    useAuthStore.setState({ session: { user: { id: "u" } } });
+    authMock.signOut.mockResolvedValueOnce(undefined);
+
+    await useAuthStore.getState().signOut();
+
+    expect(logSignOutMock).toHaveBeenCalledWith("unspecified", expect.objectContaining({ user: "u" }));
+  });
 
   it("signInWithPassword stores the returned session", async () => {
     authMock.signInWithPassword.mockResolvedValueOnce(storeSessionLike("password-1"));

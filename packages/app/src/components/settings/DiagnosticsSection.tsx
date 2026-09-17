@@ -254,7 +254,7 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
     setConfirmAction(null)
     if (action === 'relogin') {
       try {
-        await signOut()
+        await signOut('diagnostics_relogin')
         closeSettings()
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err))

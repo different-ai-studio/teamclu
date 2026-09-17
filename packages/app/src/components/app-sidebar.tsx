@@ -370,7 +370,7 @@ function SidebarUserAccountMenu() {
           {t('settings.nav.leaderboard', 'Team Leaderboard')}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => { void signOut() }} variant="destructive">
+        <DropdownMenuItem onClick={() => { void signOut('user_menu') }} variant="destructive">
           <LogOut className="mr-2 h-4 w-4" />
           {t('common.signOut', 'Sign out')}
         </DropdownMenuItem>

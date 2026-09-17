@@ -385,7 +385,10 @@ export function AuthGate({ children }: AuthGateProps) {
             return;
           } catch (refreshErr) {
             console.warn("[AuthGate] auth rejected, signing out", refreshErr);
-            await signOut();
+            await signOut(
+              "team_bootstrap_auth_rejected",
+              `${err.status} ${err.code}: ${err.message}; refresh: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`,
+            );
             return;
           }
         }
@@ -546,7 +549,7 @@ export function AuthGate({ children }: AuthGateProps) {
         error={bootstrapError}
         busy={retrying}
         onRetry={retryBootstrap}
-        onSignOut={() => void signOut()}
+        onSignOut={() => void signOut("bootstrap_error_screen")}
       />
     );
   }
@@ -560,7 +563,7 @@ export function AuthGate({ children }: AuthGateProps) {
           busy={creatingFirstTeam}
           error={bootstrapError}
           onSubmit={createFirstTeam}
-          onSignOut={() => void signOut()}
+          onSignOut={() => void signOut("name_team_screen")}
         />
         <PendingInvitesDialog onAccepted={finishPendingInvite} />
       </>
@@ -575,7 +578,7 @@ export function AuthGate({ children }: AuthGateProps) {
           messages={extensionTeamOnboarding.noTeamMessage}
           checking={checkingNoTeamInvites}
           onRetry={retryNoTeamInvites}
-          onSignOut={() => void signOut()}
+          onSignOut={() => void signOut("no_team_screen")}
         />
         <PendingInvitesDialog onAccepted={finishPendingInvite} />
       </>

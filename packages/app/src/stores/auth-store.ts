@@ -17,7 +17,8 @@ import {
   syncIntrospectAuthBridge,
 } from "@/lib/daemon/introspect-auth-bridge";
 import { clearSessionFeatures } from "@/lib/config/remote-features";
-import { getEffectiveServerConfig } from "@/lib/config/server-config";
+import { getEffectiveServerConfig, getEffectiveServerConfigSync } from "@/lib/config/server-config";
+import { logSignOut, type SignOutReason } from "@/lib/auth/sign-out-log";
 import { markStartup } from "@/lib/telemetry/startup-perf";
 
 export type { AuthClaimResult } from "@/lib/backend";
@@ -82,7 +83,16 @@ interface AuthState {
   refreshPendingInvites: () => Promise<void>;
   acceptPendingInvite: (inviteId: string) => Promise<AuthClaimResult | null>;
   declinePendingInvite: (inviteId: string) => Promise<boolean>;
-  signOut: () => Promise<void>;
+  /** `reason` goes to the desktop log file; see `SignOutReason`. */
+  signOut: (reason?: SignOutReason, detail?: string) => Promise<void>;
+}
+
+function configuredServerUrl(): string | undefined {
+  try {
+    return getEffectiveServerConfigSync().cloudApiUrl;
+  } catch {
+    return undefined;
+  }
 }
 
 function errorMessageFor(error: unknown): string {
@@ -193,6 +203,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (session?.accessToken) {
         const { cloudApiUrl } = await getEffectiveServerConfig();
         if (!accessTokenMatchesBackend(session.accessToken, cloudApiUrl)) {
+          logSignOut("session_from_other_backend", { user: session.user?.id, server: cloudApiUrl });
           await getBackend().auth.signOut();
           session = null;
         }
@@ -489,7 +500,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ pendingInvites: get().pendingInvites.filter((i) => i.inviteId !== inviteId) });
     return true;
   },
-  signOut: async () => {
+  signOut: async (reason = "unspecified", detail) => {
+    logSignOut(reason, { user: get().session?.user?.id, server: configuredServerUrl(), detail });
     await getBackend().auth.signOut();
     set({ session: null, authFlow: "idle", otpEmail: null, otpPhone: null, phoneMultiUsers: [], pendingPhoneOTPToken: "", pendingInvites: [] });
     void clearIntrospectAuthBridge();
