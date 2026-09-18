@@ -62,6 +62,15 @@ export function isPlatformOperator(
  */
 export const ADMIN_LIST_CAP = 2000;
 
+/**
+ * How many ids go into one PostgREST `in` filter.
+ *
+ * Filters travel in the query string, so a few hundred uuids is a 13 KB URL
+ * and the gateway answers `URI too long` — which is what the teams list did on
+ * self-host (352 teams) while every unit test passed.
+ */
+export const IN_FILTER_BATCH = 80;
+
 /** Page size for an operator list: 1–200, defaulting to `fallback`. */
 export function clampPage(value: unknown, fallback: number): number {
   const n = Math.trunc(Number(value));

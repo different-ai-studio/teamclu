@@ -182,6 +182,51 @@ test("teams carry the balance from the gateway and can be ranked by it", async (
   assert.deepEqual(byUsage.items.map((r: any) => r.slug), ["b", "acme-core"]);
 });
 
+test("a team the ledger never heard of does not top the 'about to run dry' list", async (t) => {
+  // Live observation: on self-host most teams have no balance row and no spend
+  // (e2e leftovers), and sorting by balance put all of them above the team that
+  // actually had a few thousand credits left.
+  withOperators(t, OPERATOR);
+  t.mock.method(aiGateway, "creditTeams", async () => ({
+    items: [{ teamId: TEAM, balanceCredits: 4200, periodCredits: 10 }],
+    truncated: false,
+  }));
+  const { repo } = repoFor(OPERATOR, {
+    "amux.teams": [
+      { ...TEAM_ROW, id: "never", slug: "never-used", oid: null },
+      TEAM_ROW,
+    ],
+    "public.orgs": [{ id: ORG, name: "Acme" }],
+    "amux.actors": [],
+  });
+
+  const out = await repo.listAdminTeams({ sort: "balance" });
+  assert.deepEqual(out.items.map((r: any) => r.slug), ["acme-core", "never-used"]);
+});
+
+test("an id filter is split into batches, whatever the deployment's size", async (t) => {
+  // Live regression: 352 teams in one `in` filter is a 13 KB query string and
+  // the gateway answers `URI too long`, so the screen 500s while every unit
+  // test that used three rows passed.
+  withOperators(t, OPERATOR);
+  t.mock.method(aiGateway, "creditTeams", async () => ({ items: [], truncated: false }));
+  const many = Array.from({ length: 352 }, (_, i) => `${i}`.padStart(8, "0") + "-0000-4000-8000-000000000000");
+  const { repo, seen } = repoFor(OPERATOR, {
+    "amux.teams": many.map((id) => ({ id, slug: `t-${id.slice(0, 4)}`, name: null, created_at: "2026-09-01T00:00:00Z", oid: ORG })),
+    "public.orgs": [{ id: ORG, name: "Acme" }],
+    "amux.actors": [],
+  });
+
+  await repo.listAdminTeams({ limit: 5 });
+
+  const batches = seen
+    .filter((q) => q.table === "actors")
+    .map((q) => q.filters.find((f) => f.startsWith("in:team_id="))!.slice("in:team_id=".length).split("|").length);
+  assert.ok(batches.length >= 5, `expected several batches, got ${batches.length}`);
+  assert.ok(Math.max(...batches) <= 80, `a batch carried ${Math.max(...batches)} ids`);
+  assert.equal(batches.reduce((a, b) => a + b, 0), 352, "every id is still asked about exactly once");
+});
+
 test("a team list survives a gateway that is down, minus the money", async (t) => {
   // The gateway holds the balances; the org and team inventory does not depend
   // on it, and an operator looking at teams should not get an empty screen

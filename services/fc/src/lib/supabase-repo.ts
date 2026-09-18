@@ -9,7 +9,7 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
-import { ADMIN_LIST_CAP, clampPage, isPlatformOperator, safeSearch } from "./platform-operators.js";
+import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, isPlatformOperator, safeSearch } from "./platform-operators.js";
 import { DEFAULT_LIST_LIMIT, DEFAULT_MESSAGE_LIST_LIMIT } from "./routing-utils.js";
 
 import { resolveFeatures } from "./routes/config.js";
@@ -654,6 +654,33 @@ export function createSupabaseBusinessRepository(options) {
     } catch (cause) {
       return { data: { user: null }, error: cause };
     }
+  }
+
+  /**
+   * A `.in(column, ids)` read, split into batches.
+   *
+   * PostgREST takes its filters in the query string, so a few hundred uuids
+   * in one `in` list is a 13 KB URL and the gateway answers `URI too long`
+   * — measured on self-host, where the teams list is 352 rows and the screen
+   * came back 500 while every unit test passed.
+   */
+  async function selectInBatches(
+    admin: any,
+    opts: { schema: string; table: string; select: string; column: string; ids: string[]; eq?: Record<string, unknown> },
+  ): Promise<any[]> {
+    const out: any[] = [];
+    for (let i = 0; i < opts.ids.length; i += IN_FILTER_BATCH) {
+      let q = admin
+        .schema(opts.schema)
+        .from(opts.table)
+        .select(opts.select)
+        .in(opts.column, opts.ids.slice(i, i + IN_FILTER_BATCH));
+      for (const [col, value] of Object.entries(opts.eq ?? {})) q = q.eq(col, value);
+      const { data, error } = await q;
+      if (error) throw error;
+      out.push(...(data ?? []));
+    }
+    return out;
   }
 
   /**
@@ -1571,14 +1598,11 @@ export function createSupabaseBusinessRepository(options) {
 
       const counts = new Map<string, { teams: number; members: Set<string> }>();
       if (orgIds.length) {
-        const { data: teams, error: teamErr } = await admin
-          .schema("amux")
-          .from("teams")
-          .select("id,oid")
-          .in("oid", orgIds);
-        if (teamErr) throw teamErr;
+        const teams = await selectInBatches(admin, {
+          schema: "amux", table: "teams", select: "id,oid", column: "oid", ids: orgIds,
+        });
         const teamOrg = new Map<string, string>();
-        for (const t of teams ?? []) {
+        for (const t of teams) {
           teamOrg.set(t.id, t.oid);
           const c = counts.get(t.oid) ?? { teams: 0, members: new Set<string>() };
           c.teams++;
@@ -1586,14 +1610,11 @@ export function createSupabaseBusinessRepository(options) {
         }
         const teamIds = [...teamOrg.keys()];
         if (teamIds.length) {
-          const { data: actors, error: actorErr } = await admin
-            .schema("amux")
-            .from("actors")
-            .select("team_id,user_id,actor_type")
-            .in("team_id", teamIds)
-            .eq("actor_type", "member");
-          if (actorErr) throw actorErr;
-          for (const a of actors ?? []) {
+          const actors = await selectInBatches(admin, {
+            schema: "amux", table: "actors", select: "team_id,user_id,actor_type",
+            column: "team_id", ids: teamIds, eq: { actor_type: "member" },
+          });
+          for (const a of actors) {
             const oid = teamOrg.get(a.team_id);
             if (!oid || !a.user_id) continue;
             counts.get(oid)?.members.add(a.user_id);
@@ -1703,28 +1724,22 @@ export function createSupabaseBusinessRepository(options) {
 
       const [orgNames, memberCounts, totals] = await Promise.all([
         (async () => {
-          const ids = [...new Set(teams.map((t: any) => t.oid).filter(Boolean))];
+          const ids = [...new Set(teams.map((t: any) => t.oid).filter(Boolean))] as string[];
           if (!ids.length) return new Map<string, string>();
-          const { data: orgs, error: orgErr } = await admin
-            .schema("public")
-            .from("orgs")
-            .select("id,name")
-            .in("id", ids);
-          if (orgErr) throw orgErr;
-          return new Map((orgs ?? []).map((o: any) => [o.id, o.name as string]));
+          const orgs = await selectInBatches(admin, {
+            schema: "public", table: "orgs", select: "id,name", column: "id", ids,
+          });
+          return new Map(orgs.map((o: any) => [o.id as string, o.name as string]));
         })(),
         (async () => {
-          const ids = teams.map((t: any) => t.id);
+          const ids = teams.map((t: any) => t.id) as string[];
           const counts = new Map<string, number>();
           if (!ids.length) return counts;
-          const { data: actors, error: actorErr } = await admin
-            .schema("amux")
-            .from("actors")
-            .select("team_id")
-            .in("team_id", ids)
-            .eq("actor_type", "member");
-          if (actorErr) throw actorErr;
-          for (const a of actors ?? []) counts.set(a.team_id, (counts.get(a.team_id) ?? 0) + 1);
+          const actors = await selectInBatches(admin, {
+            schema: "amux", table: "actors", select: "team_id", column: "team_id", ids,
+            eq: { actor_type: "member" },
+          });
+          for (const a of actors) counts.set(a.team_id, (counts.get(a.team_id) ?? 0) + 1);
           return counts;
         })(),
         // The gateway owns the ledger, so the money numbers come from it even
@@ -1746,8 +1761,20 @@ export function createSupabaseBusinessRepository(options) {
         balanceCredits: credits.get(t.id)?.balanceCredits ?? 0,
         periodCredits: credits.get(t.id)?.periodCredits ?? 0,
       }));
-      if (opts.sort === "balance") rows.sort((a, b) => a.balanceCredits - b.balanceCredits);
-      else if (opts.sort === "usage") rows.sort((a, b) => b.periodCredits - a.periodCredits);
+      if (opts.sort === "balance") {
+        // "About to run dry" is the question this sort answers, and a team the
+        // ledger has never heard of (no balance, nothing spent) is not about to
+        // run dry — it has never had credits. Measured on self-host, where such
+        // teams are most of the table and filled the whole first page.
+        const known = (r: { balanceCredits: number; periodCredits: number }) =>
+          r.balanceCredits !== 0 || r.periodCredits !== 0;
+        rows.sort((a, b) => {
+          if (known(a) !== known(b)) return known(a) ? -1 : 1;
+          return a.balanceCredits - b.balanceCredits;
+        });
+      } else if (opts.sort === "usage") {
+        rows.sort((a, b) => b.periodCredits - a.periodCredits);
+      }
 
       return {
         items: rows.slice(offset, offset + limit),
