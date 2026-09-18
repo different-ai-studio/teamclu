@@ -1132,7 +1132,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let (tx, _rx) = crate::runtime::pi_rpc::event_sink::EventSink::capture();
         shared.routes.lock().insert(
             "pi:/s.jsonl".into(),
             crate::runtime::pi_rpc::Route {
@@ -1177,6 +1177,102 @@ mod tests {
 
         in_flight.abort();
         shared.pool.kill_all();
+    }
+
+    /// The 2026-09-16 freeze: one session whose events nobody drains must not
+    /// stop the reader from delivering request responses for the whole child.
+    /// Before the event sink, the reader parked on the second event for that
+    /// session and this request sat unanswered until its 30s timeout.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_undrained_session_does_not_stall_responses_for_the_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let _env = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+
+        // Waits for the first request, floods the session with events, then
+        // answers the request.
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fake_pi = bin_dir.path().join("fake-pi");
+        std::fs::write(
+            &fake_pi,
+            r#"#!/bin/sh
+IFS= read -r line
+id=$(printf '%s' "$line" | sed -n 's/.*"id":"\(amux-[0-9]*\)".*/\1/p')
+i=0
+while [ $i -lt 600 ]; do
+  echo '{"type":"extension_ui_request","id":"t'$i'","method":"setTitle","title":"t'$i'","sessionId":"pi:/s.jsonl"}'
+  i=$((i+1))
+done
+echo '{"type":"response","id":"'$id'","command":"get_state","success":true,"data":{}}'
+cat > /dev/null
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let pkg = bin_dir.path().join("pkg");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(pkg.join("dist/cli.js"), "").unwrap();
+        let config_path = crate::config::DaemonConfig::default_path();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                "[actor]\nid = \"d\"\nname = \"m\"\n[mqtt]\nbroker_url = \"tcp://x:1883\"\n\
+                 [agents.pi]\nnode = {:?}\npackage_root = {:?}\nsession_host = \"rpc\"\n",
+                fake_pi.to_string_lossy(),
+                pkg.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let worktree = tempfile::tempdir().unwrap();
+        let shared = super::Shared::new();
+        let key = PoolKey {
+            domain: IsolationDomainKey::Workspace("ws-stall".into()),
+            env_revision: ProcessEnvRevision::from_bindings(&HashMap::new()),
+            worktree: worktree.path().to_string_lossy().into_owned(),
+        };
+        let child = shared
+            .pool
+            .ensure_with_env(&shared, &key, SpawnEnv::default())
+            .expect("spawn");
+
+        // A runtime handle with one slot that nobody reads.
+        let (handle_tx, _handle_rx) = tokio::sync::mpsc::channel(1);
+        shared.routes.lock().insert(
+            "pi:/s.jsonl".into(),
+            crate::runtime::pi_rpc::Route {
+                event_tx: crate::runtime::pi_rpc::event_sink::EventSink::forward_to(handle_tx),
+                permission: crate::runtime::permission_policy::PermissionPolicy::Ask,
+                pool_key: key.clone(),
+                session_path: "/s.jsonl".into(),
+                turn_active: false,
+                user_cancel_requested: false,
+                turn_reply_to: None,
+                turn_requester: None,
+                translate: crate::runtime::pi_rpc::translate::TranslateState::default(),
+                last_entry_id: None,
+            },
+        );
+
+        let answered = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            child
+                .client
+                .request(serde_json::json!({"type": "get_state"})),
+        )
+        .await;
+        shared.pool.kill_all();
+        let response = answered
+            .expect("the response must not wait on an undrained session")
+            .expect("request");
+        assert_eq!(
+            response.get("success").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     /// The misdiagnosis this guards: a teammate's workspace path does not

@@ -663,9 +663,9 @@ mod tests {
         session_path: &str,
     ) -> (
         super::super::Route,
-        tokio::sync::mpsc::Receiver<AcpEventFrame>,
+        tokio::sync::mpsc::UnboundedReceiver<AcpEventFrame>,
     ) {
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let (tx, rx) = super::super::event_sink::EventSink::capture();
         (
             super::super::Route {
                 event_tx: tx,
@@ -1033,7 +1033,7 @@ mod tests {
         shared: &Arc<Shared>,
         key: &PoolKey,
         client: &PiClient,
-    ) -> tokio::sync::mpsc::Receiver<AcpEventFrame> {
+    ) -> tokio::sync::mpsc::UnboundedReceiver<AcpEventFrame> {
         let (mut route, rx) = test_route(key.clone(), "/s/a.jsonl");
         route.turn_active = true;
         shared.routes.lock().insert("pi:/s/a.jsonl".into(), route);
