@@ -854,21 +854,41 @@ pub async fn webview_close(
     Ok(())
 }
 
+/// Where a hidden webview is parked: far outside any real window, so the window
+/// clips it away whatever its hidden flag ends up being.
+const PARKED_ORIGIN: f64 = -20000.0;
+
 /// Hide a native webview (keeps it alive, no reload on show).
 ///
-/// Both failure modes are logged, because a native webview left showing covers
-/// whatever the user switched to and nothing in the UI can reach it: a label
-/// that is not here yet means the hide raced the create and hid nothing, and a
-/// refused `hide()` means the platform kept it on screen. Neither used to leave
-/// a trace, so a report of "a white page is covering my session" had no way to
-/// say which had happened.
+/// Parked out of the window first, then hidden. `hide()` alone has been watched
+/// to fail in the field: the command runs, tauri and wry report no error, and
+/// the webview stays painted over whatever the user switched to — a white
+/// rectangle covering a session, with nothing in the UI able to reach it,
+/// because a native child webview is not part of the page. Moving it out of the
+/// window does not depend on the hidden flag landing. Every `webview_show` and
+/// every `webview_set_bounds` sets position and size before anything is
+/// visible, so the parking spot is always undone before it could be seen.
+///
+/// The bounds afterwards go in the log, and they are what tells the two
+/// remaining stories apart next time: bounds that report the parked origin mean
+/// the webview obeyed and anything still on screen is not this webview; bounds
+/// that report the old position mean the call never reached it.
 #[tauri::command]
 pub async fn webview_hide(app: tauri::AppHandle, label: String) -> Result<(), String> {
     match app.get_webview(&label) {
         Some(webview) => {
             log::info!("[Webview] Hiding: {}", label);
+            if let Err(err) =
+                webview.set_position(tauri::LogicalPosition::new(PARKED_ORIGIN, PARKED_ORIGIN))
+            {
+                log::error!("[Webview] Parking refused for {}: {}", label, err);
+            }
             if let Err(err) = webview.hide() {
                 log::error!("[Webview] Hide refused for {}: {}", label, err);
+            }
+            match webview.position() {
+                Ok(position) => log::info!("[Webview] Hidden {} now at {:?}", label, position),
+                Err(err) => log::warn!("[Webview] Could not read {} bounds: {}", label, err),
             }
         }
         None => log::warn!("[Webview] Hide found no webview labelled {}", label),
