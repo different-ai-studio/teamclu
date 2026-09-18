@@ -1,6 +1,7 @@
 import { exists, readTextFile } from '@tauri-apps/plugin-fs'
 import { homeDir } from '@tauri-apps/api/path'
 import { appShortName, resolveAmuxdDirName } from '@/lib/config/build-config'
+import { isPathAtOrUnder, relativePathUnder } from '@/lib/fs-path'
 
 /**
  * Workspace symlink/dir name for team-shared content.
@@ -172,6 +173,12 @@ export async function globalTeamKnowledgeShareDir(): Promise<string | null> {
  * two spellings therefore produce the same key for the same file, which is the
  * whole point: the key is what the manifest, the ACL prefixes and the version
  * history are all addressed by.
+ *
+ * A key is always `/`-separated — it addresses rows on the server, not files on
+ * this disk — so a Windows path yields the same key as the macOS one. See
+ * `relativePathUnder`: the root is built here with `/` and `absPath` comes back
+ * from Rust with `\`, and comparing those literally is what used to return null
+ * for every file on Windows.
  */
 export function teamSyncKeyForPath(
   absPath: string,
@@ -179,13 +186,14 @@ export function teamSyncKeyForPath(
 ): string | null {
   const syncRoot = opts.syncRoot ?? lastKnownSyncRoot
   if (syncRoot) {
-    const root = trimTrailingPathSeparators(syncRoot)
-    if (absPath.startsWith(`${root}/`)) return absPath.slice(root.length + 1)
+    const rel = relativePathUnder(absPath, syncRoot)
+    if (rel) return rel
   }
   for (const [linkDir, prefix] of SYNC_ROOT_LINKS) {
     if (!opts.workspacePath) break
     const link = `${trimTrailingPathSeparators(opts.workspacePath)}/${linkDir}`
-    if (absPath.startsWith(`${link}/`)) return `${prefix}/${absPath.slice(link.length + 1)}`
+    const rel = relativePathUnder(absPath, link)
+    if (rel) return `${prefix}/${rel}`
   }
   return null
 }
@@ -276,9 +284,9 @@ async function remapTeamSkillPath(
   if (!teamId) return null
 
   const linkRoot = `${workspacePath}/${TEAM_SHARE_LINK_DIR}`
-  if (!path.startsWith(linkRoot)) return null
+  if (!isPathAtOrUnder(path, linkRoot)) return null
 
-  const rel = path.slice(linkRoot.length).replace(/^[/\\]+/, '')
+  const rel = relativePathUnder(path, linkRoot) ?? ''
   const globalDir = await globalTeamDir(teamId)
   const remapped = rel ? joinPath(globalDir, rel) : globalDir
   return (await exists(remapped)) ? remapped : null

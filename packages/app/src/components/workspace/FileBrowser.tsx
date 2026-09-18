@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { cn } from '@/lib/utils'
+import { basenameOf, isSamePath, joinPathLike, relativePathUnder } from '@/lib/fs-path'
 import { useFileChangeBatchListener } from '@/hooks/use-file-change-batch-listener'
 import { useWorkspaceStore, type FileNode } from '@/stores/workspace'
 import { ScrollBar } from '@/components/ui/scroll-area'
@@ -20,7 +21,7 @@ import { FileTree } from './FileTree'
 /** Find subtree children for a given path in a file tree */
 function findSubtree(nodes: FileNode[], target: string): FileNode[] | undefined {
   for (const node of nodes) {
-    if (node.path === target) return node.children
+    if (isSamePath(node.path, target)) return node.children
     if (node.children) {
       const found = findSubtree(node.children, target)
       if (found !== undefined) return found
@@ -109,7 +110,7 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
   const effectiveTree = React.useMemo(() => {
     if (rootPaths && rootPaths.length > 0) {
       return rootPaths.map((p, i) => {
-        const name = rootLabels?.[i] || p.split('/').pop() || p
+        const name = rootLabels?.[i] || basenameOf(p) || p
         const existing = findSubtree(fileTree, p)
         return {
           name,
@@ -130,12 +131,15 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
   React.useEffect(() => {
     const expandWithAncestors = async (targetPath: string) => {
       const wp = useWorkspaceStore.getState().workspacePath
-      if (!wp || !targetPath.startsWith(wp)) return
-      const relative = targetPath.slice(wp.length + 1)
+      if (!wp) return
+      const relative = relativePathUnder(targetPath, wp)
+      if (!relative) return
       const segments = relative.split('/')
       let current = wp
       for (const seg of segments) {
-        current = `${current}/${seg}`
+        // Joined the way the workspace path is spelled — these strings are
+        // matched against listed nodes, which carry the platform separator.
+        current = joinPathLike(current, seg)
         // Only load the levels that are actually missing, and re-read the tree
         // each step because it changes across the await. Re-expanding a loaded
         // ancestor costs an IPC round-trip and republishes the whole level,

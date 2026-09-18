@@ -109,3 +109,38 @@ describe('mergeKnownDocuments', () => {
     expect(nodes[1].children).toEqual([])
   })
 })
+
+/**
+ * The same merge on Windows, where the root the app built and the paths Rust
+ * returned are spelled differently. `keyForPath` used to return null for every
+ * node here, so nothing was ever drawn in: on Windows 资料库 stayed empty no
+ * matter how many documents the team had uploaded.
+ */
+describe('mergeKnownDocuments on Windows', () => {
+  const BUILT_ROOT = 'C:\\Users\\x/.amuxd/teams/t1/shared/team-sync'
+  const RUST_ROOT = 'C:\\Users\\x\\.amuxd\\teams\\t1\\shared\\team-sync'
+  const RUST_DOCS = `${RUST_ROOT}\\documents`
+
+  const winKey = (p: string) =>
+    teamSyncKeyForPath(p, { syncRoot: BUILT_ROOT, workspacePath: 'C:\\work' })
+
+  it('draws listed documents and spells their paths the way the disk does', () => {
+    const tree: FileNode[] = [
+      { name: 'documents', path: RUST_DOCS, type: 'directory', children: [] },
+      { name: 'knowledge', path: `${RUST_ROOT}\\knowledge`, type: 'directory', children: [] },
+    ]
+
+    const { nodes, placeholderPaths } = mergeKnownDocuments(
+      tree,
+      ['documents/人力资源/offer.pdf'],
+      winKey,
+    )
+
+    const docs = nodes[0]
+    expect(names(docs.children)).toEqual(['人力资源'])
+    const hr = docs.children![0]
+    expect(hr.path).toBe(`${RUST_DOCS}\\人力资源`)
+    expect(names(hr.children)).toEqual(['offer.pdf'])
+    expect(placeholderPaths.has(`${RUST_DOCS}\\人力资源\\offer.pdf`)).toBe(true)
+  })
+})

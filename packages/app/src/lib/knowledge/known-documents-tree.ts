@@ -1,4 +1,5 @@
 import type { FileNode } from '@/stores/workspace'
+import { joinPathLike } from '@/lib/fs-path'
 
 /**
  * The tree with every listed-but-unfetched document drawn in.
@@ -55,7 +56,10 @@ export function mergeKnownDocuments(
     placeholderPaths.add(path)
     if (kind === 'file') return { name, path, type: 'file' }
     const children = [...(index.get(key) ?? [])].map(([child, childKind]) =>
-      placeholder(`${path}/${child}`, `${key}/${child}`, child, childKind),
+      // Joined the way the parent is spelled: a placeholder row is compared
+      // against on-disk nodes and against `expandedPaths`, both of which use
+      // the platform separator on Windows.
+      placeholder(joinPathLike(path, child), `${key}/${child}`, child, childKind),
     )
     return { name, path, type: 'directory', children: sortEntries(children) }
   }
@@ -76,7 +80,7 @@ export function mergeKnownDocuments(
       const added: FileNode[] = []
       for (const [name, kind] of listed ?? []) {
         if (present.has(name)) continue
-        added.push(placeholder(`${node.path}/${name}`, `${key}/${name}`, name, kind))
+        added.push(placeholder(joinPathLike(node.path, name), `${key}/${name}`, name, kind))
       }
 
       if (added.length === 0 && children === node.children) return node

@@ -128,6 +128,34 @@ describe('teamSyncKeyForPath', () => {
     expect(teamSyncKeyForPath(SYNC_ROOT, { syncRoot: SYNC_ROOT })).toBeNull()
   })
 
+  /**
+   * On Windows the root and the file are spelled differently: the root is what
+   * this module built (`homeDir()` returns `C:\Users\x`, everything after it is
+   * joined with `/`), the file is what `read_workspace_directory` returned (a
+   * `PathBuf`, so all backslashes). Comparing them literally returned null for
+   * every file on Windows, which left the knowledge tree unlocalized, with no
+   * placeholder rows and no permissions — the visible symptom being an empty
+   * 资料库 on a machine whose sync was perfectly healthy.
+   */
+  it('maps a Windows path to the same /-separated key', () => {
+    const builtRoot = 'C:\\Users\\x/.amuxd-copilot361/teams/team-abc/shared/team-sync'
+    const fromRust =
+      'C:\\Users\\x\\.amuxd-copilot361\\teams\\team-abc\\shared\\team-sync\\documents\\人力资源\\offer.pdf'
+
+    expect(teamSyncKeyForPath(fromRust, { syncRoot: builtRoot })).toBe(
+      'documents/人力资源/offer.pdf',
+    )
+  })
+
+  it('maps a Windows workspace link to the same key', () => {
+    expect(
+      teamSyncKeyForPath('C:\\ws\\team-knowledge\\guides\\setup.md', {
+        syncRoot: SYNC_ROOT,
+        workspacePath: 'C:\\ws',
+      }),
+    ).toBe('knowledge/guides/setup.md')
+  })
+
   it('falls back to the last resolved knowledge dir when none is passed', async () => {
     mockExists.mockImplementation((path: string) =>
       Promise.resolve(path === '/home/user/.amuxd-copilot361/daemon.toml'),
