@@ -10,7 +10,13 @@ use std::time::Duration;
 
 /// Default stream bubble lifetime before WeComDriver closes it and switches
 /// the final answer onto `aibot_send_msg`. Kept on the driver, not ChannelCaps.
-pub const DEFAULT_STREAM_MAX_SECS: u64 = 240;
+///
+/// WeCom's long-connection limit is 10 minutes from the first stream frame
+/// (developer.work.weixin.qq.com/document/path/101463). It used to be 240s,
+/// taken from the callback mode's shorter window; a 310s stream refreshed
+/// every 10s was verified on a real bot on 2026-09-18. Nine minutes leaves a
+/// margin for the finish frame's acks and retries.
+pub const DEFAULT_STREAM_MAX_SECS: u64 = 540;
 /// Progress frames share the 30/minute conversation quota with everything
 /// else. 10s → 6 frames/minute, leaving room for the answer.
 pub const DEFAULT_PROGRESS_FRAME_GAP_SECS: u64 = 10;
@@ -189,14 +195,111 @@ pub fn progress_frame(elapsed: Duration) -> String {
     format!("{PROGRESS_HEAD} · {}", format_elapsed(elapsed))
 }
 
-/// Append a queue notice so it is visible while the stream bubble is the only
-/// thing WeCom will reliably rewrite.
-pub fn progress_frame_with_notice(elapsed: Duration, notice: Option<&str>) -> String {
-    let base = progress_frame(elapsed);
-    match notice {
-        Some(n) if !n.trim().is_empty() => format!("{base}\n\n{n}"),
-        _ => base,
+/// Progress lines kept in the bubble. The client scrolls to the newest ones;
+/// the cap keeps a long turn inside the 20KB content limit.
+pub const MAX_PROGRESS_STEPS: usize = 30;
+/// One progress line, at most — a step is a label, not a transcript.
+pub const MAX_STEP_CHARS: usize = 120;
+
+/// What the progress bubble shows while a turn runs.
+///
+/// Rendered as an *open* `<think>` block: WeCom shows it as 「思考中」 and
+/// keeps the newest lines in view (verified on a real bot, 2026-09-18). An
+/// open block swallows everything after it, so the timer and notices live
+/// inside it too.
+pub struct Progress<'a> {
+    pub steps: &'a [String],
+    pub elapsed: Duration,
+    /// Queue notice ("上一条还在处理…").
+    pub notice: Option<&'a str>,
+    /// Waiting on someone in the chat — an approval or a question card.
+    pub waiting: Option<&'a str>,
+}
+
+fn recent_steps(steps: &[String]) -> &[String] {
+    &steps[steps.len().saturating_sub(MAX_PROGRESS_STEPS)..]
+}
+
+pub fn progress_think_frame(p: &Progress<'_>) -> String {
+    let mut lines: Vec<&str> = recent_steps(p.steps).iter().map(String::as_str).collect();
+    if let Some(waiting) = p.waiting.filter(|w| !w.trim().is_empty()) {
+        lines.push(waiting);
     }
+    let timer = progress_frame(p.elapsed);
+    lines.push(&timer);
+    if let Some(notice) = p.notice.filter(|n| !n.trim().is_empty()) {
+        lines.push(notice);
+    }
+    format!("<think>{}", lines.join("\n"))
+}
+
+/// The closed block a finished bubble keeps: the steps and a closing line,
+/// then `body` below it.
+///
+/// The closing line *replaces* the timer rather than dropping it: WeCom kept
+/// showing a line a later frame had merely removed from the end of the block.
+pub fn think_closed_with(steps: &[String], closing_line: &str, body: &str) -> String {
+    let mut lines: Vec<&str> = recent_steps(steps).iter().map(String::as_str).collect();
+    lines.push(closing_line);
+    let full = format!("<think>{}</think>\n\n{}", lines.join("\n"), body);
+    if full.len() <= WECOM_CONTENT_MAX_BYTES {
+        return full;
+    }
+    // The answer matters more than the trail that led to it.
+    format!("<think>{closing_line}</think>\n\n{body}")
+}
+
+pub fn elapsed_closing_line(elapsed: Duration) -> String {
+    format!("✅ 用时 {}", format_elapsed(elapsed))
+}
+
+/// One step as the bubble shows it: one line, bounded, and unable to open or
+/// close the block it sits in.
+pub fn progress_step_line(step: &str) -> Option<String> {
+    let flat = step.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return None;
+    }
+    let bounded: String = if flat.chars().count() > MAX_STEP_CHARS {
+        let mut cut: String = flat.chars().take(MAX_STEP_CHARS).collect();
+        cut.push('…');
+        cut
+    } else {
+        flat
+    };
+    Some(escape_think_tags(&bounded))
+}
+
+/// Break `<think>` / `</think>` in text we did not write, so an answer that
+/// mentions the tag cannot fold the rest of itself into a thought block.
+pub fn escape_think_tags(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let rest = &lower[i + 1..];
+            let tag = if rest.starts_with("think>") {
+                Some(1)
+            } else if rest.starts_with("/think>") {
+                Some(2)
+            } else {
+                None
+            };
+            if let Some(open_len) = tag {
+                // Keep the original casing; insert a zero-width space after
+                // `<` (or `</`), which is invisible and not a tag.
+                out.push_str(&text[last..i + open_len]);
+                out.push('\u{200b}');
+                last = i + open_len;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&text[last..]);
+    out
 }
 
 /// `finish=true` body used when the stream window is exhausted but the turn
@@ -392,12 +495,91 @@ mod tests {
     }
 
     #[test]
-    fn progress_notice_is_appended_not_inline() {
-        let frame = progress_frame_with_notice(Duration::from_secs(5), Some("上一条还在处理"));
-        assert!(frame.starts_with("💭 执行中 · 5秒"));
-        assert!(frame.contains("上一条还在处理"));
-        assert!(frame.contains("\n\n"));
-        assert!(!frame.contains("工具中"));
+    fn a_queue_notice_rides_below_the_timer() {
+        let frame = progress_think_frame(&Progress {
+            steps: &[],
+            elapsed: Duration::from_secs(5),
+            notice: Some("上一条还在处理"),
+            waiting: None,
+        });
+        assert_eq!(frame, "<think>💭 执行中 · 5秒\n上一条还在处理");
+    }
+
+    #[test]
+    fn progress_is_an_open_think_block_with_the_timer_last() {
+        let steps = vec!["bash: date".to_string(), "read: a.json".to_string()];
+        let frame = progress_think_frame(&Progress {
+            steps: &steps,
+            elapsed: Duration::from_secs(16),
+            notice: None,
+            waiting: Some("⏸ 等待审批"),
+        });
+        assert_eq!(
+            frame,
+            "<think>bash: date\nread: a.json\n⏸ 等待审批\n💭 执行中 · 16秒"
+        );
+        assert!(!frame.contains("</think>"), "open block shows 思考中");
+    }
+
+    #[test]
+    fn progress_keeps_only_the_newest_steps() {
+        let steps: Vec<String> = (0..MAX_PROGRESS_STEPS + 5)
+            .map(|i| format!("s{i}"))
+            .collect();
+        let frame = progress_think_frame(&Progress {
+            steps: &steps,
+            elapsed: Duration::ZERO,
+            notice: None,
+            waiting: None,
+        });
+        assert!(!frame.contains("s4\n"));
+        assert!(frame.contains(&format!("s{}", MAX_PROGRESS_STEPS + 4)));
+    }
+
+    #[test]
+    fn a_finished_bubble_replaces_the_timer_and_keeps_the_answer() {
+        let steps = vec!["bash: date".to_string()];
+        let body = think_closed_with(
+            &steps,
+            &elapsed_closing_line(Duration::from_secs(21)),
+            "答案",
+        );
+        assert_eq!(body, "<think>bash: date\n✅ 用时 21秒</think>\n\n答案");
+        assert!(!body.contains("执行中"));
+    }
+
+    #[test]
+    fn a_long_answer_drops_the_trail_not_the_answer() {
+        let steps: Vec<String> = (0..MAX_PROGRESS_STEPS)
+            .map(|_| "x".repeat(MAX_STEP_CHARS))
+            .collect();
+        let answer = "答".repeat(6000);
+        let body = think_closed_with(&steps, "✅ 用时 1秒", &answer);
+        assert!(body.ends_with(&answer));
+        assert!(body.starts_with("<think>✅ 用时 1秒</think>"));
+    }
+
+    #[test]
+    fn a_step_is_one_bounded_line() {
+        assert_eq!(
+            progress_step_line("bash:  date\n  ls").as_deref(),
+            Some("bash: date ls")
+        );
+        assert_eq!(progress_step_line("   "), None);
+        let long = progress_step_line(&"a".repeat(500)).unwrap();
+        assert_eq!(long.chars().count(), MAX_STEP_CHARS + 1);
+    }
+
+    #[test]
+    fn think_tags_in_foreign_text_cannot_open_a_block() {
+        let escaped = escape_think_tags("用 <think> 和 </THINK> 包起来");
+        assert!(!escaped.to_ascii_lowercase().contains("<think>"));
+        assert!(!escaped.to_ascii_lowercase().contains("</think>"));
+        assert_eq!(
+            escaped.replace('\u{200b}', ""),
+            "用 <think> 和 </THINK> 包起来"
+        );
+        assert_eq!(escape_think_tags("a < b > c"), "a < b > c");
     }
 
     #[test]

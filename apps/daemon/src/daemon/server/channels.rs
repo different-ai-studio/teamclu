@@ -205,24 +205,23 @@ impl DaemonServer {
         Some(mgr)
     }
 
-    /// Settle a tool approval answered in a chat.
+    /// Settle a tool approval, or an agent question, answered in a chat.
     ///
-    /// Mirrors the desktop's `GrantPermission` / `DenyPermission`: the same
-    /// first-come gate, the same resolve, the same `PermissionResolved`
-    /// broadcast — so whichever side answers first wins, the desktop card
-    /// clears when the chat answered, and a late second answer from either
-    /// side is a no-op.
+    /// Mirrors the desktop's `GrantPermission` / `DenyPermission` /
+    /// `AnswerQuestion`: the same first-come gate and the same resolve, plus
+    /// the `PermissionResolved` broadcast for a permission — so whichever side
+    /// answers first wins, the desktop card clears when the chat answered, and
+    /// a late second answer from either side is a no-op.
     pub(crate) async fn settle_chat_decision(
         &mut self,
         decision: crate::channels::approvals::ChatDecision,
     ) {
-        use crate::channels::approvals::Settled;
+        use crate::channels::approvals::{ChatAction, Settled};
 
         let crate::channels::approvals::ChatDecision {
             agent_id,
             request_id,
-            granted,
-            option_id,
+            action,
             approver,
             reply,
         } = decision;
@@ -230,51 +229,89 @@ impl DaemonServer {
         if !self.permissions.try_resolve_permission(&request_id) {
             info!(
                 request_id,
-                agent_id, approver, "chat approval arrived after the request was already settled"
+                agent_id, approver, "chat answer arrived after the request was already settled"
             );
             let _ = reply.send(Settled::AlreadyHandled);
             return;
         }
 
-        let resolved = self
-            .agents
-            .lock()
-            .await
-            .resolve_permission_for_topic(&agent_id, &request_id, granted, option_id.clone())
-            .await
-            .inspect_err(|e| {
-                warn!(
-                    request_id,
-                    agent_id,
-                    approver,
-                    error = %e,
-                    "chat approval could not reach the runtime"
-                );
-            })
-            .is_ok();
-        if resolved {
-            info!(
-                request_id,
-                agent_id,
-                approver,
-                granted,
-                option = option_id.as_deref().unwrap_or("reject"),
-                "permission settled from chat"
-            );
-        }
-        self.publish_session_event(
-            &agent_id,
-            amux::SessionEvent {
-                event: Some(amux::session_event::Event::PermissionResolved(
-                    amux::PermissionResolved {
+        let resolved = match &action {
+            ChatAction::Permission { granted, option_id } => {
+                let resolved = self
+                    .agents
+                    .lock()
+                    .await
+                    .resolve_permission_for_topic(
+                        &agent_id,
+                        &request_id,
+                        *granted,
+                        option_id.clone(),
+                    )
+                    .await
+                    .inspect_err(|e| {
+                        warn!(
+                            request_id,
+                            agent_id,
+                            approver,
+                            error = %e,
+                            "chat approval could not reach the runtime"
+                        );
+                    })
+                    .is_ok();
+                if resolved {
+                    info!(
                         request_id,
-                        resolved_by_peer_id: "chat".to_string(),
-                        granted: granted && resolved,
+                        agent_id,
+                        approver,
+                        granted,
+                        option = option_id.as_deref().unwrap_or("reject"),
+                        "permission settled from chat"
+                    );
+                }
+                self.publish_session_event(
+                    &agent_id,
+                    amux::SessionEvent {
+                        event: Some(amux::session_event::Event::PermissionResolved(
+                            amux::PermissionResolved {
+                                request_id: request_id.clone(),
+                                resolved_by_peer_id: "chat".to_string(),
+                                granted: *granted && resolved,
+                            },
+                        )),
                     },
-                )),
-            },
-        )
-        .await;
+                )
+                .await;
+                resolved
+            }
+            ChatAction::Question {
+                answers_json,
+                reject,
+            } => {
+                let resolved = self
+                    .agents
+                    .lock()
+                    .await
+                    .answer_question_for_topic(&agent_id, &request_id, answers_json, *reject)
+                    .await
+                    .inspect_err(|e| {
+                        warn!(
+                            request_id,
+                            agent_id,
+                            approver,
+                            error = %e,
+                            "chat answer could not reach the runtime"
+                        );
+                    })
+                    .is_ok();
+                if resolved {
+                    info!(
+                        request_id,
+                        agent_id, approver, reject, "question answered from chat"
+                    );
+                }
+                resolved
+            }
+        };
         let _ = reply.send(if resolved {
             Settled::Resolved
         } else {
@@ -1375,7 +1412,7 @@ mod mcp_send_open_turn_tests {
 
 #[cfg(test)]
 mod chat_decision_tests {
-    use crate::channels::approvals::{ChatDecision, Settled};
+    use crate::channels::approvals::{ChatAction, ChatDecision, Settled};
     use crate::daemon::server::tests::test_server;
     use tokio::sync::oneshot;
 
@@ -1385,8 +1422,10 @@ mod chat_decision_tests {
             ChatDecision {
                 agent_id: "agent-1".into(),
                 request_id: request_id.into(),
-                granted: true,
-                option_id: Some("once".into()),
+                action: ChatAction::Permission {
+                    granted: true,
+                    option_id: Some("once".into()),
+                },
                 approver: "张三".into(),
                 reply,
             },

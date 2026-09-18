@@ -4,7 +4,7 @@ pub mod agent;
 pub mod commands;
 pub use agent::{
     AgentCommand, AgentError, AgentHandle, AmuxSessionId, ModelInfo, ParticipantInfo, SessionInfo,
-    TurnOutcome, WorkspaceInfo,
+    TurnOutcome, TurnUpdate, WorkspaceInfo,
 };
 
 pub mod binding;

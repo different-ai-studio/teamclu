@@ -30,6 +30,16 @@ pub struct TurnOutcome {
     pub completed: bool,
 }
 
+/// What a streamed turn reports while it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnUpdate {
+    /// The reply so far — cumulative, not a delta.
+    Reply(String),
+    /// One step of work the agent just started ("bash: date"), for channels
+    /// that show progress rather than a half-written reply.
+    Step(String),
+}
+
 /// One of a chat's sessions, returned by `list_sessions`.
 ///
 /// `session_id` is the cloud `sessions.id` — the id `switch_session` takes, and
@@ -106,9 +116,10 @@ pub trait AgentHandle: Send + Sync + 'static {
     /// Same as `send_prompt`, but reports the reply as it grows so channels
     /// with editable message bubbles can show progress mid-turn.
     ///
-    /// `on_update` receives the **cumulative** reply text, not deltas — the
-    /// WeCom stream msgtype replaces a bubble's content by re-sending the
-    /// same id, so callers want the whole text every time. Updates are
+    /// `on_update` receives [`TurnUpdate::Reply`] with the **cumulative** reply
+    /// text, not deltas — the WeCom stream msgtype replaces a bubble's content
+    /// by re-sending the same id, so callers want the whole text every time —
+    /// and [`TurnUpdate::Step`] as each tool call starts. Updates are
     /// best-effort and throttled: a slow or dropped receiver never fails the
     /// turn, and intermediate updates may be skipped. The returned
     /// `TurnOutcome` is always authoritative — send it as the final,
@@ -121,7 +132,7 @@ pub trait AgentHandle: Send + Sync + 'static {
         session: &AmuxSessionId,
         sender_display: &str,
         text: &str,
-        on_update: mpsc::Sender<String>,
+        on_update: mpsc::Sender<TurnUpdate>,
         timeout: std::time::Duration,
     ) -> Result<TurnOutcome, AgentError> {
         let _ = on_update;

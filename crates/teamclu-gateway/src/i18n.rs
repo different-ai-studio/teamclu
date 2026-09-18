@@ -175,6 +175,25 @@ pub enum MsgKey<'a> {
     ApprovalAlreadyHandled,
     ApprovalNothingPending,
     ApprovalFailed(&'a str),
+    /// Card title and buttons for a tool approval.
+    ApprovalCardTitle,
+    ApprovalChoiceOnce,
+    ApprovalChoiceAlways,
+    ApprovalChoiceDeny,
+    /// Card title for the agent's `question` tool.
+    QuestionCardTitle,
+    /// The question as text — every channel's fallback. The argument is the
+    /// rendered questions; `bool`: more than one question or a multi-select.
+    QuestionAsked(&'a str, bool),
+    /// Reply and session record when someone answered or skipped a question.
+    QuestionAnswered(&'a str, &'a str),
+    QuestionRecordAnswered(&'a str),
+    QuestionSkipped(&'a str, &'a str),
+    QuestionRecordSkipped(&'a str),
+    /// The command does not fit what is waiting.
+    UseAnswerForQuestion(&'a str),
+    UseAllowForApproval(&'a str),
+    AnswerUsage,
 
     // === /reset ===
     SessionResetShort,
@@ -364,6 +383,7 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
             /reset - Clear the agent's context, staying in this session\n\
             /stop - Stop current processing\n\
             /allow, /always, /deny - Answer a pending tool approval\n\
+            /answer <n or text> - Answer the agent's question\n\
             /ctx <text> - Inject context without reply".into(),
         (GatewayMetaHelpStatic, ZhCN) => "\
             网关命令:\n\
@@ -377,6 +397,7 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
             /reset - 清空 Agent 上下文，但留在当前会话\n\
             /stop - 停止当前处理\n\
             /allow、/always、/deny - 允许本次、始终允许、拒绝等待中的工具审批\n\
+            /answer <序号或答案> - 回答 Agent 的提问\n\
             /ctx <文本> - 注入上下文但不回复".into(),
 
         (AgentCommandsHeader, En) => "\n\nAgent commands:".into(),
@@ -538,6 +559,46 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
             format!("⚠️ The approval did not take effect; please handle it on the computer: {tool}")
         }
         (ApprovalFailed(tool), ZhCN) => format!("⚠️ 审批没有生效，请到电脑上处理：{tool}"),
+        (ApprovalCardTitle, En) => "Approval needed".into(),
+        (ApprovalCardTitle, ZhCN) => "需要审批".into(),
+        (ApprovalChoiceOnce, En) => "Allow once".into(),
+        (ApprovalChoiceOnce, ZhCN) => "允许本次".into(),
+        (ApprovalChoiceAlways, En) => "Always".into(),
+        (ApprovalChoiceAlways, ZhCN) => "始终允许".into(),
+        (ApprovalChoiceDeny, En) => "Deny".into(),
+        (ApprovalChoiceDeny, ZhCN) => "拒绝".into(),
+        (QuestionCardTitle, En) => "Question".into(),
+        (QuestionCardTitle, ZhCN) => "需要你回答".into(),
+        (QuestionAsked(body, false), En) => format!(
+            "❓ The agent asks:\n{body}\nReply /answer <number>, or write your own answer (in a group, @ me first)."
+        ),
+        (QuestionAsked(body, true), En) => format!(
+            "❓ The agent asks:\n{body}\nReply /answer with one answer per question separated by ; — pick several with , (in a group, @ me first)."
+        ),
+        (QuestionAsked(body, false), ZhCN) => {
+            format!("❓ 需要你回答：\n{body}\n回复 /answer 序号，或直接写答案（群聊里请先 @我）。")
+        }
+        (QuestionAsked(body, true), ZhCN) => format!(
+            "❓ 需要你回答：\n{body}\n回复 /answer，每个问题的答案用 ; 分隔，多选用 , 分隔（群聊里请先 @我）。"
+        ),
+        (QuestionAnswered(who, answer), En) => format!("✅ {who} answered: {answer}"),
+        (QuestionAnswered(who, answer), ZhCN) => format!("✅ {who} 回答了：{answer}"),
+        (QuestionRecordAnswered(answer), En) => format!("✅ Answered: {answer}"),
+        (QuestionRecordAnswered(answer), ZhCN) => format!("✅ 回答：{answer}"),
+        (QuestionSkipped(who, q), En) => format!("⛔ {who} skipped: {q}"),
+        (QuestionSkipped(who, q), ZhCN) => format!("⛔ {who} 跳过了提问：{q}"),
+        (QuestionRecordSkipped(q), En) => format!("⛔ Skipped: {q}"),
+        (QuestionRecordSkipped(q), ZhCN) => format!("⛔ 跳过提问：{q}"),
+        (UseAnswerForQuestion(q), En) => format!("That is a question — reply /answer: {q}"),
+        (UseAnswerForQuestion(q), ZhCN) => format!("这是一个提问，请用 /answer 回答：{q}"),
+        (UseAllowForApproval(tool), En) => {
+            format!("That is an approval — reply /allow, /always or /deny: {tool}")
+        }
+        (UseAllowForApproval(tool), ZhCN) => {
+            format!("这是一个审批，请用 /allow、/always 或 /deny：{tool}")
+        }
+        (AnswerUsage, En) => "Usage: /answer <number>, or write your own answer.".into(),
+        (AnswerUsage, ZhCN) => "用法：/answer 序号，或直接写答案。".into(),
 
         // === Shared session-slash dispatcher ===
 

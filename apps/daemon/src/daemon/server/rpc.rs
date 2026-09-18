@@ -1588,6 +1588,12 @@ impl DaemonServer {
             }
 
             amux::acp_command::Command::AnswerQuestion(ans) => {
+                // The same first-come gate a chat answer goes through: whoever
+                // answers first — here or in the chat — is the answer.
+                if !self.permissions.try_resolve_permission(&ans.request_id) {
+                    info!(request_id = %ans.request_id, peer_id, agent_id, "question already answered; ignoring");
+                    return;
+                }
                 match self
                     .agents
                     .lock()
