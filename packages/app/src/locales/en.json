@@ -1954,10 +1954,12 @@
       "deps": "Dependencies",
       "billing": "Billing",
       "teamRoles": "Team Roles",
-      "knowledgeAcl": "Knowledge Access"
+      "knowledgeAcl": "Knowledge Access",
+      "providerKeys": "Provider Keys"
     },
     "navGroup": {
-      "teamManagement": "Team management"
+      "teamManagement": "Team management",
+      "operator": "Platform"
     },
     "general": {
       "title": "General",
@@ -3322,6 +3324,30 @@
         "grant": "Grant",
         "adjustment": "Adjustment",
         "refund": "Refund"
+      }
+    },
+    "providerKeys": {
+      "title": "Provider Keys",
+      "description": "Upstream keys of this deployment's AI gateway. A key that runs out of balance or quota is benched and the next one serves, so a dead key shows up here instead of as a failed request. Live state from one gateway process: it starts empty when the gateway restarts.",
+      "operatorsOnly": "Only platform operators of this deployment can see the provider keys.",
+      "yourUserId": "Your user id",
+      "refresh": "Refresh",
+      "noGateway": "This deployment has no AI gateway configured, so it holds no provider keys.",
+      "empty": "The gateway catalog lists no providers.",
+      "keyCount": "{{n}} keys",
+      "resetAll": "Resume all",
+      "resetKey": "Resume this key",
+      "position": "priority {{n}}",
+      "serving": "Serving",
+      "scopeModel": "model {{model}}",
+      "scopeKey": "whole key",
+      "resumesIn": "resumes in {{left}}",
+      "strikes": "{{n}} in a row",
+      "countsLegend": "ok / failed calls since the gateway started, and when the key was last used.",
+      "class": {
+        "exhausted": "out of balance or quota",
+        "rate_limited": "throttled",
+        "invalid": "key rejected"
       }
     },
     "teamRoles": {

@@ -26,6 +26,7 @@ import {
   Users,
   Building2,
   Trophy,
+  KeyRound,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -35,6 +36,7 @@ import { useUpdaterStore } from '@/stores/updater'
 import { hasAnyChannel } from '@/lib/config/build-config'
 import { getFeatures, useFeatures } from '@/lib/config/remote-features'
 import { useUIStore, type SettingsSection } from '@/stores/ui'
+import { usePlatformOperator } from '@/lib/admin/platform-operator'
 import { SettingsSectionBody } from './section-registry'
 interface SettingsProps {
   onClose?: () => void
@@ -62,6 +64,13 @@ const teamManagementSections: Section[] = [
   { id: 'tokenUsage', label: 'Token Usage', labelKey: 'settings.nav.tokenUsage', icon: Coins },
   { id: 'leaderboard', label: 'Leaderboard', labelKey: 'settings.nav.leaderboard', icon: Trophy },
   { id: 'teamRoles', label: '团队角色', labelKey: 'settings.nav.teamRoles', icon: Users },
+]
+
+// Platform operator sections. Shown only to an operator of this deployment,
+// and hiding them is all that check does: the endpoints behind them enforce it
+// again on the server.
+const operatorSections: Section[] = [
+  { id: 'providerKeys', label: 'Provider Keys', labelKey: 'settings.nav.providerKeys', icon: KeyRound },
 ]
 
 // Daemon-owned sections (the amuxd process for this machine).
@@ -168,8 +177,11 @@ export function Settings(_props?: SettingsProps) {
     [],
   )
 
-  type AccordionGroup = 'client' | 'teamManagement' | 'daemon' | 'localAgent'
+  const { operator } = usePlatformOperator()
+
+  type AccordionGroup = 'client' | 'teamManagement' | 'daemon' | 'localAgent' | 'operator'
   const groupForSection = (id: SettingsSection): AccordionGroup => {
+    if (operatorSections.some(s => s.id === id)) return 'operator'
     if (filteredTeamManagementSections.some(s => s.id === id)) return 'teamManagement'
     if (filteredDaemonSections.some(s => s.id === id)) return 'daemon'
     if (filteredLocalAgentSections.some(s => s.id === id)) return 'localAgent'
@@ -201,7 +213,17 @@ export function Settings(_props?: SettingsProps) {
   }
   const daemonGroup = { id: 'daemon' as const, label: 'Daemon', labelKey: 'settings.nav.daemon', icon: Server, sections: filteredDaemonSections, testid: 'daemon-subnav' }
   const localAgentGroup = { id: 'localAgent' as const, label: 'Local Agent', labelKey: 'settings.nav.localAgent', icon: SlidersHorizontal, sections: filteredLocalAgentSections, testid: 'local-agent-subnav' }
-  const navGroups = [clientGroup, teamManagementGroup, daemonGroup, localAgentGroup]
+  const operatorGroup = {
+    id: 'operator' as const,
+    label: '平台运营',
+    labelKey: 'settings.navGroup.operator',
+    icon: KeyRound,
+    sections: operatorSections,
+    testid: 'operator-subnav',
+  }
+  const navGroups = operator
+    ? [clientGroup, teamManagementGroup, daemonGroup, localAgentGroup, operatorGroup]
+    : [clientGroup, teamManagementGroup, daemonGroup, localAgentGroup]
   const [expandedGroup, setExpandedGroup] = React.useState<AccordionGroup | null>(() => groupForSection(activeView))
   const toggleGroup = (group: AccordionGroup) => {
     setExpandedGroup(prev => (prev === group ? null : group))

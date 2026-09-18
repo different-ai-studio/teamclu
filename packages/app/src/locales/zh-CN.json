@@ -1954,10 +1954,12 @@
       "deps": "依赖",
       "billing": "账单",
       "teamRoles": "团队角色",
-      "knowledgeAcl": "知识库权限"
+      "knowledgeAcl": "知识库权限",
+      "providerKeys": "供应商 Key"
     },
     "navGroup": {
-      "teamManagement": "团队管理"
+      "teamManagement": "团队管理",
+      "operator": "平台运营"
     },
     "general": {
       "title": "通用",
@@ -3322,6 +3324,30 @@
         "grant": "赠送",
         "adjustment": "调整",
         "refund": "退款"
+      }
+    },
+    "providerKeys": {
+      "title": "AI 供应商 Key",
+      "description": "这个部署的 AI 网关所用的上游 key。某个 key 没余额或没额度时，网关会把它暂停并换下一个，所以坏掉的 key 只会在这里显示，不会变成失败的请求。这里是网关单个进程里的实时状态，网关重启就清空。",
+      "operatorsOnly": "只有这个部署的平台运营能查看供应商 key。",
+      "yourUserId": "你的 user id",
+      "refresh": "刷新",
+      "noGateway": "这个部署没有配置 AI 网关，也就没有供应商 key。",
+      "empty": "网关的目录里没有任何 provider。",
+      "keyCount": "{{n}} 个 key",
+      "resetAll": "全部恢复",
+      "resetKey": "恢复这个 key",
+      "position": "优先级 {{n}}",
+      "serving": "正在服务",
+      "scopeModel": "模型 {{model}}",
+      "scopeKey": "整把 key",
+      "resumesIn": "{{left}} 后恢复",
+      "strikes": "连续 {{n}} 次",
+      "countsLegend": "成功 / 失败次数从网关启动算起，右下是这个 key 最后一次被使用的时间。",
+      "class": {
+        "exhausted": "余额或额度用完",
+        "rate_limited": "被限流",
+        "invalid": "key 被拒"
       }
     },
     "teamRoles": {
