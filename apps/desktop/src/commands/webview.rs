@@ -878,13 +878,17 @@ pub async fn webview_hide(app: tauri::AppHandle, label: String) -> Result<(), St
     match app.get_webview(&label) {
         Some(webview) => {
             log::info!("[Webview] Hiding: {}", label);
+            // Hide first, park second. The hide is the part that must happen;
+            // the park is insurance. A `webview_hide` has been watched to stop
+            // dead partway through its body, so whichever call is the one that
+            // dies, the important one has already gone out.
+            if let Err(err) = webview.hide() {
+                log::error!("[Webview] Hide refused for {}: {}", label, err);
+            }
             if let Err(err) =
                 webview.set_position(tauri::LogicalPosition::new(PARKED_ORIGIN, PARKED_ORIGIN))
             {
                 log::error!("[Webview] Parking refused for {}: {}", label, err);
-            }
-            if let Err(err) = webview.hide() {
-                log::error!("[Webview] Hide refused for {}: {}", label, err);
             }
             match webview.position() {
                 Ok(position) => log::info!("[Webview] Hidden {} now at {:?}", label, position),
