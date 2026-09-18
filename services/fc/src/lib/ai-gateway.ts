@@ -81,6 +81,9 @@ export const aiGateway = {
   models: () => call("/models"),
   // Upstream provider keys (services/ai-gateway/src/key-pool.ts). Platform
   // operators only — FC checks that; the gateway only knows the service token.
+  // Balance + this period's spend for every team at once (operator console).
+  creditTeams: (limit?: number) =>
+    call(`/credits/teams${limit ? `?limit=${limit}` : ""}`),
   providerPools: () => call("/provider-pools"),
   resetProviderPool: (providerId: string, keyId?: string) =>
     call(`/provider-pools/${encodeURIComponent(providerId)}/reset`, {

@@ -52,3 +52,34 @@ export function isPlatformOperator(
 ): boolean {
   return !!userId && platformOperatorIds(env).has(userId.toLowerCase());
 }
+
+/**
+ * How many rows an operator list reads before it stops.
+ *
+ * The lists are sorted on values that do not live in the database being paged
+ * (a team's balance lives in the gateway), so they are read whole and paged in
+ * memory. The cap keeps that honest: the response says `truncated` when it bit.
+ */
+export const ADMIN_LIST_CAP = 2000;
+
+/** Page size for an operator list: 1–200, defaulting to `fallback`. */
+export function clampPage(value: unknown, fallback: number): number {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(n, 200);
+}
+
+/**
+ * A search term safe to splice into a PostgREST `or=(...)` filter.
+ *
+ * That filter is parsed as a comma-separated list with parenthesised groups, so
+ * a comma or paren in the term does not error — it silently becomes a different
+ * filter. `%` and `_` are the LIKE wildcards. All of them are dropped rather
+ * than escaped: this is a name search box, and nobody types them on purpose.
+ */
+export function safeSearch(raw: unknown): string {
+  return String(raw ?? "")
+    .trim()
+    .replace(/[,()%_*\\"'`\\]/g, "")
+    .slice(0, 80);
+}

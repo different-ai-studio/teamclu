@@ -9,7 +9,7 @@ import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
 import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
-import { isPlatformOperator } from "./platform-operators.js";
+import { ADMIN_LIST_CAP, clampPage, isPlatformOperator, safeSearch } from "./platform-operators.js";
 import { DEFAULT_LIST_LIMIT, DEFAULT_MESSAGE_LIST_LIMIT } from "./routing-utils.js";
 
 import { resolveFeatures } from "./routes/config.js";
@@ -1538,6 +1538,323 @@ export function createSupabaseBusinessRepository(options) {
         throw new ApiError(401, "missing_auth", "authenticated user required");
       }
       return { userId: authData.user.id, operator: isPlatformOperator(authData.user.id) };
+    },
+
+    /**
+     * Orgs of this deployment, newest first, with how many teams and people
+     * are in each.
+     *
+     * Service-role reads: an operator is not a member of what they are looking
+     * at, so RLS would hide almost all of it. Counts come from separate
+     * queries rather than a join — PostgREST's cross-schema relationship
+     * inference (amux.teams → public.orgs) is not reliably in the self-host
+     * schema cache, which surfaces as PGRST200.
+     */
+    async listAdminOrgs(opts: { query?: string; limit?: number; offset?: number } = {}) {
+      await requirePlatformOperator();
+      const admin = await serviceRoleClient("list orgs for the operator console");
+      const limit = clampPage(opts.limit, 25);
+      const offset = Math.max(0, Math.trunc(Number(opts.offset ?? 0)) || 0);
+      const search = safeSearch(opts.query);
+
+      let q = admin
+        .schema("public")
+        .from("orgs")
+        .select("id,name,code,status,created_at", { count: "exact" });
+      if (search) q = q.or(`name.ilike.%${search}%,code.ilike.%${search}%`);
+      const { data, error, count } = await q
+        .order("created_at", { ascending: false })
+        .range(offset, offset + limit - 1);
+      if (error) throw error;
+      const orgs = data ?? [];
+      const orgIds = orgs.map((o: any) => o.id);
+
+      const counts = new Map<string, { teams: number; members: Set<string> }>();
+      if (orgIds.length) {
+        const { data: teams, error: teamErr } = await admin
+          .schema("amux")
+          .from("teams")
+          .select("id,oid")
+          .in("oid", orgIds);
+        if (teamErr) throw teamErr;
+        const teamOrg = new Map<string, string>();
+        for (const t of teams ?? []) {
+          teamOrg.set(t.id, t.oid);
+          const c = counts.get(t.oid) ?? { teams: 0, members: new Set<string>() };
+          c.teams++;
+          counts.set(t.oid, c);
+        }
+        const teamIds = [...teamOrg.keys()];
+        if (teamIds.length) {
+          const { data: actors, error: actorErr } = await admin
+            .schema("amux")
+            .from("actors")
+            .select("team_id,user_id,actor_type")
+            .in("team_id", teamIds)
+            .eq("actor_type", "member");
+          if (actorErr) throw actorErr;
+          for (const a of actors ?? []) {
+            const oid = teamOrg.get(a.team_id);
+            if (!oid || !a.user_id) continue;
+            counts.get(oid)?.members.add(a.user_id);
+          }
+        }
+      }
+
+      return {
+        items: orgs.map((o: any) => ({
+          id: o.id,
+          name: o.name,
+          code: o.code ?? null,
+          status: o.status ?? null,
+          createdAt: o.created_at,
+          teamCount: counts.get(o.id)?.teams ?? 0,
+          memberCount: counts.get(o.id)?.members.size ?? 0,
+        })),
+        total: count ?? orgs.length,
+      };
+    },
+
+    /**
+     * Rename an org, or take it out of service.
+     *
+     * Only `name` and `status`, deliberately: on Belayo this table is shared
+     * with saas-mono, which owns every other column. `updated_by` is NOT set
+     * here — the table's audit trigger overwrites it with `auth.uid()`, which
+     * is null under the service role — so who did it goes in `updated_note`
+     * and in the log line.
+     */
+    async updateAdminOrg(orgId: string, patch: { name?: string; status?: string }) {
+      const operatorId = await requirePlatformOperator();
+      if (!/^[0-9a-f-]{36}$/i.test(orgId)) {
+        throw new ApiError(400, "invalid_request", "orgId must be a uuid");
+      }
+      const update: Record<string, unknown> = {};
+      if (patch.name !== undefined) {
+        const name = String(patch.name).trim();
+        if (!name || name.length > 100) {
+          throw new ApiError(400, "invalid_request", "name must be 1-100 characters");
+        }
+        update.name = name;
+      }
+      if (patch.status !== undefined) {
+        // The column has no CHECK, and saas-mono owns the vocabulary on Belayo.
+        // Writing only the two values this product uses elsewhere (org roles)
+        // keeps the console from inventing a third.
+        if (patch.status !== "active" && patch.status !== "inactive") {
+          throw new ApiError(400, "invalid_request", 'status must be "active" or "inactive"');
+        }
+        update.status = patch.status;
+      }
+      if (!Object.keys(update).length) {
+        throw new ApiError(400, "invalid_request", "nothing to update");
+      }
+      update.updated_note = `platform operator ${operatorId} via console`;
+
+      const admin = await serviceRoleClient("update an org from the operator console");
+      const { data, error } = await admin
+        .schema("public")
+        .from("orgs")
+        .update(update)
+        .eq("id", orgId)
+        .select("id,name,code,status,created_at")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) throw new ApiError(404, "not_found", "no such org");
+      console.log(`[admin] operator ${operatorId} updated org ${orgId}: ${JSON.stringify(update)}`);
+      return {
+        id: data.id,
+        name: data.name,
+        code: data.code ?? null,
+        status: data.status ?? null,
+        createdAt: data.created_at,
+      };
+    },
+
+    /**
+     * Teams of this deployment with their balance and this month's spend.
+     *
+     * Read whole and sorted here rather than paged in the database: the sort
+     * key an operator wants is the balance, which lives in the gateway, so no
+     * database page can be ordered by it. Capped at `ADMIN_LIST_CAP`, and
+     * `truncated` says when the cap cut the list.
+     */
+    async listAdminTeams(
+      opts: { query?: string; orgId?: string; sort?: string; limit?: number; offset?: number } = {},
+    ) {
+      await requirePlatformOperator();
+      const admin = await serviceRoleClient("list teams for the operator console");
+      const limit = clampPage(opts.limit, 25);
+      const offset = Math.max(0, Math.trunc(Number(opts.offset ?? 0)) || 0);
+      const search = safeSearch(opts.query);
+
+      let q = admin.schema("amux").from("teams").select("id,slug,name,created_at,oid");
+      if (opts.orgId) {
+        if (!/^[0-9a-f-]{36}$/i.test(opts.orgId)) {
+          throw new ApiError(400, "invalid_request", "orgId must be a uuid");
+        }
+        q = q.eq("oid", opts.orgId);
+      }
+      if (search) q = q.or(`name.ilike.%${search}%,slug.ilike.%${search}%`);
+      const { data, error } = await q.order("created_at", { ascending: false }).range(0, ADMIN_LIST_CAP - 1);
+      if (error) throw error;
+      const teams = data ?? [];
+      const truncated = teams.length >= ADMIN_LIST_CAP;
+
+      const [orgNames, memberCounts, totals] = await Promise.all([
+        (async () => {
+          const ids = [...new Set(teams.map((t: any) => t.oid).filter(Boolean))];
+          if (!ids.length) return new Map<string, string>();
+          const { data: orgs, error: orgErr } = await admin
+            .schema("public")
+            .from("orgs")
+            .select("id,name")
+            .in("id", ids);
+          if (orgErr) throw orgErr;
+          return new Map((orgs ?? []).map((o: any) => [o.id, o.name as string]));
+        })(),
+        (async () => {
+          const ids = teams.map((t: any) => t.id);
+          const counts = new Map<string, number>();
+          if (!ids.length) return counts;
+          const { data: actors, error: actorErr } = await admin
+            .schema("amux")
+            .from("actors")
+            .select("team_id")
+            .in("team_id", ids)
+            .eq("actor_type", "member");
+          if (actorErr) throw actorErr;
+          for (const a of actors ?? []) counts.set(a.team_id, (counts.get(a.team_id) ?? 0) + 1);
+          return counts;
+        })(),
+        // The gateway owns the ledger, so the money numbers come from it even
+        // for a read (design §4.9.1) — FC never reads those tables directly.
+        aiGateway.creditTeams(ADMIN_LIST_CAP).catch(() => ({ items: [], truncated: false })),
+      ]);
+
+      const credits = new Map<string, { balanceCredits: number; periodCredits: number }>(
+        (totals?.items ?? []).map((i: any) => [i.teamId, i]),
+      );
+      const rows = teams.map((t: any) => ({
+        id: t.id,
+        slug: t.slug,
+        name: t.name,
+        orgId: t.oid ?? null,
+        orgName: t.oid ? orgNames.get(t.oid) ?? null : null,
+        createdAt: t.created_at,
+        memberCount: memberCounts.get(t.id) ?? 0,
+        balanceCredits: credits.get(t.id)?.balanceCredits ?? 0,
+        periodCredits: credits.get(t.id)?.periodCredits ?? 0,
+      }));
+      if (opts.sort === "balance") rows.sort((a, b) => a.balanceCredits - b.balanceCredits);
+      else if (opts.sort === "usage") rows.sort((a, b) => b.periodCredits - a.periodCredits);
+
+      return {
+        items: rows.slice(offset, offset + limit),
+        total: rows.length,
+        truncated: truncated || Boolean(totals?.truncated),
+      };
+    },
+
+    /** One team's money: balance, this month, the top-up history and the limits. */
+    async getAdminTeamCredits(teamId: string) {
+      await requirePlatformOperator();
+      if (!/^[0-9a-f-]{36}$/i.test(teamId)) {
+        throw new ApiError(400, "invalid_request", "teamId must be a uuid");
+      }
+      const admin = await serviceRoleClient("read a team for the operator console");
+      const [summary, usage, ledger, quotas, team, actors] = await Promise.all([
+        aiGateway.creditsSummary(teamId),
+        aiGateway.usage(teamId, { range: "month" }),
+        aiGateway.ledger(teamId, 20),
+        aiGateway.quotas(teamId),
+        admin.schema("amux").from("teams").select("id,slug,name,oid,created_at").eq("id", teamId).maybeSingle(),
+        admin.schema("amux").from("actors").select("id,display_name,actor_type").eq("team_id", teamId),
+      ]);
+      if (team.error) throw team.error;
+      if (!team.data) throw new ApiError(404, "not_found", "no such team");
+      if (actors.error) throw actors.error;
+
+      let orgName: string | null = null;
+      if (team.data.oid) {
+        const { data: org } = await admin
+          .schema("public")
+          .from("orgs")
+          .select("name")
+          .eq("id", team.data.oid)
+          .maybeSingle();
+        orgName = org?.name ?? null;
+      }
+      const names = new Map<string, { display_name: string | null; actor_type: string | null }>(
+        (actors.data ?? []).map((a: any) => [a.id as string, a]),
+      );
+
+      return {
+        team: {
+          id: team.data.id,
+          slug: team.data.slug,
+          name: team.data.name,
+          orgId: team.data.oid ?? null,
+          orgName,
+          createdAt: team.data.created_at,
+        },
+        balanceCredits: summary?.balanceCredits ?? 0,
+        usage,
+        ledger: ledger?.items ?? [],
+        quotas: {
+          period: quotas?.period ?? "month",
+          defaultLimitCredits: quotas?.defaultLimitCredits ?? null,
+          lowBalanceCredits: quotas?.lowBalanceCredits ?? null,
+          members: (quotas?.members ?? []).map((m: any) => ({
+            actorId: m.actorId,
+            displayName: names.get(m.actorId)?.display_name ?? null,
+            actorType: names.get(m.actorId)?.actor_type ?? null,
+            limitCredits: m.limitCredits,
+          })),
+        },
+        actors: (actors.data ?? []).map((a: any) => ({
+          id: a.id,
+          displayName: a.display_name,
+          actorType: a.actor_type,
+        })),
+      };
+    },
+
+    /** The team's period, its default member limit and any per-member limits. */
+    async setAdminTeamQuotas(teamId: string, input: any) {
+      const operatorId = await requirePlatformOperator();
+      if (!/^[0-9a-f-]{36}$/i.test(teamId)) {
+        throw new ApiError(400, "invalid_request", "teamId must be a uuid");
+      }
+      if (input?.period !== undefined && input.period !== "week" && input.period !== "month") {
+        throw new ApiError(400, "invalid_request", 'period must be "week" or "month"');
+      }
+      for (const field of ["defaultLimitCredits", "lowBalanceCredits"] as const) {
+        const v = input?.[field];
+        if (v !== undefined && v !== null && (!Number.isSafeInteger(v) || v < 0)) {
+          throw new ApiError(400, "invalid_request", `${field} must be a non-negative integer or null`);
+        }
+      }
+      for (const m of input?.members ?? []) {
+        if (!/^[0-9a-f-]{36}$/i.test(String(m?.actorId ?? ""))) {
+          throw new ApiError(400, "invalid_request", "each member needs an actorId");
+        }
+        if (m.limitCredits !== null && (!Number.isSafeInteger(m.limitCredits) || m.limitCredits < 0)) {
+          throw new ApiError(400, "invalid_request", "limitCredits must be a non-negative integer or null");
+        }
+      }
+      const result = await aiGateway.setQuotas(teamId, {
+        period: input?.period,
+        defaultLimitCredits: input?.defaultLimitCredits ?? null,
+        lowBalanceCredits: input?.lowBalanceCredits ?? null,
+        members: input?.members ?? [],
+      });
+      console.log(
+        `[admin] operator ${operatorId} set quotas on team ${teamId}: ` +
+          `period=${input?.period ?? "unchanged"} default=${input?.defaultLimitCredits ?? "null"} ` +
+          `low=${input?.lowBalanceCredits ?? "null"} members=${(input?.members ?? []).length}`,
+      );
+      return result;
     },
 
     // The AI gateway's provider keys: which serve, which are benched and why.
