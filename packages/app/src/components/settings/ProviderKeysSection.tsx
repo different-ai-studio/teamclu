@@ -55,6 +55,27 @@ function fmtClock(iso: string | null): string {
   return at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+/**
+ * The readable part of an upstream error body.
+ *
+ * Providers answer with JSON, and the gateway records the first 300 characters
+ * of it verbatim. Printed raw that is mostly punctuation — the useful half is
+ * the message, or the error type when there is no message.
+ */
+function fmtUpstreamError(raw: string): string {
+  const text = raw.trim()
+  if (!text.startsWith('{')) return text.slice(0, 120)
+  try {
+    const body = JSON.parse(text) as { error?: { message?: unknown; type?: unknown; code?: unknown }; message?: unknown }
+    const pick = [body.error?.message, body.error?.type, body.error?.code, body.message].find(
+      (v) => typeof v === 'string' && v,
+    )
+    return String(pick ?? text).slice(0, 120)
+  } catch {
+    return text.slice(0, 120)
+  }
+}
+
 /** Whole minutes, then seconds — a cooldown is minutes long, not hours. */
 function fmtLeft(iso: string, now: number): string {
   const ms = new Date(iso).getTime() - now
@@ -285,7 +306,12 @@ export function ProviderKeysSection() {
                           )}
                           {' · '}
                           <span className="font-mono">{c.status}</span>
-                          {c.error && <span className="text-faint"> {c.error.slice(0, 120)}</span>}
+                          {c.error && (
+                            <span className="text-faint" title={c.error}>
+                              {' '}
+                              {fmtUpstreamError(c.error)}
+                            </span>
+                          )}
                         </p>
                       ))
                     )}
@@ -315,12 +341,18 @@ export function ProviderKeysSection() {
               )
             })}
           </div>
-
-          <p className="mt-3 text-[10.5px] text-faint">
-            {t('settings.providerKeys.countsLegend', 'ok / failed calls since the gateway started, and when the key was last used.')}
-          </p>
         </SettingCard>
       ))}
+
+      {/* Once for the screen, not once per provider card. */}
+      {!!pools?.length && (
+        <p className="text-[10.5px] text-faint">
+          {t(
+            'settings.providerKeys.countsLegend',
+            'ok / failed calls since the gateway started, and when the key was last used.',
+          )}
+        </p>
+      )}
     </div>
   )
 }

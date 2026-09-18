@@ -93,6 +93,33 @@ describe('ProviderKeysSection', () => {
     expect(cooldown).toContain('2 in a row')
   })
 
+  it('shows the message out of a JSON error body, not the punctuation', async () => {
+    // Providers answer with JSON and the gateway stores it verbatim; printed
+    // raw it is mostly braces and quotes.
+    api.getProviderPools.mockResolvedValue([
+      {
+        providerId: 'mx5',
+        keys: [
+          {
+            ...POOLS[0].keys[0],
+            cooldowns: [
+              {
+                ...POOLS[0].keys[0].cooldowns[0],
+                status: 429,
+                error: '{"type":"error","error":{"type":"GoUsageLimitError","message":"weekly usage limit reached"}}',
+              },
+            ],
+          },
+        ],
+      },
+    ])
+    render(<ProviderKeysSection />)
+
+    const row = await screen.findByTestId('provider-key-cooldown-1a2b3c4d')
+    expect(row.textContent).toContain('weekly usage limit reached')
+    expect(row.textContent).not.toContain('{"type"')
+  })
+
   it('offers to resume only the key that is benched', async () => {
     render(<ProviderKeysSection />)
     await screen.findByTestId('provider-pool-deepseek')
