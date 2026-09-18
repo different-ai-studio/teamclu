@@ -1968,6 +1968,17 @@ impl DaemonServer {
             // MQTT polling and connection recovery are now owned by the
             // supervisor. This loop dispatches only decoded frames and local
             // control commands, so a business await cannot freeze MQTT IO.
+            //
+            // The housekeeping arm below (event polling, idle detaches) runs on
+            // an interval rather than a `sleep(50ms)` built fresh each pass. A
+            // fresh sleep restarted whenever another arm fired, so as long as a
+            // command was already waiting when the loop came round — a desktop
+            // retrying a RuntimeStart that took 30s every time — it never won:
+            // on 2026-09-16 no runtime events were polled and no idle detach ran
+            // for 42 minutes. An overdue interval is ready at once and gets its
+            // turn between commands.
+            let mut housekeeping = tokio::time::interval(Duration::from_millis(50));
+            housekeeping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = &mut shutdown => {
@@ -2203,7 +2214,7 @@ impl DaemonServer {
                                 .await;
                         }
                     }
-                    _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                    _ = housekeeping.tick() => {
                         let mqtt_up = self
                             .mqtt_connected_flag
                             .as_ref()

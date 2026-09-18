@@ -40,6 +40,7 @@ use crate::runtime::permission_policy::PermissionPolicy;
 
 pub mod auth;
 pub mod client;
+pub(crate) mod event_sink;
 mod events;
 pub mod process;
 pub mod transcript;
@@ -53,7 +54,8 @@ use translate::TranslateState;
 const SESSION_ID_PREFIX: &str = "pi:";
 
 pub(crate) struct Route {
-    pub(crate) event_tx: mpsc::Sender<AcpEventFrame>,
+    /// Never blocks the stdout reader — see [`event_sink`].
+    pub(crate) event_tx: event_sink::EventSink,
     /// Permission handling for this session; `Full` auto-approves tool
     /// confirmations instead of waiting on a human.
     pub(crate) permission: PermissionPolicy,
@@ -608,11 +610,13 @@ async fn attach(shared: &Arc<Shared>, args: AttachArgs) -> Result<AcpStartupMeta
             crate::config::first_available(pi_current.into_iter().chain(args.model_mru), &catalog);
     }
 
-    let event_tx = args.event_tx.clone();
+    // Everything for this session goes through one sink, so what attach emits
+    // below stays ordered with what the reader forwards later.
+    let event_tx = event_sink::EventSink::forward_to(args.event_tx);
     shared.routes.lock().insert(
         acp_session_id.clone(),
         Route {
-            event_tx: args.event_tx,
+            event_tx: event_tx.clone(),
             permission: args.permission,
             pool_key: key,
             session_path: established.session_path,
@@ -1046,7 +1050,7 @@ async fn ensure_session_ready(
 }
 
 async fn emit_frame(
-    event_tx: &mpsc::Sender<AcpEventFrame>,
+    event_tx: &event_sink::EventSink,
     session_id: &str,
     event: amux::AcpEvent,
     reply_to: Option<String>,
