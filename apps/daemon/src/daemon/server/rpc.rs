@@ -1377,6 +1377,7 @@ impl DaemonServer {
                                 None,
                                 true,
                                 Some(&sender_actor_id),
+                                "",
                                 "legacy_send_prompt",
                             )
                             .await
