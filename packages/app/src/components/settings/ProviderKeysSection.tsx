@@ -7,6 +7,7 @@ import { usePlatformOperator } from '@/lib/admin/platform-operator'
 import { cn } from '@/lib/utils'
 import type { ProviderPool, ProviderPoolCooldown, ProviderPoolKey } from '@/lib/backend/types'
 import { SectionHeader, SettingCard } from './shared'
+import { OperatorOnly } from './operator-shared'
 
 /**
  * The AI gateway's upstream provider keys — operators only.
@@ -148,39 +149,10 @@ export function ProviderKeysSection() {
     />
   )
 
-  if (whoamiLoading) {
-    return (
-      <div className="space-y-6">
-        {header}
-        <div className="flex h-20 items-center justify-center" data-testid="provider-keys-loading">
-          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-        </div>
-      </div>
-    )
-  }
-
-  // Not an operator. Showing the user's own id is the point of the screen for
-  // them: it is the value the deployment's PLATFORM_OPERATOR_USER_IDS lists.
-  if (!operator) {
-    return (
-      <div className="space-y-6">
-        {header}
-        <SettingCard data-testid="provider-keys-not-operator">
-          <p className="text-[12.5px] text-ink-2">
-            {t(
-              'settings.providerKeys.operatorsOnly',
-              'Only platform operators of this deployment can see the provider keys.',
-            )}
-          </p>
-          {userId && (
-            <p className="mt-3 text-[11.5px] text-muted-foreground">
-              {t('settings.providerKeys.yourUserId', 'Your user id')}:{' '}
-              <span className="select-all font-mono text-[11.5px] text-ink-2">{userId}</span>
-            </p>
-          )}
-        </SettingCard>
-      </div>
-    )
+  if (whoamiLoading || !operator) {
+    // Same as the other operator screens: a courtesy, since every endpoint
+    // behind them checks the caller again on the server.
+    return <OperatorOnly header={header} loading={whoamiLoading} userId={userId} />
   }
 
   return (

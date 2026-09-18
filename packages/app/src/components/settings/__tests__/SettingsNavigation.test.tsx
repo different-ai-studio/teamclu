@@ -143,7 +143,7 @@ describe('Settings navigation', () => {
     fireEvent.click(group)
     expect(
       within(screen.getByTestId('operator-subnav')).getAllByRole('button').map((b) => b.textContent),
-    ).toEqual(['Provider Keys'])
+    ).toEqual(['Orgs', 'Credits', 'Provider Keys'])
     vi.doUnmock('@/lib/admin/platform-operator')
   })
 

@@ -27,6 +27,7 @@ import {
   Building2,
   Trophy,
   KeyRound,
+  Coins as CoinsIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -70,6 +71,8 @@ const teamManagementSections: Section[] = [
 // and hiding them is all that check does: the endpoints behind them enforce it
 // again on the server.
 const operatorSections: Section[] = [
+  { id: 'operatorOrgs', label: 'Orgs', labelKey: 'settings.nav.operatorOrgs', icon: Building2 },
+  { id: 'operatorCredits', label: 'Credits', labelKey: 'settings.nav.operatorCredits', icon: CoinsIcon },
   { id: 'providerKeys', label: 'Provider Keys', labelKey: 'settings.nav.providerKeys', icon: KeyRound },
 ]
 

@@ -153,7 +153,7 @@ describe('ProviderKeysSection', () => {
     api.whoami.mockResolvedValue({ userId: 'user-9', operator: false })
     render(<ProviderKeysSection />)
 
-    await screen.findByTestId('provider-keys-not-operator')
+    await screen.findByTestId('operator-only')
     expect(screen.getByText('user-9')).toBeTruthy()
     expect(api.getProviderPools).not.toHaveBeenCalled()
   })

@@ -11,6 +11,11 @@ import type { AppTypeId } from "@/lib/apps/app-types";
 export type { MemberRoleRef, OrgRole, OrgRoleCreate, OrgRolePatch, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
 export type {
   AdminBackend,
+  AdminMemberQuota,
+  AdminOrg,
+  AdminQuotaInput,
+  AdminTeamCredits,
+  AdminTeamRow,
   PlatformWhoami,
   ProviderPool,
   ProviderPoolCooldown,
