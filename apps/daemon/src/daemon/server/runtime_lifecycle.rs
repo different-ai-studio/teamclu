@@ -3,6 +3,26 @@
 
 use super::*;
 
+/// Whether `session_id` belongs to a gateway chat. A failed lookup counts as
+/// no: the session is then treated like any desktop session.
+pub(super) async fn gateway_binding_exists(backend: &dyn Backend, session_id: &str) -> bool {
+    if session_id.is_empty() {
+        return false;
+    }
+    match backend.get_session_binding(session_id).await {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(e) => {
+            warn!(
+                session_id,
+                error = %e,
+                "session gateway binding lookup failed; treating it as not chat-bound"
+            );
+            false
+        }
+    }
+}
+
 /// True when the workspace's stored path cannot be used on this machine while
 /// the client sent one that can.
 ///
@@ -174,21 +194,7 @@ impl DaemonServer {
     }
 
     pub(crate) async fn session_has_gateway_binding(&self, session_id: &str) -> bool {
-        if session_id.is_empty() {
-            return false;
-        }
-        match self.backend.get_session_binding(session_id).await {
-            Ok(Some(_)) => true,
-            Ok(None) => false,
-            Err(e) => {
-                warn!(
-                    session_id,
-                    error = %e,
-                    "session gateway binding lookup failed; defaulting to interactive permission"
-                );
-                false
-            }
-        }
+        gateway_binding_exists(self.backend.as_ref(), session_id).await
     }
 
     pub(crate) async fn apply_start_runtime(
