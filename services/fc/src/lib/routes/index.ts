@@ -26,6 +26,7 @@ import { registerTeamMcp } from "./team-mcp.js";
 import { registerTeamEnvSecrets } from "./team-env-secrets.js";
 import { registerKnowledgeAcl } from "./knowledge-acl.js";
 import { registerOrgRoles } from "./org-roles.js";
+import { registerAdmin } from "./admin.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
@@ -51,6 +52,7 @@ export function registerAllRoutes(router) {
   // /v1/teams/:teamId/skills* and must not be shadowed by a broader match.
   registerTeamSkills(router);
   registerMarketplace(router);
+  registerAdmin(router);
   // Same ordering reason: these own /v1/teams/:teamId/mcp-servers* and
   // /v1/teams/:teamId/env-secrets* and must not be shadowed by workspaces'
   // broader team match.

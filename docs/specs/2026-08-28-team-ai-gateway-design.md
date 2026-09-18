@@ -166,7 +166,36 @@
 |-----------|------|
 | `priority` | 按 `routes` 顺序，第一条可用即用 |
 | `weighted` | 在可用路由中按 `weight` 随机（如某档大部分走 flash、少部分走 pro） |
-| `failover` | 先试第一条，上游 429/5xx/超时则试下一条 |
+| `failover` | 先试第一条，这条路由上的 key 都用不了（见下方 key 池）、上游 5xx 或请求没发出去（连接失败）时，试下一条；所有 key 都被拒（401）时不切，key 配错要直接暴露。网关自己没有首字节超时，上游挂住不会触发切换 |
+
+**同一个 provider 的多个 key（key 池）**
+
+`api_key_env` 指向的变量里可以放多个 key，用逗号分隔，顺序就是优先级（`DEEPSEEK_API_KEY=sk-a,sk-b`）。没有新增变量名：compose 的 `environment:` 是白名单，新名字要在两个部署目标上都声明一遍。
+
+切换分两层，顺序固定：
+
+1. **换 key**：同一个 provider、同一个模型，调用方感知不到。上游回 402、429、401 时，这把 key 进入冷却，请求立刻用下一把 key 重发。
+2. **换路由**：这条路由上没有能用的 key 了，`failover` 档才换到下一条路由，那是另一个模型。上游 5xx 或连不上时直接换路由，因为每把 key 连的都是同一个坏掉的服务。
+
+| 上游返回 | 判定 | 冷却范围 | 冷却时长 |
+|---|---|---|---|
+| 402 | 余额耗尽 | 整把 key（余额属于账号） | 1、2、4… 分钟翻倍，封顶 30 分钟 |
+| 429，文本含 quota / usage limit / balance / billing / credit / spend / insufficient，或 Retry-After ≥ 5 分钟 | 额度耗尽 | 这把 key 上的这个模型（订阅额度按模型计） | 同上 |
+| 其他 429 | 限流 | 这把 key 上的这个模型 | Retry-After，没有则 10 秒，限制在 1–60 秒之间 |
+| 401 | key 被拒 | 整把 key | 同 402 |
+| 5xx / 连不上 | 上游故障 | 不冷却 key | — |
+| 其他 4xx（400/403/422…） | 请求本身的问题 | 不冷却 | 原样透传 |
+
+几条要点：
+
+- **Retry-After 只会缩短耗尽类的冷却，不会延长。** OpenCode Go 平台故障时对所有账号回 429，Retry-After 长达 10 小时以上（opencode issue #47613）；照单全收的话，服务恢复很久之后整个池子还在冷却。一把真的没额度的 key，最多每 30 分钟白试一次，这是更便宜的错。
+- **冷却到期自动回到候选里**，下一次成功就清掉记录。所以给账号充值后不用重启，也可以调 `POST /internal/provider-pools/:providerId/reset` 立刻恢复。
+- **按优先级选 key，不轮询。** provider 的 prompt 缓存属于账号，轮询会把缓存命中变成全价输入。
+- **没有健康 key 时，限流中的 key 仍然会试**：只有一把 key 时，一次 429 不该让整档停摆。耗尽和被拒的 key 不试。
+- 一次请求在一条路由上最多试 3 把 key。
+- 所有 key 都在冷却时直接返回 503 `upstream_keys_unavailable`，带 `Retry-After`，不打上游。报错文案里带 quota exceeded，pi 碰到就不重试。
+- 冷却状态在进程内存里。多副本各自发现坏 key，代价是每个副本多一次被拒的请求（额度类拒绝很快，也不耗 token），不值得为此引入共享存储。
+- 日志：耗尽和被拒打 `console.error`，限流和上游故障打 `console.warn`，都带 key 的末四位和 sha256 前缀，从不打印 key 本身。
 
 团队 `llm_models` / 设置页只存 **public id**，不出现 `deepseek-v4-pro`。
 
@@ -689,6 +718,8 @@ baseURL 契约：客户端拿到的 baseURL 是 `<gateway>/v1/teams/<teamId>`，
 | `GET` | `/internal/teams/:teamId/credits/summary` |
 | `PUT` | `/internal/teams/:teamId/members/:actorId/quota` |
 | `GET` | `/internal/models` |
+| `GET` | `/internal/provider-pools`（每把 key 的状态和冷却，只有末四位，不含 key；仅本进程） |
+| `POST` | `/internal/provider-pools/:providerId/reset`（可带 `keyId`，立刻解除冷却） |
 
 **`/internal/models` 是必需的**，别漏：FC 的 `getWorkspaceConfig` 今天用 `LITELLM_MASTER_KEY` 去拉模型目录填 `availableModels`（`services/fc/src/lib/pg-repo/teams.ts:159-186`）。换成网关后 FC 没有终端用户 JWT，只能走内网 token 拿 catalog 的 public 层。
 
@@ -725,6 +756,8 @@ baseURL 契约：客户端拿到的 baseURL 是 `<gateway>/v1/teams/<teamId>`，
 
 **上游错误**：4xx/5xx 原样透传给客户端（agent runtime 依赖这些语义），但**不结算 credits**，预留直接置 `expired`。只有 `failover` 策略下才换下一条路由重试。
 
+**唯一例外是上游 402**。402 在网关这里的意思是「团队积分不够」（`insufficient_credits` / `quota_exceeded`），而上游的 402 是**我们自己的 provider 账号**没钱了（DeepSeek 的 `Insufficient Balance`）。原样透传的话，积分充足的团队会被告知去充值，真正该去充值的运维却什么都收不到。所以网关把它改写成 503 `upstream_billing_error`，同时打一条 `console.error` 写明是哪个 backend。报错文案里特意带上 billing 这个词：pi 碰到含 503 的错误会重试，碰到含 billing 的就不重试，而账号没钱时重试只会把报错拖晚几秒。
+
 ---
 
 ## 7. FC 职责
@@ -744,7 +777,7 @@ baseURL 契约：客户端拿到的 baseURL 是 `<gateway>/v1/teams/<teamId>`，
 |------|------|
 | `GET` | `/v1/teams/:teamId/credits` — 余额 + 本周期用量 |
 | `GET` | `/v1/teams/:teamId/credits/usage` — 报表，替代 `/litellm/usage` |
-| `POST` | `/v1/teams/:teamId/credits/top-up` — owner only |
+| `POST` | `/v1/teams/:teamId/credits/top-up` — **仅平台运营**（原为 owner only，见下方「平台运营」） |
 | `GET`/`PUT` | `/v1/teams/:teamId/members/:actorId/quota` — owner only |
 
 **新增**（Phase 4，Stripe，见 §4.9）：
@@ -759,6 +792,21 @@ Stripe 路由单独放 `services/fc/src/lib/routes/stripe.ts`（不混进 team-c
 新增路由文件 `services/fc/src/lib/routes/team-credits.ts`，在 `routes/index.ts` 里 **注册在 `registerWorkspaces` 之前**（和 `registerTeamShare` / `registerTeamSkills` 同理，否则被 workspaces 的宽匹配 `/v1/teams/:teamId/*` 遮蔽 —— 那个文件里已有三处注释在讲这件事）。
 
 设置页对这些端点的具体消费方式见 §12。
+
+**平台运营**（2026-09-17）：
+
+平台运营是运营这个部署的人，不是团队角色，也不是 org 角色。名单是 FC 的环境变量 `PLATFORM_OPERATOR_USER_IDS`（auth.users id，逗号分隔，不配置就没有运营），代码在 `services/fc/src/lib/platform-operators.ts`。
+
+- **为什么用环境变量，不用表或 JWT 声明**：授予这个权限需要的访问级别，和读 provider key、网关 service token 一样，应用里的任何漏洞都没法把人提成运营；Belayo 的库要手工迁移、还和 saas-mono 共用，这样不用动 schema。代价是改名单要重启 FC。
+- **充值接口原先是 owner only**，而自注册用户都是自己团队的 owner，等于任何账号都能给自己充值。付费充值本来就不走这个接口（Stripe webhook 在 FC 内部直接调网关）。
+
+| 方法 | 路径 |
+|------|------|
+| `GET` | `/v1/admin/whoami` — 任何登录用户可调，返回 `{ userId, operator }` |
+| `GET` | `/v1/admin/ai/provider-pools` — 网关 key 池状态，转调 `/internal/provider-pools`，仅运营 |
+| `POST` | `/v1/admin/ai/provider-pools/:providerId/reset` — 解除冷却，可带 `keyId`，仅运营 |
+
+权限都在 repository 里检查（`requirePlatformOperator`），身份走 `getCurrentUser()`，合作方签发的会话也能认。运营操作打 `[admin]` 日志，记录运营的 user id。
 
 **删除**（Phase 3，不是更早）：`routes/team-litellm.ts` 全部 5 条、`lib/litellm.ts`、`lib/litellm-usage.ts`，以及 repository contract 里对应的 `setupLiteLlm` / `ensureMemberKey` / `getLiteLlmUsage` / `listLiteLlmKeys` / `setLiteLlmBudget`。
 

@@ -202,7 +202,8 @@ services:
       CREDITS_ENFORCED: "${CREDITS_ENFORCED:-false}"
       TOKEN_CACHE_TTL_MS: "${TOKEN_CACHE_TTL_MS:-60000}"
       AI_IMAGE_TIMEOUT_MS: "${AI_IMAGE_TIMEOUT_MS:-180000}"
-      # Upstream provider keys.
+      # Upstream provider keys. Each may list several, comma-separated, as a
+      # pool the gateway rotates through when one runs dry (key-pool.ts).
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
@@ -543,6 +544,9 @@ services:
       APNS_ENV: "${APNS_ENV:-}"
       PUSH_WEBHOOK_SECRET: "${PUSH_WEBHOOK_SECRET:-}"
       MARKETPLACE_ADMIN_SECRET: "${MARKETPLACE_ADMIN_SECRET:-}"
+      # Platform operators of this deployment (services/fc/src/lib/platform-operators.ts):
+      # auth.users ids, comma-separated. Blank = nobody. Restart fc after changing.
+      PLATFORM_OPERATOR_USER_IDS: "${PLATFORM_OPERATOR_USER_IDS:-}"
       # Issuer/audience for the JWTs FC mints for a deployed app's platform
       # auth, and the API_BASE it hands that app (services/fc/src/auth/base-url.ts).
       # Fail-closed when blank — default to this box's Cloud API origin so a

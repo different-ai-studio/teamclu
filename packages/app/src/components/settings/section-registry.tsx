@@ -41,6 +41,9 @@ const SETTINGS_SECTION_COMPONENTS: Record<SettingsSection, React.ComponentType> 
   shortcuts: lazySection(() => import('@/components/shortcuts/ShortcutsSection'), 'ShortcutsSection'),
   cache: lazySection(() => import('./CacheSection'), 'CacheSection'),
   diagnostics: lazySection(() => import('./DiagnosticsSection'), 'DiagnosticsSection'),
+  providerKeys: lazySection(() => import('./ProviderKeysSection'), 'ProviderKeysSection'),
+  operatorOrgs: lazySection(() => import('./OperatorOrgsSection'), 'OperatorOrgsSection'),
+  operatorCredits: lazySection(() => import('./OperatorCreditsSection'), 'OperatorCreditsSection'),
 }
 
 export function SettingsSectionBody({ section }: { section: SettingsSection }) {

@@ -17,6 +17,12 @@
 providers:
   deepseek:
     api_base: https://api.deepseek.com
+    # The variable may hold SEVERAL keys, comma-separated, in priority order:
+    #   DEEPSEEK_API_KEY=sk-first,sk-second
+    # A key that answers 402/429/401 is benched and the request moves on to the
+    # next key of this provider, invisibly to the caller (key-pool.ts). A route
+    # only fails over once none of its keys can serve. Status of every key:
+    # GET /internal/provider-pools.
     api_key_env: DEEPSEEK_API_KEY
     # How this provider reports token usage on a STREAMING response.
     #   always               — usage arrives unprompted, riding the last normal
@@ -169,9 +175,11 @@ public_models:
   # weaker availability story than a first-party API, so the tier keeps serving
   # from DeepSeek if it goes down — at the same price either way.
   #
-  # ⚠️ Failover only advances on 5xx or a transport error (app.ts). A 401 from a
-  # bad OPENAI_API_KEY passes straight through to the caller instead of quietly
-  # serving DeepSeek — which is what you want: a wrong key should be loud.
+  # ⚠️ Failover advances on 5xx, 429, 402 or a transport error (`failsOver` in
+  # app.ts) — 429 being how a spent subscription pool behind the relay answers.
+  # A 401 from a bad OPENAI_API_KEY still passes straight through to the caller
+  # instead of quietly serving DeepSeek — which is what you want: a wrong key
+  # should be loud.
   max:
     name: 旗舰
     routing: failover

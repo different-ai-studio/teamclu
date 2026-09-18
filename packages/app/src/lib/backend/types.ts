@@ -4,10 +4,23 @@ import type { TeamMcpBackend } from "@/lib/backend/cloud-api/team-mcp";
 import type { KnowledgeAclBackend } from "@/lib/backend/cloud-api/knowledge-acl";
 import type { TeamEnvSecretsBackend } from "@/lib/backend/cloud-api/team-env-secrets";
 import type { MemberRoleRef, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
+import type { AdminBackend } from "@/lib/backend/cloud-api/admin";
 import type { OAuthProvider } from "@/lib/auth";
 import type { AppTypeId } from "@/lib/apps/app-types";
 
 export type { MemberRoleRef, OrgRole, OrgRoleCreate, OrgRolePatch, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
+export type {
+  AdminBackend,
+  AdminMemberQuota,
+  AdminOrg,
+  AdminQuotaInput,
+  AdminTeamCredits,
+  AdminTeamRow,
+  PlatformWhoami,
+  ProviderPool,
+  ProviderPoolCooldown,
+  ProviderPoolKey,
+} from "@/lib/backend/cloud-api/admin";
 
 export type BackendKind = "cloud_api";
 
@@ -1787,4 +1800,6 @@ export interface TeamCluBackend {
   knowledgeAcl: KnowledgeAclBackend;
   teamEnvSecrets: TeamEnvSecretsBackend;
   orgRoles: OrgRolesBackend;
+  /** Platform operators of this deployment — not a team role. */
+  admin: AdminBackend;
 }

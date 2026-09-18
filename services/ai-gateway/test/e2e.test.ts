@@ -177,6 +177,37 @@ test("a refund is accepted as a NEGATIVE amount and may drive the balance below 
   assert.equal(body.balanceCredits, -4000, "the spend gate refuses at a negative balance; the ledger still records the truth");
 });
 
+test("credits/teams ranks every team by what is left", { skip: !DB }, async () => {
+  // The operator screen's list. One request per team would be the alternative,
+  // and sorting by balance cannot be done a page at a time.
+  const svc = { Authorization: `Bearer ${SERVICE_TOKEN}` };
+  await admin`
+    insert into amux.team_credit_balance (team_id, balance_credits)
+    values (${teamId}::uuid, 7000), (${otherTeamId}::uuid, 3000)
+    on conflict (team_id) do update set balance_credits = excluded.balance_credits`;
+
+  const r = await req("/internal/credits/teams", { headers: svc });
+  assert.equal(r.status, 200);
+  const body = await r.json() as { items: Array<{ teamId: string; balanceCredits: number; periodCredits: number }>; truncated: boolean };
+  const mine = body.items.find((i) => i.teamId === teamId);
+  const other = body.items.find((i) => i.teamId === otherTeamId);
+  assert.equal(mine?.balanceCredits, 7000);
+  assert.equal(other?.balanceCredits, 3000);
+  assert.equal(typeof mine?.periodCredits, "number");
+  assert.equal(body.truncated, false);
+  // Poorest first, so the teams about to run dry are the ones on screen.
+  const ranks = body.items.map((i) => i.balanceCredits);
+  assert.deepEqual(ranks, [...ranks].sort((a, b) => a - b));
+
+  const capped = await req("/internal/credits/teams?limit=1", { headers: svc });
+  const cappedBody = await capped.json() as { items: unknown[]; truncated: boolean };
+  assert.equal(cappedBody.items.length, 1);
+  assert.equal(cappedBody.truncated, true, "a cut list says so rather than looking short");
+
+  assert.equal((await req("/internal/credits/teams?limit=0", { headers: svc })).status, 400);
+  assert.equal((await req("/internal/credits/teams")).status, 401, "service token required");
+});
+
 test("the sign has to match the kind", { skip: !DB }, async () => {
   // Dropping the check entirely would let a positive refund or a negative
   // top_up through, and a money path should not silently accept a sign the

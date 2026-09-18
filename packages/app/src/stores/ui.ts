@@ -51,7 +51,7 @@ export type SidebarFilter =
 
 export type SettingsSection = 'llm' | 'general' | 'prompt' | 'channels' | 'automation' | 'daemonGeneral' | 'daemonWorkspaces' | 'daemonRuntimes' | 'envVars' | 'skills' | 'roles' | 'rolesSkills' | 'deps' | 'billing'
   | 'tokenUsage' | 'privacy' | 'leaderboard' | 'shortcuts' | 'cache' | 'diagnostics'
-  | 'knowledgeAcl' | 'teamRoles'
+  | 'knowledgeAcl' | 'teamRoles' | 'providerKeys' | 'operatorOrgs' | 'operatorCredits'
 
 /** Context passed when opening Agent settings from a blocked quick-new-chat action. */
 type DaemonGeneralPrompt = 'quick_chat'
@@ -73,6 +73,11 @@ interface UIState {
   settingsInitialSection: SettingsSection | null
   /** Shown as a banner in DaemonGeneralSection when the user was redirected here. */
   daemonGeneralPrompt: DaemonGeneralPrompt | null
+  /**
+   * Which org the operator console's credits screen should open filtered to.
+   * Set when jumping there from an org row; the screen clears it once applied.
+   */
+  operatorOrgFilter: string | null
   draftPreselectedActor: DraftActor | null
   sidebarFilter: SidebarFilter
   ideasSectionCollapsed: boolean
@@ -117,6 +122,8 @@ interface UIState {
   selectDefaultPrimaryTab: (tab: DefaultPrimaryTab) => void
   openDefaultMoreDestination: (destination: DefaultMoreDestination) => Promise<void> | void
   openSettings: (section?: SettingsSection) => void
+  openOperatorTeams: (orgId: string | null) => void
+  clearOperatorOrgFilter: () => void
   openDaemonAgentSettings: (prompt?: DaemonGeneralPrompt) => void
   clearDaemonGeneralPrompt: () => void
   closeSettings: () => void
@@ -155,6 +162,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   actorSheetOpen: false,
   settingsInitialSection: null,
   daemonGeneralPrompt: null,
+  operatorOrgFilter: null,
   draftPreselectedActor: null,
   sidebarFilter: { kind: 'all' },
   ideasSectionCollapsed: false,
@@ -231,6 +239,16 @@ export const useUIStore = create<UIState>((set, get) => ({
     settingsInitialSection: section ?? null,
     daemonGeneralPrompt: null,
   }),
+
+  // The operator console's own deep link: an org row jumps to that org's teams.
+  openOperatorTeams: (orgId) => set({
+    currentView: 'settings',
+    settingsInitialSection: 'operatorCredits',
+    daemonGeneralPrompt: null,
+    operatorOrgFilter: orgId,
+  }),
+
+  clearOperatorOrgFilter: () => set({ operatorOrgFilter: null }),
 
   openDaemonAgentSettings: (prompt) => set({
     currentView: 'settings',

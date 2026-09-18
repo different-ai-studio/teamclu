@@ -111,7 +111,7 @@ export function parseCatalog(text: string, env: NodeJS.ProcessEnv = process.env)
         `catalog: provider ${id} usage_mode must be "always" or "needs_stream_options"`,
       );
     }
-    if (!env[p.api_key_env]?.trim()) {
+    if (!parseApiKeys(env[p.api_key_env]).length) {
       throw new Error(`catalog: provider ${id} needs ${p.api_key_env} in the environment`);
     }
   }
@@ -183,6 +183,21 @@ export function parseCatalog(text: string, env: NodeJS.ProcessEnv = process.env)
     default_supported_params: raw.default_supported_params ?? DEFAULT_PARAMS,
     default_image_params: raw.default_image_params ?? DEFAULT_IMAGE_PARAMS,
   };
+}
+
+/**
+ * The keys in a provider's `api_key_env`, which may hold several, separated by
+ * commas or whitespace: a pool of accounts with the same provider (see
+ * key-pool.ts). One key is simply a pool of one.
+ *
+ * A list in the EXISTING variable rather than a numbered family of new names
+ * (`DEEPSEEK_API_KEY_2`, ...): the compose `environment:` map is an allowlist,
+ * so every new name would have to be declared on both deploy targets before it
+ * reached the container. Order is priority order. Duplicates are dropped, since
+ * one account listed twice is not two accounts.
+ */
+export function parseApiKeys(value: string | undefined): string[] {
+  return [...new Set((value ?? "").split(/[\s,]+/).filter(Boolean))];
 }
 
 export function loadCatalog(path: string, env: NodeJS.ProcessEnv = process.env): Catalog {

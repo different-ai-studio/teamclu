@@ -102,6 +102,9 @@ const DYNAMIC_PREFIXES = [
   'chat.compaction.reason.',
   // Keyed by diagnostics tab id in DiagnosticsSection (t(`settings.diagnostics.tab.${id}`)).
   'settings.diagnostics.tab.',
+  // Keyed by the reason a provider key is benched (exhausted | rate_limited |
+  // invalid) in ProviderKeysSection.
+  'settings.providerKeys.class.',
 ]
 // i18next plural/context suffixes resolve from the base key at runtime.
 const PLURAL_SUFFIX = /_(plural|one|two|few|many|other|zero|\d+)$/

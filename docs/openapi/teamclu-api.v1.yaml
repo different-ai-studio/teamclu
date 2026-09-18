@@ -32,6 +32,8 @@ tags:
     description: Runtime configuration delivered to authenticated clients (MQTT broker, feature flags).
   - name: Apps
     description: Per-app repo provisioning and the deploy pipeline (FC function + Postgres schema).
+  - name: Admin
+    description: Platform operators of this deployment. Not a team or org role.
 paths:
   /v1/auth/refresh:
     post:
@@ -2405,6 +2407,268 @@ paths:
           description: Verified.
         "401": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/admin/whoami:
+    get:
+      operationId: getAdminWhoami
+      summary: Whether the caller is a platform operator of this deployment
+      tags: [Admin]
+      description: |
+        Answers any signed-in caller, operator or not. `userId` is what goes into
+        the deployment's `PLATFORM_OPERATOR_USER_IDS`; `operator` decides whether
+        a client shows the operator screens.
+
+        Showing a screen is all `operator` decides. Every operator endpoint
+        checks the caller again on its own.
+
+        A platform operator runs the deployment itself. It is not a team or org
+        role, and no team or org role makes someone an operator.
+      responses:
+        "200":
+          description: The caller's user id and operator status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, operator]
+                properties:
+                  userId: { type: string, format: uuid }
+                  operator: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/admin/orgs:
+    get:
+      operationId: listAdminOrgs
+      summary: Orgs of this deployment, with team and member counts
+      tags: [Admin]
+      description: |
+        Platform operators only. Newest first. `query` matches the name or the
+        code. Counts are the org's teams and the distinct people across them,
+        so somebody in two teams of one org counts once.
+      parameters:
+        - { name: query, in: query, required: false, schema: { type: string, maxLength: 80 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 25 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: One page of orgs, and how many matched.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminOrg" } }
+                  total: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/orgs/{orgId}:
+    patch:
+      operationId: updateAdminOrg
+      summary: Rename an org, or take it out of service
+      tags: [Admin]
+      description: |
+        Platform operators only, and only these two fields: on Belayo this
+        table is shared with another product, which owns every other column.
+
+        `updated_by` is not written here. The table's audit trigger overwrites
+        it with the request's own user, which is empty for a service-role
+        write, so who did it is recorded in `updated_note` and in the log.
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                status: { type: string, enum: [active, inactive] }
+      responses:
+        "200":
+          description: The org as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminOrg" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/admin/teams:
+    get:
+      operationId: listAdminTeams
+      summary: Teams of this deployment, with balance and this month's spend
+      tags: [Admin]
+      description: |
+        Platform operators only. `sort=balance` puts the teams closest to
+        running dry first, `sort=usage` the biggest spenders of this month;
+        without it, newest first.
+
+        The list is read whole (capped) and paged here, because the sort key
+        lives in the AI gateway rather than in the table being paged.
+        `truncated` says the cap bit. A gateway that is unreachable costs the
+        money columns, not the list: balances then read zero.
+      parameters:
+        - { name: query, in: query, required: false, schema: { type: string, maxLength: 80 } }
+        - { name: orgId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [balance, usage] } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 25 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: One page of teams.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, truncated]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminTeamRow" } }
+                  total: { type: integer }
+                  truncated: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/teams/{teamId}/credits:
+    get:
+      operationId: getAdminTeamCredits
+      summary: One team's balance, this month's usage, top-up history and limits
+      tags: [Admin]
+      description: |
+        Platform operators only. Every money number comes from the AI gateway,
+        which is the ledger's only writer; FC adds the team, org and actor
+        names the gateway does not hold.
+
+        To add credits, use `POST /v1/teams/{teamId}/credits/top-up`, which is
+        operator-only too.
+      parameters:
+        - { name: teamId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The team's money in one payload.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTeamCredits" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/admin/teams/{teamId}/quotas:
+    put:
+      operationId: setAdminTeamQuotas
+      summary: Set a team's period, default member limit and per-member limits
+      tags: [Admin]
+      description: |
+        Platform operators only; the owner-facing equivalent is
+        `PUT /v1/teams/{teamId}/quotas`. A null limit means no limit. The
+        period is team-wide on purpose: per-member periods make "used this
+        period" incomparable between members.
+      parameters:
+        - { name: teamId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                period: { type: string, enum: [week, month] }
+                defaultLimitCredits: { type: ["integer", "null"], minimum: 0 }
+                lowBalanceCredits: { type: ["integer", "null"], minimum: 0 }
+                members:
+                  type: array
+                  items:
+                    type: object
+                    required: [actorId, limitCredits]
+                    properties:
+                      actorId: { type: string, format: uuid }
+                      limitCredits: { type: ["integer", "null"], minimum: 0 }
+      responses:
+        "200":
+          description: Stored.
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/ai/provider-pools:
+    get:
+      operationId: getProviderPools
+      summary: The AI gateway's upstream provider keys, and which are benched
+      tags: [Admin]
+      description: |
+        Platform operators only (see `GET /v1/admin/whoami`).
+
+        A provider can hold several keys. When one answers 402, 429 or 401 the
+        gateway benches it for a while and serves from the next key, so a dead
+        key never shows up as a failed request. This listing is where it shows
+        up instead.
+
+        Keys are identified by `id` (a sha256 prefix) and `hint` (the last four
+        characters, which is how provider consoles list keys). The key itself
+        never leaves the gateway.
+
+        The state lives in the memory of one gateway process and starts empty
+        when the gateway restarts. Both deployments run a single replica today.
+        With more replicas, each would report only its own state.
+      responses:
+        "200":
+          description: Every provider in the gateway's catalog, and its keys.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderPools" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/ai/provider-pools/{providerId}/reset:
+    post:
+      operationId: resetProviderPool
+      summary: Put benched provider keys back into service now
+      tags: [Admin]
+      description: |
+        Platform operators only. Clears the cooldowns of every key of the
+        provider, or only of `keyId`. Use it right after funding an account,
+        instead of waiting out a backoff of up to 30 minutes.
+
+        A key that is still broken is benched again by the next request it
+        fails, so a reset cannot do lasting harm.
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_.-]{1,64}$" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keyId:
+                  type: string
+                  pattern: "^[0-9a-f]{8}$"
+                  description: A key `id` from the pool listing. Omit to reset every key.
+      responses:
+        "200":
+          description: How many cooldowns were cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cleared]
+                properties:
+                  cleared: { type: integer, minimum: 0 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404":
+          description: The gateway's catalog has no such provider.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/admin/marketplace/skills:
     post:
       operationId: createMarketplaceSkill
@@ -3452,8 +3716,13 @@ paths:
     post:
       operationId: topUpCredits
       tags: [teams]
-      summary: Add credits to a team (owner only)
+      summary: Add credits to a team by hand (platform operators only)
       description: |
+        Platform operators only (see `GET /v1/admin/whoami`), not team owners.
+        It used to be owner-only, and every self-registered user owns the team
+        they create, so anyone could credit themselves. Paid top-ups do not use
+        this endpoint: the Stripe webhook credits the team server-side.
+
         `idempotencyKey` is required, not optional. A retried delivery must not
         credit twice, and the server cannot invent the key — one generated per
         request is a new key on every retry, which defeats the purpose.
@@ -3491,7 +3760,7 @@ paths:
                     type: boolean
                     description: false when this idempotencyKey was already recorded
                   balanceCredits: { type: integer }
-        '403': { description: Only team owners may top up }
+        '403': { description: 'Caller is not a platform operator (`not_platform_operator`)' }
 
   /v1/teams/{teamId}/credits/packages:
     get:
@@ -8100,6 +8369,129 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    AdminOrg:
+      type: object
+      required: [id, name, code, status, createdAt, teamCount, memberCount]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        code: { type: ["string", "null"] }
+        status: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+        teamCount: { type: integer }
+        memberCount: { type: integer, description: "Distinct people across the org's teams." }
+    AdminTeamRow:
+      type: object
+      required: [id, slug, name, orgId, orgName, createdAt, memberCount, balanceCredits, periodCredits]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: ["string", "null"] }
+        orgId: { type: ["string", "null"], format: uuid }
+        orgName: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+        memberCount: { type: integer }
+        balanceCredits: { type: integer }
+        periodCredits: { type: integer, description: "Credits spent this calendar month, Asia/Shanghai." }
+    AdminTeamCredits:
+      type: object
+      required: [team, balanceCredits, usage, ledger, quotas, actors]
+      properties:
+        team:
+          type: object
+          required: [id, slug, name, orgId, orgName, createdAt]
+          properties:
+            id: { type: string, format: uuid }
+            slug: { type: string }
+            name: { type: ["string", "null"] }
+            orgId: { type: ["string", "null"], format: uuid }
+            orgName: { type: ["string", "null"] }
+            createdAt: { type: string, format: date-time }
+        balanceCredits: { type: integer }
+        usage:
+          type: object
+          description: "The gateway's month report: range, window and per-model / per-actor breakdown."
+        ledger:
+          type: array
+          description: Top-ups, grants, adjustments and refunds — not per-request usage.
+          items: { type: object }
+        quotas:
+          type: object
+          required: [period, defaultLimitCredits, lowBalanceCredits, members]
+          properties:
+            period: { type: string, enum: [week, month] }
+            defaultLimitCredits: { type: ["integer", "null"] }
+            lowBalanceCredits: { type: ["integer", "null"] }
+            members:
+              type: array
+              items:
+                type: object
+                required: [actorId, displayName, actorType, limitCredits]
+                properties:
+                  actorId: { type: string, format: uuid }
+                  displayName: { type: ["string", "null"] }
+                  actorType: { type: ["string", "null"] }
+                  limitCredits: { type: ["integer", "null"] }
+        actors:
+          type: array
+          description: Everyone in the team, so a limit can be added for someone who has none.
+          items:
+            type: object
+            required: [id, displayName, actorType]
+            properties:
+              id: { type: string, format: uuid }
+              displayName: { type: ["string", "null"] }
+              actorType: { type: ["string", "null"] }
+    ProviderPools:
+      type: object
+      required: [providers]
+      properties:
+        providers:
+          type: array
+          items:
+            type: object
+            required: [providerId, keys]
+            properties:
+              providerId: { type: string }
+              keys:
+                type: array
+                description: In priority order. The gateway tries a lower `position` first.
+                items: { $ref: "#/components/schemas/ProviderPoolKey" }
+    ProviderPoolKey:
+      type: object
+      required: [id, hint, position, ok, failed, lastUsedAt, cooldowns]
+      properties:
+        id: { type: string, pattern: "^[0-9a-f]{8}$", description: "sha256 prefix of the key." }
+        hint: { type: string, description: "The last four characters of the key, after an ellipsis." }
+        position: { type: integer, minimum: 0 }
+        ok: { type: integer, minimum: 0, description: "Successful calls since the gateway started." }
+        failed: { type: integer, minimum: 0, description: "Calls that benched this key since the gateway started." }
+        lastUsedAt: { type: [string, "null"], format: date-time }
+        cooldowns:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderPoolCooldown" }
+    ProviderPoolCooldown:
+      type: object
+      description: |
+        A bench on the whole key (`model` null) or on one model on it. An
+        inactive entry has expired: the key is back in rotation, and the entry
+        stays until the key serves again so repeated failures keep backing off.
+      required: [model, class, active, until, strikes, status, error, at]
+      properties:
+        model: { type: [string, "null"], description: "Upstream model id, or null for the whole key." }
+        class:
+          type: string
+          enum: [exhausted, rate_limited, invalid]
+          description: |
+            `exhausted` is out of balance or quota (402, or a 429 that says so),
+            `rate_limited` is a plain 429 throttle, and `invalid` is a rejected
+            key (401).
+        active: { type: boolean }
+        until: { type: string, format: date-time }
+        strikes: { type: integer, minimum: 1, description: "Consecutive failures of this class." }
+        status: { type: integer, description: "The upstream HTTP status that benched it." }
+        error: { type: string, description: "The start of the upstream error body." }
+        at: { type: string, format: date-time }
     InboxItemKind:
       type: string
       description: >-

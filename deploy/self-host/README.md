@@ -841,7 +841,7 @@ All variables live in `.env` (copied from `.env.example`).
 | `APPS_DB_APP_URL` | for data_app on FC | Postgres URL whose **host** is injected into each deployed app's `DATABASE_URL`. Required when `APPS_DB_ADMIN_URL` uses compose-internal `db` — deployed functions run on external Alibaba FC and cannot resolve that hostname. Use a VPC-reachable private IP, RDS URL, etc. |
 | `APPS_FC_VPC_ID` / `APPS_FC_VSWITCH_ID` / `APPS_FC_SECURITY_GROUP_ID` | for data_app on FC | VPC attachment for deployed app functions. Required when `APPS_DB_APP_URL` is set — without it the function cannot reach an internal RDS host. Use a dedicated security group (not the RDS-managed one) |
 | `APPS_FC_ENDPOINT` / `ALIYUN_ACCOUNT_ID` | for apps | Account-scoped FC 3.0 data-plane host (`<accountId>.<region>.fc.aliyuncs.com`). Not the OSS `ENDPOINT`; set one of the two |
-| `OPENAI_API_KEY` | no | 上游 provider key；供 `ai/catalog.yaml` 引用 |
+| `OPENAI_API_KEY` | no | 上游 provider key；供 `ai/catalog.yaml` 引用。可用逗号分隔填多个，网关在某个 key 没额度时自动换下一个 |
 | `ANTHROPIC_API_KEY` | no | 同上 |
 
 ## Single-image platform mode

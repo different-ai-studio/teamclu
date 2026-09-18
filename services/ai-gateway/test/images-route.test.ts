@@ -111,6 +111,35 @@ test("an upstream error passes through verbatim and charges nothing", async () =
   assert.equal((sql as any).usageValues, undefined, "no usage row for an image never produced");
 });
 
+test("an upstream 402 is our provider account, so it is not passed through as the team's 402", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const { app, sql } = build((async () =>
+    new Response(JSON.stringify({ error: { message: "Insufficient Balance" } }), { status: 402 })) as unknown as typeof fetch);
+  const r = await post(app, { model: "image", prompt: "x" });
+  assert.equal(r.status, 503);
+  assert.equal((await r.json() as any).error.code, "upstream_billing_error");
+  assert.equal((sql as any).usageValues, undefined, "no usage row for an image never produced");
+});
+
+test("a key at its image quota hands the picture to the next key", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const keys: string[] = [];
+  const replies = [
+    new Response(JSON.stringify({ error: { type: "usage_limit_reached" } }), { status: 429 }),
+    new Response(JSON.stringify({ data: [{ b64_json: "img0" }] }), { status: 200 }),
+  ];
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    keys.push((init.headers as Record<string, string>).Authorization);
+    return replies.shift()!;
+  }) as unknown as typeof fetch;
+  const env = { ...ENV, OPENAI_API_KEY: "k2,k3" } as NodeJS.ProcessEnv;
+  const app = createApp({ cfg, catalog, sql: fakeSql(), tokens, env, fetchImpl });
+
+  const r = await post(app, { model: "image", prompt: "x" });
+  assert.equal(r.status, 200);
+  assert.deepEqual(keys, ["Bearer k2", "Bearer k3"]);
+});
+
 test("a 200 with no images charges zero", async () => {
   const { app, sql } = build((async () =>
     new Response(JSON.stringify({ data: [] }), { status: 200 })) as unknown as typeof fetch);

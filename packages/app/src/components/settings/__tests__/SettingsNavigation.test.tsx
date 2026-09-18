@@ -115,6 +115,38 @@ describe('Settings navigation', () => {
     ])
   })
 
+  it('hides the platform operator group from everyone else', async () => {
+    // The nav is the only place this check lives on the client; the endpoints
+    // behind the section enforce it again on the server.
+    vi.resetModules()
+    vi.doMock('@/lib/admin/platform-operator', () => ({
+      usePlatformOperator: () => ({ loading: false, operator: false, userId: 'user-1' }),
+    }))
+    const { Settings } = await import('../Settings')
+
+    render(<Settings />)
+
+    expect(screen.queryByRole('button', { name: '平台运营' })).toBeNull()
+    vi.doUnmock('@/lib/admin/platform-operator')
+  })
+
+  it('shows the platform operator group to an operator', async () => {
+    vi.resetModules()
+    vi.doMock('@/lib/admin/platform-operator', () => ({
+      usePlatformOperator: () => ({ loading: false, operator: true, userId: 'op-1' }),
+    }))
+    const { Settings } = await import('../Settings')
+
+    render(<Settings />)
+
+    const group = screen.getByRole('button', { name: '平台运营' })
+    fireEvent.click(group)
+    expect(
+      within(screen.getByTestId('operator-subnav')).getAllByRole('button').map((b) => b.textContent),
+    ).toEqual(['Orgs', 'Credits', 'Provider Keys'])
+    vi.doUnmock('@/lib/admin/platform-operator')
+  })
+
   it('daemonGeneral deep link expands Daemon while keeping Desktop + Local Agent visible', async () => {
     vi.resetModules()
     vi.doMock('@/stores/ui', () => ({
