@@ -243,8 +243,14 @@ export function OperatorCreditsSection() {
               </div>
               <div className="shrink-0 text-right">
                 <p className="font-mono text-[12px] text-foreground tabular-nums">{formatPoints(row.balanceCredits)}</p>
+                {/*
+                  Blank rather than "−0". Checked on the formatted value, not
+                  the raw one: a team that spent a few thousand credits is a
+                  fraction of a point and rounds to 0, which read as "−0" on
+                  the live screen.
+                */}
                 <p className="font-mono text-[10.5px] text-faint tabular-nums">
-                  −{formatPoints(row.periodCredits)}
+                  {formatPoints(row.periodCredits) === '0' ? '' : `−${formatPoints(row.periodCredits)}`}
                 </p>
               </div>
             </button>
@@ -435,11 +441,24 @@ function TeamCreditsDetail({ teamId, onBack }: { teamId: string; onBack: () => v
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="truncate text-[15px] font-bold text-foreground">{data.team.name || data.team.slug}</p>
+                {/*
+                  Slug and org are dropped when they only repeat the name: on
+                  real data the three were identical, and the line read
+                  "958233718 · 958233718 · 2026/9/4".
+                */}
                 <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11.5px] text-muted-foreground">
-                  <span className="font-mono text-[11px] text-faint">{data.team.slug}</span>
-                  <span>·</span>
-                  <span>{data.team.orgName ?? t('settings.operatorCredits.noOrg', 'no org')}</span>
-                  <span>·</span>
+                  {data.team.slug !== (data.team.name || '') && (
+                    <>
+                      <span className="font-mono text-[11px] text-faint">{data.team.slug}</span>
+                      <span>·</span>
+                    </>
+                  )}
+                  {data.team.orgName && data.team.orgName !== data.team.name && (
+                    <>
+                      <span>{data.team.orgName}</span>
+                      <span>·</span>
+                    </>
+                  )}
                   <span className="font-mono text-[11px] text-faint">{fmtDate(data.team.createdAt)}</span>
                 </p>
               </div>
@@ -461,7 +480,7 @@ function TeamCreditsDetail({ teamId, onBack }: { teamId: string; onBack: () => v
             <p className="mb-3 text-[13px] font-semibold">{t('settings.operatorCredits.grantTitle', 'Grant credits')}</p>
             <div className="flex flex-wrap items-end gap-2">
               <label className="block space-y-1">
-                <span className="text-[11.5px] text-muted-foreground">
+                <span className="block text-[11.5px] text-muted-foreground">
                   {t('settings.operatorCredits.grantAmount', 'Points')}
                 </span>
                 <input
@@ -473,7 +492,7 @@ function TeamCreditsDetail({ teamId, onBack }: { teamId: string; onBack: () => v
                 />
               </label>
               <label className="block min-w-0 flex-1 space-y-1">
-                <span className="text-[11.5px] text-muted-foreground">
+                <span className="block text-[11.5px] text-muted-foreground">
                   {t('settings.operatorCredits.grantNote', 'Note (the team owner sees this)')}
                 </span>
                 <input
@@ -514,7 +533,7 @@ function TeamCreditsDetail({ teamId, onBack }: { teamId: string; onBack: () => v
                 options. A group with its own label keeps each option nameable.
               */}
               <div className="block space-y-1" role="group" aria-label={t('settings.operatorCredits.period', 'Period')}>
-                <span className="text-[11.5px] text-muted-foreground">
+                <span className="block text-[11.5px] text-muted-foreground">
                   {t('settings.operatorCredits.period', 'Period')}
                 </span>
                 <div className="flex items-center gap-1">
@@ -538,7 +557,7 @@ function TeamCreditsDetail({ teamId, onBack }: { teamId: string; onBack: () => v
                 </div>
               </div>
               <label className="block space-y-1">
-                <span className="text-[11.5px] text-muted-foreground">
+                <span className="block text-[11.5px] text-muted-foreground">
                   {t('settings.operatorCredits.defaultLimit', 'Default per member')}
                 </span>
                 <input
@@ -551,7 +570,7 @@ function TeamCreditsDetail({ teamId, onBack }: { teamId: string; onBack: () => v
                 />
               </label>
               <label className="block space-y-1">
-                <span className="text-[11.5px] text-muted-foreground">
+                <span className="block text-[11.5px] text-muted-foreground">
                   {t('settings.operatorCredits.lowBalance', 'Low-balance warning')}
                 </span>
                 <input
