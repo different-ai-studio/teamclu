@@ -128,11 +128,25 @@ pub struct SessionAttachment {
     pub local_path: Option<String>,
 }
 
+/// A choice put to the chat — a tool approval, or a question the agent asked.
+///
+/// Channels that can show buttons render one per [`InteractiveChoice`]; a
+/// press comes back as the choice's `reply`, as if the person had typed it.
+/// Everything else shows [`OutboundMessage::text`], which says what to type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveQuestion {
+    /// Stable id of what is being asked (the runtime's request id).
     pub question_id: String,
+    pub title: String,
     pub prompt: String,
-    pub options: Vec<String>,
+    pub choices: Vec<InteractiveChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractiveChoice {
+    pub label: String,
+    /// The command a press stands for (`/allow #<id>`).
+    pub reply: String,
 }
 
 /// What a channel can actually do.
@@ -270,6 +284,13 @@ pub trait ChannelDriver: Send + Sync {
         Err(DriverError::Transport(
             "this channel cannot edit a delivered message".into(),
         ))
+    }
+
+    /// The agent started a step of work (`bash: date`). Channels that show
+    /// progress instead of a half-written reply fold it into the open
+    /// message; the rest ignore it.
+    async fn add_step(&self, _id: &DeliveryId, _step: &str) -> Result<(), DriverError> {
+        Ok(())
     }
 }
 

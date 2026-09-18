@@ -132,7 +132,7 @@ impl TurnRunner for FakeTurns {
         acp: &str,
         sender_display: &str,
         _prompt: &str,
-        on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+        on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         self.log
             .lock()
@@ -140,7 +140,9 @@ impl TurnRunner for FakeTurns {
             .push(format!("turn:{acp}:{sender_display}"));
         if let Some(tx) = on_delta {
             for d in &self.deltas {
-                let _ = tx.send(d.to_string()).await;
+                let _ = tx
+                    .send(teamclu_gateway::TurnUpdate::Reply(d.to_string()))
+                    .await;
             }
         }
         Ok(self.reply.to_string())
@@ -156,7 +158,7 @@ impl TurnRunner for FailingTurns {
         _acp: &str,
         _sender_display: &str,
         _prompt: &str,
-        _on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+        _on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         Err(CoreError::Turn(
             "agent turn failed: pi extension error".into(),
@@ -201,6 +203,10 @@ impl CommandRunner for FakeCommands {
 struct FakeDriver {
     caps: Option<ChannelCaps>,
     delivered: Mutex<Vec<(String, Option<String>)>>, // (text, reply_context)
+    /// Choice cards that came with a delivery.
+    cards: Mutex<Vec<teamclu_gateway::driver::InteractiveQuestion>>,
+    /// Progress steps shown in the open bubble.
+    steps: Mutex<Vec<String>>,
     updates: Mutex<Vec<(String, bool)>>,
     /// How each update reported the turn's state — `None` while streaming.
     ends: Mutex<Vec<Option<TurnEnd>>>,
@@ -249,7 +255,14 @@ impl ChannelDriver for FakeDriver {
             .lock()
             .unwrap()
             .push((msg.text.clone(), reply_context.map(|s| s.to_string())));
+        if let Some(card) = &msg.question {
+            self.cards.lock().unwrap().push(card.clone());
+        }
         Ok(DeliveryId("d-1".into()))
+    }
+    async fn add_step(&self, _id: &DeliveryId, step: &str) -> Result<(), DriverError> {
+        self.steps.lock().unwrap().push(step.to_string());
+        Ok(())
     }
     async fn update(
         &self,
@@ -613,7 +626,7 @@ impl TurnRunner for AttachingTurns {
         _acp: &str,
         _display: &str,
         _prompt: &str,
-        _on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+        _on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         let attached = super::turn_attachments::attach(
             &self.session_id,
@@ -820,7 +833,10 @@ async fn an_unknown_command_says_so_instead_of_starting_a_turn() {
 
 // ── Tool approvals put to the chat ──────────────────────────────────────────
 
-use crate::channels::approvals::{ApprovalDesk, ApprovalRequest, ChatDecision, Settled};
+use crate::channels::approvals::{
+    ApprovalDesk, ApprovalKind, ApprovalRequest, ChatAction, ChatDecision, QuestionOption,
+    QuestionSpec, Settled,
+};
 use teamclu_gateway::i18n::{self as gw_i18n, MsgKey as GwMsgKey};
 
 /// The session the fake router gives `inbound(..)`.
@@ -831,13 +847,45 @@ fn ask(id: &str) -> ApprovalRequest {
         request_id: id.into(),
         agent_id: "agent-1".into(),
         summary: "bash: date".into(),
-        offers_always: true,
+        kind: ApprovalKind::Permission {
+            offers_always: true,
+        },
+    }
+}
+
+fn question(id: &str) -> ApprovalRequest {
+    ApprovalRequest {
+        request_id: id.into(),
+        agent_id: "agent-1".into(),
+        summary: "去哪个城市？".into(),
+        kind: ApprovalKind::Question {
+            questions: vec![QuestionSpec {
+                question: "去哪个城市？".into(),
+                header: String::new(),
+                options: vec![
+                    QuestionOption {
+                        label: "北京".into(),
+                        description: String::new(),
+                    },
+                    QuestionOption {
+                        label: "上海".into(),
+                        description: String::new(),
+                    },
+                ],
+                multiple: false,
+            }],
+        },
     }
 }
 
 /// A desk whose run loop settles every decision with `answer`, recording
 /// `(request_id, granted, approver)`.
-fn desk_answering(answer: Settled) -> (Arc<ApprovalDesk>, Arc<Mutex<Vec<(String, bool, String)>>>) {
+fn desk_answering(
+    answer: Settled,
+) -> (
+    Arc<ApprovalDesk>,
+    Arc<Mutex<Vec<(String, ChatAction, String)>>>,
+) {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatDecision>(8);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
@@ -845,17 +893,24 @@ fn desk_answering(answer: Settled) -> (Arc<ApprovalDesk>, Arc<Mutex<Vec<(String,
         while let Some(d) = rx.recv().await {
             log.lock()
                 .unwrap()
-                .push((d.request_id.clone(), d.granted, d.approver.clone()));
+                .push((d.request_id.clone(), d.action.clone(), d.approver.clone()));
             let _ = d.reply.send(answer);
         }
     });
     (Arc::new(ApprovalDesk::new(tx)), seen)
 }
 
-/// A turn that stops on a permission request, the way a real one does, then
-/// finishes.
+fn granted_once() -> ChatAction {
+    ChatAction::Permission {
+        granted: true,
+        option_id: Some("once".into()),
+    }
+}
+
+/// A turn that stops on a request, the way a real one does, then finishes.
 struct AskingTurns {
     desk: Arc<ApprovalDesk>,
+    request: ApprovalRequest,
 }
 
 #[async_trait]
@@ -865,9 +920,9 @@ impl TurnRunner for AskingTurns {
         acp: &str,
         _sender_display: &str,
         _prompt: &str,
-        _on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+        _on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
-        self.desk.raise(acp, ask("r1"));
+        self.desk.raise(acp, self.request.clone());
         // Long enough for the core to put the request to the chat.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         Ok("done".into())
@@ -875,13 +930,20 @@ impl TurnRunner for AskingTurns {
 }
 
 fn asking_core(desk: Arc<ApprovalDesk>) -> (Core, Arc<FakeWriter>) {
+    asking_core_with(desk, ask("r1"))
+}
+
+fn asking_core_with(desk: Arc<ApprovalDesk>, request: ApprovalRequest) -> (Core, Arc<FakeWriter>) {
     let writer = Arc::new(FakeWriter::default());
     let core = Core {
         dedup: Arc::new(FakeDedup::default()),
         router: Arc::new(FakeRouter::default()),
         identity: Arc::new(FakeIdentity::default()),
         writer: writer.clone(),
-        turns: Arc::new(AskingTurns { desk: desk.clone() }),
+        turns: Arc::new(AskingTurns {
+            desk: desk.clone(),
+            request,
+        }),
         commands: Arc::new(FakeCommands::default()),
         approvals: Some(desk),
     };
@@ -913,6 +975,92 @@ async fn a_permission_request_mid_turn_is_put_to_the_chat() {
 }
 
 #[tokio::test]
+async fn a_permission_comes_with_buttons_that_name_it() {
+    let (desk, _) = desk_answering(Settled::Resolved);
+    let (core, _) = asking_core(desk);
+    let d = driver(IM);
+    core.handle(&d, inbound("run the report")).await.unwrap();
+
+    let cards = d.cards.lock().unwrap().clone();
+    assert_eq!(cards.len(), 1);
+    let replies: Vec<&str> = cards[0].choices.iter().map(|c| c.reply.as_str()).collect();
+    assert_eq!(replies, ["/allow #r1", "/always #r1", "/deny #r1"]);
+    assert_eq!(cards[0].prompt, "bash: date");
+}
+
+#[tokio::test]
+async fn a_question_comes_with_one_button_per_option() {
+    let (desk, _) = desk_answering(Settled::Resolved);
+    let (core, _) = asking_core_with(desk, question("q1"));
+    let d = driver(IM);
+    core.handle(&d, inbound("plan my trip")).await.unwrap();
+
+    let cards = d.cards.lock().unwrap().clone();
+    assert_eq!(cards.len(), 1);
+    let choices: Vec<(&str, &str)> = cards[0]
+        .choices
+        .iter()
+        .map(|c| (c.label.as_str(), c.reply.as_str()))
+        .collect();
+    assert_eq!(
+        choices,
+        [("北京", "/answer #q1 1"), ("上海", "/answer #q1 2")]
+    );
+    // The text is the fallback: it lists the options for typing an answer.
+    let text = &d.delivered.lock().unwrap()[1].0;
+    assert!(
+        text.contains("1) 北京") && text.contains("2) 上海"),
+        "{text}"
+    );
+}
+
+/// A turn that reports the tool calls it starts.
+struct SteppingTurns;
+
+#[async_trait]
+impl TurnRunner for SteppingTurns {
+    async fn run(
+        &self,
+        _acp: &str,
+        _sender_display: &str,
+        _prompt: &str,
+        on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
+    ) -> Result<String, CoreError> {
+        if let Some(tx) = on_delta {
+            let _ = tx
+                .send(teamclu_gateway::TurnUpdate::Step("bash: date".into()))
+                .await;
+            let _ = tx
+                .send(teamclu_gateway::TurnUpdate::Reply("half".into()))
+                .await;
+        }
+        Ok("done".into())
+    }
+}
+
+#[tokio::test]
+async fn steps_reach_the_driver_and_do_not_count_as_reply_edits() {
+    let core = Core {
+        dedup: Arc::new(FakeDedup::default()),
+        router: Arc::new(FakeRouter::default()),
+        identity: Arc::new(FakeIdentity::default()),
+        writer: Arc::new(FakeWriter::default()),
+        turns: Arc::new(SteppingTurns),
+        commands: Arc::new(FakeCommands::default()),
+        approvals: None,
+    };
+    let d = driver(IM);
+    core.handle(&d, inbound("go")).await.unwrap();
+
+    assert_eq!(
+        d.steps.lock().unwrap().as_slice(),
+        &["bash: date".to_string()]
+    );
+    let updates = d.updates.lock().unwrap().clone();
+    assert_eq!(updates.first().map(|u| u.0.as_str()), Some("half"));
+}
+
+#[tokio::test]
 async fn allow_settles_the_request_and_records_who_answered() {
     let (desk, seen) = desk_answering(Settled::Resolved);
     let (core, writer) = asking_core(desk.clone());
@@ -924,7 +1072,7 @@ async fn allow_settles_the_request_and_records_who_answered() {
     assert_eq!(outcome, Outcome::Command { handled: true });
     assert_eq!(
         seen.lock().unwrap().as_slice(),
-        &[("r1".to_string(), true, "u-1".to_string())]
+        &[("r1".to_string(), granted_once(), "u-1".to_string())]
     );
     let locale = gw_i18n::locale();
     assert_eq!(
@@ -954,7 +1102,71 @@ async fn deny_in_chinese_is_a_denial() {
 
     core.handle(&d, inbound("/拒绝")).await.unwrap();
 
-    assert_eq!(seen.lock().unwrap()[0].1, false);
+    assert!(matches!(
+        seen.lock().unwrap()[0].1,
+        ChatAction::Permission { granted: false, .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_card_press_settles_the_request_it_names() {
+    // A button sends `/allow #<id>`; with two requests waiting, that is the
+    // one settled, not the oldest.
+    let (desk, seen) = desk_answering(Settled::Resolved);
+    let (core, _) = asking_core(desk.clone());
+    desk.raise(ACP_FOR_U1, ask("r1"));
+    desk.raise(ACP_FOR_U1, ask("r2"));
+    let d = driver(IM);
+
+    core.handle(&d, inbound("/allow #r2")).await.unwrap();
+
+    assert_eq!(seen.lock().unwrap()[0].0, "r2");
+}
+
+#[tokio::test]
+async fn answer_settles_a_question_and_records_the_answer() {
+    let (desk, seen) = desk_answering(Settled::Resolved);
+    let (core, writer) = asking_core(desk.clone());
+    desk.raise(ACP_FOR_U1, question("q1"));
+    let d = driver(IM);
+
+    core.handle(&d, inbound("/answer 2")).await.unwrap();
+
+    assert_eq!(
+        seen.lock().unwrap()[0].1,
+        ChatAction::Question {
+            answers_json: r#"[["上海"]]"#.into(),
+            reject: false,
+        }
+    );
+    let locale = gw_i18n::locale();
+    assert_eq!(
+        d.delivered.lock().unwrap()[0].0,
+        gw_i18n::t(GwMsgKey::QuestionAnswered("u-1", "上海"), locale)
+    );
+    assert_eq!(
+        writer.inbound.lock().unwrap()[0].0,
+        gw_i18n::t(GwMsgKey::QuestionRecordAnswered("上海"), locale)
+    );
+}
+
+#[tokio::test]
+async fn allow_on_a_question_points_at_answer() {
+    let (desk, seen) = desk_answering(Settled::Resolved);
+    let (core, _) = asking_core(desk.clone());
+    desk.raise(ACP_FOR_U1, question("q1"));
+    let d = driver(IM);
+
+    core.handle(&d, inbound("/allow")).await.unwrap();
+
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(
+        d.delivered.lock().unwrap()[0].0,
+        gw_i18n::t(
+            GwMsgKey::UseAnswerForQuestion("去哪个城市？"),
+            gw_i18n::locale()
+        )
+    );
 }
 
 #[tokio::test]

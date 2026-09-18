@@ -18,11 +18,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use teamclu_gateway::driver::{
     AttachmentSource, ChannelDriver, Conversation, DeliveryId, ExternalSender, InboundMessage,
-    OutboundMessage, SessionAttachment, TurnEnd,
+    InteractiveChoice, InteractiveQuestion, OutboundMessage, SessionAttachment, TurnEnd,
 };
 use teamclu_gateway::i18n::{self, MsgKey};
+use teamclu_gateway::TurnUpdate;
 
-use crate::channels::approvals::{self, ApprovalDesk, ApprovalRequest, DecideOutcome, Decision};
+use crate::channels::approvals::{
+    self, ApprovalDesk, ApprovalKind, ApprovalRequest, DecideOutcome, Decision, QuestionSpec,
+};
 
 pub mod adapters;
 pub mod dedup;
@@ -163,7 +166,7 @@ pub trait TurnRunner: Send + Sync {
         acp_session_id: &str,
         sender_display: &str,
         prompt: &str,
-        on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+        on_delta: Option<tokio::sync::mpsc::Sender<TurnUpdate>>,
     ) -> Result<String, CoreError>;
 }
 
@@ -286,14 +289,38 @@ impl Core {
 
         // 4. Session-scoped commands, now that there is one to act on.
         if let Some((name, arg)) = parsed {
-            // Answers to a tool approval. Anyone in the chat may give one; the
-            // answer is recorded against whoever did.
-            if let (Some(desk), Some(decision)) = (&self.approvals, Decision::from_command(&name)) {
-                let text = self
-                    .answer_approval(desk, decision, &session, &actor_id, &display, &msg)
+            // Answers to a tool approval or an agent question. Anyone in the
+            // chat may give one; the answer is recorded against whoever did.
+            if let (Some(desk), Some((decision, target))) = (
+                &self.approvals,
+                Decision::from_command(&name, arg.as_deref()),
+            ) {
+                let (text, record) = self
+                    .answer_approval(desk, &session, decision, target.as_deref(), &display)
                     .await;
+                // Reply first: a card press has to be answered within five
+                // seconds, and the record can wait.
                 self.say(driver, &msg.conversation, reply_ctx.as_deref(), &text)
                     .await?;
+                if let Some(record) = record {
+                    if let Err(e) = self
+                        .writer
+                        .write_inbound(
+                            &session.session_id,
+                            &actor_id,
+                            &record,
+                            Vec::new(),
+                            &msg.external_message_id,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session.session_id,
+                            error = %e,
+                            "gateway: an approval took effect but its record could not be written"
+                        );
+                    }
+                }
                 return Ok(Outcome::Command { handled: true });
             }
             let reply = self
@@ -430,89 +457,170 @@ impl Core {
         out
     }
 
-    /// Settle the oldest approval this session's turn is waiting on.
-    ///
-    /// The chat reply names the approver; the session gets the same fact as a
-    /// message from the approver, so the history shows who answered what even
-    /// after the chat has scrolled away.
+    /// Settle what this session's turn is waiting on. Returns the chat reply,
+    /// which names who answered, and the line to record in the session as
+    /// that person's own message — so the history shows who answered what
+    /// even after the chat has scrolled away.
     async fn answer_approval(
         &self,
         desk: &ApprovalDesk,
-        decision: Decision,
         session: &SessionRef,
-        actor_id: &str,
+        decision: Decision,
+        target: Option<&str>,
         display: &str,
-        msg: &InboundMessage,
-    ) -> String {
+    ) -> (String, Option<String>) {
         let locale = i18n::locale();
         match desk
-            .decide(&session.acp_session_id, decision, display)
+            .decide(&session.acp_session_id, decision, display, target)
             .await
         {
-            DecideOutcome::Resolved { request, decision } => {
-                let tool = request.summary.as_str();
-                let (reply, record) = match decision {
-                    Decision::AllowOnce => (
-                        MsgKey::ApprovalAllowedOnce(display, tool),
-                        MsgKey::ApprovalRecordAllowedOnce(tool),
+            DecideOutcome::Resolved {
+                request,
+                decision,
+                answers,
+            } => {
+                let about = request.summary.as_str();
+                let (reply, record) = match (&request.kind, decision, answers) {
+                    (ApprovalKind::Question { .. }, _, Some(answers)) => {
+                        let summary = answers_summary(&answers);
+                        (
+                            i18n::t(MsgKey::QuestionAnswered(display, &summary), locale),
+                            i18n::t(MsgKey::QuestionRecordAnswered(&summary), locale),
+                        )
+                    }
+                    (ApprovalKind::Question { .. }, _, None) => (
+                        i18n::t(MsgKey::QuestionSkipped(display, about), locale),
+                        i18n::t(MsgKey::QuestionRecordSkipped(about), locale),
                     ),
-                    Decision::AllowAlways => (
-                        MsgKey::ApprovalAllowedAlways(display, tool),
-                        MsgKey::ApprovalRecordAllowedAlways(tool),
+                    (_, Decision::AllowAlways, _) => (
+                        i18n::t(MsgKey::ApprovalAllowedAlways(display, about), locale),
+                        i18n::t(MsgKey::ApprovalRecordAllowedAlways(about), locale),
                     ),
-                    Decision::Deny => (
-                        MsgKey::ApprovalDenied(display, tool),
-                        MsgKey::ApprovalRecordDenied(tool),
+                    (_, Decision::Deny, _) => (
+                        i18n::t(MsgKey::ApprovalDenied(display, about), locale),
+                        i18n::t(MsgKey::ApprovalRecordDenied(about), locale),
+                    ),
+                    _ => (
+                        i18n::t(MsgKey::ApprovalAllowedOnce(display, about), locale),
+                        i18n::t(MsgKey::ApprovalRecordAllowedOnce(about), locale),
                     ),
                 };
-                if let Err(e) = self
-                    .writer
-                    .write_inbound(
-                        &session.session_id,
-                        actor_id,
-                        &i18n::t(record, locale),
-                        Vec::new(),
-                        &msg.external_message_id,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session.session_id,
-                        request_id = %request.request_id,
-                        error = %e,
-                        "gateway: approval took effect but its record could not be written"
-                    );
-                }
-                i18n::t(reply, locale)
+                (reply, Some(record))
             }
-            DecideOutcome::AlreadyHandled => i18n::t(MsgKey::ApprovalAlreadyHandled, locale),
-            DecideOutcome::NothingPending => i18n::t(MsgKey::ApprovalNothingPending, locale),
-            DecideOutcome::Failed { request } => {
-                i18n::t(MsgKey::ApprovalFailed(&request.summary), locale)
+            DecideOutcome::AlreadyHandled => {
+                (i18n::t(MsgKey::ApprovalAlreadyHandled, locale), None)
             }
+            DecideOutcome::NothingPending => {
+                (i18n::t(MsgKey::ApprovalNothingPending, locale), None)
+            }
+            DecideOutcome::Failed { request } => (
+                i18n::t(MsgKey::ApprovalFailed(&request.summary), locale),
+                None,
+            ),
+            DecideOutcome::WrongKind { request } => {
+                let key = match request.kind {
+                    ApprovalKind::Question { .. } => MsgKey::UseAnswerForQuestion(&request.summary),
+                    ApprovalKind::Permission { .. } => {
+                        MsgKey::UseAllowForApproval(&request.summary)
+                    }
+                };
+                (i18n::t(key, locale), None)
+            }
+            DecideOutcome::EmptyAnswer { .. } => (i18n::t(MsgKey::AnswerUsage, locale), None),
         }
     }
 
-    /// Put a turn's permission request to the chat. Best-effort: the desktop
-    /// card is still there if the chat cannot be reached.
+    /// Put what a turn is waiting on to the chat: buttons where the channel
+    /// has them, and text saying what to type everywhere (the fallback, and
+    /// what other channels show). Best-effort: the desktop card is still
+    /// there if the chat cannot be reached.
     async fn ask_chat(
         &self,
         driver: &dyn ChannelDriver,
         to: &Conversation,
         request: &ApprovalRequest,
     ) {
-        let text = i18n::t(
-            MsgKey::ApprovalRequested(&request.summary, request.offers_always),
-            i18n::locale(),
-        );
+        let locale = i18n::locale();
+        let (text, question) = match &request.kind {
+            ApprovalKind::Permission { offers_always } => {
+                let mut choices = vec![InteractiveChoice {
+                    label: i18n::t(MsgKey::ApprovalChoiceOnce, locale),
+                    reply: format!("/allow #{}", request.request_id),
+                }];
+                if *offers_always {
+                    choices.push(InteractiveChoice {
+                        label: i18n::t(MsgKey::ApprovalChoiceAlways, locale),
+                        reply: format!("/always #{}", request.request_id),
+                    });
+                }
+                choices.push(InteractiveChoice {
+                    label: i18n::t(MsgKey::ApprovalChoiceDeny, locale),
+                    reply: format!("/deny #{}", request.request_id),
+                });
+                (
+                    i18n::t(
+                        MsgKey::ApprovalRequested(&request.summary, *offers_always),
+                        locale,
+                    ),
+                    Some(InteractiveQuestion {
+                        question_id: request.request_id.clone(),
+                        title: i18n::t(MsgKey::ApprovalCardTitle, locale),
+                        prompt: request.summary.clone(),
+                        choices,
+                    }),
+                )
+            }
+            ApprovalKind::Question { questions } => {
+                let several = questions.len() > 1 || questions.iter().any(|q| q.multiple);
+                let text = i18n::t(
+                    MsgKey::QuestionAsked(&render_questions(questions), several),
+                    locale,
+                );
+                // Buttons only for the shape a button answers: one question,
+                // one pick. The rest is answered in text.
+                let card = match questions.as_slice() {
+                    [q] if !q.multiple && !q.options.is_empty() => Some(InteractiveQuestion {
+                        question_id: request.request_id.clone(),
+                        title: if q.header.is_empty() {
+                            i18n::t(MsgKey::QuestionCardTitle, locale)
+                        } else {
+                            q.header.clone()
+                        },
+                        prompt: q.question.clone(),
+                        choices: q
+                            .options
+                            .iter()
+                            .enumerate()
+                            .map(|(i, o)| InteractiveChoice {
+                                label: o.label.clone(),
+                                reply: format!("/answer #{} {}", request.request_id, i + 1),
+                            })
+                            .collect(),
+                    }),
+                    _ => None,
+                };
+                (text, card)
+            }
+        };
         // No reply context: the request did not come from a chat message. On
-        // WeCom that lands in the open progress bubble, which is the one thing
-        // it reliably shows mid-stream.
-        if let Err(e) = self.say(driver, to, None, &text).await {
+        // WeCom a card goes out on its own; text lands in the open progress
+        // bubble, which is the one thing it reliably shows mid-stream.
+        if let Err(e) = driver
+            .deliver(
+                to,
+                None,
+                &OutboundMessage {
+                    text,
+                    attachments: Vec::new(),
+                    question,
+                },
+            )
+            .await
+        {
             tracing::warn!(
                 request_id = %request.request_id,
                 error = %e,
-                "gateway: approval request could not be put to the chat"
+                "gateway: what the turn is waiting on could not be put to the chat"
             );
         }
     }
@@ -601,7 +709,7 @@ impl Core {
         display: &str,
         prompt: &str,
     ) -> Result<usize, CoreError> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TurnUpdate>(32);
         let handle = driver
             .deliver(
                 &msg.conversation,
@@ -626,13 +734,24 @@ impl Core {
         let mut updates = 0usize;
         loop {
             tokio::select! {
-                text = rx.recv() => {
-                    let Some(text) = text else { break };
-                    driver
-                        .update(&handle, &text, None)
-                        .await
-                        .map_err(|e| CoreError::Render(e.to_string()))?;
-                    updates += 1;
+                update = rx.recv() => {
+                    match update {
+                        None => break,
+                        Some(TurnUpdate::Reply(text)) => {
+                            driver
+                                .update(&handle, &text, None)
+                                .await
+                                .map_err(|e| CoreError::Render(e.to_string()))?;
+                            updates += 1;
+                        }
+                        // Progress is decoration: a channel that cannot show
+                        // it must not fail the turn over it.
+                        Some(TurnUpdate::Step(step)) => {
+                            if let Err(e) = driver.add_step(&handle, &step).await {
+                                tracing::debug!(error = %e, "gateway: progress step not shown");
+                            }
+                        }
+                    }
                 }
                 Some(request) = approvals::next_request(&mut asks) => {
                     self.ask_chat(driver, &msg.conversation, &request).await;
@@ -776,6 +895,42 @@ fn render(
 
 /// What the agent is told the sender is called. Channels that carry no display
 /// name (WeCom callbacks do not) fall back to the raw id rather than to "".
+/// The questions as text, numbered where there are several, options
+/// numbered for `/answer`.
+fn render_questions(questions: &[QuestionSpec]) -> String {
+    let several = questions.len() > 1;
+    let mut out = Vec::new();
+    for (i, q) in questions.iter().enumerate() {
+        let head = if q.question.is_empty() {
+            &q.header
+        } else {
+            &q.question
+        };
+        out.push(if several {
+            format!("{}. {head}", i + 1)
+        } else {
+            head.clone()
+        });
+        for (n, o) in q.options.iter().enumerate() {
+            out.push(if o.description.is_empty() {
+                format!("  {}) {}", n + 1, o.label)
+            } else {
+                format!("  {}) {} — {}", n + 1, o.label, o.description)
+            });
+        }
+    }
+    out.join("\n")
+}
+
+/// Answers as one line: picks joined by `, `, questions by `；`.
+fn answers_summary(answers: &[Vec<String>]) -> String {
+    answers
+        .iter()
+        .map(|a| a.join(", "))
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
 fn display_name(sender: &ExternalSender) -> String {
     if sender.display_name.trim().is_empty() {
         sender.external_id.clone()

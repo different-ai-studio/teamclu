@@ -1,9 +1,8 @@
 use crate::i18n;
 use crate::wecom_config::{WeComConfig, WeComGatewayStatus, WeComGatewayStatusResponse};
 use crate::wecom_delivery::{
-    self, decide_finish, decide_progress, progress_frame_with_notice, progress_rewrite_due,
-    should_requeue, still_running_close_with_notice, FinishDecision, ProgressDecision, SendError,
-    StreamPhase,
+    self, decide_finish, decide_progress, progress_rewrite_due, should_requeue,
+    still_running_close_with_notice, FinishDecision, ProgressDecision, SendError, StreamPhase,
 };
 use crate::wecom_outbox::{PendingSend, WeComOutbox};
 use base64::Engine as _;
@@ -977,7 +976,7 @@ pub(crate) fn normalize_callback(
 /// through the limit.
 pub struct WeComDriver {
     gateway: WeComGateway,
-    pacers: tokio::sync::Mutex<std::collections::HashMap<String, InFlightReply>>,
+    pacers: Pacers,
 }
 
 /// A streaming reply being written.
@@ -997,13 +996,17 @@ struct InFlightReply {
     /// only rewrite WeCom will reliably accept (proactive send during an open
     /// stream is often dropped).
     pending_notice: Option<String>,
+    /// Steps the agent started, oldest first, as the bubble shows them.
+    steps: Vec<String>,
+    /// What the turn is waiting on from the chat (an approval card).
+    waiting: Option<String>,
 }
 
 impl WeComDriver {
     pub fn new(gateway: WeComGateway) -> Self {
         Self {
             gateway,
-            pacers: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            pacers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -1098,6 +1101,43 @@ impl driver::ChannelDriver for WeComDriver {
         msg: &driver::OutboundMessage,
     ) -> Result<driver::DeliveryId, driver::DriverError> {
         let sink = self.sink().await?;
+        let (target_chat, target_type) = Self::chat_target(to);
+
+        // The answer to a card press rewrites that card — into one with no
+        // buttons, since a button_interaction card stays pressable after any
+        // update WeCom accepts (an empty button list is rejected, 40016).
+        if let Some((event_req_id, task_id)) = reply_context.and_then(parse_card_reply_context) {
+            self.set_waiting(target_chat, None).await;
+            self.gateway
+                .update_template_card(event_req_id, settled_card(task_id, &msg.text))
+                .await
+                .map_err(|e| driver::DriverError::Transport(e.to_string()))?;
+            return Ok(driver::DeliveryId(format!("card:{task_id}")));
+        }
+
+        // Something the chat has to choose: buttons, when there are few enough
+        // to be buttons. The text below is the fallback, and what every other
+        // channel shows.
+        if reply_context.is_none() {
+            if let Some(question) = msg
+                .question
+                .as_ref()
+                .filter(|q| (1..=MAX_CARD_BUTTONS).contains(&q.choices.len()))
+            {
+                match self
+                    .gateway
+                    .send_template_card(target_chat, target_type, choice_card(question))
+                    .await
+                {
+                    Ok(()) => {
+                        self.set_waiting(target_chat, Some(waiting_line(question)))
+                            .await;
+                        return Ok(driver::DeliveryId(format!("card:{}", question.question_id)));
+                    }
+                    Err(e) => eprintln!("[WeCom] choice card failed ({e}); falling back to text"),
+                }
+            }
+        }
 
         // Attachments first: the caption reads as a label for them, and WeCom
         // renders each file as its own bubble regardless of order.
@@ -1173,7 +1213,12 @@ impl driver::ChannelDriver for WeComDriver {
         let pacer = StreamPacer::new(req_id, &stream_id, &sink, self.gateway.clone(), min_gap);
         pacer
             .send(
-                &progress_frame_with_notice(Duration::ZERO, None),
+                &wecom_delivery::progress_think_frame(&wecom_delivery::Progress {
+                    steps: &[],
+                    elapsed: Duration::ZERO,
+                    notice: None,
+                    waiting: None,
+                }),
                 false,
             )
             .await
@@ -1189,18 +1234,25 @@ impl driver::ChannelDriver for WeComDriver {
                 deadline,
                 stream_closed: false,
                 pending_notice: None,
+                steps: Vec::new(),
+                waiting: None,
             },
         );
+        spawn_progress_ticker(self.pacers.clone(), stream_id.clone());
         Ok(driver::DeliveryId(stream_id))
     }
 
     /// Progress while the turn runs; the answer itself at the end.
     ///
-    /// Intermediate agent text is not written into the stream card — only the
-    /// elapsed timer (and an optional queue notice). `stream` is plain text, so
-    /// a markdown draft would show fences and tables as literals, and every
-    /// frame spends one of the 30 messages a minute this conversation is
-    /// allowed. The finish frame / follow-up markdown carries the real answer.
+    /// While the turn runs the bubble is an open `<think>` block — the steps
+    /// the agent started, a timer, and whatever the chat is waiting on — which
+    /// WeCom shows as 「思考中」 with the newest lines in view. Reply text is not
+    /// written into it mid-turn (an open block would swallow it); the finish
+    /// frame closes the block and carries the answer as markdown, which WeCom
+    /// renders both mid-stream and at the end (verified on a real bot on
+    /// 2026-09-18 — the note that used to be here said `stream` was plain
+    /// text). A ticker refreshes the timer on its own, so the bubble no longer
+    /// sits on 「0秒」 while a tool runs.
     ///
     /// Past `stream_max_secs` this driver closes the bubble itself and later
     /// `update(..., Some(end))` pushes markdown on a new req_id. Core keeps
@@ -1212,18 +1264,20 @@ impl driver::ChannelDriver for WeComDriver {
         text: &str,
         end: Option<driver::TurnEnd>,
     ) -> Result<(), driver::DriverError> {
+        let Some(end) = end else {
+            if self.pacers.lock().await.contains_key(&id.0) {
+                refresh_progress(&self.pacers, &id.0, false).await;
+                return Ok(());
+            }
+            return Err(driver::DriverError::Transport(format!(
+                "no streaming reply {} to update — it was already finished",
+                id.0
+            )));
+        };
         let snapshot = {
             let pacers = self.pacers.lock().await;
             match pacers.get(&id.0) {
-                Some(r) => InFlightSnapshot {
-                    pacer: r.pacer.clone(),
-                    chatid: r.chatid.clone(),
-                    chat_type: r.chat_type,
-                    opened_at: r.opened_at,
-                    deadline: r.deadline,
-                    stream_closed: r.stream_closed,
-                    pending_notice: r.pending_notice.clone(),
-                },
+                Some(r) => InFlightSnapshot::of(r),
                 None => {
                     return Err(driver::DriverError::Transport(format!(
                         "no streaming reply {} to update — it was already finished",
@@ -1232,37 +1286,10 @@ impl driver::ChannelDriver for WeComDriver {
                 }
             }
         };
-
         let phase = if snapshot.stream_closed {
             StreamPhase::ClosedForFollowup
         } else {
             StreamPhase::Open
-        };
-        let elapsed = snapshot.opened_at.elapsed();
-        let notice = snapshot.pending_notice.as_deref();
-
-        let Some(end) = end else {
-            match decide_progress(phase, Instant::now() >= snapshot.deadline) {
-                ProgressDecision::Swallow => return Ok(()),
-                ProgressDecision::SendProgress => {
-                    let frame = progress_frame_with_notice(elapsed, notice);
-                    if let Err(e) = snapshot.pacer.send(&frame, false).await {
-                        // A missed progress ack must not abort the turn.
-                        eprintln!("[WeCom] progress frame failed: {e}");
-                    }
-                    return Ok(());
-                }
-                ProgressDecision::CloseEarly => {
-                    let closing = still_running_close_with_notice(elapsed, notice);
-                    if let Err(e) = snapshot.pacer.send(&closing, true).await {
-                        eprintln!("[WeCom] early stream close failed: {e}");
-                    }
-                    if let Some(r) = self.pacers.lock().await.get_mut(&id.0) {
-                        r.stream_closed = true;
-                    }
-                    return Ok(());
-                }
-            }
         };
 
         match decide_finish(phase) {
@@ -1282,15 +1309,20 @@ impl driver::ChannelDriver for WeComDriver {
                 if text.trim().is_empty() {
                     return Ok(());
                 }
-                self.send_answer_followup(&snapshot.chatid, snapshot.chat_type, text)
-                    .await
+                self.send_answer_followup(
+                    &snapshot.chatid,
+                    snapshot.chat_type,
+                    &wecom_delivery::escape_think_tags(text),
+                )
+                .await
             }
             FinishDecision::FinishInStream => {
                 // WeCom has no delete/recall API, so this bubble is permanent
                 // once opened. For a short turn the finish=true content *is*
                 // what the user keeps. A turn that ended with nothing to show
                 // closes on "cancelled".
-                let closing = stream_finish_content(end, text);
+                let closing =
+                    stream_finish_content(end, text, &snapshot.steps, snapshot.opened_at.elapsed());
                 if let Err(e) = snapshot.pacer.send(&closing, true).await {
                     if text.trim().is_empty() {
                         self.pacers.lock().await.remove(&id.0);
@@ -1299,7 +1331,11 @@ impl driver::ChannelDriver for WeComDriver {
                     eprintln!("[WeCom] stream finish failed ({e}); falling back to markdown send");
                     self.pacers.lock().await.remove(&id.0);
                     return self
-                        .send_answer_followup(&snapshot.chatid, snapshot.chat_type, text)
+                        .send_answer_followup(
+                            &snapshot.chatid,
+                            snapshot.chat_type,
+                            &wecom_delivery::escape_think_tags(text),
+                        )
                         .await;
                 }
                 self.pacers.lock().await.remove(&id.0);
@@ -1307,7 +1343,34 @@ impl driver::ChannelDriver for WeComDriver {
             }
         }
     }
+
+    async fn add_step(
+        &self,
+        id: &driver::DeliveryId,
+        step: &str,
+    ) -> Result<(), driver::DriverError> {
+        let Some(line) = wecom_delivery::progress_step_line(step) else {
+            return Ok(());
+        };
+        {
+            let mut pacers = self.pacers.lock().await;
+            let Some(r) = pacers.get_mut(&id.0) else {
+                return Ok(());
+            };
+            if r.stream_closed || r.steps.last() == Some(&line) {
+                return Ok(());
+            }
+            r.steps.push(line);
+            // Work moved on, so whatever the chat was asked has been settled
+            // (here, on the desktop, or by a timeout).
+            r.waiting = None;
+        }
+        refresh_progress(&self.pacers, &id.0, false).await;
+        Ok(())
+    }
 }
+
+type Pacers = Arc<tokio::sync::Mutex<std::collections::HashMap<String, InFlightReply>>>;
 
 struct InFlightSnapshot {
     pacer: StreamPacer,
@@ -1317,6 +1380,98 @@ struct InFlightSnapshot {
     deadline: Instant,
     stream_closed: bool,
     pending_notice: Option<String>,
+    steps: Vec<String>,
+    waiting: Option<String>,
+}
+
+impl InFlightSnapshot {
+    fn of(r: &InFlightReply) -> Self {
+        Self {
+            pacer: r.pacer.clone(),
+            chatid: r.chatid.clone(),
+            chat_type: r.chat_type,
+            opened_at: r.opened_at,
+            deadline: r.deadline,
+            stream_closed: r.stream_closed,
+            pending_notice: r.pending_notice.clone(),
+            steps: r.steps.clone(),
+            waiting: r.waiting.clone(),
+        }
+    }
+}
+
+/// How often the ticker looks at an open bubble. The pacer still spaces the
+/// frames `min_gap` apart; checking often just means a frame goes out as soon
+/// as the gap allows, rather than a whole gap later (a tick landing a hair
+/// early is dropped by the pacer).
+const PROGRESS_TICK: Duration = Duration::from_secs(1);
+
+/// Keep an open bubble's timer moving on its own. Frames used to go out only
+/// when reply text changed, so a turn spent in tools showed 「0秒」 and then
+/// jumped.
+fn spawn_progress_ticker(pacers: Pacers, id: String) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(PROGRESS_TICK).await;
+            if !refresh_progress(&pacers, &id, false).await {
+                break;
+            }
+        }
+    });
+}
+
+/// Re-render an open bubble: the progress frame, or — past the stream
+/// window — the closing frame that hands the answer to a follow-up message.
+/// Returns false once there is nothing left to refresh.
+async fn refresh_progress(pacers: &Pacers, id: &str, must_send: bool) -> bool {
+    let snapshot = {
+        let pacers = pacers.lock().await;
+        match pacers.get(id) {
+            Some(r) => InFlightSnapshot::of(r),
+            None => return false,
+        }
+    };
+    let phase = if snapshot.stream_closed {
+        StreamPhase::ClosedForFollowup
+    } else {
+        StreamPhase::Open
+    };
+    let elapsed = snapshot.opened_at.elapsed();
+    match decide_progress(phase, Instant::now() >= snapshot.deadline) {
+        ProgressDecision::Swallow => false,
+        ProgressDecision::SendProgress => {
+            let frame = wecom_delivery::progress_think_frame(&wecom_delivery::Progress {
+                steps: &snapshot.steps,
+                elapsed,
+                notice: snapshot.pending_notice.as_deref(),
+                waiting: snapshot.waiting.as_deref(),
+            });
+            let sent = if must_send {
+                snapshot.pacer.send_now(&frame).await
+            } else {
+                snapshot.pacer.send(&frame, false).await
+            };
+            if let Err(e) = sent {
+                // A missed progress ack must not abort the turn.
+                eprintln!("[WeCom] progress frame failed: {e}");
+            }
+            true
+        }
+        ProgressDecision::CloseEarly => {
+            let closing = wecom_delivery::think_closed_with(
+                &snapshot.steps,
+                &format!("⏳ 已用时 {}", wecom_delivery::format_elapsed(elapsed)),
+                &still_running_close_with_notice(elapsed, snapshot.pending_notice.as_deref()),
+            );
+            if let Err(e) = snapshot.pacer.send(&closing, true).await {
+                eprintln!("[WeCom] early stream close failed: {e}");
+            }
+            if let Some(r) = pacers.lock().await.get_mut(id) {
+                r.stream_closed = true;
+            }
+            false
+        }
+    }
 }
 
 impl WeComDriver {
@@ -1328,23 +1483,35 @@ impl WeComDriver {
         chatid: &str,
         text: &str,
     ) -> Result<bool, driver::DriverError> {
-        let mut pacers = self.pacers.lock().await;
-        let Some((_, inflight)) = pacers
-            .iter_mut()
-            .find(|(_, r)| r.chatid == chatid && !r.stream_closed)
-        else {
-            return Ok(false);
+        let id = {
+            let mut pacers = self.pacers.lock().await;
+            let Some((id, inflight)) = pacers
+                .iter_mut()
+                .find(|(_, r)| r.chatid == chatid && !r.stream_closed)
+            else {
+                return Ok(false);
+            };
+            inflight.pending_notice = Some(wecom_delivery::escape_think_tags(text));
+            id.clone()
         };
-        inflight.pending_notice = Some(text.to_string());
-        let pacer = inflight.pacer.clone();
-        let elapsed = inflight.opened_at.elapsed();
-        let notice = inflight.pending_notice.clone();
-        drop(pacers);
-        let frame = progress_frame_with_notice(elapsed, notice.as_deref());
-        if let Err(e) = pacer.send_now(&frame).await {
-            eprintln!("[WeCom] queue notice piggyback failed: {e}");
-        }
+        refresh_progress(&self.pacers, &id, true).await;
         Ok(true)
+    }
+
+    /// Show (or clear) what this chat's open bubble is waiting on.
+    async fn set_waiting(&self, chatid: &str, waiting: Option<String>) {
+        let id = {
+            let mut pacers = self.pacers.lock().await;
+            let Some((id, inflight)) = pacers
+                .iter_mut()
+                .find(|(_, r)| r.chatid == chatid && !r.stream_closed)
+            else {
+                return;
+            };
+            inflight.waiting = waiting;
+            id.clone()
+        };
+        refresh_progress(&self.pacers, &id, true).await;
     }
 
     async fn send_answer_followup(
@@ -1385,19 +1552,146 @@ const PROGRESS_CANCELLED: &str = "⏹️ 已取消";
 /// WeCom `stream.content` / markdown cap, in UTF-8 bytes.
 const WECOM_CONTENT_MAX_BYTES: usize = wecom_delivery::WECOM_CONTENT_MAX_BYTES;
 
-/// The `finish=true` stream body. This is the bubble WeCom keeps.
-fn stream_finish_content(end: driver::TurnEnd, text: &str) -> String {
-    match end {
-        driver::TurnEnd::NoAnswer => PROGRESS_CANCELLED.to_string(),
+/// `button_interaction` takes at most six buttons.
+const MAX_CARD_BUTTONS: usize = 6;
+/// Marks a `reply_context` as the event of a card press (`tcard|req|task`).
+const CARD_REPLY_PREFIX: &str = "tcard|";
+/// Marks a button key as one of ours; the rest is the hex of its reply.
+const CHOICE_KEY_PREFIX: &str = "tc:";
+
+fn chars_at_most(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}
+
+/// A button key that carries the command it stands for. Hex, because the
+/// key's charset is not documented and a reply holds `/`, `#` and spaces.
+fn encode_choice_key(reply: &str) -> String {
+    let mut key = String::from(CHOICE_KEY_PREFIX);
+    for b in reply.as_bytes() {
+        key.push_str(&format!("{b:02x}"));
+    }
+    key
+}
+
+fn decode_choice_key(key: &str) -> Option<String> {
+    let hex = key.strip_prefix(CHOICE_KEY_PREFIX)?;
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
+fn card_reply_context(event_req_id: &str, task_id: &str) -> String {
+    format!("{CARD_REPLY_PREFIX}{event_req_id}|{task_id}")
+}
+
+fn parse_card_reply_context(ctx: &str) -> Option<(&str, &str)> {
+    ctx.strip_prefix(CARD_REPLY_PREFIX)?.split_once('|')
+}
+
+/// `task_id` allows letters, digits and `_-@`, up to 128 bytes, and must not
+/// repeat — so the question id is cleaned up and made unique.
+fn card_task_id(question_id: &str) -> String {
+    let cleaned: String = question_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '@'))
+        .take(64)
+        .collect();
+    let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    format!("tc_{cleaned}_{suffix}")
+}
+
+fn choice_card(question: &driver::InteractiveQuestion) -> serde_json::Value {
+    let buttons: Vec<serde_json::Value> = question
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(i, choice)| {
+            serde_json::json!({
+                "text": chars_at_most(&choice.label, 10),
+                "style": if i == 0 { 1 } else { 2 },
+                "key": encode_choice_key(&choice.reply),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "card_type": "button_interaction",
+        "main_title": { "title": chars_at_most(&question.title, 26) },
+        "sub_title_text": chars_at_most(&question.prompt, 112),
+        "button_list": buttons,
+        "task_id": card_task_id(&question.question_id),
+    })
+}
+
+/// What a pressed card becomes: the outcome, with no buttons left to press.
+/// `text` is the chat reply (「✅ 张三 允许了本次：bash: date」); its lead
+/// becomes the title and the whole of it the body.
+fn settled_card(task_id: &str, text: &str) -> serde_json::Value {
+    let text = text.trim();
+    let title = text
+        .split_once('：')
+        .or_else(|| text.split_once(": "))
+        .map(|(lead, _)| lead)
+        .unwrap_or(text);
+    serde_json::json!({
+        "card_type": "text_notice",
+        "main_title": { "title": chars_at_most(title, 26) },
+        "sub_title_text": chars_at_most(text, 112),
+        "card_action": { "type": 1, "url": "https://work.weixin.qq.com" },
+        "task_id": task_id,
+    })
+}
+
+/// The bubble line while a card waits for someone to press it.
+fn waiting_line(question: &driver::InteractiveQuestion) -> String {
+    let what = question.prompt.lines().next().unwrap_or("");
+    wecom_delivery::escape_think_tags(&format!(
+        "⏸ {}：{}（见下方卡片）",
+        question.title,
+        chars_at_most(what, 60)
+    ))
+}
+
+/// The `finish=true` stream body. This is the bubble WeCom keeps: the closed
+/// progress block (the steps, and how long it took in place of the timer),
+/// then the answer.
+fn stream_finish_content(
+    end: driver::TurnEnd,
+    text: &str,
+    steps: &[String],
+    elapsed: Duration,
+) -> String {
+    let took = wecom_delivery::format_elapsed(elapsed);
+    let content = match end {
+        driver::TurnEnd::NoAnswer => wecom_delivery::think_closed_with(
+            steps,
+            &format!("⏹️ 已停止 · {took}"),
+            PROGRESS_CANCELLED,
+        ),
         driver::TurnEnd::Answered => {
             let body = text.trim();
-            if body.is_empty() {
+            let body = if body.is_empty() {
                 PROGRESS_DONE.to_string()
             } else {
-                truncate_wecom_content(body)
-            }
+                wecom_delivery::escape_think_tags(body)
+            };
+            wecom_delivery::think_closed_with(
+                steps,
+                &wecom_delivery::elapsed_closing_line(elapsed),
+                &body,
+            )
         }
-    }
+    };
+    truncate_wecom_content(&content)
 }
 
 fn truncate_wecom_content(text: &str) -> String {
@@ -1858,8 +2152,10 @@ impl WeComGateway {
                             self.handle_enter_chat(&req_id, &ws_sink).await;
                         }
                         "template_card_event" => {
-                            self.handle_template_card_event(&body, &req_id, &ws_sink)
-                                .await;
+                            if !self.route_card_choice(&body, &req_id).await {
+                                self.handle_template_card_event(&body, &req_id, &ws_sink)
+                                    .await;
+                            }
                         }
                         "disconnected_event" => {
                             println!("[WeCom] Disconnected by server (new connection established)");
@@ -1993,12 +2289,21 @@ impl WeComGateway {
             }
         };
 
+        // A button press arrives as `event.template_card_event.event_key`
+        // (seen on a real bot, 2026-09-18); the other two shapes are kept for
+        // the selection cards this path was written for.
         let selected_key = event
-            .get("selected_items")
-            .and_then(|items| items.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|item| item.get("key"))
+            .get("template_card_event")
+            .and_then(|t| t.get("event_key"))
             .and_then(|k| k.as_str())
+            .or_else(|| {
+                event
+                    .get("selected_items")
+                    .and_then(|items| items.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|item| item.get("key"))
+                    .and_then(|k| k.as_str())
+            })
             .or_else(|| event.get("key").and_then(|k| k.as_str()))
             .unwrap_or("");
 
@@ -2272,6 +2577,133 @@ impl WeComGateway {
             chatid, chat_type
         );
         Ok(())
+    }
+
+    /// Put a button card into a chat with `aibot_send_msg`.
+    ///
+    /// Proactive, and delivered even while the chat's stream bubble is open
+    /// (verified 2026-09-18). The combined `stream_with_template_card` reply is
+    /// not an option on the long connection: it is acked, and the card never
+    /// shows.
+    async fn send_template_card(
+        &self,
+        chatid: &str,
+        chat_type: u32,
+        card: serde_json::Value,
+    ) -> Result<(), SendError> {
+        let ws_sink = self.shared_ws_sink.read().await.clone().ok_or_else(|| {
+            SendError::Transport("WeCom gateway is not connected. Cannot send a card.".into())
+        })?;
+        let req_id = uuid::Uuid::new_v4().to_string();
+        let msg = serde_json::json!({
+            "cmd": "aibot_send_msg",
+            "headers": { "req_id": req_id },
+            "body": {
+                "chatid": chatid,
+                "chat_type": chat_type,
+                "msgtype": "template_card",
+                "template_card": card,
+            }
+        });
+        self.send_json_acked_retry(
+            msg,
+            &req_id,
+            &ws_sink,
+            wecom_delivery::PROACTIVE_ACK_TIMEOUT,
+        )
+        .await
+    }
+
+    /// Rewrite the card a press came from. Only possible with that press's
+    /// event `req_id`, and only within 5 seconds of it.
+    async fn update_template_card(
+        &self,
+        event_req_id: &str,
+        card: serde_json::Value,
+    ) -> Result<(), SendError> {
+        let ws_sink = self.shared_ws_sink.read().await.clone().ok_or_else(|| {
+            SendError::Transport("WeCom gateway is not connected. Cannot update a card.".into())
+        })?;
+        let msg = serde_json::json!({
+            "cmd": "aibot_respond_update_msg",
+            "headers": { "req_id": event_req_id },
+            "body": {
+                "response_type": "update_template_card",
+                "template_card": card,
+            }
+        });
+        self.send_json_acked_retry(
+            msg,
+            event_req_id,
+            &ws_sink,
+            wecom_delivery::STREAM_FRAME_ACK_TIMEOUT,
+        )
+        .await
+    }
+
+    /// A press on one of our choice cards becomes the command it stands for,
+    /// from the person who pressed it, through the same pipeline as a typed
+    /// message. Returns false for a card this is not about.
+    async fn route_card_choice(&self, body: &serde_json::Value, req_id: &str) -> bool {
+        let press = body.get("event").and_then(|e| e.get("template_card_event"));
+        let Some(reply) = press
+            .and_then(|p| p.get("event_key"))
+            .and_then(|k| k.as_str())
+            .and_then(decode_choice_key)
+        else {
+            return false;
+        };
+        let Some(sink) = self.inbound_sink.read().await.clone() else {
+            return false;
+        };
+        let task_id = press
+            .and_then(|p| p.get("task_id"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        let str_field = |k: &str| {
+            body.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let userid = body
+            .get("from")
+            .and_then(|f| f.get("userid"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let kind = if str_field("chattype") == "group" {
+            driver::ConversationKind::Group
+        } else {
+            driver::ConversationKind::Direct
+        };
+        let conversation_id = if kind == driver::ConversationKind::Group {
+            str_field("chatid")
+        } else {
+            userid.clone()
+        };
+        let bot_id = self.config.read().await.bot_id.clone();
+        sink.accept(driver::InboundMessage {
+            conversation: driver::Conversation {
+                channel: "wecom",
+                bot_id: (!bot_id.is_empty()).then_some(bot_id),
+                kind,
+                id: conversation_id,
+            },
+            sender: driver::ExternalSender {
+                external_id: userid,
+                display_name: String::new(),
+                email: None,
+            },
+            external_message_id: str_field("msgid"),
+            text: reply,
+            attachments: Vec::new(),
+            addressed_to_bot: true,
+            quoted_text: None,
+            reply_context: Some(card_reply_context(req_id, task_id)),
+        })
+        .await;
+        true
     }
 
     /// Split a long answer and send each piece with quota-safe spacing.
@@ -3093,7 +3525,7 @@ mod progress_line_tests {
         // of miss as template_card after a stream). Official docs put the
         // answer in the finish frame.
         let reply = "广州今日多云，建议带伞。";
-        let closing = stream_finish_content(driver::TurnEnd::Answered, reply);
+        let closing = stream_finish_content(driver::TurnEnd::Answered, reply, &[], Duration::ZERO);
         assert!(
             closing.contains(reply),
             "finish frame must carry the answer: {closing}"
@@ -3106,18 +3538,37 @@ mod progress_line_tests {
 
     #[test]
     fn an_empty_answered_turn_still_closes_on_done() {
-        assert_eq!(
-            stream_finish_content(driver::TurnEnd::Answered, "  \n"),
-            PROGRESS_DONE
+        let closing = stream_finish_content(driver::TurnEnd::Answered, "  \n", &[], Duration::ZERO);
+        assert!(
+            closing.ends_with(&format!("</think>\n\n{PROGRESS_DONE}")),
+            "{closing}"
         );
     }
 
     #[test]
     fn a_cancelled_turn_closes_on_cancelled_even_if_text_lingers() {
-        assert_eq!(
-            stream_finish_content(driver::TurnEnd::NoAnswer, "half an answer"),
-            PROGRESS_CANCELLED
+        let closing = stream_finish_content(
+            driver::TurnEnd::NoAnswer,
+            "half an answer",
+            &[],
+            Duration::ZERO,
         );
+        assert!(closing.ends_with(PROGRESS_CANCELLED), "{closing}");
+        assert!(!closing.contains("half an answer"));
+    }
+
+    #[test]
+    fn the_kept_bubble_closes_the_progress_block_above_the_answer() {
+        let steps = vec!["bash: date".to_string()];
+        let closing = stream_finish_content(
+            driver::TurnEnd::Answered,
+            "答案里提到 <think> 标签",
+            &steps,
+            Duration::from_secs(21),
+        );
+        assert!(closing.starts_with("<think>bash: date\n✅ 用时 21秒</think>\n\n"));
+        // Only the block we wrote may open; the answer's tag is defused.
+        assert_eq!(closing.matches("<think>").count(), 1, "{closing}");
     }
 
     #[test]
@@ -3125,10 +3576,89 @@ mod progress_line_tests {
         // WeCom rejects stream.content over 20480 bytes. Slicing mid-char
         // would panic; cutting at a boundary keeps the send valid.
         let reply = "中".repeat(WECOM_CONTENT_MAX_BYTES);
-        let closing = stream_finish_content(driver::TurnEnd::Answered, &reply);
+        let closing = stream_finish_content(driver::TurnEnd::Answered, &reply, &[], Duration::ZERO);
         assert!(closing.len() <= WECOM_CONTENT_MAX_BYTES);
         assert!(closing.is_char_boundary(closing.len()));
         assert!(!closing.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod choice_card_tests {
+    use super::*;
+
+    fn question(n: usize) -> driver::InteractiveQuestion {
+        driver::InteractiveQuestion {
+            question_id: "req-1f/xyz".into(),
+            title: "需要审批".into(),
+            prompt: "bash: date; cd ~/.agents/skills/route-plan-poster".into(),
+            choices: (0..n)
+                .map(|i| driver::InteractiveChoice {
+                    label: format!("选项{i}"),
+                    reply: format!("/answer #req-1f/xyz {}", i + 1),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_choice_key_carries_its_reply_both_ways() {
+        let reply = "/allow #3b1c-uuid";
+        let key = encode_choice_key(reply);
+        assert!(key.starts_with(CHOICE_KEY_PREFIX));
+        assert!(key[CHOICE_KEY_PREFIX.len()..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(decode_choice_key(&key).as_deref(), Some(reply));
+        assert_eq!(decode_choice_key("allow_probe_1"), None, "not one of ours");
+        assert_eq!(decode_choice_key("tc:zz"), None);
+    }
+
+    #[test]
+    fn a_press_context_round_trips() {
+        let ctx = card_reply_context("ev-req", "tc_abc_1234");
+        assert_eq!(
+            parse_card_reply_context(&ctx),
+            Some(("ev-req", "tc_abc_1234"))
+        );
+        assert_eq!(parse_card_reply_context("plain-req-id"), None);
+    }
+
+    #[test]
+    fn the_card_has_one_button_per_choice_and_a_valid_task_id() {
+        let card = choice_card(&question(3));
+        let buttons = card["button_list"].as_array().unwrap();
+        assert_eq!(buttons.len(), 3);
+        assert_eq!(buttons[0]["style"], 1);
+        assert_eq!(
+            decode_choice_key(buttons[2]["key"].as_str().unwrap()).as_deref(),
+            Some("/answer #req-1f/xyz 3")
+        );
+        let task_id = card["task_id"].as_str().unwrap();
+        assert!(task_id.len() <= 128);
+        assert!(task_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '@')));
+        assert_ne!(
+            task_id,
+            choice_card(&question(3))["task_id"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_settled_card_has_no_buttons_and_leads_with_the_outcome() {
+        let card = settled_card("tc_1", "✅ 张三 允许了本次：bash: date");
+        assert_eq!(card["card_type"], "text_notice");
+        assert!(card.get("button_list").is_none());
+        assert_eq!(card["main_title"]["title"], "✅ 张三 允许了本次");
+        assert_eq!(card["task_id"], "tc_1");
+    }
+
+    #[test]
+    fn the_waiting_line_names_the_card() {
+        let line = waiting_line(&question(2));
+        assert!(line.starts_with("⏸ 需要审批：bash: date"));
+        assert!(line.ends_with("（见下方卡片）"));
     }
 }
 

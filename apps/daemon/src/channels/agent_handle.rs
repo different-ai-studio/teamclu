@@ -602,6 +602,33 @@ impl AmuxdAgentHandle {
     }
 }
 
+/// One progress line for a tool call: its name and the argument that says
+/// what it is doing (`bash: date; cd ~/x`), the same pick the pi extension
+/// makes for its approval titles.
+fn tool_step_line(tool: &crate::proto::amux::AcpToolUse) -> Option<String> {
+    let name = tool.tool_name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let what = [
+        "command",
+        "path",
+        "file_path",
+        "url",
+        "pattern",
+        "query",
+        "description",
+    ]
+    .iter()
+    .filter_map(|k| tool.params.get(*k))
+    .map(|v| v.lines().next().unwrap_or("").trim())
+    .find(|v| !v.is_empty());
+    Some(match what {
+        Some(what) => format!("{name}: {what}"),
+        None => name.to_string(),
+    })
+}
+
 /// Extract the channel scheme from a binding URI (`wecom://…` →
 /// `wecom`). Used in the priming preamble so the agent knows which
 /// gateway it's talking through. Falls back to `gateway` when the URI
@@ -701,7 +728,7 @@ impl AmuxdAgentHandle {
         session: &AmuxSessionId,
         sender_display: &str,
         text: &str,
-        on_update: Option<tokio::sync::mpsc::Sender<String>>,
+        on_update: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
         turn_timeout: std::time::Duration,
     ) -> Result<TurnOutcome, AgentError> {
         let outcome = self.resolve_or_spawn(session).await?;
@@ -832,6 +859,9 @@ impl AmuxdAgentHandle {
             out
         };
         let mut timed_out = false;
+        // Tool calls already reported as steps: a tool's later updates reuse
+        // its id and are not new steps.
+        let mut steps_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let result: Result<String, AgentError> = loop {
             let remaining = crate::runtime::turn_reply::wait_remaining_at(
                 last_activity,
@@ -890,16 +920,44 @@ impl AmuxdAgentHandle {
 
             // The desktop gets a card from the forward above; the chat that
             // started this turn gets asked too, since that is where somebody
-            // is actually waiting.
-            if let (
-                Some(desk),
-                Some(crate::proto::amux::acp_event::Event::PermissionRequest(request)),
-            ) = (&self.approvals, &event.event.event)
+            // is actually waiting — for a tool permission, or for an answer to
+            // the agent's question.
+            if let Some(desk) = &self.approvals {
+                match &event.event.event {
+                    Some(crate::proto::amux::acp_event::Event::PermissionRequest(request)) => {
+                        desk.raise(
+                            session,
+                            crate::channels::approvals::ApprovalRequest::from_event(
+                                &agent_id, request,
+                            ),
+                        );
+                    }
+                    Some(crate::proto::amux::acp_event::Event::Raw(raw))
+                        if raw.method == "question_asked" =>
+                    {
+                        if let Some(request) =
+                            crate::channels::approvals::ApprovalRequest::from_question_event(
+                                &agent_id,
+                                &raw.json_payload,
+                            )
+                        {
+                            desk.raise(session, request);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Each tool call that starts is a step the chat can watch, where
+            // the channel shows progress instead of a half-written reply.
+            if let (Some(tx), Some(crate::proto::amux::acp_event::Event::ToolUse(tool))) =
+                (&on_update, &event.event.event)
             {
-                desk.raise(
-                    session,
-                    crate::channels::approvals::ApprovalRequest::from_event(&agent_id, request),
-                );
+                if !tool.tool_id.is_empty() && steps_seen.insert(tool.tool_id.clone()) {
+                    if let Some(step) = tool_step_line(tool) {
+                        let _ = tx.try_send(teamclu_gateway::TurnUpdate::Step(step));
+                    }
+                }
             }
 
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
@@ -962,7 +1020,10 @@ impl AmuxdAgentHandle {
                 if due {
                     let text = crate::runtime::turn_reply::compose_reply(&segments, &live);
                     if !text.trim().is_empty() && text != sent_update {
-                        if tx.try_send(text.clone()).is_ok() {
+                        if tx
+                            .try_send(teamclu_gateway::TurnUpdate::Reply(text.clone()))
+                            .is_ok()
+                        {
                             sent_update = text;
                         }
                         last_update = std::time::Instant::now();
@@ -1039,7 +1100,7 @@ impl AgentHandle for AmuxdAgentHandle {
         session: &AmuxSessionId,
         sender_display: &str,
         text: &str,
-        on_update: tokio::sync::mpsc::Sender<String>,
+        on_update: tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>,
         timeout: std::time::Duration,
     ) -> Result<TurnOutcome, AgentError> {
         self.run_turn(session, sender_display, text, Some(on_update), timeout)

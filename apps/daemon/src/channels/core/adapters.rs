@@ -247,7 +247,7 @@ impl TurnRunner for AgentTurns {
         acp_session_id: &str,
         sender_display: &str,
         prompt: &str,
-        on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+        on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         let outcome = match on_delta {
             Some(tx) => {
