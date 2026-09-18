@@ -3,7 +3,7 @@
 
 const { spawn } = require("child_process");
 const path = require("path");
-const { createRustBuildEnv } = require("./rust-build-env");
+const { createRustBuildEnv, ensureSccacheServer } = require("./rust-build-env");
 const { ensureTeamcluIntrospectSidecar } = require("./ensure-introspect-sidecar");
 const { ensureAmuxdSidecar } = require("./ensure-amuxd-sidecar");
 const { ensureFunASRSidecar } = require("./ensure-funasr-sidecar");
@@ -40,6 +40,10 @@ if (isWindows && (sub === "dev" || sub === "build")) {
 const env = createRustBuildEnv(process.env, __dirname);
 args = applyDevSkipFlags(args, env);
 timing.mark("flags+env");
+
+// Before the sidecar builds below: they are the first cargo to fan out.
+ensureSccacheServer(env);
+timing.mark("sccache");
 
 ensureTeamcluIntrospectSidecar(env, { logPrefix: "[tauri-cli]" });
 timing.mark("ensure-introspect");

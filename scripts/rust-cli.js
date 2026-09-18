@@ -2,7 +2,7 @@
 "use strict";
 
 const { spawn } = require("child_process");
-const { createRustBuildEnv } = require("./rust-build-env");
+const { createRustBuildEnv, ensureSccacheServer } = require("./rust-build-env");
 const { ensureTeamcluIntrospectSidecar } = require("./ensure-introspect-sidecar");
 const { ensureAmuxdSidecar } = require("./ensure-amuxd-sidecar");
 const { ensureFunASRSidecar } = require("./ensure-funasr-sidecar");
@@ -27,6 +27,8 @@ if (isAnalysisOnly && !env.CI) {
     });
   }
 }
+
+ensureSccacheServer(env);
 
 // introspect is a local crate.
 // Build before invoking cargo to avoid build.rs deadlock. Skipped when env.CI is set (e.g. rust:check).

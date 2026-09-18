@@ -16,7 +16,7 @@
 
 const { spawn } = require("child_process");
 const path = require("path");
-const { createRustBuildEnv } = require("./rust-build-env");
+const { createRustBuildEnv, ensureSccacheServer } = require("./rust-build-env");
 const { sidecarTargetDir } = require("./lib/sidecar-target-dir");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -39,6 +39,8 @@ const args =
   sub === "run"
     ? ["run", "-p", "amuxd", "--", ...rest]
     : [sub, "-p", "amuxd", ...rest];
+
+ensureSccacheServer(env);
 
 const child = spawn("cargo", args, {
   cwd: repoRoot,

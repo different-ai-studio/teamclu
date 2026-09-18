@@ -1,5 +1,6 @@
 "use strict";
 
+const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { resolveBuildEnv } = require("./lib/resolve-build-env");
@@ -134,6 +135,14 @@ function createRustBuildEnv(baseEnv = process.env, scriptDir = __dirname) {
     env.SCCACHE_SERVER_UDS = `/tmp/sccache-${process.getuid?.() ?? 0}.sock`;
   }
 
+  // Keep a socket server running rather than letting it exit after its default
+  // 10 idle minutes. `ensureSccacheServer` starts it before cargo fans out, but
+  // a `tauri dev` session rebuilds on its own long after that — and a rebuild
+  // that finds no server reopens the startup race described there.
+  if (env.SCCACHE_SERVER_UDS && env.RUSTC_WRAPPER === "sccache" && !env.SCCACHE_IDLE_TIMEOUT) {
+    env.SCCACHE_IDLE_TIMEOUT = "0";
+  }
+
   if (process.platform === "darwin" && process.arch === "arm64" && !env.BINDGEN_EXTRA_CLANG_ARGS) {
     env.BINDGEN_EXTRA_CLANG_ARGS = "--target=aarch64-apple-darwin";
   }
@@ -145,6 +154,68 @@ function createRustBuildEnv(baseEnv = process.env, scriptDir = __dirname) {
   return env;
 }
 
+/**
+ * Whether something accepts connections on this Unix socket.
+ *
+ * A real connect, because nothing cheaper answers the question: the socket file
+ * outlives a server that was killed, and `sccache --show-stats` exits 0 with
+ * all-zero counters whether or not a server is there. Run in a child so the
+ * callers — plain synchronous scripts — can stay synchronous.
+ */
+function isSocketListening(socketPath, run = spawnSync) {
+  const probe = run(
+    process.execPath,
+    [
+      "-e",
+      'const s = require("net").connect(process.argv[1]);' +
+        's.on("connect", () => { s.destroy(); process.exit(0); });' +
+        's.on("error", () => process.exit(1));',
+      socketPath,
+    ],
+    { stdio: "ignore", timeout: 5000 },
+  );
+  return probe.status === 0;
+}
+
+/**
+ * Start the sccache server before cargo runs, when it talks over a Unix socket.
+ *
+ * Left to itself, the server is started by whichever rustc finds it missing —
+ * and cargo launches many at once. Over a Unix socket (see `createRustBuildEnv`)
+ * sccache 0.16 does not survive that: every starter but one fails to bind with
+ *
+ *   sccache: error: Server startup failed: File exists (os error 17)
+ *   error: could not compile `shlex` (lib)
+ *
+ * so a build that begins with no server running fails at random. Reproduced with
+ * twelve concurrent `sccache --start-server`: three failed, one exactly as above.
+ *
+ * A running server is left alone: `--start-server` against a live socket does
+ * not fail, it starts a SECOND server that takes the socket over and orphans the
+ * first. A stale socket file is fine — sccache replaces it.
+ *
+ * Never fatal. If this cannot start the server, cargo is no worse off than
+ * before, so it warns and returns.
+ */
+function ensureSccacheServer(env, { run = spawnSync, log = console.warn } = {}) {
+  if (env.RUSTC_WRAPPER !== "sccache" || !env.SCCACHE_SERVER_UDS) return "skipped";
+  if (isSocketListening(env.SCCACHE_SERVER_UDS, run)) return "running";
+
+  const started = run("sccache", ["--start-server"], {
+    env,
+    stdio: ["ignore", "ignore", "pipe"],
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  if (started.status === 0) return "started";
+
+  const why = (started.stderr || started.error?.message || `exit ${started.status}`).trim();
+  log(`[rust-build-env] could not start sccache ahead of cargo (${why}); continuing without it`);
+  return "failed";
+}
+
 module.exports = {
   createRustBuildEnv,
+  ensureSccacheServer,
+  isSocketListening,
 };
