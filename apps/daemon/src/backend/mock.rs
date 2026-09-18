@@ -124,6 +124,8 @@ pub struct MockState {
     pub sessions: HashMap<String, BackendSessionAndParticipants>,
     pub messages_by_session: HashMap<String, Vec<StoredMessage>>,
     pub gateway_session_index: HashMap<String, (String, Option<String>)>,
+    /// cloud session_id → chat binding, as `get_session_binding` reads it.
+    pub session_bindings: HashMap<String, String>,
     pub admin_member_actor_ids: HashMap<String, Vec<String>>,
     pub agent_permissions: HashMap<(String, String), Option<String>>,
     pub external_actor_results: HashMap<(String, String, String), String>,
@@ -638,6 +640,16 @@ impl Backend for MockBackend {
             .unwrap()
             .gateway_session_index
             .get(acp_session_id)
+            .cloned())
+    }
+
+    async fn get_session_binding(&self, session_id: &str) -> BackendResult<Option<String>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .session_bindings
+            .get(session_id)
             .cloned())
     }
 

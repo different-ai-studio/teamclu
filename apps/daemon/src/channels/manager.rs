@@ -57,6 +57,8 @@ pub struct ChannelManager {
     /// amuxd-managed case this defaults to the amux config dir.
     workspace_path: String,
     running: Mutex<RunningChannels>,
+    /// Shared with the agent handle, which raises the requests this answers.
+    approvals: Arc<crate::channels::approvals::ApprovalDesk>,
 }
 
 impl ChannelManager {
@@ -67,6 +69,7 @@ impl ChannelManager {
         team_id: String,
         primary_agent_actor_id: String,
         agent_owner_actor_ids: Vec<String>,
+        approvals: Arc<crate::channels::approvals::ApprovalDesk>,
     ) -> Self {
         // The team's own worktree, not the daemon home. Passing the home here
         // made every workspace-meta write land inside it — that is where the
@@ -83,6 +86,7 @@ impl ChannelManager {
             agent_owner_actor_ids,
             workspace_path,
             running: Mutex::new(RunningChannels::default()),
+            approvals,
         }
     }
 
@@ -135,6 +139,7 @@ impl ChannelManager {
                 agent: self.acp.clone(),
                 store: self.store.clone(),
             }),
+            approvals: Some(self.approvals.clone()),
         };
         Arc::new(sink::CoreSink {
             core: Arc::new(core),

@@ -62,6 +62,9 @@ impl DaemonServer {
     }
 
     /// Attach a live runtime for `(session, workspace, agent_type)` using stored binding.
+    ///
+    /// `client_permission_mode` is the caller's wire mode (`""` when the
+    /// caller has none); it is resolved exactly as a fresh spawn resolves it.
     pub(super) async fn attach_collab_from_binding(
         &mut self,
         cloud_session_id: &str,
@@ -71,6 +74,7 @@ impl DaemonServer {
         initial_model_override: Option<&str>,
         forbid_new_session_fallback: bool,
         bind_member_actor_id: Option<&str>,
+        client_permission_mode: &str,
         log_label: &'static str,
     ) -> Result<Option<String>, StartRuntimeError> {
         if cloud_session_id.is_empty() || workspace_id.is_empty() {
@@ -106,7 +110,7 @@ impl DaemonServer {
             }
         };
 
-        let context = match self
+        let mut context = match self
             .assemble_stored_execution_context(&worktree, workspace_id)
             .await
         {
@@ -123,10 +127,25 @@ impl DaemonServer {
             }
         };
 
+        // The stored env only knows the `gateway:` workspace prefix. A binding
+        // a desktop RuntimeStart wrote carries the real workspace id, so a
+        // chat-bound session that had been idle-evicted used to resume as Ask
+        // — whatever the client asked for — and the next chat turn, which
+        // reuses the live attachment, waited on an approval nobody in the chat
+        // could give.
+        let is_gateway = context.spawn_env.is_gateway
+            || self.session_has_gateway_binding(cloud_session_id).await;
+        let permission = crate::runtime::PermissionPolicy::resolve_for_session(
+            is_gateway,
+            client_permission_mode,
+        );
+        context.spawn_env.permission = Some(permission);
+
         info!(
             session_id = %cloud_session_id,
             workspace_id = %workspace_id,
             backend_session_id = %acp_resume,
+            permission = %permission,
             log_label,
             "attach_collab_from_binding: resuming stored backend session"
         );
@@ -199,6 +218,7 @@ impl DaemonServer {
         initial_prompt: &str,
         initial_model_override: Option<&str>,
         requester_actor_id: &str,
+        client_permission_mode: &str,
     ) -> Result<Option<StartRuntimeOutcome>, StartRuntimeError> {
         if cloud_session_id.is_empty() || workspace_id.is_empty() {
             return Ok(None);
@@ -213,6 +233,7 @@ impl DaemonServer {
                 initial_model_override,
                 true,
                 (!requester_actor_id.is_empty()).then_some(requester_actor_id),
+                client_permission_mode,
                 "runtime_start",
             )
             .await?;
@@ -270,6 +291,7 @@ impl DaemonServer {
                     None,
                     false,
                     requester_actor_id,
+                    "",
                     "session_live",
                 )
                 .await
@@ -369,6 +391,7 @@ mod tests {
     use crate::daemon::server::tests::test_server_with_cloud_api;
     use crate::proto::amux;
     use crate::runtime::execution_context::{IsolationDomainKey, ProcessEnvRevision};
+    use crate::runtime::PermissionPolicy;
 
     #[tokio::test]
     async fn collab_runtime_ensure_resume_propagates_workspace_attach_context() {
@@ -445,5 +468,155 @@ mod tests {
             captures.lock().unwrap().is_empty(),
             "failed workspace lookup must not attach with UnscopedAgent and bare env"
         );
+    }
+
+    /// A session whose binding a desktop RuntimeStart wrote (real workspace
+    /// id, not `gateway:`), optionally bound to a chat. Returns the fixture
+    /// with a capturing backend installed plus the workspace dir guard.
+    async fn stored_binding_fixture(
+        chat_binding: Option<&str>,
+    ) -> (
+        crate::daemon::server::tests::TestServer,
+        Arc<std::sync::Mutex<Vec<crate::runtime::test_support::CapturedAttach>>>,
+        tempfile::TempDir,
+    ) {
+        let workspace = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockBackend::with_identity("team-test", "actor-config-test"));
+        mock.state().workspaces_by_id.insert(
+            "ws-a".into(),
+            WorkspaceRow {
+                id: "ws-a".into(),
+                team_id: "team-test".into(),
+                path: Some(workspace.path().to_string_lossy().into_owned()),
+                archived: false,
+                agent_id: None,
+            },
+        );
+        mock.state().sessions.insert(
+            "chat-session".into(),
+            crate::backend::BackendSessionAndParticipants {
+                session: crate::backend::BackendSessionRow {
+                    id: "chat-session".into(),
+                    team_id: "team-test".into(),
+                    created_by_actor_id: Some("human-actor".into()),
+                    primary_agent_id: Some("actor-config-test".into()),
+                    mode: "chat".into(),
+                    title: "WeCom DM".into(),
+                    summary: String::new(),
+                    idea_id: None,
+                    parent_session_id: None,
+                    thread_root_message_id: None,
+                    created_at: chrono::Utc::now(),
+                },
+                participants: Vec::new(),
+            },
+        );
+        if let Some(binding) = chat_binding {
+            mock.state()
+                .session_bindings
+                .insert("chat-session".into(), binding.into());
+        }
+        let backend: Arc<dyn Backend> = mock;
+        let mut fixture = test_server_with_cloud_api(backend);
+        let captures = {
+            let mut manager = fixture.server.agents.lock().await;
+            crate::runtime::test_support::install_capturing_backend(&mut manager)
+        };
+        fixture.server.sessions.upsert(SessionBinding::new(
+            "chat-session",
+            "ws-a",
+            amux::AgentType::Pi as i32,
+            "acp-old",
+        ));
+        (fixture, captures, workspace)
+    }
+
+    async fn cold_runtime_start(
+        fixture: &mut crate::daemon::server::tests::TestServer,
+        workspace: &tempfile::TempDir,
+        permission_mode: &str,
+    ) {
+        fixture
+            .server
+            .apply_start_runtime(
+                amux::AgentType::Pi,
+                "ws-a",
+                workspace.path().to_string_lossy().as_ref(),
+                "chat-session",
+                "",
+                None,
+                "",
+                false,
+                None,
+                permission_mode,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("start failed: {}", e.error_message));
+    }
+
+    fn only_permission(
+        captures: &std::sync::Mutex<Vec<crate::runtime::test_support::CapturedAttach>>,
+    ) -> PermissionPolicy {
+        let captures = captures.lock().unwrap();
+        assert_eq!(captures.len(), 1, "expected exactly one attach");
+        captures[0].permission
+    }
+
+    #[tokio::test]
+    async fn cold_resume_honors_client_full_access() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) = stored_binding_fixture(None).await;
+        cold_runtime_start(&mut fixture, &workspace, "full_access").await;
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+    }
+
+    #[tokio::test]
+    async fn cold_resume_of_chat_bound_session_defaults_to_full_access() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+        cold_runtime_start(&mut fixture, &workspace, "").await;
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+    }
+
+    #[tokio::test]
+    async fn session_live_resume_of_chat_bound_session_is_full_access() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, _workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+        assert!(
+            fixture
+                .server
+                .resume_historical_runtimes_for_session("chat-session", None)
+                .await
+        );
+        assert_eq!(only_permission(&captures), PermissionPolicy::Full);
+    }
+
+    #[tokio::test]
+    async fn cold_resume_keeps_an_explicit_ask_on_a_chat_bound_session() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+        cold_runtime_start(&mut fixture, &workspace, "default").await;
+        assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
+    }
+
+    #[tokio::test]
+    async fn session_live_resume_of_desktop_session_still_asks() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, _workspace) = stored_binding_fixture(None).await;
+        assert!(
+            fixture
+                .server
+                .resume_historical_runtimes_for_session("chat-session", None)
+                .await
+        );
+        assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
     }
 }

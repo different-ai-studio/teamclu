@@ -312,6 +312,7 @@ fn fixture(reply: &'static str, deltas: Vec<&'static str>, commands: FakeCommand
                 log: turn_log.clone(),
             }),
             commands: commands.clone(),
+            approvals: None,
         },
         writer,
         identity,
@@ -467,6 +468,7 @@ async fn a_failed_turn_closes_the_stream_bubble_with_the_real_error() {
         writer: writer.clone(),
         turns: Arc::new(FailingTurns),
         commands: Arc::new(FakeCommands::default()),
+        approvals: None,
     };
     let d = driver(IM);
 
@@ -502,6 +504,7 @@ async fn a_buffered_gateway_receives_the_real_turn_error() {
         writer: Arc::new(FakeWriter::default()),
         turns: Arc::new(FailingTurns),
         commands: Arc::new(FakeCommands::default()),
+        approvals: None,
     };
     let d = driver(MAIL);
 
@@ -648,6 +651,7 @@ fn attaching_fixture(
                 reply,
             }),
             commands: Arc::new(FakeCommands::default()),
+            approvals: None,
         },
         writer,
     )
@@ -812,6 +816,177 @@ async fn an_unknown_command_says_so_instead_of_starting_a_turn() {
     assert_eq!(outcome, Outcome::Command { handled: false });
     assert_eq!(d.delivered.lock().unwrap()[0].0, "unknown: /nonsense");
     assert!(f.turn_log.lock().unwrap().is_empty());
+}
+
+// ── Tool approvals put to the chat ──────────────────────────────────────────
+
+use crate::channels::approvals::{ApprovalDesk, ApprovalRequest, ChatDecision, Settled};
+use teamclu_gateway::i18n::{self as gw_i18n, MsgKey as GwMsgKey};
+
+/// The session the fake router gives `inbound(..)`.
+const ACP_FOR_U1: &str = "acp-for-wecom://bot-a/single/u-1";
+
+fn ask(id: &str) -> ApprovalRequest {
+    ApprovalRequest {
+        request_id: id.into(),
+        agent_id: "agent-1".into(),
+        summary: "bash: date".into(),
+        offers_always: true,
+    }
+}
+
+/// A desk whose run loop settles every decision with `answer`, recording
+/// `(request_id, granted, approver)`.
+fn desk_answering(answer: Settled) -> (Arc<ApprovalDesk>, Arc<Mutex<Vec<(String, bool, String)>>>) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatDecision>(8);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while let Some(d) = rx.recv().await {
+            log.lock()
+                .unwrap()
+                .push((d.request_id.clone(), d.granted, d.approver.clone()));
+            let _ = d.reply.send(answer);
+        }
+    });
+    (Arc::new(ApprovalDesk::new(tx)), seen)
+}
+
+/// A turn that stops on a permission request, the way a real one does, then
+/// finishes.
+struct AskingTurns {
+    desk: Arc<ApprovalDesk>,
+}
+
+#[async_trait]
+impl TurnRunner for AskingTurns {
+    async fn run(
+        &self,
+        acp: &str,
+        _sender_display: &str,
+        _prompt: &str,
+        _on_delta: Option<tokio::sync::mpsc::Sender<String>>,
+    ) -> Result<String, CoreError> {
+        self.desk.raise(acp, ask("r1"));
+        // Long enough for the core to put the request to the chat.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        Ok("done".into())
+    }
+}
+
+fn asking_core(desk: Arc<ApprovalDesk>) -> (Core, Arc<FakeWriter>) {
+    let writer = Arc::new(FakeWriter::default());
+    let core = Core {
+        dedup: Arc::new(FakeDedup::default()),
+        router: Arc::new(FakeRouter::default()),
+        identity: Arc::new(FakeIdentity::default()),
+        writer: writer.clone(),
+        turns: Arc::new(AskingTurns { desk: desk.clone() }),
+        commands: Arc::new(FakeCommands::default()),
+        approvals: Some(desk),
+    };
+    (core, writer)
+}
+
+fn approval_notice() -> String {
+    gw_i18n::t(
+        GwMsgKey::ApprovalRequested("bash: date", true),
+        gw_i18n::locale(),
+    )
+}
+
+#[tokio::test]
+async fn a_permission_request_mid_turn_is_put_to_the_chat() {
+    for caps in [IM, MAIL] {
+        let (desk, _) = desk_answering(Settled::Resolved);
+        let (core, _) = asking_core(desk);
+        let d = driver(caps);
+        core.handle(&d, inbound("run the report")).await.unwrap();
+
+        let delivered = d.delivered.lock().unwrap().clone();
+        assert!(
+            delivered.contains(&(approval_notice(), None)),
+            "streaming_edit={}: the chat was never asked; got {delivered:?}",
+            caps.streaming_edit
+        );
+    }
+}
+
+#[tokio::test]
+async fn allow_settles_the_request_and_records_who_answered() {
+    let (desk, seen) = desk_answering(Settled::Resolved);
+    let (core, writer) = asking_core(desk.clone());
+    desk.raise(ACP_FOR_U1, ask("r1"));
+    let d = driver(IM);
+
+    let outcome = core.handle(&d, inbound("/allow")).await.unwrap();
+
+    assert_eq!(outcome, Outcome::Command { handled: true });
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        &[("r1".to_string(), true, "u-1".to_string())]
+    );
+    let locale = gw_i18n::locale();
+    assert_eq!(
+        d.delivered.lock().unwrap().as_slice(),
+        &[(
+            gw_i18n::t(GwMsgKey::ApprovalAllowedOnce("u-1", "bash: date"), locale),
+            Some("req-1".to_string())
+        )]
+    );
+    // The record is the approver's own message in the session.
+    assert_eq!(
+        writer.inbound.lock().unwrap().as_slice(),
+        &[(
+            gw_i18n::t(GwMsgKey::ApprovalRecordAllowedOnce("bash: date"), locale),
+            "actor-for-urn:wecom:user:u-1".to_string(),
+            0
+        )]
+    );
+}
+
+#[tokio::test]
+async fn deny_in_chinese_is_a_denial() {
+    let (desk, seen) = desk_answering(Settled::Resolved);
+    let (core, _) = asking_core(desk.clone());
+    desk.raise(ACP_FOR_U1, ask("r1"));
+    let d = driver(IM);
+
+    core.handle(&d, inbound("/拒绝")).await.unwrap();
+
+    assert_eq!(seen.lock().unwrap()[0].1, false);
+}
+
+#[tokio::test]
+async fn allow_with_nothing_pending_says_so_and_records_nothing() {
+    let (desk, seen) = desk_answering(Settled::Resolved);
+    let (core, writer) = asking_core(desk);
+    let d = driver(IM);
+
+    core.handle(&d, inbound("/allow")).await.unwrap();
+
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(writer.inbound.lock().unwrap().is_empty());
+    assert_eq!(
+        d.delivered.lock().unwrap()[0].0,
+        gw_i18n::t(GwMsgKey::ApprovalNothingPending, gw_i18n::locale())
+    );
+}
+
+#[tokio::test]
+async fn allow_after_the_desktop_answered_is_told_so() {
+    let (desk, _) = desk_answering(Settled::AlreadyHandled);
+    let (core, writer) = asking_core(desk.clone());
+    desk.raise(ACP_FOR_U1, ask("r1"));
+    let d = driver(IM);
+
+    core.handle(&d, inbound("/allow")).await.unwrap();
+
+    assert!(writer.inbound.lock().unwrap().is_empty());
+    assert_eq!(
+        d.delivered.lock().unwrap()[0].0,
+        gw_i18n::t(GwMsgKey::ApprovalAlreadyHandled, gw_i18n::locale())
+    );
 }
 
 #[cfg(test)]

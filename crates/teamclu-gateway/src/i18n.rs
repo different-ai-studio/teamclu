@@ -159,6 +159,23 @@ pub enum MsgKey<'a> {
     QueuedBehind(usize),
     ContextInjected,
 
+    // === Tool approvals asked of a chat (/allow, /always, /deny) ===
+    /// A turn stopped on a tool permission. `bool`: whether "always allow" is
+    /// on offer for this request.
+    ApprovalRequested(&'a str, bool),
+    /// Reply to the approver, also recorded in the session. Who approved is
+    /// the sender of the command, so the reply names them.
+    ApprovalAllowedOnce(&'a str, &'a str),
+    ApprovalAllowedAlways(&'a str, &'a str),
+    ApprovalDenied(&'a str, &'a str),
+    /// The session-history line, written as the approver's own message.
+    ApprovalRecordAllowedOnce(&'a str),
+    ApprovalRecordAllowedAlways(&'a str),
+    ApprovalRecordDenied(&'a str),
+    ApprovalAlreadyHandled,
+    ApprovalNothingPending,
+    ApprovalFailed(&'a str),
+
     // === /reset ===
     SessionResetShort,
     CouldNotReset(&'a str),
@@ -346,6 +363,7 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
             /new - Start a new session (the current one stays in /sessions)\n\
             /reset - Clear the agent's context, staying in this session\n\
             /stop - Stop current processing\n\
+            /allow, /always, /deny - Answer a pending tool approval\n\
             /ctx <text> - Inject context without reply".into(),
         (GatewayMetaHelpStatic, ZhCN) => "\
             网关命令:\n\
@@ -358,6 +376,7 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
             /new - 开始新会话（当前会话仍保留在 /sessions 中）\n\
             /reset - 清空 Agent 上下文，但留在当前会话\n\
             /stop - 停止当前处理\n\
+            /allow、/always、/deny - 允许本次、始终允许、拒绝等待中的工具审批\n\
             /ctx <文本> - 注入上下文但不回复".into(),
 
         (AgentCommandsHeader, En) => "\n\nAgent commands:".into(),
@@ -483,6 +502,42 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
 
         (ContextInjected, En) => "Context injected.".into(),
         (ContextInjected, ZhCN) => "已注入上下文。".into(),
+
+        // === Tool approvals asked of a chat ===
+        (ApprovalRequested(tool, true), En) => format!(
+            "⏸ Approval needed: {tool}\nReply /allow to allow once · /always to always allow · /deny to deny (in a group, @ me first)."
+        ),
+        (ApprovalRequested(tool, false), En) => format!(
+            "⏸ Approval needed: {tool}\nReply /allow to allow · /deny to deny (in a group, @ me first)."
+        ),
+        (ApprovalRequested(tool, true), ZhCN) => format!(
+            "⏸ 需要审批：{tool}\n回复 /allow 允许本次 · /always 始终允许 · /deny 拒绝（群聊里请先 @我）。"
+        ),
+        (ApprovalRequested(tool, false), ZhCN) => format!(
+            "⏸ 需要审批：{tool}\n回复 /allow 允许 · /deny 拒绝（群聊里请先 @我）。"
+        ),
+        (ApprovalAllowedOnce(who, tool), En) => format!("✅ {who} allowed this once: {tool}"),
+        (ApprovalAllowedOnce(who, tool), ZhCN) => format!("✅ {who} 允许了本次：{tool}"),
+        (ApprovalAllowedAlways(who, tool), En) => format!("✅ {who} always allowed: {tool}"),
+        (ApprovalAllowedAlways(who, tool), ZhCN) => format!("✅ {who} 设为始终允许：{tool}"),
+        (ApprovalDenied(who, tool), En) => format!("⛔ {who} denied: {tool}"),
+        (ApprovalDenied(who, tool), ZhCN) => format!("⛔ {who} 拒绝了：{tool}"),
+        (ApprovalRecordAllowedOnce(tool), En) => format!("✅ Allowed once: {tool}"),
+        (ApprovalRecordAllowedOnce(tool), ZhCN) => format!("✅ 允许本次：{tool}"),
+        (ApprovalRecordAllowedAlways(tool), En) => format!("✅ Always allowed: {tool}"),
+        (ApprovalRecordAllowedAlways(tool), ZhCN) => format!("✅ 设为始终允许：{tool}"),
+        (ApprovalRecordDenied(tool), En) => format!("⛔ Denied: {tool}"),
+        (ApprovalRecordDenied(tool), ZhCN) => format!("⛔ 拒绝：{tool}"),
+        (ApprovalAlreadyHandled, En) => {
+            "That approval was already handled (possibly on the computer).".into()
+        }
+        (ApprovalAlreadyHandled, ZhCN) => "这条审批已经处理过了（可能已在电脑上处理）。".into(),
+        (ApprovalNothingPending, En) => "Nothing is waiting for approval.".into(),
+        (ApprovalNothingPending, ZhCN) => "当前没有等待审批的请求。".into(),
+        (ApprovalFailed(tool), En) => {
+            format!("⚠️ The approval did not take effect; please handle it on the computer: {tool}")
+        }
+        (ApprovalFailed(tool), ZhCN) => format!("⚠️ 审批没有生效，请到电脑上处理：{tool}"),
 
         // === Shared session-slash dispatcher ===
 

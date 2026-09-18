@@ -650,6 +650,7 @@ impl DaemonServer {
                         initial_prompt,
                         initial_model_override.as_deref(),
                         requester_actor_id,
+                        client_permission_mode,
                     )
                     .await?
                 {
@@ -1052,6 +1053,21 @@ impl DaemonServer {
             }
             other => other,
         };
+
+        // The client gets the error, but nothing else did: a desktop that kept
+        // failing to resume a session showed up here as a trail of "resuming"
+        // lines and nothing after them.
+        if let Err(err) = &outcome {
+            warn!(
+                session_id = %start.session_id,
+                workspace_id = %start.workspace_id,
+                requester_actor_id = %request.requester_actor_id,
+                error_code = %err.error_code,
+                failed_stage = %err.failed_stage,
+                error = %err.error_message,
+                "runtimeStart rejected"
+            );
+        }
 
         match outcome {
             Ok(res) => RpcResponse {

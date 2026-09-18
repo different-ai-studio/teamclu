@@ -1377,6 +1377,7 @@ impl DaemonServer {
                                 None,
                                 true,
                                 Some(&sender_actor_id),
+                                "",
                                 "legacy_send_prompt",
                             )
                             .await
@@ -1384,6 +1385,13 @@ impl DaemonServer {
                             Ok(None) => {}
                             Ok(Some(_)) => {}
                             Err(err) => {
+                                warn!(
+                                    session_id = %session_id,
+                                    workspace_id = %workspace_id,
+                                    error_code = %err.error_code,
+                                    error = %err.error_message,
+                                    "legacy SendPrompt: resume failed; prompt rejected"
+                                );
                                 self.publish_session_event(
                                     agent_id,
                                     amux::SessionEvent {

@@ -145,6 +145,11 @@ impl DaemonServer {
             m
         };
 
+        // One desk per manager: the agent handle raises what a turn asks, the
+        // core answers it, and both go through the run loop's decision channel.
+        let approvals = Arc::new(crate::channels::approvals::ApprovalDesk::new(
+            self.chat_decision_tx.clone(),
+        ));
         let agent_handle: Arc<dyn AgentHandle> = Arc::new(AmuxdAgentHandle {
             manager: self.agents.clone(),
             spawn_env: crate::channels::GatewaySpawnEnv {
@@ -165,6 +170,7 @@ impl DaemonServer {
             workspace_override: Arc::new(AsyncMutex::new(HashMap::new())),
             bot_configs: Arc::new(AsyncMutex::new(bot_configs)),
             live_event_tx: Some(self.cron_turn_event_tx.clone()),
+            approvals: Some(approvals.clone()),
         });
         // Everything this store writes gets announced on `session/{id}/live`.
         // Without it a gateway conversation exists only in the cloud table, and
@@ -190,12 +196,90 @@ impl DaemonServer {
             team_id,
             primary_agent_actor_id,
             agent_owner_actor_ids,
+            approvals,
         );
         match mgr.start_enabled().await {
             Ok(()) => info!("channel manager: start_enabled() completed"),
             Err(e) => warn!("channel manager: start_enabled() failed: {e:?}"),
         }
         Some(mgr)
+    }
+
+    /// Settle a tool approval answered in a chat.
+    ///
+    /// Mirrors the desktop's `GrantPermission` / `DenyPermission`: the same
+    /// first-come gate, the same resolve, the same `PermissionResolved`
+    /// broadcast — so whichever side answers first wins, the desktop card
+    /// clears when the chat answered, and a late second answer from either
+    /// side is a no-op.
+    pub(crate) async fn settle_chat_decision(
+        &mut self,
+        decision: crate::channels::approvals::ChatDecision,
+    ) {
+        use crate::channels::approvals::Settled;
+
+        let crate::channels::approvals::ChatDecision {
+            agent_id,
+            request_id,
+            granted,
+            option_id,
+            approver,
+            reply,
+        } = decision;
+
+        if !self.permissions.try_resolve_permission(&request_id) {
+            info!(
+                request_id,
+                agent_id, approver, "chat approval arrived after the request was already settled"
+            );
+            let _ = reply.send(Settled::AlreadyHandled);
+            return;
+        }
+
+        let resolved = self
+            .agents
+            .lock()
+            .await
+            .resolve_permission_for_topic(&agent_id, &request_id, granted, option_id.clone())
+            .await
+            .inspect_err(|e| {
+                warn!(
+                    request_id,
+                    agent_id,
+                    approver,
+                    error = %e,
+                    "chat approval could not reach the runtime"
+                );
+            })
+            .is_ok();
+        if resolved {
+            info!(
+                request_id,
+                agent_id,
+                approver,
+                granted,
+                option = option_id.as_deref().unwrap_or("reject"),
+                "permission settled from chat"
+            );
+        }
+        self.publish_session_event(
+            &agent_id,
+            amux::SessionEvent {
+                event: Some(amux::session_event::Event::PermissionResolved(
+                    amux::PermissionResolved {
+                        request_id,
+                        resolved_by_peer_id: "chat".to_string(),
+                        granted: granted && resolved,
+                    },
+                )),
+            },
+        )
+        .await;
+        let _ = reply.send(if resolved {
+            Settled::Resolved
+        } else {
+            Settled::Failed
+        });
     }
 
     /// Construct the channel manager from `[channels.*]` entries in
@@ -1286,5 +1370,60 @@ mod mcp_send_open_turn_tests {
     fn idle_turn_never_parks() {
         assert!(!mcp_send_parks_file_on_open_turn(false, true));
         assert!(!mcp_send_parks_file_on_open_turn(false, false));
+    }
+}
+
+#[cfg(test)]
+mod chat_decision_tests {
+    use crate::channels::approvals::{ChatDecision, Settled};
+    use crate::daemon::server::tests::test_server;
+    use tokio::sync::oneshot;
+
+    fn decision(request_id: &str) -> (ChatDecision, oneshot::Receiver<Settled>) {
+        let (reply, rx) = oneshot::channel();
+        (
+            ChatDecision {
+                agent_id: "agent-1".into(),
+                request_id: request_id.into(),
+                granted: true,
+                option_id: Some("once".into()),
+                approver: "张三".into(),
+                reply,
+            },
+            rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_chat_answer_loses_to_an_earlier_desktop_answer() {
+        let mut fixture = test_server();
+        // The desktop's GrantPermission passes the same gate first.
+        assert!(fixture.server.permissions.try_resolve_permission("r1"));
+
+        let (d, rx) = decision("r1");
+        fixture.server.settle_chat_decision(d).await;
+
+        assert_eq!(rx.await.unwrap(), Settled::AlreadyHandled);
+    }
+
+    #[tokio::test]
+    async fn a_chat_answer_wins_the_gate_once() {
+        let mut fixture = test_server();
+
+        let (d, rx) = decision("r1");
+        fixture.server.settle_chat_decision(d).await;
+        assert_ne!(
+            rx.await.unwrap(),
+            Settled::AlreadyHandled,
+            "the first answer must take the gate"
+        );
+
+        let (d, rx) = decision("r1");
+        fixture.server.settle_chat_decision(d).await;
+        assert_eq!(rx.await.unwrap(), Settled::AlreadyHandled);
+        assert!(
+            !fixture.server.permissions.try_resolve_permission("r1"),
+            "a desktop answer after the chat's must be a no-op"
+        );
     }
 }

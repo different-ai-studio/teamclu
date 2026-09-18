@@ -1,4 +1,6 @@
 pub mod agent_handle;
+/// Tool approvals put to the chat a turn came from (`/allow`, `/deny`).
+pub mod approvals;
 pub mod backend_store;
 mod bot_prompt_file;
 /// The one channel→session pipeline
