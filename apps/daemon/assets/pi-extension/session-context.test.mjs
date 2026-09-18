@@ -806,6 +806,12 @@ test("before_agent_start and tool_call swallow stale extension ctx", () => {
   assert.match(src, /tool_call skipped stale ctx/);
 });
 
+test("extension tells the agent to search then read the knowledge vault", () => {
+  const src = fs.readFileSync(fileURLToPath(new URL("./teamclu.ts", import.meta.url)), "utf8");
+  assert.match(src, /knowledge_search then knowledge_read/);
+  assert.match(src, /KNOWLEDGE_VAULT_PROMPT/);
+});
+
 test("session title still runs when a session already has a pi name", async () => {
   // Skip is sidecar-only. Reading pi.getSessionName() hits the shared
   // ExtensionRuntime, which any session dispose() marks stale.

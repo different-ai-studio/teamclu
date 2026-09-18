@@ -17,6 +17,7 @@
 //! - `inbox_list` / `inbox_get` / `inbox_discard` — review-inbox bookkeeping
 //! - `publish`       — write a pending candidate into the vault (desktop only)
 //! - `search`        — substring search across the vault, no index (see `search.rs`)
+//! - `read`          — fetch a few authorised-by-path-in-vault chunks (see `read.rs`)
 //! - `manifest_get`  — read knowledge.manifest.yaml
 //! - `manifest_set`  — update manifest fields (visibility change needs confirm:true)
 //! - `health`        — freshness / coverage stats
@@ -48,8 +49,12 @@ const STALE_DAYS_UPDATED: i64 = 90;
 
 #[path = "knowledge/inbox.rs"]
 pub(crate) mod inbox;
+#[path = "knowledge/read.rs"]
+mod read;
 #[path = "knowledge/search.rs"]
 mod search;
+#[path = "knowledge/source_ref.rs"]
+mod source_ref;
 
 pub(super) fn err(code: &str, message: impl Into<String>) -> String {
     json!({ "ok": false, "error": message.into(), "errorCode": code }).to_string()
@@ -218,6 +223,7 @@ fn handle_knowledge_inner(payload: Value) -> String {
         "inbox_discard" => inbox::inbox_discard(&inbox, &payload),
         "publish" => inbox::publish(&inbox, &root, &payload, &blocked),
         "search" => search::search(&root, &stale_index_root(&team_id), &payload),
+        "read" => read::read(&root, &payload),
         "manifest_get" => manifest_get(&root),
         "manifest_set" => manifest_set(&root, &payload),
         "health" => health(&root),
@@ -226,7 +232,7 @@ fn handle_knowledge_inner(payload: Value) -> String {
             format!(
                 "unknown knowledge action '{other}'; expected \
                  scaffold|create|write|salvage|propose|inbox_list|inbox_get|\
-                 inbox_discard|publish|search|manifest_get|manifest_set|health"
+                 inbox_discard|publish|search|read|manifest_get|manifest_set|health"
             ),
         ),
     }

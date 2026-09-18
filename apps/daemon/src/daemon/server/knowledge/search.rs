@@ -29,6 +29,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use super::source_ref::{encode_source_ref, heading_at, page_title, updated_at};
 use super::{collect_md_files, err, ok, str_field, MAX_SEARCH_RESULTS};
 
 /// Characters of context kept either side of the matched term.
@@ -102,7 +103,11 @@ pub(super) fn drop_stale_index(dir: &Path) {
 struct Hit {
     path: String,
     title: String,
+    heading: Option<String>,
     snippet: String,
+    snippet_plain: String,
+    content_hash: String,
+    updated_at: Option<String>,
     /// Title matches sort first: a page named for the thing you asked about is
     /// a better answer than one that mentions it in passing.
     title_match: bool,
@@ -135,6 +140,17 @@ pub(super) fn search(root: &Path, stale_index_dir: &Path, payload: &Value) -> St
         return ok(json!({ "results": [], "vaultExists": true }));
     }
 
+    let limit = payload
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(MAX_SEARCH_RESULTS)
+        .clamp(1, MAX_SEARCH_RESULTS);
+    let path_prefix = str_field(payload, "pathPrefix").unwrap_or("");
+    if path_prefix.contains("..") {
+        return err("invalid_path", "pathPrefix must not contain '..'");
+    }
+
     let mut files = Vec::new();
     collect_md_files(root, root, &mut files);
     files.sort();
@@ -145,15 +161,20 @@ pub(super) fn search(root: &Path, stale_index_dir: &Path, payload: &Value) -> St
             continue;
         };
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        let title = content
-            .lines()
-            .find(|l| l.starts_with("# "))
-            .map(|l| l.trim_start_matches('#').trim().to_string())
-            .unwrap_or_else(|| rel_str.clone());
+        if !path_prefix.is_empty() && !rel_str.starts_with(path_prefix) {
+            continue;
+        }
+        let title = {
+            let t = page_title(&content);
+            if t.is_empty() {
+                rel_str.clone()
+            } else {
+                t
+            }
+        };
 
         let body_chars: Vec<char> = content.chars().collect();
         let body_lower = lowered(&content);
-        let title_chars: Vec<char> = title.chars().collect();
         let title_lower = lowered(&title);
 
         // Every term must appear somewhere on the page — title or body. The
@@ -166,6 +187,10 @@ pub(super) fn search(root: &Path, stale_index_dir: &Path, payload: &Value) -> St
             continue;
         }
         let title_match = terms.iter().any(|t| find_sub(&title_lower, t).is_some());
+        let body_at = terms.iter().find_map(|t| find_sub(&body_lower, t));
+        let heading = body_at
+            .and_then(|at| heading_at(&content, at))
+            .or_else(|| Some(title.clone()));
         // Highlight the first term that occurs in the body; if the match is
         // title-only, show the opening of the page instead of nothing.
         let snippet = terms
@@ -182,10 +207,15 @@ pub(super) fn search(root: &Path, stale_index_dir: &Path, payload: &Value) -> St
                 }
                 s.trim().to_string()
             });
+        let snippet_plain = snippet.replace("<b>", "").replace("</b>", "");
         hits.push(Hit {
             path: rel_str,
             title,
+            heading,
             snippet,
+            snippet_plain,
+            content_hash: crate::sync::oss::crypto::sha256_hex(content.as_bytes()),
+            updated_at: updated_at(&content),
             title_match,
         });
         // Keep scanning past the limit would only cost time; stop once the
@@ -196,11 +226,23 @@ pub(super) fn search(root: &Path, stale_index_dir: &Path, payload: &Value) -> St
     }
 
     hits.sort_by(|a, b| b.title_match.cmp(&a.title_match).then(a.path.cmp(&b.path)));
-    hits.truncate(MAX_SEARCH_RESULTS);
+    hits.truncate(limit);
 
     let results: Vec<Value> = hits
         .into_iter()
-        .map(|h| json!({ "path": h.path, "title": h.title, "snippet": h.snippet }))
+        .map(|h| {
+            let source_ref = encode_source_ref(&h.path, h.heading.as_deref());
+            json!({
+                "path": h.path,
+                "title": h.title,
+                "heading": h.heading,
+                "snippet": h.snippet,
+                "snippetPlain": h.snippet_plain,
+                "contentHash": h.content_hash,
+                "sourceRef": source_ref,
+                "updatedAt": h.updated_at,
+            })
+        })
         .collect();
     ok(json!({
         "results": results,
@@ -334,5 +376,63 @@ mod tests {
         std::fs::write(dir.join("notes.txt"), b"mine").unwrap();
         drop_stale_index(&dir);
         assert!(dir.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn a_hit_carries_source_ref_hash_heading_and_plain_snippet() {
+        let tmp = vault();
+        let results = run(tmp.path(), "outage")["result"]["results"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(results.len(), 1);
+        let hit = &results[0];
+        assert_eq!(hit["path"], "40-runbooks/push-outage.md");
+        assert_eq!(hit["title"], "Push outage");
+        assert_eq!(hit["heading"], "Push outage");
+        let source_ref = hit["sourceRef"].as_str().unwrap();
+        assert!(
+            source_ref.starts_with("kb:v1:"),
+            "sourceRef must be parseable, got {source_ref}"
+        );
+        assert!(source_ref.contains("40-runbooks"));
+        let hash = hit["contentHash"].as_str().unwrap();
+        assert_eq!(hash.len(), 64, "{hash}");
+        let plain = hit["snippetPlain"].as_str().unwrap();
+        assert!(!plain.contains("<b>"), "{plain}");
+        assert!(
+            plain.to_lowercase().contains("outage")
+                || hit["snippet"].as_str().unwrap().contains("<b>")
+        );
+    }
+
+    #[test]
+    fn limit_truncates_results_without_changing_title_first_order() {
+        let tmp = vault();
+        let idx = tempfile::tempdir().unwrap();
+        let v: Value = serde_json::from_str(&search(
+            tmp.path(),
+            idx.path(),
+            &json!({ "query": "渠道", "limit": 1 }),
+        ))
+        .unwrap();
+        let results = v["result"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1, "{v}");
+        assert_eq!(results[0]["path"], "20-domains-index.md");
+    }
+
+    #[test]
+    fn path_prefix_keeps_only_matching_pages() {
+        let tmp = vault();
+        let idx = tempfile::tempdir().unwrap();
+        let v: Value = serde_json::from_str(&search(
+            tmp.path(),
+            idx.path(),
+            &json!({ "query": "渠道", "pathPrefix": "40-runbooks/" }),
+        ))
+        .unwrap();
+        let results = v["result"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1, "{v}");
+        assert_eq!(results[0]["path"], "40-runbooks/push-outage.md");
     }
 }
