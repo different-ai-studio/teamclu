@@ -11,7 +11,7 @@ import {
 import { pickImageRoute } from "./catalog.js";
 import { KeyPools } from "./key-pool.js";
 import { callUpstream } from "./upstream.js";
-import { creditLedger, usageReport, type UsageRange } from "./report.js";
+import { creditLedger, teamCreditTotals, usageReport, type UsageRange } from "./report.js";
 import {
   backfillSignupGrants,
   pruneUsage,
@@ -429,6 +429,17 @@ export function createApp(deps: Deps) {
       return c.json(err("not_found", `unknown provider "${c.req.param("providerId")}"`, 404), 404);
     }
     return c.json({ cleared });
+  });
+
+  // Balance + this month's spend for every team at once. What an operator
+  // screen ranks teams by; the per-team endpoints cannot answer it without one
+  // request per team.
+  internal.get("/credits/teams", async (c) => {
+    const limit = Number(c.req.query("limit") ?? 2000);
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      return c.json(err("invalid_request", "limit must be a positive integer", 400), 400);
+    }
+    return c.json(await teamCreditTotals(sql, { limit }));
   });
 
   internal.get("/teams/:teamId/credits/summary", async (c) => {
