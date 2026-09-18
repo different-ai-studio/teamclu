@@ -252,6 +252,12 @@ pub struct DaemonServer {
     cron_turn_event_tx: mpsc::Sender<cron::CronTurnEvent>,
     /// Receiver half, `take()`n by whichever run loop is active.
     cron_turn_event_rx: Option<mpsc::Receiver<cron::CronTurnEvent>>,
+    /// Tool approvals answered in a chat (`/allow`). Settled on the run loop so
+    /// they pass the same first-come gate as a desktop grant — see
+    /// `settle_chat_decision`.
+    chat_decision_tx: mpsc::Sender<crate::channels::approvals::ChatDecision>,
+    /// Receiver half, `take()`n by whichever run loop is active.
+    chat_decision_rx: Option<mpsc::Receiver<crate::channels::approvals::ChatDecision>>,
 }
 
 /// Single control command parsed off `amuxd.sock`. Variants correspond to the
@@ -770,6 +776,7 @@ impl DaemonServer {
         // frames (the UI catches up on the next one) instead of applying
         // backpressure to the turn.
         let (cron_turn_event_tx, cron_turn_event_rx) = mpsc::channel(1024);
+        let (chat_decision_tx, chat_decision_rx) = mpsc::channel(16);
 
         let team_skill_reconciler = Arc::new(
             crate::runtime::team_skills::TeamSkillReconciler::new(backend.clone()),
@@ -831,6 +838,8 @@ impl DaemonServer {
             cron_turn_done_rx: Some(cron_turn_done_rx),
             cron_turn_event_tx,
             cron_turn_event_rx: Some(cron_turn_event_rx),
+            chat_decision_tx,
+            chat_decision_rx: Some(chat_decision_rx),
         })
     }
 
@@ -1698,6 +1707,10 @@ impl DaemonServer {
             .cron_turn_event_rx
             .take()
             .expect("cron_turn_event_rx already taken (MQTT run loop entered twice)");
+        let mut chat_decision_rx = self
+            .chat_decision_rx
+            .take()
+            .expect("chat_decision_rx already taken (MQTT run loop entered twice)");
 
         'outer: loop {
             // ── 0. Self-heal team_id from daemon.toml ──
@@ -2118,6 +2131,12 @@ impl DaemonServer {
                             self.publish_cron_turn_event(ev).await;
                         }
                     }
+                    decision = chat_decision_rx.recv() => {
+                        // Someone answered a tool approval in a chat (`/allow`).
+                        if let Some(decision) = decision {
+                            self.settle_chat_decision(decision).await;
+                        }
+                    }
                     event = mqtt_supervisor.events.recv() => {
                         match event {
                             Some(MqttSupervisorEvent::TransportConnected { generation, worker_generation }) => {
@@ -2292,6 +2311,10 @@ impl DaemonServer {
             .cron_turn_event_rx
             .take()
             .expect("cron_turn_event_rx already taken (NATS run loop entered twice)");
+        let mut chat_decision_rx = self
+            .chat_decision_rx
+            .take()
+            .expect("chat_decision_rx already taken (NATS run loop entered twice)");
 
         'outer: loop {
             // 1. Fresh backend access_token; same retry cadence as MQTT path.
@@ -2574,6 +2597,13 @@ impl DaemonServer {
                         // matching arm in the MQTT loop.
                         if let Some(ev) = ev {
                             self.publish_cron_turn_event(ev).await;
+                        }
+                    }
+                    decision = chat_decision_rx.recv() => {
+                        // A tool approval answered in a chat. See the matching
+                        // arm in the MQTT loop.
+                        if let Some(decision) = decision {
+                            self.settle_chat_decision(decision).await;
                         }
                     }
                     frame = inbound.recv() => {
@@ -4022,6 +4052,7 @@ pub(crate) mod tests {
         ));
         let (cron_turn_done_tx, cron_turn_done_rx) = mpsc::channel(64);
         let (cron_turn_event_tx, cron_turn_event_rx) = mpsc::channel(1024);
+        let (chat_decision_tx, chat_decision_rx) = mpsc::channel(16);
         TestServer {
             server: DaemonServer {
                 config,
@@ -4084,6 +4115,8 @@ pub(crate) mod tests {
                 cron_turn_done_rx: Some(cron_turn_done_rx),
                 cron_turn_event_tx,
                 cron_turn_event_rx: Some(cron_turn_event_rx),
+                chat_decision_tx,
+                chat_decision_rx: Some(chat_decision_rx),
             },
             _tmp: tmp,
             _mqtt_eventloop: mqtt.eventloop,

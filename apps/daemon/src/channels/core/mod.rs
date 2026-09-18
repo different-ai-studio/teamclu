@@ -20,6 +20,9 @@ use teamclu_gateway::driver::{
     AttachmentSource, ChannelDriver, Conversation, DeliveryId, ExternalSender, InboundMessage,
     OutboundMessage, SessionAttachment, TurnEnd,
 };
+use teamclu_gateway::i18n::{self, MsgKey};
+
+use crate::channels::approvals::{self, ApprovalDesk, ApprovalRequest, DecideOutcome, Decision};
 
 pub mod adapters;
 pub mod dedup;
@@ -221,6 +224,9 @@ pub struct Core {
     pub writer: Arc<dyn SessionWriter>,
     pub turns: Arc<dyn TurnRunner>,
     pub commands: Arc<dyn CommandRunner>,
+    /// Tool approvals a turn puts to the chat, answered with `/allow` and
+    /// friends. `None` where no runtime can ask (tests).
+    pub approvals: Option<Arc<ApprovalDesk>>,
 }
 
 impl Core {
@@ -280,6 +286,16 @@ impl Core {
 
         // 4. Session-scoped commands, now that there is one to act on.
         if let Some((name, arg)) = parsed {
+            // Answers to a tool approval. Anyone in the chat may give one; the
+            // answer is recorded against whoever did.
+            if let (Some(desk), Some(decision)) = (&self.approvals, Decision::from_command(&name)) {
+                let text = self
+                    .answer_approval(desk, decision, &session, &actor_id, &display, &msg)
+                    .await;
+                self.say(driver, &msg.conversation, reply_ctx.as_deref(), &text)
+                    .await?;
+                return Ok(Outcome::Command { handled: true });
+            }
             let reply = self
                 .commands
                 .dispatch(&name, arg.as_deref(), &session.acp_session_id)
@@ -414,6 +430,110 @@ impl Core {
         out
     }
 
+    /// Settle the oldest approval this session's turn is waiting on.
+    ///
+    /// The chat reply names the approver; the session gets the same fact as a
+    /// message from the approver, so the history shows who answered what even
+    /// after the chat has scrolled away.
+    async fn answer_approval(
+        &self,
+        desk: &ApprovalDesk,
+        decision: Decision,
+        session: &SessionRef,
+        actor_id: &str,
+        display: &str,
+        msg: &InboundMessage,
+    ) -> String {
+        let locale = i18n::locale();
+        match desk
+            .decide(&session.acp_session_id, decision, display)
+            .await
+        {
+            DecideOutcome::Resolved { request, decision } => {
+                let tool = request.summary.as_str();
+                let (reply, record) = match decision {
+                    Decision::AllowOnce => (
+                        MsgKey::ApprovalAllowedOnce(display, tool),
+                        MsgKey::ApprovalRecordAllowedOnce(tool),
+                    ),
+                    Decision::AllowAlways => (
+                        MsgKey::ApprovalAllowedAlways(display, tool),
+                        MsgKey::ApprovalRecordAllowedAlways(tool),
+                    ),
+                    Decision::Deny => (
+                        MsgKey::ApprovalDenied(display, tool),
+                        MsgKey::ApprovalRecordDenied(tool),
+                    ),
+                };
+                if let Err(e) = self
+                    .writer
+                    .write_inbound(
+                        &session.session_id,
+                        actor_id,
+                        &i18n::t(record, locale),
+                        Vec::new(),
+                        &msg.external_message_id,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session.session_id,
+                        request_id = %request.request_id,
+                        error = %e,
+                        "gateway: approval took effect but its record could not be written"
+                    );
+                }
+                i18n::t(reply, locale)
+            }
+            DecideOutcome::AlreadyHandled => i18n::t(MsgKey::ApprovalAlreadyHandled, locale),
+            DecideOutcome::NothingPending => i18n::t(MsgKey::ApprovalNothingPending, locale),
+            DecideOutcome::Failed { request } => {
+                i18n::t(MsgKey::ApprovalFailed(&request.summary), locale)
+            }
+        }
+    }
+
+    /// Put a turn's permission request to the chat. Best-effort: the desktop
+    /// card is still there if the chat cannot be reached.
+    async fn ask_chat(
+        &self,
+        driver: &dyn ChannelDriver,
+        to: &Conversation,
+        request: &ApprovalRequest,
+    ) {
+        let text = i18n::t(
+            MsgKey::ApprovalRequested(&request.summary, request.offers_always),
+            i18n::locale(),
+        );
+        // No reply context: the request did not come from a chat message. On
+        // WeCom that lands in the open progress bubble, which is the one thing
+        // it reliably shows mid-stream.
+        if let Err(e) = self.say(driver, to, None, &text).await {
+            tracing::warn!(
+                request_id = %request.request_id,
+                error = %e,
+                "gateway: approval request could not be put to the chat"
+            );
+        }
+    }
+
+    /// This session's approval requests, for the life of the returned guard.
+    fn watch_approvals(
+        &self,
+        session: &SessionRef,
+    ) -> (
+        Option<tokio::sync::mpsc::UnboundedReceiver<ApprovalRequest>>,
+        Option<approvals::WatchGuard>,
+    ) {
+        match &self.approvals {
+            Some(desk) => {
+                let (rx, guard) = desk.watch(&session.acp_session_id);
+                (Some(rx), Some(guard))
+            }
+            None => (None, None),
+        }
+    }
+
     /// A one-shot line back to the chat that is not an agent turn (a command
     /// answer, an error). Recorded nowhere on purpose: it is gateway chrome,
     /// not conversation.
@@ -448,10 +568,19 @@ impl Core {
         display: &str,
         prompt: &str,
     ) -> Result<usize, CoreError> {
-        let reply = self
+        let (mut asks, _watch) = self.watch_approvals(session);
+        let turn = self
             .turns
-            .run(&session.acp_session_id, display, prompt, None)
-            .await?;
+            .run(&session.acp_session_id, display, prompt, None);
+        tokio::pin!(turn);
+        let reply = loop {
+            tokio::select! {
+                reply = &mut turn => break reply?,
+                Some(request) = approvals::next_request(&mut asks) => {
+                    self.ask_chat(driver, &msg.conversation, &request).await;
+                }
+            }
+        };
         let attachments = self.collect_attachments(&session.session_id).await;
         self.writer
             .write_reply(&session.session_id, &reply, attachments.clone())
@@ -482,6 +611,8 @@ impl Core {
             .await
             .map_err(|e| CoreError::Render(e.to_string()))?;
 
+        // Before the turn starts, so no request it raises can be missed.
+        let (mut asks, _watch) = self.watch_approvals(session);
         let turns = self.turns.clone();
         let acp = session.acp_session_id.clone();
         let display_owned = display.to_string();
@@ -493,12 +624,20 @@ impl Core {
         });
 
         let mut updates = 0usize;
-        while let Some(text) = rx.recv().await {
-            driver
-                .update(&handle, &text, None)
-                .await
-                .map_err(|e| CoreError::Render(e.to_string()))?;
-            updates += 1;
+        loop {
+            tokio::select! {
+                text = rx.recv() => {
+                    let Some(text) = text else { break };
+                    driver
+                        .update(&handle, &text, None)
+                        .await
+                        .map_err(|e| CoreError::Render(e.to_string()))?;
+                    updates += 1;
+                }
+                Some(request) = approvals::next_request(&mut asks) => {
+                    self.ask_chat(driver, &msg.conversation, &request).await;
+                }
+            }
         }
 
         let reply = match turn

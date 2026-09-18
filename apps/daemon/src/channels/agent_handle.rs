@@ -163,6 +163,9 @@ pub struct AmuxdAgentHandle {
     /// `poll_events` cannot publish thinking/tools/output to `session/live`.
     /// `None` in unit tests that never drive a live turn.
     pub live_event_tx: Option<tokio::sync::mpsc::Sender<crate::runtime::CheckedOutTurnEvent>>,
+    /// Where a turn's permission requests are put to the chat. `None` in unit
+    /// tests that never drive a live turn.
+    pub approvals: Option<Arc<crate::channels::approvals::ApprovalDesk>>,
 }
 
 /// Returned by `resolve_or_spawn`. `spawned` is true iff this call was
@@ -885,6 +888,20 @@ impl AmuxdAgentHandle {
                 &event,
             );
 
+            // The desktop gets a card from the forward above; the chat that
+            // started this turn gets asked too, since that is where somebody
+            // is actually waiting.
+            if let (
+                Some(desk),
+                Some(crate::proto::amux::acp_event::Event::PermissionRequest(request)),
+            ) = (&self.approvals, &event.event.event)
+            {
+                desk.raise(
+                    session,
+                    crate::channels::approvals::ApprovalRequest::from_event(&agent_id, request),
+                );
+            }
+
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
                 match crate::runtime::turn_reply::gateway_error_action(err, &segments, &live) {
                     crate::runtime::turn_reply::GatewayErrorAction::Continue => {
@@ -960,6 +977,9 @@ impl AmuxdAgentHandle {
                 agent_id: agent_id.clone(),
                 event_rx,
             });
+        }
+        if let Some(desk) = &self.approvals {
+            desk.clear(session);
         }
 
         // The gateway has stopped waiting; the runtime has not. A turn left
@@ -1556,6 +1576,7 @@ pub(crate) mod tests {
             workspace_override: Arc::new(Mutex::new(HashMap::new())),
             bot_configs: Arc::new(Mutex::new(HashMap::new())),
             live_event_tx: None,
+            approvals: None,
         }
     }
 
