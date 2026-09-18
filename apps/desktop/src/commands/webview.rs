@@ -855,11 +855,23 @@ pub async fn webview_close(
 }
 
 /// Hide a native webview (keeps it alive, no reload on show).
+///
+/// Both failure modes are logged, because a native webview left showing covers
+/// whatever the user switched to and nothing in the UI can reach it: a label
+/// that is not here yet means the hide raced the create and hid nothing, and a
+/// refused `hide()` means the platform kept it on screen. Neither used to leave
+/// a trace, so a report of "a white page is covering my session" had no way to
+/// say which had happened.
 #[tauri::command]
 pub async fn webview_hide(app: tauri::AppHandle, label: String) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
-        log::info!("[Webview] Hiding: {}", label);
-        let _ = webview.hide();
+    match app.get_webview(&label) {
+        Some(webview) => {
+            log::info!("[Webview] Hiding: {}", label);
+            if let Err(err) = webview.hide() {
+                log::error!("[Webview] Hide refused for {}: {}", label, err);
+            }
+        }
+        None => log::warn!("[Webview] Hide found no webview labelled {}", label),
     }
     Ok(())
 }
@@ -874,12 +886,24 @@ pub async fn webview_show(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
-        log::info!("[Webview] Showing: {}", label);
-        let _ = webview.set_position(tauri::LogicalPosition::new(x, y));
-        let _ = webview.set_size(tauri::LogicalSize::new(width, height));
-        let _ = webview.show();
-        let _ = webview.set_focus();
+    match app.get_webview(&label) {
+        Some(webview) => {
+            log::info!(
+                "[Webview] Showing: {} at ({},{}) {}x{}",
+                label,
+                x,
+                y,
+                width,
+                height
+            );
+            let _ = webview.set_position(tauri::LogicalPosition::new(x, y));
+            let _ = webview.set_size(tauri::LogicalSize::new(width, height));
+            if let Err(err) = webview.show() {
+                log::error!("[Webview] Show refused for {}: {}", label, err);
+            }
+            let _ = webview.set_focus();
+        }
+        None => log::warn!("[Webview] Show found no webview labelled {}", label),
     }
     Ok(())
 }

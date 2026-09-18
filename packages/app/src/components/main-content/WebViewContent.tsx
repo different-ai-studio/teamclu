@@ -170,12 +170,27 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
               authSessionJson: authInject?.sessionJson,
             })
 
+            // Registered the moment it exists, mounted or not: this set is the
+            // only handle anything has on the native webview, and a create that
+            // finished after the switch away used to leave one nothing could
+            // find — or hide.
+            createdWebviews.add(label)
             if (!cancelled) {
-              createdWebviews.add(label)
               setTimeout(() => {
                 if (!cancelled) setIsLoading(false)
               }, 1500)
             }
+          }
+
+          // The view can change during any await above. The cleanup that ran
+          // back then found nothing to hide — the webview did not exist yet —
+          // and nothing else will come looking. A native webview is not part
+          // of the React tree: left showing, it sits on top of whatever the
+          // user switched to (the white page over the session) until the app
+          // restarts.
+          if (cancelled) {
+            await invoke("webview_hide", { label })
+            return
           }
 
           // Record initial bounds
