@@ -163,6 +163,9 @@ const SESSION_SCOPED_TOOLS = new Set([
   "export_pi_transcript",
 ]);
 
+const KNOWLEDGE_VAULT_PROMPT =
+  "Team knowledge is a Markdown vault. When the question needs team process, runbooks, written decisions, or definitions, call knowledge_search then knowledge_read. Do not invent vault paths. If search returns nothing, say you do not know. Do not browse the vault with read/grep/bash on team-knowledge/.";
+
 function normalizeSessionScopedToolName(name: string): string {
   const raw = name.trim();
   if (!raw) return "";
@@ -1622,9 +1625,10 @@ export default async function (pi: ExtensionAPI) {
         ? await fetchSessionPromptAppend(backendSessionId)
         : undefined;
 
-      if (base === original && !append) return undefined;
+      const extra = [append, KNOWLEDGE_VAULT_PROMPT].filter(Boolean).join("\n\n");
+      if (base === original && !extra) return undefined;
 
-      const systemPrompt = append ? (base ? `${base}\n\n${append}` : append) : base;
+      const systemPrompt = extra ? (base ? `${base}\n\n${extra}` : extra) : base;
       return { systemPrompt };
     } catch (e) {
       if (isStaleExtensionCtxError(e)) {

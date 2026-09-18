@@ -7,6 +7,7 @@ mod daemon_http;
 mod daemon_sock;
 mod desktop_api;
 mod env_vars;
+mod knowledge;
 mod mcp;
 mod participants;
 mod roles;
@@ -519,6 +520,7 @@ fn tool_definitions() -> Value {
     ]);
     // The app control panel's tools live with their handlers.
     if let Value::Array(list) = &mut tools {
+        list.extend(knowledge::tool_definitions());
         list.extend(apps::tool_definitions());
     }
     tools
@@ -738,6 +740,15 @@ async fn handle_request(
                     }
                     Err(e) => tool_err(&e),
                 },
+                "knowledge_search" | "knowledge_read" => {
+                    match knowledge::handle(sock, tool_name, &arguments).await {
+                        Ok(v) => {
+                            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+                            tool_ok(&text)
+                        }
+                        Err(e) => tool_err(&e),
+                    }
+                }
                 "archive_session" => {
                     match session::archive(workspace, api_port, &arguments).await {
                         Ok(v) => {
@@ -863,6 +874,8 @@ mod tests {
         unique.dedup();
         assert_eq!(names.len(), unique.len(), "{names:?}");
         assert!(names.contains(&"manage_app_cron"));
+        assert!(names.contains(&"knowledge_search"));
+        assert!(names.contains(&"knowledge_read"));
     }
 
     #[test]
