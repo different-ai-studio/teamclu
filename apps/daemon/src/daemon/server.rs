@@ -2775,6 +2775,23 @@ impl DaemonServer {
                 continue;
             }
 
+            // A chat-bound session (WeCom and the other gateways) belongs to
+            // its gateway, which answers in the chat on its own turn. Its
+            // cursor never moves — gateway turns do not go through
+            // `route_session_message` — so every restart used to find "unread"
+            // messages the gateway had long since answered. And a runtime
+            // started here cannot reply into the chat anyway: the answer would
+            // land in the session only, which nobody in the chat sees. The
+            // daemon's participant row in these sessions carries no workspace
+            // either, so the attempt failed on workspace identity to boot.
+            if self.session_has_gateway_binding(&session_id).await {
+                info!(
+                    session_id = %session_id,
+                    "plan_auto_restart_offline_sessions: skipping chat-bound session; its gateway answers it"
+                );
+                continue;
+            }
+
             let cursor = prior_cursor.as_deref().filter(|s| !s.is_empty());
             let messages = match self
                 .backend
@@ -4935,6 +4952,77 @@ pub(crate) mod tests {
         // resolve via the registered workspace lookup or current dir).
         assert!(plan[0].local_workspace_id.is_empty());
         assert!(plan[0].fork_from.is_none());
+    }
+
+    /// Unread messages a chat-bound session looks like it has — everything its
+    /// gateway already answered, since gateway turns never move the cursor.
+    async fn mock_gateway_session_with_unread(
+        srv: &MockServer,
+        session_id: &str,
+        extra: serde_json::Value,
+    ) {
+        mock_agent_runtime_row(srv, session_id, None, None, "pi").await;
+        mock_messages_response(
+            srv,
+            session_id,
+            serde_json::json!([
+                {
+                    "id": "msg-chat",
+                    "session_id": session_id,
+                    "sender_actor_id": "external-wecom-user",
+                    "kind": "text",
+                    "content": "查一下今天的数据",
+                    "metadata": {},
+                    "created_at": "2025-05-22T01:00:00Z"
+                }
+            ]),
+        )
+        .await;
+        mock_session_detail(srv, session_id, extra).await;
+    }
+
+    #[tokio::test]
+    pub(crate) async fn plan_skips_chat_bound_session() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        mock_gateway_session_with_unread(
+            &srv,
+            "sess-wecom",
+            serde_json::json!({ "binding": "wecom://bot/single/u-1" }),
+        )
+        .await;
+
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        add_membership(&srv, &mut fixture, "sess-wecom").await;
+
+        let plan = fixture.server.plan_auto_restart_offline_sessions().await;
+        assert!(
+            plan.is_empty(),
+            "the gateway answers its own chat; a restart here cannot reach it"
+        );
+    }
+
+    #[tokio::test]
+    pub(crate) async fn plan_skips_chat_session_left_behind_by_new() {
+        // `/new` releases the binding but the row keeps its gatewayKey; it is
+        // still a chat's session, not a desktop one.
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        mock_gateway_session_with_unread(
+            &srv,
+            "sess-wecom-old",
+            serde_json::json!({ "binding": null, "gatewayKey": "wecom://bot/single/u-1" }),
+        )
+        .await;
+
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        add_membership(&srv, &mut fixture, "sess-wecom-old").await;
+
+        assert!(fixture
+            .server
+            .plan_auto_restart_offline_sessions()
+            .await
+            .is_empty());
     }
 
     #[tokio::test]
