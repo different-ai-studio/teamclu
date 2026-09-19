@@ -2,6 +2,7 @@
 
 use tracing::{info, warn};
 
+use crate::channels::ColdAttach;
 use crate::config::SessionBinding;
 use crate::daemon::session_resume::{resolve_backend_session_id, BACKEND_SESSION_NOT_RESUMABLE};
 use crate::proto::amux;
@@ -150,22 +151,31 @@ impl DaemonServer {
             "attach_collab_from_binding: resuming stored backend session"
         );
 
-        let resume_res = self
-            .agents
-            .lock()
-            .await
-            .resume_agent(
-                cloud_session_id,
-                &acp_resume,
-                agent_type,
-                workspace_id,
-                Some(workspace_id),
-                initial_prompt,
-                None,
-                forbid_new_session_fallback,
-                context,
-            )
-            .await;
+        let resume_res = {
+            let mut agents = self.agents.lock().await;
+            // Asked again under the lock the resume holds, because the check
+            // at the top was not: resolving the workspace and env in between
+            // is long enough for a chat turn to attach this session itself,
+            // and `resume_agent` would replace that runtime under the turn
+            // using it (`no agent for acp_session_id`). A chat's own inbound
+            // write echoing back over `session/live` is exactly that race.
+            if agents.get_handle(cloud_session_id).is_some() {
+                return Ok(Some(cloud_session_id.to_string()));
+            }
+            agents
+                .resume_agent(
+                    cloud_session_id,
+                    &acp_resume,
+                    agent_type,
+                    workspace_id,
+                    Some(workspace_id),
+                    initial_prompt,
+                    None,
+                    forbid_new_session_fallback,
+                    context,
+                )
+                .await
+        };
 
         let new_acp_sid = match resume_res {
             Ok(sid) => sid,
@@ -364,6 +374,69 @@ impl DaemonServer {
         self.catchup_runtime(cloud_session_id).await;
     }
 
+    /// A chat turn found no live runtime for its session.
+    ///
+    /// `Resume` is the resume a desktop message gets, keyed by the workspace
+    /// the chat runs in, so an idle-evicted chat picks its conversation back up
+    /// instead of starting over. `Record` stores what a chat spawned when there
+    /// was nothing to resume, which is what makes the next cold start resumable.
+    pub(crate) async fn serve_cold_attach(&mut self, request: ColdAttach) {
+        let agent_type = self.agents.lock().await.default_agent_type();
+        match request {
+            ColdAttach::Resume {
+                cloud_session_id,
+                workspace_id,
+                reply,
+            } => {
+                let attached = self
+                    .attach_collab_from_binding(
+                        &cloud_session_id,
+                        agent_type,
+                        &workspace_id,
+                        "",
+                        None,
+                        false,
+                        None,
+                        "",
+                        "gateway_cold_attach",
+                    )
+                    .await;
+                let acp = match attached {
+                    Ok(Some(_)) => self
+                        .agents
+                        .lock()
+                        .await
+                        .get_handle(&cloud_session_id)
+                        .map(|h| h.acp_session_id.clone())
+                        .filter(|sid| !sid.is_empty()),
+                    Ok(None) => None,
+                    Err(e) => {
+                        warn!(
+                            session_id = %cloud_session_id,
+                            workspace_id = %workspace_id,
+                            error = %e.error_message,
+                            "gateway cold attach: resume failed; the chat starts a fresh session"
+                        );
+                        None
+                    }
+                };
+                let _ = reply.send(acp);
+            }
+            ColdAttach::Record {
+                cloud_session_id,
+                workspace_id,
+                acp_session_id,
+            } => {
+                self.upsert_session_binding(
+                    &cloud_session_id,
+                    &workspace_id,
+                    agent_type,
+                    &acp_session_id,
+                );
+            }
+        }
+    }
+
     pub(super) fn upsert_session_binding(
         &mut self,
         cloud_session_id: &str,
@@ -387,6 +460,7 @@ mod tests {
 
     use crate::backend::mock::MockBackend;
     use crate::backend::{Backend, WorkspaceRow};
+    use crate::channels::ColdAttach;
     use crate::config::SessionBinding;
     use crate::daemon::server::tests::test_server_with_cloud_api;
     use crate::proto::amux;
@@ -604,6 +678,91 @@ mod tests {
             stored_binding_fixture(Some("wecom://bot/chat")).await;
         cold_runtime_start(&mut fixture, &workspace, "default").await;
         assert_eq!(only_permission(&captures), PermissionPolicy::Ask);
+    }
+
+    async fn cold_attach_resume(
+        fixture: &mut crate::daemon::server::tests::TestServer,
+        workspace_id: &str,
+    ) -> Option<String> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        fixture
+            .server
+            .serve_cold_attach(ColdAttach::Resume {
+                cloud_session_id: "chat-session".into(),
+                workspace_id: workspace_id.into(),
+                reply,
+            })
+            .await;
+        answer.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_cold_chat_resumes_the_session_it_had() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, _workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+
+        let acp = cold_attach_resume(&mut fixture, "ws-a").await;
+
+        assert_eq!(acp.as_deref(), Some("captured-1"));
+        let captures = captures.lock().unwrap();
+        assert_eq!(captures.len(), 1);
+        assert_eq!(
+            captures[0].resume_acp_session_id.as_deref(),
+            Some("acp-old")
+        );
+        assert_eq!(captures[0].permission, PermissionPolicy::Full);
+    }
+
+    #[tokio::test]
+    async fn a_live_runtime_answers_a_cold_chat_without_a_second_attach() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, _workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+
+        let first = cold_attach_resume(&mut fixture, "ws-a").await;
+        let second = cold_attach_resume(&mut fixture, "ws-a").await;
+
+        assert_eq!(first, second);
+        assert_eq!(captures.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn what_a_chat_spawned_is_what_its_next_cold_start_resumes() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, _workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+
+        fixture
+            .server
+            .serve_cold_attach(ColdAttach::Record {
+                cloud_session_id: "chat-session".into(),
+                workspace_id: "ws-a".into(),
+                acp_session_id: "acp-new".into(),
+            })
+            .await;
+        cold_attach_resume(&mut fixture, "ws-a").await;
+
+        let captures = captures.lock().unwrap();
+        assert_eq!(
+            captures[0].resume_acp_session_id.as_deref(),
+            Some("acp-new")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cold_chat_with_nothing_stored_is_told_to_start_fresh() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, _workspace) =
+            stored_binding_fixture(Some("wecom://bot/chat")).await;
+
+        // Stored under ws-a; the chat runs somewhere else.
+        assert_eq!(cold_attach_resume(&mut fixture, "ws-other").await, None);
+        assert!(captures.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
