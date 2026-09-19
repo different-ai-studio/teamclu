@@ -166,6 +166,11 @@ pub struct AmuxdAgentHandle {
     /// Where a turn's permission requests are put to the chat. `None` in unit
     /// tests that never drive a live turn.
     pub approvals: Option<Arc<crate::channels::approvals::ApprovalDesk>>,
+    /// The daemon run loop, which owns the stored session bindings. A chat with
+    /// no live runtime asks it to resume the backend session it had, and
+    /// reports the one it spawns otherwise. `None` in unit tests that do not
+    /// exercise a cold start.
+    pub cold_attach: Option<tokio::sync::mpsc::Sender<ColdAttach>>,
 }
 
 /// Returned by `resolve_or_spawn`. `spawned` is true iff this call was
@@ -178,6 +183,46 @@ struct ResolveOutcome {
     spawned: bool,
 }
 
+/// Where a chat's runtime runs. `workspace_id` is `None` when the chat has only
+/// a directory (a bot configured by path) or nothing at all.
+struct SpawnTarget {
+    workspace_id: Option<String>,
+    workspace_dir: Option<String>,
+    agent_type: Option<amux::AgentType>,
+}
+
+/// A chat turn's request to the daemon run loop, which owns the stored session
+/// bindings (`runtimes.toml`) and the resume that reads them.
+///
+/// Without it a chat whose runtime had been idle-evicted started a new backend
+/// session and lost the conversation, while its own message — echoed back over
+/// `session/live` — made the run loop resume the old one for the same session
+/// at the same moment. Whichever attached second replaced the first, and the
+/// turn failed with `no agent for acp_session_id`.
+#[derive(Debug)]
+pub enum ColdAttach {
+    /// Resume the backend session stored for this chat in `workspace_id`.
+    /// Answers with the live ACP session id — resumed now or already live —
+    /// or `None` when there is nothing to resume.
+    Resume {
+        cloud_session_id: String,
+        workspace_id: String,
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+    },
+    /// Remember the backend session a chat spawned, so its next cold start
+    /// resumes it instead of opening another.
+    Record {
+        cloud_session_id: String,
+        workspace_id: String,
+        acp_session_id: String,
+    },
+}
+
+/// How long a turn waits for the run loop to resume its session before it
+/// spawns a fresh one. A resume takes well under a second; this bounds the
+/// case where the loop is not serving requests at all (startup, reconnect).
+const COLD_ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 impl AmuxdAgentHandle {
     /// Resolve the workspace dir + agent type for a spawn, applying priority
     /// **per-session override > per-bot config > daemon global default**.
@@ -188,6 +233,12 @@ impl AmuxdAgentHandle {
         session: &str,
         binding: &str,
     ) -> Result<(Option<String>, Option<amux::AgentType>), AgentError> {
+        let target = self.spawn_target(session, binding).await?;
+        Ok((target.workspace_dir, target.agent_type))
+    }
+
+    /// `resolve_spawn_target`, keeping the workspace id the directory came from.
+    async fn spawn_target(&self, session: &str, binding: &str) -> Result<SpawnTarget, AgentError> {
         let bot = {
             let configs = self.bot_configs.lock().await;
             bot_id_from_binding(binding)
@@ -202,25 +253,32 @@ impl AmuxdAgentHandle {
             let ov = self.workspace_override.lock().await;
             ov.get(session).cloned()
         };
-        let workspace_dir = if let Some(workspace_id) = session_ws_id {
-            Some(self.workspace_dir_for_id(&workspace_id).await?)
-        } else if let Some(workspace_id) = bot.workspace_id.as_deref() {
-            match bot.workspace_dir {
-                Some(path) => Some(path),
-                None => Some(self.workspace_dir_for_id(workspace_id).await?),
-            }
+        let (workspace_id, workspace_dir) = if let Some(workspace_id) = session_ws_id {
+            let dir = self.workspace_dir_for_id(&workspace_id).await?;
+            (Some(workspace_id), Some(dir))
+        } else if let Some(workspace_id) = bot.workspace_id {
+            let dir = match bot.workspace_dir {
+                Some(path) => path,
+                None => self.workspace_dir_for_id(&workspace_id).await?,
+            };
+            (Some(workspace_id), Some(dir))
         } else if bot.workspace_dir.is_some() {
-            bot.workspace_dir
-        } else if let Some(workspace_id) = self.default_workspace_id.as_deref() {
-            match self.default_workspace_dir.clone() {
-                Some(path) => Some(path),
-                None => Some(self.workspace_dir_for_id(workspace_id).await?),
-            }
+            (None, bot.workspace_dir)
+        } else if let Some(workspace_id) = self.default_workspace_id.clone() {
+            let dir = match self.default_workspace_dir.clone() {
+                Some(path) => path,
+                None => self.workspace_dir_for_id(&workspace_id).await?,
+            };
+            (Some(workspace_id), Some(dir))
         } else {
-            self.default_workspace_dir.clone()
+            (None, self.default_workspace_dir.clone())
         };
 
-        Ok((workspace_dir, agent_type))
+        Ok(SpawnTarget {
+            workspace_id,
+            workspace_dir,
+            agent_type,
+        })
     }
 
     /// Build the runtime environment for a gateway spawn: team secrets,
@@ -525,24 +583,44 @@ impl AmuxdAgentHandle {
                 .cloned()
                 .or_else(|| self.gateway_model.clone())
         };
-        let (workspace_dir, _agent_type) = self.resolve_spawn_target(session, &binding).await?;
-        let context = self
-            .assemble_execution_context(workspace_dir.as_deref())
-            .await?;
-        let real = {
-            let mut mgr = self.manager.lock().await;
-            mgr.create_gateway_session_with_model(
-                &self.team_id,
-                session,
-                &binding,
-                "Gateway session",
-                model_arg,
-                remote_session_id.as_deref(),
-                context,
-                None,
-            )
-            .await
-            .map_err(|e| AgentError::Create(e.to_string()))?
+        let SpawnTarget {
+            workspace_id,
+            workspace_dir,
+            ..
+        } = self.spawn_target(session, &binding).await?;
+        // The run loop keys stored sessions by (cloud session, workspace); a
+        // chat with neither has nothing to resume or record.
+        let cold_key = remote_session_id.as_deref().zip(workspace_id.as_deref());
+        let resumed = match cold_key {
+            Some((cloud, ws)) => self.resume_through_run_loop(cloud, ws).await,
+            None => None,
+        };
+        let real = match resumed {
+            Some(acp) => acp,
+            None => {
+                let context = self
+                    .assemble_execution_context(workspace_dir.as_deref())
+                    .await?;
+                let real = {
+                    let mut mgr = self.manager.lock().await;
+                    mgr.create_gateway_session_with_model(
+                        &self.team_id,
+                        session,
+                        &binding,
+                        "Gateway session",
+                        model_arg,
+                        remote_session_id.as_deref(),
+                        context,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| AgentError::Create(e.to_string()))?
+                };
+                if let Some((cloud, ws)) = cold_key {
+                    self.record_through_run_loop(cloud, ws, &real).await;
+                }
+                real
+            }
         };
 
         // Durable persona: write CLAUDE.local.md into the bot's workspace.
@@ -582,6 +660,57 @@ impl AmuxdAgentHandle {
             spawned: true,
         };
         Ok(outcome)
+    }
+
+    /// Ask the run loop to resume this chat's stored backend session. `None` —
+    /// nothing stored, no run loop, or no answer in time — means spawn fresh.
+    async fn resume_through_run_loop(
+        &self,
+        cloud_session_id: &str,
+        workspace_id: &str,
+    ) -> Option<String> {
+        let run_loop = self.cold_attach.as_ref()?;
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        run_loop
+            .send(ColdAttach::Resume {
+                cloud_session_id: cloud_session_id.to_string(),
+                workspace_id: workspace_id.to_string(),
+                reply,
+            })
+            .await
+            .ok()?;
+        match tokio::time::timeout(COLD_ATTACH_TIMEOUT, answer).await {
+            Ok(answer) => answer.ok().flatten(),
+            Err(_) => {
+                // A late resume cannot replace the runtime spawned instead:
+                // the resume re-checks under the runtime manager lock.
+                tracing::warn!(
+                    cloud_session_id,
+                    "gateway: run loop did not answer a resume in time; starting a fresh session"
+                );
+                None
+            }
+        }
+    }
+
+    /// Tell the run loop which backend session this chat now runs, so its next
+    /// cold start resumes it.
+    async fn record_through_run_loop(
+        &self,
+        cloud_session_id: &str,
+        workspace_id: &str,
+        acp_session_id: &str,
+    ) {
+        let Some(run_loop) = self.cold_attach.as_ref() else {
+            return;
+        };
+        let _ = run_loop
+            .send(ColdAttach::Record {
+                cloud_session_id: cloud_session_id.to_string(),
+                workspace_id: workspace_id.to_string(),
+                acp_session_id: acp_session_id.to_string(),
+            })
+            .await;
     }
 
     /// Mark a logical session as having received its priming system
@@ -1662,7 +1791,109 @@ pub(crate) mod tests {
             bot_configs: Arc::new(Mutex::new(HashMap::new())),
             live_event_tx: None,
             approvals: None,
+            cold_attach: None,
         }
+    }
+
+    /// A chat that runs in `ws-a` and has gone cold, wired to a fake run loop.
+    async fn cold_chat(
+        workspace: &tempfile::TempDir,
+    ) -> (AmuxdAgentHandle, tokio::sync::mpsc::Receiver<ColdAttach>) {
+        let backend = Arc::new(MockBackend::with_identity("team-a", "actor-a"));
+        backend.state().workspaces_by_id.insert(
+            "ws-a".into(),
+            WorkspaceRow {
+                id: "ws-a".into(),
+                team_id: "team-a".into(),
+                path: Some(workspace.path().to_string_lossy().into_owned()),
+                archived: false,
+                agent_id: None,
+            },
+        );
+        backend.state().gateway_session_index.insert(
+            "logical-1".into(),
+            ("cloud-1".into(), Some("wecom://bot/chat".into())),
+        );
+        let mut handle = make_handle_with_backend(backend);
+        handle.team_id = "team-a".into();
+        handle.spawn_env.actor_id = "actor-a".into();
+        handle.default_workspace_id = Some("ws-a".into());
+        handle.default_workspace_dir = Some(workspace.path().to_string_lossy().into_owned());
+        handle.workspace_resolver.resolve("ws-a").await.unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        handle.cold_attach = Some(tx);
+        (handle, rx)
+    }
+
+    #[tokio::test]
+    async fn a_cold_chat_takes_the_session_the_run_loop_resumed() {
+        let workspace = tempfile::tempdir().unwrap();
+        let (handle, mut run_loop) = cold_chat(&workspace).await;
+        let captures = {
+            let mut manager = handle.manager.lock().await;
+            crate::runtime::test_support::install_capturing_backend(&mut manager)
+        };
+        let serve = async {
+            let Some(ColdAttach::Resume {
+                cloud_session_id,
+                workspace_id,
+                reply,
+            }) = run_loop.recv().await
+            else {
+                panic!("expected a resume request");
+            };
+            reply.send(Some("acp-resumed".into())).unwrap();
+            (cloud_session_id, workspace_id)
+        };
+
+        let session = AmuxSessionId::from("logical-1");
+        let (outcome, asked) = tokio::join!(handle.resolve_or_spawn(&session), serve);
+
+        assert_eq!(asked, ("cloud-1".to_string(), "ws-a".to_string()));
+        assert_eq!(outcome.unwrap().real_acp_sid, "acp-resumed");
+        assert!(
+            captures.lock().unwrap().is_empty(),
+            "a resumed chat must not open another backend session"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cold_chat_with_nothing_to_resume_records_what_it_spawned() {
+        let workspace = tempfile::tempdir().unwrap();
+        let (handle, mut run_loop) = cold_chat(&workspace).await;
+        let captures = {
+            let mut manager = handle.manager.lock().await;
+            crate::runtime::test_support::install_capturing_backend(&mut manager)
+        };
+        let serve = async {
+            let Some(ColdAttach::Resume { reply, .. }) = run_loop.recv().await else {
+                panic!("expected a resume request");
+            };
+            reply.send(None).unwrap();
+            run_loop.recv().await
+        };
+
+        let session = AmuxSessionId::from("logical-1");
+        let (outcome, recorded) = tokio::join!(handle.resolve_or_spawn(&session), serve);
+
+        let spawned = outcome.unwrap().real_acp_sid;
+        assert_eq!(captures.lock().unwrap().len(), 1);
+        let Some(ColdAttach::Record {
+            cloud_session_id,
+            workspace_id,
+            acp_session_id,
+        }) = recorded
+        else {
+            panic!("expected the spawn to be recorded, got {recorded:?}");
+        };
+        assert_eq!(
+            (
+                cloud_session_id.as_str(),
+                workspace_id.as_str(),
+                acp_session_id.as_str()
+            ),
+            ("cloud-1", "ws-a", spawned.as_str())
+        );
     }
 
     pub(crate) async fn capture_workspace_and_unscoped_gateway_attaches(

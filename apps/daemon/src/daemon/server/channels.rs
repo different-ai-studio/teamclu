@@ -171,6 +171,7 @@ impl DaemonServer {
             bot_configs: Arc::new(AsyncMutex::new(bot_configs)),
             live_event_tx: Some(self.cron_turn_event_tx.clone()),
             approvals: Some(approvals.clone()),
+            cold_attach: Some(self.cold_attach_tx.clone()),
         });
         // Everything this store writes gets announced on `session/{id}/live`.
         // Without it a gateway conversation exists only in the cloud table, and
