@@ -3950,7 +3950,9 @@
     "forward": "前进",
     "reload": "重新加载",
     "iframeTitle": "网页内容",
-    "loadFailed": "页面加载失败"
+    "loadFailed": "页面加载失败",
+    "retry": "重试",
+    "openInBrowser": "在浏览器中打开"
   },
   "tabBar": {
     "closeAria": "关闭标签页",

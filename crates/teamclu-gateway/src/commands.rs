@@ -686,6 +686,7 @@ mod tests {
             _session: &AmuxSessionId,
             _sender_display: &str,
             _text: &str,
+            _attachment_urls: &[String],
             _timeout: std::time::Duration,
         ) -> Result<TurnOutcome, AgentError> {
             Ok(TurnOutcome {

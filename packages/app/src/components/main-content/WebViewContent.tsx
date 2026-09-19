@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useTranslation } from "react-i18next"
-import { Loader2, ExternalLink } from "lucide-react"
+import { Loader2, ExternalLink, RotateCw } from "lucide-react"
 import { isTauri } from "@/lib/utils"
 import { normalizeUrl, urlToLabel } from "@/lib/ui/webview-utils"
 import { useTabsStore } from "@/stores/tabs"
 import { useCurrentTeamStore } from "@/stores/current-team"
 import { adminSsoInjectionFor } from "@/lib/extension/admin-sso-inject"
+import { hideNativeWebview } from "@/lib/ui/webview-hide"
 
 interface WebViewContentProps {
   url: string
@@ -15,6 +16,22 @@ interface WebViewContentProps {
 const createdWebviews = new Set<string>()
 // Track webviews whose tabs were closed — need URL reset when reopened
 const needsUrlReset = new Set<string>()
+
+/**
+ * Take the webview off screen and keep the two sets above honest.
+ *
+ * A hide that never answers ends in a close (see `hideNativeWebview`), and a
+ * closed webview no longer exists — so it must leave `createdWebviews`, or the
+ * next open would try to show something that is gone instead of creating it.
+ */
+async function takeWebviewOffScreen(label: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core")
+  const outcome = await hideNativeWebview(invoke, label)
+  if (outcome === "hidden") return
+  console.warn(`[WebView] hide did not confirm for ${label}; ${outcome}`)
+  createdWebviews.delete(label)
+  needsUrlReset.delete(label)
+}
 
 // Subscribe to tab store to hide native webviews when their tabs are closed
 let tabCleanupInitialized = false
@@ -38,9 +55,7 @@ function initTabCleanup() {
         // Hide instead of close to preserve login/session state.
         // Mark for URL reset so reopening navigates to the original URL.
         needsUrlReset.add(label)
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("webview_hide", { label }).catch(() => {})
-        })
+        void takeWebviewOffScreen(label)
       }
     }
 
@@ -57,14 +72,45 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
   const [error, setError] = useState<string | null>(null)
   // Track last bounds to skip no-op repositions (prevents jitter)
   const lastBoundsRef = useRef<string>("")
+  // Whether the native webview is currently placed over this container. It is
+  // created parked off-window, so until something brings it on screen nothing
+  // may move it there — a reposition would put a blank white webview on top of
+  // the app, which is the thing we are avoiding.
+  const onScreenRef = useRef(false)
 
   // Initialize global tab cleanup listener
   useEffect(() => { initTabCleanup() }, [])
+
+  /** Place the native webview over this container, at its current bounds. */
+  const bringOnScreen = useCallback(async () => {
+    const el = containerRef.current
+    if (!el) return
+
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) return
+
+    const bounds = {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    }
+    lastBoundsRef.current = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`
+
+    try {
+      const { invoke } = await import("@tauri-apps/api/core")
+      await invoke("webview_show", { label, ...bounds })
+      onScreenRef.current = true
+    } catch {
+      // A show that fails leaves it parked, which is the safe side.
+    }
+  }, [label])
 
   // Update native webview position/size to match container (debounced)
   const updateBounds = useCallback(async () => {
     const el = containerRef.current
     if (!el) return
+    if (!onScreenRef.current) return
 
     const rect = el.getBoundingClientRect()
     if (rect.width < 1 || rect.height < 1) return
@@ -117,7 +163,30 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
           const alreadyExists = createdWebviews.has(label)
 
           if (alreadyExists) {
-            // Webview already exists — show and reposition
+            // Webview already exists. Whether it may go on screen is not a
+            // given: the backend's verdict was delivered once, seconds after
+            // this webview was created, and the user has since switched away
+            // and come back. Showing it regardless is how a webview that never
+            // loaded went back up as a white rectangle.
+            const verdict = await invoke<{ state: string; reason: string | null }>(
+              "webview_check_load",
+              { label, url },
+            ).catch(() => ({ state: "loaded", reason: null }))
+            if (cancelled) return
+
+            if (verdict.state === "failed") {
+              setIsLoading(false)
+              setError(verdict.reason || t("webview.loadFailed", "Failed to load page"))
+              return // stays parked, so the message is visible
+            }
+
+            if (verdict.state === "slow") {
+              // Still fetching. Leave it parked and let the commit fetch it;
+              // on screen now it would be blank.
+              setIsLoading(true)
+              return
+            }
+
             setIsLoading(false)
 
             // If tab was closed and reopened, navigate back to the original URL
@@ -130,6 +199,7 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
               label,
               ...bounds,
             })
+            onScreenRef.current = true
           } else {
             // Create new native webview
             setIsLoading(true)
@@ -170,16 +240,32 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
               authSessionJson: authInject?.sessionJson,
             })
 
-            if (!cancelled) {
-              createdWebviews.add(label)
-              setTimeout(() => {
-                if (!cancelled) setIsLoading(false)
-              }, 1500)
-            }
+            // Registered the moment it exists, mounted or not: this set is the
+            // only handle anything has on the native webview, and a create that
+            // finished after the switch away used to leave one nothing could
+            // find — or hide.
+            createdWebviews.add(label)
+            onScreenRef.current = false
+            // No timer hides the spinner here. The webview is parked off-window
+            // until the page commits or the backend rules on it, and the effect
+            // below acts on whichever arrives first. `webview-load-verdict`
+            // always arrives, so this cannot wait forever.
           }
 
-          // Record initial bounds
-          lastBoundsRef.current = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`
+          // The view can change during any await above. The cleanup that ran
+          // back then found nothing to hide — the webview did not exist yet —
+          // and nothing else will come looking. A native webview is not part
+          // of the React tree: left showing, it sits on top of whatever the
+          // user switched to (the white page over the session) until the app
+          // restarts.
+          if (cancelled) {
+            await takeWebviewOffScreen(label)
+            return
+          }
+
+          // Deliberately no `lastBoundsRef` seeding: the webview is parked, not
+          // at `bounds`, so recording them would let `updateBounds` skip the
+          // first real reposition as a no-op.
         } catch (err) {
           console.error("[WebView] Failed:", err)
           if (!cancelled) {
@@ -206,12 +292,86 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
       if (resizeTimer) clearTimeout(resizeTimer)
       // Hide (don't close) the native webview when switching away
       if (createdWebviews.has(label)) {
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("webview_hide", { label }).catch(() => {})
-        })
+        void takeWebviewOffScreen(label)
       }
     }
-  }, [url, label, updateBounds])
+  }, [url, label, updateBounds, t])
+
+  // Bring the parked webview on screen, or say why it never will.
+  //
+  // wry's navigation delegate implements `didCommitNavigation` and
+  // `didFinishNavigation` only, so a page that fails to load fires no event at
+  // all. That is why the backend also rules on every new webview after five
+  // seconds (`spawn_load_watchdog`): between the two, exactly one of "it
+  // loaded" and "it failed" always arrives.
+  useEffect(() => {
+    if (!isTauri()) return
+
+    let cancelled = false
+    const unlisteners: Array<() => void> = []
+
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      const onProgress = await listen<{ label: string; progress: number }>(
+        "webview-progress",
+        (event) => {
+          if (cancelled || event.payload.label !== label) return
+          // A progress event means the page committed, so whatever we decided
+          // earlier about it failing is out of date.
+          setError(null)
+          setIsLoading(false)
+          // Progress also fires on every later navigation; only the first one
+          // has anything to fetch.
+          if (!onScreenRef.current) void bringOnScreen()
+        },
+      )
+
+      const onVerdict = await listen<{ label: string; state: string; reason: string | null }>(
+        "webview-load-verdict",
+        (event) => {
+          if (cancelled || event.payload.label !== label) return
+          setIsLoading(false)
+
+          if (event.payload.state === "failed") {
+            // Keep it parked. The error below is a DOM node, and a native child
+            // webview draws above every DOM node — on screen it would cover the
+            // very message explaining it.
+            void takeWebviewOffScreen(label)
+            onScreenRef.current = false
+            setError(event.payload.reason || t("webview.loadFailed", "Failed to load page"))
+            return
+          }
+
+          // "loaded" or "slow": show it either way. A slow page is still a page.
+          void bringOnScreen()
+        },
+      )
+
+      if (cancelled) {
+        onProgress()
+        onVerdict()
+        return
+      }
+      unlisteners.push(onProgress, onVerdict)
+    })
+
+    return () => {
+      cancelled = true
+      for (const unlisten of unlisteners) unlisten()
+    }
+  }, [label, bringOnScreen, t])
+
+  /** Error overlay's retry: reload the page and let the events above decide. */
+  const retry = useCallback(async () => {
+    setError(null)
+    setIsLoading(true)
+    try {
+      const { invoke } = await import("@tauri-apps/api/core")
+      await invoke("webview_navigate", { label, url })
+    } catch (err) {
+      setIsLoading(false)
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [label, url])
 
   if (!isTauri()) {
     // Web fallback: use iframe
@@ -267,15 +427,25 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
         <div className="absolute inset-0 flex items-center justify-center bg-background pointer-events-auto">
           <div className="text-center text-muted-foreground">
             <p className="text-sm">{error}</p>
-            <a
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 mt-2 text-xs text-primary hover:underline"
-            >
-              <ExternalLink className="h-3 w-3" />
-              Open in browser
-            </a>
+            <div className="flex items-center justify-center gap-3 mt-2">
+              <button
+                type="button"
+                onClick={retry}
+                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                <RotateCw className="h-3 w-3" />
+                {t('webview.retry', '重试')}
+              </button>
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                <ExternalLink className="h-3 w-3" />
+                {t('webview.openInBrowser', '在浏览器中打开')}
+              </a>
+            </div>
           </div>
         </div>
       )}

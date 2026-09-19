@@ -14,7 +14,7 @@ use teamclu_gateway::{
 
 use super::{
     CommandRunner, CoreError, IdentityMapper, PendingUpload, SessionRef, SessionRouter,
-    SessionWriter, TurnRunner,
+    SessionWriter, TurnRunner, WrittenInbound,
 };
 
 fn route(e: StoreError) -> CoreError {
@@ -104,21 +104,28 @@ impl SessionWriter for StoreWriter {
         text: &str,
         attachments: Vec<PendingUpload>,
         external_message_id: &str,
-    ) -> Result<String, CoreError> {
+    ) -> Result<WrittenInbound, CoreError> {
         let mut records = Vec::with_capacity(attachments.len());
         let mut fragments = Vec::new();
+        let mut attachment_urls = Vec::new();
+        let mut failed_uploads = Vec::new();
         for upload in &attachments {
             // An upload failure keeps the message: the agent still needs the
             // text and the filename, even if clients cannot download the bytes.
             let record = match self.upload(session_id, upload).await {
-                Ok(a) => AttachmentRecord {
-                    filename: a.filename,
-                    mime: a.mime,
-                    size: upload.bytes.len(),
-                    bucket_path: a.bucket_path,
-                    local_path: a.local_path,
-                },
+                Ok(a) => {
+                    // What the store hands back is the download URL.
+                    attachment_urls.push(a.bucket_path.clone());
+                    AttachmentRecord {
+                        filename: a.filename,
+                        mime: a.mime,
+                        size: upload.bytes.len(),
+                        bucket_path: a.bucket_path,
+                        local_path: a.local_path,
+                    }
+                }
                 Err(e) => {
+                    failed_uploads.push(upload.filename.clone());
                     tracing::warn!(session_id, error = %e, "attachment upload failed; recording metadata only");
                     AttachmentRecord {
                         filename: upload.filename.clone(),
@@ -129,11 +136,7 @@ impl SessionWriter for StoreWriter {
                     }
                 }
             };
-            fragments.push(format!(
-                "[Attachment: {}] ({})",
-                record.filename,
-                human_size(record.size)
-            ));
+            fragments.push(attachment_fragment(&record));
             records.push(record);
         }
 
@@ -146,7 +149,8 @@ impl SessionWriter for StoreWriter {
             (false, false) => format!("{text}\n{}", fragments.join("\n")),
         };
 
-        self.store
+        let message_id = self
+            .store
             .record_message_with_attachments(
                 session_id,
                 actor_id,
@@ -155,7 +159,12 @@ impl SessionWriter for StoreWriter {
                 records,
             )
             .await
-            .map_err(|e| CoreError::Write(e.to_string()))
+            .map_err(|e| CoreError::Write(e.to_string()))?;
+        Ok(WrittenInbound {
+            message_id,
+            attachment_urls,
+            failed_uploads,
+        })
     }
 
     async fn write_reply(
@@ -222,6 +231,19 @@ impl SessionWriter for StoreWriter {
     }
 }
 
+/// How a received file reads in the message text: the markers the desktop
+/// writes for its own uploads (`use-chat-send.ts`), which is what lets the
+/// message list show a picture instead of an empty bubble. A file that did not
+/// upload has no URL, so it is named with its size alone.
+fn attachment_fragment(record: &AttachmentRecord) -> String {
+    let (name, size) = (&record.filename, human_size(record.size));
+    match record.bucket_path.as_str() {
+        "" => format!("[Attachment: {name}] ({size})"),
+        url if record.mime.starts_with("image/") => format!("[Image: {name}] (url: {url})"),
+        url => format!("[Attachment: {name}] (url: {url}, size: {size})"),
+    }
+}
+
 fn human_size(bytes: usize) -> String {
     const KB: usize = 1024;
     const MB: usize = KB * 1024;
@@ -247,6 +269,7 @@ impl TurnRunner for AgentTurns {
         acp_session_id: &str,
         sender_display: &str,
         prompt: &str,
+        attachment_urls: &[String],
         on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         let outcome = match on_delta {
@@ -256,6 +279,7 @@ impl TurnRunner for AgentTurns {
                         &acp_session_id.to_string(),
                         sender_display,
                         prompt,
+                        attachment_urls,
                         tx,
                         self.turn_timeout,
                     )
@@ -267,6 +291,7 @@ impl TurnRunner for AgentTurns {
                         &acp_session_id.to_string(),
                         sender_display,
                         prompt,
+                        attachment_urls,
                         self.turn_timeout,
                     )
                     .await
@@ -330,6 +355,33 @@ impl CommandRunner for GatewayCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(filename: &str, mime: &str, bucket_path: &str) -> AttachmentRecord {
+        AttachmentRecord {
+            filename: filename.into(),
+            mime: mime.into(),
+            size: 2048,
+            bucket_path: bucket_path.into(),
+            local_path: None,
+        }
+    }
+
+    #[test]
+    fn a_received_file_reads_the_way_the_desktop_writes_its_own() {
+        assert_eq!(
+            attachment_fragment(&record("file.jpg", "image/jpeg", "https://s/a/file.jpg")),
+            "[Image: file.jpg] (url: https://s/a/file.jpg)"
+        );
+        assert_eq!(
+            attachment_fragment(&record("a.pdf", "application/pdf", "https://s/a/a.pdf")),
+            "[Attachment: a.pdf] (url: https://s/a/a.pdf, size: 2.0 KB)"
+        );
+        // Nothing to link to when the upload failed.
+        assert_eq!(
+            attachment_fragment(&record("file.jpg", "image/jpeg", "")),
+            "[Attachment: file.jpg] (2.0 KB)"
+        );
+    }
 
     #[test]
     fn attachment_sizes_read_as_sizes_not_byte_counts() {

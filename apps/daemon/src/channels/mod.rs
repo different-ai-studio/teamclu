@@ -14,6 +14,6 @@ pub mod reply_token;
 /// in #933: queueing is runtime behaviour, not protocol.
 pub mod session_queue;
 pub mod wecom_mcp;
-pub use agent_handle::{AmuxdAgentHandle, BotRuntimeConfig, GatewaySpawnEnv};
+pub use agent_handle::{AmuxdAgentHandle, BotRuntimeConfig, ColdAttach, GatewaySpawnEnv};
 pub use backend_store::AmuxdChannelStore;
 pub use manager::ChannelManager;

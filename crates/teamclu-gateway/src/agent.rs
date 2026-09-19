@@ -105,11 +105,17 @@ pub trait AgentHandle: Send + Sync + 'static {
     /// waiting. A mail round trip and an IM bubble have nothing in common, and
     /// the value used to be a constant in the daemon that no channel could
     /// influence.
+    ///
+    /// `attachment_urls` are the session attachments the user sent with this
+    /// message. The runtime resolves them the way it does for the desktop's own
+    /// uploads — pictures as image input, other files as local paths — so the
+    /// agent sees the files and not only their names.
     async fn send_prompt(
         &self,
         session: &AmuxSessionId,
         sender_display: &str,
         text: &str,
+        attachment_urls: &[String],
         timeout: std::time::Duration,
     ) -> Result<TurnOutcome, AgentError>;
 
@@ -132,11 +138,12 @@ pub trait AgentHandle: Send + Sync + 'static {
         session: &AmuxSessionId,
         sender_display: &str,
         text: &str,
+        attachment_urls: &[String],
         on_update: mpsc::Sender<TurnUpdate>,
         timeout: std::time::Duration,
     ) -> Result<TurnOutcome, AgentError> {
         let _ = on_update;
-        self.send_prompt(session, sender_display, text, timeout)
+        self.send_prompt(session, sender_display, text, attachment_urls, timeout)
             .await
     }
 
