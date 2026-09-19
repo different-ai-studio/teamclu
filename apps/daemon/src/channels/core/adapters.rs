@@ -136,11 +136,7 @@ impl SessionWriter for StoreWriter {
                     }
                 }
             };
-            fragments.push(format!(
-                "[Attachment: {}] ({})",
-                record.filename,
-                human_size(record.size)
-            ));
+            fragments.push(attachment_fragment(&record));
             records.push(record);
         }
 
@@ -232,6 +228,19 @@ impl SessionWriter for StoreWriter {
             // the bytes back at delivery time.
             local_path: upload.local_path.clone(),
         })
+    }
+}
+
+/// How a received file reads in the message text: the markers the desktop
+/// writes for its own uploads (`use-chat-send.ts`), which is what lets the
+/// message list show a picture instead of an empty bubble. A file that did not
+/// upload has no URL, so it is named with its size alone.
+fn attachment_fragment(record: &AttachmentRecord) -> String {
+    let (name, size) = (&record.filename, human_size(record.size));
+    match record.bucket_path.as_str() {
+        "" => format!("[Attachment: {name}] ({size})"),
+        url if record.mime.starts_with("image/") => format!("[Image: {name}] (url: {url})"),
+        url => format!("[Attachment: {name}] (url: {url}, size: {size})"),
     }
 }
 
@@ -346,6 +355,33 @@ impl CommandRunner for GatewayCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(filename: &str, mime: &str, bucket_path: &str) -> AttachmentRecord {
+        AttachmentRecord {
+            filename: filename.into(),
+            mime: mime.into(),
+            size: 2048,
+            bucket_path: bucket_path.into(),
+            local_path: None,
+        }
+    }
+
+    #[test]
+    fn a_received_file_reads_the_way_the_desktop_writes_its_own() {
+        assert_eq!(
+            attachment_fragment(&record("file.jpg", "image/jpeg", "https://s/a/file.jpg")),
+            "[Image: file.jpg] (url: https://s/a/file.jpg)"
+        );
+        assert_eq!(
+            attachment_fragment(&record("a.pdf", "application/pdf", "https://s/a/a.pdf")),
+            "[Attachment: a.pdf] (url: https://s/a/a.pdf, size: 2.0 KB)"
+        );
+        // Nothing to link to when the upload failed.
+        assert_eq!(
+            attachment_fragment(&record("file.jpg", "image/jpeg", "")),
+            "[Attachment: file.jpg] (2.0 KB)"
+        );
+    }
 
     #[test]
     fn attachment_sizes_read_as_sizes_not_byte_counts() {
