@@ -191,3 +191,75 @@ describe("workspace external roots", () => {
     ).toHaveLength(1);
   });
 });
+
+/**
+ * Windows spells the same directory two ways, and the tree used to believe
+ * them to be two directories.
+ *
+ * The root is the string the app built — `homeDir()` returns `C:\Users\x` and
+ * everything after it is joined with `/` — while every child comes back from
+ * `read_workspace_directory` as a `PathBuf`, all backslashes. The two roots
+ * listed (the root matches itself), and then every child below them belonged to
+ * no tree at all: 资料库 and 知识库 both rendered expanded and empty on a
+ * machine whose sync was healthy and whose files were on disk.
+ */
+describe("windows external root", () => {
+  // What the app builds.
+  const BUILT = "C:\\Users\\x/.amuxd/teams/team-1/shared/team-sync";
+  // What Rust returns.
+  const RUST = "C:\\Users\\x\\.amuxd\\teams\\team-1\\shared\\team-sync";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useWorkspaceStore.setState({
+      workspacePath: null,
+      fileTree: [],
+      externalTrees: {},
+      expandedPaths: new Set<string>(),
+      loadingPaths: new Set<string>(),
+      selectedFile: null,
+      fileContent: null,
+    });
+    mockInvoke.mockImplementation(async (cmd: string, args: any) => {
+      if (cmd !== "read_workspace_directory") return null;
+      // Windows accepts either separator, so the listing answers for both.
+      const target = String(args.path).replace(/\//g, "\\");
+      if (target === RUST) {
+        return [
+          { name: "documents", path: `${RUST}\\documents`, type: "directory" },
+          { name: "knowledge", path: `${RUST}\\knowledge`, type: "directory" },
+        ];
+      }
+      if (target === `${RUST}\\knowledge`) {
+        return [{ name: "00-home.md", path: `${RUST}\\knowledge\\00-home.md`, type: "file" }];
+      }
+      return [];
+    });
+  });
+
+  it("fills a root's children although Rust spells the path differently", async () => {
+    await useWorkspaceStore.getState().openExternalRoot(BUILT);
+    await useWorkspaceStore.getState().expandDirectory(`${RUST}\\knowledge`);
+
+    const tree = useWorkspaceStore.getState().externalTrees[BUILT];
+    expect(tree.map((n) => n.name)).toEqual(["documents", "knowledge"]);
+    const knowledge = tree.find((n) => n.name === "knowledge");
+    expect(knowledge?.children?.map((n) => n.name)).toEqual(["00-home.md"]);
+    // It belongs to the external tree, not to the workspace's.
+    expect(useWorkspaceStore.getState().fileTree).toEqual([]);
+  });
+
+  it("reads a file under the root against that root", async () => {
+    await useWorkspaceStore.getState().openExternalRoot(BUILT);
+    mockInvoke.mockImplementation(async (cmd: string) =>
+      cmd === "read_workspace_text_file" ? "# hello" : [],
+    );
+
+    await useWorkspaceStore.getState().selectFile(`${RUST}\\knowledge\\00-home.md`);
+
+    expect(mockInvoke).toHaveBeenCalledWith("read_workspace_text_file", {
+      workspacePath: BUILT,
+      path: `${RUST}\\knowledge\\00-home.md`,
+    });
+  });
+});

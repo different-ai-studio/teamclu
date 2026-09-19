@@ -25,6 +25,7 @@ import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
 import { useOssSyncStore } from "@/stores/oss-sync";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team/team-sync-badges";
 import { teamSyncKeyForPath } from "@/lib/team/team-skill-paths";
+import { basenameOf, isPathAtOrUnder, isPathUnder, isSamePath } from "@/lib/fs-path";
 import { proposeDocumentToKnowledge } from "@/lib/knowledge/propose-from-document";
 import {
   hasSystemClipboardFiles,
@@ -804,7 +805,7 @@ export function FileTree({
       for (const source of paths) {
         // Copying a directory into itself or its own subtree would recurse
         // until the disk fills. The same guard the paste path applies.
-        if (targetDir === source || targetDir.startsWith(`${source}/`)) {
+        if (isPathAtOrUnder(targetDir, source)) {
           failed++;
           continue;
         }
@@ -872,7 +873,7 @@ export function FileTree({
       e.preventDefault();
       e.dataTransfer.dropEffect = e.altKey ? "copy" : "move";
       // Don't allow dropping on self or on a child of the dragged item
-      if (dragSourcePath && (path === dragSourcePath || path.startsWith(dragSourcePath + "/"))) {
+      if (dragSourcePath && isPathAtOrUnder(path, dragSourcePath)) {
         return;
       }
       setDragOverPath(path);
@@ -909,11 +910,11 @@ export function FileTree({
       const sourcePath = e.dataTransfer.getData("text/plain") || dragSourcePathRef.current;
       dragSourcePathRef.current = null;
       setDragSourcePath(null);
-      if (!sourcePath || sourcePath === targetDirPath) return;
+      if (!sourcePath || isSamePath(sourcePath, targetDirPath)) return;
       // Don't drop into own subtree
-      if (targetDirPath.startsWith(sourcePath + "/")) return;
+      if (isPathUnder(targetDirPath, sourcePath)) return;
 
-      const fileName = sourcePath.substring(sourcePath.lastIndexOf("/") + 1);
+      const fileName = basenameOf(sourcePath);
 
       // Option/Alt+drag = copy, otherwise move
       if (e.altKey) {
@@ -1178,9 +1179,7 @@ export function FileTree({
     // for the root itself while returning a key for everything inside it,
     // which is precisely the distinction needed.
     disallowCreate:
-      node.type === 'directory' &&
-      syncRoot != null &&
-      node.path.replace(/[/\\]+$/, '') === syncRoot.replace(/[/\\]+$/, ''),
+      node.type === 'directory' && syncRoot != null && isSamePath(node.path, syncRoot),
     localizedName: localizedRootName(node, compactName),
     // Documents only. Knowledge is shared consensus — everyone on the team sees
     // the same thing — so it is never offered a restriction. That split is

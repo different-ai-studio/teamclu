@@ -6,6 +6,14 @@ import { ensureGitignoreEntries } from '@/lib/workspace/gitignore-manager'
 import { seedDefaultWorkspaceInstructions } from '@/lib/workspace-seed/seed-default-instructions'
 import { appDisplayName, appStoragePrefix } from '@/lib/config/build-config'
 import { TEAM_LINK_DIRS } from '@/lib/team/team-skill-paths'
+import {
+  isPathAtOrUnder,
+  isPathUnder,
+  isSamePath,
+  joinPathLike,
+  normalizePathForCompare,
+  relativePathUnder,
+} from '@/lib/fs-path'
 import { useTeamModeStore } from './team-mode'
 
 // Start watching a directory for file changes
@@ -296,11 +304,11 @@ function updateNodeChildren(
   children: FileNode[],
 ): FileNode[] {
   return nodes.map((node) => {
-    if (node.path === targetPath) {
+    if (isSamePath(node.path, targetPath)) {
       return { ...node, children: mergeLoadedChildren(node.children, children) };
     }
     // Only recurse into directories whose path is a prefix of targetPath
-    if (node.children && targetPath.startsWith(node.path + "/")) {
+    if (node.children && isPathUnder(targetPath, node.path)) {
       return {
         ...node,
         children: updateNodeChildren(node.children, targetPath, children),
@@ -322,17 +330,23 @@ const expandChain = new Map<string, Promise<void>>();
 /**
  * The registered external root that owns `path`, or null when the workspace
  * owns it. Prefix match on a path boundary so `/a/bc` never matches root `/a/b`.
+ *
+ * Separator-insensitive because the two sides are spelled differently on
+ * Windows: the root is the string the app built (`C:\Users\x` + `/.amuxd/...`)
+ * and `path` came back from Rust in all backslashes. Comparing them literally
+ * made every child of the team knowledge root belong to no tree, which is how
+ * that column came up empty on Windows with the files sitting right there.
  */
 function externalRootFor(roots: string[], path: string): string | null {
   for (const root of roots) {
-    if (path === root || path.startsWith(`${root}/`)) return root;
+    if (isPathAtOrUnder(path, root)) return root;
   }
   return null;
 }
 
 function findNodeByPath(nodes: FileNode[], path: string): FileNode | null {
   for (const node of nodes) {
-    if (node.path === path) return node;
+    if (isSamePath(node.path, path)) return node;
     if (node.children) {
       const child = findNodeByPath(node.children, path);
       if (child) return child;
@@ -409,7 +423,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       let allSuccess = true;
       for (const sourcePath of source.paths) {
         // Skip copy/move into self or own subtree
-        if (targetDir === sourcePath || targetDir.startsWith(sourcePath + '/')) continue;
+        if (isPathAtOrUnder(targetDir, sourcePath)) continue;
         const success =
           source.mode === "copy"
             ? await copyItem(sourcePath, targetDir)
@@ -702,7 +716,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             // The root itself holds no node of its own — its children ARE the
             // tree — so it merges directly instead of going through the tree walk.
             [externalRoot]:
-              path === externalRoot
+              isSamePath(path, externalRoot)
                 ? mergeLoadedChildren(currentExternal, children)
                 : updateNodeChildren(currentExternal, path, children),
           }
@@ -793,9 +807,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     const nextExpanded = new Set<string>();
     for (const path of get().expandedPaths) {
-      const underRoot = path === rootPath || path.startsWith(`${rootPath}/`);
+      const underRoot = isPathAtOrUnder(path, rootPath);
       // The root is the tree rather than a node in it, so it stays expanded.
-      if (!underRoot || path === rootPath || stillValid.has(path)) {
+      if (!underRoot || isSamePath(path, rootPath) || stillValid.has(path)) {
         nextExpanded.add(path);
       }
     }
@@ -818,7 +832,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     const nextExpanded = new Set<string>();
     for (const path of get().expandedPaths) {
-      if (path !== rootPath && !path.startsWith(`${rootPath}/`)) nextExpanded.add(path);
+      if (!isPathAtOrUnder(path, rootPath)) nextExpanded.add(path);
     }
 
     set({ externalTrees, expandedPaths: nextExpanded });
@@ -884,16 +898,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   // Reveal a file in the tree: expand all ancestor directories and set focus
   revealFile: async (path: string) => {
     const { workspacePath, expandDirectory } = get();
-    if (!workspacePath || !path.startsWith(workspacePath)) return;
+    if (!workspacePath) return;
+    const relativePath = relativePathUnder(path, workspacePath);
+    if (!relativePath) return;
 
-    // Build list of ancestor directories to expand
-    const relativePath = path.slice(workspacePath.length + 1);
+    // Build list of ancestor directories to expand. Joined the way the
+    // workspace path is spelled: these strings are matched against listed nodes
+    // and against `expandedPaths`, so a `/` joined onto a Windows path would
+    // expand a directory nothing on screen answers to.
     const segments = relativePath.split("/");
     let currentPath = workspacePath;
 
     // Expand each ancestor directory
     for (let i = 0; i < segments.length - 1; i++) {
-      currentPath = `${currentPath}/${segments[i]}`;
+      currentPath = joinPathLike(currentPath, segments[i]);
       await expandDirectory(currentPath);
     }
 
@@ -955,7 +973,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const ownerOf = (dir: string): string | null => {
       const external = externalRootFor(externalRoots, dir);
       if (external) return external;
-      if (workspacePath && (dir === workspacePath || dir.startsWith(`${workspacePath}/`))) {
+      if (workspacePath && isPathAtOrUnder(dir, workspacePath)) {
         return workspacePath;
       }
       return null;
@@ -970,7 +988,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     for (const dir of targets) {
       const external = externalRootFor(externalRoots, dir);
-      const isRoot = dir === (external ?? workspacePath);
+      const root = external ?? workspacePath;
+      const isRoot = root != null && isSamePath(dir, root);
       const tree = external ? (get().externalTrees[external] ?? []) : get().fileTree;
 
       if (!isRoot) {
@@ -1000,13 +1019,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     // Expansions whose directory vanished are dropped, as refreshFileTree does.
     // Roots stay: they are trees, not nodes in one.
-    const roots = new Set<string>([workspacePath ?? "", ...externalRoots]);
+    const roots = new Set<string>(
+      [workspacePath ?? "", ...externalRoots].map(normalizePathForCompare),
+    );
     const trees = [get().fileTree, ...Object.values(get().externalTrees)];
     const nextExpanded = new Set<string>();
     let pruned = false;
     for (const path of get().expandedPaths) {
-      const underTarget = targets.some((dir) => path.startsWith(`${dir}/`));
-      if (underTarget && !roots.has(path) && !trees.some((t) => findNodeByPath(t, path))) {
+      const underTarget = targets.some((dir) => isPathUnder(path, dir));
+      const isRoot = roots.has(normalizePathForCompare(path));
+      if (underTarget && !isRoot && !trees.some((t) => findNodeByPath(t, path))) {
         pruned = true;
         continue;
       }
