@@ -6,6 +6,7 @@ import { normalizeUrl, urlToLabel } from "@/lib/ui/webview-utils"
 import { useTabsStore } from "@/stores/tabs"
 import { useCurrentTeamStore } from "@/stores/current-team"
 import { adminSsoInjectionFor } from "@/lib/extension/admin-sso-inject"
+import { hideNativeWebview } from "@/lib/ui/webview-hide"
 
 interface WebViewContentProps {
   url: string
@@ -15,6 +16,22 @@ interface WebViewContentProps {
 const createdWebviews = new Set<string>()
 // Track webviews whose tabs were closed — need URL reset when reopened
 const needsUrlReset = new Set<string>()
+
+/**
+ * Take the webview off screen and keep the two sets above honest.
+ *
+ * A hide that never answers ends in a close (see `hideNativeWebview`), and a
+ * closed webview no longer exists — so it must leave `createdWebviews`, or the
+ * next open would try to show something that is gone instead of creating it.
+ */
+async function takeWebviewOffScreen(label: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core")
+  const outcome = await hideNativeWebview(invoke, label)
+  if (outcome === "hidden") return
+  console.warn(`[WebView] hide did not confirm for ${label}; ${outcome}`)
+  createdWebviews.delete(label)
+  needsUrlReset.delete(label)
+}
 
 // Subscribe to tab store to hide native webviews when their tabs are closed
 let tabCleanupInitialized = false
@@ -38,9 +55,7 @@ function initTabCleanup() {
         // Hide instead of close to preserve login/session state.
         // Mark for URL reset so reopening navigates to the original URL.
         needsUrlReset.add(label)
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("webview_hide", { label }).catch(() => {})
-        })
+        void takeWebviewOffScreen(label)
       }
     }
 
@@ -170,12 +185,27 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
               authSessionJson: authInject?.sessionJson,
             })
 
+            // Registered the moment it exists, mounted or not: this set is the
+            // only handle anything has on the native webview, and a create that
+            // finished after the switch away used to leave one nothing could
+            // find — or hide.
+            createdWebviews.add(label)
             if (!cancelled) {
-              createdWebviews.add(label)
               setTimeout(() => {
                 if (!cancelled) setIsLoading(false)
               }, 1500)
             }
+          }
+
+          // The view can change during any await above. The cleanup that ran
+          // back then found nothing to hide — the webview did not exist yet —
+          // and nothing else will come looking. A native webview is not part
+          // of the React tree: left showing, it sits on top of whatever the
+          // user switched to (the white page over the session) until the app
+          // restarts.
+          if (cancelled) {
+            await takeWebviewOffScreen(label)
+            return
           }
 
           // Record initial bounds
@@ -206,9 +236,7 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
       if (resizeTimer) clearTimeout(resizeTimer)
       // Hide (don't close) the native webview when switching away
       if (createdWebviews.has(label)) {
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("webview_hide", { label }).catch(() => {})
-        })
+        void takeWebviewOffScreen(label)
       }
     }
   }, [url, label, updateBounds])

@@ -113,6 +113,47 @@ describe("WebViewContent", () => {
     })
   })
 
+  /**
+   * What the user sees, modelled: a native webview is either on screen or it
+   * is not. Counting invocations cannot tell a leftover webview from a busy
+   * one — this can.
+   */
+  function trackVisibility(pending: Record<string, Promise<void>> = {}) {
+    // Commands take effect natively in the order they are invoked, so the flag
+    // flips on invocation, not on the promise settling.
+    const state = { shown: false }
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "webview_create" || command === "webview_show") state.shown = true
+      if (command === "webview_hide" || command === "webview_close") state.shown = false
+      if (command === "get_device_hostname") return Promise.resolve("matts-mac")
+      return pending[command] ?? Promise.resolve()
+    })
+    return state
+  }
+
+  it("does not leave a webview on screen when creation lands after the switch away", async () => {
+    // The white rectangle over the session pane: switching views while the
+    // native webview was still being created ran the cleanup too early — the
+    // webview did not exist yet, so there was nothing to hide — and the create
+    // then finished with nobody left to hide it. A native webview left showing
+    // sits on top of whatever the user switched to, for the rest of the run.
+    let finishCreate = () => {}
+    const creating = new Promise<void>((resolve) => {
+      finishCreate = resolve
+    })
+    const native = trackVisibility({ webview_create: creating })
+
+    const view = render(<WebViewContent url="https://example.test/slow-create" />)
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("webview_create", expect.anything())
+    })
+
+    view.unmount()
+    finishCreate()
+
+    await waitFor(() => expect(native.shown).toBe(false))
+  })
+
   it("still creates the webview when get_device_hostname fails (does not gate on name)", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "webview_set_bounds") return Promise.resolve()

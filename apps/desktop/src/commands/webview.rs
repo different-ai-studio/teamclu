@@ -854,12 +854,48 @@ pub async fn webview_close(
     Ok(())
 }
 
+/// Where a hidden webview is parked: far outside any real window, so the window
+/// clips it away whatever its hidden flag ends up being.
+const PARKED_ORIGIN: f64 = -20000.0;
+
 /// Hide a native webview (keeps it alive, no reload on show).
+///
+/// Parked out of the window first, then hidden. `hide()` alone has been watched
+/// to fail in the field: the command runs, tauri and wry report no error, and
+/// the webview stays painted over whatever the user switched to — a white
+/// rectangle covering a session, with nothing in the UI able to reach it,
+/// because a native child webview is not part of the page. Moving it out of the
+/// window does not depend on the hidden flag landing. Every `webview_show` and
+/// every `webview_set_bounds` sets position and size before anything is
+/// visible, so the parking spot is always undone before it could be seen.
+///
+/// The bounds afterwards go in the log, and they are what tells the two
+/// remaining stories apart next time: bounds that report the parked origin mean
+/// the webview obeyed and anything still on screen is not this webview; bounds
+/// that report the old position mean the call never reached it.
 #[tauri::command]
 pub async fn webview_hide(app: tauri::AppHandle, label: String) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
-        log::info!("[Webview] Hiding: {}", label);
-        let _ = webview.hide();
+    match app.get_webview(&label) {
+        Some(webview) => {
+            log::info!("[Webview] Hiding: {}", label);
+            // Hide first, park second. The hide is the part that must happen;
+            // the park is insurance. A `webview_hide` has been watched to stop
+            // dead partway through its body, so whichever call is the one that
+            // dies, the important one has already gone out.
+            if let Err(err) = webview.hide() {
+                log::error!("[Webview] Hide refused for {}: {}", label, err);
+            }
+            if let Err(err) =
+                webview.set_position(tauri::LogicalPosition::new(PARKED_ORIGIN, PARKED_ORIGIN))
+            {
+                log::error!("[Webview] Parking refused for {}: {}", label, err);
+            }
+            match webview.position() {
+                Ok(position) => log::info!("[Webview] Hidden {} now at {:?}", label, position),
+                Err(err) => log::warn!("[Webview] Could not read {} bounds: {}", label, err),
+            }
+        }
+        None => log::warn!("[Webview] Hide found no webview labelled {}", label),
     }
     Ok(())
 }
@@ -874,12 +910,24 @@ pub async fn webview_show(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
-        log::info!("[Webview] Showing: {}", label);
-        let _ = webview.set_position(tauri::LogicalPosition::new(x, y));
-        let _ = webview.set_size(tauri::LogicalSize::new(width, height));
-        let _ = webview.show();
-        let _ = webview.set_focus();
+    match app.get_webview(&label) {
+        Some(webview) => {
+            log::info!(
+                "[Webview] Showing: {} at ({},{}) {}x{}",
+                label,
+                x,
+                y,
+                width,
+                height
+            );
+            let _ = webview.set_position(tauri::LogicalPosition::new(x, y));
+            let _ = webview.set_size(tauri::LogicalSize::new(width, height));
+            if let Err(err) = webview.show() {
+                log::error!("[Webview] Show refused for {}: {}", label, err);
+            }
+            let _ = webview.set_focus();
+        }
+        None => log::warn!("[Webview] Show found no webview labelled {}", label),
     }
     Ok(())
 }
@@ -949,86 +997,89 @@ pub async fn webview_navigate(
     Ok(())
 }
 
-thread_local! {
-    /// Set while wry's expected "URL is nil" panic is being caught on this
-    /// thread, so the hook installed by [`silence_expected_panic`] can skip it.
-    static EXPECTED_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// The panic hook is global, but "this panic is expected" only holds for the
-/// thread running the query — hence the thread-local flag above. Installed once
-/// and chained behind whatever hook is already there (Sentry's, from
-/// `main.rs`), so genuine panics still report exactly as before.
-static EXPECTED_PANIC_HOOK: std::sync::Once = std::sync::Once::new();
-
-/// Silences panic output for the current thread until the returned guard drops.
-fn silence_expected_panic() -> ExpectedPanicGuard {
-    EXPECTED_PANIC_HOOK.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if !EXPECTED_PANIC.with(|flag| flag.get()) {
-                previous(info);
-            }
-        }));
-    });
-    EXPECTED_PANIC.with(|flag| flag.set(true));
-    ExpectedPanicGuard
-}
-
-/// Clears [`EXPECTED_PANIC`] on drop, including when the guarded block unwinds.
-struct ExpectedPanicGuard;
-
-impl Drop for ExpectedPanicGuard {
-    fn drop(&mut self) {
-        EXPECTED_PANIC.with(|flag| flag.set(false));
-    }
-}
-
-/// Read a webview's current URL, returning `Err` instead of panicking when the
-/// webview has not committed a navigation yet.
+/// Read a webview's current URL, returning `Err` when the webview has not
+/// committed a navigation yet.
 ///
-/// `tauri::Webview::url()` lands in wry's `url_from_webview`, which does
-/// `webview.URL().unwrap()` (wry 0.55.1, `wkwebview/mod.rs`). `WKWebView.URL` is
-/// nil until a navigation commits, so the getter panics rather than returning an
-/// error, and 0.55.1 gives us no way to avoid it (upstream wry#1752).
+/// **Do not reach for `tauri::Webview::url()` here.** It lands in wry's
+/// `url_from_webview`, which is `webview.URL().unwrap()` (wry 0.55.1,
+/// `wkwebview/mod.rs:1349`), and `WKWebView.URL` is nil until a navigation
+/// commits — so it panics instead of returning an error (upstream wry#1752).
 ///
-/// Catching only helps if the catch encloses the panic, and `webview.url()` does
-/// not necessarily run on the calling thread: tauri-runtime-wry's
-/// `send_user_message` runs the getter inline only when the caller is already on
-/// the main thread, and otherwise posts it to the event loop and blocks on a
-/// channel. Every `#[tauri::command] async fn` body runs on tauri's tokio
-/// runtime, so a `catch_unwind` there lets the panic unwind out of the main
-/// event loop and take the process with it. Marshal the query onto the main
-/// thread first, then catch it there.
+/// Catching that panic is not enough, and marshalling the call onto the main
+/// thread to catch it is what caused the bug this function now avoids.
+/// `WebviewDispatcher::url()` expands to
 ///
-/// `WebViewToolbar.tsx` polls `webview_get_url` / `webview_get_favicon` every 2s
-/// starting 2s after a webview is created, which is well inside the window a slow
-/// page can still have no committed navigation, so this is a live path.
+/// ```text
+/// send_user_message(&ctx, Message::Webview(*self.window_id.lock().unwrap(), ..))?;
+/// ```
+///
+/// where the `MutexGuard` temporary lives until the end of the statement. On
+/// the main thread `send_user_message` runs the handler inline, so the nil
+/// unwrap panics *inside the guard's scope* and poisons that webview's
+/// `Mutex<WindowId>` permanently. Every later `hide()` / `close()` /
+/// `set_position()` then panics at its own `.lock().unwrap()` before doing
+/// anything — which is how a page that failed to load used to leave a white
+/// rectangle on top of the app until restart.
+///
+/// So read `WKWebView.URL` directly and treat nil as "not committed", the same
+/// way [`webview_get_title`] reads the title. Nothing panics, nothing to
+/// poison. Windows (`ICoreWebView2::get_Source`) and WebKitGTK
+/// (`uri().unwrap_or_default()`) both return a value rather than unwrapping a
+/// missing one, so the dispatcher getter stays fine there.
+///
+/// `WebViewToolbar.tsx` polls `webview_get_url` every 2s starting 2s after a
+/// webview is created, so this runs against pages that have not committed yet
+/// as a matter of course.
 pub(crate) fn webview_url_safe<R: tauri::Runtime>(
     webview: &tauri::Webview<R>,
 ) -> Result<tauri::Url, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let query = webview.clone();
-    webview
-        .run_on_main_thread(move || {
-            let _ = tx.send(catch_url_query(&query));
-        })
-        .map_err(|error| format!("failed to reach the main thread: {error}"))?;
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
 
-    rx.recv()
-        .map_err(|_| "the webview URL query never ran".to_string())?
-}
+        webview
+            .with_webview(move |wv| {
+                use objc2::msg_send;
+                use objc2::runtime::AnyObject;
+                // Nil-checked at every hop: `URL` is nil before the first
+                // commit, and `absoluteString` is nil for a URL that cannot be
+                // rendered as one.
+                let url = unsafe {
+                    let wk_webview: *const AnyObject = wv.inner().cast();
+                    let ns_url: *const AnyObject = msg_send![wk_webview, URL];
+                    if ns_url.is_null() {
+                        None
+                    } else {
+                        let ns_string: *const AnyObject = msg_send![ns_url, absoluteString];
+                        if ns_string.is_null() {
+                            None
+                        } else {
+                            let utf8: *const std::ffi::c_char = msg_send![ns_string, UTF8String];
+                            if utf8.is_null() {
+                                None
+                            } else {
+                                Some(std::ffi::CStr::from_ptr(utf8).to_string_lossy().to_string())
+                            }
+                        }
+                    }
+                };
+                let _ = tx.send(url);
+            })
+            .map_err(|error| format!("failed to reach the webview: {error}"))?;
 
-/// Main-thread half of [`webview_url_safe`]: the panic catcher has to share a
-/// stack frame with the getter.
-fn catch_url_query<R: tauri::Runtime>(webview: &tauri::Webview<R>) -> Result<tauri::Url, String> {
-    // Losing the URL is how we learn the navigation has not committed yet, so
-    // keep the panic out of the log and out of Sentry — otherwise a webview that
-    // never commits files an "error" every time the toolbar polls it.
-    let _silence = silence_expected_panic();
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| webview.url()))
-        .map_err(|_| "webview has not committed a navigation yet".to_string())?
-        .map_err(|error| error.to_string())
+        // `with_webview` dispatches to the main thread; wait for the answer.
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "the webview URL query never ran".to_string())?
+            .ok_or_else(|| "webview has not committed a navigation yet".to_string())?;
+
+        raw.parse::<tauri::Url>().map_err(|error| error.to_string())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        webview.url().map_err(|error| error.to_string())
+    }
 }
 
 /// Get the current URL of the webview.
@@ -1480,27 +1531,5 @@ mod identity_origin_tests {
             "https://a.b:8443"
         );
         assert_eq!(origin_key(&url("https://a.b/p")), "https://a.b");
-    }
-}
-
-#[cfg(test)]
-mod expected_panic_tests {
-    use super::*;
-
-    #[test]
-    fn guard_silences_the_panic_and_clears_the_flag() {
-        assert!(!EXPECTED_PANIC.with(|flag| flag.get()));
-
-        {
-            let _silence = silence_expected_panic();
-            assert!(EXPECTED_PANIC.with(|flag| flag.get()));
-            // The hook is supposed to swallow this one, so a clean test log is
-            // part of the assertion — if the guard stopped working, the panic
-            // message would show up here.
-            let caught = std::panic::catch_unwind(|| panic!("expected nil URL"));
-            assert!(caught.is_err());
-        }
-
-        assert!(!EXPECTED_PANIC.with(|flag| flag.get()));
     }
 }
