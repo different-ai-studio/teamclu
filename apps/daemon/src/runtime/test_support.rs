@@ -16,6 +16,8 @@ pub(crate) struct CapturedAttach {
     pub(crate) process_env_revision: ProcessEnvRevision,
     pub(crate) extra_env: HashMap<String, String>,
     pub(crate) permission: PermissionPolicy,
+    /// The backend session asked to be resumed; `None` for a fresh one.
+    pub(crate) resume_acp_session_id: Option<String>,
 }
 
 struct CapturingBackend {
@@ -33,7 +35,7 @@ impl AgentBackend for CapturingBackend {
         extra_env: HashMap<String, String>,
         _force_env_override: bool,
         worktree: String,
-        _resume_acp_session_id: Option<String>,
+        resume_acp_session_id: Option<String>,
         _mcp_config_path: Option<PathBuf>,
         _initial_model_override: Option<String>,
         _model_mru: Vec<String>,
@@ -49,6 +51,7 @@ impl AgentBackend for CapturingBackend {
             process_env_revision,
             extra_env,
             permission,
+            resume_acp_session_id,
         });
         let (tx, _rx) = mpsc::channel(1);
         Ok((

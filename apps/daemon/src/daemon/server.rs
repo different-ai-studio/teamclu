@@ -258,6 +258,13 @@ pub struct DaemonServer {
     chat_decision_tx: mpsc::Sender<crate::channels::approvals::ChatDecision>,
     /// Receiver half, `take()`n by whichever run loop is active.
     chat_decision_rx: Option<mpsc::Receiver<crate::channels::approvals::ChatDecision>>,
+    /// A chat with no live runtime resuming its stored session, or recording
+    /// the one it spawned. Served on the run loop because that is where the
+    /// bindings live and where a desktop message resumes the same session —
+    /// see `serve_cold_attach`.
+    cold_attach_tx: mpsc::Sender<crate::channels::ColdAttach>,
+    /// Receiver half, `take()`n by whichever run loop is active.
+    cold_attach_rx: Option<mpsc::Receiver<crate::channels::ColdAttach>>,
 }
 
 /// Single control command parsed off `amuxd.sock`. Variants correspond to the
@@ -777,6 +784,7 @@ impl DaemonServer {
         // backpressure to the turn.
         let (cron_turn_event_tx, cron_turn_event_rx) = mpsc::channel(1024);
         let (chat_decision_tx, chat_decision_rx) = mpsc::channel(16);
+        let (cold_attach_tx, cold_attach_rx) = mpsc::channel(16);
 
         let team_skill_reconciler = Arc::new(
             crate::runtime::team_skills::TeamSkillReconciler::new(backend.clone()),
@@ -840,6 +848,8 @@ impl DaemonServer {
             cron_turn_event_rx: Some(cron_turn_event_rx),
             chat_decision_tx,
             chat_decision_rx: Some(chat_decision_rx),
+            cold_attach_tx,
+            cold_attach_rx: Some(cold_attach_rx),
         })
     }
 
@@ -1711,6 +1721,10 @@ impl DaemonServer {
             .chat_decision_rx
             .take()
             .expect("chat_decision_rx already taken (MQTT run loop entered twice)");
+        let mut cold_attach_rx = self
+            .cold_attach_rx
+            .take()
+            .expect("cold_attach_rx already taken (MQTT run loop entered twice)");
 
         'outer: loop {
             // ── 0. Self-heal team_id from daemon.toml ──
@@ -2148,6 +2162,12 @@ impl DaemonServer {
                             self.settle_chat_decision(decision).await;
                         }
                     }
+                    request = cold_attach_rx.recv() => {
+                        // A chat turn with no live runtime.
+                        if let Some(request) = request {
+                            self.serve_cold_attach(request).await;
+                        }
+                    }
                     event = mqtt_supervisor.events.recv() => {
                         match event {
                             Some(MqttSupervisorEvent::TransportConnected { generation, worker_generation }) => {
@@ -2326,6 +2346,10 @@ impl DaemonServer {
             .chat_decision_rx
             .take()
             .expect("chat_decision_rx already taken (NATS run loop entered twice)");
+        let mut cold_attach_rx = self
+            .cold_attach_rx
+            .take()
+            .expect("cold_attach_rx already taken (NATS run loop entered twice)");
 
         'outer: loop {
             // 1. Fresh backend access_token; same retry cadence as MQTT path.
@@ -2615,6 +2639,13 @@ impl DaemonServer {
                         // arm in the MQTT loop.
                         if let Some(decision) = decision {
                             self.settle_chat_decision(decision).await;
+                        }
+                    }
+                    request = cold_attach_rx.recv() => {
+                        // A chat turn with no live runtime. See the matching
+                        // arm in the MQTT loop.
+                        if let Some(request) = request {
+                            self.serve_cold_attach(request).await;
                         }
                     }
                     frame = inbound.recv() => {
@@ -4081,6 +4112,7 @@ pub(crate) mod tests {
         let (cron_turn_done_tx, cron_turn_done_rx) = mpsc::channel(64);
         let (cron_turn_event_tx, cron_turn_event_rx) = mpsc::channel(1024);
         let (chat_decision_tx, chat_decision_rx) = mpsc::channel(16);
+        let (cold_attach_tx, cold_attach_rx) = mpsc::channel(16);
         TestServer {
             server: DaemonServer {
                 config,
@@ -4145,6 +4177,8 @@ pub(crate) mod tests {
                 cron_turn_event_rx: Some(cron_turn_event_rx),
                 chat_decision_tx,
                 chat_decision_rx: Some(chat_decision_rx),
+                cold_attach_tx,
+                cold_attach_rx: Some(cold_attach_rx),
             },
             _tmp: tmp,
             _mqtt_eventloop: mqtt.eventloop,
