@@ -62,6 +62,7 @@ import { useEnvVarsStore } from '@/stores/env-vars'
 import { FileBrowser } from '@/components/workspace/FileBrowser'
 import { TeamDirInitPanel } from '@/components/teamshare/TeamDirInitPanel'
 import { scaffoldKnowledgeVault } from '@/lib/knowledge/scaffold-client'
+import { isPathUnder } from '@/lib/fs-path'
 import { isKnowledgeVaultEmpty } from '@/lib/knowledge/is-knowledge-vault-empty'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
@@ -595,7 +596,11 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
     },
     500,
     section === 'knowledge' && !!syncRoot,
-    (event) => !!syncRoot && event.payload.path.startsWith(`${syncRoot}/`),
+    // The watcher reports what Rust walked, which on Windows is spelled with
+    // backslashes while `syncRoot` was built with `/`. A literal prefix test
+    // there matches nothing, and a teammate's arriving note never refreshes
+    // this column.
+    (event) => !!syncRoot && isPathUnder(event.payload.path, syncRoot),
   )
 
   // Reload after any successful cloud sync, ours or another surface's.

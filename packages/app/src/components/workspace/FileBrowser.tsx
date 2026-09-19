@@ -5,7 +5,13 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { cn } from '@/lib/utils'
-import { basenameOf, isSamePath, joinPathLike, relativePathUnder } from '@/lib/fs-path'
+import {
+  basenameOf,
+  isPathAtOrUnder,
+  isSamePath,
+  joinPathLike,
+  relativePathUnder,
+} from '@/lib/fs-path'
 import { useFileChangeBatchListener } from '@/hooks/use-file-change-batch-listener'
 import { useWorkspaceStore, type FileNode } from '@/stores/workspace'
 import { ScrollBar } from '@/components/ui/scroll-area'
@@ -94,7 +100,7 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
     !!singleRootPath &&
     !(
       workspacePath &&
-      (singleRootPath === workspacePath || singleRootPath.startsWith(`${workspacePath}/`))
+      isPathAtOrUnder(singleRootPath, workspacePath)
     )
 
   // Team sync has no surface here any more — neither the "sync now" button nor
@@ -206,9 +212,7 @@ export function FileBrowser({ className, variant = 'default', rootPath, rootPath
   useFileChangeBatchListener(
     (batch) => {
       if (!rootPath) return
-      const inside = batch.directories.filter(
-        (dir) => dir === rootPath || dir.startsWith(`${rootPath}/`),
-      )
+      const inside = batch.directories.filter((dir) => isPathAtOrUnder(dir, rootPath))
       if (inside.length > 0) void refreshChangedDirectories(inside)
     },
     isExternalRoot,
