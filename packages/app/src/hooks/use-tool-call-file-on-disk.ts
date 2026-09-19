@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { isPathAtOrUnder, isPathUnder } from "@/lib/fs-path";
 import { isTauri } from "@/lib/utils";
 
 /** Resolve a tool file argument to an absolute path when possible. */
@@ -55,10 +56,7 @@ export function useToolCallFileOnDisk(
           "file-change-batch",
           (event) => {
             const touched = event.payload.paths.some(
-              (p) =>
-                p === absolutePath ||
-                absolutePath.startsWith(`${p}/`) ||
-                p.startsWith(`${absolutePath}/`),
+              (p) => isPathAtOrUnder(absolutePath, p) || isPathUnder(p, absolutePath),
             );
             if (touched) void check();
           },
