@@ -641,6 +641,7 @@ pub fn run() {
             commands::webview::webview_navigate,
             commands::webview::webview_get_url,
             commands::webview::webview_get_title,
+            commands::webview::webview_check_load,
             commands::webview::webview_read_local_storage,
             commands::webview::webview_get_favicon,
             commands::webview::webview_find_in_page,

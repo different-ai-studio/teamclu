@@ -148,11 +148,12 @@ describe("WebViewContent", () => {
     // flips on invocation, not on the promise settling. `webview_create` is
     // deliberately absent: a webview is born parked off-window and only
     // `webview_show` puts it in front of the user.
-    const state = { shown: false }
+    const state = { shown: false, verdict: { state: "loaded", reason: null as string | null } }
     invokeMock.mockImplementation((command: string) => {
       if (command === "webview_show") state.shown = true
       if (command === "webview_hide" || command === "webview_close") state.shown = false
       if (command === "get_device_hostname") return Promise.resolve("matts-mac")
+      if (command === "webview_check_load") return Promise.resolve(state.verdict)
       return pending[command] ?? Promise.resolve()
     })
     return state
@@ -287,6 +288,45 @@ describe("WebViewContent", () => {
       expect(view.getByText(i18n.t("webview.loadFailed"))).toBeTruthy()
     })
     expect(native.shown).toBe(false)
+  })
+
+  it("does not put a webview that never loaded back on screen when you return to its tab", async () => {
+    // The verdict is delivered once, seconds after the webview is created. Come
+    // back to the tab later and the frontend has to ask again — showing it on
+    // faith is how the blank webview went back up over the app.
+    const native = trackVisibility()
+    const pageUrl = "https://example.test/still-dead-on-return"
+
+    const first = render(<WebViewContent url={pageUrl} />)
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("webview_create", expect.anything())
+    })
+    first.unmount()
+
+    // Switching back: the webview exists now, and it is still broken.
+    native.verdict = { state: "failed", reason: "Host 'localhost' is not reachable" }
+    const second = render(<WebViewContent url={pageUrl} />)
+
+    await waitFor(() => {
+      expect(second.getByText("Host 'localhost' is not reachable")).toBeTruthy()
+    })
+    expect(native.shown).toBe(false)
+  })
+
+  it("puts a webview that did load straight back on screen", async () => {
+    const native = trackVisibility()
+    const pageUrl = "https://example.test/loads-fine-on-return"
+
+    const first = render(<WebViewContent url={pageUrl} />)
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("webview_create", expect.anything())
+    })
+    first.unmount()
+
+    native.verdict = { state: "loaded", reason: null }
+    render(<WebViewContent url={pageUrl} />)
+
+    await waitFor(() => expect(native.shown).toBe(true))
   })
 
   it("ignores events addressed to a different webview", async () => {

@@ -845,10 +845,11 @@ pub async fn webview_create(
 /// before we work out whether it is slow or dead.
 ///
 /// Long enough that an ordinary slow page is not accused of failing — WKWebView
-/// commits as soon as response headers arrive, so five seconds of nothing is
+/// commits as soon as response headers arrive, so three seconds of nothing is
 /// already a bad sign — and short enough that a user staring at an empty pane
-/// gets told what happened.
-const LOAD_WATCHDOG_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// gets told what happened. Matches `WEBVIEW_PREFLIGHT_TIMEOUT`, the budget the
+/// pre-flight probe already gives an origin to answer.
+const LOAD_WATCHDOG_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What the watchdog concluded about a webview once [`LOAD_WATCHDOG_DELAY`] passed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -935,6 +936,37 @@ fn webview_is_loading<R: tauri::Runtime>(webview: &tauri::Webview<R>) -> Option<
 /// a proxy this probe reaches the proxy rather than the origin.
 async fn describe_load_failure(url: &tauri::Url) -> Option<String> {
     ensure_http_url_reachable_async(url).await.err()
+}
+
+/// The same verdict, asked for on demand rather than waited out.
+///
+/// [`spawn_load_watchdog`] rules once, moments after a webview is created. A
+/// webview outlives that: its tab is switched away from and come back to, and
+/// the frontend then has to decide all over again whether to put it on screen.
+/// Without this it could only guess, and guessing "show it" is how a webview
+/// that never loaded went back up as a white rectangle.
+#[tauri::command]
+pub async fn webview_check_load(
+    app: tauri::AppHandle,
+    label: String,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "Webview not found".to_string())?;
+
+    let committed = webview_url_safe(&webview).is_ok();
+    let verdict = load_verdict(committed, webview_is_loading(&webview));
+
+    // `url` comes from the caller because a webview that failed has none to
+    // read back — that is what failing means here — and it is only ever used to
+    // phrase the message.
+    let reason = match (&verdict, url.parse::<tauri::Url>()) {
+        (LoadVerdict::Failed, Ok(url)) => describe_load_failure(&url).await,
+        _ => None,
+    };
+
+    Ok(serde_json::json!({ "state": verdict.as_state(), "reason": reason }))
 }
 
 /// Tell the frontend, once, whether a newly created webview actually loaded.

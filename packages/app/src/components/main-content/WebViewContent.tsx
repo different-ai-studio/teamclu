@@ -163,7 +163,30 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
           const alreadyExists = createdWebviews.has(label)
 
           if (alreadyExists) {
-            // Webview already exists — show and reposition
+            // Webview already exists. Whether it may go on screen is not a
+            // given: the backend's verdict was delivered once, seconds after
+            // this webview was created, and the user has since switched away
+            // and come back. Showing it regardless is how a webview that never
+            // loaded went back up as a white rectangle.
+            const verdict = await invoke<{ state: string; reason: string | null }>(
+              "webview_check_load",
+              { label, url },
+            ).catch(() => ({ state: "loaded", reason: null }))
+            if (cancelled) return
+
+            if (verdict.state === "failed") {
+              setIsLoading(false)
+              setError(verdict.reason || t("webview.loadFailed", "Failed to load page"))
+              return // stays parked, so the message is visible
+            }
+
+            if (verdict.state === "slow") {
+              // Still fetching. Leave it parked and let the commit fetch it;
+              // on screen now it would be blank.
+              setIsLoading(true)
+              return
+            }
+
             setIsLoading(false)
 
             // If tab was closed and reopened, navigate back to the original URL
@@ -272,7 +295,7 @@ export function WebViewContent({ url: rawUrl }: WebViewContentProps) {
         void takeWebviewOffScreen(label)
       }
     }
-  }, [url, label, updateBounds])
+  }, [url, label, updateBounds, t])
 
   // Bring the parked webview on screen, or say why it never will.
   //
