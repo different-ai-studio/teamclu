@@ -659,6 +659,10 @@ pub async fn webview_create(
     let identity_origin = identity_injection_origin(&parsed_url, auth_inject_script.is_some());
 
     #[allow(unused_mut)]
+    // Kept for the load watchdog below, which re-probes this URL if the page
+    // never commits.
+    let watched_url = parsed_url.clone();
+
     let mut webview_builder =
         tauri::webview::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed_url))
             .user_agent(WEBVIEW_UA);
@@ -805,10 +809,17 @@ pub async fn webview_create(
         webview_builder = webview_builder.initialization_script(script);
     }
 
+    // Born parked, not on screen. A WKWebView paints white from the moment it
+    // exists, and a native child webview draws above every DOM node — so a
+    // webview placed at its real position is a white rectangle covering the app
+    // until the page paints, and forever if the page never loads. It comes on
+    // screen in `webview_show`, once the frontend has heard the page commit or
+    // heard this webview's verdict (see `spawn_load_watchdog`). Size is real
+    // from the start so the page lays out against the right viewport.
     let webview = window
         .add_child(
             webview_builder,
-            tauri::LogicalPosition::new(x, y),
+            tauri::LogicalPosition::new(PARKED_ORIGIN, PARKED_ORIGIN),
             tauri::LogicalSize::new(width, height),
         )
         .map_err(|e| format!("Failed to create webview: {}", e))?;
@@ -824,7 +835,193 @@ pub async fn webview_create(
         .insert(label.clone(), ());
 
     log::info!("[Webview] Created successfully: {}", label);
+
+    spawn_load_watchdog(app.clone(), label.clone(), watched_url);
+
     Ok(())
+}
+
+/// How long a freshly created webview may go without committing a navigation
+/// before we work out whether it is slow or dead.
+///
+/// Long enough that an ordinary slow page is not accused of failing — WKWebView
+/// commits as soon as response headers arrive, so three seconds of nothing is
+/// already a bad sign — and short enough that a user staring at an empty pane
+/// gets told what happened. Matches `WEBVIEW_PREFLIGHT_TIMEOUT`, the budget the
+/// pre-flight probe already gives an origin to answer.
+const LOAD_WATCHDOG_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What the watchdog concluded about a webview once [`LOAD_WATCHDOG_DELAY`] passed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LoadVerdict {
+    /// The page committed. Normal.
+    Loaded,
+    /// Nothing committed and the webview has stopped trying: the load failed,
+    /// and the user is looking at an empty pane that will stay empty.
+    Failed,
+    /// Nothing committed yet, but the webview is still loading. Show it and let
+    /// it finish.
+    Slow,
+}
+
+impl LoadVerdict {
+    fn as_state(&self) -> &'static str {
+        match self {
+            LoadVerdict::Loaded => "loaded",
+            LoadVerdict::Failed => "failed",
+            LoadVerdict::Slow => "slow",
+        }
+    }
+}
+
+/// Decide what a webview's state means, from two things the webview itself
+/// knows: whether it committed a navigation, and whether it is still loading.
+///
+/// Deliberately **not** a network probe. The obvious design — re-run
+/// `ensure_http_url_reachable_async` and call an unreachable URL a failure —
+/// is wrong behind an HTTP proxy, and reqwest reads proxy environment
+/// variables: a dead origin then answers the probe with the proxy's own 502,
+/// which `ensure_http_url_reachable_async` counts as reachable ("any status
+/// code is fine" is the right policy for a pre-flight veto, and the wrong one
+/// here). Measured on a dev machine whose shell had a proxy configured: a
+/// server that RSTs every page request was still ruled reachable.
+///
+/// `isLoading` has no such problem. It is the webview's own answer about the
+/// navigation we are actually asking about.
+///
+/// `still_loading` is `None` where we cannot ask — everywhere but macOS. There
+/// we never accuse: WebView2 and WebKitGTK render their own error pages for a
+/// failed load, so an empty pane with no explanation is a macOS problem.
+fn load_verdict(committed: bool, still_loading: Option<bool>) -> LoadVerdict {
+    if committed {
+        return LoadVerdict::Loaded;
+    }
+    match still_loading {
+        Some(false) => LoadVerdict::Failed,
+        Some(true) | None => LoadVerdict::Slow,
+    }
+}
+
+/// Ask a webview whether it is still loading. `None` where we cannot ask.
+fn webview_is_loading<R: tauri::Runtime>(webview: &tauri::Webview<R>) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        webview
+            .with_webview(move |wv| {
+                use objc2::msg_send;
+                use objc2::runtime::AnyObject;
+                let loading: bool = unsafe {
+                    let wk_webview: *const AnyObject = wv.inner().cast();
+                    msg_send![wk_webview, isLoading]
+                };
+                let _ = tx.send(loading);
+            })
+            .ok()?;
+        rx.recv_timeout(std::time::Duration::from_secs(2)).ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = webview;
+        None
+    }
+}
+
+/// Describe a failure in the words the user already sees elsewhere, or `None`
+/// when the probe has nothing to add and the frontend should use its own
+/// translated wording.
+///
+/// Only ever called once [`load_verdict`] has decided the load failed, so this
+/// cannot cause a false accusation. It often *will* have nothing to add: behind
+/// a proxy this probe reaches the proxy rather than the origin.
+async fn describe_load_failure(url: &tauri::Url) -> Option<String> {
+    ensure_http_url_reachable_async(url).await.err()
+}
+
+/// The same verdict, asked for on demand rather than waited out.
+///
+/// [`spawn_load_watchdog`] rules once, moments after a webview is created. A
+/// webview outlives that: its tab is switched away from and come back to, and
+/// the frontend then has to decide all over again whether to put it on screen.
+/// Without this it could only guess, and guessing "show it" is how a webview
+/// that never loaded went back up as a white rectangle.
+#[tauri::command]
+pub async fn webview_check_load(
+    app: tauri::AppHandle,
+    label: String,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "Webview not found".to_string())?;
+
+    let committed = webview_url_safe(&webview).is_ok();
+    let verdict = load_verdict(committed, webview_is_loading(&webview));
+
+    // `url` comes from the caller because a webview that failed has none to
+    // read back — that is what failing means here — and it is only ever used to
+    // phrase the message.
+    let reason = match (&verdict, url.parse::<tauri::Url>()) {
+        (LoadVerdict::Failed, Ok(url)) => describe_load_failure(&url).await,
+        _ => None,
+    };
+
+    Ok(serde_json::json!({ "state": verdict.as_state(), "reason": reason }))
+}
+
+/// Tell the frontend, once, whether a newly created webview actually loaded.
+///
+/// wry gives us nothing to hang this on: its navigation delegate implements
+/// `didFinishNavigation` and `didCommitNavigation` only
+/// (`wry-0.55.1/src/wkwebview/class/wry_navigation_delegate.rs`), so a failed
+/// provisional navigation fires **no** event at all — no progress, no error,
+/// nothing. Without this the pane just stays empty and the user is never told.
+fn spawn_load_watchdog(app: tauri::AppHandle, label: String, url: tauri::Url) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(LOAD_WATCHDOG_DELAY).await;
+
+        let Some(webview) = app.get_webview(&label) else {
+            return; // closed while we waited
+        };
+
+        // `webview_url_safe` reports "not committed yet" instead of panicking,
+        // which is the whole signal this watchdog runs on.
+        let committed = webview_url_safe(&webview).is_ok();
+        let verdict = load_verdict(committed, webview_is_loading(&webview));
+
+        let reason = match verdict {
+            LoadVerdict::Loaded => None,
+            LoadVerdict::Slow => {
+                log::info!(
+                    "[Webview] '{}' has not committed after {}s but is still loading {}",
+                    label,
+                    LOAD_WATCHDOG_DELAY.as_secs(),
+                    url
+                );
+                None
+            }
+            LoadVerdict::Failed => {
+                let reason = describe_load_failure(&url).await;
+                log::warn!(
+                    "[Webview] '{}' never loaded {}: {}",
+                    label,
+                    url,
+                    reason.as_deref().unwrap_or("no further detail")
+                );
+                reason
+            }
+        };
+
+        use tauri::Emitter;
+        let _ = app.emit(
+            "webview-load-verdict",
+            serde_json::json!({
+                "label": label,
+                "state": verdict.as_state(),
+                "reason": reason,
+            }),
+        );
+    });
 }
 
 fn webview_close_inner(
@@ -1405,6 +1602,40 @@ mod tests {
         assert!(js.contains("__teamclu_websso_cleared"));
         assert!(js.contains("sessionStorage.getItem"));
         assert!(js.contains("localStorage.removeItem(\"sb-test-supa-auth-token\")"));
+    }
+
+    #[test]
+    fn load_verdict_never_accuses_a_page_that_committed() {
+        assert_eq!(load_verdict(true, Some(false)), LoadVerdict::Loaded);
+        assert_eq!(load_verdict(true, Some(true)), LoadVerdict::Loaded);
+        assert_eq!(load_verdict(true, None), LoadVerdict::Loaded);
+    }
+
+    #[test]
+    fn load_verdict_calls_it_failed_once_the_webview_has_given_up() {
+        // Nothing committed and no longer loading: the navigation is over and
+        // produced nothing. That is the empty pane the user is staring at.
+        assert_eq!(load_verdict(false, Some(false)), LoadVerdict::Failed);
+    }
+
+    #[test]
+    fn load_verdict_calls_a_still_loading_page_slow() {
+        // Showing an error over a page that is still fetching would be a lie.
+        assert_eq!(load_verdict(false, Some(true)), LoadVerdict::Slow);
+    }
+
+    #[test]
+    fn load_verdict_never_accuses_a_platform_it_cannot_ask() {
+        // Off macOS there is no `isLoading` read, and WebView2 / WebKitGTK draw
+        // their own error pages anyway.
+        assert_eq!(load_verdict(false, None), LoadVerdict::Slow);
+    }
+
+    #[test]
+    fn load_verdict_states_are_the_names_the_frontend_switches_on() {
+        assert_eq!(LoadVerdict::Loaded.as_state(), "loaded");
+        assert_eq!(LoadVerdict::Slow.as_state(), "slow");
+        assert_eq!(LoadVerdict::Failed.as_state(), "failed");
     }
 
     #[test]

@@ -3950,7 +3950,9 @@
     "forward": "Forward",
     "reload": "Reload",
     "iframeTitle": "Web content",
-    "loadFailed": "Failed to load page"
+    "loadFailed": "Failed to load page",
+    "retry": "Retry",
+    "openInBrowser": "Open in browser"
   },
   "tabBar": {
     "closeAria": "Close tab",
