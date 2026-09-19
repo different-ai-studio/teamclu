@@ -671,7 +671,9 @@ pub(crate) struct WeComMsgCallback {
     /// `msgtype` and body.
     #[serde(default)]
     mixed: Option<serde_json::Value>,
-    /// Quoted/referenced message when user replies to a message
+    /// Quoted/referenced message when user replies to a message. Kept as a
+    /// raw value so a quote of an unexpected shape costs only the quote, never
+    /// the whole callback; `extract_quote_parts` reads it.
     #[serde(default)]
     quote: Option<serde_json::Value>,
 }
@@ -800,6 +802,33 @@ fn extract_message_parts(msg: &WeComMsgCallback) -> Option<(String, Vec<PendingM
     Some((text, media))
 }
 
+/// Split a quoted message into the text it adds to the prompt and the media it
+/// adds as attachments.
+///
+/// A quote has the same body shape as a callback, only without the ids, so it
+/// goes through the same demux: a quoted `mixed` message, a voice transcript,
+/// or a legacy image URL name is read exactly as a sent one is. Each media item
+/// leaves an `[attachment]` line in the text, so the quoted block still says
+/// what was quoted when the quote was nothing but a picture.
+fn extract_quote_parts(quote: &serde_json::Value) -> (Option<String>, Vec<PendingMedia>) {
+    let Some((text, media)) = serde_json::from_value::<WeComMsgCallback>(quote.clone())
+        .ok()
+        .and_then(|q| extract_message_parts(&q))
+    else {
+        return (None, Vec::new());
+    };
+    let mut lines = Vec::new();
+    if !text.is_empty() {
+        lines.push(text);
+    }
+    lines.extend(media.iter().map(|m| match &m.filename_hint {
+        Some(name) => format!("[attachment: {name}]"),
+        None => "[attachment]".to_string(),
+    }));
+    let quoted = lines.join("\n");
+    ((!quoted.is_empty()).then_some(quoted), media)
+}
+
 /// Metadata stored when a template card is sent for a question,
 /// needed to update the card when the user clicks a button.
 #[derive(Debug, Clone)]
@@ -908,16 +937,16 @@ pub(crate) fn normalize_callback(
 
     let text = strip_group_mention_prefix(&text, kind, bot_name);
 
-    let quoted_text = msg.quote.as_ref().and_then(|q| {
-        q.get("text")
-            .and_then(|t| t.get("content"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty())
-    });
+    let (quoted_text, quoted_media) = msg
+        .quote
+        .as_ref()
+        .map(extract_quote_parts)
+        .unwrap_or_default();
 
+    // The message's own media first, then what it quoted.
     let attachments = pending_media
         .into_iter()
+        .chain(quoted_media)
         .map(|m| driver::InboundAttachment {
             filename: m
                 .filename_hint
@@ -3492,6 +3521,68 @@ mod message_parts_tests {
         let msg = callback(json!({ "msgtype": "video", "video": { "url": "https://x/1" }}));
         assert!(extract_message_parts(&msg).is_none());
     }
+
+    #[test]
+    fn a_quoted_image_becomes_media_and_a_marker() {
+        let (text, media) = extract_quote_parts(&json!({
+            "msgtype": "image",
+            "image": { "url": "https://x/q", "aeskey": "kq" }
+        }));
+        assert_eq!(text.as_deref(), Some("[attachment]"));
+        assert_eq!(
+            media,
+            vec![PendingMedia {
+                url: "https://x/q".into(),
+                aeskey: Some("kq".into()),
+                filename_hint: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_quoted_file_names_itself_in_the_marker() {
+        let (text, media) = extract_quote_parts(&json!({
+            "msgtype": "file",
+            "file": { "url": "https://x/f", "aeskey": "kf", "filename": "report.xlsx" }
+        }));
+        assert_eq!(text.as_deref(), Some("[attachment: report.xlsx]"));
+        assert_eq!(media[0].filename_hint.as_deref(), Some("report.xlsx"));
+    }
+
+    #[test]
+    fn a_quoted_voice_message_carries_its_transcript() {
+        let (text, media) = extract_quote_parts(&json!({
+            "msgtype": "voice",
+            "voice": { "content": "明天下午三点开会" }
+        }));
+        assert_eq!(text.as_deref(), Some("明天下午三点开会"));
+        assert!(media.is_empty());
+    }
+
+    #[test]
+    fn a_quoted_mixed_message_keeps_its_caption_and_its_picture() {
+        let (text, media) = extract_quote_parts(&json!({
+            "msgtype": "mixed",
+            "mixed": { "msg_item": [
+                { "msgtype": "text", "text": { "content": "看这张" }},
+                { "msgtype": "image", "image": { "url": "https://x/m", "aeskey": "km" }}
+            ]}
+        }));
+        assert_eq!(text.as_deref(), Some("看这张\n[attachment]"));
+        assert_eq!(media.len(), 1);
+    }
+
+    #[test]
+    fn a_quote_we_cannot_read_contributes_nothing() {
+        // Video is not handled for sent messages either.
+        let video = json!({ "msgtype": "video", "video": { "url": "https://x/v" }});
+        assert_eq!(extract_quote_parts(&video), (None, Vec::new()));
+        // A malformed quote costs the quote, not the message.
+        assert_eq!(
+            extract_quote_parts(&json!("not an object")),
+            (None, Vec::new())
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3797,6 +3888,37 @@ mod normalize_tests {
             .unwrap()
             .quoted_text
             .is_none());
+    }
+
+    #[test]
+    fn a_quoted_file_is_attached_after_the_message_own_media() {
+        // Quoting a file and asking about it used to hand the agent the
+        // question without the file.
+        let msg = callback(json!({
+            "msgid": "m-9",
+            "chattype": "single",
+            "msgtype": "mixed",
+            "from": { "userid": "u-7" },
+            "mixed": { "msg_item": [
+                { "msgtype": "image", "image": { "url": "https://x/own", "aeskey": "k1" }},
+                { "msgtype": "text", "text": { "content": "对比一下这两个" }}
+            ]},
+            "quote": { "msgtype": "file", "file": {
+                "url": "https://x/quoted", "aeskey": "k2", "filename": "report.xlsx"
+            }},
+        }));
+        let inbound = normalize_callback(&msg, "bot-a", "req-1", None).unwrap();
+        assert_eq!(inbound.text, "对比一下这两个");
+        assert_eq!(
+            inbound.quoted_text.as_deref(),
+            Some("[attachment: report.xlsx]")
+        );
+        let names: Vec<_> = inbound
+            .attachments
+            .iter()
+            .map(|a| a.filename.as_str())
+            .collect();
+        assert_eq!(names, ["file", "report.xlsx"]);
     }
 
     #[test]
