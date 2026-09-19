@@ -14,7 +14,7 @@ use teamclu_gateway::{
 
 use super::{
     CommandRunner, CoreError, IdentityMapper, PendingUpload, SessionRef, SessionRouter,
-    SessionWriter, TurnRunner,
+    SessionWriter, TurnRunner, WrittenInbound,
 };
 
 fn route(e: StoreError) -> CoreError {
@@ -104,21 +104,28 @@ impl SessionWriter for StoreWriter {
         text: &str,
         attachments: Vec<PendingUpload>,
         external_message_id: &str,
-    ) -> Result<String, CoreError> {
+    ) -> Result<WrittenInbound, CoreError> {
         let mut records = Vec::with_capacity(attachments.len());
         let mut fragments = Vec::new();
+        let mut attachment_urls = Vec::new();
+        let mut failed_uploads = Vec::new();
         for upload in &attachments {
             // An upload failure keeps the message: the agent still needs the
             // text and the filename, even if clients cannot download the bytes.
             let record = match self.upload(session_id, upload).await {
-                Ok(a) => AttachmentRecord {
-                    filename: a.filename,
-                    mime: a.mime,
-                    size: upload.bytes.len(),
-                    bucket_path: a.bucket_path,
-                    local_path: a.local_path,
-                },
+                Ok(a) => {
+                    // What the store hands back is the download URL.
+                    attachment_urls.push(a.bucket_path.clone());
+                    AttachmentRecord {
+                        filename: a.filename,
+                        mime: a.mime,
+                        size: upload.bytes.len(),
+                        bucket_path: a.bucket_path,
+                        local_path: a.local_path,
+                    }
+                }
                 Err(e) => {
+                    failed_uploads.push(upload.filename.clone());
                     tracing::warn!(session_id, error = %e, "attachment upload failed; recording metadata only");
                     AttachmentRecord {
                         filename: upload.filename.clone(),
@@ -146,7 +153,8 @@ impl SessionWriter for StoreWriter {
             (false, false) => format!("{text}\n{}", fragments.join("\n")),
         };
 
-        self.store
+        let message_id = self
+            .store
             .record_message_with_attachments(
                 session_id,
                 actor_id,
@@ -155,7 +163,12 @@ impl SessionWriter for StoreWriter {
                 records,
             )
             .await
-            .map_err(|e| CoreError::Write(e.to_string()))
+            .map_err(|e| CoreError::Write(e.to_string()))?;
+        Ok(WrittenInbound {
+            message_id,
+            attachment_urls,
+            failed_uploads,
+        })
     }
 
     async fn write_reply(
@@ -247,6 +260,7 @@ impl TurnRunner for AgentTurns {
         acp_session_id: &str,
         sender_display: &str,
         prompt: &str,
+        attachment_urls: &[String],
         on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         let outcome = match on_delta {
@@ -256,6 +270,7 @@ impl TurnRunner for AgentTurns {
                         &acp_session_id.to_string(),
                         sender_display,
                         prompt,
+                        attachment_urls,
                         tx,
                         self.turn_timeout,
                     )
@@ -267,6 +282,7 @@ impl TurnRunner for AgentTurns {
                         &acp_session_id.to_string(),
                         sender_display,
                         prompt,
+                        attachment_urls,
                         self.turn_timeout,
                     )
                     .await

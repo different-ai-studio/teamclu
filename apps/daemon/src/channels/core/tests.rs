@@ -2,6 +2,7 @@
 //! bot. Every assertion here corresponds to something that is currently true on
 //! exactly one channel, or true nowhere.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use super::*;
@@ -72,8 +73,11 @@ impl IdentityMapper for FakeIdentity {
 #[derive(Default)]
 struct FakeWriter {
     inbound: Mutex<Vec<(String, String, usize)>>, // (text, actor, attachment count)
+    uploads: Mutex<Vec<(String, String)>>,        // (filename, mime)
     replies: Mutex<Vec<String>>,
     log: Mutex<Vec<&'static str>>,
+    /// Every inbound upload fails, the way an unreachable store does.
+    fail_uploads: AtomicBool,
 }
 
 #[async_trait]
@@ -85,13 +89,28 @@ impl SessionWriter for FakeWriter {
         text: &str,
         attachments: Vec<PendingUpload>,
         _external: &str,
-    ) -> Result<String, CoreError> {
+    ) -> Result<WrittenInbound, CoreError> {
         self.log.lock().unwrap().push("write_inbound");
         self.inbound
             .lock()
             .unwrap()
             .push((text.to_string(), actor.to_string(), attachments.len()));
-        Ok("msg-in".into())
+        self.uploads.lock().unwrap().extend(
+            attachments
+                .iter()
+                .map(|a| (a.filename.clone(), a.mime.clone())),
+        );
+        let names = attachments.into_iter().map(|a| a.filename);
+        let mut written = WrittenInbound {
+            message_id: "msg-in".into(),
+            ..Default::default()
+        };
+        if self.fail_uploads.load(Ordering::SeqCst) {
+            written.failed_uploads = names.collect();
+        } else {
+            written.attachment_urls = names.map(|n| format!("bucket/{n}")).collect();
+        }
+        Ok(written)
     }
 
     async fn write_reply(
@@ -123,6 +142,8 @@ struct FakeTurns {
     reply: &'static str,
     deltas: Vec<&'static str>,
     log: Arc<Mutex<Vec<String>>>,
+    /// (prompt, attachment urls) of every turn.
+    inputs: Arc<Mutex<Vec<(String, Vec<String>)>>>,
 }
 
 #[async_trait]
@@ -131,13 +152,18 @@ impl TurnRunner for FakeTurns {
         &self,
         acp: &str,
         sender_display: &str,
-        _prompt: &str,
+        prompt: &str,
+        attachment_urls: &[String],
         on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         self.log
             .lock()
             .unwrap()
             .push(format!("turn:{acp}:{sender_display}"));
+        self.inputs
+            .lock()
+            .unwrap()
+            .push((prompt.to_string(), attachment_urls.to_vec()));
         if let Some(tx) = on_delta {
             for d in &self.deltas {
                 let _ = tx
@@ -158,6 +184,7 @@ impl TurnRunner for FailingTurns {
         _acp: &str,
         _sender_display: &str,
         _prompt: &str,
+        _attachment_urls: &[String],
         _on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         Err(CoreError::Turn(
@@ -305,6 +332,7 @@ struct Fixture {
     router: Arc<FakeRouter>,
     commands: Arc<FakeCommands>,
     turn_log: Arc<Mutex<Vec<String>>>,
+    turn_inputs: Arc<Mutex<Vec<(String, Vec<String>)>>>,
 }
 
 fn fixture(reply: &'static str, deltas: Vec<&'static str>, commands: FakeCommands) -> Fixture {
@@ -313,6 +341,7 @@ fn fixture(reply: &'static str, deltas: Vec<&'static str>, commands: FakeCommand
     let router = Arc::new(FakeRouter::default());
     let commands = Arc::new(commands);
     let turn_log = Arc::new(Mutex::new(Vec::new()));
+    let turn_inputs = Arc::new(Mutex::new(Vec::new()));
     Fixture {
         core: Core {
             dedup: Arc::new(FakeDedup::default()),
@@ -323,6 +352,7 @@ fn fixture(reply: &'static str, deltas: Vec<&'static str>, commands: FakeCommand
                 reply,
                 deltas,
                 log: turn_log.clone(),
+                inputs: turn_inputs.clone(),
             }),
             commands: commands.clone(),
             approvals: None,
@@ -332,6 +362,7 @@ fn fixture(reply: &'static str, deltas: Vec<&'static str>, commands: FakeCommand
         router,
         commands,
         turn_log,
+        turn_inputs,
     }
 }
 
@@ -612,6 +643,75 @@ async fn attachments_are_resolved_and_written_with_the_message() {
     assert_eq!(f.writer.inbound.lock().unwrap()[0].2, 1);
 }
 
+fn pdf(filename: &str) -> InboundAttachment {
+    InboundAttachment {
+        filename: filename.into(),
+        mime: "application/pdf".into(),
+        size_hint: Some(3),
+        source: AttachmentSource::Ready(vec![1, 2, 3]),
+    }
+}
+
+#[tokio::test]
+async fn an_untyped_attachment_is_typed_and_named_from_its_bytes() {
+    // WeCom declares neither. An empty type was refused by the store, and a
+    // bare `file` reached the agent as a path rather than as a picture.
+    let f = plain("done");
+    let d = driver(MAIL);
+    let mut msg = inbound("这是什么");
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend_from_slice(&[0; 16]);
+    msg.attachments.push(InboundAttachment {
+        filename: "file".into(),
+        mime: String::new(),
+        size_hint: None,
+        source: AttachmentSource::Ready(png),
+    });
+
+    f.core.handle(&d, msg).await.unwrap();
+
+    assert_eq!(
+        *f.writer.uploads.lock().unwrap(),
+        [("file.png".to_string(), "image/png".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn uploaded_attachments_reach_the_turn() {
+    // The agent used to get the question and none of the files.
+    let f = plain("done");
+    let d = driver(MAIL);
+    let mut msg = inbound("compare these");
+    msg.attachments.push(pdf("a.pdf"));
+    msg.attachments.push(pdf("b.pdf"));
+
+    f.core.handle(&d, msg).await.unwrap();
+
+    let inputs = f.turn_inputs.lock().unwrap();
+    assert_eq!(inputs[0].1, ["bucket/a.pdf", "bucket/b.pdf"]);
+    assert!(!inputs[0].0.contains("could not be retrieved"));
+}
+
+#[tokio::test]
+async fn an_attachment_that_did_not_upload_is_named_to_the_agent_only() {
+    let f = plain("done");
+    f.writer.fail_uploads.store(true, Ordering::SeqCst);
+    let d = driver(MAIL);
+    let mut msg = inbound("see attached");
+    msg.attachments.push(pdf("report.pdf"));
+
+    f.core.handle(&d, msg).await.unwrap();
+
+    let inputs = f.turn_inputs.lock().unwrap();
+    assert!(inputs[0].1.is_empty());
+    assert!(inputs[0]
+        .0
+        .contains("[1 attachment(s) the user sent could not be retrieved: report.pdf]"));
+    // The stored message is what the user sent, not a note to the agent.
+    let written = f.writer.inbound.lock().unwrap();
+    assert!(!written[0].0.contains("could not be retrieved"));
+}
+
 /// A turn that attaches a file part-way through, the way `send` does.
 struct AttachingTurns {
     session_id: String,
@@ -626,6 +726,7 @@ impl TurnRunner for AttachingTurns {
         _acp: &str,
         _display: &str,
         _prompt: &str,
+        _attachment_urls: &[String],
         _on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         let attached = super::turn_attachments::attach(
@@ -920,6 +1021,7 @@ impl TurnRunner for AskingTurns {
         acp: &str,
         _sender_display: &str,
         _prompt: &str,
+        _attachment_urls: &[String],
         _on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         self.desk.raise(acp, self.request.clone());
@@ -1024,6 +1126,7 @@ impl TurnRunner for SteppingTurns {
         _acp: &str,
         _sender_display: &str,
         _prompt: &str,
+        _attachment_urls: &[String],
         on_delta: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
     ) -> Result<String, CoreError> {
         if let Some(tx) = on_delta {

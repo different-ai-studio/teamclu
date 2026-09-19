@@ -728,6 +728,7 @@ impl AmuxdAgentHandle {
         session: &AmuxSessionId,
         sender_display: &str,
         text: &str,
+        attachment_urls: &[String],
         on_update: Option<tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>>,
         turn_timeout: std::time::Duration,
     ) -> Result<TurnOutcome, AgentError> {
@@ -816,7 +817,13 @@ impl AmuxdAgentHandle {
             // send failure would exempt this runtime from idle eviction for the
             // rest of the daemon's life. Check in before propagating.
             if let Err(e) = mgr
-                .send_prompt_raw(&turn.agent_id, &prompt, vec![], None, None)
+                .send_prompt_raw(
+                    &turn.agent_id,
+                    &prompt,
+                    attachment_urls.to_vec(),
+                    None,
+                    None,
+                )
                 .await
             {
                 mgr.checkin_turn(turn);
@@ -1089,10 +1096,18 @@ impl AgentHandle for AmuxdAgentHandle {
         session: &AmuxSessionId,
         sender_display: &str,
         text: &str,
+        attachment_urls: &[String],
         timeout: std::time::Duration,
     ) -> Result<TurnOutcome, AgentError> {
-        self.run_turn(session, sender_display, text, None, timeout)
-            .await
+        self.run_turn(
+            session,
+            sender_display,
+            text,
+            attachment_urls,
+            None,
+            timeout,
+        )
+        .await
     }
 
     async fn send_prompt_streamed(
@@ -1100,11 +1115,19 @@ impl AgentHandle for AmuxdAgentHandle {
         session: &AmuxSessionId,
         sender_display: &str,
         text: &str,
+        attachment_urls: &[String],
         on_update: tokio::sync::mpsc::Sender<teamclu_gateway::TurnUpdate>,
         timeout: std::time::Duration,
     ) -> Result<TurnOutcome, AgentError> {
-        self.run_turn(session, sender_display, text, Some(on_update), timeout)
-            .await
+        self.run_turn(
+            session,
+            sender_display,
+            text,
+            attachment_urls,
+            Some(on_update),
+            timeout,
+        )
+        .await
     }
 
     async fn inject_context(
@@ -1409,6 +1432,7 @@ impl AgentHandle for AmuxdAgentHandle {
             session,
             "user",
             &text,
+            &[],
             std::time::Duration::from_secs(GATEWAY_TURN_TIMEOUT_SECS),
         )
         .await

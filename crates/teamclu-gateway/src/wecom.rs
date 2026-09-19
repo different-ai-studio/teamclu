@@ -330,6 +330,46 @@ pub fn resolve_mime(bytes: &[u8], filename_hint: Option<&str>) -> String {
         .unwrap_or_else(|| "application/octet-stream".into())
 }
 
+/// File extension (without dot) for a MIME type `resolve_mime` can produce.
+/// `None` for anything else, so a name never ends in something like `.sheet`.
+pub fn ext_for_mime(mime: &str) -> Option<&'static str> {
+    Some(match mime {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        "application/pdf" => "pdf",
+        "application/msword" => "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/vnd.ms-powerpoint" => "ppt",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+        "text/csv" => "csv",
+        "text/plain" => "txt",
+        "application/json" => "json",
+        "application/xml" => "xml",
+        "text/html" => "html",
+        "text/markdown" => "md",
+        "application/zip" => "zip",
+        _ => return None,
+    })
+}
+
+/// `filename`, given the extension `mime` implies when it has none.
+///
+/// WeCom sends pictures without a name. Downstream, whether the agent is shown
+/// a picture or only handed a path is decided by the extension on the stored
+/// file, so a bare `file` holding a PNG has to become `file.png`.
+pub fn name_with_extension(filename: &str, mime: &str) -> String {
+    match (ext_from_filename(filename), ext_for_mime(mime)) {
+        (None, Some(ext)) => format!("{filename}.{ext}"),
+        _ => filename.to_string(),
+    }
+}
+
 /// Extract the lowercase extension from a filename, rejecting dotfiles
 /// (`.hidden`), trailing dots (`name.`), and non-alphanumeric extensions.
 #[allow(dead_code)]
@@ -3570,6 +3610,23 @@ mod message_parts_tests {
         }));
         assert_eq!(text.as_deref(), Some("看这张\n[attachment]"));
         assert_eq!(media.len(), 1);
+    }
+
+    #[test]
+    fn a_bare_name_takes_the_extension_its_type_implies() {
+        assert_eq!(name_with_extension("file", "image/png"), "file.png");
+        assert_eq!(name_with_extension("file", "image/jpeg"), "file.jpg");
+        // A name that already says what it is keeps it, even if the sniffed
+        // type disagrees.
+        assert_eq!(
+            name_with_extension("report.xlsx", "application/zip"),
+            "report.xlsx"
+        );
+        // An unknown type adds nothing rather than a made-up extension.
+        assert_eq!(
+            name_with_extension("file", "application/octet-stream"),
+            "file"
+        );
     }
 
     #[test]

@@ -73,6 +73,18 @@ pub trait IdentityMapper: Send + Sync {
     async fn join(&self, session_id: &str, actor_id: &str) -> Result<(), CoreError>;
 }
 
+/// What `write_inbound` stored.
+#[derive(Debug, Clone, Default)]
+pub struct WrittenInbound {
+    pub message_id: String,
+    /// Where each attachment that uploaded can be fetched. Handed to the turn,
+    /// so the agent sees the files and not only their names.
+    pub attachment_urls: Vec<String>,
+    /// Names of the attachments that did not upload, which the agent will not
+    /// find anywhere.
+    pub failed_uploads: Vec<String>,
+}
+
 /// The #933 write service: insert, broadcast, and attach — in that order, once.
 #[async_trait]
 pub trait SessionWriter: Send + Sync {
@@ -83,7 +95,7 @@ pub trait SessionWriter: Send + Sync {
         text: &str,
         attachments: Vec<PendingUpload>,
         external_message_id: &str,
-    ) -> Result<String, CoreError>;
+    ) -> Result<WrittenInbound, CoreError>;
 
     /// Records the agent's reply the same way, so both directions look alike.
     async fn write_reply(
@@ -166,6 +178,7 @@ pub trait TurnRunner: Send + Sync {
         acp_session_id: &str,
         sender_display: &str,
         prompt: &str,
+        attachment_urls: &[String],
         on_delta: Option<tokio::sync::mpsc::Sender<TurnUpdate>>,
     ) -> Result<String, CoreError>;
 }
@@ -348,9 +361,18 @@ impl Core {
                     .await
                     .map_err(|e| CoreError::Write(format!("attachment fetch: {e}")))?,
             };
+            // A driver that cannot tell a file's type (WeCom) leaves the type
+            // empty and the name bare; both are settled here from the bytes.
+            // The attachment store refuses an empty content type, and the agent
+            // is shown a picture only when the stored name ends like one.
+            let mime = if att.mime.is_empty() {
+                teamclu_gateway::wecom::resolve_mime(&bytes, Some(&att.filename))
+            } else {
+                att.mime.clone()
+            };
             uploads.push(PendingUpload {
-                filename: att.filename.clone(),
-                mime: att.mime.clone(),
+                filename: teamclu_gateway::wecom::name_with_extension(&att.filename, &mime),
+                mime,
                 bytes,
                 local_path: None,
             });
@@ -360,7 +382,8 @@ impl Core {
         //    three-minute turn look like a frozen client everywhere else, then
         //    dropped both rows in 39ms apart.
         let prompt = compose_prompt(&msg);
-        self.writer
+        let written = self
+            .writer
             .write_inbound(
                 &session.session_id,
                 &actor_id,
@@ -369,6 +392,12 @@ impl Core {
                 &msg.external_message_id,
             )
             .await?;
+        // For the agent only: the stored message already names every file,
+        // uploaded or not.
+        let prompt = match unretrieved_note(&written.failed_uploads) {
+            Some(note) => format!("{prompt}\n\n{note}"),
+            None => prompt,
+        };
 
         // 7. Drive the turn, streaming only where it can be seen.
         //
@@ -382,11 +411,12 @@ impl Core {
             Some(dir) => format!("{}\n\n{prompt}", outbox::prompt_note(&dir)),
             None => prompt,
         };
+        let urls = &written.attachment_urls;
         let result = if driver.caps().streaming_edit {
-            self.run_streamed(driver, &msg, &session, &display, &prompt)
+            self.run_streamed(driver, &msg, &session, &display, &prompt, urls)
                 .await
         } else {
-            self.run_buffered(driver, &msg, &session, &display, &prompt)
+            self.run_buffered(driver, &msg, &session, &display, &prompt, urls)
                 .await
         };
         if let Err(error) = &result {
@@ -675,11 +705,16 @@ impl Core {
         session: &SessionRef,
         display: &str,
         prompt: &str,
+        attachment_urls: &[String],
     ) -> Result<usize, CoreError> {
         let (mut asks, _watch) = self.watch_approvals(session);
-        let turn = self
-            .turns
-            .run(&session.acp_session_id, display, prompt, None);
+        let turn = self.turns.run(
+            &session.acp_session_id,
+            display,
+            prompt,
+            attachment_urls,
+            None,
+        );
         tokio::pin!(turn);
         let reply = loop {
             tokio::select! {
@@ -708,6 +743,7 @@ impl Core {
         session: &SessionRef,
         display: &str,
         prompt: &str,
+        attachment_urls: &[String],
     ) -> Result<usize, CoreError> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<TurnUpdate>(32);
         let handle = driver
@@ -725,9 +761,10 @@ impl Core {
         let acp = session.acp_session_id.clone();
         let display_owned = display.to_string();
         let prompt_owned = prompt.to_string();
+        let urls_owned = attachment_urls.to_vec();
         let turn = tokio::spawn(async move {
             turns
-                .run(&acp, &display_owned, &prompt_owned, Some(tx))
+                .run(&acp, &display_owned, &prompt_owned, &urls_owned, Some(tx))
                 .await
         });
 
@@ -953,6 +990,18 @@ fn compose_prompt(msg: &InboundMessage) -> String {
         }
         _ => msg.text.clone(),
     }
+}
+
+/// Tells the agent which of the user's files it will not find, so it says so
+/// instead of answering as if nothing had been sent.
+fn unretrieved_note(failed: &[String]) -> Option<String> {
+    (!failed.is_empty()).then(|| {
+        format!(
+            "[{} attachment(s) the user sent could not be retrieved: {}]",
+            failed.len(),
+            failed.join(", ")
+        )
+    })
 }
 
 #[cfg(test)]
