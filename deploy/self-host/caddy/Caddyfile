@@ -111,9 +111,23 @@
 	}
 }
 
+# Supabase Studio.
+#
+# Goes through Kong, NEVER straight to studio:3000. Studio has no login of its
+# own: the container holds the service_role key, JWT_SECRET and the Postgres
+# password, and its SQL editor connects as supabase_admin. The only thing
+# standing in front of it is the basic-auth plugin on Kong's catch-all
+# `dashboard` route (DASHBOARD_USERNAME / DASHBOARD_PASSWORD), and this site
+# used to bypass it — anyone who knew the hostname had the database.
+#
+# Kong rather than a `basic_auth` block here, because an unset hash in one of
+# those stops Caddy from parsing the whole file (see REGISTRY_*_PASSWORD_HASH in
+# docker-compose.yml), and because Studio is then behind the same single
+# credential on both hostnames it answers on: this one and SUPABASE_DOMAIN's
+# root. services/fc/test/self-host-admin-surfaces.test.ts pins this.
 {$CADDY_SITE_SCHEME}{$STUDIO_DOMAIN} {
 	{$CADDY_SITE_TLS}
-	reverse_proxy studio:3000
+	reverse_proxy kong:8000
 }
 
 {$CADDY_SITE_SCHEME}{$EMQX_DASHBOARD_DOMAIN} {

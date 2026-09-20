@@ -292,7 +292,7 @@ is explicitly documented and enforced by
 |---|---|
 | `https://api.teamclu-dev.ucar.cc` | Cloud API (`/v1`) — what clients call |
 | `https://supabase.teamclu-dev.ucar.cc` | Supabase gateway (PostgREST / GoTrue / Storage) |
-| `https://studio.teamclu-dev.ucar.cc` | Supabase Studio |
+| `https://studio.teamclu-dev.ucar.cc` | Supabase Studio (behind Kong basic-auth — `DASHBOARD_*` in the box's `.env`) |
 | `https://emqx.teamclu-dev.ucar.cc` | EMQX dashboard |
 | `wss://mqtt.teamclu-dev.ucar.cc/mqtt` | MQTT over WSS (JWT access_token as password) |
 
