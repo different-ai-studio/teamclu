@@ -60,6 +60,28 @@ applied it, and a drift from the real migrations still passed.
 
 Entry wiring: `src/index.ts` (`makeBusinessRepoFactory` / `makeAuthRepoFactory`).
 
+### Backward compatibility (old daemons are still calling)
+
+Every `/v1` change must keep serving the amuxd daemons already installed on
+users' machines; they do not upgrade when the Cloud API ships. Before changing a
+request/response shape, ask: can an old daemon still call this?
+
+- **Add, never change.** New fields, endpoints, and optional params are safe.
+  Changing a field's meaning/type/requiredness/default, or removing it, is not.
+- **Keep the old shape and mark it `deprecated`** in
+  `docs/openapi/teamclu-api.v1.yaml`, naming the replacement. Precedents in this
+  repo: `actorType`/`role` (legacy aliases of `kind`/`teamRole`), `audience`
+  (legacy-read only, superseded by `roles`), `BootstrapConfig.webSso` (still
+  served because shipped clients read their SSO target from it).
+- **Dual-read, dual-write.** The read path accepts old and new and falls back
+  when the new value is absent; the write path emits both during the transition.
+- **Delete separately.** Removing the old shape is its own change, with evidence
+  that nothing calls it — never cleanup bundled into the feature PR.
+
+A genuinely breaking change ships as a new endpoint (or versioned path) with the
+old one kept alongside. Full rule:
+[ADR-0016](../../docs/adr/0016-fc-and-schema-changes-stay-backward-compatible.md).
+
 ### No in-process scheduler
 
 The Cloud API has no in-process timer. Belayo and self-host each run one cron

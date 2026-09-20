@@ -20,6 +20,7 @@ Page content you choose to share is sent to the TeamClu agent backend so the age
 - `scripting` — injects the content script that extracts page content.
 - `tabs` — identifies the active tab and opens/navigates URLs you share with the agent.
 - `storage` — stores your settings locally in the browser.
+- `identity` — runs Google OAuth sign-in via `chrome.identity.launchWebAuthFlow` (PKCE redirect capture only; no background identity monitoring).
 
 ## Data retention
 

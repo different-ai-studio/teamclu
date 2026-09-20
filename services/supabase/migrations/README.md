@@ -72,3 +72,19 @@ Optional cleanup (only if you want a single row in `schema_migrations`):
 ## New changes
 
 Add timestamped SQL files **after** the baseline, e.g. `20260615_add_foo.sql`.
+
+### Backward compatibility (expand-contract)
+
+Old amuxd daemons keep running against this database, so a migration must never
+break a query they still issue ([ADR-0016](../../../docs/adr/0016-fc-and-schema-changes-stay-backward-compatible.md)):
+
+- **Add only** — new columns, new tables, nullable constraints, indexes, new
+  functions. An added column needs a default or must be nullable.
+- **Destructive steps are their own migrations.** Drop column / drop table /
+  change type / add `NOT NULL` / change a function signature must be split into:
+  add-new → dual-write / backfill → confirm nobody reads the old shape → remove.
+  The intermediate state must work for both old and new callers.
+- **Re-runnable.** `apply-migrations.sh` may re-apply; use `if not exists` /
+  `create or replace` where the shape allows it.
+- **Never assume the client already upgraded.** A migration that only works once
+  every daemon is new is not an expand-contract migration.

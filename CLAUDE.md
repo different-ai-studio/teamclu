@@ -163,6 +163,32 @@ Direct Supabase client usage (e.g. `supabase.from('sessions').select()`) is **re
 
 Do not bypass the Cloud API and call Supabase directly from client code. The facade exists so future backend replacements (MySQL, other storage) happen inside FC without client rewrites.
 
+## Backward compatibility — FC & database changes
+
+**Before changing `services/fc/` or `services/supabase/`, answer one question: can
+the amuxd daemons already installed on users' machines still call this?** The
+default answer must be yes. Users do not upgrade their desktop just because the
+server shipped, so old daemons stay online against `/v1` indefinitely. The rule is
+[ADR-0016](docs/adr/0016-fc-and-schema-changes-stay-backward-compatible.md):
+
+- **Add, never change.** New fields, new endpoints, new optional params are safe.
+  Changing a field's semantics, type, requiredness, default, or removing it is not.
+- **Keep the old shape and mark it `deprecated`.** In
+  `docs/openapi/teamclu-api.v1.yaml`, point at the replacement and keep serving /
+  accepting the old field. Existing precedents: `actorType` / `role` (legacy
+  aliases of `kind` / `teamRole`), `audience` (legacy-read only, superseded by
+  `roles`), `BootstrapConfig.webSso` (still served because shipped clients read
+  their SSO target from it).
+- **Dual-read, dual-write; delete separately.** During the transition the read
+  path accepts old and new (fall back when the new value is absent) and the write
+  path emits both. Removing the old shape is its own change with evidence that
+  nothing uses it — never a cleanup bundled into the feature PR.
+- **Database changes are expand-contract.** Migrations only add (columns, tables,
+  nullable constraints, indexes, new functions). Drop column / drop table / change
+  type / add `NOT NULL` / change a function signature must be split into
+  add-new → dual-write/backfill → confirm-nobody-reads-old → remove. Migrations
+  must be re-runnable and must not break an old daemon's query at any step.
+
 ## Streaming Architecture (Critical)
 
 Single source of truth principle — **never mix content sources**:

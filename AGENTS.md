@@ -423,6 +423,16 @@ Direct Supabase client usage (e.g. `supabase.from('sessions').select()`) is **re
 
 Do not bypass the Cloud API and call Supabase directly from client code. The facade exists so future backend replacements (MySQL, other storage) happen inside FC without client rewrites.
 
+**Backward compatibility is part of this boundary.** A change to `services/fc/` or
+`services/supabase/` must still serve the amuxd daemons already installed on
+users' machines — they do not upgrade when the server ships. Add, never change:
+keep the old field/endpoint, mark it `deprecated` in
+`docs/openapi/teamclu-api.v1.yaml`, dual-read and dual-write during the
+transition, and remove it only in a separate change with evidence nobody uses it.
+Database changes are expand-contract (add → backfill → confirm → remove), never a
+destructive step in the same migration that introduces the replacement. Full rule:
+[ADR-0016](docs/adr/0016-fc-and-schema-changes-stay-backward-compatible.md).
+
 ---
 
 ## 8. Out-of-scope (yet)
