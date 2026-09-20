@@ -90,6 +90,8 @@ function parseExtensionsConfig(raw) {
 
   return {
     solo: row.solo === true,
+    /** When false, extension embed hides agent-reply thread fork UI. Omitted → enabled. */
+    agentReplyFork: row.agentReplyFork !== false,
     domains,
     teamOnboarding: {
       autoCreateTeam: teamOnboardingRaw.autoCreateTeam !== false,
@@ -127,6 +129,8 @@ function resolveExtensionPack(buildConfig) {
       ...asStringList(alias.hosts),
     ],
     solo: canonical.solo === true || alias.solo === true,
+    agentReplyFork:
+      canonical.agentReplyFork !== false && alias.agentReplyFork !== false,
     teamOnboarding: {
       ...(alias.teamOnboarding && typeof alias.teamOnboarding === 'object'
         ? alias.teamOnboarding

@@ -10,6 +10,7 @@ import { threadTitleFromMessage, formatThreadRelativeTime } from "@/lib/session/
 import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";
 import { useThreadSummaryForMessage } from "@/hooks/use-session-thread-summaries";
 import { rememberThreadForkMetadata } from "@/lib/session/thread-fork-metadata";
+import { isAgentReplyForkEnabled } from "@/lib/config/agent-reply-fork-build";
 import { MessageActionIconButton } from "./MessageActionIconButton";
 
 export function ThreadBadge({
@@ -63,6 +64,7 @@ export function ThreadBadge({
     Boolean(summary?.threadSessionId) || Boolean(panelThreadSessionId);
 
   const showThread = isAgentReply && !hideThread;
+  const forkEnabled = isAgentReplyForkEnabled();
   if (!showThread && !copySlot) return null;
 
   const onOpen = () => {
@@ -84,7 +86,7 @@ export function ThreadBadge({
     hasThread || Boolean(summary && summary.messageCount > 0);
 
   const threadReplyBadge =
-    showThread && hasThreadUi ? (
+    showThread && forkEnabled && hasThreadUi ? (
       <button
         type="button"
         data-testid="thread-badge"
@@ -109,7 +111,7 @@ export function ThreadBadge({
     ) : null;
 
   const startThreadButton =
-    showThread && !hasThreadUi && allowStartThread ? (
+    showThread && forkEnabled && !hasThreadUi && allowStartThread ? (
       <MessageActionIconButton
         label={t("thread.tooltipStart")}
         onClick={onOpen}

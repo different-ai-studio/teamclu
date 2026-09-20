@@ -62,6 +62,28 @@ test("resolveExtensionPack honours solo from either block", () => {
   assert.strictEqual(resolveExtensionPack({ extension: { solo: false } }).solo, false);
 });
 
+test("resolveExtensionPack defaults agentReplyFork to enabled", () => {
+  assert.strictEqual(resolveExtensionPack({ extensions: {} }).agentReplyFork, true);
+});
+
+test("resolveExtensionPack honours agentReplyFork from either block", () => {
+  assert.strictEqual(
+    resolveExtensionPack({ extensions: { agentReplyFork: false } }).agentReplyFork,
+    false,
+  );
+  assert.strictEqual(
+    resolveExtensionPack({ extension: { agentReplyFork: false } }).agentReplyFork,
+    false,
+  );
+  assert.strictEqual(
+    resolveExtensionPack({
+      extension: { agentReplyFork: false },
+      extensions: { agentReplyFork: true },
+    }).agentReplyFork,
+    false,
+  );
+});
+
 test("resolveExtensionPack lets the canonical block win on settings", () => {
   const pack = resolveExtensionPack({
     extension: { settings: { hideButton: true } },

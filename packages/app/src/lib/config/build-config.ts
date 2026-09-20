@@ -271,5 +271,8 @@ export const hideExtensionSettingsButton: boolean = extensionSettings.hideButton
 /** Solo-agent extension build (`extensions.solo`). */
 export const extensionSoloBuild: boolean = extensionPack.solo === true
 
+/** Agent-reply thread fork in extension embed (`extensions.agentReplyFork`). */
+export const extensionAgentReplyForkEnabled: boolean = extensionPack.agentReplyFork !== false
+
 /** Side-panel host gate patterns (`extensions.domains`). Empty = ungated. */
 export const extensionSidePanelDomains: readonly string[] = extensionPack.domains

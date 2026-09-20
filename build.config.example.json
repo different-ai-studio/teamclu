@@ -23,6 +23,7 @@
   },
   "extensions": {
     "solo": true,
+    "agentReplyFork": true,
     "domains": [
       "*.example.com"
     ],

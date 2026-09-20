@@ -42,6 +42,7 @@ describe('parseExtensionPackConfig', () => {
       }),
     ).toEqual({
       solo: true,
+      agentReplyFork: true,
       domains: ['*.shopee.io', 'accounting.i.shopee.io'],
       settings: {
         hideButton: true,
@@ -83,6 +84,11 @@ describe('parseExtensionPackConfig', () => {
       autoCreateTeam: true,
       noTeamMessage: {},
     })
+  })
+
+  it('defaults agentReplyFork to enabled and allows opting out', () => {
+    expect(parseExtensionPackConfig(undefined).agentReplyFork).toBe(true)
+    expect(parseExtensionPackConfig({ agentReplyFork: false }).agentReplyFork).toBe(false)
   })
 })
 
