@@ -15,8 +15,8 @@
 //! That is the chosen trade: nothing irreversible or public happens unless
 //! someone at the computer holding the credentials says yes.
 
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tauri::AppHandle;
@@ -110,6 +110,101 @@ fn declined_hint(zh: bool) -> &'static str {
     } else {
         "If you did not ask for this, choose Decline."
     }
+}
+
+/// An approval the user has already given for a publish, waiting to be spent.
+///
+/// Keyed on what the dialog actually told them — which agent host asked, which
+/// app, at which address, reachable by whom — because that is the whole of what
+/// they agreed to. A retry after a failed deploy publishes the same app to the
+/// same address; only the bundle differs, and the dialog never described the
+/// bundle. Re-asking there conveys nothing and trains people to click through.
+///
+/// Change any field and the user would be shown a *different* dialog, so they
+/// get one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeployKey {
+    /// The agent host that asked. One agent's yes is not another's.
+    pub(crate) host_generation_id: String,
+    pub(crate) app_id: String,
+    /// `None` until the first publish assigns one, exactly as the dialog says.
+    pub(crate) url: Option<String>,
+    /// Whether the dialog said "anyone with the link" or "sign-in required".
+    pub(crate) open_to_anyone: bool,
+}
+
+impl DeployKey {
+    pub(crate) fn new(host_generation_id: &str, row: &Value) -> Self {
+        let brief = super::apps::app_brief(row);
+        Self {
+            host_generation_id: host_generation_id.to_string(),
+            app_id: row
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            url: brief["url"].as_str().map(str::to_string),
+            open_to_anyone: !matches!(brief["auth_mode"].as_str(), Some("platform" | "third")),
+        }
+    }
+}
+
+/// How long a remembered approval survives without being used.
+///
+/// The backstop, not the mechanism: a deploy that succeeds spends the approval
+/// outright (see [`spend_deploy_approval`]), so in practice this only matters to
+/// a fix-and-retry loop somebody walked away from.
+pub(crate) const DEPLOY_APPROVAL_IDLE: Duration = Duration::from_secs(600);
+
+struct Granted {
+    key: DeployKey,
+    last_used: Instant,
+}
+
+/// One slot, not a map. Two concurrent publish loops for different apps is
+/// far-fetched, and with a single slot the second app evicts the first — which
+/// fails towards asking rather than towards silence.
+fn granted() -> &'static Mutex<Option<Granted>> {
+    static GRANTED: OnceLock<Mutex<Option<Granted>>> = OnceLock::new();
+    GRANTED.get_or_init(|| Mutex::new(None))
+}
+
+/// Whether this exact publish is already approved, refreshing its idle timer.
+pub(crate) fn deploy_already_approved(key: &DeployKey) -> bool {
+    approved_at(key, Instant::now())
+}
+
+/// Remember an approval the user just gave.
+pub(crate) fn remember_deploy_approval(key: DeployKey) {
+    remember_at(key, Instant::now());
+}
+
+/// Spend the approval: the publish went through, so the next one asks again.
+pub(crate) fn spend_deploy_approval(key: &DeployKey) {
+    let mut slot = granted().lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|g| &g.key == key) {
+        *slot = None;
+    }
+}
+
+/// [`deploy_already_approved`] with the clock passed in, so tests need no sleep.
+fn approved_at(key: &DeployKey, now: Instant) -> bool {
+    let mut slot = granted().lock().unwrap_or_else(|e| e.into_inner());
+    match slot.as_mut() {
+        Some(g) if &g.key == key && now.duration_since(g.last_used) < DEPLOY_APPROVAL_IDLE => {
+            g.last_used = now;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// [`remember_deploy_approval`] with the clock passed in.
+fn remember_at(key: DeployKey, now: Instant) {
+    *granted().lock().unwrap_or_else(|e| e.into_inner()) = Some(Granted {
+        key,
+        last_used: now,
+    });
 }
 
 /// `manage_app` `deploy`: publishing to the public internet.
@@ -475,6 +570,100 @@ fn describe_server(spec: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn row(id: &str, url: Option<&str>, auth: &str) -> Value {
+        let mut row = json!({ "id": id, "name": id, "authMode": auth });
+        if let Some(url) = url {
+            row["publicUrl"] = json!(url);
+        }
+        row
+    }
+
+    #[test]
+    fn deploy_key_matches_only_a_publish_the_dialog_would_word_the_same() {
+        let live = row("a1", Some("https://a1.example.com"), "none");
+        let base = DeployKey::new("host-1", &live);
+
+        // The same publish, retried.
+        assert_eq!(base, DeployKey::new("host-1", &live));
+
+        // Another agent host does not inherit this yes.
+        assert_ne!(base, DeployKey::new("host-2", &live));
+        // A different app.
+        assert_ne!(
+            base,
+            DeployKey::new("host-1", &row("a2", Some("https://a1.example.com"), "none"))
+        );
+        // A different address — including the first one ever assigned, which is
+        // the first time the dialog can name it.
+        assert_ne!(
+            base,
+            DeployKey::new(
+                "host-1",
+                &row("a1", Some("https://moved.example.com"), "none")
+            )
+        );
+        assert_ne!(base, DeployKey::new("host-1", &row("a1", None, "none")));
+        // Open to anyone versus behind a sign-in.
+        assert_ne!(
+            base,
+            DeployKey::new(
+                "host-1",
+                &row("a1", Some("https://a1.example.com"), "platform")
+            )
+        );
+    }
+
+    /// One test owns the approval slot: it is process-global, so splitting this
+    /// across tests would have them race each other under the parallel runner.
+    #[test]
+    fn a_remembered_approval_covers_retries_until_it_is_spent() {
+        let live = row("a1", Some("https://a1.example.com"), "none");
+        let key = DeployKey::new("host-1", &live);
+        let start = Instant::now();
+
+        // Nothing is approved until the user says so.
+        assert!(!approved_at(&key, start));
+
+        remember_at(key.clone(), start);
+        // The fix-and-retry loop: attempt after attempt, no new dialog.
+        assert!(approved_at(&key, start));
+        assert!(approved_at(&key, start + Duration::from_secs(60)));
+
+        // Not for anything the user was not shown.
+        let other = DeployKey::new("host-2", &live);
+        assert!(!approved_at(&other, start));
+
+        // The publish goes through, and the approval is spent with it.
+        spend_deploy_approval(&key);
+        assert!(!approved_at(&key, start));
+
+        // Idle expiry is the backstop for a loop nobody came back to. It counts
+        // from the last use, not from the approval.
+        remember_at(key.clone(), start);
+        assert!(approved_at(
+            &key,
+            start + DEPLOY_APPROVAL_IDLE - Duration::from_secs(1)
+        ));
+        assert!(approved_at(
+            &key,
+            start + DEPLOY_APPROVAL_IDLE + Duration::from_secs(60)
+        ));
+        assert!(!approved_at(
+            &key,
+            start + DEPLOY_APPROVAL_IDLE * 2 + Duration::from_secs(120)
+        ));
+
+        // A second app's publish evicts the first: one slot, and eviction fails
+        // towards asking.
+        remember_at(key.clone(), start);
+        let second = DeployKey::new("host-1", &row("a2", None, "none"));
+        remember_at(second.clone(), start);
+        assert!(approved_at(&second, start));
+        assert!(!approved_at(&key, start));
+
+        spend_deploy_approval(&second);
+    }
 
     #[test]
     fn deploy_says_where_it_goes_and_who_can_open_it() {
