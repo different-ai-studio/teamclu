@@ -95,25 +95,91 @@ export function prepareUpstream(
 }
 
 /**
+ * Tokens to bill for text the upstream never counted for us. Bytes rather than
+ * characters, and a divisor of 3, so it errs high for both scripts: English
+ * runs ~4 bytes per token, and a CJK character is 3 bytes for well under one
+ * token. An estimate that errs low is a discount for hanging up.
+ */
+export function estimateTokens(utf8Bytes: number): number {
+  return Math.ceil(utf8Bytes / 3);
+}
+
+/**
+ * UTF-8 bytes of everything a chunk — or a whole non-streamed response —
+ * generated. Reasoning and tool-call arguments count: the upstream bills them
+ * as completion tokens like any other output.
+ */
+export function generatedBytes(obj: any): number {
+  let n = 0;
+  for (const choice of Array.isArray(obj?.choices) ? obj.choices : []) {
+    const m = choice?.delta ?? choice?.message;
+    if (!m || typeof m !== "object") continue;
+    for (const k of ["content", "reasoning_content", "reasoning", "refusal"]) {
+      if (typeof m[k] === "string") n += Buffer.byteLength(m[k]);
+    }
+    for (const t of Array.isArray(m.tool_calls) ? m.tool_calls : []) {
+      if (typeof t?.function?.name === "string") n += Buffer.byteLength(t.function.name);
+      if (typeof t?.function?.arguments === "string") n += Buffer.byteLength(t.function.arguments);
+    }
+  }
+  return n;
+}
+
+export type StreamEnd = {
+  /**
+   * complete  — the upstream finished.
+   * cancelled — the consumer hung up first.
+   * errored   — the upstream body failed mid-stream: a reset, or the fetch
+   *             aborted along with the client's own request.
+   */
+  outcome: "complete" | "cancelled" | "errored";
+  /** `generatedBytes` summed over every frame that went past. */
+  generatedBytes: number;
+};
+
+type TeeOpts = {
+  dropUsageOnlyFrame: boolean;
+  onUsage: (u: UpstreamUsage) => void;
+  /**
+   * Called exactly once, however the stream ends. Required on purpose: billing
+   * hangs off it, and a stream whose end can be ignored is a stream that can be
+   * cut short for free.
+   */
+  onEnd: (end: StreamEnd) => void;
+};
+
+/**
  * Pipe an upstream SSE body straight through while tee-ing the usage frame out
  * of it. Chunk-by-chunk: buffering the whole response first would destroy the
  * streaming experience that the agent runtime depends on.
  */
 export function teeSseUsage(
   upstream: ReadableStream<Uint8Array>,
-  opts: { dropUsageOnlyFrame: boolean; onUsage: (u: UpstreamUsage) => void },
+  opts: TeeOpts,
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
+  const tally = { generatedBytes: 0 };
   let buf = "";
+
+  // Taken here rather than inside start() so cancel() can reach it: the stream
+  // is locked from this point on, and cancelling a locked stream directly only
+  // rejects.
+  const reader = upstream.getReader();
+
+  let ended = false;
+  const end = (outcome: StreamEnd["outcome"]) => {
+    if (ended) return;
+    ended = true;
+    opts.onEnd({ outcome, generatedBytes: tally.generatedBytes });
+  };
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      const reader = upstream.getReader();
       try {
         for (;;) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || ended) break;
           buf += decoder.decode(value, { stream: true });
 
           // Keep the trailing partial event in the buffer; SSE events are
@@ -122,28 +188,38 @@ export function teeSseUsage(
           while ((idx = buf.indexOf("\n\n")) !== -1) {
             const rawEvent = buf.slice(0, idx + 2);
             buf = buf.slice(idx + 2);
-            controller.enqueue(encoder.encode(handleEvent(rawEvent, opts)));
+            controller.enqueue(encoder.encode(handleEvent(rawEvent, opts, tally)));
           }
         }
-        if (buf) controller.enqueue(encoder.encode(handleEvent(buf, opts)));
+        // Cancelled mid-read: the controller is already closed, and cancel()
+        // has reported the end.
+        if (ended) return;
+        if (buf) controller.enqueue(encoder.encode(handleEvent(buf, opts, tally)));
         controller.close();
+        end("complete");
       } catch (err) {
+        if (ended) return;
+        end("errored");
         controller.error(err);
       } finally {
         reader.releaseLock();
       }
     },
     cancel(reason) {
+      // Already drained: the upstream is finished and the lock released.
+      if (ended) return;
+      end("cancelled");
       // Client hung up -> propagate upstream so we stop paying for tokens
       // nobody will read.
-      return upstream.cancel(reason);
+      return reader.cancel(reason);
     },
   });
 }
 
 function handleEvent(
   rawEvent: string,
-  opts: { dropUsageOnlyFrame: boolean; onUsage: (u: UpstreamUsage) => void },
+  opts: TeeOpts,
+  tally: { generatedBytes: number },
 ): string {
   const line = rawEvent.split("\n").find((l) => l.startsWith("data:"));
   if (!line) return rawEvent;
@@ -157,6 +233,7 @@ function handleEvent(
   }
   const usage = readUsage(obj);
   if (usage) opts.onUsage(usage);
+  tally.generatedBytes += generatedBytes(obj);
 
   // A usage-only frame (no choices) exists solely because we asked for it.
   // Passing it to a client that never set stream_options would be a frame it

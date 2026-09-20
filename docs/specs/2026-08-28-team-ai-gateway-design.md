@@ -295,7 +295,21 @@ agent 一次会话有几十次这种小请求，所以这是常态而不是边�
 |------|------|
 | 请求前（预留） | 该档的单价 × 预估 token 数（输入按字节估、输出按 `max_tokens` 上限），见 §4.6 |
 | 请求后（结算） | 按**该档单价** + 上游 usage 的 token 数精确扣费，冲销预留。落哪个 backend 不影响金额 |
-| 无 usage | 按 `max_tokens`（缺省时按该 backend 的 `default_max_output_tokens`）上限保守扣，并在 `ai_usage_logs.usage_source` 记 `estimated` |
+| 无 usage | 按估算扣，并在 `ai_usage_logs.usage_source` 记 `estimated`：输入沿用预留时的估算，输出按**实际流过网关的生成内容**（`content` / `reasoning_content` / tool call 参数）的 UTF-8 字节数 ÷ 3，封顶为本次预留额。见下方「请求没跑完」 |
+
+**请求没跑完（客户端中断 / 上游中途断开）同样要计量并结算。** 最初的实现把结算挂在流正常关闭的回调上，客户端一断开就整段跳过：不写用量、不扣费，预留 10 分钟后过期释放。后果是成员可以在最后一个 chunk（usage 就在这一帧）之前断开，白拿整段输出；日常点「停止生成」的每一轮也都不计费，且因为成员限额是从 `ai_usage_logs` 求和的，这些请求连限额都不占。现在流的三种结束方式（读完 / 客户端取消 / 上游出错）走同一个、且只触发一次的出口：
+
+| 结束方式 | 扣费依据 | `usage_source` | `status_code` |
+|---|---|---|---|
+| 正常读完，上游回了 usage | 上游 usage | `upstream` | 上游状态码 |
+| 正常读完，上游没回 usage | 估算 | `estimated` | 上游状态码 |
+| 客户端中断，usage 帧已经过去了 | 上游 usage | `upstream` | `499` |
+| 客户端中断，usage 帧还没到 | 估算 | `estimated` | `499` |
+| 上游中途断开 | 估算 | `estimated` | `502` |
+
+没有按 `max_tokens` 上限扣：成员生成 10 个 token 后点停止，不该付 16k token 的钱。估算按字节而不是字符、除数取 3，是为了在中英文上都偏高 —— 估低了就等于给「提前断开」打折。已知局限：上游不下发的隐藏 reasoning token（mx5 的 gpt-5.6 系列）估不到。
+
+`estimated` 仍然是「上游不回 usage 了」的告警口径，告警查询排除 `status_code = 499` 即可 —— 成员点停止是日常行为。没有为此新增 `usage_source` 取值：那需要改 CHECK 约束，而 belayo 不自动跑迁移，网关先于迁移上线时插入会违反约束，`recordUsage` 吞掉错误、预留被释放，这个洞就静默地回来了。
 
 **用量日志**同时记 `public_model_id`（计费依据）与 `backend_model_id` + `cached_input_tokens`（成本/毛利依据，不参与计费）。
 
@@ -335,7 +349,7 @@ Team owner 可设 `limit_credits`（null = 不限）。管理 API 在 FC；enfor
 
 `estimate()` 一期用一个保守常数：`最高价路由 × (输入 token 估算 + max_tokens)`。输入 token 估算不引 tiktoken —— 按 `字节数 / 3` 粗算即可（宁可高估，预留是可退的）。
 
-**孤儿预留**：进程崩溃 / 客户端断连会留下 `held` 行。网关启动时 + 每分钟扫一次，把 `expires_at < now()` 的 `held` 置 `expired`。10 分钟是硬上限，超过它的长请求会被提前放开预留（接受这点风险，比永久漏额度好）。
+**孤儿预留**：进程崩溃会留下 `held` 行。客户端断连**不再**属于这一类 —— 断连时当场结算（§4.4「请求没跑完」），扫描只是进程崩溃的兜底，不是断连请求的计费路径。网关启动时 + 每分钟扫一次，把 `expires_at < now()` 的 `held` 置 `expired`。10 分钟是硬上限，超过它的长请求会被提前放开预留（接受这点风险，比永久漏额度好）。
 
 **member quota** 走同一套：`credit_reservation.actor_id` 参与 quota 侧的 SUM。
 
