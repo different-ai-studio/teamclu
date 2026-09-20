@@ -5343,6 +5343,17 @@ paths:
           schema:
             type: string
             format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                archived:
+                  type: boolean
+                  default: true
+                  description: Pass false to restore an archived idea.
       responses:
         "204":
           description: OK

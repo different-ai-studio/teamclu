@@ -31,6 +31,7 @@ type CloudIdeaActivity = {
   kind?: string | null;
   activityType?: string | null;
   content?: string | null;
+  metadata?: Record<string, unknown> | null;
   createdAt: string;
 };
 
@@ -65,6 +66,7 @@ function mapActivity(row: CloudIdeaActivity): IdeaActivityRow {
     actor_id: row.actorId,
     activity_type: row.activityType ?? row.kind ?? "progress",
     content: row.content ?? null,
+    metadata: row.metadata ?? null,
     created_at: row.createdAt,
   };
 }
@@ -136,8 +138,8 @@ export function createIdeasModule(client: CloudApiClient): IdeasBackend {
         });
       }
     },
-    async archiveIdea(ideaId) {
-      await client.post<void>(`/v1/ideas/${encodeURIComponent(ideaId)}/archive`, {});
+    async archiveIdea(ideaId, archived = true) {
+      await client.post<void>(`/v1/ideas/${encodeURIComponent(ideaId)}/archive`, { archived });
     },
     async createIdeaActivity(input) {
       await client.post<void>(`/v1/ideas/${encodeURIComponent(input.ideaId)}/activities`, {
