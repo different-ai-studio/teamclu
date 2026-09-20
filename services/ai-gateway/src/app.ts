@@ -162,7 +162,14 @@ export function createApp(deps: Deps) {
     // Output is estimated at the full ceiling because reasoning tokens count
     // toward completion_tokens and can consume the entire budget on their own.
     const wantsStream = body.stream === true;
-    const estInput = Math.ceil(JSON.stringify(body.messages ?? "").length / 3);
+    //
+    // Bytes, not `.length`: that counts UTF-16 units, so a CJK character — three
+    // bytes, and most of a token upstream — weighed the same as one ASCII
+    // letter, and a Chinese prompt reserved about half of what it went on to
+    // cost. This number is also what an interrupted request is charged for its
+    // input (see `log` below), so reading low there was a discount, not just a
+    // thin hold.
+    const estInput = estimateTokens(Buffer.byteLength(JSON.stringify(body.messages ?? "")));
     const estOutput = Number(body.max_tokens ?? 0) || defaultMaxOutput(catalog, publicId);
     const hold = computeCredits(tier.pricing, estInput, estOutput);
 

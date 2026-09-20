@@ -41,7 +41,7 @@ type UsageRow = {
 /** Enough of the ledger to see what a request did to it, in order. No database. */
 function ledgerSql() {
   const ops: string[] = [];
-  const state: { usage: UsageRow | null; debited: number } = { usage: null, debited: 0 };
+  const state: { usage: UsageRow | null; debited: number; held: number } = { usage: null, debited: 0, held: 0 };
   const sql: any = (strings: TemplateStringsArray, ...vals: unknown[]) => {
     const q = strings.join("?").replace(/\s+/g, " ");
     if (q.includes("ai_gateway_resolve_actor")) {
@@ -50,6 +50,7 @@ function ledgerSql() {
     if (q.includes("select balance_credits")) return Promise.resolve([{ balance_credits: "999999999999" }]);
     if (q.includes("insert into amux.credit_reservation")) {
       ops.push("reserve");
+      state.held = vals[2] as number;
       return Promise.resolve([{ id: HOLD_ID }]);
     }
     if (q.includes("insert into amux.ai_usage_logs")) {
@@ -112,7 +113,7 @@ function streamingUpstream(frames: string[], opts: { gapMs?: number; die?: boole
 }
 
 const MESSAGES = [{ role: "user", content: "hi" }];
-const EST_INPUT = Math.ceil(JSON.stringify(MESSAGES).length / 3);
+const EST_INPUT = estimateTokens(Buffer.byteLength(JSON.stringify(MESSAGES)));
 const requestBody = (extra: Record<string, unknown> = {}) =>
   JSON.stringify({ model: "default", stream: true, messages: MESSAGES, ...extra });
 const HEADERS = {
@@ -270,4 +271,44 @@ test("a non-streamed reply without usage is estimated from the message", async (
   assert.deepEqual(ops, ["reserve", "usage", "debit", "settle"]);
   assert.equal(state.usage!.usageSource, "estimated");
   assert.equal(state.usage!.credits, computeCredits(PRICE, EST_INPUT, estimateTokens(90)));
+});
+
+// ── sizing the hold ─────────────────────────────────────────────────────────
+
+test("a Chinese prompt is sized by its bytes, not its UTF-16 length", async () => {
+  // `.length` counts a CJK character as one unit, the same as an ASCII letter,
+  // though it is three bytes and most of a token upstream. Sized that way a
+  // Chinese prompt reserved about half of what it went on to cost — and since
+  // an interrupted request is charged this same input estimate, it was a
+  // discount too, on a Chinese-first product.
+  const messages = [{ role: "user", content: "请帮我总结这份文档。".repeat(200) }];
+  const json = JSON.stringify(messages);
+  const byBytes = estimateTokens(Buffer.byteLength(json));
+  const byUnits = Math.ceil(json.length / 3);
+  assert.ok(byBytes > byUnits * 2.5, "the two readings differ by ~3x on CJK text, so this test can tell them apart");
+
+  const up = streamingUpstream([content("好"), content("never read"), FINAL, DONE], { gapMs: 5 });
+  const { app, ops, state } = build(up.impl);
+  const reader = (await chat(app, { messages, max_tokens: 100 })).body!.getReader();
+  await reader.read();
+  await reader.cancel();
+  await settled(ops);
+
+  assert.equal(state.held, computeCredits(PRICE, byBytes, 100), "the hold");
+  assert.equal(state.usage!.inputTokens, byBytes, "and the input an interrupted request is charged for");
+});
+
+test("an ASCII prompt is sized exactly as before", async () => {
+  // Bytes and UTF-16 units agree on ASCII, so English traffic — and every
+  // hold it produces — is untouched by the switch to bytes.
+  const messages = [{ role: "user", content: "summarise this document. ".repeat(200) }];
+  const json = JSON.stringify(messages);
+  assert.equal(Buffer.byteLength(json), json.length);
+
+  const up = streamingUpstream([content("ok"), FINAL, DONE]);
+  const { app, ops, state } = build(up.impl);
+  await (await chat(app, { messages, max_tokens: 100 })).text();
+  await settled(ops);
+
+  assert.equal(state.held, computeCredits(PRICE, Math.ceil(json.length / 3), 100));
 });
