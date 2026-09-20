@@ -2,6 +2,7 @@ import { Check } from 'lucide-react'
 
 import { changeLanguage, getCurrentLanguage, availableLanguages } from '@/lib/i18n'
 import { useAppVersion } from '@/lib/config/version'
+import { appLogoUrl } from '@/lib/config/app-logo-url'
 import { cn } from '@/lib/utils'
 
 /**
@@ -39,7 +40,7 @@ export function LanguageStep({ onDone }: { onDone: () => void }) {
       <div className="mx-auto flex w-full max-w-[520px] flex-1 flex-col">
         <div className="flex flex-1 flex-col justify-center">
           <div className="mb-8 text-center">
-            <img src="/logo.png" alt="" className="mx-auto mb-5 h-16 w-16 object-contain" />
+            <img src={appLogoUrl()} alt="" className="mx-auto mb-5 h-16 w-16 object-contain" />
             {/* Both languages, both plain: no i18n lookup can be trusted to be
                 readable until the user has answered this. */}
             <h1 className="text-[22px] font-semibold leading-tight text-foreground">选择语言</h1>
