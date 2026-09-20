@@ -1,8 +1,15 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Check, ChevronLeft, ChevronRight, Filter, Lightbulb, Loader2, Plus, Search } from 'lucide-react'
+import { toast } from 'sonner'
+import { Archive, Check, ChevronLeft, ChevronRight, Lightbulb, Loader2, Plus, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
 import { SidebarCollapseToggle } from '@/components/app-sidebar'
 import { TrafficLights } from '@/components/ui/traffic-lights'
 import { useSidebar } from '@/components/ui/sidebar'
@@ -13,6 +20,15 @@ import { formatRelativeTime } from '@/lib/ui/date-format'
 import { cn, isTauri } from '@/lib/utils'
 import * as localCache from '@/lib/cache/local-cache'
 import { syncIdeasForTeam } from '@/lib/sync/idea-sync'
+import { recordIdeaStatusChange, updateIdeaStatus, type IdeaStatus } from '@/lib/team/idea-mutations'
+import {
+  IDEA_STATUSES,
+  IdeaActorDisc,
+  archiveIdeaWithUndo,
+  ideaStatusDotClass,
+  ideaStatusLabel,
+  normalizeIdeaStatus,
+} from '@/components/panel/idea-ui'
 
 export type IdeaRow = {
   id: string
@@ -147,19 +163,18 @@ function useIdeasForTeam(): UseIdeasForTeamResult {
 }
 
 function StatusBadge({ status }: { status: IdeaRow['status'] }) {
-  if (!status) return null
-  const styles =
-    status === 'in_progress' ? 'bg-coral'
-    : status === 'done' ? 'bg-emerald-500'
-    : 'bg-faint'
-  const label =
-    status === 'in_progress' ? 'In progress'
-    : status === 'done' ? 'Done'
-    : 'Open'
-  return <span className={cn('mt-[5px] h-2 w-2 shrink-0 rounded-full', styles)} aria-label={label} />
+  const { t } = useTranslation()
+  return (
+    <span
+      className={cn('mt-[5px] h-2 w-2 shrink-0 rounded-full', ideaStatusDotClass(status))}
+      aria-label={ideaStatusLabel(t, status)}
+    />
+  )
 }
 
-type IdeaStatusFilter = 'all' | 'in_progress' | 'open' | 'done'
+type IdeaStatusFilter = 'all' | IdeaStatus
+
+const STATUS_TABS: readonly IdeaStatusFilter[] = ['all', ...IDEA_STATUSES]
 
 const IDEAS_PAGE_SIZE = 20
 
@@ -187,10 +202,12 @@ function IdeaRowView({
   dragOverlay,
   dragOffsetY,
   idea,
+  onArchive,
   onPointerDown,
   onPointerEnter,
   onPointerMove,
   onPointerUp,
+  onSetStatus,
   onView,
   selected,
 }: {
@@ -200,80 +217,87 @@ function IdeaRowView({
   dragOverlay: DragOverlay | null
   dragOffsetY: number
   idea: IdeaRow
+  onArchive: (idea: IdeaRow) => void
   onPointerDown: (event: React.PointerEvent<HTMLButtonElement>, ideaId: string) => void
   onPointerEnter: (ideaId: string) => void
   onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void
   onPointerUp: () => void
+  onSetStatus: (idea: IdeaRow, status: IdeaStatus) => void
   onView: (idea: IdeaRow) => void
   selected: boolean
 }) {
+  const { t } = useTranslation()
   const relative = formatRelativeTime(new Date(idea.updated_at))
+  const currentStatus = normalizeIdeaStatus(idea.status)
   return (
-    <button
-      type="button"
-      aria-label={`Drag idea ${idea.title}`}
-      data-idea-id={idea.id}
-      onPointerDown={(event) => onPointerDown(event, idea.id)}
-      onPointerEnter={() => onPointerEnter(idea.id)}
-      onPointerMove={onPointerMove}
-      onPointerCancel={onPointerUp}
-      onPointerUp={onPointerUp}
-      onClick={() => onView(idea)}
-      style={dragging && dragOverlay
-        ? {
-            left: dragOverlay.left,
-            position: 'fixed',
-            top: dragOverlay.top + dragOffsetY,
-            transform: 'scale(1.015)',
-            width: dragOverlay.width,
-          }
-        : undefined}
-      className={cn(
-        'relative flex w-full items-start gap-2.5 border-b border-border-soft px-4 py-2.5 text-left transition-[background-color,box-shadow,transform] duration-150 hover:bg-selected focus:outline-none focus-visible:bg-selected',
-        selected && 'bg-selected',
-        canReorder && 'touch-none select-none cursor-grab active:cursor-grabbing',
-        dragging && 'z-50 pointer-events-none bg-paper shadow-[0_18px_34px_-24px_rgba(26,26,20,0.5)] ring-1 ring-border transition-none',
-      )}
-    >
-      <StatusBadge status={idea.status} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-semibold leading-[19px] text-foreground">{idea.title}</div>
-        <div className="mt-0.5 truncate text-[11.5px] leading-[18px] text-muted-foreground">
-          {creatorName ? `${creatorName} · ${relative}` : relative}
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Drag idea ${idea.title}`}
+          data-idea-id={idea.id}
+          onPointerDown={(event) => onPointerDown(event, idea.id)}
+          onPointerEnter={() => onPointerEnter(idea.id)}
+          onPointerMove={onPointerMove}
+          onPointerCancel={onPointerUp}
+          onPointerUp={onPointerUp}
+          // The menu swallows the pointerup (and macOS ctrl-click is a primary-button
+          // press), so a pending long-press would otherwise start a drag under it.
+          onContextMenu={onPointerUp}
+          onClick={() => onView(idea)}
+          style={dragging && dragOverlay
+            ? {
+                left: dragOverlay.left,
+                position: 'fixed',
+                top: dragOverlay.top + dragOffsetY,
+                transform: 'scale(1.015)',
+                width: dragOverlay.width,
+              }
+            : undefined}
+          className={cn(
+            'relative flex w-full items-start gap-2.5 border-b border-border-soft px-4 py-2.5 text-left transition-[background-color,box-shadow,transform] duration-150 hover:bg-selected focus:outline-none focus-visible:bg-selected',
+            selected && 'bg-selected',
+            canReorder && 'touch-none select-none cursor-grab active:cursor-grabbing',
+            dragging && 'z-50 pointer-events-none bg-paper shadow-[0_18px_34px_-24px_rgba(26,26,20,0.5)] ring-1 ring-border transition-none',
+          )}
+        >
+          <StatusBadge status={idea.status} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline gap-2">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-[19px] text-foreground">{idea.title}</span>
+              <span className="shrink-0 font-mono text-[11px] leading-[19px] text-faint">{relative}</span>
+            </div>
+            <div className="mt-1 flex items-center gap-1.5 text-[11.5px] leading-[16px] text-muted-foreground">
+              {creatorName && (
+                <>
+                  <IdeaActorDisc actorId={idea.created_by_actor_id} name={creatorName} size={14} />
+                  <span className="min-w-0 truncate">{creatorName}</span>
+                  <span className="text-faint">·</span>
+                </>
+              )}
+              <span className="shrink-0">{ideaStatusLabel(t, idea.status)}</span>
+            </div>
+          </div>
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="min-w-[168px]">
+        <div className="px-2 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-faint">
+          {t('ideas.statusFilterLabel', 'Status')}
         </div>
-      </div>
-      <span className="ml-2 shrink-0 pt-[1px] font-mono text-[11.5px] leading-[19px] text-faint">{relative}</span>
-    </button>
-  )
-}
-
-function FilterRow({
-  active,
-  count,
-  dotClassName,
-  label,
-  onSelect,
-}: {
-  active: boolean
-  count: number
-  dotClassName?: string
-  label: string
-  onSelect: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={cn(
-        'flex w-full items-center gap-2.5 rounded-[8px] px-3 py-1.5 text-left text-[12.5px] font-semibold text-foreground',
-        active && 'bg-coral-soft/35',
-      )}
-    >
-      {dotClassName ? <span className={cn('h-2 w-2 shrink-0 rounded-full', dotClassName)} /> : <span className="w-2" />}
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      <span className="font-mono text-[11.5px] font-normal text-faint">{count}</span>
-      {active && <Check className="h-3.5 w-3.5 text-coral" />}
-    </button>
+        {IDEA_STATUSES.map((status) => (
+          <ContextMenuItem key={status} onSelect={() => onSetStatus(idea, status)}>
+            <span className={cn('h-2 w-2 shrink-0 rounded-full', ideaStatusDotClass(status))} />
+            <span className="flex-1">{ideaStatusLabel(t, status)}</span>
+            {status === currentStatus && <Check className="h-3.5 w-3.5 text-muted-foreground" />}
+          </ContextMenuItem>
+        ))}
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => onArchive(idea)}>
+          <Archive className="h-3.5 w-3.5" />
+          {t('ideas.archive', 'Archive')}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 
@@ -287,8 +311,13 @@ export function IdeasView() {
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [filter, setFilter] = React.useState<IdeaStatusFilter>('all')
   const [page, setPage] = React.useState(0)
+  const [quickTitle, setQuickTitle] = React.useState('')
+  const [quickCreating, setQuickCreating] = React.useState(false)
+  const quickCreatingRef = React.useRef(false)
+  const searchInputRef = React.useRef<HTMLInputElement | null>(null)
   const openCreate = useIdeaDetailStore((s) => s.openCreate)
   const openEdit = useIdeaDetailStore((s) => s.openEdit)
+  const patchOpenIdea = useIdeaDetailStore((s) => s.patchOpenIdea)
   const selectedIdeaId = useIdeaDetailStore((s) =>
     s.target?.kind === 'edit' ? s.target.idea.id : null,
   )
@@ -368,7 +397,7 @@ export function IdeasView() {
   }, [])
 
   const handleDragStart = React.useCallback((event: React.PointerEvent<HTMLButtonElement>, ideaId: string) => {
-    if (!canReorder) return
+    if (!canReorder || event.button !== 0) return
     clearLongPressTimer()
     const row = event.currentTarget
     const rect = row.getBoundingClientRect()
@@ -428,6 +457,63 @@ export function IdeasView() {
     })
   }, [clearLongPressTimer, persistIdeaOrder, refetch])
 
+  // Brainstorming is a burst: a title and Enter, focus stays put for the next one.
+  const handleQuickCreate = React.useCallback(async () => {
+    const title = quickTitle.trim()
+    if (!title || !teamId || quickCreatingRef.current) return
+    quickCreatingRef.current = true
+    setQuickCreating(true)
+    try {
+      const row = await getBackend().ideas.createIdea({ teamId, title, workspaceId: null, body: null })
+      setQuickTitle('')
+      refetch()
+      openEdit({
+        id: row.id,
+        title: row.title,
+        status: (row.status as IdeaRow['status']) ?? null,
+        created_by_actor_id: row.created_by_actor_id ?? '',
+        sort_order: row.sort_order ?? 0,
+        updated_at: row.updated_at ?? new Date().toISOString(),
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.error(t('ideas.createFailed', 'Failed to create idea: {{msg}}', { msg }))
+    } finally {
+      quickCreatingRef.current = false
+      setQuickCreating(false)
+    }
+  }, [openEdit, quickTitle, refetch, t, teamId])
+
+  const handleSetStatus = React.useCallback(async (idea: IdeaRow, next: IdeaStatus) => {
+    const previous = normalizeIdeaStatus(idea.status)
+    if (previous === next) return
+    setOrderedIdeas((current) => current.map((row) => (row.id === idea.id ? { ...row, status: next } : row)))
+    try {
+      await updateIdeaStatus(idea.id, next)
+      patchOpenIdea(idea.id, { status: next })
+      await recordIdeaStatusChange(idea.id, previous, next).catch((e) => {
+        console.warn('[IdeasView] failed to record status change', e)
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.error(t('ideas.detail.saveFailed', 'Save failed: {{msg}}', { msg }))
+    }
+    refetch()
+  }, [patchOpenIdea, refetch, t])
+
+  const handleArchive = React.useCallback((idea: IdeaRow) => {
+    void archiveIdeaWithUndo(t, idea.id)
+  }, [t])
+
+  React.useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus()
+  }, [searchOpen])
+
+  const closeSearch = React.useCallback(() => {
+    setQuery('')
+    setSearchOpen(false)
+  }, [])
+
   const handleViewIdea = React.useCallback((idea: IdeaRow) => {
     if (suppressNextClickRef.current) {
       suppressNextClickRef.current = false
@@ -453,7 +539,7 @@ export function IdeasView() {
   }, [canReorder, draggingId, finishDrag, reorderFromPoint])
 
   const renderBody = () => {
-    if (loading) {
+    if (loading && orderedIdeas.length === 0) {
       return (
         <div className="flex flex-1 flex-col items-center justify-center py-12 text-sm text-muted-foreground">
           <Loader2 className="mb-2 h-5 w-5 animate-spin" />
@@ -498,6 +584,8 @@ export function IdeasView() {
             onPointerEnter={handleDragEnter}
             onPointerMove={handleDragMove}
             onPointerUp={finishDrag}
+            onArchive={handleArchive}
+            onSetStatus={(row, status) => void handleSetStatus(row, status)}
             onView={handleViewIdea}
             selected={selectedIdeaId === idea.id}
           />
@@ -526,30 +614,10 @@ export function IdeasView() {
             size="icon-sm"
             className={cn('h-7 w-7 rounded-[8px] text-muted-foreground hover:bg-selected hover:text-foreground', searchOpen && 'bg-selected text-foreground')}
             aria-label={t('common.search', 'Search')}
-            onClick={() => setSearchOpen((v) => !v)}
+            onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
           >
             <Search className="h-4 w-4" />
           </Button>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="h-7 w-7 rounded-[8px] text-muted-foreground hover:bg-selected hover:text-foreground"
-                aria-label={t('ideas.filterStatus', 'Filter by status')}
-              >
-                <Filter className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-[260px] rounded-[14px] border-border bg-paper p-2 shadow-[0_18px_45px_-28px_rgba(26,26,20,0.45)]">
-              <div className="px-3 pb-1 pt-1 text-[11.5px] font-semibold text-faint">{t('ideas.statusFilterLabel', 'Status')}</div>
-              <FilterRow active={filter === 'all'} count={counts.all} label={t('common.all', 'All')} onSelect={() => setFilter('all')} />
-              <FilterRow active={filter === 'in_progress'} count={counts.in_progress} dotClassName="bg-coral" label={t('ideas.status.inProgress', 'In progress')} onSelect={() => setFilter('in_progress')} />
-              <FilterRow active={filter === 'open'} count={counts.open} dotClassName="bg-faint" label={t('ideas.status.open', 'Open')} onSelect={() => setFilter('open')} />
-              <FilterRow active={filter === 'done'} count={counts.done} dotClassName="bg-emerald-500" label={t('ideas.status.done', 'Done')} onSelect={() => setFilter('done')} />
-            </PopoverContent>
-          </Popover>
           <Button
             type="button"
             variant="ghost"
@@ -563,13 +631,76 @@ export function IdeasView() {
           </Button>
         </div>
         {searchOpen && (
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t('ideas.searchPlaceholder', 'Search ideas')}
-            className="mt-2 h-8 w-full rounded-[8px] border border-border bg-paper px-3 text-[12.5px] outline-none placeholder:text-faint focus:border-border"
-          />
+          <div className="mt-2 flex h-8 items-center gap-2 rounded-[8px] border border-border bg-paper px-2.5">
+            <Search className="h-3.5 w-3.5 shrink-0 text-faint" />
+            <input
+              ref={searchInputRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && !event.nativeEvent.isComposing) closeSearch()
+              }}
+              placeholder={t('ideas.searchPlaceholder', 'Search ideas')}
+              className="min-w-0 flex-1 bg-transparent text-[12.5px] outline-none placeholder:text-faint"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => { setQuery(''); searchInputRef.current?.focus() }}
+                aria-label={t('ideas.clearSearch', 'Clear search')}
+                className="shrink-0 rounded p-0.5 text-faint hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         )}
+        <div className="mt-2 flex h-8 items-center gap-2 rounded-[8px] border border-border bg-paper px-2.5 transition-colors focus-within:border-foreground/25">
+          {quickCreating
+            ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-faint" />
+            : <Lightbulb className="h-3.5 w-3.5 shrink-0 text-faint" />}
+          <input
+            value={quickTitle}
+            onChange={(event) => setQuickTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+              event.preventDefault()
+              void handleQuickCreate()
+            }}
+            disabled={!teamId}
+            aria-label={t('ideas.quickCapture', 'Jot an idea down, Enter to save')}
+            placeholder={t('ideas.quickCapture', 'Jot an idea down, Enter to save')}
+            className="min-w-0 flex-1 bg-transparent text-[12.5px] outline-none placeholder:text-faint"
+          />
+          {quickTitle.trim() && <span className="shrink-0 font-mono text-[11px] text-faint">↵</span>}
+        </div>
+        <div
+          role="tablist"
+          aria-label={t('ideas.filterStatus', 'Filter by status')}
+          className="-mx-1 mt-2 flex items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
+        >
+          {STATUS_TABS.map((tab) => {
+            const active = filter === tab
+            return (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setFilter(tab)}
+                className={cn(
+                  'inline-flex shrink-0 items-center gap-1 rounded-[7px] px-2 py-1 text-[12px] leading-[18px] transition-colors',
+                  active
+                    ? 'bg-selected font-semibold text-foreground'
+                    : 'text-muted-foreground hover:bg-selected/60 hover:text-foreground',
+                )}
+              >
+                {tab === 'all' ? t('common.all', 'All') : ideaStatusLabel(t, tab)}
+                <span className="font-mono text-[11px] font-normal text-faint">{counts[tab]}</span>
+              </button>
+            )
+          })}
+        </div>
       </div>
       {renderBody()}
       {pageCount > 1 && (

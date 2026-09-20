@@ -626,6 +626,8 @@ export interface IdeaActivityRow {
   actor_id: string;
   activity_type: string;
   content?: string | null;
+  /** `status_change` rows carry `from_status` / `to_status` here. */
+  metadata?: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -667,7 +669,8 @@ export interface IdeasBackend {
   getIdeaDetail(ideaId: string): Promise<IdeaDetailRow | null>;
   createIdea(input: { teamId: string; title: string; body?: string | null; workspaceId?: string | null }): Promise<IdeaRow>;
   updateIdea(input: IdeaSortOrderUpdateInput | IdeaFullUpdateInput): Promise<void>;
-  archiveIdea(ideaId: string): Promise<void>;
+  /** `archived: false` restores an archived idea — the undo path. */
+  archiveIdea(ideaId: string, archived?: boolean): Promise<void>;
   createIdeaActivity(input: {
     ideaId: string;
     actorId?: string | null;
