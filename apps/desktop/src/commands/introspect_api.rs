@@ -302,7 +302,20 @@ fn router(app: AppHandle, token: Arc<str>, verifier: caller::CallerVerifier) -> 
             post_route!(handle_session_participants),
         )
         .route("/session-archive", post_route!(handle_session_archive))
-        .route("/app-manage", post_route!(apps::handle_app_manage))
+        // Hand-wired rather than `post_route!`: the deploy gate scopes a
+        // remembered approval to the agent host that asked, so this one handler
+        // needs the caller the gate vouched for.
+        .route(
+            "/app-manage",
+            axum::routing::post(
+                |State(app): State<AppHandle>,
+                 caller: Option<axum::Extension<caller::AgentCaller>>,
+                 body: Bytes| async move {
+                    let caller = caller.map(|axum::Extension(caller)| caller);
+                    handler_response(apps::handle_app_manage(&app, caller.as_ref(), &body).await)
+                },
+            ),
+        )
         .route("/app-access", post_route!(apps::handle_app_access))
         .route("/app-data", post_route!(apps::handle_app_data))
         .route("/app-files", post_route!(apps::handle_app_files))
