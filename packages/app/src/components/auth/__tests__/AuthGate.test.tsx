@@ -101,6 +101,13 @@ vi.mock("@/lib/config/build-config", () => ({
   extensionTeamOnboarding: extensionPolicyMock,
 }));
 
+vi.mock("@/lib/config/extension-auto-create-team", () => ({
+  isExtensionAutoCreateTeamEnabled: () => {
+    if (!extensionPolicyMock.isExtension) return true;
+    return extensionPolicyMock.autoCreateTeam !== false;
+  },
+}));
+
 // These cases exercise everything *after* first-run onboarding, so present a
 // machine that has already answered the language step. The gate itself is
 // covered in AuthGateOnboarding.test.tsx.
@@ -518,9 +525,26 @@ describe("AuthGate", () => {
     expect(screen.queryByText(/Team picker/)).not.toBeInTheDocument();
   });
 
+  it("extension: invite-only build skips first-team naming when autoCreateTeam is off", async () => {
+    isTauriMock.mockReturnValue(false);
+    extensionPolicyMock.isExtension = true;
+    extensionPolicyMock.autoCreateTeam = false;
+    backendMock.teams.listAllMyTeams.mockResolvedValue([]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(screen.getByText("暂未加入团队")).toBeInTheDocument());
+    expect(screen.getByText("请联系管理员邀请你加入团队。")).toBeInTheDocument();
+    expect(backendMock.teams.bootstrapTeam).not.toHaveBeenCalled();
+    expect(authState.refreshPendingInvites).toHaveBeenCalled();
+    expect(screen.queryByText("App shell")).not.toBeInTheDocument();
+  });
+
   it("blocks a teamless user when the server refuses to create an org", async () => {
-    // Invite-only is a DEPLOYMENT decision now, not a client build policy: the
-    // gate reacts to 403 registration_disabled rather than deciding for itself.
     isTauriMock.mockReturnValue(false);
     backendMock.teams.listAllMyTeams.mockResolvedValue([]);
     backendMock.teams.bootstrapTeam.mockRejectedValueOnce(registrationDisabled());

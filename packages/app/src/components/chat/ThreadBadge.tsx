@@ -10,6 +10,8 @@ import { threadTitleFromMessage, formatThreadRelativeTime } from "@/lib/session/
 import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";
 import { useThreadSummaryForMessage } from "@/hooks/use-session-thread-summaries";
 import { rememberThreadForkMetadata } from "@/lib/session/thread-fork-metadata";
+import { isAgentReplyForkEnabled } from "@/lib/config/agent-reply-fork-build";
+import { MessageFeedback } from "./MessageFeedback";
 import { MessageActionIconButton } from "./MessageActionIconButton";
 
 export function ThreadBadge({
@@ -63,7 +65,16 @@ export function ThreadBadge({
     Boolean(summary?.threadSessionId) || Boolean(panelThreadSessionId);
 
   const showThread = isAgentReply && !hideThread;
-  if (!showThread && !copySlot) return null;
+  const forkEnabled = isAgentReplyForkEnabled();
+  const feedbackEl =
+    isAgentReply ? (
+      <MessageFeedback sessionId={parentSessionId} messageId={messageId} />
+    ) : null;
+
+  const actionOpacityClass = cn(
+    "transition-opacity",
+    !actionsRevealed && !isActive && "opacity-0 group-hover/msg:opacity-100",
+  );
 
   const onOpen = () => {
     useThreadListPanelStore.getState().close();
@@ -84,7 +95,7 @@ export function ThreadBadge({
     hasThread || Boolean(summary && summary.messageCount > 0);
 
   const threadReplyBadge =
-    showThread && hasThreadUi ? (
+    showThread && forkEnabled && hasThreadUi ? (
       <button
         type="button"
         data-testid="thread-badge"
@@ -109,7 +120,7 @@ export function ThreadBadge({
     ) : null;
 
   const startThreadButton =
-    showThread && !hasThreadUi && allowStartThread ? (
+    showThread && forkEnabled && !hasThreadUi && allowStartThread ? (
       <MessageActionIconButton
         label={t("thread.tooltipStart")}
         onClick={onOpen}
@@ -120,37 +131,25 @@ export function ThreadBadge({
       </MessageActionIconButton>
     ) : null;
 
-  const copyRow = copySlot ? (
-    <div
-      className={cn(
-        "transition-opacity",
-        !actionsRevealed && "opacity-0 group-hover/msg:opacity-100",
-      )}
-    >
-      {copySlot}
-    </div>
-  ) : null;
+  const actionRow =
+    copySlot || startThreadButton || feedbackEl ? (
+      <div className={cn("flex items-center gap-0.5", actionOpacityClass)}>
+        {copySlot}
+        {startThreadButton}
+        {feedbackEl}
+      </div>
+    ) : null;
 
   if (hasThreadUi && threadReplyBadge) {
     return (
       <div className="mt-1 pl-1">
         {threadReplyBadge}
-        {copyRow ? <div className="mt-0.5">{copyRow}</div> : null}
+        {actionRow ? <div className="mt-0.5">{actionRow}</div> : null}
       </div>
     );
   }
 
-  if (!copySlot && !startThreadButton) return null;
+  if (!actionRow) return null;
 
-  return (
-    <div
-      className={cn(
-        "mt-1 flex items-center gap-0.5 pl-1 transition-opacity",
-        !actionsRevealed && !isActive && "opacity-0 group-hover/msg:opacity-100",
-      )}
-    >
-      {copySlot}
-      {startThreadButton}
-    </div>
-  );
+  return <div className="mt-1 pl-1">{actionRow}</div>;
 }

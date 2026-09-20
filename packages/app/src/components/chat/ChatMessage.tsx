@@ -25,7 +25,6 @@ import { MessageStatusDot } from "./MessageStatusDot";
 import { ActorLabel } from "./ActorLabel";
 import { MessageTokenUsage } from "./MessageTokenUsage";
 import { MessageTokenSummary } from "./MessageTokenSummary";
-import { MessageFeedback } from "./MessageFeedback";
 import { MessageStarRating } from "./MessageStarRating";
 import { splitAssistantProcessAndFinalParts } from "@/lib/agent/agent-reply-transcript";
 import {
@@ -782,7 +781,7 @@ export const ChatMessage = React.memo(function ChatMessage({
         </div>
       )}
 
-      {/* Token usage summary + feedback for assistant messages */}
+      {/* Token usage summary for assistant messages */}
       {!isUser && !latestMessage.isStreaming && latestMessage.tokens && !tokenGroupInfo?.hideTokenUsage && (
         <div className="pl-1 group">
           <div className="flex items-start gap-2">
@@ -791,12 +790,6 @@ export const ChatMessage = React.memo(function ChatMessage({
             ) : (
               <MessageTokenUsage tokens={latestMessage.tokens} cost={latestMessage.cost} />
             )}
-            <div className="mt-1">
-              <MessageFeedback
-                sessionId={latestMessage.sessionId}
-                messageId={latestMessage.id}
-              />
-            </div>
           </div>
           {showStarRating && (
             <MessageStarRating

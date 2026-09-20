@@ -5,6 +5,7 @@ import { Toaster, toast } from "sonner";
 import { cn, isTauri, removeStartupSkeleton } from "@/lib/utils";
 import { capabilities } from "@/lib/config/platform";
 import { isSoloBuild } from "@/lib/config/solo-build";
+import { isAgentReplyForkEnabled } from "@/lib/config/agent-reply-fork-build";
 import { scheduleReleaseStuckModalLayers } from "@/lib/ui/modal-layer-cleanup";
 import { appDisplayName } from "@/lib/config/build-config";
 import { daemonHomeDisplayPath } from "@/lib/daemon/daemon-paths";
@@ -678,7 +679,7 @@ function AppContent() {
               {capabilities.workspace && sessionWorkspacePath && showSkillsRefresh && (
                 <RefreshSkillsHeaderButton workspacePath={sessionWorkspacePath} />
               )}
-              {activeSession && hasCurrentSession && (
+              {activeSession && hasCurrentSession && isAgentReplyForkEnabled() && (
                 <SessionThreadsHeaderButton sessionId={activeSession.id} />
               )}
               {hasCurrentSession && !isSoloBuild() && (

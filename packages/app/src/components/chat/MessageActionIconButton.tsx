@@ -28,7 +28,7 @@ export function MessageActionIconButton({
           onClick={onClick}
           aria-label={label}
           className={cn(
-            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors",
+            "inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors",
             "hover:bg-muted/40 hover:text-foreground",
             active && "bg-selected text-ink-2",
           )}

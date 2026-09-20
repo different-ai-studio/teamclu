@@ -20,6 +20,7 @@ import { markStartup } from "@/lib/telemetry/startup-perf";
 import { TeamPicker } from "./TeamPicker";
 import { PendingInvitesDialog } from "@/components/auth/PendingInvitesDialog";
 import { extensionTeamOnboarding } from "@/lib/config/build-config";
+import { isExtensionAutoCreateTeamEnabled } from "@/lib/config/extension-auto-create-team";
 import { NoTeamScreen } from "./NoTeamScreen";
 import { NameYourTeamScreen } from "./NameYourTeamScreen";
 import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
@@ -349,6 +350,15 @@ export function AuthGate({ children }: AuthGateProps) {
           setMyTeams(allTeams);
           teamSet = true;
         } else {
+          if (!isExtensionAutoCreateTeamEnabled()) {
+            setMyTeams([]);
+            await useAuthStore.getState().refreshPendingInvites();
+            markStartup("team-bootstrap:end");
+            setRetrying(false);
+            setBootstrapError(null);
+            setBootstrap("no_team");
+            return;
+          }
           // Login onboarding. The server CAN name the org and its default team
           // by itself, and still does when the field comes back blank — but
           // that derivation names a company's workspace after whoever signed
