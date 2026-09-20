@@ -224,7 +224,11 @@ export async function settle(sql: Sql, input: SettleInput): Promise<void> {
   });
 }
 
-/** Drop a hold whose request never produced a charge (upstream error, cancel). */
+/**
+ * Drop a hold whose request never produced a charge: the upstream refused it,
+ * or the usage row could not be written. NOT a client that hung up — that
+ * request ran, and is settled like any other.
+ */
 export async function release(sql: Sql, reservationId: string | null): Promise<void> {
   if (!reservationId) return;
   await sql`
@@ -233,8 +237,10 @@ export async function release(sql: Sql, reservationId: string | null): Promise<v
 }
 
 /**
- * Release holds whose requests never came back — a crashed process or a client
- * that vanished mid-stream would otherwise keep that credit reserved forever.
+ * Release holds whose requests never came back — a crashed process would
+ * otherwise keep that credit reserved forever. A client that vanished
+ * mid-stream is not one of these: it is settled when it hangs up, and must
+ * never be left for this sweep, which releases without charging.
  * Ten minutes is a hard ceiling: a longer request has its hold released early,
  * which is the cheaper of the two failure modes.
  */

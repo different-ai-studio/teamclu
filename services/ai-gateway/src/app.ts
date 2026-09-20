@@ -5,8 +5,9 @@ import { pickRoute } from "./catalog.js";
 import { TokenCache, bearer } from "./auth.js";
 import { resolveActor, recordUsage, getBalance, type Sql } from "./db.js";
 import {
-  computeCredits, countImages, prepareImageUpstream, pricePerImage,
-  prepareUpstream, readImageUsage, readUsage, teeSseUsage,
+  computeCredits, countImages, estimateTokens, generatedBytes, prepareImageUpstream,
+  pricePerImage, prepareUpstream, readImageUsage, readUsage, teeSseUsage,
+  type UpstreamUsage,
 } from "./proxy.js";
 import { pickImageRoute } from "./catalog.js";
 import { KeyPools } from "./key-pool.js";
@@ -39,6 +40,14 @@ const err = (code: string, message: string, status: number) =>
 
 /** Upper bound on one images request. The upstream's own cap is 10. */
 const MAX_IMAGES = 10;
+
+// What `ai_usage_logs.status_code` records for a chat request that did not run
+// to completion. The client saw a 200 either way; these say how it really went.
+// They also keep `usage_source = 'estimated'` usable as the "an upstream stopped
+// reporting usage" alarm: a member pressing stop is routine, and 499 is how a
+// query leaves those rows out.
+const CLIENT_CLOSED_REQUEST = 499;
+const UPSTREAM_CUT_SHORT = 502;
 
 const RANGES = new Set(["day", "week", "month", "year"]);
 const parseRange = (v: string | undefined): UsageRange =>
@@ -196,23 +205,33 @@ export function createApp(deps: Deps) {
     }
     const { res, route: picked, prepared } = up;
 
-    const log = async (
-      u: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null,
-      source: "upstream" | "estimated",
-    ) => {
-      const credits = u ? computeCredits(tier.pricing, u.inputTokens, u.outputTokens) : 0;
+    // `reported` is the upstream's own count. Without one — it never sent a
+    // usage frame, or the stream was cut before the frame arrived — the charge
+    // is estimated: the hold's input estimate plus whatever was generated. It
+    // used to be zero, which priced "hang up before the last chunk" at free.
+    //
+    // An estimate never charges past the hold; the upstream's count may, and
+    // the ledger tolerates that overshoot by design.
+    const log = async (reported: UpstreamUsage | null, generated: number, statusCode: number) => {
+      const u = reported ?? {
+        inputTokens: estInput,
+        cachedInputTokens: 0,
+        outputTokens: estimateTokens(generated),
+      };
+      const priced = computeCredits(tier.pricing, u.inputTokens, u.outputTokens);
+      const credits = reported ? priced : Math.min(priced, hold);
       const usageLogId = await recordUsage(sql, {
         teamId: a.teamId,
         actorId: a.actor.id,
         publicModelId: publicId,
         backendModelId: picked.backendId,
         providerId: picked.backend.provider,
-        inputTokens: u?.inputTokens ?? 0,
-        cachedInputTokens: u?.cachedInputTokens ?? 0,
-        outputTokens: u?.outputTokens ?? 0,
+        inputTokens: u.inputTokens,
+        cachedInputTokens: u.cachedInputTokens,
+        outputTokens: u.outputTokens,
         credits,
-        usageSource: source,
-        statusCode: res.status,
+        usageSource: reported ? "upstream" : "estimated",
+        statusCode,
         stream: wantsStream,
         latencyMs: Date.now() - started,
         requestId: c.req.header("x-request-id") ?? null,
@@ -233,24 +252,35 @@ export function createApp(deps: Deps) {
       }
     };
 
+    const clientGone = () => c.req.raw.signal.aborted;
+
     if (!wantsStream || !res.body) {
       const json = await res.json().catch(() => null);
-      const usage = readUsage(json);
-      void log(usage, usage ? "upstream" : "estimated");
+      void log(readUsage(json), generatedBytes(json), clientGone() ? CLIENT_CLOSED_REQUEST : res.status);
       return c.json(json as any, res.status as any);
     }
 
-    let seen: { inputTokens: number; cachedInputTokens: number; outputTokens: number } | null = null;
+    let seen: UpstreamUsage | null = null;
     const stream = teeSseUsage(res.body, {
       dropUsageOnlyFrame: prepared.injectedUsageOption && !clientAskedForUsage,
       onUsage: (u) => { seen = u; },
+      // Settled from the stream's one exit, not from a flush(): a flush only
+      // runs on a clean close, so a client that hung up — or an upstream that
+      // reset — skipped it, and the request was neither metered nor charged.
+      // The hold just expired ten minutes later.
+      //
+      // A client abort reaches us two ways, as a cancel on this body and as an
+      // abort of the upstream fetch, in no fixed order; the second shows up as
+      // `errored`, so the request's own signal is what tells it from a reset.
+      onEnd: ({ outcome, generatedBytes: generated }) => {
+        const statusCode =
+          outcome === "complete" ? res.status
+          : outcome === "cancelled" || clientGone() ? CLIENT_CLOSED_REQUEST
+          : UPSTREAM_CUT_SHORT;
+        void log(seen, generated, statusCode);
+      },
     });
-    // The usage frame is the last thing on the wire, so the log write is
-    // queued after the stream drains rather than before it starts.
-    const done = new TransformStream<Uint8Array, Uint8Array>({
-      flush() { void log(seen, seen ? "upstream" : "estimated"); },
-    });
-    return new Response(stream.pipeThrough(done), {
+    return new Response(stream, {
       status: res.status,
       headers: {
         "Content-Type": res.headers.get("content-type") ?? "text/event-stream",
