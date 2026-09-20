@@ -56,6 +56,20 @@ if [ -z "$AI_GATEWAY_SERVICE_TOKEN" ]; then
 fi
 set_kv AI_GATEWAY_SERVICE_TOKEN "$AI_GATEWAY_SERVICE_TOKEN"
 
+# Password on Kong's `dashboard` route — the only thing in front of Supabase
+# Studio, which has no login of its own and connects to Postgres as
+# supabase_admin. Upstream Supabase ships a placeholder that is printed in its
+# public docs; a box that kept it has a Studio anyone can open. Blank or that
+# placeholder gets a random value; anything else is somebody's real password
+# and is preserved, like the token above.
+DASHBOARD_PASSWORD_PLACEHOLDER="this_password_is_insecure_and_should_be_updated"
+DASHBOARD_PASSWORD="$(grep '^DASHBOARD_PASSWORD=' "$ENV_FILE" | cut -d= -f2- || true)"
+if [ -z "$DASHBOARD_PASSWORD" ] || [ "$DASHBOARD_PASSWORD" = "$DASHBOARD_PASSWORD_PLACEHOLDER" ]; then
+  DASHBOARD_PASSWORD="$(openssl rand -hex 24)"
+  set_kv DASHBOARD_PASSWORD "$DASHBOARD_PASSWORD"
+  echo "gen-secrets: generated DASHBOARD_PASSWORD (Studio login) — read it from $ENV_FILE; restart kong to apply"
+fi
+
 CADDY_TLS_MODE="$(grep '^CADDY_TLS_MODE=' "$ENV_FILE" | cut -d= -f2- || true)"
 # CADDY_CATCHALL_SITE is the address of the block that serves apps' own custom
 # domains. With TLS it must be a bare `:443` so it matches any Host; with TLS

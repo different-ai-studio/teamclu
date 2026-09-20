@@ -37,4 +37,17 @@ grep -q '^CADDY_SITE_TLS=tls force_automate$' "$TMP/acme.env" || {
   echo "FAIL: CADDY_SITE_TLS does not force ACME automation"
   exit 1
 }
+
+# DASHBOARD_PASSWORD is the only thing in front of Studio. Blank and the
+# upstream placeholder must both come out random; a real password must survive.
+PLACEHOLDER="this_password_is_insecure_and_should_be_updated"
+dash() { grep '^DASHBOARD_PASSWORD=' "$1" | cut -d= -f2-; }
+v="$(dash "$TMP/.env")"   # absent from the fixture above
+[ "${#v}" -ge 32 ] || { echo "FAIL: DASHBOARD_PASSWORD not generated when absent"; exit 1; }
+ENV_FILE="$TMP/.env" ./gen-secrets.sh
+[ "$(dash "$TMP/.env")" = "$v" ] || { echo "FAIL: DASHBOARD_PASSWORD not preserved across runs"; exit 1; }
+{ grep -v '^DASHBOARD_PASSWORD=' "$TMP/.env"; echo "DASHBOARD_PASSWORD=$PLACEHOLDER"; } > "$TMP/placeholder.env"
+ENV_FILE="$TMP/placeholder.env" ./gen-secrets.sh
+v="$(dash "$TMP/placeholder.env")"
+[ "$v" != "$PLACEHOLDER" ] && [ "${#v}" -ge 32 ] || { echo "FAIL: placeholder DASHBOARD_PASSWORD kept"; exit 1; }
 echo "PASS"
