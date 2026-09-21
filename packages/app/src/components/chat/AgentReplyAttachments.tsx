@@ -7,6 +7,9 @@ import {
   openOrDownloadAgentReplyAttachment,
 } from "@/lib/attachments/download-remote-attachment";
 
+/** Fixed square tile — images and files share the same footprint. */
+const TILE_SIZE_CLASS = "h-[88px] w-[88px]";
+
 function formatAttachmentSize(bytes: number): string {
   if (!bytes || bytes < 0) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -14,7 +17,18 @@ function formatAttachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function FileAttachmentChip({
+function attachmentTileButtonClass(canOpen: boolean, busy?: boolean) {
+  return cn(
+    TILE_SIZE_CLASS,
+    "relative shrink-0 overflow-hidden rounded-lg border border-border bg-paper text-left",
+    canOpen && !busy
+      ? "cursor-pointer hover:bg-selected/30"
+      : "cursor-default opacity-70",
+    busy && "opacity-60",
+  );
+}
+
+function FileAttachmentTile({
   item,
   onOpen,
   busy,
@@ -32,37 +46,36 @@ function FileAttachmentChip({
       type="button"
       disabled={!canOpen || busy}
       onClick={() => onOpen(item)}
-      className={cn(
-        "inline-flex max-w-[220px] items-center gap-2 rounded-lg border border-border bg-paper px-[11px] py-2 text-left",
-        canOpen
-          ? "cursor-pointer hover:bg-selected/40"
-          : "cursor-default opacity-70",
-      )}
+      className={attachmentTileButtonClass(canOpen, busy)}
       title={item.filename}
     >
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-panel font-mono text-[9px] font-bold text-muted-foreground">
-        {ext.slice(0, 4)}
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate text-[13px] font-semibold text-foreground">
+      <div className="flex h-full flex-col items-center px-1 py-1.5">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-panel font-mono text-[8px] font-bold text-muted-foreground">
+          {ext.slice(0, 4)}
+        </span>
+        <span className="mt-1 min-h-0 w-full flex-1 overflow-hidden text-center text-[10px] font-semibold leading-[1.15] text-foreground line-clamp-2 break-all">
           {item.filename}
         </span>
         {sizeLabel ? (
-          <span className="mt-0.5 block font-mono text-[11px] text-faint">
+          <span className="mt-0.5 shrink-0 font-mono text-[9px] leading-none text-faint">
             {sizeLabel}
           </span>
-        ) : null}
-      </span>
+        ) : (
+          <span className="shrink-0" aria-hidden />
+        )}
+      </div>
     </button>
   );
 }
 
-function ImageAttachmentPreview({
+function ImageAttachmentTile({
   item,
   onOpen,
+  busy,
 }: {
   item: AgentReplyAttachment;
   onOpen: (item: AgentReplyAttachment) => void;
+  busy: boolean;
 }) {
   const { t } = useTranslation();
   const canOpen = Boolean(item.url || item.bucketPath);
@@ -120,31 +133,29 @@ function ImageAttachmentPreview({
   return (
     <button
       type="button"
-      disabled={!canOpen}
+      disabled={!canOpen || busy}
       onClick={() => onOpen(item)}
-      className={cn(
-        "max-w-[320px] overflow-hidden rounded-lg border border-border bg-paper text-left",
-        canOpen ? "cursor-pointer hover:opacity-95" : "cursor-default opacity-80",
-      )}
+      className={attachmentTileButtonClass(canOpen, busy)}
+      title={item.filename}
     >
-      <div className="flex h-[140px] items-center justify-center bg-panel">
-        {previewUrl ? (
-          <img
-            src={previewUrl}
-            alt={item.filename}
-            className="max-h-full max-w-full object-contain"
-          />
-        ) : (
-          <span className="text-[12px] text-faint">
+      {previewUrl ? (
+        <img
+          src={previewUrl}
+          alt={item.filename}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <div className="flex h-full flex-col items-center justify-center gap-1 bg-panel px-1.5">
+          <span className="font-mono text-[9px] font-bold uppercase text-muted-foreground">
+            {item.filename.split(".").pop()?.slice(0, 4) ?? "IMG"}
+          </span>
+          <span className="line-clamp-2 text-center text-[10px] text-faint">
             {previewFailed
               ? item.filename
               : t("chat.agentReply.imagePreviewLoading")}
           </span>
-        )}
-      </div>
-      <div className="border-t border-border-soft px-2.5 py-1.5 font-mono text-[11px] text-faint truncate">
-        {item.filename}
-      </div>
+        </div>
+      )}
     </button>
   );
 }
@@ -158,9 +169,6 @@ export function AgentReplyAttachments({
 }) {
   const { t } = useTranslation();
   const [busyUrl, setBusyUrl] = React.useState<string | null>(null);
-
-  const images = attachments.filter((a) => a.isImage);
-  const files = attachments.filter((a) => !a.isImage);
 
   const handleOpen = React.useCallback(
     async (item: AgentReplyAttachment) => {
@@ -195,29 +203,31 @@ export function AgentReplyAttachments({
           count: attachments.length,
         })}
       </div>
-      {images.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {images.map((item) => (
-            <ImageAttachmentPreview
-              key={`${item.filename}-${item.url || item.bucketPath}`}
+      <div className="flex flex-wrap gap-2">
+        {attachments.map((item) => {
+          const busyKey = item.url || item.bucketPath || item.filename;
+          const busy = busyUrl === busyKey;
+          const key = `${item.filename}-${busyKey}`;
+          if (item.isImage) {
+            return (
+              <ImageAttachmentTile
+                key={key}
+                item={item}
+                onOpen={handleOpen}
+                busy={busy}
+              />
+            );
+          }
+          return (
+            <FileAttachmentTile
+              key={key}
               item={item}
               onOpen={handleOpen}
+              busy={busy}
             />
-          ))}
-        </div>
-      ) : null}
-      {files.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {files.map((item) => (
-            <FileAttachmentChip
-              key={`${item.filename}-${item.url || item.bucketPath}`}
-              item={item}
-              onOpen={handleOpen}
-              busy={busyUrl === (item.url || item.bucketPath)}
-            />
-          ))}
-        </div>
-      ) : null}
+          );
+        })}
+      </div>
     </div>
   );
 }
