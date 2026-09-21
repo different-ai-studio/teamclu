@@ -141,6 +141,87 @@ impl SessionAttachService {
     }
 }
 
+/// Parsed from pi `session_attach_file` tool result JSON (daemon aggregator path).
+pub struct ParsedSessionAttach {
+    pub record: teamclu_gateway::AttachmentRecord,
+    pub public_url: String,
+}
+
+const SESSION_ATTACH_TOOL: &str = "session_attach_file";
+
+/// When the ACP tool result is from `session_attach_file` and reports success,
+/// return attachment metadata for turn-final agent reply merge.
+pub fn parse_session_attach_tool_result(
+    tool_name: &str,
+    tr: &crate::proto::amux::AcpToolResult,
+) -> Option<ParsedSessionAttach> {
+    if tool_name != SESSION_ATTACH_TOOL || !tr.success {
+        return None;
+    }
+    if let Some(parsed) = parse_session_attach_json(&tr.summary) {
+        return Some(parsed);
+    }
+    if !tr.raw_output_json.is_empty() {
+        if let Some(parsed) = parse_session_attach_json(&tr.raw_output_json) {
+            return Some(parsed);
+        }
+    }
+    for block in &tr.content {
+        if let Some(crate::proto::amux::acp_tool_call_content::Payload::Text(text)) =
+            block.payload.as_ref()
+        {
+            if let Some(parsed) = parse_session_attach_json(&text.text) {
+                return Some(parsed);
+            }
+        }
+    }
+    None
+}
+
+fn parse_session_attach_json(raw: &str) -> Option<ParsedSessionAttach> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if v.get("ok") != Some(&serde_json::Value::Bool(true)) {
+        return None;
+    }
+    let file_name = v
+        .get("fileName")
+        .or_else(|| v.get("file_name"))
+        .and_then(|x| x.as_str())?;
+    let mime = v
+        .get("mimeType")
+        .or_else(|| v.get("mime_type"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("application/octet-stream");
+    let size = v.get("size").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+    let storage_path = v
+        .get("storagePath")
+        .or_else(|| v.get("storage_path"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("");
+    if storage_path.is_empty() && url.is_empty() {
+        return None;
+    }
+    Some(ParsedSessionAttach {
+        record: teamclu_gateway::AttachmentRecord {
+            filename: file_name.to_string(),
+            mime: mime.to_string(),
+            size,
+            bucket_path: if storage_path.is_empty() {
+                url.to_string()
+            } else {
+                storage_path.to_string()
+            },
+            local_path: None,
+        },
+        public_url: url.to_string(),
+    })
+}
+
 /// `file` must resolve to a path under `worktree` (no `..` escape).
 pub fn canonicalize_under_worktree(
     file: &Path,
@@ -185,6 +266,22 @@ mod tests {
             canonicalize_under_worktree(&outside, &worktree),
             Err(SessionAttachError::PathNotAllowed)
         ));
+    }
+
+    #[test]
+    fn parses_session_attach_tool_result_json() {
+        use crate::proto::amux::AcpToolResult;
+        let tr = AcpToolResult {
+            tool_id: "t1".into(),
+            success: true,
+            summary: r#"{"ok":true,"fileName":"a.pdf","mimeType":"application/pdf","size":3,"storagePath":"team/s/a.pdf","url":"https://cdn/a.pdf"}"#.into(),
+            raw_output_json: String::new(),
+            content: vec![],
+        };
+        let parsed =
+            super::parse_session_attach_tool_result("session_attach_file", &tr).unwrap();
+        assert_eq!(parsed.record.filename, "a.pdf");
+        assert_eq!(parsed.public_url, "https://cdn/a.pdf");
     }
 
     #[test]

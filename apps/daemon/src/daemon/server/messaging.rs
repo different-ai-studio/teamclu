@@ -609,6 +609,12 @@ impl DaemonServer {
                     }
                     let mut cloud_ok = true;
                     let mut trace_targets = Vec::new();
+                    let msg_attachments = if msg.attachments.is_empty() {
+                        None
+                    } else {
+                        Some(msg.attachments.clone())
+                    };
+                    let msg_attachment_urls = msg.attachment_urls.clone();
                     for sid in &collab_sessions {
                         let persisted = tc
                             .emit_agent_message(
@@ -623,6 +629,8 @@ impl DaemonServer {
                                 seq,
                                 persist,
                                 Some(&self.backend),
+                                msg_attachments.clone(),
+                                msg_attachment_urls.clone(),
                             )
                             .await;
                         cloud_ok = cloud_ok && persisted.ok();

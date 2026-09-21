@@ -15,6 +15,25 @@ use uuid::Uuid;
 
 const RECENT_EVENT_CACHE_LIMIT: usize = 512;
 
+fn gateway_attachment_json(
+    attachments: Vec<teamclu_gateway::AttachmentRecord>,
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        attachments
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "filename": a.filename,
+                    "mime": a.mime,
+                    "size": a.size,
+                    "bucket_path": a.bucket_path,
+                    "local_path": a.local_path,
+                })
+            })
+            .collect(),
+    )
+}
+
 /// The "已经处理过这条" gate, shared by everything that can introduce a message
 /// into a session.
 ///
@@ -1177,6 +1196,8 @@ impl SessionManager {
         sequence: u64,
         persist_backend: bool,
         backend: Option<&std::sync::Arc<dyn Backend>>,
+        attachments: Option<Vec<teamclu_gateway::AttachmentRecord>>,
+        attachment_urls: Vec<String>,
     ) -> CloudPersist {
         // An agent reply addresses no one, and it is written by the same daemon
         // that would answer a mention — so there is nothing to claim either.
@@ -1194,6 +1215,8 @@ impl SessionManager {
                 claim_before_publish: false,
                 persist_local: true,
                 persist_backend,
+                attachments,
+                attachment_urls,
             },
             backend,
         )
@@ -1234,6 +1257,8 @@ impl SessionManager {
             claim_before_publish,
             persist_local,
             persist_backend,
+            attachments,
+            attachment_urls,
         } = write;
         let message_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
@@ -1252,6 +1277,7 @@ impl SessionManager {
             metadata_json: metadata_json.to_string(),
             turn_id: turn_id.to_string(),
             reply_to_message_id: reply_to_message_id.to_string(),
+            attachment_urls,
             ..Default::default()
         };
 
@@ -1304,22 +1330,36 @@ impl SessionManager {
         let team_id = self.team_id.clone();
         // message_kind_to_string is the pub(crate) fn defined later in this file.
         let kind_str = message_kind_to_string(kind as i32);
-        if let Err(e) = sb
-            .insert_message(
-                &message_id,
-                &team_id,
-                session_id,
-                sender_actor_id,
-                &kind_str,
-                content,
-                metadata_json,
-                model,
-                turn_id,
-                reply_to_message_id,
-                sequence,
-            )
-            .await
-        {
+        let insert_result = match (kind, attachments.as_ref()) {
+            (crate::proto::teamclu::MessageKind::AgentReply, Some(rows)) if !rows.is_empty() => {
+                sb.insert_gateway_agent_reply_with_attachments(
+                    session_id,
+                    sender_actor_id,
+                    content,
+                    None,
+                    gateway_attachment_json(rows.clone()),
+                )
+                .await
+                .map(|_| message_id.clone())
+            }
+            _ => sb
+                .insert_message(
+                    &message_id,
+                    &team_id,
+                    session_id,
+                    sender_actor_id,
+                    &kind_str,
+                    content,
+                    metadata_json,
+                    model,
+                    turn_id,
+                    reply_to_message_id,
+                    sequence,
+                )
+                .await
+                .map(|_| message_id.clone()),
+        };
+        if let Err(e) = insert_result {
             warn!(?e, "backend insert_message failed");
             return CloudPersist::Failed;
         }
@@ -1369,6 +1409,8 @@ pub struct SessionMessageWrite<'a> {
     pub persist_local: bool,
     /// Insert into the cloud `messages` table.
     pub persist_backend: bool,
+    pub attachments: Option<Vec<teamclu_gateway::AttachmentRecord>>,
+    pub attachment_urls: Vec<String>,
 }
 
 impl SessionManager {
@@ -2018,6 +2060,8 @@ mod tests {
             7,
             false,
             None,
+            None,
+            Vec::new(),
         )
         .await;
 

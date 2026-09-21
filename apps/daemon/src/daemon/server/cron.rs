@@ -418,6 +418,8 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                                 seq,
                                 true,
                                 Some(&self.backend),
+                                None,
+                                Vec::new(),
                             )
                             .await;
                         match persisted {
@@ -683,6 +685,8 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                     claim_before_publish: true,
                     persist_local: true,
                     persist_backend: true,
+                    attachments: None,
+                    attachment_urls: Vec::new(),
                 },
                 Some(&backend),
             )
