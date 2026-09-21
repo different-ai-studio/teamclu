@@ -353,6 +353,8 @@ export interface AttachmentRef {
 
 export interface AttachmentsBackend {
   uploadAttachment(input: AttachmentUploadInput): Promise<AttachmentRef>;
+  /** Authenticated download from team attachments storage (`bucket_path`). */
+  downloadByStoragePath(storagePath: string): Promise<{ bytes: Uint8Array; contentType: string }>;
 }
 
 export interface DirectoryMemberActor {

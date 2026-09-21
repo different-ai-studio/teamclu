@@ -210,6 +210,10 @@ pub fn final_agent_reply_emitted(
         metadata_json: meta.map(|m| m.metadata_json.clone()).unwrap_or_default(),
         turn_id: meta.map(|m| m.turn_id.clone()).unwrap_or_default(),
         cloud_persist: true,
+        attachments: meta.map(|m| m.attachments.clone()).unwrap_or_default(),
+        attachment_urls: meta
+            .map(|m| m.attachment_urls.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -229,6 +233,8 @@ pub fn salvage_timeout_emitted(
             metadata_json: r#"{"turn_status":"interrupted"}"#.to_string(),
             turn_id: String::new(),
             cloud_persist: true,
+            attachments: Vec::new(),
+            attachment_urls: Vec::new(),
         })
     }
 }
@@ -342,6 +348,8 @@ mod tests {
             metadata_json: String::new(),
             turn_id: "t1".into(),
             cloud_persist: true,
+            attachments: Vec::new(),
+            attachment_urls: Vec::new(),
         }];
         assert!(absorb_emitted(emitted, &mut segments, &mut live));
         assert!(segments.is_empty());
@@ -358,6 +366,8 @@ mod tests {
             metadata_json: r#"{"turn_status":"no_final_reply"}"#.into(),
             turn_id: "turn-tool".into(),
             cloud_persist: true,
+            attachments: Vec::new(),
+            attachment_urls: Vec::new(),
         }];
         absorb_emitted(idle.clone(), &mut segments, &mut live);
         let out = final_agent_reply_emitted(&segments, &live, &idle);
@@ -472,6 +482,8 @@ mod tests {
             metadata_json: r#"{"turn_status":"completed"}"#.into(),
             turn_id: "turn-1".into(),
             cloud_persist: true,
+            attachments: Vec::new(),
+            attachment_urls: Vec::new(),
         }];
         absorb_emitted(idle.clone(), &mut segments, &mut live);
         let out = final_agent_reply_emitted(&segments, &live, &idle);

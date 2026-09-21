@@ -209,6 +209,8 @@ pub struct HttpState {
     pub runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
     /// Per-session group-chat system prompt for managed backends (Pi v1).
     pub session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
+    /// Pi `session_attach_file` uploads merged into turn-final agent replies.
+    pub session_attach: Option<Arc<crate::runtime::session_attach::SessionAttachService>>,
 }
 
 impl HttpState {
@@ -259,6 +261,7 @@ impl HttpState {
             local_live_ingest_tx: None,
             runtime_context: None,
             session_prompt: None,
+            session_attach: None,
         }
     }
 
@@ -275,6 +278,14 @@ impl HttpState {
         service: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
     ) -> Self {
         self.session_prompt = service;
+        self
+    }
+
+    pub fn with_session_attach(
+        mut self,
+        service: Option<Arc<crate::runtime::session_attach::SessionAttachService>>,
+    ) -> Self {
+        self.session_attach = service;
         self
     }
 

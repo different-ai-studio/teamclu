@@ -91,6 +91,37 @@ describe("session-message-store", () => {
     expect(rows[0]?.content).toBe("second");
   });
 
+  it("replaceTurnAgentRepliesInStore merges partsJson when late row replaces enriched reply", () => {
+    const parts = JSON.stringify([{ type: "text", text: "done" }]);
+    const enriched = createMessage(MessageSchema, {
+      messageId: "r1",
+      sessionId: "s1",
+      senderActorId: "agent",
+      kind: MessageKind.AGENT_REPLY,
+      content: "done",
+      turnId: "turn-1",
+      createdAt: BigInt(1),
+    });
+    Object.assign(enriched, { partsJson: parts });
+    const late = createMessage(MessageSchema, {
+      messageId: "r2",
+      sessionId: "s1",
+      senderActorId: "agent",
+      kind: MessageKind.AGENT_REPLY,
+      content: "done",
+      turnId: "turn-1",
+      metadataJson: JSON.stringify({ attachments: [{ filename: "a.txt" }] }),
+      createdAt: BigInt(2),
+    });
+    useSessionMessageStore.getState().replaceTurnAgentRepliesInStore("s1", enriched);
+    useSessionMessageStore.getState().replaceTurnAgentRepliesInStore("s1", late);
+
+    const row = useSessionMessageStore.getState().messages.s1?.[0];
+    expect(row?.messageId).toBe("r2");
+    expect((row as { partsJson?: string }).partsJson).toBe(parts);
+    expect(JSON.parse(row?.metadataJson ?? "{}").attachments).toHaveLength(1);
+  });
+
   it("replaceTurnAgentRepliesInStore inserts by createdAt instead of appending", () => {
     const earlyUser = createMessage(MessageSchema, {
       messageId: "u1",

@@ -32,5 +32,20 @@ export function createAttachmentsModule(client: CloudApiClient): AttachmentsBack
         size: out.size ?? input.file.size,
       };
     },
+    async downloadByStoragePath(storagePath: string) {
+      const trimmed = storagePath.trim();
+      if (!trimmed) {
+        throw new Error("Missing attachment storage path");
+      }
+      const response = await client.getRaw(
+        `/v1/attachments/${encodeURIComponent(trimmed)}`,
+      );
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+      return { bytes, contentType };
+    },
   };
 }

@@ -145,7 +145,13 @@ export function handleLiveMessage(
                   ...summarizeProtoForExtDiag(msg),
                 });
               }
-              useSessionMessageStore.getState().appendMessage(sid, decoded.message);
+              if (msg.kind === MessageKind.AGENT_REPLY) {
+                useSessionMessageStore
+                  .getState()
+                  .replaceTurnAgentRepliesInStore(sid, decoded.message);
+              } else {
+                useSessionMessageStore.getState().appendMessage(sid, decoded.message);
+              }
               if (senderActorId && msg.kind === MessageKind.AGENT_REPLY) {
                 logExtMsgDiag("mqtt.agentReply.lateAppend.storeSnapshot", {
                   sessionId: sid,

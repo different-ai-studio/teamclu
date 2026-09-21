@@ -1195,6 +1195,122 @@ function questionOptionLabels(q: QuestionSpec): string[] {
     .filter((label) => label.length > 0);
 }
 
+function sessionAttachToolResult(text: string, isError: boolean) {
+  return {
+    content: [{ type: "text" as const, text }],
+    isError,
+  };
+}
+
+async function postSessionAttach(
+  backendSessionId: string,
+  filePath: string,
+  message?: string,
+): Promise<Record<string, unknown>> {
+  const baseUrl = process.env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
+  const token = process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
+  const hostGenerationId = process.env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const backendKind = process.env.TEAMCLU_AGENT_BACKEND?.trim();
+  if (!baseUrl || !token || !hostGenerationId || !backendKind || !backendSessionId.trim()) {
+    throw new Error("session_context_unavailable");
+  }
+  const resp = await fetch(`${baseUrl}/internal/runtime-context/session-attach`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      backendSessionId,
+      hostGenerationId,
+      backendKind,
+      filePath,
+      ...(message?.trim() ? { message: message.trim() } : {}),
+    }),
+  });
+  const body = (await resp.json()) as Record<string, unknown>;
+  if (!resp.ok) {
+    return {
+      ok: false,
+      error: String(body.error ?? "upload_failed"),
+      message: String(body.detail ?? body.message ?? body.error ?? "session attach failed"),
+    };
+  }
+  return {
+    ok: true,
+    fileName: body.fileName ?? body.file_name,
+    mimeType: body.mimeType ?? body.mime_type,
+    size: body.size,
+    storagePath: body.storagePath ?? body.storage_path,
+    url: body.url,
+  };
+}
+
+function registerSessionAttachFileTool(pi: ExtensionAPI, ownTools: Set<string>): void {
+  ownTools.add("session_attach_file");
+  pi.registerTool({
+    name: "session_attach_file",
+    label: "Session attach file",
+    description:
+      "Upload a local file to the current TeamClu chat session so other participants can download it. " +
+      "Use only for deliverables the team should see (reports, exports, diagrams). " +
+      "Do not upload secrets, credentials, .env, or scratch files. " +
+      "Writing a file to disk does not share it — call this tool when sharing is intended. " +
+      "The file must already exist at file_path under your workspace. " +
+      "Teammates cannot read paths on your machine from your reply text alone.",
+    parameters: {
+      type: "object",
+      required: ["file_path"],
+      additionalProperties: false,
+      properties: {
+        file_path: {
+          type: "string",
+          description:
+            "Absolute path to an existing file under this agent's workspace (runtime worktree). Symlinks outside the worktree are rejected.",
+        },
+        message: {
+          type: "string",
+          description:
+            "Optional short caption shown with the attachment in the session transcript. Omit if the main reply already explains the file.",
+        },
+      },
+    },
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const backendSessionId = backendSessionIdFromContext(ctx);
+      if (!backendSessionId?.trim()) {
+        return sessionContextUnavailableResult();
+      }
+      const filePath = String((params as { file_path?: unknown })?.file_path ?? "").trim();
+      if (!filePath) {
+        return sessionAttachToolResult(
+          JSON.stringify({
+            ok: false,
+            error: "path_not_allowed",
+            message: "file_path is required",
+          }),
+          true,
+        );
+      }
+      const rawMessage = (params as { message?: unknown })?.message;
+      const message =
+        rawMessage != null && String(rawMessage).trim() ? String(rawMessage) : undefined;
+      try {
+        const out = await postSessionAttach(backendSessionId, filePath, message);
+        return sessionAttachToolResult(JSON.stringify(out), out.ok === false);
+      } catch {
+        return sessionAttachToolResult(
+          JSON.stringify({
+            ok: false,
+            error: "session_context_unavailable",
+            message: "Unable to determine the TeamClu session for this tool call",
+          }),
+          true,
+        );
+      }
+    },
+  });
+}
+
 function registerQuestionTool(pi: ExtensionAPI, ownTools: Set<string>): void {
   ownTools.add("question");
   pi.registerTool({
@@ -1608,6 +1724,7 @@ export default async function (pi: ExtensionAPI) {
   // select response (no JSON) still works: it is treated as the answer to the
   // first question, which is what a TUI select would produce.
   registerQuestionTool(pi, ownTools);
+  registerSessionAttachFileTool(pi, ownTools);
 
   // -- Permission gate -------------------------------------------------------
   pi.on("before_agent_start", async (event, ctx) => {

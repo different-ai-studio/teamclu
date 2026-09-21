@@ -188,6 +188,7 @@ async fn test_app_with_runtime_adapter() -> TestApp {
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("spawn http server");
