@@ -75,6 +75,10 @@ function dryRun(opts) {
   });
   assertSchema(opts.knowledgeRoot);
 
+  const state = loadState(opts.statePath);
+  const importedSources =
+    state.sources && typeof state.sources === "object" ? state.sources : {};
+
   const localByPath = new Map();
   for (const abs of walkFiles(opts.documentsRoot)) {
     const documentsPath = toDocumentsPath(opts.documentsRoot, abs);
@@ -91,13 +95,15 @@ function dryRun(opts) {
   const union = new Map(localByPath);
   for (const item of known) {
     const documentsPath = normalizeDocumentsPath(item.path);
-    if (!union.has(documentsPath)) {
-      union.set(documentsPath, {
-        path: documentsPath,
-        size: Number(item.size) || 0,
-        local: false,
-      });
-    }
+    if (union.has(documentsPath)) continue;
+    // Already-imported sources missing on disk are deletions, not lazy fetches.
+    // Keeping them in the union as would_fetch would block retract.
+    if (importedSources[documentsPath]?.status === "imported") continue;
+    union.set(documentsPath, {
+      path: documentsPath,
+      size: Number(item.size) || 0,
+      local: false,
+    });
   }
 
   const allowed = [];
@@ -116,8 +122,6 @@ function dryRun(opts) {
       blocked.push(verdict);
     }
   }
-
-  const state = loadState(opts.statePath);
   const queues = reconcile({ current: allowed, state });
   const plan = {
     add: queues.add,

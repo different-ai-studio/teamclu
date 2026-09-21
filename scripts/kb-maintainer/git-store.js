@@ -5,11 +5,20 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 function git(wikiRoot, args) {
-  return execFileSync(
-    "git",
-    ["-c", "user.name=kb-maintainer", "-c", "user.email=kb-maintainer@local", "-c", "commit.gpgsign=false", "-c", "core.quotepath=false", ...args],
-    { cwd: wikiRoot, encoding: "utf8" },
-  ).trim();
+  try {
+    return execFileSync(
+      "git",
+      ["-c", "user.name=kb-maintainer", "-c", "user.email=kb-maintainer@local", "-c", "commit.gpgsign=false", "-c", "core.quotepath=false", ...args],
+      { cwd: wikiRoot, encoding: "utf8" },
+    ).trim();
+  } catch (error) {
+    const detail = [error.stderr, error.stdout]
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .join("\n");
+    const message = detail || error.message;
+    throw new Error(message);
+  }
 }
 
 function gitShow(wikiRoot, commit, rel) {
@@ -48,6 +57,10 @@ function changedRelPaths(wikiRoot, fromCommit) {
 
 function commitAll(wikiRoot, message) {
   git(wikiRoot, ["add", "-A"]);
+  const status = git(wikiRoot, ["status", "--porcelain"]);
+  if (!status) {
+    return headCommit(wikiRoot);
+  }
   git(wikiRoot, ["commit", "-m", message]);
   return headCommit(wikiRoot);
 }

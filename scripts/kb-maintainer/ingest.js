@@ -7,7 +7,7 @@ const { dryRun } = require("./dry-run");
 const { extractorCacheKey, rawRelativePath } = require("./extract-text");
 const { extractSource } = require("./extract");
 const { compile } = require("./agent-runner");
-const { validateSourceDiff, rebuildIndex } = require("./validator");
+const { validateSourceDiff, rebuildIndex, normalizeWikiLinks } = require("./validator");
 const {
   ensureWikiRepo,
   headCommit,
@@ -92,6 +92,14 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
       createSession: opts.createSession,
     });
     rebuildIndex(wikiRoot);
+    normalizeWikiLinks(wikiRoot);
+    rebuildIndex(wikiRoot);
+    const pageHits = (compiled.affectedPages || []).filter((rel) =>
+      rel.startsWith("pages/"),
+    );
+    if (pageHits.length === 0) {
+      throw new Error("compiler produced no wiki pages");
+    }
     const changed = changedRelPaths(wikiRoot, beforeCommit);
     const verdict = validateSourceDiff({
       workRoot: opts.workRoot,
@@ -124,7 +132,10 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
     saveState(opts.statePath, state);
   } catch (error) {
     resetHard(wikiRoot, beforeCommit);
-    if (previous && previous.status === "imported") {
+    const priorPages = (previous?.affectedPages || []).filter((rel) =>
+      rel.startsWith("pages/"),
+    );
+    if (previous && previous.status === "imported" && priorPages.length > 0) {
       state.sources[item.path] = previous;
     } else {
       delete state.sources[item.path];
@@ -132,6 +143,26 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
     saveState(opts.statePath, state);
     throw error;
   }
+}
+
+function pagesStillCiting(wikiRoot, sourcePath) {
+  const { listPageFiles } = require("./validator");
+  const { parseFrontmatter } = require("./frontmatter");
+  const citing = [];
+  for (const rel of listPageFiles(wikiRoot)) {
+    const abs = path.join(wikiRoot, rel);
+    let parsed;
+    try {
+      parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
+    } catch {
+      continue;
+    }
+    const sources = parsed.frontmatter?.sources || [];
+    if (sources.some((source) => source.path === sourcePath)) {
+      citing.push(rel);
+    }
+  }
+  return citing;
 }
 
 async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
@@ -158,6 +189,13 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
       createSession: opts.createSession,
     });
     rebuildIndex(wikiRoot);
+    normalizeWikiLinks(wikiRoot);
+    const stillCiting = pagesStillCiting(wikiRoot, item.path);
+    if (stillCiting.length > 0) {
+      throw new Error(
+        `delete did not retract ${stillCiting.join(", ")}: still cites ${item.path}`,
+      );
+    }
     const changed = changedRelPaths(wikiRoot, beforeCommit);
     const verdict = validateSourceDiff({
       workRoot: opts.workRoot,
@@ -205,32 +243,35 @@ async function ingestBatch(opts) {
   let imported = 0;
   let rolledBack = 0;
   let retracted = 0;
+  const onProgress =
+    typeof opts.onProgress === "function" ? opts.onProgress : () => {};
+  const queue = [
+    ...planResult.plan.add.map((item) => ({ action: "add", item })),
+    ...planResult.plan.update.map((item) => ({ action: "update", item })),
+    ...planResult.plan.delete.map((item) => ({ action: "delete", item })),
+  ];
+  let current = 0;
 
-  for (const item of planResult.plan.add) {
+  for (const { action, item } of queue) {
+    current += 1;
+    onProgress({
+      stage: "ingest",
+      action,
+      path: item.path,
+      current,
+      total: queue.length,
+    });
     try {
-      await ingestOne({ action: "add", item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
-      imported += 1;
+      if (action === "delete") {
+        await retractOne({ item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
+        retracted += 1;
+      } else {
+        await ingestOne({ action, item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
+        imported += 1;
+      }
     } catch (error) {
       rolledBack += 1;
-      failures.push({ path: item.path, action: "add", error: error.message });
-    }
-  }
-  for (const item of planResult.plan.update) {
-    try {
-      await ingestOne({ action: "update", item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
-      imported += 1;
-    } catch (error) {
-      rolledBack += 1;
-      failures.push({ path: item.path, action: "update", error: error.message });
-    }
-  }
-  for (const item of planResult.plan.delete) {
-    try {
-      await retractOne({ item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
-      retracted += 1;
-    } catch (error) {
-      rolledBack += 1;
-      failures.push({ path: item.path, action: "delete", error: error.message });
+      failures.push({ path: item.path, action, error: error.message });
     }
   }
 

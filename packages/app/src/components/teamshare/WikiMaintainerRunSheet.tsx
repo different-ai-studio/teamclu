@@ -13,6 +13,7 @@ export interface WikiSourceDirectory {
 export interface WikiPrepareSummary {
   runId: string
   sourceCount: number
+  retractCount?: number
   added: number
   updated: number
   deleted: number
@@ -28,7 +29,46 @@ export interface WikiPublishResult {
   syncStatus: 'synced' | 'published_local_sync_pending' | string
 }
 
+export type WikiCompileProgress = {
+  stage: 'plan' | 'estimate' | 'ingest' | 'lint' | 'done' | string
+  path?: string
+  action?: string
+  current?: number
+  total?: number
+}
+
 type Phase = 'select' | 'preparing' | 'summary' | 'publishing' | 'published'
+
+const STAGES = ['plan', 'estimate', 'ingest', 'lint', 'done'] as const
+
+async function defaultSubscribeProgress(
+  handler: (event: WikiCompileProgress) => void,
+): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<WikiCompileProgress>('kb-maintainer:progress', (event) => {
+    handler(event.payload)
+  })
+}
+
+function stageLabel(
+  stage: string,
+  t: (key: string, fallback: string) => string,
+): string {
+  switch (stage) {
+    case 'plan':
+      return t('teamShare.wikiStepPlan', 'Checking source plan')
+    case 'estimate':
+      return t('teamShare.wikiStepEstimate', 'Estimating vision cost')
+    case 'ingest':
+      return t('teamShare.wikiStepIngest', 'Compiling sources')
+    case 'lint':
+      return t('teamShare.wikiStepLint', 'Checking wiki quality')
+    case 'done':
+      return t('teamShare.wikiStepDone', 'Preparing summary')
+    default:
+      return stage
+  }
+}
 
 export function WikiMaintainerRunSheet({
   open,
@@ -40,6 +80,7 @@ export function WikiMaintainerRunSheet({
   onPublish,
   onCancel,
   onClose,
+  subscribeProgress,
 }: {
   open: boolean
   teamId: string
@@ -50,6 +91,9 @@ export function WikiMaintainerRunSheet({
   onPublish: (runId: string, acceptVisionCost: boolean) => Promise<WikiPublishResult>
   onCancel?: (runId: string) => Promise<void>
   onClose: () => void
+  subscribeProgress?: (
+    handler: (event: WikiCompileProgress) => void,
+  ) => (() => void) | Promise<() => void>
 }) {
   const { t } = useTranslation()
   const [selected, setSelected] = React.useState<string[]>(initialSelected)
@@ -58,6 +102,7 @@ export function WikiMaintainerRunSheet({
   const [publishResult, setPublishResult] = React.useState<WikiPublishResult | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [costAccepted, setCostAccepted] = React.useState(false)
+  const [progress, setProgress] = React.useState<WikiCompileProgress | null>(null)
 
   React.useEffect(() => {
     if (!open) return
@@ -67,10 +112,31 @@ export function WikiMaintainerRunSheet({
     setPublishResult(null)
     setError(null)
     setCostAccepted(false)
+    setProgress(null)
     // Persist a new selection while the sheet is open; do not reset on that
     // array identity change or the user would lose in-progress folder picks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
+
+  React.useEffect(() => {
+    if (phase !== 'preparing') return
+    let cancelled = false
+    let unsub: (() => void) | undefined
+    const subscribe = subscribeProgress ?? defaultSubscribeProgress
+    void Promise.resolve(subscribe((event) => {
+      if (!cancelled) setProgress(event)
+    })).then((dispose) => {
+      if (cancelled) {
+        dispose()
+        return
+      }
+      unsub = dispose
+    })
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [phase, subscribeProgress])
 
   const busy = phase === 'preparing' || phase === 'publishing'
   const togglePath = (path: string) => {
@@ -80,14 +146,17 @@ export function WikiMaintainerRunSheet({
   }
   const prepare = async () => {
     setError(null)
+    setProgress({ stage: 'plan' })
     setPhase('preparing')
     try {
       onSaveSelection(teamId, selected)
       const next = await onPrepare(teamId, selected)
       setSummary(next)
+      setProgress(null)
       setPhase('summary')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
+      setProgress(null)
       setPhase('select')
     }
   }
@@ -128,6 +197,8 @@ export function WikiMaintainerRunSheet({
       setError(reason instanceof Error ? reason.message : String(reason))
     }
   }
+  const activeStage = progress?.stage ?? 'plan'
+  const activeIndex = Math.max(0, STAGES.indexOf(activeStage as (typeof STAGES)[number]))
 
   return (
     <ModalShell
@@ -165,7 +236,7 @@ export function WikiMaintainerRunSheet({
         </>
       }
     >
-      {(phase === 'select' || phase === 'preparing') && (
+      {phase === 'select' && (
         <div>
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-faint">
             {t('teamShare.wikiSourceFolders', 'Source folders')}
@@ -196,6 +267,50 @@ export function WikiMaintainerRunSheet({
         </div>
       )}
 
+      {phase === 'preparing' && (
+        <div className="space-y-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-faint">
+            {t('teamShare.wikiCompileProgress', 'Compile progress')}
+          </div>
+          <div className="space-y-1.5">
+            {STAGES.map((stage, index) => {
+              const done = index < activeIndex || activeStage === 'done'
+              const active = stage === activeStage && activeStage !== 'done'
+              return (
+                <div
+                  key={stage}
+                  className={`flex items-start gap-2 rounded-[8px] px-3 py-2 text-[12.5px] ${
+                    active ? 'bg-panel text-foreground' : 'text-muted-foreground'
+                  }`}
+                >
+                  {done ? (
+                    <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                  ) : active ? (
+                    <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+                  ) : (
+                    <span className="mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded-full border border-border" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div>{stageLabel(stage, t)}</div>
+                    {active && stage === 'ingest' && progress?.path && (
+                      <div className="mt-0.5 truncate font-mono text-[11px] text-faint">
+                        {progress.current && progress.total
+                          ? `${progress.current} / ${progress.total} · ${
+                              progress.action === 'delete'
+                                ? t('teamShare.wikiActionRetract', 'retract')
+                                : t('teamShare.wikiActionCompile', 'compile')
+                            } · ${progress.path}`
+                          : progress.path}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {summary && (phase === 'summary' || phase === 'publishing' || phase === 'published') && (
         <div className="space-y-3">
           {phase === 'summary' && (
@@ -214,6 +329,13 @@ export function WikiMaintainerRunSheet({
                 count: summary.sourceCount,
               })}
             />
+            {(summary.retractCount ?? 0) > 0 && (
+              <SummaryItem
+                text={t('teamShare.wikiSourcesRetracted', '{{count}} deleted sources retracted', {
+                  count: summary.retractCount,
+                })}
+              />
+            )}
             <SummaryItem
               text={t('teamShare.wikiPagesAdded', '{{count}} pages added', {
                 count: summary.added,

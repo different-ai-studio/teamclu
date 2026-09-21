@@ -13,7 +13,10 @@ test("reconcile classifies add, update, delete, unchanged, and would_fetch", () 
     ],
     state: {
       sources: {
-        "documents/handbook/a.pdf": { sourceSha256: "aaa" },
+        "documents/handbook/a.pdf": {
+          sourceSha256: "aaa",
+          affectedPages: ["pages/a.md"],
+        },
         "documents/handbook/b.pdf": { sourceSha256: "bbb1" },
         "documents/handbook/gone.pdf": { sourceSha256: "old" },
       },
@@ -40,6 +43,28 @@ test("reconcile classifies add, update, delete, unchanged, and would_fetch", () 
     plan.would_fetch.map((x) => x.path),
     ["documents/training/c.pdf"],
   );
+});
+
+test("reconcile recompiles an imported source that left no wiki pages", () => {
+  const plan = reconcile({
+    current: [
+      { path: "documents/handbook/a.pdf", sourceSha256: "aaa", priority: 10 },
+    ],
+    state: {
+      sources: {
+        "documents/handbook/a.pdf": {
+          sourceSha256: "aaa",
+          status: "imported",
+          affectedPages: [],
+        },
+      },
+    },
+  });
+  assert.deepEqual(
+    plan.update.map((x) => x.path),
+    ["documents/handbook/a.pdf"],
+  );
+  assert.deepEqual(plan.unchanged, []);
 });
 
 test("reconcile treats a hashed path absent from state as add", () => {

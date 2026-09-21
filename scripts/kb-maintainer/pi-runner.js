@@ -13,7 +13,7 @@ const EXCLUDED_PI_TOOLS = ["bash", "grep", "ls"];
 
 function piSessionPolicy() {
   return {
-    noTools: "all",
+    tools: [...ALLOWED_PI_TOOLS],
     excludeTools: [...EXCLUDED_PI_TOOLS],
   };
 }
@@ -111,7 +111,7 @@ async function createLivePiSession(ctx) {
     agentDir,
     modelRuntime,
     model,
-    noTools: policy.noTools,
+    tools: policy.tools,
     excludeTools: policy.excludeTools,
     customTools: [
       sdk.createReadToolDefinition(wikiRoot, { operations: ops }),

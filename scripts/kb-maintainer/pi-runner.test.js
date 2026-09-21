@@ -20,7 +20,7 @@ test("Pi tool allowlist is wiki read/write/edit/find and never bash", () => {
   assert.ok(!ALLOWED_PI_TOOLS.includes("bash"));
   assert.deepEqual([...EXCLUDED_PI_TOOLS].sort(), ["bash", "grep", "ls"]);
   assert.deepEqual(piSessionPolicy(), {
-    noTools: "all",
+    tools: ["read", "write", "edit", "find"],
     excludeTools: ["bash", "grep", "ls"],
   });
 });

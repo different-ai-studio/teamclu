@@ -178,6 +178,71 @@ test("ingestBatch recompiles a shared page when one of two sources is deleted", 
   assert.match(kept, /documents\/handbook\/leave-faq.md/);
 });
 
+test("ingestBatch fails when the compiler produces no wiki pages", async () => {
+  const fx = makeHarness();
+  write(path.join(fx.documentsRoot, "handbook", "leave.md"), "# 请假\n\n员工请假需提前申请。\n");
+  const result = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "pi",
+    createSession: async () => ({
+      prompt: async () => {
+        // Model wrote nothing into wiki/pages.
+      },
+    }),
+  });
+  assert.equal(result.ok, false);
+  assert.match(JSON.stringify(result.failures), /no wiki pages/);
+  const state = JSON.parse(fs.readFileSync(fx.statePath, "utf8"));
+  assert.equal(state.sources["documents/handbook/leave.md"], undefined);
+});
+
+test("ingestBatch fails a delete that leaves the source cited on a wiki page", async () => {
+  const fx = makeHarness();
+  write(path.join(fx.documentsRoot, "handbook", "leave.md"), "# 请假\n\n员工请假需提前申请。\n");
+  const added = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+  });
+  assert.equal(added.ok, true, JSON.stringify(added.failures || added));
+  fs.rmSync(path.join(fx.documentsRoot, "handbook", "leave.md"));
+  const deleted = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "pi",
+    createSession: async () => ({
+      prompt: async () => {
+        // Pretend the model ignored the delete request.
+      },
+    }),
+  });
+  assert.equal(deleted.ok, false);
+  assert.match(
+    JSON.stringify(deleted.failures),
+    /did not retract|still cites|请假/,
+  );
+  const state = JSON.parse(fs.readFileSync(fx.statePath, "utf8"));
+  assert.equal(state.sources["documents/handbook/leave.md"].status, "imported");
+});
+
 test("ingest rebuilds index so a compiler-written summary mismatch still imports", async () => {
   const crypto = require("node:crypto");
   const { serializeFrontmatter } = require("./frontmatter");
@@ -230,4 +295,74 @@ test("ingest rebuilds index so a compiler-written summary mismatch still imports
   const index = fs.readFileSync(path.join(fx.workRoot, "wiki", "index.md"), "utf8");
   assert.match(index, /员工请假需提前申请/);
   assert.doesNotMatch(index, /WRONG SUMMARY/);
+});
+
+test("ingestBatch rewrites short wiki links before the source gate", async () => {
+  const crypto = require("node:crypto");
+  const { serializeFrontmatter } = require("./frontmatter");
+  const fx = makeHarness();
+  const source = "# amuxd 家目录\n\n含 device-id 与 teams 目录。\n";
+  write(path.join(fx.documentsRoot, "handbook", "leave.md"), source);
+  const sha256 = crypto.createHash("sha256").update(source).digest("hex");
+  const result = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "pi",
+    createSession: async (ctx) => ({
+      prompt: async () => {
+        const wiki = path.join(ctx.workRoot, "wiki");
+        fs.mkdirSync(path.join(wiki, "pages"), { recursive: true });
+        const sourceMeta = {
+          path: "documents/handbook/leave.md",
+          sha256,
+          locators: ["heading=amuxd 家目录"],
+        };
+        fs.writeFileSync(
+          path.join(wiki, "pages", "amuxd-home-directory.md"),
+          serializeFrontmatter(
+            {
+              type: "process",
+              summary: "amuxd 家目录。",
+              managed_by: "llm-wiki",
+              schema_version: 1,
+              sources: [sourceMeta],
+              updated: "2026-09-21",
+            },
+            "# 家目录\n\n见 [[amuxd-device-id]]。\n",
+          ),
+        );
+        fs.writeFileSync(
+          path.join(wiki, "pages", "amuxd-device-id.md"),
+          serializeFrontmatter(
+            {
+              type: "term",
+              summary: "机器身份证。",
+              managed_by: "llm-wiki",
+              schema_version: 1,
+              sources: [sourceMeta],
+              updated: "2026-09-21",
+            },
+            "# device-id\n\n回到 [[amuxd-home-directory]]。\n",
+          ),
+        );
+      },
+    }),
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.failures));
+  const home = fs.readFileSync(
+    path.join(fx.workRoot, "wiki", "pages", "amuxd-home-directory.md"),
+    "utf8",
+  );
+  const device = fs.readFileSync(
+    path.join(fx.workRoot, "wiki", "pages", "amuxd-device-id.md"),
+    "utf8",
+  );
+  assert.match(home, /\[\[pages\/amuxd-device-id\]\]/);
+  assert.match(device, /\[\[pages\/amuxd-home-directory\]\]/);
 });

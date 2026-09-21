@@ -168,3 +168,39 @@ test("dryRun does not download, call an agent, or write the vault", () => {
   const state = JSON.parse(fs.readFileSync(fx.statePath, "utf8"));
   assert.deepEqual(state.sources, {});
 });
+
+test("dryRun treats an imported-but-missing known path as delete, not would_fetch", () => {
+  const fx = makeFixture();
+  const sha = "ab".repeat(32);
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    sources: {
+      "documents/handbook/gone.pdf": {
+        sourceSha256: sha,
+        status: "imported",
+        affectedPages: ["pages/gone.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [
+      { path: "documents/handbook/gone.pdf", size: 12 },
+      { path: "documents/training/onboarding.pdf", size: 40 },
+    ],
+    aclPrefixes: [],
+  });
+  assert.deepEqual(
+    result.plan.delete.map((item) => item.path),
+    ["documents/handbook/gone.pdf"],
+  );
+  assert.deepEqual(
+    result.plan.would_fetch.map((item) => item.path),
+    ["documents/training/onboarding.pdf"],
+  );
+  assert.ok(!result.plan.would_fetch.some((item) => item.path === "documents/handbook/gone.pdf"));
+});

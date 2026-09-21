@@ -37,6 +37,11 @@ function reconcile({ current, state }) {
       queues.update.push({ ...item, previousSha256: prior.sourceSha256 });
       continue;
     }
+    // A prior import that recorded no pages never landed in the wiki — recompile.
+    if (!Array.isArray(prior.affectedPages) || prior.affectedPages.length === 0) {
+      queues.update.push({ ...item, previousSha256: prior.sourceSha256 });
+      continue;
+    }
     queues.unchanged.push({ ...item });
   }
 

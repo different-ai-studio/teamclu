@@ -1,12 +1,14 @@
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::Mutex;
+use std::thread;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const ALLOWED_EXTENSIONS: &[&str] = &[
     "md", "txt", "html", "htm", "csv", "json", "yaml", "yml", "pdf", "docx", "pptx", "xlsx",
@@ -119,6 +121,8 @@ pub struct DiscoverResponse {
 pub struct PrepareSummary {
     run_id: String,
     source_count: usize,
+    #[serde(default)]
+    retract_count: usize,
     added: usize,
     updated: usize,
     deleted: usize,
@@ -238,6 +242,95 @@ pub async fn kb_maintainer_discover(
         })
         .collect();
     Ok(DiscoverResponse { directories })
+}
+
+fn walk_document_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = fs::read_dir(&current)
+            .map_err(|e| format!("Cannot inspect team documents: {e}"))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Cannot inspect team documents: {e}"))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("Cannot inspect team documents: {e}"))?;
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn to_documents_path(documents_root: &Path, abs: &Path) -> Result<String, String> {
+    let rel = abs
+        .strip_prefix(documents_root)
+        .map_err(|_| "Document path escaped the team documents root.".to_string())?;
+    let relative = rel
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(format!("documents/{relative}"))
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_list_local_documents(
+    team_id: String,
+    source_directories: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if source_directories.is_empty() {
+        return Err("Choose at least one source folder.".to_string());
+    }
+    let prefixes: Vec<String> = source_directories
+        .iter()
+        .map(|path| normalize_source_directory(path))
+        .collect::<Result<_, _>>()?;
+    let (documents_root, _) = team_paths(&team_id)?;
+    let mut paths = BTreeSet::new();
+    for abs in walk_document_files(&documents_root)? {
+        let documents_path = to_documents_path(&documents_root, &abs)?;
+        if prefixes
+            .iter()
+            .any(|prefix| documents_path.starts_with(prefix.as_str()))
+        {
+            paths.insert(documents_path);
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_imported_source_paths(team_id: String) -> Result<Vec<String>, String> {
+    let root = work_root(&team_id)?;
+    let state_path = root.join("state/state.json");
+    if !state_path.is_file() {
+        return Ok(Vec::new());
+    }
+    let value: Value = serde_json::from_slice(
+        &fs::read(&state_path).map_err(|e| format!("Cannot read Wiki state: {e}"))?,
+    )
+    .map_err(|e| format!("Invalid Wiki state: {e}"))?;
+    let Some(sources) = value.get("sources").and_then(Value::as_object) else {
+        return Ok(Vec::new());
+    };
+    let mut paths = sources
+        .iter()
+        .filter_map(|(path, entry)| {
+            let status = entry.get("status").and_then(Value::as_str)?;
+            (status == "imported").then(|| path.clone())
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
 }
 
 fn work_root(team_id: &str) -> Result<PathBuf, String> {
@@ -386,7 +479,12 @@ fn humanize_compiler_error(stderr: &str) -> String {
         return "Some pages need visual recognition. Review the estimated cost before continuing."
             .to_string();
     }
-    if stderr.contains("publish destination changed") || stderr.contains("unexplained vault edits")
+    if (stderr.contains("unpublished external content") || stderr.contains("already has files")) {
+        return "Team Wiki already has older pages. Run maintenance again, then publish to replace them."
+            .to_string();
+    }
+    if (stderr.contains("publish destination changed") || stderr.contains("unexplained vault edits")
+        || stderr.contains("modified externally"))
     {
         return "Wiki changed after this run started. Run maintenance again before publishing."
             .to_string();
@@ -440,37 +538,90 @@ async fn run_node(
     input_path: &Path,
     gateway: Option<&(String, String)>,
 ) -> Result<Value, String> {
-    let mut cmd = tokio::process::Command::new(node_path()?);
-    cmd.arg(script_path(app)?)
-        .arg(command)
-        .arg(input_path)
-        .env(
-            teamclu_runtime_env::AMUXD_HOME_ENV,
-            super::amuxd_home_dir(),
-        );
-    if let Some((payload, token)) = gateway {
-        cmd.env("TEAMCLU_TEAM_PROVIDER", payload)
-            .env("tc_gateway_token", token);
-    }
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Cannot start Wiki compiler: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "Wiki compiler stopped unexpectedly.".to_string()
-        } else {
-            humanize_compiler_error(&stderr)
+    let node = node_path()?;
+    let script = script_path(app)?;
+    let command = command.to_string();
+    let input_path = input_path.to_path_buf();
+    let amuxd_home = super::amuxd_home_dir();
+    let gateway = gateway.cloned();
+    let app = app.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = StdCommand::new(node);
+        cmd.arg(&script)
+            .arg(&command)
+            .arg(&input_path)
+            .env(teamclu_runtime_env::AMUXD_HOME_ENV, amuxd_home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some((payload, token)) = gateway.as_ref() {
+            cmd.env("TEAMCLU_TEAM_PROVIDER", payload)
+                .env("tc_gateway_token", token);
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Cannot start Wiki compiler: {e}"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Wiki compiler stderr is unavailable.".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Wiki compiler stdout is unavailable.".to_string())?;
+
+        let progress_app = app.clone();
+        let stderr_thread = thread::spawn(move || {
+            let mut other = String::new();
+            for line in BufReader::new(stderr).lines().flatten() {
+                if let Some(payload) = line.strip_prefix("KB_PROGRESS ") {
+                    if let Ok(value) = serde_json::from_str::<Value>(payload) {
+                        let _ = progress_app.emit("kb-maintainer:progress", value);
+                        continue;
+                    }
+                }
+                if !other.is_empty() {
+                    other.push('\n');
+                }
+                other.push_str(&line);
+            }
+            other
         });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .ok_or_else(|| "Wiki compiler returned no result.".to_string())?;
-    serde_json::from_str(line).map_err(|e| format!("Invalid Wiki compiler result: {e}"))
+
+        let stdout_text = {
+            let mut buf = String::new();
+            for line in BufReader::new(stdout).lines().flatten() {
+                if !buf.is_empty() {
+                    buf.push('\n');
+                }
+                buf.push_str(&line);
+            }
+            buf
+        };
+        let status = child
+            .wait()
+            .map_err(|e| format!("Wiki compiler stopped unexpectedly: {e}"))?;
+        let stderr_text = stderr_thread
+            .join()
+            .unwrap_or_else(|_| "Wiki compiler stderr reader failed.".to_string());
+
+        if !status.success() {
+            let stderr = stderr_text.trim();
+            return Err(if stderr.is_empty() {
+                "Wiki compiler stopped unexpectedly.".to_string()
+            } else {
+                humanize_compiler_error(stderr)
+            });
+        }
+        let line = stdout_text
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .ok_or_else(|| "Wiki compiler returned no result.".to_string())?;
+        serde_json::from_str(line).map_err(|e| format!("Invalid Wiki compiler result: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Wiki compiler task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -633,6 +784,17 @@ mod tests {
         assert!(normalize_source_directory("../secrets").is_err());
         assert!(normalize_source_directory("knowledge/wiki").is_err());
         assert!(normalize_source_directory("documents/_secrets/").is_err());
+    }
+
+    #[test]
+    fn documents_path_stays_under_documents_root() {
+        let root = PathBuf::from("/tmp/team/documents");
+        let abs = root.join("handbook").join("leave.md");
+        assert_eq!(
+            to_documents_path(&root, &abs).unwrap(),
+            "documents/handbook/leave.md"
+        );
+        assert!(to_documents_path(&root, Path::new("/tmp/elsewhere/a.md")).is_err());
     }
 
     #[test]

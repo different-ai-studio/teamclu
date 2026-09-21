@@ -8,7 +8,7 @@ Independent compiler for `documents/` → `knowledge/wiki/`.
 - **Slice 4** extractors: Markdown / Office / PDF text gate / vision fallback (replace, never concat). Audio/video is `unsupported`.
 - **Slice 5** `estimate` / `lint` / `eval`: vision budget preview, batch gate, 20-question structural eval.
 
-See `docs/specs/2026-09-20-llm-wiki-maintainer-p0-design.md` and `RUNBOOK.md`.
+See `WALKTHROUGH.md` for a worked example with intermediate files, `FLOW.md` for the diagrams, `docs/specs/2026-09-20-llm-wiki-maintainer-p0-design.md` for the spec, and `RUNBOOK.md` for operations.
 
 ## Dry-run
 

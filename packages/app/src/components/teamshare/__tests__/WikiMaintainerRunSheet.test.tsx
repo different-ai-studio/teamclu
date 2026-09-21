@@ -3,6 +3,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { WikiMaintainerRunSheet } from '../WikiMaintainerRunSheet'
 
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+}))
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: unknown, vars?: Record<string, unknown>) => {
@@ -38,6 +42,59 @@ describe('WikiMaintainerRunSheet', () => {
     expect(screen.getByRole('checkbox', { name: 'spec-docs' })).toBeChecked()
     expect(screen.getByRole('button', { name: 'Check and compile' })).toBeEnabled()
     expect(prepare).not.toHaveBeenCalled()
+  })
+
+  it('shows live compile steps while preparing', async () => {
+    let resolvePrepare!: (value: unknown) => void
+    const prepare = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolvePrepare = resolve
+        }),
+    )
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        onSaveSelection={vi.fn()}
+        onPrepare={prepare}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+        subscribeProgress={(handler) => {
+          handler({ stage: 'plan' })
+          handler({ stage: 'estimate' })
+          handler({
+            stage: 'ingest',
+            action: 'add',
+            path: 'documents/handbook/leave.md',
+            current: 1,
+            total: 3,
+          })
+          return () => {}
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    expect(await screen.findByText('Compiling sources')).toBeTruthy()
+    expect(screen.getByText('1 / 3 · compile · documents/handbook/leave.md')).toBeTruthy()
+    resolvePrepare({
+      runId: 'run-live',
+      sourceCount: 3,
+      retractCount: 0,
+      added: 1,
+      updated: 0,
+      deleted: 0,
+      failed: 0,
+      visionPages: 0,
+      estimatedCost: 0,
+      currency: 'CNY',
+      canPublish: true,
+      blockers: [],
+    })
+    expect(await screen.findByText('3 source files checked')).toBeTruthy()
   })
 
   it('selects source folders once, compiles, shows a human summary, then publishes', async () => {

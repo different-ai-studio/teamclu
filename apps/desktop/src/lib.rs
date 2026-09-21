@@ -495,6 +495,8 @@ pub fn run() {
             commands::obsidian::obsidian_status,
             commands::obsidian::obsidian_open_vault,
             commands::kb_maintainer::kb_maintainer_discover,
+            commands::kb_maintainer::kb_maintainer_list_local_documents,
+            commands::kb_maintainer::kb_maintainer_imported_source_paths,
             commands::kb_maintainer::kb_maintainer_prepare,
             commands::kb_maintainer::kb_maintainer_publish,
             commands::kb_maintainer::kb_maintainer_cancel,

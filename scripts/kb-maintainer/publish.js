@@ -182,16 +182,24 @@ function assertVaultBaseline({ knowledgeRoot, wikiRoot, publishedCommit, replayi
   if (replaying) return;
   const vault = vaultWikiRoot(knowledgeRoot);
   if (!publishedCommit) {
-    const existing = listWikiRelFromDir(vault);
-    if (existing.length > 0) {
-      throw new Error("knowledge/wiki already has files; unpublished external content");
-    }
+    // First publish takes over knowledge/wiki/. Leftover pages from earlier
+    // experiments are replaced by applyPlan pruning — do not block the run.
     return;
   }
   const expected = treeHashFromCommit(wikiRoot, publishedCommit);
   const actual = treeHashFromDir(vault);
   if (actual !== expected) {
     throw new Error("knowledge/wiki was modified externally; refuse to overwrite");
+  }
+}
+
+function pruneVaultExtras({ knowledgeRoot, wikiRoot, toCommit }) {
+  const vault = vaultWikiRoot(knowledgeRoot);
+  const target = new Set(listWikiFilesAtCommit(wikiRoot, toCommit));
+  for (const rel of listWikiRelFromDir(vault)) {
+    if (target.has(rel)) continue;
+    const dest = resolveInside(vault, rel);
+    if (fs.existsSync(dest)) fs.rmSync(dest);
   }
 }
 
@@ -205,13 +213,21 @@ function applyPlan({ wikiRoot, knowledgeRoot, plan, crashAfter }) {
   if (crashAfter === "pages") {
     throw new Error("injected crash");
   }
-  if (plan.create.includes("index.md") || plan.update.includes("index.md") || listWikiFilesAtCommit(wikiRoot, plan.toCommit).includes("index.md")) {
-    atomicWrite(resolveInside(vault, "index.md"), fileAtCommit(wikiRoot, plan.toCommit, "index.md"));
+  if (
+    plan.create.includes("index.md") ||
+    plan.update.includes("index.md") ||
+    listWikiFilesAtCommit(wikiRoot, plan.toCommit).includes("index.md")
+  ) {
+    atomicWrite(
+      resolveInside(vault, "index.md"),
+      fileAtCommit(wikiRoot, plan.toCommit, "index.md"),
+    );
   }
   for (const rel of plan.delete) {
     const dest = resolveInside(vault, rel);
     if (fs.existsSync(dest)) fs.rmSync(dest);
   }
+  pruneVaultExtras({ knowledgeRoot, wikiRoot, toCommit: plan.toCommit });
 }
 
 function interpretSync(result) {

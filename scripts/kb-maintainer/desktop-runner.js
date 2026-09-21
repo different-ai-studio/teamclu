@@ -10,7 +10,8 @@ const { ingestBatch, loadState } = require("./ingest");
 const { lintBatch } = require("./lint");
 const { loadConfig } = require("./config");
 const { buildPublishPlan, publishWiki } = require("./publish");
-const { headCommit } = require("./git-store");
+const { commitAll, headCommit } = require("./git-store");
+const { gcOrphanPages } = require("./orphan-gc");
 
 function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan }) {
   const failures = (ingest.failures || []).map(
@@ -19,14 +20,13 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
   const policyBlocks = [...(plan.denied || []), ...(plan.blocked || [])].map(
     (item) => `${item.path}: ${item.reason}`,
   );
+  // Present sources only — deleted-from-disk retracts are counted separately so
+  // the UI does not look like "3 files" when the vault only has 1 left.
   const sourceCount =
-    plan.add.length +
-    plan.update.length +
-    plan.delete.length +
-    plan.unchanged.length +
-    policyBlocks.length;
+    plan.add.length + plan.update.length + plan.unchanged.length + policyBlocks.length;
+  const retractCount = plan.delete.length;
   const blockers = [
-    ...(sourceCount === 0
+    ...(sourceCount === 0 && retractCount === 0
       ? ["No source files were found in the selected folders."]
       : []),
     ...policyBlocks,
@@ -36,6 +36,7 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
   return {
     runId,
     sourceCount,
+    retractCount,
     added: publishPlan.create.filter((item) => item.startsWith("pages/")).length,
     updated: publishPlan.update.filter((item) => item.startsWith("pages/")).length,
     deleted: publishPlan.delete.filter((item) => item.startsWith("pages/")).length,
@@ -48,7 +49,9 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
   };
 }
 
-async function prepare(input) {
+async function prepare(input, hooks = {}) {
+  const onProgress =
+    typeof hooks.onProgress === "function" ? hooks.onProgress : () => {};
   const common = {
     configPath: input.configPath,
     statePath: input.statePath,
@@ -58,16 +61,27 @@ async function prepare(input) {
     nodeId: input.nodeId,
     known: input.known || [],
     aclPrefixes: input.aclPrefixes,
-    runner: "pi",
+    runner: input.runner || "pi",
     compilerModel: input.compilerModel || "default",
     acceptVisionEstimate: false,
+    createSession: input.createSession,
+    onProgress,
   };
+  onProgress({ stage: "plan" });
   const dry = dryRun(common);
+  onProgress({ stage: "estimate" });
   const estimate = await estimateVision(common);
   const ingest = await ingestBatch(common);
+  onProgress({ stage: "lint" });
   const config = loadConfig(input.configPath);
   const wikiRoot = path.join(input.workRoot, "wiki");
   const state = loadState(input.statePath);
+  // Previous failed retracts can leave wiki pages that still cite deleted
+  // sources while state no longer tracks them. Drop those orphans before lint.
+  const orphans = gcOrphanPages({ wikiRoot, state });
+  if (orphans.removed.length > 0 || orphans.rewritten.length > 0) {
+    commitAll(wikiRoot, "wiki: drop pages for deleted sources");
+  }
   const lint = lintBatch({ wikiRoot, state, config });
   const toCommit = headCommit(wikiRoot);
   const publishPlan = buildPublishPlan({
@@ -75,6 +89,7 @@ async function prepare(input) {
     fromCommit: state.publishedCommit || null,
     toCommit,
   });
+  onProgress({ stage: "done" });
   return summarizePreparedRun({
     runId: input.runId,
     plan: dry.plan,
@@ -101,6 +116,8 @@ async function publish(input) {
   });
 }
 
+const { writeProgress } = require("./progress");
+
 async function main() {
   const command = process.argv[2];
   const inputPath = process.argv[3];
@@ -110,7 +127,7 @@ async function main() {
   const input = JSON.parse(fs.readFileSync(inputPath, "utf8"));
   const result =
     command === "prepare"
-      ? await prepare(input)
+      ? await prepare(input, { onProgress: writeProgress })
       : command === "publish"
         ? await publish(input)
         : (() => {

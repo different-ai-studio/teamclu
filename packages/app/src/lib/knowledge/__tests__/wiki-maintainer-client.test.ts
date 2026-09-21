@@ -47,19 +47,41 @@ describe('wiki-maintainer-client', () => {
     listKnowledgeAcl.mockResolvedValue([{ pathPrefix: 'documents/restricted/' }])
     listKnownDocuments.mockResolvedValue([
       { path: 'documents/handbook/a.pdf', version: 1, size: 10 },
+      { path: 'documents/handbook/present.md', version: 1, size: 11 },
+      { path: 'documents/handbook/deleted.md', version: 1, size: 12 },
       { path: 'documents/training/b.pdf', version: 1, size: 20 },
     ])
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'kb_maintainer_list_local_documents') {
+        return ['documents/handbook/present.md']
+      }
+      if (command === 'kb_maintainer_imported_source_paths') {
+        return ['documents/handbook/deleted.md']
+      }
+      return { runId: 'run-1' }
+    })
     fetchDocuments.mockResolvedValue(1)
-    invoke.mockResolvedValue({ runId: 'run-1' })
 
     await prepareWikiMaintenance('team-1', ['documents/handbook/'])
 
+    expect(invoke).toHaveBeenCalledWith('kb_maintainer_list_local_documents', {
+      teamId: 'team-1',
+      sourceDirectories: ['documents/handbook/'],
+    })
+    expect(invoke).toHaveBeenCalledWith('kb_maintainer_imported_source_paths', {
+      teamId: 'team-1',
+    })
     expect(fetchDocuments).toHaveBeenCalledWith('team-1', [
       'documents/handbook/a.pdf',
     ])
     expect(invoke).toHaveBeenCalledWith('kb_maintainer_prepare', {
       request: expect.objectContaining({
         aclPrefixes: ['documents/restricted/'],
+        known: [
+          { path: 'documents/handbook/a.pdf', version: 1, size: 10 },
+          { path: 'documents/handbook/present.md', version: 1, size: 11 },
+          { path: 'documents/handbook/deleted.md', version: 1, size: 12 },
+        ],
       }),
     })
   })
@@ -70,6 +92,11 @@ describe('wiki-maintainer-client', () => {
       { path: 'documents/handbook/a.pdf', version: 1, size: 10 },
       { path: 'documents/handbook/b.pdf', version: 1, size: 20 },
     ])
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'kb_maintainer_list_local_documents') return []
+      if (command === 'kb_maintainer_imported_source_paths') return []
+      return { runId: 'run-1' }
+    })
     fetchDocuments.mockResolvedValue(1)
 
     await expect(

@@ -39,9 +39,23 @@ export async function prepareWikiMaintenance(
   // Live owner/admin ACL list. Any failure stops before local files are touched.
   const acl = await getBackend().knowledgeAcl.listKnowledgeAcl(teamId)
   const known = await listKnownDocuments(teamId)
-  const missing = known
+  const selectedKnown = known.filter((item) =>
+    isUnderSelected(item.path, sourceDirectories),
+  )
+  const [localPaths, importedPaths] = await Promise.all([
+    invoke<string[]>('kb_maintainer_list_local_documents', {
+      teamId,
+      sourceDirectories,
+    }),
+    invoke<string[]>('kb_maintainer_imported_source_paths', { teamId }),
+  ])
+  const local = new Set(localPaths)
+  const imported = new Set(importedPaths)
+  // Only lazy-fetch never-downloaded files. Paths already imported but missing
+  // on disk were deleted by the user and must retract, not resurrect.
+  const missing = selectedKnown
     .map((item) => item.path)
-    .filter((path) => isUnderSelected(path, sourceDirectories))
+    .filter((path) => !local.has(path) && !imported.has(path))
   if (missing.length > 0) {
     const fetched = await fetchDocuments(teamId, missing)
     if (fetched !== missing.length) {
@@ -55,7 +69,7 @@ export async function prepareWikiMaintenance(
       teamId,
       sourceDirectories,
       aclPrefixes: acl.map((rule) => rule.pathPrefix),
-      known,
+      known: selectedKnown,
     },
   })
 }

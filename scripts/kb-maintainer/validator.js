@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { parseFrontmatter } = require("./frontmatter");
+const { parseFrontmatter, serializeFrontmatter } = require("./frontmatter");
 
 const PAGE_TYPES = new Set(["policy", "process", "role", "term", "faq", "training", "source-summary"]);
 const WIKI_LINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
@@ -40,9 +40,57 @@ function collectWikiLinks(text) {
   return links;
 }
 
+function wikiLinkCandidates(target) {
+  const trimmed = String(target || "").trim();
+  if (!trimmed) return [];
+  const withoutMd = trimmed.endsWith(".md") ? trimmed.slice(0, -3) : trimmed;
+  const rel = `${withoutMd}.md`;
+  const candidates = [rel];
+  if (!withoutMd.startsWith("pages/") && !withoutMd.includes("/")) {
+    candidates.push(`pages/${rel}`);
+  }
+  return candidates;
+}
+
 function resolveWikiLink(wikiRoot, target) {
-  const rel = target.endsWith(".md") ? target : `${target}.md`;
-  return fs.existsSync(path.join(wikiRoot, rel));
+  return wikiLinkCandidates(target).some((rel) => fs.existsSync(path.join(wikiRoot, rel)));
+}
+
+function canonicalWikiTarget(wikiRoot, target) {
+  const trimmed = String(target || "").trim();
+  if (!trimmed) return null;
+  const withoutMd = trimmed.endsWith(".md") ? trimmed.slice(0, -3) : trimmed;
+  if (withoutMd.startsWith("pages/")) {
+    return fs.existsSync(path.join(wikiRoot, `${withoutMd}.md`)) ? withoutMd : null;
+  }
+  if (!withoutMd.includes("/") && fs.existsSync(path.join(wikiRoot, "pages", `${withoutMd}.md`))) {
+    return `pages/${withoutMd}`;
+  }
+  return null;
+}
+
+function rewriteWikiLinksInText(text, wikiRoot) {
+  return text.replace(/\[\[([^\]|#]+)(#[^\]|]+)?(\|[^\]]+)?\]\]/g, (full, target, hash, alias) => {
+    const canonical = canonicalWikiTarget(wikiRoot, target);
+    if (!canonical || canonical === target.trim()) return full;
+    return `[[${canonical}${hash || ""}${alias || ""}]]`;
+  });
+}
+
+function normalizeWikiLinks(wikiRoot) {
+  let rewritten = 0;
+  const files = listPageFiles(wikiRoot);
+  const indexAbs = path.join(wikiRoot, "index.md");
+  if (fs.existsSync(indexAbs)) files.push("index.md");
+  for (const rel of files) {
+    const abs = path.join(wikiRoot, rel);
+    const before = fs.readFileSync(abs, "utf8");
+    const after = rewriteWikiLinksInText(before, wikiRoot);
+    if (after === before) continue;
+    fs.writeFileSync(abs, after);
+    rewritten += 1;
+  }
+  return { rewritten };
 }
 
 function locatorPresent(rawMarkdown, locator) {
@@ -68,6 +116,30 @@ function parseIndexEntries(indexText) {
     }
   }
   return entries;
+}
+
+function scalarSummary(value) {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value).trim();
+  }
+  return "";
+}
+
+function pageDisplay(parsed, slug) {
+  const heading = /^(#{1,6})\s+(.+)$/m.exec(parsed.body);
+  return heading ? heading[2].trim() : slug;
+}
+
+function indexAlias(display) {
+  const cleaned = String(display || "")
+    .replace(/[\[\]|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "page";
+}
+
+function indexSummaryFor(parsed, slug) {
+  return scalarSummary(parsed.frontmatter.summary) || pageDisplay(parsed, slug);
 }
 
 function validateSourceDiff(opts) {
@@ -101,8 +173,7 @@ function validateSourceDiff(opts) {
     ? rawMarkdown.slice(rawMarkdown.indexOf("\n---\n") + 5)
     : rawMarkdown;
 
-  for (const rel of listPageFiles(wikiRoot)) {
-    if (!changedPages.includes(rel) && !fs.existsSync(path.join(wikiRoot, rel))) continue;
+  for (const rel of changedPages) {
     const abs = path.join(wikiRoot, rel);
     if (!fs.existsSync(abs)) continue;
     let parsed;
@@ -117,6 +188,7 @@ function validateSourceDiff(opts) {
     if (fm.schema_version !== 1) errors.push(`${rel}: unsupported schema_version`);
     if (!PAGE_TYPES.has(fm.type)) errors.push(`${rel}: illegal type ${fm.type}`);
     if (!Array.isArray(fm.sources) || fm.sources.length === 0) errors.push(`${rel}: sources required`);
+    const citesCurrent = (fm.sources || []).some((source) => source.path === currentSource.path);
     const text = `${parsed.body}\n${fm.summary || ""}`;
     if (ID_CARD_RE.test(text) || MOBILE_RE.test(text) || /保单号/.test(text) && /\d{6,}/.test(text)) {
       errors.push(`${rel}: PII or sensitive identifier`);
@@ -131,7 +203,11 @@ function validateSourceDiff(opts) {
     if (fm.type === "source-summary" && parsed.body.trim().length > (limits.maxSourceSummaryChars ?? 4000)) {
       errors.push(`${rel}: source-summary too large`);
     }
-    if (rawBody.length > 2000 && parsed.body.trim().length > 0.9 * rawBody.trim().length) {
+    if (
+      citesCurrent &&
+      rawBody.length > 2000 &&
+      parsed.body.trim().length > 0.9 * rawBody.trim().length
+    ) {
       errors.push(`${rel}: copy ratio too high`);
     }
     for (const source of fm.sources || []) {
@@ -171,8 +247,11 @@ function validateSourceDiff(opts) {
         continue;
       }
       const parsed = parseFrontmatter(fs.readFileSync(path.join(wikiRoot, rel), "utf8"));
-      if (entry.summary !== parsed.frontmatter.summary) {
-        errors.push(`index summary mismatch for ${rel}`);
+      const expected = indexSummaryFor(parsed, slug);
+      if (entry.summary !== expected) {
+        errors.push(
+          `index summary mismatch for ${rel}: index=${JSON.stringify(entry.summary)} page=${JSON.stringify(expected)}`,
+        );
       }
     }
     for (const slug of seen.keys()) {
@@ -188,17 +267,23 @@ function validateSourceDiff(opts) {
 function rebuildIndex(wikiRoot) {
   const groups = new Map();
   for (const rel of listPageFiles(wikiRoot)) {
-    const parsed = parseFrontmatter(fs.readFileSync(path.join(wikiRoot, rel), "utf8"));
-    const type = parsed.frontmatter.type;
+    const abs = path.join(wikiRoot, rel);
+    let parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
     const slug = rel.slice("pages/".length, -3);
-    const heading = /^(#{1,6})\s+(.+)$/m.exec(parsed.body);
-    const display = heading ? heading[2].trim() : slug;
+    const summary = indexSummaryFor(parsed, slug);
+    if (parsed.frontmatter.summary !== summary) {
+      parsed.frontmatter.summary = summary;
+      fs.writeFileSync(abs, serializeFrontmatter(parsed.frontmatter, parsed.body));
+      parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
+    }
+    const type = parsed.frontmatter.type;
+    const display = indexAlias(pageDisplay(parsed, slug));
     const section = SECTION_BY_TYPE[type] || type;
     if (!groups.has(section)) groups.set(section, []);
     groups.get(section).push({
       slug,
       display,
-      summary: parsed.frontmatter.summary,
+      summary: indexSummaryFor(parsed, slug),
     });
   }
   const lines = ["# LLM Wiki", ""];
@@ -217,6 +302,7 @@ module.exports = {
   SECTION_BY_TYPE,
   validateSourceDiff,
   rebuildIndex,
+  normalizeWikiLinks,
   listPageFiles,
   isAllowedWikiPath,
   posixRel,

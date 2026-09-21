@@ -28,6 +28,20 @@ test("assertWikiPath allows wiki pages and index", () => {
   assert.equal(assertWikiPath(root, "pages/leave.md"), fs.realpathSync(page));
 });
 
+test("assertWikiPath maps a wiki/ prefix onto the wiki root, not a nested wiki/wiki", () => {
+  const root = workRoot();
+  const wikiRoot = fs.realpathSync(path.join(root, "wiki"));
+  assert.equal(
+    assertWikiPath(root, "wiki/pages/leave.md"),
+    path.join(wikiRoot, "pages", "leave.md"),
+  );
+  assert.equal(assertWikiPath(root, "wiki/index.md"), path.join(wikiRoot, "index.md"));
+  assert.equal(
+    assertWikiPath(root, path.join(wikiRoot, "wiki", "pages", "leave.md")),
+    path.join(wikiRoot, "pages", "leave.md"),
+  );
+});
+
 test("assertWikiPath rejects raw, state, vault, and parent escape", () => {
   const root = workRoot();
   assert.throws(() => assertWikiPath(root, path.join(root, "raw", "x.md")), /wiki/);

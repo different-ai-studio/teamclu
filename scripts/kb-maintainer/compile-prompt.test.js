@@ -24,8 +24,11 @@ test("buildCompilePrompt treats the model as a compiler and wraps the source as 
   assert.match(prompt, /<\/source>/);
   assert.match(prompt, /documents\/handbook\/leave.md/);
   assert.match(prompt, /heading=请假/);
-  assert.match(prompt, /wiki\/pages/);
+  assert.match(prompt, /pages\/\*\.md/);
+  assert.match(prompt, /working directory is the wiki root/i);
   assert.match(prompt, /Wiki Link/);
+  assert.match(prompt, /at least one page/);
+  assert.match(prompt, /one-line string summary/);
 });
 
 test("buildCompilePrompt for delete names the affected pages to recompile", () => {

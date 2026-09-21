@@ -11,6 +11,8 @@ This file is human-maintained. The kb-maintainer reads it and never writes it.
 - `faq` — 稳定、可复用的问答
 - `source-summary` — 无法安全拆入主题页时的原文摘要
 
+Every page needs a one-line `summary:` string (used on `index.md`). Prefer a fact from the source, not the filename.
+
 ## Hard rules
 
 1. Facts must come from the provided source locators.

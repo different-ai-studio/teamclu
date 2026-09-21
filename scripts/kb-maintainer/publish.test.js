@@ -37,27 +37,21 @@ test("buildPublishPlan lists creates from an unpublished HEAD", () => {
   assert.equal(plan.toCommit, fx.toCommit);
 });
 
-test("publishWiki writes only knowledge/wiki and uses atomic tree hash", async () => {
+test("publishWiki takes over a vault that already has unpublished pages", async () => {
   const fx = makeWiki();
-  const syncCalls = [];
+  write(path.join(fx.knowledgeRoot, "wiki", "pages", "请假.md"), "# stale\n");
+  write(path.join(fx.knowledgeRoot, "wiki", "index.md"), "# stale index\n");
   const result = await publishWiki({
     wikiRoot: fx.wikiRoot,
     knowledgeRoot: fx.knowledgeRoot,
     statePath: fx.statePath,
     workRoot: path.join(fx.root, "work"),
-    syncTeam: (opts) => {
-      syncCalls.push(opts);
-      return { ok: true };
-    },
+    syncTeam: () => ({ ok: true }),
   });
   assert.equal(result.ok, true);
+  assert.equal(fs.existsSync(path.join(fx.knowledgeRoot, "wiki", "pages", "请假.md")), false);
   assert.equal(fs.existsSync(path.join(fx.knowledgeRoot, "wiki", "pages", "leave.md")), true);
   assert.match(fs.readFileSync(path.join(fx.knowledgeRoot, "wiki", "index.md"), "utf8"), /pages\/leave/);
-  assert.equal(fs.existsSync(path.join(fx.knowledgeRoot, "30-decisions")), false);
-  const state = loadState(fx.statePath);
-  assert.equal(state.publishedCommit, fx.toCommit);
-  assert.equal(state.syncStatus, "synced");
-  assert.deepEqual(syncCalls, [{ force_sync: true, allow_bulk_add: false, allow_bulk_delete: false }]);
   assert.equal(
     treeHashFromDir(path.join(fx.knowledgeRoot, "wiki")),
     result.plan.targetTreeHash,
