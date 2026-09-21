@@ -1,5 +1,7 @@
 // ── Concrete shapes for the state the session store still hosts ──
 
+import type { AgentReplyAttachment } from "@/lib/attachments/agent-reply-attachments";
+
 /** One choice offered by the agent's `question` tool. */
 export interface QuestionOption {
   label: string;
@@ -232,6 +234,8 @@ export interface Message {
     turnId: string;
     senderActorId: string;
   };
+  /** Turn-final agent_reply files (metadata.attachments + attachment_urls). */
+  replyAttachments?: AgentReplyAttachment[];
 }
 
 interface PlanEntry {

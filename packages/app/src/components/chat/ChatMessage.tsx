@@ -21,12 +21,14 @@ import { StreamMarkdown } from "./StreamMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { AgentProcessCollapsible } from "./AgentProcessCollapsible";
 import { UserMessageWithMentions } from "./UserMessageWithMentions";
+import { AgentReplyAttachments } from "./AgentReplyAttachments";
 import { MessageStatusDot } from "./MessageStatusDot";
 import { ActorLabel } from "./ActorLabel";
 import { MessageTokenUsage } from "./MessageTokenUsage";
 import { MessageTokenSummary } from "./MessageTokenSummary";
 import { MessageStarRating } from "./MessageStarRating";
 import { splitAssistantProcessAndFinalParts } from "@/lib/agent/agent-reply-transcript";
+import { agentReplyTextsEquivalent } from "@/lib/agent/agent-reply-text";
 import {
   countCompactionParts,
   formatAgentProcessSummary,
@@ -224,6 +226,53 @@ export const ChatMessage = React.memo(function ChatMessage({
     () => mergeProcessPartsWithCompaction(rawOrderedProcessParts, compactionParts),
     [rawOrderedProcessParts, compactionParts],
   );
+  const dedupedOrderedTextParts = React.useMemo(() => {
+    const out: MessagePart[] = [];
+    for (const part of orderedTextParts) {
+      const text = (part.text || part.content || "").trim();
+      if (!text) continue;
+      if (
+        out.some((existing) =>
+          agentReplyTextsEquivalent(
+            (existing.text || existing.content || "").trim(),
+            text,
+          ),
+        )
+      ) {
+        continue;
+      }
+      out.push(part);
+    }
+    return out;
+  }, [orderedTextParts]);
+  const showFallbackAssistantBody = React.useMemo(() => {
+    if (latestMessage.isStreaming || !textContent.trim()) return false;
+    if (dedupedOrderedTextParts.length > 0) return false;
+    return !orderedProcessParts.some((part) => part.type === "text");
+  }, [
+    dedupedOrderedTextParts.length,
+    latestMessage.isStreaming,
+    orderedProcessParts,
+    textContent,
+  ]);
+  const completedFinalTextParts = React.useMemo(() => {
+    if (latestMessage.isStreaming || dedupedOrderedTextParts.length <= 1) {
+      return dedupedOrderedTextParts;
+    }
+    const firstText = (
+      dedupedOrderedTextParts[0]?.text ||
+      dedupedOrderedTextParts[0]?.content ||
+      ""
+    ).trim();
+    const allEquivalent = dedupedOrderedTextParts.every((part) =>
+      agentReplyTextsEquivalent(
+        (part.text || part.content || "").trim(),
+        firstText,
+      ),
+    );
+    if (!allEquivalent) return dedupedOrderedTextParts;
+    return [dedupedOrderedTextParts[dedupedOrderedTextParts.length - 1]!];
+  }, [dedupedOrderedTextParts, latestMessage.isStreaming]);
   const compactionCount = React.useMemo(
     () => countCompactionParts(orderedProcessParts),
     [orderedProcessParts],
@@ -484,7 +533,7 @@ export const ChatMessage = React.memo(function ChatMessage({
           ) : null}
           {(latestMessage.isStreaming
             ? orderedRenderableParts
-            : orderedTextParts
+            : completedFinalTextParts
           ).map((part, index, arr) => {
             if (part.type === "reasoning") {
               if (!latestMessage.isStreaming) return null;
@@ -522,18 +571,13 @@ export const ChatMessage = React.memo(function ChatMessage({
               </Message>
             );
           })}
-          {!latestMessage.isStreaming &&
-            orderedTextParts.length === 0 &&
-            textContent &&
-            // Mid-turn narrations already live inside process; don't re-render
-            // message.content as a duplicate final body.
-            !orderedProcessParts.some((part) => part.type === "text") && (
+          {showFallbackAssistantBody ? (
               <Message from="assistant" basePath={basePath}>
                 <MessageContent>
                   <MessageResponse>{textContent}</MessageResponse>
                 </MessageContent>
               </Message>
-            )}
+            ) : null}
           {latestMessage.isStreaming && textContent && (
             <span className="inline-flex items-center gap-0.5 ml-1.5 align-middle">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-[bounce_1s_ease-in-out_infinite]" />
@@ -580,6 +624,15 @@ export const ChatMessage = React.memo(function ChatMessage({
           )}
         </>
       )}
+
+      {!isUser &&
+      !latestMessage.isStreaming &&
+      latestMessage.replyAttachments &&
+      latestMessage.replyAttachments.length > 0 ? (
+        <div className="pl-1 max-w-full">
+          <AgentReplyAttachments attachments={latestMessage.replyAttachments} />
+        </div>
+      ) : null}
 
       {/* Daemon interrupted AGENT_REPLY — after process/tools, scheme A */}
       {isInterruptedTurn ? (

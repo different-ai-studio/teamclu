@@ -1042,6 +1042,10 @@
       "downloadImage": "Download image",
       "enlargeDiagram": "Enlarge diagram"
     },
+    "agentReply": {
+      "attachmentsHeading": "Attachments · {{count}}",
+      "imagePreviewLoading": "Loading preview…"
+    },
     "attachment": {
       "download": "Download attachment",
       "saveAttachment": "Save attachment",

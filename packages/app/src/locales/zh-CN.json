@@ -1042,6 +1042,10 @@
       "downloadImage": "下载图片",
       "enlargeDiagram": "放大流程图"
     },
+    "agentReply": {
+      "attachmentsHeading": "附件 · {{count}}",
+      "imagePreviewLoading": "加载预览…"
+    },
     "attachment": {
       "download": "下载附件",
       "saveAttachment": "保存附件",
