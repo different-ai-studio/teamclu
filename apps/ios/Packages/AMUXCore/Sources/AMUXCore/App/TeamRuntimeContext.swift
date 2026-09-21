@@ -20,6 +20,10 @@ public struct TeamRuntimeContext {
 
     public let actorStore: ActorStore
     public let connectedAgentsStore: ConnectedAgentsStore
+    /// Broker-backed agent presence, written by `SessionListViewModel` from the
+    /// retained actor-state topic. Team-scoped like everything else here, so a
+    /// team switch drops the old entries with the context that held them.
+    public let agentPresenceStore: AgentPresenceStore
     public let shortcutsStore: ShortcutsStore?
     public let notificationPrefsStore: NotificationPrefsStore?
 
@@ -39,6 +43,7 @@ public struct TeamRuntimeContext {
         memberActorID: String,
         actorStore: ActorStore,
         connectedAgentsStore: ConnectedAgentsStore,
+        agentPresenceStore: AgentPresenceStore = AgentPresenceStore(),
         shortcutsStore: ShortcutsStore?,
         notificationPrefsStore: NotificationPrefsStore? = nil,
         sessionIDsRepo: (any SessionIDsRepository)?,
@@ -56,6 +61,7 @@ public struct TeamRuntimeContext {
         self.memberActorID = memberActorID
         self.actorStore = actorStore
         self.connectedAgentsStore = connectedAgentsStore
+        self.agentPresenceStore = agentPresenceStore
         self.shortcutsStore = shortcutsStore
         self.notificationPrefsStore = notificationPrefsStore
         self.sessionIDsRepo = sessionIDsRepo

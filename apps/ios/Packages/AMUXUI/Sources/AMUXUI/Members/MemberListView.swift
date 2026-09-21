@@ -18,6 +18,17 @@ public struct MemberListView: View {
     private var actors: [CachedActor]
 
     private let selectionMode: Bool
+    /// Refreshed when the picker opens. Without it the rows render off
+    /// whatever `ActorCacheSynchronizer` last wrote — which, before this, only
+    /// ever happened on the Actors tab. A picker opened from a session showed
+    /// presence as stale as the last time that tab was visited, so everyone
+    /// read offline. Optional: browse-only callers have no store.
+    private let actorStore: ActorStore?
+    /// Broker-backed agent presence. Read in the row body so SwiftUI tracks it
+    /// and the dot flips the moment a Last Will lands.
+    private let agentPresenceStore: AgentPresenceStore?
+    /// The signed-in user's actor id, so their own row reads online.
+    private let currentActorID: String?
     private let accessibleAgentIDs: Set<String>
     private let currentPrimaryAgentID: String?
     private let excludeActorID: String?
@@ -41,8 +52,13 @@ public struct MemberListView: View {
     @State private var toastMessage: String?
 
     /// Browse-only mode: tap rows to see detail.
-    public init() {
+    public init(actorStore: ActorStore? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil,
+                currentActorID: String? = nil) {
         self.selectionMode = false
+        self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
+        self.currentActorID = currentActorID
         self.accessibleAgentIDs = []
         self.currentPrimaryAgentID = nil
         self.excludeActorID = nil
@@ -55,6 +71,9 @@ public struct MemberListView: View {
 
     /// Selection mode: multi-select with a confirm callback.
     public init(selected: Set<String> = [],
+                actorStore: ActorStore? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil,
+                currentActorID: String? = nil,
                 accessibleAgentIDs: Set<String> = [],
                 currentPrimaryAgentID: String? = nil,
                 excludeActorID: String? = nil,
@@ -63,6 +82,9 @@ public struct MemberListView: View {
                 onAgentTap: ((CachedActor) -> String?)? = nil,
                 onConfirm: @escaping (_ actors: [CachedActor]) -> Void) {
         self.selectionMode = true
+        self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
+        self.currentActorID = currentActorID
         self.accessibleAgentIDs = accessibleAgentIDs
         self.currentPrimaryAgentID = currentPrimaryAgentID
         self.excludeActorID = excludeActorID
@@ -97,7 +119,8 @@ public struct MemberListView: View {
         guard !q.isEmpty else { return visibleActors }
         let norm = q.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
         return visibleActors.filter { a in
-            [a.displayName, a.roleLabel, a.defaultAgentType ?? "", a.actorId]
+            [a.displayName, a.roleLabel, a.roles.map(\.name).joined(separator: " "),
+             a.defaultAgentType ?? "", a.actorId]
                 .joined(separator: " ")
                 .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
                 .contains(norm)
@@ -113,9 +136,12 @@ public struct MemberListView: View {
                             selectionRow(actor)
                         } else {
                             NavigationLink {
-                                MemberDetailView(member: actor)
+                                MemberDetailView(member: actor, currentActorID: currentActorID,
+                                                 devicePresence: devicePresence(actor))
                             } label: {
-                                ActorRow(actor: actor, isPrimary: false, isLocked: false)
+                                ActorRow(actor: actor, isPrimary: false, isLocked: false,
+                                         currentActorID: currentActorID,
+                                         devicePresence: devicePresence(actor))
                             }
                         }
                     }
@@ -126,6 +152,8 @@ public struct MemberListView: View {
             .scrollContentBackground(.hidden)
             .background(Color.amux.mist)
             .searchable(text: $searchText, prompt: "Search actors")
+            .task { await actorStore?.reload(); await actorStore?.heartbeat() }
+            .refreshable { await actorStore?.reload() }
             .navigationTitle("Actors").navigationBarTitleDisplayMode(.large)
             .toolbar {
                 if selectionMode {
@@ -192,6 +220,11 @@ public struct MemberListView: View {
         }
     }
 
+    private func devicePresence(_ actor: CachedActor) -> AgentDevicePresence {
+        guard actor.isAgent, let agentPresenceStore else { return .unknown }
+        return agentPresenceStore.presence(forAgent: actor.actorId)
+    }
+
     private func isLocked(_ actor: CachedActor) -> Bool {
         actor.isAgent && !accessibleAgentIDs.contains(actor.actorId)
     }
@@ -226,7 +259,9 @@ public struct MemberListView: View {
                     .foregroundStyle(appearsSelected ? Color.amux.cinnabar
                                      : locked ? Color.amux.slate.opacity(0.4) : Color.amux.slate)
                     .font(.title3)
-                ActorRow(actor: actor, isPrimary: isPrimary(actor), isLocked: locked)
+                ActorRow(actor: actor, isPrimary: isPrimary(actor), isLocked: locked,
+                         currentActorID: currentActorID,
+                         devicePresence: devicePresence(actor))
             }
             .contentShape(Rectangle())
         }
@@ -241,6 +276,12 @@ private struct ActorRow: View {
     let actor: CachedActor
     let isPrimary: Bool
     let isLocked: Bool
+    var currentActorID: String? = nil
+    var devicePresence: AgentDevicePresence = .unknown
+
+    private var isOnline: Bool {
+        actor.isOnline(currentActorID: currentActorID, devicePresence: devicePresence)
+    }
 
     private var subtitle: String {
         if actor.isMember {
@@ -274,10 +315,16 @@ private struct ActorRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(actor.isOnline ? Color.amux.sage : Color.amux.slate.opacity(0.4))
-                .frame(width: 8, height: 8)
+        HStack(spacing: 10) {
+            ZStack(alignment: .bottomTrailing) {
+                AgentAvatar(actor: actor, size: 32, cornerRadius: 8)
+                Circle()
+                    .fill(isOnline ? Color.amux.sage : Color.amux.slate.opacity(0.4))
+                    .frame(width: 9, height: 9)
+                    .overlay(Circle().stroke(Color.amux.paper, lineWidth: 2))
+                    .breathingOpacity(active: isOnline, dim: 0.55)
+                    .offset(x: 1, y: 1)
+            }
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -323,6 +370,8 @@ private struct ActorRow: View {
 
 private struct MemberDetailView: View {
     let member: CachedActor
+    var currentActorID: String? = nil
+    var devicePresence: AgentDevicePresence = .unknown
 
     @Query private var allMessages: [SessionMessage]
     @Query(sort: \Session.lastMessageAt, order: .reverse)
@@ -339,6 +388,41 @@ private struct MemberDetailView: View {
 
     var body: some View {
         List {
+            Section {
+                VStack(spacing: 10) {
+                    ZStack(alignment: .bottomTrailing) {
+                        AgentAvatar(actor: member, size: 72, cornerRadius: 18)
+                        if member.isOnline(currentActorID: currentActorID,
+                                           devicePresence: devicePresence) {
+                            Circle()
+                                .fill(Color.amux.sage)
+                                .frame(width: 16, height: 16)
+                                .overlay(Circle().stroke(Color.amux.mist, lineWidth: 3))
+                                .breathingOpacity(active: true, dim: 0.55)
+                                .offset(x: 2, y: 2)
+                        }
+                    }
+                    Text(member.displayName)
+                        .font(.system(size: 22, weight: .bold))
+                        .multilineTextAlignment(.center)
+                    if !member.displayRoles.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(member.displayRoles) { role in
+                                Text(role.label)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color.amux.basalt)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(Capsule().fill(Color.amux.pebble))
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
             Section("Info") {
                 LabeledContent("Name", value: member.displayName)
                 LabeledContent("Role", value: member.roleLabel)

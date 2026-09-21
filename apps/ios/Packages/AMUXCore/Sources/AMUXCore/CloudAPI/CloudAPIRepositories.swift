@@ -1067,6 +1067,15 @@ private struct CloudSessionParticipant: Decodable, Sendable {
     let model: String?
 }
 
+/// `Actor.roles[]` — the member's org role assignments (`roles_users`). The
+/// contract marks this the source of truth for role UI and `teamRole` legacy,
+/// so both ride along and `ActorRoleResolution` prefers this one.
+private struct CloudMemberRoleRef: Decodable, Sendable {
+    let id: String
+    let code: String
+    let name: String
+}
+
 private struct CloudActor: Decodable, Sendable {
     let id: String
     let teamId: String?
@@ -1075,6 +1084,7 @@ private struct CloudActor: Decodable, Sendable {
     let avatarUrl: String?
     let userId: String?
     let invitedByActorId: String?
+    let roles: [CloudMemberRoleRef]?
     let teamRole: String?
     let memberStatus: String?
     let agentStatus: String?
@@ -1101,6 +1111,7 @@ private struct CloudActor: Decodable, Sendable {
             createdAt: parseCloudDate(createdAt) ?? .distantPast,
             updatedAt: parseCloudDate(updatedAt) ?? .distantPast,
             memberStatus: memberStatus,
+            roles: (roles ?? []).map { ActorRoleRef(id: $0.id, code: $0.code, name: $0.name) },
             teamRole: teamRole,
             agentTypes: agentTypes ?? [],
             agentKind: agentKind,

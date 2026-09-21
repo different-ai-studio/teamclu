@@ -76,6 +76,7 @@ public struct RootTabView: View {
                             navigationPath: $sessionsPath,
                             connectedAgentsStore: teamRuntime?.connectedAgentsStore,
                             actorStore: teamRuntime?.actorStore,
+                            agentPresenceStore: teamRuntime?.agentPresenceStore,
                             shortcutsStore: teamRuntime?.shortcutsStore,
                             messagesRepository: teamRuntime?.messagesRepo,
                             workspacesRepository: teamRuntime?.workspacesRepo,
@@ -100,7 +101,9 @@ public struct RootTabView: View {
                          workspacesRepository: teamRuntime?.workspacesRepo,
                          sessionsRepository: teamRuntime?.sessionRepo,
                          ideasRepository: teamRuntime?.ideasRepo,
-                         currentActorID: currentActorID)
+                         currentActorID: currentActorID,
+                         actorStore: teamRuntime?.actorStore,
+                         agentPresenceStore: teamRuntime?.agentPresenceStore)
             }
             Tab("Actors", systemImage: "person.2", value: AppTab.members) {
                 if let actorStore = teamRuntime?.actorStore {
@@ -112,6 +115,7 @@ public struct RootTabView: View {
                                currentActorID: currentActorID,
                                store: actorStore,
                                connectedAgentsStore: teamRuntime?.connectedAgentsStore,
+                               agentPresenceStore: teamRuntime?.agentPresenceStore,
                                workspacesRepository: teamRuntime?.workspacesRepo,
                                agentAccessRepository: teamRuntime?.agentAccessRepo,
                                teamResourceRepository: teamRuntime?.teamResourceRepo,
@@ -144,7 +148,8 @@ public struct RootTabView: View {
                 teamID: activeTeam?.id ?? "",
                 connectedAgentsStore: teamRuntime?.connectedAgentsStore,
                 modelContext: modelContext,
-                teamcluService: teamcluService
+                teamcluService: teamcluService,
+                agentPresenceStore: teamRuntime?.agentPresenceStore
             )
             // Inbox red-dot subscription: per-user MQTT topic, populated by
             // FC fan-out after each message INSERT. Decoupled from the

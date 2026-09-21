@@ -19,6 +19,9 @@ public struct NewSessionSheet: View {
     let currentActorID: String?
     let isAgentAvailable: Bool
     let connectedAgentsStore: ConnectedAgentsStore?
+    /// Handed to the member picker so it refreshes presence when it opens.
+    let actorStore: ActorStore?
+    let agentPresenceStore: AgentPresenceStore?
     let workspacesRepository: (any WorkspaceRepository)?
     let sessionsRepository: (any SessionRepository)?
 
@@ -55,6 +58,8 @@ public struct NewSessionSheet: View {
     public init(mqtt: MQTTService, peerId: String, teamcluService: TeamcluService? = nil,
                 teamID: String = "", currentActorID: String? = nil, isAgentAvailable: Bool = true,
                 connectedAgentsStore: ConnectedAgentsStore? = nil,
+                actorStore: ActorStore? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
                 sessionsRepository: (any SessionRepository)? = nil,
                 viewModel: SessionListViewModel,
@@ -68,6 +73,8 @@ public struct NewSessionSheet: View {
         self.currentActorID = currentActorID
         self.isAgentAvailable = isAgentAvailable
         self.connectedAgentsStore = connectedAgentsStore
+        self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
         self.workspacesRepository = workspacesRepository
         self.sessionsRepository = sessionsRepository
         self.viewModel = viewModel
@@ -154,6 +161,9 @@ public struct NewSessionSheet: View {
         .sheet(isPresented: $showMemberPicker) {
             MemberListView(
                 selected: Set(collaborators.filter { !$0.isAgent }.map(\.actorId)),
+                actorStore: actorStore,
+                agentPresenceStore: agentPresenceStore,
+                currentActorID: currentActorID,
                 accessibleAgentIDs: Set(connectedAgentsStore?.agents.map(\.id) ?? []),
                 currentPrimaryAgentID: nil,
                 excludeActorID: currentActorID,

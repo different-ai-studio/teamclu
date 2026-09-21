@@ -54,6 +54,9 @@ public struct SessionDetailView: View {
     private let workspacesRepository: (any WorkspaceRepository)?
 
     let connectedAgentsStore: ConnectedAgentsStore?
+    /// Forwarded to AddMemberSheet's picker so it refreshes presence.
+    let actorStore: ActorStore?
+    let agentPresenceStore: AgentPresenceStore?
 
     public init(session: Session, mqtt: MQTTService, hub: MQTTMessageHub, peerId: String,
                 teamcluService: TeamcluService?,
@@ -62,7 +65,9 @@ public struct SessionDetailView: View {
                 workspacesRepository: (any WorkspaceRepository)? = nil,
                 sessionsRepository: (any SessionRepository)? = nil,
                 pushPrefs: (any PushPreferencesAPI)? = nil,
-                notificationPrefsStore: NotificationPrefsStore? = nil) {
+                notificationPrefsStore: NotificationPrefsStore? = nil,
+                actorStore: ActorStore? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil) {
         _viewModel = State(initialValue: SessionDetailViewModel(
             runtime: nil, mqtt: mqtt, hub: hub, teamID: session.teamId,
             peerId: peerId, session: session,
@@ -72,6 +77,8 @@ public struct SessionDetailView: View {
             messagesRepository: messagesRepository,
             workspacesRepository: workspacesRepository))
         self.connectedAgentsStore = connectedAgentsStore
+        self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
         self.pendingTeamcluService = teamcluService
         self.pushPrefs = pushPrefs
         self.notificationPrefsStore = notificationPrefsStore
@@ -423,7 +430,8 @@ public struct SessionDetailView: View {
                 AddAgentSheet(
                     candidates: viewModel.candidatesForAddAgent(),
                     teamID: viewModel.teamIDRef,
-                    workspacesRepository: workspacesRepository
+                    workspacesRepository: workspacesRepository,
+                    agentPresenceStore: agentPresenceStore
                 ) { actorID, workspaceID, workspacePath, agentType in
                     Task {
                         await viewModel.addAgent(
@@ -439,7 +447,9 @@ public struct SessionDetailView: View {
                 AddMemberSheet(
                     excludedActorIDs: viewModel.existingParticipantActorIDs,
                     accessibleAgentIDs: Set(connectedAgentsStore?.agents.map(\.id) ?? []),
-                    currentActorID: viewModel.currentHumanActorIDRef
+                    currentActorID: viewModel.currentHumanActorIDRef,
+                    actorStore: actorStore,
+                    agentPresenceStore: agentPresenceStore
                 ) { humanActorIDs in
                     Task { await viewModel.addMembers(humanActorIDs) }
                 }

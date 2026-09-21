@@ -18,21 +18,31 @@ public struct AddMemberSheet: View {
     let excludedActorIDs: Set<String>
     let accessibleAgentIDs: Set<String>
     let currentActorID: String?
+    /// Handed to the picker so it refreshes presence when it opens.
+    let actorStore: ActorStore?
+    let agentPresenceStore: AgentPresenceStore?
     let onConfirm: (_ humanActorIDs: [String]) -> Void
 
     public init(excludedActorIDs: Set<String>,
                 accessibleAgentIDs: Set<String> = [],
                 currentActorID: String? = nil,
+                actorStore: ActorStore? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil,
                 onConfirm: @escaping (_ humanActorIDs: [String]) -> Void) {
         self.excludedActorIDs = excludedActorIDs
         self.accessibleAgentIDs = accessibleAgentIDs
         self.currentActorID = currentActorID
+        self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
         self.onConfirm = onConfirm
     }
 
     public var body: some View {
         MemberListView(
             selected: [],
+            actorStore: actorStore,
+            agentPresenceStore: agentPresenceStore,
+            currentActorID: currentActorID,
             accessibleAgentIDs: accessibleAgentIDs,
             currentPrimaryAgentID: nil,
             excludeActorID: currentActorID,

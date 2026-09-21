@@ -15,6 +15,7 @@ public struct SettingsView: View {
     @Environment(AppOnboardingCoordinator.self) private var onboarding: AppOnboardingCoordinator?
 
     let connectedAgentsStore: ConnectedAgentsStore?
+    let agentPresenceStore: AgentPresenceStore?
     let activeTeam: TeamSummary?
     let onSignOut: (() -> Void)?
     let notificationPrefsStore: NotificationPrefsStore?
@@ -37,12 +38,14 @@ public struct SettingsView: View {
     @Query private var cachedActors: [CachedActor]
 
     public init(connectedAgentsStore: ConnectedAgentsStore?,
+                agentPresenceStore: AgentPresenceStore? = nil,
                 activeTeam: TeamSummary? = nil,
                 onSignOut: (() -> Void)? = nil,
                 notificationPrefsStore: NotificationPrefsStore? = nil,
                 teamRepository: (any TeamRepository)? = nil,
                 actorRepository: (any ActorRepository)? = nil) {
         self.connectedAgentsStore = connectedAgentsStore
+        self.agentPresenceStore = agentPresenceStore
         self.activeTeam = activeTeam
         self.onSignOut = onSignOut
         self.notificationPrefsStore = notificationPrefsStore
@@ -269,7 +272,12 @@ public struct SettingsView: View {
     }
 
     private func connectedAgentRow(_ agent: ConnectedAgent) -> some View {
-        let dotColor: Color = agent.isOnline ? Color.amux.sage : Color.amux.slate
+        // The broker's retained state, not the heartbeat: a daemon that just
+        // died has a seconds-old last_active_at but an offline Last Will.
+        let isOnline = agent.isOnline(
+            devicePresence: agentPresenceStore?.presence(forAgent: agent.id) ?? .unknown
+        )
+        let dotColor: Color = isOnline ? Color.amux.sage : Color.amux.slate
         let agentTypeLabel: String = {
             switch agent.defaultAgentType {
             case "claude", "claude_code": return "Claude"
@@ -292,7 +300,7 @@ public struct SettingsView: View {
                     .font(.system(size: 14.5, weight: .semibold))
                     .foregroundStyle(Color.amux.onyx)
                     .lineLimit(1)
-                Text(meta.isEmpty ? (agent.isOnline ? String(localized: "online") : String(localized: "offline")) : meta)
+                Text(meta.isEmpty ? (isOnline ? String(localized: "online") : String(localized: "offline")) : meta)
                     .font(.system(size: 11.5, design: .monospaced))
                     .foregroundStyle(Color.amux.basalt.opacity(0.75))
                     .lineLimit(1)
@@ -305,7 +313,7 @@ public struct SettingsView: View {
                 .buttonStyle(.borderless)
                 .font(.system(size: 13, weight: .semibold))
             }
-            Text(agent.isOnline ? "Online" : "Offline")
+            Text(isOnline ? "Online" : "Offline")
                 .font(.system(size: 13))
                 .foregroundStyle(dotColor)
         }
