@@ -17,6 +17,7 @@ import {
   mergePendingAgentReplies,
   normalizeToolResultEvent,
   normalizeToolUseEvent,
+  liveEventDedupKey,
   rememberLiveEventId,
   streamTranscriptHasText,
   streamTranscriptRevision,
@@ -145,6 +146,40 @@ describe("live agent stream event helpers", () => {
     expect(rememberLiveEventId(seen, "s1", "evt-1")).toBe(true);
     expect(rememberLiveEventId(seen, "s1", "evt-1")).toBe(false);
     expect(rememberLiveEventId(seen, "s2", "evt-1")).toBe(true);
+  });
+
+  it("keys message.created on the message id, not the envelope id", () => {
+    // The same row can reach a client from two publishers — the daemon today,
+    // FC once it fans out. Each mints its own eventId, so keying on that would
+    // show the message twice.
+    expect(liveEventDedupKey("message.created", "evt-daemon", "msg-1")).toBe("message:msg-1");
+    expect(liveEventDedupKey("message.created", "evt-fc", "msg-1")).toBe("message:msg-1");
+  });
+
+  it("keys every other event on the envelope id", () => {
+    // Streaming deltas have no message id and must stay keyed per publish,
+    // or two distinct chunks would collapse into one.
+    expect(liveEventDedupKey("acp.event", "evt-1", undefined)).toBe("evt-1");
+    expect(liveEventDedupKey("session.title_updated", "evt-2", undefined)).toBe("evt-2");
+  });
+
+  it("falls back to the envelope id when message.created carries no message id", () => {
+    // A malformed envelope must not collapse onto a single shared key and
+    // silently swallow every later message in the session.
+    expect(liveEventDedupKey("message.created", "evt-3", undefined)).toBe("evt-3");
+    expect(liveEventDedupKey("message.created", "evt-4", "")).toBe("evt-4");
+  });
+
+  it("drops the second copy of one message but keeps distinct ones", () => {
+    const seen = new Set<string>();
+    const key = (eventId: string, messageId: string) =>
+      liveEventDedupKey("message.created", eventId, messageId);
+    expect(rememberLiveEventId(seen, "s1", key("evt-daemon", "msg-1"))).toBe(true);
+    expect(rememberLiveEventId(seen, "s1", key("evt-fc", "msg-1"))).toBe(false);
+    expect(rememberLiveEventId(seen, "s1", key("evt-fc", "msg-2"))).toBe(true);
+    // Session-scoped, as before: the same message id in another session is
+    // a different key.
+    expect(rememberLiveEventId(seen, "s2", key("evt-daemon", "msg-1"))).toBe(true);
   });
 
   it("derives merged content from transcript parts when present", () => {

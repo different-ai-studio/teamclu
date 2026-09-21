@@ -57,7 +57,7 @@ import { acquireRuntimeStateStore, useRuntimeStateStore } from "@/stores/runtime
 import { findStaleLiveStreams, STALE_STREAM_SWEEP_MS } from "@/lib/stream/stale-stream-recovery";
 import { acquireActorPresenceStore } from "@/stores/actor-presence-store";
 import { type Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
-import { agentStreamKey, mergePendingAgentReplies, registerDiscardPendingStreamReply, rememberLiveEventId} from "@/lib/stream/live-agent-stream";
+import { agentStreamKey, liveEventDedupKey, mergePendingAgentReplies, registerDiscardPendingStreamReply, rememberLiveEventId} from "@/lib/stream/live-agent-stream";
 import { softDeleteMessage} from "@/lib/cache/local-cache";
 import { syncActorsForTeam } from "@/lib/sync/actor-sync";
 import { syncIdeasForTeam } from "@/lib/sync/idea-sync";
@@ -741,11 +741,16 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
             !rememberLiveEventId(
               seenLiveEventIdsRef.current,
               sid,
-              decoded.envelope.eventId,
+              liveEventDedupKey(
+                decoded.envelope.eventType,
+                decoded.envelope.eventId,
+                decoded.message?.messageId,
+              ),
             )
           ) {
             // Second copy of a dual-path event (local daemon SSE fast-path +
-            // MQTT deliver the same eventId) or an MQTT redelivery.
+            // MQTT deliver the same eventId), an MQTT redelivery, or — for
+            // `message.created` — the same row from a second publisher.
             bumpLiveDuplicateDropped();
             return;
           }

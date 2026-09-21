@@ -37,6 +37,28 @@ export function discardPendingStreamReply(sessionId: string, actorId: string): v
 
 const SEEN_LIVE_EVENT_IDS_CAP = 2_000;
 
+/**
+ * What a live envelope is deduped on.
+ *
+ * Everything is keyed by the envelope's own `eventId`, which is minted per
+ * publish — that is what catches an MQTT redelivery and the second copy of the
+ * local-SSE/MQTT dual path, where both carry the same id.
+ *
+ * `message.created` is keyed by the message id instead, because the same row
+ * can be published by more than one party: the daemon today, and FC once it
+ * fans out (#1455 Phase 3). Two publishers mint two different `eventId`s for
+ * one message, so an envelope-id gate would let it through twice and the
+ * thread would show it twice.
+ */
+export function liveEventDedupKey(
+  eventType: string | undefined,
+  eventId: string | undefined,
+  messageId: string | undefined,
+): string | undefined {
+  if (eventType === "message.created" && messageId) return `message:${messageId}`;
+  return eventId;
+}
+
 /** Dedupe MQTT live envelopes that may be redelivered with the same eventId. */
 export function rememberLiveEventId(
   seen: Set<string>,
