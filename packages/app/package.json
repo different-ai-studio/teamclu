@@ -21,7 +21,7 @@
     "./proto/amux_pb": "./src/lib/proto/amux_pb.ts"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.13.0",
+    "@bufbuild/protobuf": "^2.15.0",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.2",
     "@codemirror/lang-css": "^6.3.1",
