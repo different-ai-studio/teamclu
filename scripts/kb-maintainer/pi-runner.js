@@ -9,6 +9,14 @@ const { buildCompilePrompt } = require("./compile-prompt");
 const { jailedWikiOperations } = require("./wiki-jail");
 
 const ALLOWED_PI_TOOLS = ["read", "write", "edit", "find"];
+const EXCLUDED_PI_TOOLS = ["bash", "grep", "ls"];
+
+function piSessionPolicy() {
+  return {
+    noTools: "all",
+    excludeTools: [...EXCLUDED_PI_TOOLS],
+  };
+}
 
 function amuxdHome() {
   return process.env.AMUXD_HOME || path.join(os.homedir(), ".amuxd");
@@ -97,12 +105,14 @@ async function createLivePiSession(ctx) {
     throw new Error("Team AI compiler model is not available.");
   }
   const ops = jailedWikiOperations(ctx.workRoot);
+  const policy = piSessionPolicy();
   const { session } = await sdk.createAgentSession({
     cwd: wikiRoot,
     agentDir,
     modelRuntime,
     model,
-    noTools: "all",
+    noTools: policy.noTools,
+    excludeTools: policy.excludeTools,
     customTools: [
       sdk.createReadToolDefinition(wikiRoot, { operations: ops }),
       sdk.createWriteToolDefinition(wikiRoot, { operations: ops }),
@@ -148,6 +158,8 @@ async function compile(ctx) {
 
 module.exports = {
   ALLOWED_PI_TOOLS,
+  EXCLUDED_PI_TOOLS,
+  piSessionPolicy,
   compile,
   loadTeamGateway,
   createLivePiSession,

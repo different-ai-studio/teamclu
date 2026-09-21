@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { ensureWikiRepo, commitAll } = require("./git-store");
-const { ALLOWED_PI_TOOLS, compile } = require("./pi-runner");
+const { ALLOWED_PI_TOOLS, EXCLUDED_PI_TOOLS, piSessionPolicy, compile } = require("./pi-runner");
 
 function makeWork() {
   const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kb-pi-"));
@@ -18,6 +18,11 @@ function makeWork() {
 test("Pi tool allowlist is wiki read/write/edit/find and never bash", () => {
   assert.deepEqual([...ALLOWED_PI_TOOLS].sort(), ["edit", "find", "read", "write"]);
   assert.ok(!ALLOWED_PI_TOOLS.includes("bash"));
+  assert.deepEqual([...EXCLUDED_PI_TOOLS].sort(), ["bash", "grep", "ls"]);
+  assert.deepEqual(piSessionPolicy(), {
+    noTools: "all",
+    excludeTools: ["bash", "grep", "ls"],
+  });
 });
 
 test("compile with an injected session records wiki pages from git, not the model report", async () => {

@@ -58,19 +58,17 @@ export function WikiMaintainerRunSheet({
   const [publishResult, setPublishResult] = React.useState<WikiPublishResult | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [costAccepted, setCostAccepted] = React.useState(false)
-  const autoStarted = React.useRef(false)
 
   React.useEffect(() => {
     if (!open) return
-    autoStarted.current = false
     setSelected(initialSelected)
     setPhase('select')
     setSummary(null)
     setPublishResult(null)
     setError(null)
     setCostAccepted(false)
-    // A successful first run persists a new array while this sheet is open.
-    // Reinitializing on that array change would recursively start another run.
+    // Persist a new selection while the sheet is open; do not reset on that
+    // array identity change or the user would lose in-progress folder picks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
@@ -93,14 +91,6 @@ export function WikiMaintainerRunSheet({
       setPhase('select')
     }
   }
-  React.useEffect(() => {
-    if (!open || initialSelected.length === 0 || autoStarted.current) return
-    autoStarted.current = true
-    void prepare()
-    // `initialSelected` is a persisted array and intentionally starts one run
-    // when the sheet opens; phase changes must not start it again.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
 
   if (!open) return null
 
@@ -144,7 +134,7 @@ export function WikiMaintainerRunSheet({
       title={t('teamShare.wikiMaintainTitle', 'Maintain Wiki')}
       hint={t(
         'teamShare.wikiMaintainHint',
-        'Choose source folders once. TeamClu checks, compiles, and shows a summary before anything is published.',
+        'Choose source folders, then check and compile. Nothing is published until you confirm.',
       )}
       onClose={close}
       footer={

@@ -20,12 +20,12 @@ test("assertWikiPath allows wiki pages and index", () => {
   const root = workRoot();
   const page = path.join(root, "wiki", "pages", "leave.md");
   fs.writeFileSync(page, "ok");
-  assert.equal(assertWikiPath(root, page), path.resolve(page));
+  assert.equal(assertWikiPath(root, page), fs.realpathSync(page));
   assert.equal(
     assertWikiPath(root, path.join(root, "wiki", "index.md")),
-    path.resolve(root, "wiki", "index.md"),
+    fs.realpathSync(path.join(root, "wiki", "index.md")),
   );
-  assert.equal(assertWikiPath(root, "pages/leave.md"), path.resolve(page));
+  assert.equal(assertWikiPath(root, "pages/leave.md"), fs.realpathSync(page));
 });
 
 test("assertWikiPath rejects raw, state, vault, and parent escape", () => {

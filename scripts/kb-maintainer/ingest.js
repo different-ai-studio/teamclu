@@ -7,7 +7,7 @@ const { dryRun } = require("./dry-run");
 const { extractorCacheKey, rawRelativePath } = require("./extract-text");
 const { extractSource } = require("./extract");
 const { compile } = require("./agent-runner");
-const { validateSourceDiff } = require("./validator");
+const { validateSourceDiff, rebuildIndex } = require("./validator");
 const {
   ensureWikiRepo,
   headCommit,
@@ -91,6 +91,7 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
       compilerModel: opts.compilerModel,
       createSession: opts.createSession,
     });
+    rebuildIndex(wikiRoot);
     const changed = changedRelPaths(wikiRoot, beforeCommit);
     const verdict = validateSourceDiff({
       workRoot: opts.workRoot,
@@ -156,6 +157,7 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
       compilerModel: opts.compilerModel,
       createSession: opts.createSession,
     });
+    rebuildIndex(wikiRoot);
     const changed = changedRelPaths(wikiRoot, beforeCommit);
     const verdict = validateSourceDiff({
       workRoot: opts.workRoot,

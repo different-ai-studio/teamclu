@@ -16,6 +16,30 @@ vi.mock('react-i18next', () => ({
 }))
 
 describe('WikiMaintainerRunSheet', () => {
+  it('does not compile until the user clicks Check and compile', async () => {
+    const prepare = vi.fn()
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[
+          { path: 'documents/features/', label: 'features' },
+          { path: 'documents/spec-docs/', label: 'spec-docs' },
+        ]}
+        initialSelected={['documents/features/', 'documents/spec-docs/']}
+        onSaveSelection={vi.fn()}
+        onPrepare={prepare}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('checkbox', { name: 'features' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'spec-docs' })).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Check and compile' })).toBeEnabled()
+    expect(prepare).not.toHaveBeenCalled()
+  })
+
   it('selects source folders once, compiles, shows a human summary, then publishes', async () => {
     const prepare = vi.fn().mockResolvedValue({
       runId: 'run-1',
@@ -92,6 +116,7 @@ describe('WikiMaintainerRunSheet', () => {
       />,
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
     expect(await screen.findByText('Source ACL is not team-public')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeDisabled()
     expect(publish).not.toHaveBeenCalled()

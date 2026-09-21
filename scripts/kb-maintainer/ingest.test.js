@@ -177,3 +177,57 @@ test("ingestBatch recompiles a shared page when one of two sources is deleted", 
   assert.doesNotMatch(kept, /documents\/handbook\/leave.md/);
   assert.match(kept, /documents\/handbook\/leave-faq.md/);
 });
+
+test("ingest rebuilds index so a compiler-written summary mismatch still imports", async () => {
+  const crypto = require("node:crypto");
+  const { serializeFrontmatter } = require("./frontmatter");
+  const fx = makeHarness();
+  const source = "# 请假\n\n员工请假需提前申请。\n";
+  write(path.join(fx.documentsRoot, "handbook", "leave.md"), source);
+  const sha256 = crypto.createHash("sha256").update(source).digest("hex");
+  const result = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "pi",
+    createSession: async (ctx) => ({
+      prompt: async () => {
+        const wiki = path.join(ctx.workRoot, "wiki");
+        fs.mkdirSync(path.join(wiki, "pages"), { recursive: true });
+        fs.writeFileSync(
+          path.join(wiki, "pages", "请假.md"),
+          serializeFrontmatter(
+            {
+              type: "policy",
+              summary: "员工请假需提前申请。",
+              managed_by: "llm-wiki",
+              schema_version: 1,
+              sources: [
+                {
+                  path: "documents/handbook/leave.md",
+                  sha256,
+                  locators: ["heading=请假"],
+                },
+              ],
+              updated: "2026-09-21",
+            },
+            "# 请假\n\n员工请假需提前申请。\n",
+          ),
+        );
+        fs.writeFileSync(
+          path.join(wiki, "index.md"),
+          "# LLM Wiki\n\n## 制度\n- [[pages/请假|请假]] — WRONG SUMMARY\n",
+        );
+      },
+    }),
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.failures));
+  const index = fs.readFileSync(path.join(fx.workRoot, "wiki", "index.md"), "utf8");
+  assert.match(index, /员工请假需提前申请/);
+  assert.doesNotMatch(index, /WRONG SUMMARY/);
+});

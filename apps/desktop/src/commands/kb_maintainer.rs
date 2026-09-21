@@ -391,6 +391,13 @@ fn humanize_compiler_error(stderr: &str) -> String {
         return "Wiki changed after this run started. Run maintenance again before publishing."
             .to_string();
     }
+    if stderr.contains("Team AI gateway") {
+        return gateway_unavailable();
+    }
+    if stderr.contains("managed Agent runtime is not installed") {
+        return "The managed Agent runtime is not installed. Finish local Agent setup, then try again."
+            .to_string();
+    }
     stderr
         .lines()
         .find_map(|line| line.trim().strip_prefix("Error: "))
@@ -399,15 +406,53 @@ fn humanize_compiler_error(stderr: &str) -> String {
         .to_string()
 }
 
+fn gateway_unavailable() -> String {
+    "Team AI is not available. Open a team session once, then maintain Wiki again.".to_string()
+}
+
+fn gateway_from_disk_team(team: &Value) -> Result<(String, String), String> {
+    let token = team
+        .get("options")
+        .and_then(|options| options.get("apiKey"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .filter(|key| !key.contains("${"))
+        .filter(|key| !key.starts_with(teamclu_runtime_env::LEGACY_VIRTUAL_KEY_PREFIX))
+        .ok_or_else(gateway_unavailable)?
+        .to_string();
+    let provider = teamclu_runtime_env::managed_llm_provider_from_disk_team(team)
+        .ok_or_else(gateway_unavailable)?;
+    Ok((
+        teamclu_runtime_env::team_provider_env_payload(&provider, None),
+        token,
+    ))
+}
+
+fn load_team_gateway() -> Result<(String, String), String> {
+    let team = teamclu_runtime_env::read_global_team_provider().ok_or_else(gateway_unavailable)?;
+    gateway_from_disk_team(&team)
+}
+
 async fn run_node(
     app: &tauri::AppHandle,
     command: &str,
     input_path: &Path,
+    gateway: Option<&(String, String)>,
 ) -> Result<Value, String> {
-    let output = tokio::process::Command::new(node_path()?)
-        .arg(script_path(app)?)
+    let mut cmd = tokio::process::Command::new(node_path()?);
+    cmd.arg(script_path(app)?)
         .arg(command)
         .arg(input_path)
+        .env(
+            teamclu_runtime_env::AMUXD_HOME_ENV,
+            super::amuxd_home_dir(),
+        );
+    if let Some((payload, token)) = gateway {
+        cmd.env("TEAMCLU_TEAM_PROVIDER", payload)
+            .env("tc_gateway_token", token);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("Cannot start Wiki compiler: {e}"))?;
@@ -445,6 +490,7 @@ pub async fn kb_maintainer_prepare(
     let (documents_root, knowledge_root) = team_paths(&request.team_id)?;
     validate_existing_directory(&documents_root, &documents_root)?;
     validate_existing_directory(&knowledge_root, &knowledge_root)?;
+    let gateway = load_team_gateway()?;
 
     let root = work_root(&request.team_id)?;
     fs::create_dir_all(root.join("state"))
@@ -478,7 +524,7 @@ pub async fn kb_maintainer_prepare(
         "deny": { "pathPatterns": [
             "**/_secrets/**", "**/personnel/**", "**/discipline/**", "**/insurance/**"
         ]},
-        "models": { "compiler": "", "vision": "", "visionPagePrice": 0.12, "currency": "CNY" }
+        "models": { "compiler": "default", "vision": "", "visionPagePrice": 0.12, "currency": "CNY" }
     });
     if let Err(error) = write_json(&config_path, &config) {
         let _ = fs::remove_file(&lock_path);
@@ -504,7 +550,7 @@ pub async fn kb_maintainer_prepare(
         return Err(error);
     }
 
-    let result = run_node(&app, "prepare", &input_path).await;
+    let result = run_node(&app, "prepare", &input_path, Some(&gateway)).await;
     let summary: PrepareSummary = match result {
         Ok(value) => match serde_json::from_value(value) {
             Ok(summary) => summary,
@@ -545,7 +591,7 @@ pub async fn kb_maintainer_publish(
         let _ = state.set_active(run);
         return Err("Confirm the estimated visual recognition cost before publishing.".to_string());
     }
-    let publish = run_node(&app, "publish", &run.input_path).await;
+    let publish = run_node(&app, "publish", &run.input_path, None).await;
     if let Err(error) = publish {
         let _ = state.set_active(run);
         return Err(error);
@@ -605,6 +651,20 @@ mod tests {
         assert!(state.take_for_publish("run-1").is_err());
     }
 
+    fn disk_team(api_key: &str) -> Value {
+        json!({
+            "name": "Team",
+            "options": {
+                "baseURL": "http://127.0.0.1:43111/ai/v1/teams/abc",
+                "apiKey": api_key
+            },
+            "models": {
+                "default": { "name": "default" },
+                "max": { "name": "max" }
+            }
+        })
+    }
+
     #[test]
     fn compiler_errors_are_presented_without_pipeline_terms() {
         assert_eq!(
@@ -617,6 +677,39 @@ mod tests {
             humanize_compiler_error("Error: knowledge/_schema.md is missing\n at dryRun"),
             "Set up the team knowledge base before maintaining Wiki."
         );
+        assert_eq!(
+            humanize_compiler_error(
+                "Error: Team AI gateway is not available. Open a team session once, then maintain Wiki again.\n    at loadTeamGateway"
+            ),
+            "Team AI is not available. Open a team session once, then maintain Wiki again."
+        );
+        assert_eq!(
+            humanize_compiler_error(
+                "Error: The managed Agent runtime is not installed. Finish local Agent setup, then try again."
+            ),
+            "The managed Agent runtime is not installed. Finish local Agent setup, then try again."
+        );
+    }
+
+    #[test]
+    fn gateway_token_comes_from_resolved_provider_team() {
+        let (payload, token) = gateway_from_disk_team(&disk_team("tok_live_ai_invoke")).unwrap();
+        assert_eq!(token, "tok_live_ai_invoke");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            parsed["baseUrl"],
+            "http://127.0.0.1:43111/ai/v1/teams/abc"
+        );
+        assert_eq!(parsed["apiKeyEnv"], "tc_gateway_token");
+        assert_eq!(parsed["models"][0]["id"], "default");
+        assert!(!payload.contains("tok_live_ai_invoke"));
+    }
+
+    #[test]
+    fn gateway_token_rejects_placeholder_and_legacy_virtual_keys() {
+        assert!(gateway_from_disk_team(&disk_team("${tc_gateway_token}")).is_err());
+        assert!(gateway_from_disk_team(&disk_team("sk-tc-actor-leftover")).is_err());
+        assert!(gateway_from_disk_team(&disk_team("")).is_err());
     }
 
     #[test]

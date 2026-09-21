@@ -9,14 +9,19 @@ test("agent-runner keeps the fake runner for tests and fixtures", async () => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
+  const { rawRelativePath } = require("./extract-text");
   const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kb-fake-"));
+  const rawMarkdown = "# 请假\n\n员工请假需提前申请。\n";
+  const rawAbs = path.join(workRoot, "raw", rawRelativePath("documents/handbook/leave.md"));
+  fs.mkdirSync(path.dirname(rawAbs), { recursive: true });
+  fs.writeFileSync(rawAbs, rawMarkdown);
   const result = await compile({
     runner: "fake",
     workRoot,
     action: "add",
     sourcePath: "documents/handbook/leave.md",
     sourceSha256: "ab".repeat(32),
-    rawMarkdown: "---\n---\n# 请假\n\n员工请假需提前申请。\n",
+    rawMarkdown,
     locators: ["heading=请假"],
     pageType: "policy",
   });

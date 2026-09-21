@@ -36,7 +36,7 @@
     "wikiCardAdminHint": "Choose source folders, review the result, then publish. Wiki pages stay read-only.",
     "wikiMaintainAction": "Maintain Wiki",
     "wikiMaintainTitle": "Maintain Wiki",
-    "wikiMaintainHint": "Choose source folders once. TeamClu checks, compiles, and shows a summary before anything is published.",
+    "wikiMaintainHint": "Choose source folders, then check and compile. Nothing is published until you confirm.",
     "wikiSourceFolders": "Source folders",
     "wikiChangeSources": "Change source folders",
     "wikiSingleMaintainerWarning": "Do not maintain this Wiki from another computer at the same time.",
