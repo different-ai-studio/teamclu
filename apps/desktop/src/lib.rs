@@ -454,6 +454,7 @@ pub fn run() {
         .manage(commands::shared_secrets::SharedSecretsState::default())
         .manage(commands::introspect_auth::IntrospectAuthState::default())
         .manage(commands::oauth_loopback::OAuthLoopbackState::default())
+        .manage(commands::kb_maintainer::KbMaintainerState::default())
         .manage::<crate::mqtt::MqttBus>(std::sync::Arc::new(crate::mqtt::MqttBusInner::new()))
         .manage(std::sync::Arc::new(crate::terminal::Registry::new()))
         .invoke_handler(tauri::generate_handler![
@@ -493,6 +494,10 @@ pub fn run() {
             commands::oauth_loopback::oauth_loopback_cancel,
             commands::obsidian::obsidian_status,
             commands::obsidian::obsidian_open_vault,
+            commands::kb_maintainer::kb_maintainer_discover,
+            commands::kb_maintainer::kb_maintainer_prepare,
+            commands::kb_maintainer::kb_maintainer_publish,
+            commands::kb_maintainer::kb_maintainer_cancel,
             commands::filewatcher::watch_directory,
             commands::filewatcher::unwatch_directory,
             commands::gateway::list_channels,

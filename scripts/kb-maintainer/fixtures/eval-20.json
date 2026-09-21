@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 1,
+  "questions": [
+    {
+      "id": "q01",
+      "question": "员工请假需要提前多久申请？",
+      "expectedPage": "pages/请假.md",
+      "expectedLocator": "heading=请假",
+      "expectedSnippet": "提前三天",
+      "critical": true
+    },
+    {
+      "id": "q02",
+      "question": "病假需要什么证明？",
+      "expectedPage": "pages/请假.md",
+      "expectedLocator": "heading=病假",
+      "expectedSnippet": "医院证明",
+      "critical": true
+    },
+    {
+      "id": "q03",
+      "question": "销假在哪一天完成？",
+      "expectedPage": "pages/请假.md",
+      "expectedLocator": "heading=销假",
+      "expectedSnippet": "返岗当天",
+      "critical": false
+    },
+    {
+      "id": "q04",
+      "question": "工作日要打卡几次？",
+      "expectedPage": "pages/考勤.md",
+      "expectedLocator": "heading=考勤",
+      "expectedSnippet": "打卡两次",
+      "critical": true
+    },
+    {
+      "id": "q05",
+      "question": "忘记打卡如何补卡？",
+      "expectedPage": "pages/考勤.md",
+      "expectedLocator": "heading=补卡",
+      "expectedSnippet": "次日中午前",
+      "critical": false
+    },
+    {
+      "id": "q06",
+      "question": "标准工作时间是几点到几点？",
+      "expectedPage": "pages/工作时间.md",
+      "expectedLocator": "heading=工作时间",
+      "expectedSnippet": "09:30",
+      "critical": true
+    },
+    {
+      "id": "q07",
+      "question": "午休多长时间？",
+      "expectedPage": "pages/工作时间.md",
+      "expectedLocator": "heading=午休",
+      "expectedSnippet": "12:00-13:30",
+      "critical": false
+    },
+    {
+      "id": "q08",
+      "question": "加班需要谁批准？",
+      "expectedPage": "pages/工作时间.md",
+      "expectedLocator": "heading=加班",
+      "expectedSnippet": "直属主管",
+      "critical": false
+    },
+    {
+      "id": "q09",
+      "question": "报销发票要在多少天内提交？",
+      "expectedPage": "pages/报销.md",
+      "expectedLocator": "heading=报销",
+      "expectedSnippet": "30 天内",
+      "critical": true
+    },
+    {
+      "id": "q10",
+      "question": "差旅住宿上限是多少？",
+      "expectedPage": "pages/报销.md",
+      "expectedLocator": "heading=差旅",
+      "expectedSnippet": "500 元/晚",
+      "critical": false
+    },
+    {
+      "id": "q11",
+      "question": "入职第一天要签哪些文件？",
+      "expectedPage": "pages/入职.md",
+      "expectedLocator": "heading=入职",
+      "expectedSnippet": "劳动合同",
+      "critical": false
+    },
+    {
+      "id": "q12",
+      "question": "试用期多久？",
+      "expectedPage": "pages/入职.md",
+      "expectedLocator": "heading=试用期",
+      "expectedSnippet": "三个月",
+      "critical": false
+    },
+    {
+      "id": "q13",
+      "question": "客户资料能否发到个人邮箱？",
+      "expectedPage": "pages/保密.md",
+      "expectedLocator": "heading=保密",
+      "expectedSnippet": "不得发到个人邮箱",
+      "critical": true
+    },
+    {
+      "id": "q14",
+      "question": "离职后保密义务持续多久？",
+      "expectedPage": "pages/保密.md",
+      "expectedLocator": "heading=离职保密",
+      "expectedSnippet": "两年",
+      "critical": false
+    },
+    {
+      "id": "q15",
+      "question": "周会在哪一天开？",
+      "expectedPage": "pages/会议.md",
+      "expectedLocator": "heading=周会",
+      "expectedSnippet": "每周一",
+      "critical": false
+    },
+    {
+      "id": "q16",
+      "question": "会议纪要要在多久内发出？",
+      "expectedPage": "pages/会议.md",
+      "expectedLocator": "heading=纪要",
+      "expectedSnippet": "24 小时",
+      "critical": false
+    },
+    {
+      "id": "q17",
+      "question": "工程师岗位的值班职责是什么？",
+      "expectedPage": "pages/岗位-工程师.md",
+      "expectedLocator": "heading=值班",
+      "expectedSnippet": "轮值响应线上故障",
+      "critical": false
+    },
+    {
+      "id": "q18",
+      "question": "OKR 在本公司指什么？",
+      "expectedPage": "pages/术语-OKR.md",
+      "expectedLocator": "heading=OKR",
+      "expectedSnippet": "目标与关键结果",
+      "critical": false
+    },
+    {
+      "id": "q19",
+      "question": "是否允许长期远程办公？",
+      "expectedPage": "pages/FAQ-远程.md",
+      "expectedLocator": "heading=远程",
+      "expectedSnippet": "需书面批准",
+      "critical": false
+    },
+    {
+      "id": "q20",
+      "question": "远程办公期间如何打卡？",
+      "expectedPage": "pages/FAQ-远程.md",
+      "expectedLocator": "heading=远程打卡",
+      "expectedSnippet": "在线状态即可",
+      "critical": false
+    }
+  ]
+}

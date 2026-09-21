@@ -87,6 +87,8 @@
       "binaries/teamclu-introspect",
       "binaries/amuxd"
     ],
-    "resources": []
+    "resources": {
+      "../../scripts/kb-maintainer": "kb-maintainer"
+    }
   }
 }

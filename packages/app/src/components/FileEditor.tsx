@@ -28,6 +28,7 @@ import {
   globalTeamKnowledgeShareDir,
   teamSyncKeyForPath,
 } from "@/lib/team/team-skill-paths";
+import { isLlmWikiSyncKey } from "@/lib/knowledge/wiki-vault";
 import { getEditorType } from "@/components/editors/utils";
 import { UNSUPPORTED_BINARY_EXTENSIONS } from "@/components/viewers/UnsupportedFileViewer";
 import { supportsPreview } from "@/components/editors/utils";
@@ -392,14 +393,6 @@ export function FileEditor({
   const [conflictAgentContent, setConflictAgentContent] = useState<string | null>(null);
   const [showConflictDiff, setShowConflictDiff] = useState(false);
 
-  // Auto-save hook (only active for markdown files)
-  const { saveStatus, isSelfWrite, saveNow, cancelPendingSave } = useAutoSave({
-    filePath,
-    content: currentContent,
-    isModified: isMarkdown ? isModified : false,
-    enabled: isMarkdown,
-  });
-
   // Git HEAD content for git gutter decorations
   const [gitHeadContent, setGitHeadContent] = useState<string | null>(null);
   const workspacePath = useWorkspaceStore((s) => s.workspacePath);
@@ -434,6 +427,15 @@ export function FileEditor({
   // that have none, and offered none on knowledge documents, which are the only
   // files that do.
   const isTeamFile = !!teamSyncKey
+  const wikiOwned = isLlmWikiSyncKey(teamSyncKey)
+
+  // Auto-save hook (only active for markdown files)
+  const { saveStatus, isSelfWrite, saveNow, cancelPendingSave } = useAutoSave({
+    filePath,
+    content: currentContent,
+    isModified: isMarkdown ? isModified : false,
+    enabled: isMarkdown && !wikiOwned,
+  });
 
   const historyProvider = useMemo(() => {
     if (!teamSyncKey) return null
@@ -724,7 +726,11 @@ export function FileEditor({
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
           <span className="text-xs text-muted-foreground truncate">{displayPath}</span>
-          {isMarkdown ? (
+          {isMarkdown && wikiOwned ? (
+            <span className="shrink-0 font-mono text-[11px] text-faint">
+              {t("teamShare.wikiReadOnly", "Read-only")}
+            </span>
+          ) : isMarkdown ? (
             renderSaveStatusIndicator()
           ) : (
             isModified && (
@@ -739,7 +745,7 @@ export function FileEditor({
         {/* Actions */}
         <div className="flex items-center gap-1 ml-auto">
           {/* Save button - only for non-markdown files */}
-          {!isMarkdown && (
+          {!isMarkdown && !wikiOwned && (
             <button
               onClick={handleSave}
               disabled={!isModified || isSaving}
@@ -880,6 +886,15 @@ export function FileEditor({
         )}
       </div>
 
+      {wikiOwned && (
+        <div className="shrink-0 border-b border-border-soft px-3 py-1.5 text-[12px] text-muted-foreground">
+          {t(
+            "teamShare.wikiReadOnlyBanner",
+            "Agent-managed wiki page. Read-only — correct the source in Documents or _schema.md.",
+          )}
+        </div>
+      )}
+
       {/* Conflict banner for markdown files */}
       {isMarkdown && conflictAgentContent !== null && (
         <ConflictBanner
@@ -964,6 +979,7 @@ export function FileEditor({
                     isDark={isDark}
                     targetLine={targetLine}
                     targetHeading={targetHeading}
+                    readOnly={wikiOwned}
                   />
                 </Suspense>
               );
@@ -1015,6 +1031,7 @@ export function FileEditor({
                         isDark={isDark}
                         originalContent={gitHeadContent ?? null}
                         targetLine={targetLine}
+                        readOnly={wikiOwned}
                     />
                   </Suspense>
                 </div>

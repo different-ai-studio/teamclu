@@ -1,0 +1,630 @@
+use std::collections::BTreeSet;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tauri::Manager;
+
+const ALLOWED_EXTENSIONS: &[&str] = &[
+    "md", "txt", "html", "htm", "csv", "json", "yaml", "yml", "pdf", "docx", "pptx", "xlsx",
+];
+
+#[derive(Debug, Clone)]
+struct ActiveRun {
+    run_id: String,
+    team_id: String,
+    input_path: PathBuf,
+    lock_path: PathBuf,
+    requires_cost_acceptance: bool,
+}
+
+#[derive(Default)]
+pub struct KbMaintainerState {
+    active: Mutex<Option<ActiveRun>>,
+}
+
+impl KbMaintainerState {
+    fn set_active(&self, run: ActiveRun) -> Result<(), String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Wiki maintenance state is unavailable".to_string())?;
+        if active.is_some() {
+            return Err("A Wiki maintenance run is already active on this computer.".to_string());
+        }
+        *active = Some(run);
+        Ok(())
+    }
+
+    fn take_for_publish(&self, run_id: &str) -> Result<ActiveRun, String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Wiki maintenance state is unavailable".to_string())?;
+        let matches = active
+            .as_ref()
+            .map(|run| run.run_id == run_id)
+            .unwrap_or(false);
+        if !matches {
+            return Err(
+                "This Wiki summary is no longer active. Run maintenance again.".to_string(),
+            );
+        }
+        active
+            .take()
+            .ok_or_else(|| "This Wiki summary is no longer active.".to_string())
+    }
+
+    fn clear(&self, run_id: &str) {
+        if let Ok(mut active) = self.active.lock() {
+            if active
+                .as_ref()
+                .map(|run| run.run_id == run_id)
+                .unwrap_or(false)
+            {
+                *active = None;
+            }
+        }
+    }
+
+    fn set_requires_cost_acceptance(&self, run_id: &str, required: bool) -> Result<(), String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Wiki maintenance state is unavailable".to_string())?;
+        let run = active
+            .as_mut()
+            .filter(|run| run.run_id == run_id)
+            .ok_or_else(|| "This Wiki summary is no longer active.".to_string())?;
+        run.requires_cost_acceptance = required;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownDocument {
+    path: String,
+    version: u64,
+    size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareRequest {
+    team_id: String,
+    source_directories: Vec<String>,
+    acl_prefixes: Vec<String>,
+    known: Vec<KnownDocument>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceDirectory {
+    path: String,
+    label: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverResponse {
+    directories: Vec<SourceDirectory>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareSummary {
+    run_id: String,
+    source_count: usize,
+    added: usize,
+    updated: usize,
+    deleted: usize,
+    failed: usize,
+    vision_pages: usize,
+    estimated_cost: Option<f64>,
+    currency: String,
+    can_publish: bool,
+    blockers: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishResult {
+    sync_status: String,
+}
+
+fn safe_team_id(team_id: &str) -> Result<&str, String> {
+    let valid = !team_id.is_empty()
+        && team_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-');
+    valid
+        .then_some(team_id)
+        .ok_or_else(|| "Invalid team id.".to_string())
+}
+
+fn normalize_source_directory(input: &str) -> Result<String, String> {
+    let normalized = input.replace('\\', "/");
+    if !normalized.starts_with("documents/") {
+        return Err("Source folders must be inside team documents.".to_string());
+    }
+    if normalized
+        .split('/')
+        .any(|part| part == ".." || part == "." || part.is_empty() && !normalized.ends_with('/'))
+    {
+        return Err("Source folder contains an unsafe path.".to_string());
+    }
+    let relative = normalized.trim_start_matches("documents/");
+    if relative.is_empty() {
+        return Ok("documents/".to_string());
+    }
+    if relative.split('/').any(|part| {
+        matches!(
+            part,
+            "_secrets" | ".git" | "personnel" | "discipline" | "insurance"
+        )
+    }) {
+        return Err("This folder is protected and cannot be used as a Wiki source.".to_string());
+    }
+    let mut out = normalized.trim_end_matches('/').to_string();
+    out.push('/');
+    Ok(out)
+}
+
+fn team_paths(team_id: &str) -> Result<(PathBuf, PathBuf), String> {
+    let team_id = safe_team_id(team_id)?;
+    let shared = super::amuxd_home_dir()
+        .join("teams")
+        .join(team_id)
+        .join("shared")
+        .join("team-sync");
+    Ok((shared.join("documents"), shared.join("knowledge")))
+}
+
+fn first_directory(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let relative = normalized.strip_prefix("documents/")?;
+    let first = relative.split('/').next()?;
+    if first.is_empty() {
+        return None;
+    }
+    Some(format!("documents/{first}/"))
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_discover(
+    team_id: String,
+    known_paths: Vec<String>,
+) -> Result<DiscoverResponse, String> {
+    let (documents_root, _) = team_paths(&team_id)?;
+    let mut paths = BTreeSet::new();
+    if documents_root.is_dir() {
+        for entry in fs::read_dir(&documents_root)
+            .map_err(|e| format!("Cannot inspect team documents: {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("Cannot inspect team documents: {e}"))?;
+            if entry
+                .file_type()
+                .map_err(|e| format!("Cannot inspect team documents: {e}"))?
+                .is_dir()
+            {
+                let name = entry.file_name().to_string_lossy().to_string();
+                paths.insert(format!("documents/{name}/"));
+            } else {
+                paths.insert("documents/".to_string());
+            }
+        }
+    }
+    for known in known_paths {
+        if let Some(directory) = first_directory(&known) {
+            paths.insert(directory);
+        }
+    }
+    let directories = paths
+        .into_iter()
+        .filter_map(|path| {
+            normalize_source_directory(&path).ok().map(|path| {
+                let label = path
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("documents")
+                    .to_string();
+                SourceDirectory { path, label }
+            })
+        })
+        .collect();
+    Ok(DiscoverResponse { directories })
+}
+
+fn work_root(team_id: &str) -> Result<PathBuf, String> {
+    let team_id = safe_team_id(team_id)?;
+    let config =
+        dirs::config_dir().ok_or_else(|| "No application config directory.".to_string())?;
+    Ok(config
+        .join(super::home_storage_dir_name())
+        .join("kb-maintainer")
+        .join(team_id))
+}
+
+fn validate_existing_directory(path: &Path, expected_parent: &Path) -> Result<(), String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("Required team folder is unavailable: {e}"))?;
+    let parent = expected_parent
+        .canonicalize()
+        .map_err(|e| format!("Team sync folder is unavailable: {e}"))?;
+    if !canonical.starts_with(parent) {
+        return Err("Team folder escaped the local team sync root.".to_string());
+    }
+    Ok(())
+}
+
+fn script_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let development = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("scripts/kb-maintainer/desktop-runner.js");
+    if cfg!(debug_assertions) && development.is_file() {
+        return Ok(development);
+    }
+    let resource = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Cannot locate application resources: {e}"))?
+        .join("kb-maintainer/desktop-runner.js");
+    resource
+        .is_file()
+        .then_some(resource)
+        .ok_or_else(|| "Wiki maintenance resources are missing from this build.".to_string())
+}
+
+fn node_path() -> Result<PathBuf, String> {
+    let lock: Value = serde_json::from_str(include_str!("../../../daemon/pi.lock.json"))
+        .map_err(|e| format!("Invalid bundled Node lock: {e}"))?;
+    let version = lock
+        .get("node")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Bundled Node version is missing.".to_string())?;
+    let binary = super::amuxd_home_dir()
+        .join("cache/node")
+        .join(version)
+        .join(if cfg!(windows) {
+            "node.exe"
+        } else {
+            "bin/node"
+        });
+    binary.is_file().then_some(binary).ok_or_else(|| {
+        "The managed Agent runtime is not installed. Finish local Agent setup, then try again."
+            .to_string()
+    })
+}
+
+fn write_json(path: &Path, value: &Value) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid Wiki maintenance path.".to_string())?;
+    fs::create_dir_all(parent).map_err(|e| format!("Cannot create Wiki work folder: {e}"))?;
+    let bytes =
+        serde_json::to_vec_pretty(value).map_err(|e| format!("Cannot encode Wiki input: {e}"))?;
+    fs::write(path, bytes).map_err(|e| format!("Cannot write Wiki input: {e}"))
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+}
+
+fn acquire_run_lock(path: &Path) -> Result<(), String> {
+    let create = || {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| error.kind())?;
+        write!(file, "{{\"pid\":{}}}", std::process::id())
+            .map_err(|_| std::io::ErrorKind::Other)?;
+        Ok::<(), std::io::ErrorKind>(())
+    };
+    match create() {
+        Ok(()) => Ok(()),
+        Err(std::io::ErrorKind::AlreadyExists) => {
+            let owner = fs::read_to_string(path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|value| value.get("pid").and_then(Value::as_u64))
+                .and_then(|pid| u32::try_from(pid).ok());
+            if owner.map(process_is_alive).unwrap_or(false) {
+                return Err(
+                    "A Wiki maintenance run is already active on this computer.".to_string()
+                );
+            }
+            fs::remove_file(path)
+                .map_err(|_| "The previous Wiki run lock could not be recovered.".to_string())?;
+            create().map_err(|_| {
+                "A Wiki maintenance run is already active on this computer.".to_string()
+            })
+        }
+        Err(_) => Err("Cannot create the Wiki maintenance run lock.".to_string()),
+    }
+}
+
+fn humanize_compiler_error(stderr: &str) -> String {
+    if stderr.contains("whitelist intersects restricted documents ACL") {
+        return "A selected source folder is restricted. Choose only folders visible to the whole team."
+            .to_string();
+    }
+    if stderr.contains("knowledge/_schema.md is missing")
+        || stderr.contains("knowledge/_schema.md is empty")
+    {
+        return "Set up the team knowledge base before maintaining Wiki.".to_string();
+    }
+    if stderr.contains("ACL state unknown") {
+        return "Team folder permissions could not be verified. Check your connection and try again."
+            .to_string();
+    }
+    if stderr.contains("vision estimate") || stderr.contains("vision is unavailable") {
+        return "Some pages need visual recognition. Review the estimated cost before continuing."
+            .to_string();
+    }
+    if stderr.contains("publish destination changed") || stderr.contains("unexplained vault edits")
+    {
+        return "Wiki changed after this run started. Run maintenance again before publishing."
+            .to_string();
+    }
+    stderr
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Error: "))
+        .filter(|line| !line.is_empty())
+        .unwrap_or("Wiki maintenance stopped unexpectedly.")
+        .to_string()
+}
+
+async fn run_node(
+    app: &tauri::AppHandle,
+    command: &str,
+    input_path: &Path,
+) -> Result<Value, String> {
+    let output = tokio::process::Command::new(node_path()?)
+        .arg(script_path(app)?)
+        .arg(command)
+        .arg(input_path)
+        .output()
+        .await
+        .map_err(|e| format!("Cannot start Wiki compiler: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Wiki compiler stopped unexpectedly.".to_string()
+        } else {
+            humanize_compiler_error(&stderr)
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| "Wiki compiler returned no result.".to_string())?;
+    serde_json::from_str(line).map_err(|e| format!("Invalid Wiki compiler result: {e}"))
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_prepare(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KbMaintainerState>,
+    request: PrepareRequest,
+) -> Result<PrepareSummary, String> {
+    if request.source_directories.is_empty() {
+        return Err("Choose at least one source folder.".to_string());
+    }
+    let sources: Vec<String> = request
+        .source_directories
+        .iter()
+        .map(|path| normalize_source_directory(path))
+        .collect::<Result<_, _>>()?;
+    let (documents_root, knowledge_root) = team_paths(&request.team_id)?;
+    validate_existing_directory(&documents_root, &documents_root)?;
+    validate_existing_directory(&knowledge_root, &knowledge_root)?;
+
+    let root = work_root(&request.team_id)?;
+    fs::create_dir_all(root.join("state"))
+        .map_err(|e| format!("Cannot create Wiki work folder: {e}"))?;
+    let lock_path = root.join("state/run.lock");
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let node_id = gethostname::gethostname().to_string_lossy().to_string();
+    let config_path = root.join("config.json");
+    let input_path = root.join(format!("state/run-{run_id}.json"));
+    state.set_active(ActiveRun {
+        run_id: run_id.clone(),
+        team_id: request.team_id.clone(),
+        input_path: input_path.clone(),
+        lock_path: lock_path.clone(),
+        requires_cost_acceptance: false,
+    })?;
+    if let Err(error) = acquire_run_lock(&lock_path) {
+        state.clear(&run_id);
+        return Err(error);
+    }
+    let config = json!({
+        "schemaVersion": 1,
+        "teamId": request.team_id,
+        "maintainerNodeId": node_id,
+        "sources": sources.iter().enumerate().map(|(index, prefix)| json!({
+            "prefix": prefix,
+            "class": "process",
+            "priority": index + 1,
+            "allowExtensions": ALLOWED_EXTENSIONS,
+        })).collect::<Vec<_>>(),
+        "deny": { "pathPatterns": [
+            "**/_secrets/**", "**/personnel/**", "**/discipline/**", "**/insurance/**"
+        ]},
+        "models": { "compiler": "", "vision": "", "visionPagePrice": 0.12, "currency": "CNY" }
+    });
+    if let Err(error) = write_json(&config_path, &config) {
+        let _ = fs::remove_file(&lock_path);
+        state.clear(&run_id);
+        return Err(error);
+    }
+    let input = json!({
+        "runId": run_id,
+        "configPath": config_path,
+        "statePath": root.join("state/state.json"),
+        "documentsRoot": documents_root,
+        "knowledgeRoot": knowledge_root,
+        "workRoot": root,
+        "nodeId": node_id,
+        "aclPrefixes": request.acl_prefixes,
+        "known": request.known.into_iter().map(|item| json!({
+            "path": item.path, "version": item.version, "size": item.size
+        })).collect::<Vec<_>>()
+    });
+    if let Err(error) = write_json(&input_path, &input) {
+        let _ = fs::remove_file(&lock_path);
+        state.clear(&run_id);
+        return Err(error);
+    }
+
+    let result = run_node(&app, "prepare", &input_path).await;
+    let summary: PrepareSummary = match result {
+        Ok(value) => match serde_json::from_value(value) {
+            Ok(summary) => summary,
+            Err(error) => {
+                let _ = fs::remove_file(&lock_path);
+                state.clear(&run_id);
+                return Err(format!("Invalid Wiki summary: {error}"));
+            }
+        },
+        Err(error) => {
+            let _ = fs::remove_file(&lock_path);
+            state.clear(&run_id);
+            return Err(error);
+        }
+    };
+    if !summary.can_publish {
+        let _ = fs::remove_file(lock_path);
+        let _ = fs::remove_file(input_path);
+        state.clear(&run_id);
+    } else {
+        state.set_requires_cost_acceptance(
+            &run_id,
+            summary.estimated_cost.unwrap_or_default() > 0.0,
+        )?;
+    }
+    Ok(summary)
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_publish(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KbMaintainerState>,
+    run_id: String,
+    accept_vision_cost: bool,
+) -> Result<PublishResult, String> {
+    let run = state.take_for_publish(&run_id)?;
+    if run.requires_cost_acceptance && !accept_vision_cost {
+        let _ = state.set_active(run);
+        return Err("Confirm the estimated visual recognition cost before publishing.".to_string());
+    }
+    let publish = run_node(&app, "publish", &run.input_path).await;
+    if let Err(error) = publish {
+        let _ = state.set_active(run);
+        return Err(error);
+    }
+    let sync_status = match super::team_sync_proxy::daemon_team_sync(None, true, false).await {
+        Ok(_) => "synced",
+        Err(_) => "published_local_sync_pending",
+    };
+    let _ = fs::remove_file(&run.lock_path);
+    let _ = fs::remove_file(&run.input_path);
+    let _ = run.team_id;
+    state.clear(&run_id);
+    Ok(PublishResult {
+        sync_status: sync_status.to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_cancel(
+    state: tauri::State<'_, KbMaintainerState>,
+    run_id: String,
+) -> Result<(), String> {
+    let run = state.take_for_publish(&run_id)?;
+    let _ = fs::remove_file(run.lock_path);
+    let _ = fs::remove_file(run.input_path);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_directories_are_normalized_under_documents() {
+        assert_eq!(
+            normalize_source_directory("documents/handbook/").unwrap(),
+            "documents/handbook/"
+        );
+        assert!(normalize_source_directory("../secrets").is_err());
+        assert!(normalize_source_directory("knowledge/wiki").is_err());
+        assert!(normalize_source_directory("documents/_secrets/").is_err());
+    }
+
+    #[test]
+    fn publish_stage_cannot_be_skipped_or_replayed() {
+        let state = KbMaintainerState::default();
+        let run = ActiveRun {
+            run_id: "run-1".into(),
+            team_id: "team-1".into(),
+            input_path: std::path::PathBuf::from("/tmp/input.json"),
+            lock_path: std::path::PathBuf::from("/tmp/lock"),
+            requires_cost_acceptance: false,
+        };
+        state.set_active(run).unwrap();
+        assert!(state.take_for_publish("wrong-run").is_err());
+        assert!(state.take_for_publish("run-1").is_ok());
+        assert!(state.take_for_publish("run-1").is_err());
+    }
+
+    #[test]
+    fn compiler_errors_are_presented_without_pipeline_terms() {
+        assert_eq!(
+            humanize_compiler_error(
+                "Error: whitelist intersects restricted documents ACL: documents/hr/"
+            ),
+            "A selected source folder is restricted. Choose only folders visible to the whole team."
+        );
+        assert_eq!(
+            humanize_compiler_error("Error: knowledge/_schema.md is missing\n at dryRun"),
+            "Set up the team knowledge base before maintaining Wiki."
+        );
+    }
+
+    #[test]
+    fn run_lock_recovers_after_a_crash_but_rejects_a_live_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("run.lock");
+        fs::write(&lock, b"").unwrap();
+        acquire_run_lock(&lock).unwrap();
+        assert!(acquire_run_lock(&lock).is_err());
+    }
+}

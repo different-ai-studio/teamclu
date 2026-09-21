@@ -81,6 +81,7 @@ import { encodeWorkspaceId, notifyDaemonSkillsChanged } from '@/lib/daemon/daemo
 import { SkillScanPaths } from './SkillScanPaths'
 import { KnowledgeSyncFooter } from '@/components/teamshare/KnowledgeSyncFooter'
 import { KnowledgeInboxStrip } from '@/components/teamshare/KnowledgeInboxStrip'
+import { WikiMaintainerCard } from '@/components/teamshare/WikiMaintainerCard'
 import { useTeamConflictsStore } from '@/stores/team-conflicts'
 import { ObsidianIcon } from '@/components/workspace/ObsidianIcon'
 import { useObsidianStatus } from '@/hooks/use-obsidian'
@@ -1344,6 +1345,7 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
             // When knowledge/ has no files yet, the one-click scaffold CTA sits
             // above the tree so documents/ remains reachable.
             <>
+            <WikiMaintainerCard />
             <KnowledgeInboxStrip />
             {vaultEmpty ? (
               <div className="shrink-0 border-b border-border-soft">
