@@ -16,6 +16,9 @@ public struct SessionDetailView: View {
         CachedActorMap(nameByActorID: Dictionary(uniqueKeysWithValues: cachedActors.map { ($0.actorId, $0.displayName) }))
     }
     @State private var promptText = ""
+    /// Composer focus lives here, not in `SessionComposer`, so the transcript
+    /// can give the keyboard's space back to the messages on scroll or tap.
+    @FocusState private var composerFocused: Bool
     @State private var attachments: [URL] = []
     @State private var voiceRecorder = VoiceRecorder(contextualStrings: [
         "Claude", "Claude Code", "Sonnet", "Opus", "Haiku",
@@ -184,6 +187,24 @@ public struct SessionDetailView: View {
                 // robust and matches the user's expectation that pulling
                 // the chat reveals more chat.
                 .scrollDismissesKeyboard(.immediately)
+                // …but that modifier only resigns the responder; the
+                // composer's `@FocusState` is hoisted here and lives in the
+                // bottom safeAreaInset, outside this ScrollView, so it can
+                // re-raise the keyboard on the next layout pass. Clear it
+                // explicitly. `.tracking`/`.interacting` are the finger-driven
+                // phases — `.animating` is excluded so the auto-scroll that
+                // follows an incoming message never steals focus mid-typing.
+                .onScrollPhaseChange { _, phase in
+                    guard composerFocused, phase == .tracking || phase == .interacting else { return }
+                    composerFocused = false
+                }
+                // Tapping anywhere in the transcript does the same. Simultaneous
+                // so bubble buttons, disclosure rows and context menus still fire.
+                .simultaneousGesture(
+                    TapGesture().onEnded {
+                        if composerFocused { composerFocused = false }
+                    }
+                )
             }
         }
         // Mist canvas — matches `agent-session.jsx`. Without an explicit
@@ -363,7 +384,8 @@ public struct SessionDetailView: View {
                     },
                     onAgentMention: { target in
                         viewModel.lightAgentChip(target.id)
-                    }
+                    },
+                    inputFocused: $composerFocused
                     )
                 }
             }

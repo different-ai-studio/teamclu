@@ -307,10 +307,11 @@ public enum ChatTimelineReducer {
                 toolName: pr.toolName,
                 senderActorID: bucket,
                 timestamp: input.timestamp,
-                // Anchor: buildFeedItems re-orders permission rows to sit
-                // before their turn's bubble (the reply row's timestamp is
-                // the turn's START, so pure time-sorting lands mid-turn
-                // permissions after the reply).
+                // Anchor: buildFeedItems places a pending permission row
+                // under its turn's card, and folds an answered one into that
+                // turn's runtime events. Both need the turn id — the reply
+                // row's timestamp is the turn's START, so time alone doesn't
+                // say which turn a mid-turn request belongs to.
                 turnID: input.turnID
             ))
             return .entriesChanged
@@ -495,6 +496,16 @@ public enum ChatTimelineReducer {
     }
 
     private static func applyHistoryRow(_ input: HistoryInput, to state: inout TimelineState) -> TimelineReducerEffect {
+        // Attachments reach the timeline only on a history row: the optimistic
+        // prompt and the live ACP reply have no attachment channel of their
+        // own. Every merge branch below is a row that came from somewhere
+        // else, so each one adopts them. Backfill, never overwrite — a
+        // re-seed must not churn a row that already has them.
+        func adoptAttachments(_ idx: Int) {
+            guard !input.attachments.isEmpty, state.entries[idx].attachments.isEmpty else { return }
+            state.entries[idx].attachments = input.attachments
+        }
+
         // Identity dedupe by supabaseMessageID.
         if let idx = state.entries.firstIndex(where: { $0.supabaseMessageID == input.supabaseMessageID }) {
             if state.entries[idx].timestamp != input.createdAt {
@@ -506,6 +517,7 @@ public enum ChatTimelineReducer {
             if state.entries[idx].turnID == nil {
                 state.entries[idx].turnID = input.turnID
             }
+            adoptAttachments(idx)
             return .entriesChanged
         }
         let eventType: String = input.kind == .output ? "output" : "user_prompt"
@@ -524,6 +536,7 @@ public enum ChatTimelineReducer {
             if state.entries[idx].timestamp > input.createdAt {
                 state.entries[idx].timestamp = input.createdAt
             }
+            adoptAttachments(idx)
             return .entriesChanged
         }
 
@@ -544,6 +557,7 @@ public enum ChatTimelineReducer {
             }
             if state.entries[idx].model == nil { state.entries[idx].model = input.model }
             if state.entries[idx].turnID == nil { state.entries[idx].turnID = input.turnID }
+            adoptAttachments(idx)
             return .entriesChanged
         }
 
@@ -571,6 +585,7 @@ public enum ChatTimelineReducer {
             state.entries[idx].supabaseMessageID = input.supabaseMessageID
             if state.entries[idx].model == nil { state.entries[idx].model = input.model }
             state.entries[idx].turnID = input.turnID
+            adoptAttachments(idx)
             return .entriesChanged
         }
 
@@ -588,6 +603,7 @@ public enum ChatTimelineReducer {
             if state.entries[idx].timestamp > input.createdAt {
                 state.entries[idx].timestamp = input.createdAt
             }
+            adoptAttachments(idx)
             return .entriesChanged
         }
 
@@ -611,7 +627,8 @@ public enum ChatTimelineReducer {
             timestamp: input.createdAt,
             model: input.model,
             supabaseMessageID: input.supabaseMessageID,
-            turnID: input.turnID
+            turnID: input.turnID,
+            attachments: input.attachments
         ))
         // History entries land sorted by createdAt; keep the array
         // ordered so feed-rendering downstream stays consistent.

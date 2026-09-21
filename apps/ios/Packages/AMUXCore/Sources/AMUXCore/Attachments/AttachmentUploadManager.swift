@@ -124,7 +124,7 @@ public class AttachmentUploadManager: NSObject, @unchecked Sendable {
             let result: AttachmentUploadResult = try await client.postRaw(
                 "/v1/attachments?path=\(encodedPath)&bucket=attachments",
                 bytes: fileData,
-                contentType: mimeType(for: pathInfo.fileName)
+                contentType: attachmentMimeType(for: pathInfo.fileName)
             )
 
             // Mark complete on main thread
@@ -209,8 +209,20 @@ public enum UploadError: LocalizedError {
     }
 }
 
-// Helper to determine MIME type
-private func mimeType(for fileName: String) -> String {
+public extension AttachmentUploadManager {
+    /// The MIME type this uploader sends for a file, exposed so the outbox
+    /// can stamp the same value onto the `MessageAttachment` it persists — the
+    /// upload record itself doesn't keep one, and two independent guesses
+    /// would eventually disagree.
+    static func mimeType(forFileName fileName: String) -> String {
+        attachmentMimeType(for: fileName)
+    }
+}
+
+// Helper to determine MIME type. Free function rather than a static on the
+// manager: a static named `mimeType` would shadow it inside the type's own
+// scope, where `performUpload` calls it.
+func attachmentMimeType(for fileName: String) -> String {
     let ext = (fileName as NSString).pathExtension.lowercased()
     switch ext {
     case "jpg", "jpeg": return "image/jpeg"

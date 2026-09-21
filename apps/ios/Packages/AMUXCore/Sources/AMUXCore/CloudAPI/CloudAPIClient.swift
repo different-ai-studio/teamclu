@@ -100,6 +100,41 @@ public struct CloudAPIClient: Sendable {
         try await request("POST", path: path, body: bytes, idempotencyKey: nil, as: type, contentType: contentType)
     }
 
+    /// GET raw bytes plus the server's content type.
+    ///
+    /// For `GET /v1/attachments/:path`, which answers with the file itself
+    /// rather than JSON. The route is caller-scoped, so the bytes can only be
+    /// fetched with the user's bearer — an `AsyncImage` pointed at that URL
+    /// gets a 401. The attachments bucket is public, but iOS is never told
+    /// the storage origin (only the Cloud API's), so there is no public URL
+    /// to build either.
+    public func getRawBytes(_ path: String) async throws -> (data: Data, contentType: String) {
+        let token = try await accessToken().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { throw CloudAPIError.missingAccessToken }
+
+        let normalizedBase = baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        guard let url = URL(string: "\(normalizedBase)\(normalizedPath)") else {
+            throw CloudAPIError.invalidResponse
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(Self.requestID(), forHTTPHeaderField: "X-Request-Id")
+
+        let (data, response) = try await send(request)
+        guard (200..<300).contains(response.statusCode) else {
+            let envelope = try? JSONDecoder().decode(CloudAPIErrorEnvelope.self, from: data)
+            throw CloudAPIError.requestFailed(
+                status: response.statusCode,
+                code: envelope?.error.code,
+                message: envelope?.error.message ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode)
+            )
+        }
+        let mime = response.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
+        return (data, mime)
+    }
+
     public func patchVoid<Body: Encodable & Sendable>(
         _ path: String,
         body: Body,

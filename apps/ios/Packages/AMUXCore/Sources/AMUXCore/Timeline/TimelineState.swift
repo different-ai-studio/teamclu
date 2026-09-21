@@ -39,8 +39,10 @@ public struct TimelineEntry: Identifiable, Equatable, Sendable {
     /// consecutive agent_reply entries sharing the same turnID came
     /// out of one logical turn — the reducer's history path merges
     /// them so reload doesn't split a single answer across two bubbles.
-    /// nil for pre-turn_id rows and for kinds that don't have a turn
-    /// (user_prompt, system, permission, etc.).
+    /// nil for pre-turn_id rows and for user_prompt — a turn is the agent's,
+    /// not the user's. permission_request DOES carry one; `applyAcp` stamps
+    /// it from the envelope, and `buildFeedItems` needs it to know which
+    /// turn's card the request belongs under.
     public var turnID: String?
     /// Result summary text from the matching `ToolResult` envelope,
     /// written onto a `tool_use` entry when the result arrives. nil while
@@ -55,6 +57,11 @@ public struct TimelineEntry: Identifiable, Equatable, Sendable {
     public var diffPath: String?
     public var diffOldText: String?
     public var diffNewText: String?
+    /// Files this message carries, from `messages.attachments`. Only the
+    /// history path fills it — live ACP envelopes have no attachment channel
+    /// of their own. Empty for rows written before the column was plumbed
+    /// through; those have their URLs inlined in `text` instead.
+    public var attachments: [MessageAttachment] = []
 
     public init(id: String = UUID().uuidString,
                 sequence: UInt64 = 0,
@@ -74,7 +81,8 @@ public struct TimelineEntry: Identifiable, Equatable, Sendable {
                 resultSummary: String? = nil,
                 diffPath: String? = nil,
                 diffOldText: String? = nil,
-                diffNewText: String? = nil) {
+                diffNewText: String? = nil,
+                attachments: [MessageAttachment] = []) {
         self.id = id
         self.sequence = sequence
         self.eventType = eventType
@@ -94,6 +102,7 @@ public struct TimelineEntry: Identifiable, Equatable, Sendable {
         self.diffPath = diffPath
         self.diffOldText = diffOldText
         self.diffNewText = diffNewText
+        self.attachments = attachments
     }
 }
 

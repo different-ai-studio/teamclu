@@ -167,7 +167,7 @@ final class BuildFeedItemsTurnCollapseTests: XCTestCase {
 
     // MARK: - Pass-through cases
 
-    func test_planUpdateAndPermissionStayVisible() {
+    func test_planUpdateStaysVisible_andPendingPermissionReadsUnderItsTurn() {
         let prompt = makeEvent(sequence: 1, eventType: "user_prompt", text: "go", sender: "user")
         let plan = makeEvent(sequence: 2, eventType: "plan_update", text: "[wip] step", isComplete: true, turnID: "T1")
         let perm = makeEvent(sequence: 3, eventType: "permission_request", text: "approve?", isComplete: false, turnID: "T1")
@@ -178,29 +178,75 @@ final class BuildFeedItemsTurnCollapseTests: XCTestCase {
         XCTAssertEqual(feed.count, 4)
         guard case .userMessage = feed[0] else { return XCTFail("expected userMessage") }
         guard case .todo = feed[1] else { return XCTFail("expected todo for plan_update") }
-        guard case .permission = feed[2] else { return XCTFail("expected permission") }
-        guard case .completedTurn = feed[3] else { return XCTFail("expected completedTurn") }
+        guard case .completedTurn = feed[2] else { return XCTFail("expected completedTurn") }
+        guard case .permission = feed[3] else {
+            return XCTFail("a pending permission reads under the turn that asked it")
+        }
     }
 
-    // MARK: - Mid-turn permission anchors above its turn's bubble
+    // MARK: - Permission placement
 
-    func test_permissionAskedMidTurn_reanchorsAboveBubble() {
-        // The reply row's timestamp is the turn's START (Supabase
-        // created_at), so time-sorting lands the mid-turn permission AFTER
-        // the bubble. The feed must still read permission → reply.
+    func test_answeredPermission_leavesFeedAndFoldsIntoItsTurn() {
+        // Once the user has answered, the card is spent: it stops taking up a
+        // row between the prompt and the reply, and is only reachable in the
+        // turn detail next to the tool it was gating.
         let reply = makeEvent(sequence: 10, eventType: "output", text: "Done.", isComplete: true, turnID: "T1")
         let perm = makeEvent(sequence: 5, eventType: "permission_request", text: "WebSearch",
                              toolId: "perm-1", isComplete: true, turnID: "T1")
 
         let feed = buildFeedItems([reply, perm])
 
+        XCTAssertEqual(feed.count, 1, "the answered permission must not hold a feed row")
+        guard case let .completedTurn(_, _, _, runtimeEvents) = feed[0] else {
+            return XCTFail("expected the turn's bubble")
+        }
+        XCTAssertTrue(
+            runtimeEvents.contains { $0.toolId == "perm-1" },
+            "it folds into the turn so the detail view can still show it"
+        )
+    }
+
+    func test_answeredPermissionWithNoTurnInFeed_keepsItsRow() {
+        // Nothing to fold into means nowhere left to read it, so the row
+        // survives rather than the request disappearing outright.
+        let perm = makeEvent(sequence: 5, eventType: "permission_request", text: "WebSearch",
+                             toolId: "perm-1", isComplete: true, turnID: "T-gone")
+
+        let feed = buildFeedItems([perm])
+
+        XCTAssertEqual(feed.count, 1)
+        guard case .permission = feed[0] else { return XCTFail("expected the permission row to survive") }
+    }
+
+    func test_pendingPermission_alsoReachesTheTurnDetail() {
+        // It must be answerable from the process view too, so it rides in the
+        // turn's runtime events while keeping its own feed row.
+        let reply = makeEvent(sequence: 10, eventType: "output", text: "Done.", isComplete: true, turnID: "T1")
+        let perm = makeEvent(sequence: 5, eventType: "permission_request", text: "Bash",
+                             toolId: "perm-1", turnID: "T1")
+
+        let feed = buildFeedItems([reply, perm])
+
         XCTAssertEqual(feed.count, 2)
-        guard case .permission = feed[0] else {
-            return XCTFail("permission must re-anchor above its turn's bubble")
+        guard case let .completedTurn(_, _, _, runtimeEvents) = feed[0] else {
+            return XCTFail("bubble first")
         }
-        guard case .completedTurn = feed[1] else {
-            return XCTFail("expected completedTurn after the permission")
-        }
+        guard case .permission = feed[1] else { return XCTFail("and its own row under it") }
+        XCTAssertTrue(runtimeEvents.contains { $0.toolId == "perm-1" })
+    }
+
+    func test_pendingPermission_readsUnderTheActiveStreamCard() {
+        // The agent thinks, then asks. The stream card is appended after the
+        // whole walk, so without placement the request sorts above it.
+        let think = makeEvent(sequence: 1, eventType: "thinking", text: "hm", turnID: "T1")
+        let perm = makeEvent(sequence: 2, eventType: "permission_request", text: "Bash",
+                             toolId: "perm-1", turnID: "T1")
+
+        let feed = buildFeedItems([think, perm], streamingAgentIDs: ["agent-a"])
+
+        XCTAssertEqual(feed.count, 2)
+        guard case .activeStream = feed[0] else { return XCTFail("stream card first") }
+        guard case .permission = feed[1] else { return XCTFail("pending permission reads under it") }
     }
 
     func test_pendingPermissionForNewTurn_staysPut() {
@@ -213,6 +259,24 @@ final class BuildFeedItemsTurnCollapseTests: XCTestCase {
         XCTAssertEqual(feed.count, 2)
         guard case .completedTurn = feed[0] else { return XCTFail("bubble first") }
         guard case .permission = feed[1] else { return XCTFail("new turn's pending permission stays below") }
+    }
+
+    func test_severalPendingPermissions_keepTheOrderTheyWereAskedIn() {
+        let reply = makeEvent(sequence: 10, eventType: "output", text: "Done.", isComplete: true, turnID: "T1")
+        let first = makeEvent(sequence: 5, eventType: "permission_request", text: "Bash",
+                              toolId: "perm-1", turnID: "T1")
+        let second = makeEvent(sequence: 6, eventType: "permission_request", text: "WebSearch",
+                               toolId: "perm-2", turnID: "T1")
+
+        let feed = buildFeedItems([first, second, reply])
+
+        XCTAssertEqual(feed.count, 3)
+        guard case .completedTurn = feed[0] else { return XCTFail("bubble first") }
+        guard case let .permission(a) = feed[1], case let .permission(b) = feed[2] else {
+            return XCTFail("both permissions read under the turn")
+        }
+        XCTAssertEqual(a.toolId, "perm-1")
+        XCTAssertEqual(b.toolId, "perm-2")
     }
 }
 

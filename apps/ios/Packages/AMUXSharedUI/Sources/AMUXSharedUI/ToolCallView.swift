@@ -219,9 +219,7 @@ public struct ToolCallView: View {
 
 public struct CompactToolLine: View {
     public let event: AgentEvent
-    @State private var showDetail = false
-    @State private var showResult = false
-    @State private var showDiff = false
+    @State private var isExpanded = false
 
     private var toolName: String { event.toolName ?? "" }
     private var description: String { event.text ?? "" }
@@ -233,10 +231,6 @@ public struct CompactToolLine: View {
         event.diffNewText != nil || event.diffOldText != nil
     }
 
-    private var hasDetails: Bool {
-        ToolDisplay.summary(for: description) != nil
-    }
-
     private var detailSummary: String? {
         ToolDisplay.summary(for: description)
     }
@@ -246,16 +240,37 @@ public struct CompactToolLine: View {
         return s
     }
 
+    /// What sits beside the tool name on the head row: the call's own
+    /// arguments when it has readable ones, otherwise the opening line of
+    /// what came back. A tool with neither — `bash` with an unparseable
+    /// command and a long stdout — used to render as a bare name on one
+    /// line with an empty RESULT row hanging under it.
+    private var headPreview: String? {
+        if let detailSummary { return detailSummary }
+        guard let resultSummary else { return nil }
+        let firstLine = resultSummary.prefix(while: { !$0.isNewline })
+        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Anything to reveal. Drives the chevron too, so a row without a
+    /// disclosure doesn't advertise one.
+    private var isExpandable: Bool {
+        detailSummary != nil || resultSummary != nil || hasDiff
+    }
+
     public init(event: AgentEvent) {
         self.event = event
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
+            // One head row, one disclosure. The call's arguments, its diff and
+            // its output used to be three sibling rows each with its own
+            // chevron, so a single tool call could occupy four lines of a
+            // phone screen before revealing anything.
             Button {
-                if hasDetails {
-                    withAnimation(AMUXAnimation.fast) { showDetail.toggle() }
-                }
+                if isExpandable { withAnimation(AMUXAnimation.fast) { isExpanded.toggle() } }
             } label: {
                 HStack(spacing: 8) {
                     Circle()
@@ -267,9 +282,10 @@ public struct CompactToolLine: View {
                         .tracking(1.5)
                         .foregroundStyle(Color.amux.basalt)
                         .lineLimit(1)
+                        .layoutPriority(1)
 
-                    if let detailSummary {
-                        Text(detailSummary)
+                    if let headPreview {
+                        Text(headPreview)
                             .font(.caption2)
                             .foregroundStyle(Color.amux.slate)
                             .lineLimit(1)
@@ -277,104 +293,80 @@ public struct CompactToolLine: View {
                     }
 
                     Spacer(minLength: 0)
+
+                    if isExpandable {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .medium))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .foregroundStyle(Color.amux.slate.opacity(0.6))
+                    }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!hasDetails)
+            .disabled(!isExpandable)
+            .accessibilityIdentifier("toolLine.disclosure")
 
-            if showDetail && hasDetails {
+            if isExpanded {
                 HStack(alignment: .top, spacing: 12) {
                     Rectangle()
                         .fill(Color.amux.hairline)
                         .frame(width: 0.5)
-                    Text(description)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Color.amux.basalt)
-                        .lineLimit(10)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if detailSummary != nil, !description.isEmpty {
+                            expandedSection("INPUT") {
+                                Text(description)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(Color.amux.basalt)
+                                    .lineLimit(10)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        if hasDiff {
+                            expandedSection("DIFF") {
+                                ToolCallDiffView(
+                                    path: event.diffPath ?? "",
+                                    oldText: event.diffOldText,
+                                    newText: event.diffNewText ?? ""
+                                )
+                            }
+                        }
+                        if let resultSummary {
+                            expandedSection("RESULT") {
+                                Text(resultSummary)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(Color.amux.basalt)
+                                    .textSelection(.enabled)
+                                    .lineLimit(20)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.leading, 13)
+                .padding(.leading, 13) // align under the mono tool name (dot 5 + gap 8)
                 .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-
-            if hasDiff {
-                Button {
-                    withAnimation(AMUXAnimation.fast) { showDiff.toggle() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("DIFF")
-                            .font(.system(size: 9, design: .monospaced))
-                            .tracking(2)
-                            .foregroundStyle(Color.amux.slate)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .medium))
-                            .rotationEffect(.degrees(showDiff ? 90 : 0))
-                            .foregroundStyle(Color.amux.slate.opacity(0.6))
-                    }
-                    .padding(.leading, 13)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("toolLine.diffDisclosure")
-
-                if showDiff {
-                    HStack(alignment: .top, spacing: 12) {
-                        Rectangle()
-                            .fill(Color.amux.hairline)
-                            .frame(width: 0.5)
-                        ToolCallDiffView(
-                            path: event.diffPath ?? "",
-                            oldText: event.diffOldText,
-                            newText: event.diffNewText ?? ""
-                        )
-                    }
-                    .padding(.leading, 13)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-            }
-
-            if let summary = resultSummary {
-                Button {
-                    withAnimation(AMUXAnimation.fast) { showResult.toggle() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("RESULT")
-                            .font(.system(size: 9, design: .monospaced))
-                            .tracking(2)
-                            .foregroundStyle(Color.amux.slate)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .medium))
-                            .rotationEffect(.degrees(showResult ? 90 : 0))
-                            .foregroundStyle(Color.amux.slate.opacity(0.6))
-                    }
-                    .padding(.leading, 13)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                if showResult {
-                    HStack(alignment: .top, spacing: 12) {
-                        Rectangle()
-                            .fill(Color.amux.hairline)
-                            .frame(width: 0.5)
-                        Text(summary)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Color.amux.basalt)
-                            .textSelection(.enabled)
-                            .lineLimit(20)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.leading, 13)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 2)
+        .padding(.vertical, 6)
+    }
+
+    /// One labelled block inside the expanded body. The label is a mono
+    /// eyebrow, never translated — these are field names, not prose.
+    @ViewBuilder
+    private func expandedSection<Content: View>(
+        _ label: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: label)
+                .font(.system(size: 9, design: .monospaced))
+                .tracking(2)
+                .foregroundStyle(Color.amux.slate)
+            content()
+        }
     }
 }
 

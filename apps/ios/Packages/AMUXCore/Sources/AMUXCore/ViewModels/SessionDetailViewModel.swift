@@ -285,7 +285,37 @@ public final class SessionDetailViewModel {
     /// TeamcluService in scope. nil when this VM was constructed for a
     /// runtime-only legacy path (no session, no Teamclu) where the
     /// outbox isn't applicable.
-    public var outboxSender: OutboxSender?
+    public var outboxSender: OutboxSender? {
+        didSet { registerOutboxDeliveryHook() }
+    }
+
+    /// Messages this VM sent that are still waiting on the outbox. The
+    /// agent's placeholder card is raised when one of these is delivered,
+    /// not when the user taps send — see `sendPrompt`.
+    private var sendsAwaitingDelivery: Set<String> = []
+
+    /// Point the sender's delivery hook back at this VM. Called whenever
+    /// `outboxSender` is assigned, since the view wires it after init.
+    private func registerOutboxDeliveryHook() {
+        guard let outboxSender else { return }
+        // Built outside the Task so the handler captures `self` weakly and
+        // the Task itself captures no `self` at all — the sender holds this
+        // closure for its whole life, and a strong capture would keep the VM
+        // (and its MQTT task) alive after the chat view is gone.
+        let handler: @Sendable (String) async -> Void = { [weak self] messageID in
+            await self?.handleOutboxDelivered(messageID)
+        }
+        Task { await outboxSender.setOnDelivered(handler) }
+    }
+
+    /// One of our sends reached the broker. Now — and not before — is the
+    /// moment the agent can be said to be starting.
+    private func handleOutboxDelivered(_ messageID: String) {
+        // The sender drains every session's rows, so ignore ids that
+        // aren't ours.
+        guard sendsAwaitingDelivery.remove(messageID) != nil else { return }
+        markAgentWorking()
+    }
 
     public init(runtime: AgentAttachment? = nil,
                 mqtt: MQTTService,
@@ -2132,8 +2162,65 @@ public final class SessionDetailViewModel {
         return output.isComplete
     }
 
+    /// Drops the local thinking / tool rows of the turns a history batch is
+    /// about to replay, so the replay is the only source for them. Mirrors
+    /// `pruneTracedTurnRuntimeRows`, which does the same when a cloud trace
+    /// takes over a turn.
+    ///
+    /// Without this the two copies pile up side by side. The daemon replays a
+    /// turn envelope by envelope — every thinking delta its own line
+    /// (`read_turn`, apps/daemon/src/history/store.rs) — while the local rows
+    /// hold that same thinking already coalesced into one entry, and that
+    /// entry claims only the FIRST delta's sequence. So the sequence dedupe
+    /// waves deltas 2…n through, and they land next to the complete copy as
+    /// fragments of it.
+    ///
+    /// Rows of a turn still streaming are kept: its live buffer is the newer
+    /// copy, and the replay would re-open it.
+    private func pruneReplayedTurnRuntimeRows(_ envelopes: [Amux_Envelope],
+                                              modelContext: ModelContext) {
+        let replayed = Set(envelopes.map(\.turnID).filter { !$0.isEmpty })
+        guard !replayed.isEmpty else { return }
+        let liveTurnIDs = Set(timelineState.streamingTurnIDByAgent.values)
+        var doomed = Set<String>()
+        for entry in timelineState.entries {
+            guard let turnID = entry.turnID,
+                  replayed.contains(turnID),
+                  !liveTurnIDs.contains(turnID)
+            else { continue }
+            // Only the rows the replay reconstitutes. The final reply, the
+            // permission cards and their resolution, plans and errors are
+            // the chat feed's own state and are left alone.
+            switch entry.eventType {
+            case "thinking", "tool_use", "tool_result":
+                doomed.insert(entry.id)
+            default:
+                break
+            }
+        }
+        guard !doomed.isEmpty else { return }
+        timelineState.entries.removeAll { doomed.contains($0.id) }
+        for event in events where doomed.contains(event.id) {
+            modelContext.delete(event)
+        }
+        events.removeAll { doomed.contains($0.id) }
+        try? modelContext.save()
+        rebuildIndexes()
+    }
+
     private func handleHistoryBatch(_ batch: Amux_HistoryBatch) {
         guard let modelContext = syncModelContext else { return }
+
+        // Make the replay authoritative for the turns it covers — but only
+        // when it is the whole turn. `has_more` means the daemon trimmed the
+        // batch to its publish budget, and a partial replay must not be
+        // allowed to replace rows it cannot put back.
+        if !batch.hasMore_p {
+            pruneReplayedTurnRuntimeRows(batch.events, modelContext: modelContext)
+        }
+
+        // After the prune, so the sequences of the rows just dropped don't
+        // dedupe away the replay that is meant to rebuild them.
         let existingSeqs = Set(events.compactMap { $0.sequence != 0 ? $0.sequence : nil })
 
         // Aggregate dirty across the batch so we save + regroup once per page
@@ -2237,7 +2324,8 @@ public final class SessionDetailViewModel {
                     model: record.model,
                     turnID: record.turnID,
                     sequence: record.sequence,
-                    closesTurn: kind == .output && record.trace != nil
+                    closesTurn: kind == .output && record.trace != nil,
+                    attachments: record.attachments
                 )),
                 modelContext: modelContext
             )
@@ -2607,17 +2695,20 @@ public final class SessionDetailViewModel {
                 if dirty { recomputeGroups() }
             }
 
-            // Flip the busy flag immediately on send so the chip-bar
-            // stop button surfaces without waiting for the first ACP
-            // event to round-trip. The 10s safety reset still fires;
-            // the first real ACP event resets the timer.
-            markAgentWorking()
-
             // 2. Hand the body off to the outbox. The sender loop will
             //    drive MQTT publish + Supabase persist with retries.
             //    Falls back to the legacy synchronous path when the
             //    outbox sender hasn't been wired in (e.g. tests).
+            //
+            //    The busy flag is NOT flipped here. Tapping send only
+            //    enqueues: an attachment upload and the FC round trip still
+            //    sit between this line and the broker, so raising the
+            //    agent's placeholder card now put "agent working" on screen
+            //    above a message whose own status dot still read "sending".
+            //    `handleOutboxDelivered` flips it once the row lands, which
+            //    is the same moment the dot turns into a checkmark.
             if let outboxSender {
+                sendsAwaitingDelivery.insert(messageID)
                 await outboxSender.enqueue(
                     messageID: messageID,
                     sessionID: session.sessionId,
@@ -2643,6 +2734,9 @@ public final class SessionDetailViewModel {
                     attachmentURLs: attachmentURLs,
                     messageID: messageID
                 )
+                // Same rule as the outbox path: the card goes up once the
+                // message is out, not when the button was pressed.
+                markAgentWorking()
             } catch {
                 surfaceSendError(error)
                 throw error

@@ -37,6 +37,10 @@ public struct EventBubbleView: View {
     /// already painted into the nav-bar title for the whole turn so the
     /// per-bubble caption would just be redundant.
     let showsAssistantHeader: Bool
+    /// When false the assistant bubble leaves its attachments to the parent.
+    /// `StreamingDetailView` collects the whole turn's files and renders them
+    /// once at the end, so rendering them here too would double them up.
+    var showsAttachments: Bool = true
     /// Actor map built by the parent once per recomputeGroups cycle.
     /// Replaces the per-row @Query(CachedActor) so ~100 bubbles don't
     /// each register a SwiftData observation.
@@ -55,6 +59,10 @@ public struct EventBubbleView: View {
 
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var fullscreenImageContext: FullscreenImageContext?
+    /// Separate from `fullscreenImageContext`: that viewer pages through the
+    /// local outbox by URL, which a message-carried attachment has no place
+    /// in — it is addressed by bucket path and fetched with a bearer.
+    @State private var fullscreenAttachment: MessageAttachment?
 
     public init(event: AgentEvent, runtime: AgentAttachment? = nil,
                 onGrant: ((String, String?) -> Void)? = nil,
@@ -63,6 +71,7 @@ public struct EventBubbleView: View {
                 permissionOptions: ((String) -> [PermissionOptionItem])? = nil,
                 onRetryOutbox: ((String) -> Void)? = nil,
                 showsAssistantHeader: Bool = true,
+                showsAttachments: Bool = true,
                 actorMap: CachedActorMap = .empty,
                 onEdit: (() -> Void)? = nil,
                 onDelete: (() -> Void)? = nil,
@@ -76,6 +85,7 @@ public struct EventBubbleView: View {
         self.permissionOptions = permissionOptions
         self.onRetryOutbox = onRetryOutbox
         self.showsAssistantHeader = showsAssistantHeader
+        self.showsAttachments = showsAttachments
         self.actorMap = actorMap
         self.onEdit = onEdit
         self.onDelete = onDelete
@@ -178,6 +188,9 @@ public struct EventBubbleView: View {
         }
         .fullScreenCover(item: $fullscreenImageContext) { ctx in
             FullScreenSessionImageViewer(sessionID: ctx.sessionID, initialURL: ctx.initialURL)
+        }
+        .fullScreenCover(item: $fullscreenAttachment) { item in
+            FullScreenAttachmentViewer(attachment: item)
         }
     }
 
@@ -341,6 +354,17 @@ public struct EventBubbleView: View {
                 .contextMenu {
                     MessageContextMenu(text: event.text ?? "")
                 }
+            }
+
+            // Under the bubble, not inside it: the files are the message's,
+            // not part of its prose, and a thumbnail inside the glass would
+            // inherit its padding and corner.
+            if showsAttachments, !event.attachments.isEmpty {
+                MessageAttachmentsView(
+                    attachments: event.attachments,
+                    onTapImage: { fullscreenAttachment = $0 }
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.horizontal, 16)
@@ -625,40 +649,58 @@ struct ThinkingBlockView: View {
     let text: String
     @State private var isExpanded = false
 
-    private var trimmedPreview: String {
-        let collapsed = text
+    private var collapsedText: String {
+        text
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedPreview: String {
+        let collapsed = collapsedText
         guard collapsed.count > 80 else { return collapsed }
         return String(collapsed.prefix(80)) + "…"
+    }
+
+    /// Expanding earns a chevron only when it reveals something the preview
+    /// doesn't already show — a short thought is the whole row.
+    private var isExpandable: Bool {
+        collapsedText.count > 80 || text.contains("\n")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                if isExpandable { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }
             } label: {
                 HStack(spacing: 8) {
                     Text("THINKING")
                         .font(.system(size: 9, design: .monospaced))
                         .tracking(2)
                         .foregroundStyle(Color.amux.slate)
+                        .layoutPriority(1)
                     if !isExpanded, !trimmedPreview.isEmpty {
+                        // Basalt, not slate: the thought is the row's content
+                        // and the eyebrow is only its label. Setting both in
+                        // slate flattened the page into one undifferentiated
+                        // grey.
                         Text(trimmedPreview)
                             .font(.caption2)
-                            .foregroundStyle(Color.amux.slate)
+                            .foregroundStyle(Color.amux.basalt)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .medium))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .foregroundStyle(Color.amux.slate.opacity(0.6))
+                    if isExpandable {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .medium))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .foregroundStyle(Color.amux.slate.opacity(0.6))
+                    }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(!isExpandable)
 
             if isExpanded {
                 HStack(alignment: .top, spacing: 12) {
@@ -761,7 +803,9 @@ private struct FullscreenImageContext: Identifiable {
 /// Queries every OutboxMessage for `sessionID`, flattens their attachment URLs
 /// in chronological order, and presents them in a paging TabView so the user
 /// can swipe left/right between images. Opens at the tapped image's index.
-private struct FullScreenSessionImageViewer: View {
+/// Internal, not private: `StreamingDetailView` opens the same viewer for
+/// the files it lists at the end of a turn.
+struct FullScreenSessionImageViewer: View {
     @Environment(\.dismiss) private var dismiss
     let sessionID: String
     let initialURL: URL
@@ -779,8 +823,14 @@ private struct FullScreenSessionImageViewer: View {
         )
     }
 
+    /// Every image the viewer can page through, plus the one actually
+    /// tapped. The query source is the local outbox — only what this device
+    /// sent — so an agent's attachment is never in it. Without the union a
+    /// tap on one opened the viewer on an unrelated image, because
+    /// `seekToInitial` found no index and left it at 0.
     private var allURLs: [URL] {
-        messages.flatMap { $0.attachmentURLs }
+        let sent = messages.flatMap { $0.attachmentURLs }
+        return sent.contains(initialURL) ? sent : sent + [initialURL]
     }
 
     var body: some View {
@@ -947,6 +997,87 @@ private struct SentAttachmentsView: View {
     }
 }
 
+// MARK: - MessageAttachmentsView
+
+/// Files a message carries structurally, from `messages.attachments`.
+///
+/// Distinct from `SentAttachmentsView`, which reads this device's local
+/// outbox row: that one only knows about what *this* device sent, while
+/// these ride on the message itself and so survive a reinstall and show up
+/// on every device — including an agent's own attachments.
+struct MessageAttachmentsView: View {
+    let attachments: [MessageAttachment]
+    let onTapImage: ((MessageAttachment) -> Void)?
+
+    var body: some View {
+        ForEach(attachments, id: \.identity) { item in
+            if item.isImage {
+                AttachmentImageView(attachment: item, maxHeight: 220)
+                    .onTapGesture { onTapImage?(item) }
+                    .accessibilityLabel(item.filename)
+            } else {
+                AttachmentFileCard(attachment: item)
+            }
+        }
+    }
+}
+
+// MARK: - AttachmentImageView
+
+/// A message attachment rendered as an image.
+///
+/// Not `AsyncImage`: the bytes come from a caller-scoped Cloud API route, so
+/// they need the user's bearer (see `AttachmentContentLoader`). A failure
+/// falls back to the file card rather than an empty frame — a blank space is
+/// indistinguishable from "no image".
+struct AttachmentImageView: View {
+    let attachment: MessageAttachment
+    var maxHeight: CGFloat = 220
+
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: maxHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else if failed {
+                AttachmentFileCard(attachment: attachment)
+            } else {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.amux.pebble)
+                    .overlay(ProgressView())
+                    .frame(height: 150)
+            }
+        }
+        .task(id: attachment.identity) { await load() }
+    }
+
+    private func load() async {
+        guard image == nil, !failed, let path = attachment.bucketPath else {
+            if attachment.bucketPath == nil { failed = true }
+            return
+        }
+        do {
+            let data = try await AttachmentContentLoader.shared.data(
+                bucketPath: path, fileName: attachment.filename
+            )
+            guard let decoded = UIImage(data: data) else { failed = true; return }
+            image = decoded
+        } catch {
+            failed = true
+        }
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var isNilOrEmpty: Bool { self?.isEmpty != false }
+}
+
 // MARK: - MessageContentParser
 
 private struct ParsedMessageContent {
@@ -1056,17 +1187,51 @@ struct ReplyQuoteChip: View {
 // MARK: - AttachmentFileCard
 
 /// A non-image attachment in a message bubble: type icon + filename +
-/// extension badge. Tapping hands the URL to the system (Safari previews
-/// PDFs and most documents inline; anything else downloads).
+/// extension badge. Tapping opens it in-app (`AttachmentPreviewSheet`)
+/// rather than handing the URL to Safari — an agent that produces an HTML
+/// report should not bounce the reader out of the conversation to read it.
 struct AttachmentFileCard: View {
-    let url: URL
+    /// A file the message carries, fetched by bucket path.
+    private let attachment: MessageAttachment?
+    /// A bare link found in the message body — all the older path gives us.
+    private let linkURL: URL?
+    private let overrideName: String?
 
-    private var filename: String {
-        let name = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
-        return name.isEmpty ? url.absoluteString : name
+    @State private var isPreviewing = false
+
+    init(attachment: MessageAttachment) {
+        self.attachment = attachment
+        self.linkURL = nil
+        self.overrideName = nil
     }
 
-    private var ext: String { url.pathExtension.lowercased() }
+    init(url: URL, displayName: String? = nil) {
+        self.attachment = nil
+        self.linkURL = url
+        self.overrideName = displayName
+    }
+
+    private var filename: String {
+        if let attachment, !attachment.filename.isEmpty { return attachment.filename }
+        if let overrideName, !overrideName.isEmpty { return overrideName }
+        guard let linkURL else { return "" }
+        let name = linkURL.lastPathComponent.removingPercentEncoding ?? linkURL.lastPathComponent
+        return name.isEmpty ? linkURL.absoluteString : name
+    }
+
+    /// Taken from the name rather than the URL: an attachment path can end in
+    /// an id with no extension at all.
+    private var ext: String {
+        let fromName = (filename as NSString).pathExtension
+        if !fromName.isEmpty { return fromName.lowercased() }
+        return (linkURL?.pathExtension ?? "").lowercased()
+    }
+
+    private var source: AttachmentSource? {
+        if let attachment { return .managed(attachment) }
+        if let linkURL { return .link(linkURL, name: filename) }
+        return nil
+    }
 
     private var iconName: String {
         switch ext {
@@ -1074,6 +1239,7 @@ struct AttachmentFileCard: View {
         case "zip": return "doc.zipper"
         case "csv", "xls", "xlsx", "numbers": return "tablecells"
         case "doc", "docx", "pages", "txt", "md", "log", "json": return "doc.text"
+        case "html", "htm": return "globe"
         case "ppt", "pptx", "key": return "rectangle.on.rectangle"
         case "mp3", "wav", "m4a": return "waveform"
         case "mp4", "mov": return "film"
@@ -1083,7 +1249,7 @@ struct AttachmentFileCard: View {
 
     var body: some View {
         Button {
-            UIApplication.shared.open(url)
+            isPreviewing = true
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: iconName)
@@ -1113,22 +1279,29 @@ struct AttachmentFileCard: View {
             )
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            Button {
-                UIPasteboard.general.string = url.absoluteString
-            } label: {
-                Label("Copy Link", systemImage: "doc.on.doc")
-            }
-            ShareLink(item: url) {
-                Label("Share", systemImage: "square.and.arrow.up")
+        .sheet(isPresented: $isPreviewing) {
+            if let source {
+                AttachmentPreviewSheet(source: source)
             }
         }
-        .accessibilityLabel("Attachment \(filename)")
+        .contextMenu {
+            if let linkURL {
+                Button {
+                    UIPasteboard.general.string = linkURL.absoluteString
+                } label: {
+                    Label("Copy Link", systemImage: "doc.on.doc")
+                }
+                Button {
+                    UIApplication.shared.open(linkURL)
+                } label: {
+                    Label("Open in another app", systemImage: "arrow.up.forward.app")
+                }
+                ShareLink(item: linkURL) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+            }
+        }
     }
-}
-
-private extension Optional where Wrapped == String {
-    var isNilOrEmpty: Bool { self?.isEmpty != false }
 }
 
 // MARK: - MessageContextMenu
