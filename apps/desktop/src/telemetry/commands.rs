@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::AppHandle;
-use tauri_plugin_aptabase::EventTracker;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -60,6 +59,6 @@ pub async fn telemetry_track(
     ) {
         return Ok(());
     }
-    let _ = app.track_event(&event_name, props);
+    super::track(&app, &event_name, props);
     Ok(())
 }
