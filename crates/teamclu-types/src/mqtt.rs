@@ -47,6 +47,15 @@ impl Topics {
         format!("{}/notify", self.actor_base())
     }
 
+    /// Where FC delivers messages addressed to this actor's sessions.
+    ///
+    /// One topic covers every session the actor takes part in, which is the
+    /// point: subscribing per session made an agent deaf in any session it had
+    /// not happened to start a runtime for (#1455 §2.6).
+    pub fn actor_inbox(&self) -> String {
+        format!("{}/inbox", self.actor_base())
+    }
+
     pub fn session_live(&self, session_id: &str) -> String {
         session_live(&self.team_id, session_id)
     }

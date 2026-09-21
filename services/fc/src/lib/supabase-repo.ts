@@ -624,9 +624,11 @@ export function createSupabaseBusinessRepository(options) {
     appLogs,
     appLogsUnavailableReason,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
-    // Optional push hook — called after every successful message INSERT. Best-effort:
-    // errors are logged and swallowed so insert outcome is never affected.
-    dispatchPush,
+    // Optional fan-out hook — called after every successful message INSERT.
+    // Best-effort: errors are logged and swallowed so the insert outcome is
+    // never affected. It delivers to agent inboxes as well as sending the
+    // notifications, hence the name change from `dispatchPush`.
+    fanoutMessage,
   } = options;
 
   if (!supabaseUrl) throw new Error("SUPABASE_URL is required");
@@ -2058,16 +2060,12 @@ export function createSupabaseBusinessRepository(options) {
         .single();
       if (error) throw error;
 
-      if (dispatchPush) {
-        dispatchPush({
-          id: data.id,
-          session_id: data.session_id,
-          team_id: data.team_id,
-          sender_actor_id: data.sender_actor_id ?? null,
-          kind: data.kind ?? "text",
-          content: data.content ?? "",
-        }).catch((err: unknown) => {
-          console.error("[push] dispatchPush failed (swallowed):", err);
+      if (fanoutMessage) {
+        // The whole row, not a six-field digest: the agent inbox carries the
+        // message itself (#1455 Phase 1), so `metadata` — which holds
+        // `mention_actor_ids` and the attachment refs — has to travel with it.
+        fanoutMessage(data).catch((err: unknown) => {
+          console.error("[fanout] fanoutMessage failed (swallowed):", err);
         });
       }
 

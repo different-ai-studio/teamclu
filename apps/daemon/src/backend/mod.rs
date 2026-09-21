@@ -257,6 +257,16 @@ pub struct CloudAuthSnapshot {
     pub terminal_failure: bool,
 }
 
+/// One row of the actor's session list, as the catch-up scans read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorSessionRef {
+    pub session_id: String,
+    /// `lastMessageAt` exactly as served (RFC3339). `None` for a session that
+    /// has no messages yet — such a session can never hold an unanswered
+    /// mention, so the incremental scan skips it.
+    pub last_message_at: Option<String>,
+}
+
 #[async_trait]
 pub trait Backend: Send + Sync {
     // ── Identity ──────────────────────────────────────────────────────────
@@ -551,15 +561,19 @@ pub trait Backend: Send + Sync {
         session_id: &str,
     ) -> BackendResult<BackendSessionAndParticipants>;
 
-    /// Paginated session ids for the calling actor (`GET /v1/sessions?kind=regular`).
+    /// Paginated sessions for the calling actor (`GET /v1/sessions?kind=regular`).
     /// Excludes archived and cron sessions server-side; used for offline catch-up
     /// scans instead of a local on-disk session index.
+    ///
+    /// `last_message_at` rides along because the reconnect scan filters on it:
+    /// checking every session on every reconnect costs a handful of Cloud calls
+    /// each, and the reconnect happens at least hourly when the token rolls.
     async fn list_actor_session_ids(
         &self,
         team_id: &str,
         cursor: Option<&str>,
         limit: u32,
-    ) -> BackendResult<(Vec<String>, Option<String>)>;
+    ) -> BackendResult<(Vec<ActorSessionRef>, Option<String>)>;
 
     /// Display names for seated session participants via
     /// `GET /v1/sessions/{sessionId}/roster`.

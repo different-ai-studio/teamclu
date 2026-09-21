@@ -346,7 +346,7 @@ impl Backend for DeferredBackend {
         team_id: &str,
         cursor: Option<&str>,
         limit: u32,
-    ) -> BackendResult<(Vec<String>, Option<String>)> {
+    ) -> BackendResult<(Vec<super::ActorSessionRef>, Option<String>)> {
         self.inner()?
             .list_actor_session_ids(team_id, cursor, limit)
             .await

@@ -5,6 +5,98 @@ use super::*;
 use crate::runtime::acp_event_frame::AcpEventFrame;
 use teamclu_transport::PublisherError;
 
+/// FC's `amux/{team}/{actor}/inbox` payload (#1455 Phase 1).
+///
+/// Deliberately permissive: every field but the two the router cannot work
+/// without is optional, so a future FC that adds a key does not stop an older
+/// daemon from answering @-mentions.
+#[derive(serde::Deserialize)]
+pub(crate) struct AgentInboxEnvelope {
+    #[serde(default)]
+    pub r#type: String,
+    pub message: AgentInboxRow,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct AgentInboxRow {
+    pub id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub sender_actor_id: Option<String>,
+    #[serde(default)]
+    pub reply_to_message_id: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Kept as raw JSON: it holds `mention_actor_ids` and the attachment refs,
+    /// and both are read back out of the serialized form downstream.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// FC's JSON row → the proto `Message` the router already understands.
+///
+/// Pure so the mapping can be tested without a `DaemonServer`. The one thing
+/// that must not be lost here is `metadata`: `mention_actor_ids` lives inside
+/// it, and it is read back out of `metadata_json` downstream — a row that
+/// dropped it would route as unmentioned context and the agent would stay
+/// silent.
+pub(crate) fn agent_inbox_row_to_message(row: AgentInboxRow) -> crate::proto::teamclu::Message {
+    let metadata_json = row
+        .metadata
+        .as_ref()
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "{}".to_string());
+    let message = crate::proto::teamclu::Message {
+        message_id: row.id,
+        session_id: row.session_id,
+        sender_actor_id: row.sender_actor_id.unwrap_or_default(),
+        kind: message_kind_from_str(row.kind.as_deref().unwrap_or("text")) as i32,
+        content: row.content.unwrap_or_default(),
+        created_at: row
+            .created_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp())
+            .unwrap_or_else(|| chrono::Utc::now().timestamp()),
+        reply_to_message_id: row.reply_to_message_id.unwrap_or_default(),
+        mentions: Vec::new(),
+        model: row.model.unwrap_or_default(),
+        // Filled below: the helper reads `metadata_json` off the message it is
+        // given, so the message has to exist first.
+        attachment_urls: Vec::new(),
+        turn_id: row.turn_id.unwrap_or_default(),
+        metadata_json,
+    };
+    crate::proto::teamclu::Message {
+        attachment_urls: message_attachment_urls(&message),
+        ..message
+    }
+}
+
+/// `amux.messages.kind` → proto enum. An unknown kind routes as text rather
+/// than being dropped: a message the agent cannot classify is still a message
+/// it was sent.
+pub(crate) fn message_kind_from_str(kind: &str) -> crate::proto::teamclu::MessageKind {
+    use crate::proto::teamclu::MessageKind;
+    match kind {
+        "system" => MessageKind::System,
+        "work_event" => MessageKind::WorkEvent,
+        "agent_thinking" => MessageKind::AgentThinking,
+        "agent_tool_call" => MessageKind::AgentToolCall,
+        "agent_tool_result" => MessageKind::AgentToolResult,
+        "agent_reply" => MessageKind::AgentReply,
+        _ => MessageKind::Text,
+    }
+}
+
 /// One-way latency probe (dev-only). When the daemon is started with
 /// AMUX_LATENCY_PROBE=1, outgoing ACP envelopes carry a `probe:<ms>` marker in
 /// the otherwise-unused `source_peer_id` field; the desktop webview computes
@@ -839,6 +931,48 @@ impl DaemonServer {
             &resolve_mention_actor_ids(&env.mention_actor_ids, &msg.metadata_json),
         )
         .await;
+        Ok(())
+    }
+
+    /// Decode FC's agent-inbox payload and route it exactly like live traffic.
+    ///
+    /// This is the agent's delivery path as of #1455 Phase 1. Unlike
+    /// `session/{sid}/live` it needs no per-session subscription, which is the
+    /// whole point: one topic covers every session this actor is in, so a
+    /// daemon restart can no longer leave it deaf in sessions it has not
+    /// happened to start a runtime for.
+    ///
+    /// The payload is JSON (FC has no protobuf toolchain) carrying the whole
+    /// `amux.messages` row. `metadata` travels verbatim, so `mention_actor_ids`
+    /// survives and `resolve_mention_actor_ids` reads it exactly as it does on
+    /// the live path.
+    pub(crate) async fn ingest_agent_inbox(&mut self, payload: &[u8]) -> Result<(), String> {
+        let envelope: AgentInboxEnvelope = serde_json::from_slice(payload)
+            .map_err(|e| format!("agent inbox decode failed: {e}"))?;
+        if envelope.r#type != "message.created" {
+            return Ok(());
+        }
+        let row = envelope.message;
+        if row.session_id.is_empty() || row.id.is_empty() {
+            return Err("agent inbox row without session_id or id".into());
+        }
+
+        // The same gate the live path uses. An inbox copy and a live copy of
+        // one message must not both start a turn while both paths are wired.
+        if !self
+            .teamclu
+            .as_ref()
+            .map(|tc| tc.message_dedup().claim_message(&row.session_id, &row.id))
+            .unwrap_or(true)
+        {
+            return Ok(());
+        }
+
+        let session_id = row.session_id.clone();
+        let message = agent_inbox_row_to_message(row);
+        let mentions = resolve_mention_actor_ids(&[], &message.metadata_json);
+        self.route_session_message(&session_id, &message, &mentions)
+            .await;
         Ok(())
     }
 
@@ -1766,5 +1900,82 @@ mod turn_trace_tests {
             0,
             "the finished turn left nothing buffered"
         );
+    }
+}
+
+#[cfg(test)]
+mod agent_inbox_tests {
+    use super::*;
+
+    fn payload(metadata: &str, kind: &str) -> Vec<u8> {
+        format!(
+            r#"{{"v":1,"type":"message.created","message":{{
+                "id":"msg-1","team_id":"team-1","session_id":"sess-1",
+                "turn_id":"turn-1","sender_actor_id":"human-1",
+                "reply_to_message_id":null,"kind":"{kind}",
+                "content":"@bot hello","metadata":{metadata},
+                "model":null,"created_at":"2026-09-21T02:59:00Z"}}}}"#
+        )
+        .into_bytes()
+    }
+
+    fn decode(bytes: &[u8]) -> AgentInboxEnvelope {
+        serde_json::from_slice(bytes).expect("FC payload should decode")
+    }
+
+    #[test]
+    fn mentions_survive_the_json_hop() {
+        // The whole reason the row travels instead of a digest: drop metadata
+        // and every @-mention reads as unmentioned context.
+        let env = decode(&payload(r#"{"mention_actor_ids":["agent-1"]}"#, "text"));
+        let message = agent_inbox_row_to_message(env.message);
+        assert_eq!(
+            resolve_mention_actor_ids(&[], &message.metadata_json),
+            vec!["agent-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn maps_the_fields_the_router_reads() {
+        let env = decode(&payload("{}", "text"));
+        assert_eq!(env.r#type, "message.created");
+        let message = agent_inbox_row_to_message(env.message);
+        assert_eq!(message.message_id, "msg-1");
+        assert_eq!(message.session_id, "sess-1");
+        assert_eq!(message.sender_actor_id, "human-1");
+        assert_eq!(message.turn_id, "turn-1");
+        assert_eq!(message.content, "@bot hello");
+        // 2026-09-21T02:59:00Z
+        assert_eq!(message.created_at, 1789959540);
+    }
+
+    #[test]
+    fn attachments_are_lifted_out_of_metadata() {
+        let env = decode(
+            &payload(r#"{"attachment_urls":["https://example.test/a.png"]}"#, "text"),
+        );
+        let message = agent_inbox_row_to_message(env.message);
+        assert_eq!(message.attachment_urls, vec!["https://example.test/a.png"]);
+    }
+
+    #[test]
+    fn kind_strings_map_to_the_proto_enum() {
+        use crate::proto::teamclu::MessageKind;
+        assert_eq!(message_kind_from_str("text"), MessageKind::Text);
+        assert_eq!(message_kind_from_str("agent_reply"), MessageKind::AgentReply);
+        assert_eq!(message_kind_from_str("system"), MessageKind::System);
+        // An unrecognised kind is still a message the agent was sent.
+        assert_eq!(message_kind_from_str("whatever-comes-next"), MessageKind::Text);
+    }
+
+    #[test]
+    fn unknown_fields_do_not_break_an_older_daemon() {
+        // FC adding a key must not stop this daemon answering @-mentions.
+        let bytes = br#"{"v":9,"type":"message.created","brand_new":true,
+            "message":{"id":"m","session_id":"s","brand_new_too":1}}"#;
+        let env: AgentInboxEnvelope = serde_json::from_slice(bytes).expect("should decode");
+        let message = agent_inbox_row_to_message(env.message);
+        assert_eq!(message.message_id, "m");
+        assert_eq!(message.session_id, "s");
     }
 }

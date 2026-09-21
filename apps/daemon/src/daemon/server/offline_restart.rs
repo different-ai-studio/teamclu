@@ -53,23 +53,71 @@ pub(crate) struct OfflineRestartPlanner {
 impl OfflineRestartPlanner {
     /// The sessions that need a runtime, in the order the Cloud listed them.
     pub(crate) async fn plan(&self) -> Vec<OfflineRestartPlan> {
-        let session_ids = self.list_all_actor_session_ids().await;
-        if session_ids.is_empty() {
-            return Vec::new();
+        let (plans, _) = self.plan_since(None).await;
+        plans
+    }
+
+    /// The same scan, but only over sessions whose `last_message_at` is newer
+    /// than `watermark`.
+    ///
+    /// This is what makes the scan cheap enough to run on every MQTT connect
+    /// rather than only at process start. The full scan costs a few Cloud
+    /// calls per session — 20–35 s for thirty of them — while a reconnect
+    /// happens at least hourly when the access token rolls. Filtering on a
+    /// field the session list already carries usually leaves nothing to check.
+    ///
+    /// Returns the plans and the newest `last_message_at` seen, which the
+    /// caller keeps as the next watermark. `None` scans everything, which is
+    /// what a fresh process does.
+    pub(crate) async fn plan_since(
+        &self,
+        watermark: Option<&str>,
+    ) -> (Vec<OfflineRestartPlan>, Option<String>) {
+        let sessions = self.list_all_actor_session_ids().await;
+        if sessions.is_empty() {
+            return (Vec::new(), watermark.map(str::to_string));
+        }
+
+        // RFC3339 from one server, so lexical order is chronological order.
+        let newest = sessions
+            .iter()
+            .filter_map(|s| s.last_message_at.clone())
+            .chain(watermark.map(str::to_string))
+            .max();
+
+        let scanned: Vec<String> = sessions
+            .into_iter()
+            .filter(|s| match (watermark, s.last_message_at.as_deref()) {
+                // A full scan looks at everything, exactly as it did before the
+                // watermark existed. Narrowing it here would change what a
+                // process restart finds, which is not what this is for.
+                (None, _) => true,
+                // Incremental: nothing has been said here, so nothing can be
+                // unanswered.
+                (Some(_), None) => false,
+                (Some(mark), Some(at)) => at > mark,
+            })
+            .map(|s| s.session_id)
+            .collect();
+
+        if scanned.is_empty() {
+            return (Vec::new(), newest);
         }
         info!(
-            count = session_ids.len(),
+            count = scanned.len(),
+            incremental = watermark.is_some(),
             "plan_auto_restart_offline_sessions: scanning Cloud regular sessions for offline messages"
         );
-        stream::iter(session_ids)
+        let plans = stream::iter(scanned)
             .map(|session_id| self.plan_session(session_id))
             .buffered(PLAN_CONCURRENCY)
             .filter_map(|entry| async move { entry })
             .collect()
-            .await
+            .await;
+        (plans, newest)
     }
 
-    async fn list_all_actor_session_ids(&self) -> Vec<String> {
+    async fn list_all_actor_session_ids(&self) -> Vec<crate::backend::ActorSessionRef> {
         let team_id = match self.team_id.as_deref() {
             Some(team_id) if !team_id.is_empty() => team_id,
             _ => return Vec::new(),
@@ -253,11 +301,39 @@ impl DaemonServer {
     /// through `tx`; the main loop starts them with
     /// [`Self::apply_offline_restart`].
     pub(crate) fn spawn_offline_restart_planning(&self, tx: mpsc::Sender<OfflineRestartPlan>) {
+        self.spawn_offline_restart_scan(tx, false);
+    }
+
+    /// The same scan on every MQTT (re)connect, narrowed to sessions that moved
+    /// since the last one.
+    ///
+    /// Without this the only catch-up runs at process start, so a daemon that
+    /// merely reconnects — which happens at least hourly when the access token
+    /// rolls — never reconciles. That is half of the 2026-09-21 failure: the
+    /// live subscription was missing and nothing else ever looked.
+    pub(crate) fn spawn_offline_restart_reconcile(&self, tx: mpsc::Sender<OfflineRestartPlan>) {
+        self.spawn_offline_restart_scan(tx, true);
+    }
+
+    fn spawn_offline_restart_scan(&self, tx: mpsc::Sender<OfflineRestartPlan>, incremental: bool) {
         let Some(planner) = self.offline_restart_planner() else {
             return;
         };
+        let watermark = self.offline_restart_watermark.clone();
         tokio::spawn(async move {
-            let plan = planner.plan().await;
+            // Cloned out of the lock before any await: the guard is a std
+            // Mutex and must not be held across one.
+            let since = if incremental {
+                watermark.lock().ok().and_then(|m| m.clone())
+            } else {
+                None
+            };
+            let (plan, newest) = planner.plan_since(since.as_deref()).await;
+            if let Some(newest) = newest {
+                if let Ok(mut guard) = watermark.lock() {
+                    *guard = Some(newest);
+                }
+            }
             if plan.is_empty() {
                 return;
             }
@@ -329,5 +405,86 @@ impl DaemonServer {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod watermark_tests {
+    use crate::backend::ActorSessionRef;
+
+    /// Mirror of the filter in `plan_since`. Kept as a free function so the
+    /// rule can be tested without a backend, a planner or a runtime manager.
+    fn should_scan(watermark: Option<&str>, last_message_at: Option<&str>) -> bool {
+        match (watermark, last_message_at) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(mark), Some(at)) => at > mark,
+        }
+    }
+
+    fn session(id: &str, at: Option<&str>) -> ActorSessionRef {
+        ActorSessionRef {
+            session_id: id.to_string(),
+            last_message_at: at.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn no_watermark_scans_everything() {
+        // A fresh process must behave exactly as it did before the watermark
+        // existed, or a restart would skip the sessions it is there to find.
+        assert!(should_scan(None, Some("2026-09-21T13:53:11Z")));
+    }
+
+    #[test]
+    fn a_full_scan_is_never_narrowed() {
+        // The full scan must keep finding exactly what it found before, even
+        // for a session the list reports without a `lastMessageAt`.
+        assert!(should_scan(None, None));
+        assert!(should_scan(None, Some("2026-09-21T13:53:11Z")));
+    }
+
+    #[test]
+    fn an_incremental_scan_skips_a_session_with_no_messages() {
+        // Nothing has been said in it, so nothing can be unanswered.
+        assert!(!should_scan(Some("2026-09-21T13:00:00Z"), None));
+    }
+
+    #[test]
+    fn only_sessions_newer_than_the_watermark_are_scanned() {
+        let mark = Some("2026-09-21T13:53:11Z");
+        assert!(should_scan(mark, Some("2026-09-21T14:08:00Z")));
+        assert!(!should_scan(mark, Some("2026-09-21T13:00:00Z")));
+        // Equal is not newer: the message at the watermark was the one that
+        // set it, and it has already been looked at.
+        assert!(!should_scan(mark, Some("2026-09-21T13:53:11Z")));
+    }
+
+    #[test]
+    fn newest_watermark_survives_an_empty_page() {
+        // `plan_since` carries the old mark forward when the list comes back
+        // empty, so a transient Cloud failure cannot rewind it to None and
+        // make the next reconnect a full scan.
+        let sessions: Vec<ActorSessionRef> = Vec::new();
+        let carried = sessions
+            .iter()
+            .filter_map(|s| s.last_message_at.clone())
+            .chain(Some("2026-09-21T13:53:11Z".to_string()))
+            .max();
+        assert_eq!(carried.as_deref(), Some("2026-09-21T13:53:11Z"));
+    }
+
+    #[test]
+    fn watermark_advances_to_the_newest_row() {
+        let sessions = vec![
+            session("a", Some("2026-09-21T13:00:00Z")),
+            session("b", Some("2026-09-21T14:08:00Z")),
+            session("c", None),
+        ];
+        let newest = sessions
+            .iter()
+            .filter_map(|s| s.last_message_at.clone())
+            .max();
+        assert_eq!(newest.as_deref(), Some("2026-09-21T14:08:00Z"));
     }
 }

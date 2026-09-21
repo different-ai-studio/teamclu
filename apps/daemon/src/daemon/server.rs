@@ -266,6 +266,14 @@ pub struct DaemonServer {
     cold_attach_tx: mpsc::Sender<crate::channels::ColdAttach>,
     /// Receiver half, `take()`n by whichever run loop is active.
     cold_attach_rx: Option<mpsc::Receiver<crate::channels::ColdAttach>>,
+    /// Newest `last_message_at` the catch-up scan has seen, so a reconnect
+    /// only has to look at sessions that moved since.
+    ///
+    /// Memory only, and deliberately so: a fresh process has none and falls
+    /// back to the full scan, which is the behaviour that existed before.
+    /// Persisting it would mean a restart trusts a watermark written by a
+    /// process that may have died mid-scan.
+    offline_restart_watermark: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// Single control command parsed off `amuxd.sock`. Variants correspond to the
@@ -851,6 +859,7 @@ impl DaemonServer {
             chat_decision_rx: Some(chat_decision_rx),
             cold_attach_tx,
             cold_attach_rx: Some(cold_attach_rx),
+            offline_restart_watermark: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -1988,6 +1997,12 @@ impl DaemonServer {
                 // here, it held the loop below for up to a minute.
                 self.spawn_offline_restart_planning(offline_restart_tx.clone());
                 first_connect = false;
+            } else {
+                // A reconnect, not a restart. The broker dropped anything
+                // published while we were away (clean_session=true), and the
+                // in-memory subscription set says nothing about sessions this
+                // process never subscribed to — so ask the backend what moved.
+                self.spawn_offline_restart_reconcile(offline_restart_tx.clone());
             }
 
             // ── 5. Business/control loop ──
@@ -2468,6 +2483,12 @@ impl DaemonServer {
             if first_connect {
                 self.spawn_offline_restart_planning(offline_restart_tx.clone());
                 first_connect = false;
+            } else {
+                // A reconnect, not a restart. The broker dropped anything
+                // published while we were away (clean_session=true), and the
+                // in-memory subscription set says nothing about sessions this
+                // process never subscribed to — so ask the backend what moved.
+                self.spawn_offline_restart_reconcile(offline_restart_tx.clone());
             }
 
             // 5. Proactive reconnect timer (mirrors MQTT path: refresh ~5min
@@ -3953,6 +3974,7 @@ pub(crate) mod tests {
                 chat_decision_rx: Some(chat_decision_rx),
                 cold_attach_tx,
                 cold_attach_rx: Some(cold_attach_rx),
+                offline_restart_watermark: Arc::new(std::sync::Mutex::new(None)),
             },
             _tmp: tmp,
             _mqtt_eventloop: mqtt.eventloop,

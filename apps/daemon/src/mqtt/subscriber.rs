@@ -29,6 +29,13 @@ pub enum IncomingMessage {
         session_id: String,
         payload: Vec<u8>,
     },
+    /// FC's delivery of a message to this actor: `amux/{team}/{actor}/inbox`.
+    /// JSON, not protobuf — FC has no protobuf toolchain, and adding one for a
+    /// single topic buys nothing the daemon's serde cannot already do.
+    TeamcluAgentInbox {
+        actor_id: String,
+        payload: Vec<u8>,
+    },
     /// Team-scoped sync hint: `amux/{team}/sync/{resource}`.
     SyncHint {
         team_id: String,
@@ -69,6 +76,19 @@ pub fn parse_frame(frame: &IncomingFrame) -> Option<IncomingMessage> {
         if parts.len() == 5 && parts[2] == "session" && parts[4] == "live" {
             return Some(IncomingMessage::TeamcluSessionLive {
                 session_id: parts[3].to_string(),
+                payload: payload.clone(),
+            });
+        }
+    }
+
+    // Agent inbox: amux/{team}/{actor}/inbox (4 segments). Checked before
+    // notify only because both are actor-scoped four-segment topics; the
+    // suffixes are disjoint, so the order is cosmetic.
+    if topic.starts_with("amux/") && topic.ends_with("/inbox") {
+        let parts: Vec<&str> = topic.split('/').collect();
+        if parts.len() == 4 {
+            return Some(IncomingMessage::TeamcluAgentInbox {
+                actor_id: parts[2].to_string(),
                 payload: payload.clone(),
             });
         }
@@ -199,6 +219,42 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn parse_agent_inbox_topic() {
+        let payload = br#"{"v":1,"type":"message.created","message":{"id":"m1"}}"#.to_vec();
+        let frame = IncomingFrame {
+            topic: "amux/team-a/agent-1/inbox".to_string(),
+            payload: payload.clone(),
+            retained: false,
+        };
+        match parse_frame(&frame).expect("should parse") {
+            IncomingMessage::TeamcluAgentInbox {
+                actor_id,
+                payload: got,
+            } => {
+                assert_eq!(actor_id, "agent-1");
+                assert_eq!(got, payload);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn agent_inbox_does_not_swallow_notify() {
+        // Both are four-segment actor-scoped topics; the suffix is what tells
+        // them apart, and getting that wrong would silently reroute membership
+        // refreshes into the message router.
+        let frame = IncomingFrame {
+            topic: "amux/team-a/agent-1/notify".to_string(),
+            payload: Vec::new(),
+            retained: false,
+        };
+        assert!(matches!(
+            parse_frame(&frame),
+            Some(IncomingMessage::TeamcluNotify { .. })
+        ));
     }
 
     #[test]
