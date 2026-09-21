@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::AppHandle;
-use tauri_plugin_aptabase::EventTracker;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -44,22 +43,110 @@ pub async fn telemetry_set_consent(_app: AppHandle, state: ConsentState) -> Resu
     Ok(())
 }
 
-/// Forward a product event to Aptabase, but only when the user has explicitly
-/// granted telemetry consent. Lifecycle events (`app_started`/`app_active`/
-/// `app_exited`) are emitted unconditionally elsewhere; these richer product
-/// events are opt-in.
+/// Events that ship regardless of consent, and the exact props each one may
+/// carry. Same class as the `app_started` / `app_active` / `app_exited`
+/// lifecycle trio `lib.rs` already emits unconditionally.
+///
+/// `session_created` is here because gating it made the number unreadable.
+/// It was being compared against the ungated `app_started`, so the ratio
+/// between the two measured the *consent rate*, not anything about the
+/// product. iOS never gated it either (`AnalyticsSink` has no consent check),
+/// so the same event name meant two different populations per platform.
+///
+/// The bar for this list is an aggregate counter whose props identify nobody.
+/// The prop allowlist is not decoration: the consent dialog promises we never
+/// collect conversation content, code, file paths, project names or personal
+/// information, and once an event ships without consent that promise would
+/// otherwise rest on nobody ever adding a path-shaped prop to it. Props that
+/// are not listed here are dropped before the event is sent.
+const CONSENT_EXEMPT_EVENTS: &[(&str, &[&str])] =
+    &[("session_created", &["participantCount", "hasIdea"])];
+
+fn consent_exempt_props(event_name: &str) -> Option<&'static [&'static str]> {
+    CONSENT_EXEMPT_EVENTS
+        .iter()
+        .find(|(name, _)| *name == event_name)
+        .map(|(_, allowed)| *allowed)
+}
+
+/// Keep only the props an exempt event is allowed to carry.
+fn retain_allowed_props(
+    props: Option<serde_json::Value>,
+    allowed: &[&str],
+) -> Option<serde_json::Value> {
+    let Some(serde_json::Value::Object(mut map)) = props else {
+        // A payload that is not a flat object cannot be checked against the
+        // allowlist, so it does not ship from a user who declined.
+        return None;
+    };
+    map.retain(|key, _| allowed.contains(&key.as_str()));
+    Some(serde_json::Value::Object(map))
+}
+
+/// Forward a product event to Aptabase. Consent-gated unless the event is on
+/// [`CONSENT_EXEMPT_EVENTS`]; richer product events stay opt-in.
 #[tauri::command]
 pub async fn telemetry_track(
     app: AppHandle,
     event_name: String,
     props: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    // Before the consent read, so an exempt event still ships when the consent
+    // file is missing or corrupt.
+    if let Some(allowed) = consent_exempt_props(&event_name) {
+        super::track(&app, &event_name, retain_allowed_props(props, allowed));
+        return Ok(());
+    }
     if !matches!(
         telemetry_get_consent(app.clone()).await?,
         ConsentState::Granted
     ) {
         return Ok(());
     }
-    let _ = app.track_event(&event_name, props);
+    super::track(&app, &event_name, props);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn session_created_is_exempt_and_other_events_are_not() {
+        assert!(consent_exempt_props("session_created").is_some());
+        // The events that made the gate worth having stay behind it.
+        assert!(consent_exempt_props("message_sent").is_none());
+        assert!(consent_exempt_props("sign_in_started").is_none());
+    }
+
+    #[test]
+    fn keeps_the_props_the_event_is_allowed_to_carry() {
+        let out = retain_allowed_props(
+            Some(json!({ "participantCount": 3, "hasIdea": true })),
+            consent_exempt_props("session_created").unwrap(),
+        );
+        assert_eq!(out, Some(json!({ "participantCount": 3, "hasIdea": true })));
+    }
+
+    #[test]
+    fn drops_a_prop_added_later_that_is_not_on_the_allowlist() {
+        // The regression this guards: someone adds `workspacePath` to
+        // `session_created` and it starts flowing from users who declined,
+        // against the dialog's "never collected: file paths" promise.
+        let out = retain_allowed_props(
+            Some(json!({ "participantCount": 1, "workspacePath": "/Users/me/secret" })),
+            consent_exempt_props("session_created").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(out["participantCount"], json!(1));
+        assert!(out.get("workspacePath").is_none());
+    }
+
+    #[test]
+    fn drops_a_payload_that_is_not_a_flat_object() {
+        let allowed = consent_exempt_props("session_created").unwrap();
+        assert_eq!(retain_allowed_props(Some(json!("oops")), allowed), None);
+        assert_eq!(retain_allowed_props(None, allowed), None);
+    }
 }

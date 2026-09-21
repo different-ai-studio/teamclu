@@ -9,7 +9,6 @@
 #![allow(clippy::too_many_arguments)]
 
 use tauri::Manager;
-use tauri_plugin_aptabase::EventTracker;
 
 mod branding;
 pub mod commands;
@@ -349,7 +348,8 @@ fn maybe_emit_app_active(app: &tauri::AppHandle) {
         return;
     }
     LAST_ACTIVE_AT.store(now, std::sync::atomic::Ordering::Relaxed);
-    let _ = app.track_event(
+    telemetry::track(
+        app,
         "app_active",
         Some(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
@@ -971,7 +971,7 @@ pub fn run() {
             }
 
             // Track app_started (always, regardless of consent)
-            let _ = app.handle().track_event("app_started", Some(serde_json::json!({
+            telemetry::track(app.handle(), "app_started", Some(serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "platform": std::env::consts::OS,
             })));
@@ -1030,7 +1030,7 @@ pub fn run() {
                     // The aptabase plugin's own Exit handler will attempt to flush,
                     // but we don't want to block exit for up to 10s on a network
                     // request (the aptabase HTTP timeout) if the server is slow.
-                    let _ = app.track_event("app_exited", None);
+                    telemetry::track(app, "app_exited", None);
                 }
                 tauri::RunEvent::ExitRequested { .. } => {
                     if let Some(registry) = app.try_state::<std::sync::Arc<crate::terminal::Registry>>() {
