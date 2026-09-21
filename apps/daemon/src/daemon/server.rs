@@ -1216,6 +1216,12 @@ impl DaemonServer {
                     self.backend.clone(),
                 ),
             ));
+            let session_attach = Some(Arc::new(
+                crate::runtime::session_attach::SessionAttachService::new(
+                    self.agents.clone(),
+                    self.backend.clone(),
+                ),
+            ));
             match crate::http::spawn_with_refresh_watch_registry(
                 http_cfg,
                 meta,
@@ -1237,6 +1243,7 @@ impl DaemonServer {
                 self.refresh_watch_registry.clone(),
                 Some(self.runtime_context.clone()),
                 session_prompt,
+                session_attach,
                 Some(self.managed_llm.clone()),
             )
             .await
