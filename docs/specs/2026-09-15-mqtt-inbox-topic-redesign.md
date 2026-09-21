@@ -567,6 +567,7 @@ iOS 消费端（#1499、#1501）。`messages.metadata.trace` 存
 | idea 事件是否走 inbox | **走**。否则 daemon 无法在 Phase 4 退订 live |
 | FC 投递失败是否加重试队列 | **不加**。由 daemon 连接时对账兜住 |
 | daemon 是否改用 MQTT 持久会话让 broker 代存 | **不改**。有状态的 broker 会变成第二个真相来源，运维、扩容、队列溢出都是静默风险。`clean_session=true` 维持不变 |
+| daemon 是否照搬桌面的 session/live「兴趣模型」 | **不搬**。桌面需要它是因为 inbox 只给红点 ping、内容还得从 live 取——发现与内容是两条路。daemon 的 inbox 直接投完整消息行，两者合一，live 上再没有它要消费的东西（流式增量今天就在 `ingest_session_live` 第一行被丢弃）。而且以 inbox ping 为触发源的模型兜不住 inbox 自身的失败：inbox 坏了就收不到 ping，也就永远不会去订 live。兜底由连接时对账承担，它不依赖 inbox，直接问库 |
 | 是否拆 `events` / `stream` 两个 topic | **本次不拆**，继续用 `/live`。拆分是 QoS 优化而非正确性修复，拆了会让客户端改动翻倍 |
 | Phase 3 是否需要多版本迁移梯子 | **不需要**。产品尚未正式发布，可直接切到目标状态；但 self-host 每晚 00:00 才部署、iOS 走 TestFlight，仍有数小时到数天的错位窗口，客户端按 `message_id` 去重是向前兼容的，应尽早发 |
 

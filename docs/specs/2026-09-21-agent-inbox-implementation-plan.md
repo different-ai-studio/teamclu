@@ -94,7 +94,7 @@ daemon 对 `session/<sid>/live` 的**订阅**降为 0，**发布**不变。客�
 | **3** | 客户端 | `message.created` 改按 `message_id` 去重；修 B1（iOS inbox topic） | — 可并行 |
 | **4** | FC | `fanoutMessage` 增发 `session/<sid>/live` 上的 `message.created` | 3 |
 | **5** | 客户端 | 停止自己 publish；**收口重写** | 4 |
-| **6** | daemon | 摘掉 live 订阅；idea 事件改走 inbox | 5 |
+| **6** | daemon | 摘掉 live 订阅**的调用点**（保留 `ensure_session_live_subscription` / `unsubscribe_session_live` 函数本身）；idea 事件改走 inbox | 5 |
 
 **PR 1 + 2 落地即修复第 1 节的故障**，且零客户端改动。PR 3 向前兼容，可立即发布。
 
@@ -156,6 +156,7 @@ daemon 对 `session/<sid>/live` 的**订阅**降为 0，**发布**不变。客�
 |---|---|
 | 客户端 live publish 与 FC 写入是两条独立的路，publish 失败则其他在线客户端要刷新才看到（B4） | PR-4 + PR-5 |
 | 中途进入会话看不到本轮前半段（`request_recent_session_events` 是空实现，`session_manager.rs:1591`） | 独立缺口，需 `FetchTurnEvents`，不在本次范围 |
+| agent 无法实时观看另一个 agent 的 turn 过程 | 现状即如此（`ingest_session_live` 丢弃非 `message.created`），本次不引入也不恶化。将来「任务拆解 / 子任务委派」需要时，按 turn 订阅、turn 结束退订即可——函数保留着，接触发条件就行 |
 | EMQX ACL 与实际流量不符（B6） | Phase 4 |
 | OSS 轨迹无保留期策略 | 独立跟进 |
 
