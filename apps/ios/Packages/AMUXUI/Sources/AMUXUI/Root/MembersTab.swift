@@ -4,9 +4,9 @@ import AMUXCore
 import AMUXSharedUI
 
 enum MembersTabPresentation {
-    /// `NavigationPath` rather than `[String]`: the stack pushes two kinds of
-    /// destination now — an actor id, and an `ActorResourceRoute` for that
-    /// actor's skills / MCP / env list — and a typed array can only hold one.
+    /// Only actor ids reach this path. An actor's skills / MCP / env list is
+    /// pushed by `ActorDetailView`'s own `navigationDestination(item:)`, so it
+    /// never lands here — by then the actor detail already emptied the tab bar.
     static func isTabBarVisible(navigationPath: NavigationPath) -> Bool {
         navigationPath.isEmpty
     }
@@ -21,6 +21,7 @@ public struct MembersTab: View {
     let currentActorID: String?
     let store: ActorStore
     let connectedAgentsStore: ConnectedAgentsStore?
+    let agentPresenceStore: AgentPresenceStore?
     let workspacesRepository: (any WorkspaceRepository)?
     let agentAccessRepository: (any AgentAccessRepository)?
     let teamResourceRepository: (any TeamResourceRepository)?
@@ -43,6 +44,7 @@ public struct MembersTab: View {
                 currentActorID: String? = nil,
                 store: ActorStore,
                 connectedAgentsStore: ConnectedAgentsStore? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
                 agentAccessRepository: (any AgentAccessRepository)? = nil,
                 teamResourceRepository: (any TeamResourceRepository)? = nil,
@@ -55,6 +57,7 @@ public struct MembersTab: View {
         self.currentActorID = currentActorID
         self.store = store
         self.connectedAgentsStore = connectedAgentsStore
+        self.agentPresenceStore = agentPresenceStore
         self.workspacesRepository = workspacesRepository
         self.agentAccessRepository = agentAccessRepository
         self.teamResourceRepository = teamResourceRepository
@@ -71,6 +74,7 @@ public struct MembersTab: View {
                 teamcluService: teamcluService,
                 currentActorID: currentActorID,
                 connectedAgentsStore: connectedAgentsStore,
+                agentPresenceStore: agentPresenceStore,
                 onAddYourAgent: { showInvite = true }
             )
                 .navigationTitle("Actors")
@@ -123,7 +127,9 @@ public struct MembersTab: View {
                             connectedAgentsStore: connectedAgentsStore,
                             workspacesRepository: workspacesRepository,
                             agentAccessRepository: agentAccessRepository,
-                            teamResourceRepository: teamResourceRepository
+                            teamResourceRepository: teamResourceRepository,
+                            currentActorID: currentActorID,
+                            agentPresenceStore: agentPresenceStore
                         )
                     } else {
                         ContentUnavailableView(

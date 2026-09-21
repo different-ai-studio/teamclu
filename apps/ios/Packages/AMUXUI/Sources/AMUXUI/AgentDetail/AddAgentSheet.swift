@@ -21,6 +21,7 @@ public struct AddAgentSheet: View {
     let candidates: [ConnectedAgent]
     let teamID: String
     let workspacesRepository: (any WorkspaceRepository)?
+    let agentPresenceStore: AgentPresenceStore?
     let onConfirm: (_ actorID: String,
                     _ workspaceID: String,
                     _ workspacePath: String,
@@ -32,6 +33,7 @@ public struct AddAgentSheet: View {
     public init(candidates: [ConnectedAgent],
                 teamID: String,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil,
                 onConfirm: @escaping (_ actorID: String,
                                       _ workspaceID: String,
                                       _ workspacePath: String,
@@ -39,7 +41,12 @@ public struct AddAgentSheet: View {
         self.candidates = candidates
         self.teamID = teamID
         self.workspacesRepository = workspacesRepository
+        self.agentPresenceStore = agentPresenceStore
         self.onConfirm = onConfirm
+    }
+
+    private func isOnline(_ agent: ConnectedAgent) -> Bool {
+        agent.isOnline(devicePresence: agentPresenceStore?.presence(forAgent: agent.id) ?? .unknown)
     }
 
     private var workspaces: [WorkspaceRecord] { workspaceStore?.workspaces ?? [] }
@@ -61,7 +68,7 @@ public struct AddAgentSheet: View {
                         } label: {
                             HStack(spacing: 8) {
                                 Circle()
-                                    .fill(agent.isOnline ? .green : .gray.opacity(0.4))
+                                    .fill(isOnline(agent) ? .green : .gray.opacity(0.4))
                                     .frame(width: 8, height: 8)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(agent.displayName).font(.body)

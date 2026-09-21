@@ -88,6 +88,11 @@ public struct PermissionBannerView: View {
                 }
             }
         }
+        // One width whatever the request says. Without this the card is sized
+        // by its contents, so a short description or the resolved state (a
+        // check and one word, with none of the full-width buttons) shrinks the
+        // card and the feed gains a ragged edge.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(

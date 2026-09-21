@@ -165,6 +165,9 @@ public struct HistoryInput: Sendable {
     /// The row carries `metadata.trace`, which the daemon attaches only to a
     /// turn's final reply: the turn `turnID` has ended.
     public let closesTurn: Bool
+    /// `messages.attachments` — files this message carries, structured.
+    /// Empty for rows written before the column was plumbed through.
+    public let attachments: [MessageAttachment]
 
     public init(supabaseMessageID: String,
                 kind: HistoryKind,
@@ -174,7 +177,8 @@ public struct HistoryInput: Sendable {
                 model: String? = nil,
                 turnID: String? = nil,
                 sequence: Int64 = 0,
-                closesTurn: Bool = false) {
+                closesTurn: Bool = false,
+                attachments: [MessageAttachment] = []) {
         self.supabaseMessageID = supabaseMessageID
         self.kind = kind
         self.senderActorID = senderActorID
@@ -184,6 +188,7 @@ public struct HistoryInput: Sendable {
         self.turnID = turnID
         self.sequence = sequence
         self.closesTurn = closesTurn
+        self.attachments = attachments
     }
 }
 

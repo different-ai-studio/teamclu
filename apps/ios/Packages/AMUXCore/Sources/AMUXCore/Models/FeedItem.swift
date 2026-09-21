@@ -209,27 +209,125 @@ public func buildFeedItems(_ events: [AgentEvent],
         ))
     }
 
-    // Permission anchoring: a permission asked mid-turn must read ABOVE the
-    // turn's final reply, but the reply row's timestamp is the turn's START
-    // (Supabase `created_at`), so time-sorted events can land the permission
-    // row after the bubble. Move any permission whose turnID matches an
-    // earlier completed turn to sit just before that bubble.
-    var i = 0
-    while i < result.count {
-        guard case let .permission(event) = result[i],
-              let turnID = event.turnID, !turnID.isEmpty
-        else { i += 1; continue }
-        let turnIdx = result.firstIndex(where: { item in
-            if case let .completedTurn(id, _, final, _) = item {
+    // The card of the turn a permission request came out of: its completed
+    // bubble, or the agent's still-running stream card.
+    func turnAnchor(for event: AgentEvent, in items: [FeedItem]) -> Int? {
+        let turnID = event.turnID ?? ""
+        let owner = ownerFor(event)
+        return items.firstIndex { item in
+            switch item {
+            case let .completedTurn(id, agentID, final, _):
+                guard !turnID.isEmpty else { return agentID == owner }
                 return final.turnID == turnID || id == turnID
+            case let .activeStream(_, agentID, _):
+                return agentID == owner
+            default:
+                return false
             }
-            return false
-        })
-        if let turnIdx, turnIdx < i {
-            let item = result.remove(at: i)
-            result.insert(item, at: turnIdx)
         }
-        i += 1
+    }
+
+    // An answered permission leaves the chat. The decision is already made,
+    // so the card is only noise sitting between the prompt and the reply —
+    // it folds into its turn's runtime events, where the turn detail view
+    // shows it alongside the tool it was gating. A request whose turn isn't
+    // in this feed keeps its row rather than disappearing with nowhere left
+    // to read it.
+    //
+    // Lifted out and put back rather than shuffled in place: an anchor can
+    // sit either side of the row (active-stream cards are appended after the
+    // whole walk), and in-place index juggling around that is where the
+    // non-terminating version of this lived.
+    var answered: [(event: AgentEvent, fallbackIndex: Int)] = []
+    var unanswered: [FeedItem] = []
+    unanswered.reserveCapacity(result.count)
+    for item in result {
+        if case let .permission(event) = item, event.isComplete {
+            answered.append((event, unanswered.count))
+        } else {
+            unanswered.append(item)
+        }
+    }
+
+    if !answered.isEmpty {
+        result = unanswered
+        for entry in answered {
+            guard let anchor = turnAnchor(for: entry.event, in: result) else {
+                result.insert(.permission(entry.event), at: min(entry.fallbackIndex, result.count))
+                continue
+            }
+            switch result[anchor] {
+            case let .completedTurn(id, agentID, final, runtime):
+                result[anchor] = .completedTurn(
+                    id: id, agentID: agentID, finalEvent: final, runtimeEvents: runtime + [entry.event]
+                )
+            case let .activeStream(id, agentID, runtime):
+                result[anchor] = .activeStream(
+                    id: id, agentID: agentID, runtimeEvents: runtime + [entry.event]
+                )
+            default:
+                result.insert(.permission(entry.event), at: min(entry.fallbackIndex, result.count))
+            }
+        }
+    }
+
+    // Placement of the ones still waiting on the user: a request comes out of
+    // a turn, so it reads UNDER that turn's card — the agent thinks, then
+    // asks. Neither the walk above nor a time sort gets there on its own. A
+    // completed reply's timestamp is the turn's START (Supabase
+    // `created_at`), and active-stream cards are appended after the whole
+    // walk, so either can sort ahead of the request that produced it.
+    //
+    // Lift them all out first, then put them back. Shuffling them in place
+    // does not terminate: two requests sharing one anchor each skip past the
+    // other looking for the end of the run under that card, and trade places
+    // forever.
+    var pendingRows: [(row: FeedItem, event: AgentEvent, fallbackIndex: Int)] = []
+    var placed: [FeedItem] = []
+    placed.reserveCapacity(result.count)
+    for item in result {
+        if case let .permission(event) = item {
+            // Where it sits once the other permissions are gone — the spot it
+            // returns to if its turn isn't in this feed.
+            pendingRows.append((item, event, placed.count))
+        } else {
+            placed.append(item)
+        }
+    }
+
+    if !pendingRows.isEmpty {
+        result = placed
+        for pending in pendingRows {
+            guard let anchor = turnAnchor(for: pending.event, in: result) else {
+                result.insert(pending.row, at: min(pending.fallbackIndex, result.count))
+                continue
+            }
+            // A waiting request is answerable from either surface, so it goes
+            // into the turn's runtime events as well as keeping its feed row.
+            // Runtime events are detail-only — the feed renders a turn from
+            // its card, never from this list — so this doesn't double it up
+            // in the chat.
+            switch result[anchor] {
+            case let .completedTurn(id, agentID, final, runtime):
+                result[anchor] = .completedTurn(
+                    id: id, agentID: agentID, finalEvent: final,
+                    runtimeEvents: runtime + [pending.event]
+                )
+            case let .activeStream(id, agentID, runtime):
+                result[anchor] = .activeStream(
+                    id: id, agentID: agentID, runtimeEvents: runtime + [pending.event]
+                )
+            default:
+                break
+            }
+            // Several requests out of one turn keep the order they were asked
+            // in: each lands after the ones already placed under that card.
+            // Folding above replaces an element, it doesn't shift indices, so
+            // the anchor is still where it was.
+            var target = anchor + 1
+            while target < result.count, case .permission = result[target] { target += 1 }
+            result.insert(pending.row, at: target)
+        }
     }
 
     return result

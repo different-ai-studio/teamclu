@@ -101,6 +101,16 @@
         }
       }
     },
+    "ADMIN": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理员"
+          }
+        }
+      }
+    },
     "AGENT": {},
     "AI digital employees": {
       "localizations": {
@@ -1394,6 +1404,16 @@
         }
       }
     },
+    "Failed to set the default workspace.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置默认工作目录失败。"
+          }
+        }
+      }
+    },
     "Failed to update default agent.": {
       "localizations": {
         "zh-Hans": {
@@ -1410,6 +1430,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "文件"
+          }
+        }
+      }
+    },
+    "Finance": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "财务"
           }
         }
       }
@@ -1811,6 +1841,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在加载工作目录…"
+          }
+        }
+      }
+    },
+    "Makes this the default workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设为默认工作目录"
           }
         }
       }
@@ -2342,6 +2382,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "尚未登录任何团队。"
+          }
+        }
+      }
+    },
+    "Not the default workspace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不是默认工作目录"
           }
         }
       }
@@ -3732,6 +3782,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "切换当前模型"
+          }
+        }
+      }
+    },
+    "The starred directory is this agent's default — pre-selected when it joins a new session. Tap another to move the star.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "带星标的目录是该 Agent 的默认工作目录——它加入新会话时会预先选中。点按其他目录即可移动星标。"
           }
         }
       }

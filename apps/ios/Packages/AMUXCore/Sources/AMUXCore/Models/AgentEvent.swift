@@ -35,14 +35,24 @@ public final class AgentEvent {
     /// (assistant replies, mirrored messages from other collaborators)
     /// and for legacy rows inserted before slice A.
     public var outboxMessageID: String?
-    /// Daemon-assigned ACP turn correlation. Same value across multiple
-    /// agent_reply rows the daemon flushed from one logical turn (ToolUse
-    /// mid-stream causes a flush + a continuation flush at Active→Idle).
-    /// `buildFeedItems` uses this to bundle them under a single
-    /// `.completedTurn`, and `StreamingDetailView`'s `TurnRoute` keys on
-    /// it so cross-device navigation lands on the same turn. `nil` for
-    /// pre-turn_id rows and for kinds that don't have a turn
-    /// (user prompts, system notices, permission requests).
+    /// Daemon-assigned ACP turn correlation, minted per turn by the daemon's
+    /// `turn_aggregator` and stamped on every envelope of that turn. Same
+    /// value across multiple agent_reply rows the daemon flushed from one
+    /// logical turn (ToolUse mid-stream causes a flush + a continuation
+    /// flush at Active→Idle).
+    ///
+    /// `buildFeedItems` uses this to bundle those rows under a single
+    /// `.completedTurn`, to place a pending permission under the card of the
+    /// turn that asked it, and to fold an answered one into that turn's
+    /// runtime events. `StreamingDetailView`'s `TurnRoute` keys on it so
+    /// cross-device navigation lands on the same turn, and the cloud trace
+    /// is fetched by it (`GET /v1/sessions/:sid/turns/:turnId/trace`) —
+    /// message ids can't address a turn's process, since thinking, tool and
+    /// permission rows are never written as `messages` rows at all.
+    ///
+    /// `nil` for pre-turn_id rows and for user prompts — a turn is the
+    /// agent's, not the user's. Permission requests DO carry one: the
+    /// reducer stamps them from the envelope like any other ACP event.
     public var turnID: String?
     /// Mirror of `TimelineEntry.resultSummary` — populated on `tool_use`
     /// rows when the matching `ToolResult` envelope lands. nil while the
@@ -55,6 +65,16 @@ public final class AgentEvent {
     public var diffPath: String?
     public var diffOldText: String?
     public var diffNewText: String?
+    /// This message's files as JSON — the `metadata.attachments` list, not
+    /// the unused `messages.attachments` column (see `MessageAttachment`).
+    ///
+    /// Stored as a string rather than `[MessageAttachment]`: SwiftData can
+    /// persist an array of Codable structs, but as an opaque blob whose
+    /// shape it can't migrate, and a plain string keeps the encoding ours
+    /// and the migration lightweight. Read it through `attachments` rather
+    /// than touching this directly. nil on every row written before this
+    /// column existed.
+    public var attachmentsJSON: String?
 
     public init(agentId: String, sequence: Int, eventType: String) {
         self.id = UUID().uuidString
@@ -67,6 +87,15 @@ public final class AgentEvent {
 }
 
 public extension AgentEvent {
+    /// Files this message carries, decoded from `attachmentsJSON`.
+    /// Empty for anything written before the column, and for every event
+    /// type other than a message (thinking, tools and permissions have no
+    /// attachments of their own).
+    var attachments: [MessageAttachment] {
+        get { [MessageAttachment].fromJSONString(attachmentsJSON) }
+        set { attachmentsJSON = newValue.isEmpty ? nil : newValue.jsonString }
+    }
+
     /// Returns the human display name for `model` resolved against the
     /// available models, or nil if no model is stamped. Falls back to the raw
     /// model id when no display name is registered (e.g. proto-only model id

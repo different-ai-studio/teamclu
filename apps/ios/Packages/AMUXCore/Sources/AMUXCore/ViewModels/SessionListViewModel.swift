@@ -32,12 +32,22 @@ public final class SessionListViewModel {
 
     public init() {}
 
+    /// Written on every retained actor-state publish so presence dots have a
+    /// broker-backed answer instead of heartbeat arithmetic. Held here because
+    /// this view model already owns the only subscription to that topic.
+    private var agentPresenceStore: AgentPresenceStore?
+
     public func start(mqtt: MQTTService,
                       hub: MQTTMessageHub,
                       teamID: String = "",
                       connectedAgentsStore: ConnectedAgentsStore?,
                       modelContext: ModelContext,
-                      teamcluService: TeamcluService? = nil) {
+                      teamcluService: TeamcluService? = nil,
+                      agentPresenceStore: AgentPresenceStore? = nil) {
+        // Never clobber a live store with nil: start() is called from both
+        // RootTabView and SessionsTab, and whichever ran last would otherwise
+        // decide whether presence is recorded at all.
+        if let agentPresenceStore { self.agentPresenceStore = agentPresenceStore }
         // Create a dedicated context from the same container for async work
         let container = modelContext.container
         let ctx = ModelContext(container)
@@ -119,13 +129,25 @@ public final class SessionListViewModel {
 
                 for await msg in stream {
                     if let actorID = Self.parseActorStateTopic(msg.topic, teamID: teamID) {
-                        // An empty payload is the LWT / offline marker; a
-                        // presence-only publish carries no attachments either.
-                        // Both mean the same thing here: nothing live to show.
-                        guard !msg.payload.isEmpty,
-                              let presence = try? ProtoMQTTCoder.decode(
-                                  Amux_ActorPresence.self, from: msg.payload
-                              ) else { continue }
+                        guard let presence = try? ProtoMQTTCoder.decode(
+                            Amux_ActorPresence.self, from: msg.payload
+                        ) else { continue }
+
+                        // Record presence from EVERY publish, the offline ones
+                        // included. The daemon's Last Will is an ordinary
+                        // encoded `ActorPresence { online: false }`, published
+                        // retained by the broker the instant the connection
+                        // drops (apps/daemon/src/mqtt/client.rs); a cleared
+                        // retain is an empty payload, which decodes to the same
+                        // defaults. This used to be dropped on the floor, which
+                        // is why a dead agent kept a green dot until its
+                        // heartbeat aged out.
+                        self.agentPresenceStore?.record(actorID: actorID, online: presence.online)
+
+                        // An empty payload carries no attachments either, so
+                        // there is nothing to project — and projecting from it
+                        // would prune live rows on a bare retain clear.
+                        guard !msg.payload.isEmpty else { continue }
                         self.syncActorPresence(presence, actorID: actorID, modelContext: ctx)
                         self.refreshSessions(modelContext: ctx)
                     }

@@ -13,6 +13,11 @@ public struct ActorRecord: Codable, Equatable, Hashable, Identifiable, Sendable 
     public let updatedAt: Date
 
     public let memberStatus: String?
+    /// Org role assignments (`roles_users`). Source of truth for role display —
+    /// see [ActorRoleRef].
+    public let roles: [ActorRoleRef]
+    /// Transitional highest-privilege derivation. Read only as a fallback when
+    /// `roles` is empty.
     public let teamRole: String?
 
     public let agentTypes: [String]
@@ -30,7 +35,7 @@ public struct ActorRecord: Codable, Equatable, Hashable, Identifiable, Sendable 
         userID: String?, invitedByActorID: String?,
         displayName: String, avatarURL: String? = nil, lastActiveAt: Date?,
         createdAt: Date, updatedAt: Date,
-        memberStatus: String?, teamRole: String?,
+        memberStatus: String?, roles: [ActorRoleRef] = [], teamRole: String?,
         agentTypes: [String] = [], agentKind: String? = nil, defaultAgentType: String? = nil,
         agentStatus: String?, defaultWorkspaceID: String? = nil,
         email: String? = nil, phone: String? = nil
@@ -39,7 +44,7 @@ public struct ActorRecord: Codable, Equatable, Hashable, Identifiable, Sendable 
         self.userID = userID; self.invitedByActorID = invitedByActorID
         self.displayName = displayName; self.avatarURL = avatarURL; self.lastActiveAt = lastActiveAt
         self.createdAt = createdAt; self.updatedAt = updatedAt
-        self.memberStatus = memberStatus; self.teamRole = teamRole
+        self.memberStatus = memberStatus; self.roles = roles; self.teamRole = teamRole
         self.agentTypes = agentTypes; self.agentKind = agentKind; self.defaultAgentType = defaultAgentType
         self.agentStatus = agentStatus; self.defaultWorkspaceID = defaultWorkspaceID
         self.email = email; self.phone = phone
@@ -47,19 +52,22 @@ public struct ActorRecord: Codable, Equatable, Hashable, Identifiable, Sendable 
 
     public var isMember: Bool { actorType == "member" }
     public var isAgent: Bool  { actorType == "agent" }
-    public var isOwner: Bool  { teamRole == "owner" }
+    public var isOwner: Bool  { ActorRoleResolution.hasRole("owner", roles: roles, teamRole: teamRole) }
+    public var isAdmin: Bool  { ActorRoleResolution.hasRole("admin", roles: roles, teamRole: teamRole) }
 
-    public var isOnline: Bool {
-        guard let last = lastActiveAt else { return false }
-        return Date().timeIntervalSince(last) < 90
+    /// Presence without knowing who is signed in — see
+    /// `isOnline(currentActorID:)` for the caller-aware form.
+    public var isOnline: Bool { isOnline(currentActorID: nil) }
+
+    public func isOnline(currentActorID: String?,
+                         devicePresence: AgentDevicePresence = .unknown) -> Bool {
+        ActorPresence.isOnline(actorType: actorType,
+                               lastActiveAt: lastActiveAt,
+                               isCurrentUser: currentActorID != nil && currentActorID == id,
+                               devicePresence: devicePresence)
     }
 
     public var roleLabel: String {
-        switch teamRole {
-        case "owner":  return String(localized: "Owner")
-        case "admin":  return String(localized: "Admin")
-        case "member": return String(localized: "Member")
-        default:       return "—"
-        }
+        ActorRoleResolution.roleLabel(isMember: isMember, roles: roles, teamRole: teamRole)
     }
 }

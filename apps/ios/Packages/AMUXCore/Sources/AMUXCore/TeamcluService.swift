@@ -572,6 +572,10 @@ public final class TeamcluService {
         modelId: String? = nil,
         mentionActorIDs: [String] = [],
         attachmentURLs: [URL] = [],
+        /// Structured records for the same files `attachmentURLs` names.
+        /// These are what lands on `messages.attachments`; the bare URLs
+        /// stay on the proto for the daemon's prompt builder.
+        attachments: [MessageAttachment] = [],
         persistFirst: Bool = false,
         messageID: String? = nil
     ) async throws -> String {
@@ -665,6 +669,7 @@ public final class TeamcluService {
                 senderActorID: actorId,
                 content: content,
                 mentionActorIDs: mentionActorIDs,
+                attachments: attachments,
                 sidPrefix: sidPrefix,
                 msgIdPrefix: msgIdPrefix
             )
@@ -691,6 +696,7 @@ public final class TeamcluService {
                     senderActorID: actorId,
                     content: content,
                     mentionActorIDs: mentionActorIDs,
+                    attachments: attachments,
                     sidPrefix: sidPrefix,
                     msgIdPrefix: msgIdPrefix
                 )
@@ -710,6 +716,7 @@ public final class TeamcluService {
         senderActorID: String,
         content: String,
         mentionActorIDs: [String] = [],
+        attachments: [MessageAttachment] = [],
         sidPrefix: String,
         msgIdPrefix: String
     ) async throws {
@@ -730,7 +737,8 @@ public final class TeamcluService {
                 senderActorID: senderActorID,
                 kind: "text",
                 content: content,
-                mentionActorIDs: mentionActorIDs
+                mentionActorIDs: mentionActorIDs,
+                attachments: attachments
             ))
             teamcluLogger.notice("sendMessage[\(sidPrefix, privacy: .public)] msgId=\(msgIdPrefix, privacy: .public) supabase persist OK")
         } catch {
@@ -750,6 +758,7 @@ public final class TeamcluService {
         senderActorID: String,
         content: String,
         mentionActorIDs: [String] = [],
+        attachments: [MessageAttachment] = [],
         sidPrefix: String,
         msgIdPrefix: String
     ) async {
@@ -769,7 +778,8 @@ public final class TeamcluService {
                 senderActorID: senderActorID,
                 kind: "text",
                 content: content,
-                mentionActorIDs: mentionActorIDs
+                mentionActorIDs: mentionActorIDs,
+                attachments: attachments
             ))
             teamcluLogger.notice("sendMessage[\(sidPrefix, privacy: .public)] msgId=\(msgIdPrefix, privacy: .public) supabase persist OK")
         } catch {

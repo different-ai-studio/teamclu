@@ -75,6 +75,17 @@ public struct StreamingDetailView: View {
     @State private var resolvedSnapshot: (events: [AgentEvent], isActive: Bool, agentName: String) = ([], false, "")
     /// Last feedItems fingerprint we used to build `resolvedSnapshot`.
     @State private var lastFeedFingerprint = ""
+    @State private var fullscreenAttachment: MessageAttachment?
+
+    /// Every file the turn produced, in the order its events did, with the
+    /// same attachment never listed twice — a multi-segment turn can repeat
+    /// one across its reply rows.
+    private var turnAttachments: [MessageAttachment] {
+        var seen = Set<String>()
+        return resolvedSnapshot.events
+            .flatMap(\.attachments)
+            .filter { seen.insert($0.identity).inserted }
+    }
 
     public init(route: TurnRoute, viewModel: SessionDetailViewModel) {
         self.route = route
@@ -120,16 +131,28 @@ public struct StreamingDetailView: View {
     /// chronologically so text→tool→text turns display in the correct order.
     private func computeResolved() -> (events: [AgentEvent], isActive: Bool, agentName: String) {
         if let pinned = route.frozenTurnID {
-            // The trace is the whole turn, already in the order the daemon
-            // recorded it; the local rows are at best a subset of it.
-            if let trace = viewModel.loadedTurnTraces[pinned], !trace.events.isEmpty {
-                return (trace.events, false, agentNameFor(route.agentID))
-            }
+            // Local rows for this exact turn, gathered first: they are both
+            // the fallback when the cloud has no trace and the tail spliced
+            // onto one that was trimmed.
+            var localEvents: [AgentEvent] = []
+            var localAgentID = route.agentID
             for item in viewModel.feedItems {
                 if case .completedTurn(let id, let agentID, let final, let runtime) = item,
                    id == pinned {
-                    return (chronologicallySorted(runtime + [final]), false, agentNameFor(agentID))
+                    localEvents = runtime + [final]
+                    localAgentID = agentID
+                    break
                 }
+            }
+            if let trace = viewModel.loadedTurnTraces[pinned], !trace.events.isEmpty {
+                return (
+                    trace.merged(withLocal: localEvents),
+                    false,
+                    agentNameFor(localAgentID)
+                )
+            }
+            if !localEvents.isEmpty {
+                return (chronologicallySorted(localEvents), false, agentNameFor(localAgentID))
             }
         }
         for item in viewModel.feedItems {
@@ -232,6 +255,10 @@ public struct StreamingDetailView: View {
                             // this view's left margin clean and avoids
                             // repeating identity on every assistant row.
                             showsAssistantHeader: false,
+                            // Collected below instead, so a turn's files sit
+                            // together at the end rather than scattered
+                            // through its reply segments.
+                            showsAttachments: false,
                             actorMap: cachedActorMap
                         )
                         .id(event.id)
@@ -245,6 +272,26 @@ public struct StreamingDetailView: View {
                     if snapshot.isActive || stillStreaming {
                         TypingIndicatorView()
                             .id("detail-typing")
+                    }
+
+                    // Everything the turn produced, at the end of the
+                    // process — the natural place to look for what came
+                    // out of it once you've read how it got there.
+                    if !turnAttachments.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(verbatim: "FILES")
+                                .font(.system(size: 9, design: .monospaced))
+                                .tracking(2)
+                                .foregroundStyle(Color.amux.slate)
+                            MessageAttachmentsView(
+                                attachments: turnAttachments,
+                                onTapImage: { fullscreenAttachment = $0 }
+                            )
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .id("detail-attachments")
                     }
 
                     if let note = processNote(eventCount: snapshot.events.count) {
@@ -287,6 +334,9 @@ public struct StreamingDetailView: View {
             guard newFP != lastFeedFingerprint else { return }
             lastFeedFingerprint = newFP
             resolvedSnapshot = computeResolved()
+        }
+        .fullScreenCover(item: $fullscreenAttachment) { attachment in
+            FullScreenAttachmentViewer(attachment: attachment)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let text = planUpdateText {

@@ -16,6 +16,8 @@ public struct SessionsTab: View {
     let refreshSessionsFromBackend: () async -> Void
     let connectedAgentsStore: ConnectedAgentsStore?
     let actorStore: ActorStore?
+    /// Broker-backed agent presence for the dots drawn further down.
+    let agentPresenceStore: AgentPresenceStore?
     let shortcutsStore: ShortcutsStore?
     let messagesRepository: (any MessagesRepository)?
     let workspacesRepository: (any WorkspaceRepository)?
@@ -55,6 +57,7 @@ public struct SessionsTab: View {
                 navigationPath: Binding<[String]>,
                 connectedAgentsStore: ConnectedAgentsStore? = nil,
                 actorStore: ActorStore? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil,
                 shortcutsStore: ShortcutsStore? = nil,
                 messagesRepository: (any MessagesRepository)? = nil,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
@@ -77,6 +80,7 @@ public struct SessionsTab: View {
         self._navigationPath = navigationPath
         self.connectedAgentsStore = connectedAgentsStore
         self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
         self.shortcutsStore = shortcutsStore
         self.messagesRepository = messagesRepository
         self.workspacesRepository = workspacesRepository
@@ -151,11 +155,14 @@ public struct SessionsTab: View {
                         workspacesRepository: workspacesRepository,
                         sessionsRepository: sessionsRepository,
                         preferencesAPI: preferencesAPI,
-                        notificationPrefsStore: notificationPrefsStore
+                        notificationPrefsStore: notificationPrefsStore,
+                        actorStore: actorStore,
+                        agentPresenceStore: agentPresenceStore
                     )
                 }
                 .sheet(isPresented: $showSettings) {
                     SettingsView(connectedAgentsStore: connectedAgentsStore,
+                                 agentPresenceStore: agentPresenceStore,
                                  activeTeam: activeTeam,
                                  onSignOut: onSignOut,
                                  notificationPrefsStore: notificationPrefsStore,
@@ -170,6 +177,8 @@ public struct SessionsTab: View {
                                    currentActorID: currentActorID,
                                    isAgentAvailable: pairing.isPaired,
                                    connectedAgentsStore: connectedAgentsStore,
+                                   actorStore: actorStore,
+                                   agentPresenceStore: agentPresenceStore,
                                    workspacesRepository: workspacesRepository,
                                    sessionsRepository: sessionsRepository,
                                    viewModel: viewModel) { agentId in
@@ -194,7 +203,8 @@ public struct SessionsTab: View {
                         teamID: activeTeam?.id ?? "",
                         connectedAgentsStore: connectedAgentsStore,
                         modelContext: modelContext,
-                        teamcluService: teamcluService
+                        teamcluService: teamcluService,
+                        agentPresenceStore: agentPresenceStore
                     )
                 }
                 .onChange(of: teamcluService?.sessions.count) {
@@ -258,6 +268,9 @@ private struct SessionDestinationView: View {
     let sessionsRepository: (any SessionRepository)?
     let preferencesAPI: (any PushPreferencesAPI)?
     let notificationPrefsStore: NotificationPrefsStore?
+    /// Reaches AddMemberSheet's picker, which refreshes presence on open.
+    let actorStore: ActorStore?
+    let agentPresenceStore: AgentPresenceStore?
 
     @Environment(\.modelContext) private var modelContext
 
@@ -285,7 +298,9 @@ private struct SessionDestinationView: View {
                     workspacesRepository: workspacesRepository,
                     sessionsRepository: sessionsRepository,
                     pushPrefs: preferencesAPI,
-                    notificationPrefsStore: notificationPrefsStore
+                    notificationPrefsStore: notificationPrefsStore,
+                    actorStore: actorStore,
+                    agentPresenceStore: agentPresenceStore
                 )
                 .id("session:\(session.sessionId)")
             } else {

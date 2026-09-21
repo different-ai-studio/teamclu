@@ -14,6 +14,9 @@ public struct IdeaDetailView: View {
     let peerId: String
     let sessionsRepository: (any SessionRepository)?
     let connectedAgentsStore: ConnectedAgentsStore?
+    /// Forwarded to NewSessionSheet's member picker so it refreshes presence.
+    let actorStore: ActorStore?
+    let agentPresenceStore: AgentPresenceStore?
     @Binding var navigationPath: [String]
 
     @Environment(\.dismiss) private var dismiss
@@ -51,6 +54,8 @@ public struct IdeaDetailView: View {
         peerId: String,
         sessionsRepository: (any SessionRepository)? = nil,
         connectedAgentsStore: ConnectedAgentsStore? = nil,
+        actorStore: ActorStore? = nil,
+        agentPresenceStore: AgentPresenceStore? = nil,
         navigationPath: Binding<[String]>
     ) {
         self.ideaID = ideaID
@@ -62,6 +67,8 @@ public struct IdeaDetailView: View {
         self.peerId = peerId
         self.sessionsRepository = sessionsRepository
         self.connectedAgentsStore = connectedAgentsStore
+        self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
         self._navigationPath = navigationPath
     }
 
@@ -151,6 +158,8 @@ public struct IdeaDetailView: View {
                 peerId: peerId,
                 teamcluService: teamcluService,
                 connectedAgentsStore: connectedAgentsStore,
+                actorStore: actorStore,
+                agentPresenceStore: agentPresenceStore,
                 sessionsRepository: sessionsRepository,
                 viewModel: sessionViewModel,
                 preselectedIdeaId: item.id,
