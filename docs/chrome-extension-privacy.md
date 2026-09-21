@@ -1,6 +1,6 @@
 # TeamClu Privacy Policy
 
-*Last updated: August 6, 2026*
+*Last updated: September 20, 2026*
 
 TeamClu is a browser extension that shows an AI chat side panel and lets you send the content of a web page you are viewing to a TeamClu agent. This policy explains what data the extension handles and how.
 

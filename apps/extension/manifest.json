@@ -2,17 +2,39 @@
   "manifest_version": 3,
   "default_locale": "zh_CN",
   "name": "__MSG_appName__",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "__MSG_extensionDescription__",
-  "permissions": ["sidePanel", "scripting", "activeTab", "tabs", "storage", "identity"],
-  "host_permissions": ["http://*/*", "https://*/*"],
-  "background": { "service_worker": "background.js", "type": "module" },
-  "action": { "default_title": "__MSG_appName__" },
-  "side_panel": { "default_path": "sidepanel/index.html" },
+  "permissions": [
+    "sidePanel",
+    "scripting",
+    "activeTab",
+    "tabs",
+    "storage",
+    "identity"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "__MSG_appName__"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content-script.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content-script.js"
+      ],
       "run_at": "document_idle"
     }
   ],
