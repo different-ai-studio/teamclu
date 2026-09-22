@@ -74,7 +74,12 @@ public struct RootTabView: View {
 
     private var teamRuntime: TeamRuntimeContext? { coordinator?.teamRuntimeContext }
 
-    public var body: some View {
+    // Split across three properties rather than one expression. As one, the
+    // type-checker took over two seconds on CI to solve it — the same shape
+    // that failed the release archive in SessionDetailView, one feature away
+    // from doing it here. Each `some View` boundary is its own problem.
+
+    private var tabs: some View {
         TabView(selection: $selection) {
             Tab("Sessions", systemImage: "bubble.left.and.bubble.right", value: AppTab.sessions) {
                 SessionsTab(mqtt: mqtt,
@@ -160,6 +165,11 @@ public struct RootTabView: View {
                 Label("Voice", systemImage: "mic")
             }
         }
+    }
+
+    /// The tabs, plus what reacts to a tab change or the team loading.
+    private var wiredTabs: some View {
+        tabs
         .tabViewStyle(.sidebarAdaptable)
         .onChange(of: selection) { previous, tab in
             if previous == .search, tab != .search {
@@ -250,6 +260,11 @@ public struct RootTabView: View {
                 await maybeShowFirstAgentReminder(team: team)
             }
         }
+    }
+
+    /// …plus the invite, deep-link and lifecycle observers.
+    private var observedTabs: some View {
+        wiredTabs
         .onReceive(NotificationCenter.default.publisher(for: .amuxInviteTokenReceived)) { note in
             guard let token = note.userInfo?["token"] as? String,
                   let store = teamRuntime?.actorStore else { return }
@@ -283,6 +298,10 @@ public struct RootTabView: View {
             guard let sessionID, !sessionID.isEmpty else { return }
             openSessionFromDeepLink(sessionID)
         }
+    }
+
+    public var body: some View {
+        observedTabs
         .sheet(item: $voiceAgentChoice) {
             // Swipe-dismiss and the picker's own Cancel both land here. A
             // pick has already flipped `isStartingVoiceSession`, so this only
