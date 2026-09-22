@@ -16,9 +16,15 @@ import AMUXSharedUI
 /// instead so the two targets stay separate.
 struct IdeaFeedCard: View {
     let item: IdeaRecord
-    let authorName: String
+    /// The poster, when the local actor cache knows them. Carries the avatar
+    /// and tells `AgentAvatar` whether to draw a person or an agent.
+    let author: CachedActor?
     let onOpen: () -> Void
     let onToggleLike: () -> Void
+
+    private var authorName: String {
+        author?.displayName ?? String(localized: "Someone")
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -48,17 +54,28 @@ struct IdeaFeedCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    @ViewBuilder
     private var avatar: some View {
-        Circle()
-            .fill(Color.amux.pebble)
-            .frame(width: 38, height: 38)
-            .overlay(
-                Text(authorInitial)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.amux.basalt)
-            )
-            .contentShape(Circle())
-            .onTapGesture(perform: onOpen)
+        Group {
+            if let author {
+                // The shared one: it loads the actor's picture, falls back to
+                // initials, and draws agents as a rounded square rather than
+                // a circle. Hand-rolling a circle here is what lost every
+                // avatar the team had uploaded.
+                AgentAvatar(actor: author, size: 38)
+            } else {
+                Circle()
+                    .fill(Color.amux.pebble)
+                    .frame(width: 38, height: 38)
+                    .overlay(
+                        Text(authorInitial)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Color.amux.basalt)
+                    )
+            }
+        }
+        .contentShape(Circle())
+        .onTapGesture(perform: onOpen)
     }
 
     private var byline: some View {

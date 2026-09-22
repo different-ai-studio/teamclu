@@ -6,14 +6,15 @@ import AMUXSharedUI
 public struct IdeaListView: View {
     @Bindable var ideaStore: IdeaStore
 
-    @Query(filter: #Predicate<CachedActor> { $0.actorType == "member" },
-           sort: \CachedActor.displayName)
-    private var members: [CachedActor]
+    // Every actor, not only members: an agent can post too, and filtering
+    // them out left their rows with no avatar and no name.
+    @Query(sort: \CachedActor.displayName)
+    private var actors: [CachedActor]
 
     @Query(sort: \Workspace.displayName) private var workspaces: [Workspace]
 
-    private var memberById: [String: CachedActor] {
-        Dictionary(uniqueKeysWithValues: members.map { ($0.actorId, $0) })
+    private var actorByID: [String: CachedActor] {
+        Dictionary(uniqueKeysWithValues: actors.map { ($0.actorId, $0) })
     }
 
     private var workspaceNameById: [String: String] {
@@ -50,10 +51,6 @@ public struct IdeaListView: View {
             if lhs.createdAt == rhs.createdAt { return lhs.id > rhs.id }
             return lhs.createdAt > rhs.createdAt
         }
-    }
-
-    private func authorName(for idea: IdeaRecord) -> String {
-        memberById[idea.createdByActorID]?.displayName ?? String(localized: "Someone")
     }
 
     public var body: some View {
@@ -103,7 +100,7 @@ public struct IdeaListView: View {
                     ForEach(feedIdeas) { item in
                         IdeaFeedCard(
                             item: item,
-                            authorName: authorName(for: item),
+                            author: actorByID[item.createdByActorID],
                             onOpen: { navigationPath.append("idea:\(item.id)") },
                             onToggleLike: {
                                 Task { await ideaStore.setLiked(ideaID: item.id, liked: !item.likedByMe) }
