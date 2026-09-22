@@ -177,7 +177,7 @@ test("insertMessage writes a messages row and maps response", async () => {
   assert.equal(message.senderActorId, "actor-1");
 });
 
-test("insertMessage calls injected dispatchPush once with snake_case record", async () => {
+test("insertMessage calls injected fanoutMessage once with the whole snake_case row", async () => {
   const calls: any[] = [];
   const repo = createRepo(fakeSupabase({
     tableData: {
@@ -197,7 +197,7 @@ test("insertMessage calls injected dispatchPush once with snake_case record", as
       }],
     },
   }), {
-    dispatchPush: async (record) => { calls.push(record); },
+    fanoutMessage: async (record) => { calls.push(record); },
   });
 
   const message = await repo.insertMessage("session-1", {
@@ -209,16 +209,22 @@ test("insertMessage calls injected dispatchPush once with snake_case record", as
 
   await new Promise((r) => setImmediate(r));
 
-  assert.equal(calls.length, 1, "dispatchPush should be called exactly once");
+  assert.equal(calls.length, 1, "fanoutMessage should be called exactly once");
   assert.equal(calls[0].id, message.id);
   assert.equal(calls[0].session_id, "session-1");
   assert.equal(calls[0].team_id, "team-1");
   assert.equal(calls[0].sender_actor_id, "actor-1");
   assert.equal(calls[0].kind, "text");
   assert.equal(calls[0].content, "hello");
+  // The agent inbox carries the row itself, so the fields the six-field digest
+  // used to drop have to survive the hop — `metadata` above all, it holds
+  // `mention_actor_ids`.
+  assert.ok("metadata" in calls[0], "metadata must reach the fan-out");
+  assert.ok("turn_id" in calls[0], "turn_id must reach the fan-out");
+  assert.ok("created_at" in calls[0], "created_at must reach the fan-out");
 });
 
-test("insertMessage succeeds even when dispatchPush throws", async () => {
+test("insertMessage succeeds even when fanoutMessage throws", async () => {
   const repo = createRepo(fakeSupabase({
     tableData: {
       messages: [{
@@ -237,7 +243,7 @@ test("insertMessage succeeds even when dispatchPush throws", async () => {
       }],
     },
   }), {
-    dispatchPush: async () => { throw new Error("push failure"); },
+    fanoutMessage: async () => { throw new Error("push failure"); },
   });
 
   const message = await repo.insertMessage("session-1", {

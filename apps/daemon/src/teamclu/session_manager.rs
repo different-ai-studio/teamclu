@@ -1581,6 +1581,11 @@ impl SessionManager {
             self.topics.actor_rpc_req(),
             self.topics.actor_notify(),
             self.topics.actor_rpc_res(),
+            // One topic for every session this actor is in. Subscribed here,
+            // with the other team topics, so it is in place before any
+            // session/live restore — an agent must not be deaf during the
+            // window where per-session subscriptions are still being replayed.
+            self.topics.actor_inbox(),
         ]
     }
 

@@ -66,6 +66,30 @@ function buildPushDeps() {
         .update({ revoked_at: new Date().toISOString() })
         .eq('token', token);
     },
+    // Agent participants of a session, for the agent-inbox fan-out.
+    //
+    // `list_session_push_targets` cannot serve this: it filters
+    // `actor_type = 'member'` in the function body, so agents never appear.
+    // Two plain queries instead of a new RPC — that would be a migration, and
+    // belayo applies those by hand.
+    listSessionAgentActorIds: async (sessionId: string, excludeActorId: string | null) => {
+      const { data: rows, error: partsError } = await sbClient.schema("amux")
+        .from('session_participants')
+        .select('actor_id')
+        .eq('session_id', sessionId);
+      if (partsError) throw partsError;
+      const actorIds = (rows ?? [])
+        .map((row: { actor_id: string | null }) => row.actor_id)
+        .filter((id: string | null): id is string => Boolean(id) && id !== excludeActorId);
+      if (actorIds.length === 0) return [];
+      const { data: actors, error: actorsError } = await sbClient.schema("amux")
+        .from('actors')
+        .select('id')
+        .eq('actor_type', 'agent')
+        .in('id', actorIds);
+      if (actorsError) throw actorsError;
+      return (actors ?? []).map((row: { id: string }) => row.id);
+    },
   };
   return { sb, apns: buildApns(), mqtt: buildMqtt() };
 }
