@@ -483,6 +483,9 @@ struct ActorDetailView: View {
     /// row, and a row activates *every* link it contains, so one tap used to
     /// push all three in the same frame. One optional can only hold one.
     @State private var resourceRoute: ActorResourceRoute?
+    /// Its own optional for the same reason `resourceRoute` is one: the member
+    /// blocks share a List row, and a row activates every link it contains.
+    @State private var ideasRoute: ActorIdeasRoute?
     @State private var authorizedHumansStore: AgentAuthorizedHumansStore?
     @State private var workspaceStore: WorkspaceStore?
     @State private var newWorkspacePath = ""
@@ -829,6 +832,9 @@ struct ActorDetailView: View {
         .navigationDestination(item: $resourceRoute) { route in
             ActorResourceListView(route: route, repository: teamResourceRepository)
         }
+        .navigationDestination(item: $ideasRoute) { route in
+            ActorIdeasListView(route: route, repositories: memberStatsRepositories())
+        }
         .sheet(isPresented: $showInviteSheet) {
             if let createdInvite {
                 InviteShareSheet(invite: createdInvite)
@@ -1165,7 +1171,15 @@ struct ActorDetailView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
+        .modifier(MemberStatTap(kind: kind, onOpen: openIdeas))
+    }
+
+    private func openIdeas() {
+        ideasRoute = ActorIdeasRoute(
+            actorID: actor.actorId,
+            actorName: actor.displayName,
+            teamID: actor.teamId
+        )
     }
 
     /// Skills and MCP are this actor's installs; env is the team's set and
@@ -1223,35 +1237,19 @@ struct ActorDetailView: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    /// Built here rather than injected, the way `TeamStatsSheet` builds its
-    /// own telemetry repository. This stat row is the only thing on this
-    /// screen that wants them, and threading two more repositories through
-    /// MembersTab and MemberListContent to reach it is a lot of public surface
-    /// for two numbers.
-    ///
+    private func memberStatsRepositories() -> MemberStatsRepositories? {
+        MemberStatsRepositories.make(onboarding: onboarding, callerActorID: currentActorID)
+    }
+
     /// Nil when there is no signed-in Cloud API session, which leaves the row
     /// showing "—" rather than a fabricated zero.
     private func loadMemberStats() async -> MemberActivityStats? {
-        guard let onboarding,
-              let config = CloudAPIConfigurationStore.configuration()
-        else { return nil }
+        guard let repositories = memberStatsRepositories() else { return nil }
         return await MemberActivityStatsLoader.load(
             teamID: actor.teamId,
             actorID: actor.actorId,
-            telemetry: CloudAPITelemetryRepository(
-                client: CloudAPIClient(configuration: config, accessToken: {
-                    try await onboarding.accessToken()
-                })
-            ),
-            // `memberActorID` is who is asking, not who is being looked at —
-            // it is what the write paths stamp on a new idea. Listing ignores
-            // it, but passing the viewed actor here would be a lie waiting to
-            // be used.
-            ideas: CloudAPIRepositoryFactory.ideasRepository(
-                configuration: config,
-                memberActorID: currentActorID ?? "",
-                accessToken: { try await onboarding.accessToken() }
-            )
+            telemetry: repositories.telemetry,
+            ideas: repositories.ideas
         )
     }
 
@@ -1463,6 +1461,31 @@ struct ActorDetailView: View {
                     defaultsErrorMessage = store.errorMessage ?? String(localized: "Failed to set the default workspace.")
                 }
             }
+        }
+    }
+}
+
+/// The tap belongs to the ideas block alone — there is nothing behind a token
+/// count. A modifier rather than an `if` inside the block keeps both blocks one
+/// view type, so the row is not rebuilt with a new identity when the numbers
+/// land.
+private struct MemberStatTap: ViewModifier {
+    let kind: MemberStatKind
+    let onOpen: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if kind.opensList {
+            content
+                // A gesture rather than a link, same as the agent blocks: a
+                // gesture only fires inside this block's own frame, where a
+                // List row hands any tap to every link it contains.
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onOpen)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+        } else {
+            content.accessibilityElement(children: .combine)
         }
     }
 }

@@ -46,6 +46,15 @@ enum MemberStatKind: CaseIterable {
         }
     }
 
+    /// Whether there is a second level behind the number. A token count is the
+    /// whole answer; ideas are a list.
+    var opensList: Bool {
+        switch self {
+        case .tokens: false
+        case .ideas: true
+        }
+    }
+
     func value(from stats: MemberActivityStats) -> String {
         switch self {
         case .tokens: formattedTokenCount(stats.tokens)
@@ -60,6 +69,45 @@ func formattedTokenCount(_ n: Int) -> String {
     if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
     if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
     return "\(n)"
+}
+
+/// The Cloud API repositories a member's profile reads from.
+///
+/// Built on demand rather than injected, the way `TeamStatsSheet` builds its
+/// own telemetry repository: this stat row and the list it pushes into are the
+/// only things that want them, and threading two more repositories from
+/// MembersTab down to a stat block is a lot of public surface for two numbers.
+struct MemberStatsRepositories {
+    let telemetry: any TelemetryRepository
+    let ideas: any IdeaRepository
+
+    /// Nil when there is no signed-in Cloud API session. Callers show their
+    /// loading placeholder rather than a fabricated zero.
+    ///
+    /// `callerActorID` is who is asking, not who is being looked at — it is
+    /// what the idea write paths stamp on a new row. Listing ignores it, but
+    /// passing the viewed actor would be a lie waiting to be used.
+    @MainActor
+    static func make(
+        onboarding: AppOnboardingCoordinator?,
+        callerActorID: String?
+    ) -> MemberStatsRepositories? {
+        guard let onboarding,
+              let config = CloudAPIConfigurationStore.configuration()
+        else { return nil }
+        return MemberStatsRepositories(
+            telemetry: CloudAPITelemetryRepository(
+                client: CloudAPIClient(configuration: config, accessToken: {
+                    try await onboarding.accessToken()
+                })
+            ),
+            ideas: CloudAPIRepositoryFactory.ideasRepository(
+                configuration: config,
+                memberActorID: callerActorID ?? "",
+                accessToken: { try await onboarding.accessToken() }
+            )
+        )
+    }
 }
 
 enum MemberActivityStatsLoader {
@@ -95,6 +143,17 @@ enum MemberActivityStatsLoader {
     /// Archived ideas are off the board, so they are not counted — this is
     /// "what they have up", not "what they have ever written".
     static func ideaCount(in records: [IdeaRecord], for actorID: String) -> Int {
-        records.filter { $0.createdByActorID == actorID && !$0.archived }.count
+        ideas(in: records, by: actorID).count
+    }
+
+    /// The same selection the count reports, newest first — so the list the
+    /// count pushes into can never disagree with the number that opened it.
+    static func ideas(in records: [IdeaRecord], by actorID: String) -> [IdeaRecord] {
+        records
+            .filter { $0.createdByActorID == actorID && !$0.archived }
+            .sorted { lhs, rhs in
+                if lhs.createdAt == rhs.createdAt { return lhs.id > rhs.id }
+                return lhs.createdAt > rhs.createdAt
+            }
     }
 }

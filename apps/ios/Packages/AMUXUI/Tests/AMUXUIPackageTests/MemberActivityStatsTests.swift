@@ -23,8 +23,12 @@ struct MemberActivityStatsTests {
         )
     }
 
+    /// `createdAt` is derived from the name so the ordering assertion below
+    /// has something to order by: "newer" sorts after "older" alphabetically,
+    /// and the feed wants it first.
     private func idea(_ id: String, by actorID: String, archived: Bool = false) -> IdeaRecord {
-        IdeaRecord(
+        let created = Date(timeIntervalSince1970: id == "newer" ? 2_000 : 1_000)
+        return IdeaRecord(
             id: id,
             teamID: "team-1",
             workspaceID: "ws-1",
@@ -33,8 +37,8 @@ struct MemberActivityStatsTests {
             description: "",
             status: "open",
             archived: archived,
-            createdAt: .distantPast,
-            updatedAt: .distantPast
+            createdAt: created,
+            updatedAt: created
         )
     }
 
@@ -67,6 +71,25 @@ struct MemberActivityStatsTests {
         #expect(MemberStatKind.tokens.scopeTag != nil)
         // Ideas are all-time and this person's own, so no tag to qualify them.
         #expect(MemberStatKind.ideas.scopeTag == nil)
+    }
+
+    @Test("the list behind the number shows exactly what the number counted")
+    func listAgreesWithCount() {
+        let records = [
+            idea("older", by: "me"),
+            idea("archived", by: "me", archived: true),
+            idea("theirs", by: "someone-else"),
+            idea("newer", by: "me"),
+        ]
+        let listed = MemberActivityStatsLoader.ideas(in: records, by: "me")
+        #expect(listed.count == MemberActivityStatsLoader.ideaCount(in: records, for: "me"))
+        #expect(listed.map(\.id) == ["newer", "older"])
+    }
+
+    @Test("only the ideas block opens anything")
+    func onlyIdeasPushes() {
+        #expect(MemberStatKind.ideas.opensList)
+        #expect(!MemberStatKind.tokens.opensList)
     }
 
     @Test("a seven-digit token count is shortened, so a third of a phone fits it", arguments: [
