@@ -58,7 +58,15 @@ public final class IdeaStore {
             merge(created)
             IdeaCacheSynchronizer.upsert(created, modelContext: modelContext)
             try? modelContext.save()
-            errorMessage = nil
+            // A backend older than this client does not know the field and
+            // drops the pictures without complaining. Say so: the post is
+            // real and keeping it is right, but losing what someone attached
+            // without a word is not.
+            if !attachmentURLs.isEmpty, created.attachmentURLs.isEmpty {
+                errorMessage = String(localized: "Posted, but the pictures couldn\u{2019}t be saved.")
+            } else {
+                errorMessage = nil
+            }
             return true
         } catch {
             errorMessage = error.localizedDescription

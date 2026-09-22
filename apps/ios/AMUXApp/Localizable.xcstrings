@@ -1033,6 +1033,16 @@
         }
       }
     },
+    "Dismiss": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
+          }
+        }
+      }
+    },
     "DONE": {
       "localizations": {
         "zh-Hans": {
@@ -2732,6 +2742,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "已发布到 **团队 · %@**。任何人都可以提交进展。"
+          }
+        }
+      }
+    },
+    "Posted, but the pictures couldn’t be saved.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已发布，但图片没能保存。"
           }
         }
       }

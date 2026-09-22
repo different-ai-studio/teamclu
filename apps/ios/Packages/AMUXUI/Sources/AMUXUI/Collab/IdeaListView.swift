@@ -75,6 +75,31 @@ public struct IdeaListView: View {
                 )
             } else {
                 List {
+                    // Anything that goes wrong after the first load — a like
+                    // that didn't land, pictures the backend dropped — used
+                    // to be written to `errorMessage` and never shown, because
+                    // the only place that read it was the empty state.
+                    if let errorMessage = ideaStore.errorMessage {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 12))
+                            Text(errorMessage)
+                                .font(.footnote)
+                            Spacer(minLength: 8)
+                            Button {
+                                ideaStore.errorMessage = nil
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Dismiss")
+                        }
+                        .foregroundStyle(Color.amux.cinnabarDeep)
+                        .padding(.vertical, 10)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                    }
                     ForEach(feedIdeas) { item in
                         IdeaFeedCard(
                             item: item,
