@@ -90,13 +90,23 @@ public final class VoiceRecorder {
     // MARK: - Private
 
     private func requestAndStart() {
-        SFSpeechRecognizer.requestAuthorization { [weak self] status in
-            DispatchQueue.main.async {
+        Self.requestSpeechAuthorization { [weak self] status in
+            // TCC invokes this completion on a worker queue. The callback is
+            // deliberately `@Sendable` and registered from a nonisolated
+            // helper, so it cannot inherit this class's MainActor isolation.
+            // Hop back only after TCC has called it.
+            Task.detached { @MainActor [weak self] in
                 guard let self else { return }
                 guard status == .authorized else { self.state = .denied; return }
                 self.beginCapture()
             }
         }
+    }
+
+    nonisolated private static func requestSpeechAuthorization(
+        _ completion: @escaping @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void
+    ) {
+        SFSpeechRecognizer.requestAuthorization(completion)
     }
 
     private func beginCapture() {

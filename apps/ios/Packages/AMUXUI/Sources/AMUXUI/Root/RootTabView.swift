@@ -129,7 +129,10 @@ public struct RootTabView: View {
                                           description: Text("Create or join a team to see actors."))
                 }
             }
-            Tab("Voice", systemImage: "mic", value: AppTab.search) {
+            // `role: .search` is the system's separate circular control on
+            // the right of the tab bar. Keep that exact presentation; only
+            // the selected action changes from search to voice capture.
+            Tab(value: AppTab.search, role: .search) {
                 VoiceTabPlaceholder(isRecording: voiceRecorder.state == .recording)
             }
         }
@@ -408,7 +411,7 @@ private struct VoiceTabPlaceholder: View {
         ContentUnavailableView(
             isRecording ? "Listening…" : "Voice chat",
             systemImage: isRecording ? "waveform" : "mic",
-            description: Text(isRecording ? "Tap stop when you are done." : "Tap Voice to start a new chat with your default agent.")
+            description: Text(isRecording ? "Tap stop when you are done." : "Tap the voice button to start a new chat with your default agent.")
         )
         .background(Color.amux.mist)
     }
