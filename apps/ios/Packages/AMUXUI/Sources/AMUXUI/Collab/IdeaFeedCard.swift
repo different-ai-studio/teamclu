@@ -152,7 +152,8 @@ struct IdeaFeedCard: View {
 
 /// A post's pictures, sized as media rather than as the thumbnail strip a
 /// comment's attachments get: one fills the column, several share it.
-private struct IdeaFeedMedia: View {
+/// Shared with the post detail so a picture is the same size in both places.
+struct IdeaFeedMedia: View {
     let urls: [URL]
 
     private var shown: [URL] { Array(urls.prefix(4)) }

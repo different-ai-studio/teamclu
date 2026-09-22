@@ -1600,7 +1600,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "处理中"
+            "value": "进行中"
           }
         }
       }
@@ -2491,7 +2491,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "进行中"
+            "value": "未开始"
           }
         }
       }

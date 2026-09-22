@@ -207,12 +207,17 @@ public struct IdeaDetailView: View {
     @ViewBuilder
     private func heroSection(_ item: IdeaRecord) -> some View {
         Section {
-            VStack(alignment: .leading, spacing: 12) {
-                statusPillMenu(for: item)
+            // The post, the way the feed shows it — byline, words, pictures,
+            // then what the team has done with it. The fields stay editable
+            // in place, but at a post's size rather than the 26pt headline
+            // the board opened with.
+            VStack(alignment: .leading, spacing: 10) {
+                byline(item)
 
                 TextField("Title", text: $localTitle, axis: .vertical)
-                    .font(.system(size: 26, weight: .bold))
-                    .lineLimit(1...3)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.amux.onyx)
+                    .lineLimit(1...4)
                     .focused($titleFocused)
                     .onSubmit { commitTitle(for: item) }
                     .onChange(of: titleFocused) { _, focused in
@@ -220,14 +225,20 @@ public struct IdeaDetailView: View {
                     }
 
                 TextField("Add details…", text: $localDescription, axis: .vertical)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2...10)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.amux.basalt)
+                    .lineSpacing(2)
+                    .lineLimit(1...14)
                     .focused($descriptionFocused)
                     .onChange(of: descriptionFocused) { _, focused in
                         if !focused { commitDescription(for: item) }
                     }
 
+                if !item.attachmentURLs.isEmpty {
+                    IdeaFeedMedia(urls: item.attachmentURLs)
+                }
+
+                postActions(item)
                 heroMetaStrip(item)
             }
             .padding(.vertical, 4)
@@ -235,6 +246,79 @@ public struct IdeaDetailView: View {
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
+    }
+
+    /// Avatar, who, when — and the status control at the trailing edge. On a
+    /// card the status is a tag that only appears once it means something; on
+    /// the post it is always there, because here it is the control.
+    private func byline(_ item: IdeaRecord) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(Color.amux.pebble)
+                .frame(width: 38, height: 38)
+                .overlay(
+                    Text(String(creator?.displayName.first ?? "·").uppercased())
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.amux.basalt)
+                )
+            VStack(alignment: .leading, spacing: 1) {
+                Text(creator?.displayName ?? String(localized: "Someone"))
+                    .font(.system(size: 14.5, weight: .semibold))
+                    .foregroundStyle(Color.amux.onyx)
+                    .lineLimit(1)
+                Text(item.createdAt.relativeShort)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Color.amux.slate)
+            }
+            Spacer(minLength: 8)
+            statusPillMenu(for: item)
+        }
+    }
+
+    /// Comment count comes from the loaded activities rather than the record's
+    /// `commentCount`: the list aggregates that number, and by the time you
+    /// are reading the post the replies themselves are in hand and may have
+    /// grown since.
+    private func postActions(_ item: IdeaRecord) -> some View {
+        HStack(spacing: 28) {
+            HStack(spacing: 6) {
+                Image(systemName: "bubble.right")
+                    .font(.system(size: 13.5))
+                if commentCount > 0 {
+                    Text(commentCount, format: .number)
+                        .font(.system(size: 13))
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(Color.amux.slate)
+
+            Button {
+                Task { await ideaStore.setLiked(ideaID: item.id, liked: !item.likedByMe) }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: item.likedByMe ? "heart.fill" : "heart")
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(item.likedByMe ? Color.amux.cinnabar : Color.amux.slate)
+                    if item.likeCount > 0 {
+                        Text(item.likeCount, format: .number)
+                            .font(.system(size: 13))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.amux.slate)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(item.likedByMe ? "Unlike" : "Like")
+            .accessibilityIdentifier("ideaDetail.likeButton")
+
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 2)
+    }
+
+    private var commentCount: Int {
+        activities.filter(\.isProgress).count
     }
 
     private func statusPillMenu(for item: IdeaRecord) -> some View {
@@ -275,6 +359,10 @@ public struct IdeaDetailView: View {
             .frame(height: 22)
             .background(Capsule().fill(bg))
         }
+        // A Menu tints its own label from the accent colour, which is coral
+        // here; `foregroundStyle` alone is not always enough to hold the two
+        // quiet statuses against it.
+        .tint(fg)
     }
 
     private func statusBinding(for item: IdeaRecord) -> Binding<String> {
@@ -297,6 +385,8 @@ public struct IdeaDetailView: View {
 
     @ViewBuilder
     private func heroMetaStrip(_ item: IdeaRecord) -> some View {
+        // Creator and time moved into the byline; what is left is where the
+        // work happens, and only when the idea names a workspace at all.
         HStack(spacing: 6) {
             if let name = workspaceName, !name.isEmpty {
                 Text(name)
@@ -305,22 +395,9 @@ public struct IdeaDetailView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(Capsule().fill(Color.amux.pebble))
+                Spacer(minLength: 0)
             }
-            if let creator {
-                Text("Created by \(creator.displayName) · \(item.createdAt.relativeShort)")
-                    .font(.caption)
-                    .foregroundStyle(Color.amux.basalt)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.amux.pebble))
-            } else {
-                Text(item.createdAt.relativeShort)
-                    .font(.caption)
-                    .foregroundStyle(Color.amux.slate)
-            }
-            Spacer(minLength: 0)
         }
-        .padding(.top, 2)
     }
 
     // MARK: Activity
