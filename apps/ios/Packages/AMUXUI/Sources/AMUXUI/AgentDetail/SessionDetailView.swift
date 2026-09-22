@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 import AMUXCore
 import AMUXSharedUI
 
@@ -43,6 +44,18 @@ public struct SessionDetailView: View {
     /// User-prompt bubble pending delete confirmation (drives the dialog).
     @State private var pendingDeleteEvent: AgentEvent?
     private let nearBottomThreshold: CGFloat = 80
+    /// True while the software keyboard is on screen. Focus is the wrong
+    /// predicate for the composer's resting gap: with a hardware keyboard
+    /// attached the field takes focus and no keyboard appears, and the card
+    /// would hop up for nothing.
+    @State private var softwareKeyboardShown = false
+    /// How far the resting composer is pulled back into the home-indicator
+    /// reserve. That reserve (34pt on current iPhones) plus the composer's own
+    /// 8pt stacks to 42pt off the screen edge — a band of empty paper next to
+    /// the 22pt the tab bar's pill sits at elsewhere in the app. Taking 12pt
+    /// back lands on the same 22pt. Where the reserve is shorter the card just
+    /// ends up nearer the edge, never past it.
+    private static let composerRestingBottomPullback: CGFloat = -12
     /// Cached TeamcluService used to lazily build the OutboxSender once
     /// the modelContext (and therefore its container) is available.
     private let pendingTeamcluService: TeamcluService?
@@ -396,6 +409,21 @@ public struct SessionDetailView: View {
                     )
                 }
             }
+            // The gap under the composer card lives here rather than inside
+            // the composer, because it is measured from two different things:
+            // at rest from the screen edge, with the keyboard up from the
+            // keyboard. `ignoresSafeArea` on inset content doesn't give the
+            // reserve back — it stacks — so the resting case pulls into it.
+            .padding(.bottom, softwareKeyboardShown ? 8 : Self.composerRestingBottomPullback)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            // A hardware keyboard still posts this for the shortcut bar, so
+            // go by height rather than by the notification arriving at all.
+            let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+            softwareKeyboardShown = (frame?.height ?? 0) > 120
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            softwareKeyboardShown = false
         }
         .sheet(isPresented: $isMemberSheetPresented) {
             SessionMemberSheet(
