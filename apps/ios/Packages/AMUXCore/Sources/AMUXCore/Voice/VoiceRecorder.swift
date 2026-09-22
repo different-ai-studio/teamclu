@@ -48,6 +48,10 @@ public final class VoiceRecorder {
     private var audioEngine: AVAudioEngine?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    /// Bumped by every start and every teardown. Authorization is answered
+    /// asynchronously, so a take cancelled while TCC is still thinking would
+    /// otherwise come back and start capturing with no UI attached.
+    private var startEpoch = 0
 
     public init(contextualStrings: [String] = []) {
         self.contextualStrings = contextualStrings
@@ -90,13 +94,15 @@ public final class VoiceRecorder {
     // MARK: - Private
 
     private func requestAndStart() {
+        startEpoch += 1
+        let epoch = startEpoch
         let finishAuthorization: @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void = { [weak self] status in
             // TCC invokes this completion on a worker queue. The callback is
             // deliberately `@Sendable` and registered from a nonisolated
             // helper, so it cannot inherit this class's MainActor isolation.
             // Hop back only after TCC has called it.
             Task.detached { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.startEpoch == epoch else { return }
                 guard status == .authorized else { self.state = .denied; return }
                 self.beginCapture()
             }
@@ -112,7 +118,7 @@ public final class VoiceRecorder {
 
     private func beginCapture() {
         guard let recognizer, recognizer.isAvailable else {
-            state = .error("Speech recognizer unavailable")
+            state = .error(String(localized: "Speech recognizer unavailable"))
             return
         }
 
@@ -197,6 +203,7 @@ public final class VoiceRecorder {
     /// Explicit teardown — used by toggle/cancel/reset. Targets either
     /// `.idle` or another state, and optionally clears the transcript.
     private func tearDown(targetState: State, clearTranscript: Bool) {
+        startEpoch += 1
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         request?.endAudio()

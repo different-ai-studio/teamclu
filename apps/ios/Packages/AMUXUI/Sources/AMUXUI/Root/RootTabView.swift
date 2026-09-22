@@ -21,6 +21,12 @@ public struct RootTabView: View {
     @State private var voiceRecorder = VoiceRecorder()
     @State private var isStartingVoiceSession = false
     @State private var voiceErrorMessage: String?
+    /// Start of the current take, for the capture screen's elapsed readout.
+    @State private var recordingStartedAt: Date?
+    /// The finished transcript, held while the session is being created —
+    /// the recorder has already been reset by then, and the capture screen
+    /// should keep showing the words it is about to send.
+    @State private var pendingVoiceTranscript: String = ""
 
     /// Drives the "add the team's first agent" reminder. Set once per app
     /// launch when we observe a team with zero agents; soft-dismissible so it
@@ -136,26 +142,32 @@ public struct RootTabView: View {
             // mic rather than a magnifier — selecting it starts voice
             // capture instead of search.
             Tab(value: AppTab.search, role: .search) {
-                VoiceTabPlaceholder(isRecording: voiceRecorder.state == .recording)
+                VoiceCaptureView(
+                    phase: voicePhase,
+                    level: voiceRecorder.audioLevel,
+                    transcript: isStartingVoiceSession ? pendingVoiceTranscript : voiceRecorder.transcript,
+                    startedAt: recordingStartedAt,
+                    onDone: voiceRecorder.stopRecording,
+                    onCancel: cancelVoiceCapture
+                )
+                // On the tab content, not on the TabView: the modifier only
+                // takes effect from inside the tab whose bar it hides.
+                .toolbarVisibility(.hidden, for: .tabBar)
             } label: {
                 Label("Voice", systemImage: "mic")
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if voiceRecorder.state == .recording || isStartingVoiceSession {
-                VoiceRecordingBar(
-                    level: voiceRecorder.audioLevel,
-                    isStartingSession: isStartingVoiceSession,
-                    onStop: voiceRecorder.stopRecording
-                )
+        .onChange(of: selection) { previous, tab in
+            if previous == .search, tab != .search {
+                // Belt and braces: the iPad sidebar can switch away mid-take,
+                // and a running engine with no visible surface is the worst
+                // outcome. Finished takes are already `.done` here, so this
+                // only catches a genuine abandon.
+                if voiceRecorder.state == .recording { voiceRecorder.cancel() }
+                recordingStartedAt = nil
+                return
             }
-        }
-        .toolbarVisibility(
-            (voiceRecorder.state == .recording || isStartingVoiceSession) ? .hidden : .automatic,
-            for: .tabBar
-        )
-        .onChange(of: selection) { _, tab in
             guard tab == .search,
                   voiceRecorder.state != .recording,
                   !isStartingVoiceSession
@@ -172,6 +184,7 @@ public struct RootTabView: View {
                     voiceErrorMessage = String(localized: "No speech was recognized. Try recording again.")
                     return
                 }
+                pendingVoiceTranscript = transcript
                 isStartingVoiceSession = true
                 Task { await startVoiceSession(transcript) }
             case .denied:
@@ -180,7 +193,9 @@ public struct RootTabView: View {
             case .error(let message):
                 selection = .sessions
                 voiceErrorMessage = message
-            case .idle, .recording:
+            case .recording:
+                recordingStartedAt = Date()
+            case .idle:
                 break
             }
         }
@@ -245,6 +260,10 @@ public struct RootTabView: View {
             if ready { replayPendingInviteIfNeeded() }
         }
         .onAppear {
+            // The voice tab is an action, not a place. `@SceneStorage` will
+            // happily restore it, which would strand the user on a capture
+            // screen with nothing recording — so bounce to Sessions.
+            if selection == .search { selection = .sessions }
             // Cold launch from a push: the intent may have been recorded
             // before this view mounted, so `onChange` never sees the
             // transition. Consume any already-pending session here.
@@ -273,6 +292,18 @@ public struct RootTabView: View {
         }
     }
 
+    private var voicePhase: VoiceCaptureView.Phase {
+        if isStartingVoiceSession { return .startingSession }
+        return voiceRecorder.state == .recording ? .recording : .preparing
+    }
+
+    @MainActor
+    private func cancelVoiceCapture() {
+        voiceRecorder.cancel()
+        recordingStartedAt = nil
+        selection = .sessions
+    }
+
     /// Push/deep-link entry point: reveal the Sessions tab and push the given
     /// session, mirroring the `"session:<id>"` path convention that
     /// `SessionsTab.navigationDestination` resolves. Idempotent — skips the
@@ -291,7 +322,10 @@ public struct RootTabView: View {
 
     @MainActor
     private func startVoiceSession(_ transcript: String) async {
-        defer { isStartingVoiceSession = false }
+        defer {
+            isStartingVoiceSession = false
+            pendingVoiceTranscript = ""
+        }
         do {
             let sessionID = try await VoiceSessionStarter.start(
                 transcript: transcript,
@@ -406,50 +440,5 @@ public struct RootTabView: View {
             viewModel.validSessionIDs = ids
             viewModel.reloadSessions(modelContext: modelContext)
         }
-    }
-}
-
-private struct VoiceTabPlaceholder: View {
-    let isRecording: Bool
-
-    var body: some View {
-        ContentUnavailableView(
-            isRecording ? "Listening…" : "Voice chat",
-            systemImage: isRecording ? "waveform" : "mic",
-            description: Text(isRecording ? "Tap stop when you are done." : "Tap the voice button to start a new chat with your default agent.")
-        )
-        .background(Color.amux.mist)
-    }
-}
-
-private struct VoiceRecordingBar: View {
-    let level: Float
-    let isStartingSession: Bool
-    let onStop: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            if isStartingSession {
-                ProgressView()
-                Text("Starting your agent…")
-                    .foregroundStyle(Color.amux.basalt)
-            } else {
-                RecordingWaveform(level: level)
-                Button(action: onStop) {
-                    Image(systemName: "stop.fill")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(Color.amux.mist)
-                        .frame(width: 42, height: 42)
-                        .background(Color.amux.cinnabar, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("voice.stopRecordingButton")
-                .accessibilityLabel("Stop recording")
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .background(Color.amux.mist)
-        .overlay(alignment: .top) { Color.amux.hairline.frame(height: 0.5) }
     }
 }
