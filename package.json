@@ -28,7 +28,7 @@
     "tauri:dev:win": "node scripts/update-tauri-config.js && node scripts/tauri-cli.js dev -- --no-default-features",
     "rust:check": "node scripts/rust-cli.js check --manifest-path apps/desktop/Cargo.toml",
     "rust:build": "node scripts/rust-cli.js build --manifest-path apps/desktop/Cargo.toml",
-    "rust:clippy": "node scripts/rust-cli.js clippy --manifest-path apps/desktop/Cargo.toml -- -D warnings",
+    "rust:clippy": "node scripts/rust-cli.js clippy --manifest-path apps/desktop/Cargo.toml --all-targets -- -D warnings",
     "daemon:run": "node scripts/daemon-cargo.js run",
     "daemon:deploy": "scripts/deploy-daemon-binaries.sh",
     "daemon:ctl": "scripts/amuxdctl.sh",

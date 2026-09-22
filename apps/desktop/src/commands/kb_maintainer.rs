@@ -253,8 +253,8 @@ fn walk_document_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(current) = stack.pop() {
-        let entries = fs::read_dir(&current)
-            .map_err(|e| format!("Cannot inspect team documents: {e}"))?;
+        let entries =
+            fs::read_dir(&current).map_err(|e| format!("Cannot inspect team documents: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("Cannot inspect team documents: {e}"))?;
             let path = entry.path();
@@ -481,12 +481,13 @@ fn humanize_compiler_error(stderr: &str) -> String {
         return "Some pages need visual recognition. Review the estimated cost before continuing."
             .to_string();
     }
-    if (stderr.contains("unpublished external content") || stderr.contains("already has files")) {
+    if stderr.contains("unpublished external content") || stderr.contains("already has files") {
         return "Team Wiki already has older pages. Run maintenance again, then publish to replace them."
             .to_string();
     }
-    if (stderr.contains("publish destination changed") || stderr.contains("unexplained vault edits")
-        || stderr.contains("modified externally"))
+    if stderr.contains("publish destination changed")
+        || stderr.contains("unexplained vault edits")
+        || stderr.contains("modified externally")
     {
         return "Wiki changed after this run started. Run maintenance again before publishing."
             .to_string();
@@ -596,7 +597,7 @@ async fn run_node(
         let progress_app = app.clone();
         let stderr_thread = thread::spawn(move || {
             let mut other = String::new();
-            for line in BufReader::new(stderr).lines().flatten() {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 if let Some(payload) = line.strip_prefix("KB_PROGRESS ") {
                     if let Ok(value) = serde_json::from_str::<Value>(payload) {
                         let _ = progress_app.emit("kb-maintainer:progress", value);
@@ -613,7 +614,7 @@ async fn run_node(
 
         let stdout_text = {
             let mut buf = String::new();
-            for line in BufReader::new(stdout).lines().flatten() {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if !buf.is_empty() {
                     buf.push('\n');
                 }
@@ -920,10 +921,7 @@ mod tests {
         let (payload, token) = gateway_from_disk_team(&disk_team("tok_live_ai_invoke")).unwrap();
         assert_eq!(token, "tok_live_ai_invoke");
         let parsed: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(
-            parsed["baseUrl"],
-            "http://127.0.0.1:43111/ai/v1/teams/abc"
-        );
+        assert_eq!(parsed["baseUrl"], "http://127.0.0.1:43111/ai/v1/teams/abc");
         assert_eq!(parsed["apiKeyEnv"], "tc_gateway_token");
         assert_eq!(parsed["models"][0]["id"], "default");
         assert!(!payload.contains("tok_live_ai_invoke"));
