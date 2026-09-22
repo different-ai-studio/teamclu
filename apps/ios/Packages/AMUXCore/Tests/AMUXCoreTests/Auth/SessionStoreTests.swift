@@ -77,6 +77,60 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(SessionStore.jwtExpiry("a.b.c"))
     }
 
+    func testJWTSubjectReadsSubClaimAndIgnoresNonJWTs() {
+        // FC publishes the inbox ping to `inbox/<auth user id>`, and this is
+        // where that id comes from. Subscribing with the member actor id
+        // instead — as iOS did until 2026-09-21 — is a topic nothing ever
+        // publishes to, so the unread dot simply never fires.
+        XCTAssertEqual(
+            SessionStore.jwtSubject(Self.jwt(expiringAt: Date(timeIntervalSince1970: 1_800_000_000))),
+            "user-1"
+        )
+        XCTAssertNil(SessionStore.jwtSubject("opaque-session-token"))
+        XCTAssertNil(SessionStore.jwtSubject("a.b.c"))
+    }
+
+    func testJWTSubjectRejectsAnEmptySubject() {
+        // An empty `sub` would build the topic `inbox/`, which subscribes to
+        // nothing and hides the failure; `nil` makes the caller log instead.
+        XCTAssertNil(SessionStore.jwtSubject(Self.jwt(subject: "")))
+    }
+
+    func testCurrentUserIDComesFromTheStoredSession() async throws {
+        let storage = InMemorySessionStorage()
+        try storage.save(StoredSession(accessToken: Self.jwt(subject: "user-42"), refreshToken: "rt",
+            expiresAt: Date().addingTimeInterval(3600), isAnonymous: false, email: nil))
+        let count = LockedBox<Int>(); count.set(0)
+        let store = SessionStore(baseURL: URL(string: "https://c")!, storage: storage,
+            send: refreshResponder(at: 9_000_000_000, count: count))
+        await store.start()
+        let userID = await store.currentUserID()
+        XCTAssertEqual(userID, "user-42")
+    }
+
+    func testCurrentUserIDIsNilWithoutASession() async {
+        let count = LockedBox<Int>(); count.set(0)
+        let store = SessionStore(baseURL: URL(string: "https://c")!, storage: InMemorySessionStorage(),
+            send: refreshResponder(at: 9_000_000_000, count: count))
+        await store.start()
+        let userID = await store.currentUserID()
+        XCTAssertNil(userID)
+    }
+
+    /// Unsigned stand-in carrying a chosen `sub`.
+    private static func jwt(subject: String) -> String {
+        func segment(_ object: [String: Any]) -> String {
+            let data = try! JSONSerialization.data(withJSONObject: object)
+            return data.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let header = segment(["alg": "HS256", "typ": "JWT"])
+        let payload = segment(["sub": subject, "exp": 9_000_000_000])
+        return "\(header).\(payload).signature"
+    }
+
     /// Unsigned stand-in for a real access token: only the payload's `exp` is read.
     private static func jwt(expiringAt date: Date) -> String {
         func segment(_ object: [String: Any]) -> String {

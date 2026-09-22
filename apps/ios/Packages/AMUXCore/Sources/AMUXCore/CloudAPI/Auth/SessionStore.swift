@@ -77,6 +77,32 @@ public actor SessionStore {
         return Date(timeIntervalSince1970: exp.doubleValue)
     }
 
+    /// `sub` of a JWT — the authenticated user's id — read without verifying
+    /// the signature. Like `jwtExpiry` this is not an authorization decision:
+    /// it only names the topic to subscribe to, and the broker's own ACL
+    /// decides whether that subscription is allowed.
+    ///
+    /// FC publishes the inbox ping to `inbox/<auth user id>`, which is a
+    /// different UUID from the member actor id this app otherwise works in.
+    static func jwtSubject(_ token: String) -> String? {
+        let segments = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count == 3 else { return nil }
+        var payload = String(segments[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sub = json["sub"] as? String,
+              !sub.isEmpty else { return nil }
+        return sub
+    }
+
+    /// The authenticated user's id for the session currently held, if any.
+    public func currentUserID() -> String? {
+        session.flatMap { Self.jwtSubject($0.accessToken) }
+    }
+
     public func forceRefresh() async throws {
         _ = try await refreshLocked()
     }

@@ -154,15 +154,22 @@ public struct RootTabView: View {
             // Inbox red-dot subscription: per-user MQTT topic, populated by
             // FC fan-out after each message INSERT. Decoupled from the
             // per-runtime subscriptions in start() above.
-            if let actorID = currentActorID {
+            //
+            // The id here is the authenticated user's, taken from the access
+            // token's `sub`. FC publishes to `inbox/<auth user id>`, which is
+            // a different UUID from `currentActorID` — this used to pass the
+            // actor id and so subscribed to a topic nothing is published to.
+            if let userID = await coordinator?.currentUserID() {
                 viewModel.startInboxSubscription(
                     mqtt: mqtt,
                     hub: hub,
-                    actorID: actorID,
+                    userID: userID,
                     teamID: activeTeam?.id ?? "",
                     sessionsRepo: teamRuntime?.sessionsRepo,
                     modelContext: modelContext
                 )
+            } else {
+                NSLog("[RootTabView] inbox: no access token subject; unread dot disabled")
             }
             await refreshSessionsFromBackend()
             if let team = activeTeam {

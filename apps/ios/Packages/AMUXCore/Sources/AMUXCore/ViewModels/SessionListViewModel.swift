@@ -173,22 +173,28 @@ public final class SessionListViewModel {
     // has_unread itself is computed server-side from `session_read_markers`
     // + `sessions.last_message_at` — see SupabaseSessionsRepository.
 
-    /// Subscribes to `inbox/<actorID>` on the MQTT broker and updates
+    /// Subscribes to `inbox/<userID>` on the MQTT broker and updates
     /// Session.hasUnread on each ping. Safe to call after start(); cancels
     /// any previous inbox subscription.
+    ///
+    /// `userID` is the **authenticated user id**, not the member actor id.
+    /// FC publishes to `inbox/<auth user id>` (`push-dispatch.ts`), and the
+    /// two are different UUIDs — subscribing with the actor id, as this did
+    /// until 2026-09-21, yields a topic nothing is ever published to, so the
+    /// unread dot and the list re-sort never fired on iOS at all.
     public func startInboxSubscription(
         mqtt: MQTTService,
         hub: MQTTMessageHub,
-        actorID: String,
+        userID: String,
         teamID: String,
         sessionsRepo: SessionsRepository?,
         modelContext: ModelContext
     ) {
-        guard !actorID.isEmpty else {
-            NSLog("[SessionListVM] startInboxSubscription: empty actorID, skipping")
+        guard !userID.isEmpty else {
+            NSLog("[SessionListVM] startInboxSubscription: empty userID, skipping")
             return
         }
-        let topic = "inbox/\(actorID)"
+        let topic = "inbox/\(userID)"
 
         inboxTask?.cancel()
         let container = modelContext.container
@@ -219,7 +225,7 @@ public final class SessionListViewModel {
             let stream = await hub.messages(matching: { msg in msg.topic == topic })
             for await msg in stream {
                 if Task.isCancelled { return }
-                switch parseInboxEnvelope(topic: msg.topic, payload: msg.payload, expectedUserID: actorID) {
+                switch parseInboxEnvelope(topic: msg.topic, payload: msg.payload, expectedUserID: userID) {
                 case .success(let ping):
                     await self.applyInboxPing(ping, teamID: teamID, sessionsRepo: sessionsRepo, modelContext: ctx)
                 case .failure(let err):

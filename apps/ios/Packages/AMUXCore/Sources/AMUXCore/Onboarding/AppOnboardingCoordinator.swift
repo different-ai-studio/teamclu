@@ -1004,6 +1004,17 @@ public final class AppOnboardingCoordinator {
         try await store.accessToken()
     }
 
+    /// The authenticated user's id, as opposed to the member actor id in
+    /// `currentContext`. The two are different UUIDs and are not
+    /// interchangeable: FC addresses a user's inbox topic by this one.
+    ///
+    /// Read from the access token's `sub`, so it needs no extra round trip and
+    /// is available wherever a token is.
+    public func currentUserID() async -> String? {
+        guard let token = try? await store.accessToken() else { return nil }
+        return SessionStore.jwtSubject(token)
+    }
+
     public func signOut() async {
         guard !isBusy else { return }
         isBusy = true
