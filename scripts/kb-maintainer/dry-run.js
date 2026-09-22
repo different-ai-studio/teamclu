@@ -59,9 +59,6 @@ function assertSchema(knowledgeRoot) {
 
 function dryRun(opts) {
   const config = loadConfig(opts.configPath);
-  if (opts.nodeId !== config.maintainerNodeId) {
-    throw new Error(`maintainer node id mismatch: expected ${config.maintainerNodeId}`);
-  }
   if (typeof opts.fetchDocuments === "function") {
     // Slice 1 must never fetch; presence of the hook is a tripwire for tests.
   }
