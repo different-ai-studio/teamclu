@@ -472,9 +472,12 @@ struct ActorDetailView: View {
     var currentActorID: String?
     var agentPresenceStore: AgentPresenceStore?
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppOnboardingCoordinator.self) private var onboarding: AppOnboardingCoordinator?
     /// Nil until the first fetch lands, so the stat row can tell "loading"
-    /// from a genuine zero.
+    /// from a genuine zero. Agents only — a person installs none of these.
     @State private var resourceCounts: TeamResourceCounts?
+    /// The member equivalent, same nil-means-loading rule.
+    @State private var memberStats: MemberActivityStats?
     /// Drives the push into skills / MCP / env. An optional rather than a
     /// `NavigationLink(value:)` per block: the three blocks share one List
     /// row, and a row activates *every* link it contains, so one tap used to
@@ -815,8 +818,13 @@ struct ActorDetailView: View {
             myDefaultAgentID = await store.getMemberDefaultAgent()
         }
         .task(id: actor.actorId) {
-            guard let repo = teamResourceRepository else { return }
+            // Three requests a member's page no longer draws anything from.
+            guard !actor.isMember, let repo = teamResourceRepository else { return }
             resourceCounts = await repo.counts(teamID: actor.teamId, actorID: actor.actorId)
+        }
+        .task(id: actor.actorId) {
+            guard actor.isMember else { return }
+            memberStats = await loadMemberStats()
         }
         .navigationDestination(item: $resourceRoute) { route in
             ActorResourceListView(route: route, repository: teamResourceRepository)
@@ -1079,20 +1087,85 @@ struct ActorDetailView: View {
         }
     }
 
+    /// Agents count what is installed on them; people count what they did.
+    ///
+    /// Skills and MCP are an agent's installs — a person has neither, and the
+    /// env block showed the team's number, which read identically on
+    /// everybody's page and so said nothing about the person whose page it was.
     @ViewBuilder
     private var statsSection: some View {
         Section {
-            HStack(spacing: 0) {
-                statBlock(.skills)
-                statDivider
-                statBlock(.mcp)
-                statDivider
-                statBlock(.env)
+            Group {
+                if actor.isMember {
+                    memberStatRow
+                } else {
+                    agentStatRow
+                }
             }
             .padding(.vertical, 8)
             .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             .listRowBackground(Color.amux.paper)
         }
+    }
+
+    private var agentStatRow: some View {
+        HStack(spacing: 0) {
+            statBlock(.skills)
+            statDivider
+            statBlock(.mcp)
+            statDivider
+            statBlock(.env)
+        }
+    }
+
+    private var memberStatRow: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(MemberStatKind.allCases.enumerated()), id: \.offset) { index, kind in
+                if index > 0 { statDivider }
+                memberStatBlock(kind)
+            }
+        }
+    }
+
+    /// The same shape as `statBlock`, minus the tap: there is nothing to push
+    /// into. A skills count opens a list; a token count is the whole answer.
+    private func memberStatBlock(_ kind: MemberStatKind) -> some View {
+        VStack(spacing: 2) {
+            Group {
+                if let memberStats {
+                    Text(kind.value(from: memberStats))
+                        .font(.system(size: 22, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                } else {
+                    // Same placeholder rule as the agent row: a real zero and
+                    // "not loaded yet" mean different things.
+                    Text("—")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 3) {
+                Text(kind.title.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.2)
+                    .foregroundStyle(.secondary)
+                if let tag = kind.scopeTag {
+                    Text(tag)
+                        .font(.system(size: 8, weight: .bold))
+                        .tracking(0.3)
+                        .foregroundStyle(Color.amux.basalt)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.amux.pebble)
+                        )
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 
     /// Skills and MCP are this actor's installs; env is the team's set and
@@ -1148,6 +1221,38 @@ struct ActorDetailView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
+    }
+
+    /// Built here rather than injected, the way `TeamStatsSheet` builds its
+    /// own telemetry repository. This stat row is the only thing on this
+    /// screen that wants them, and threading two more repositories through
+    /// MembersTab and MemberListContent to reach it is a lot of public surface
+    /// for two numbers.
+    ///
+    /// Nil when there is no signed-in Cloud API session, which leaves the row
+    /// showing "—" rather than a fabricated zero.
+    private func loadMemberStats() async -> MemberActivityStats? {
+        guard let onboarding,
+              let config = CloudAPIConfigurationStore.configuration()
+        else { return nil }
+        return await MemberActivityStatsLoader.load(
+            teamID: actor.teamId,
+            actorID: actor.actorId,
+            telemetry: CloudAPITelemetryRepository(
+                client: CloudAPIClient(configuration: config, accessToken: {
+                    try await onboarding.accessToken()
+                })
+            ),
+            // `memberActorID` is who is asking, not who is being looked at —
+            // it is what the write paths stamp on a new idea. Listing ignores
+            // it, but passing the viewed actor here would be a lie waiting to
+            // be used.
+            ideas: CloudAPIRepositoryFactory.ideasRepository(
+                configuration: config,
+                memberActorID: currentActorID ?? "",
+                accessToken: { try await onboarding.accessToken() }
+            )
+        )
     }
 
     private var statDivider: some View {

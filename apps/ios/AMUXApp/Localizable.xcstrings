@@ -2056,6 +2056,16 @@
         }
       }
     },
+    "MONTH": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本月"
+          }
+        }
+      }
+    },
     "Month": {
       "localizations": {
         "zh-Hans": {
@@ -4233,6 +4243,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "今天"
+          }
+        }
+      }
+    },
+    "Tokens": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Token"
           }
         }
       }
