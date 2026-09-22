@@ -171,16 +171,38 @@ public final class VoiceRecorder {
         self.audioLevel = 0
         self.state = .recording
 
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-            Task { @MainActor in
-                if let result {
-                    self.transcript = result.bestTranscription.formattedString
-                }
-                if error != nil || result?.isFinal == true {
-                    self.finalizeRecognition()
-                }
+        // Same treatment as the two callbacks above, and for the same reason.
+        // Speech runs this on its own queue, and the handler used to deref
+        // `self` there — a strong one, which is more than the weak capture the
+        // tap note says is already enough to trip Swift 6's isolation checking.
+        // Nothing that touches this object crosses onto a framework thread
+        // now: the closure Speech holds forwards two plain values, and the hop
+        // happens on our side.
+        let onUpdate: @Sendable (String?, Bool) -> Void = { [weak self] text, finished in
+            Task.detached { @MainActor [weak self] in
+                guard let self else { return }
+                if let text { self.transcript = text }
+                if finished { self.finalizeRecognition() }
             }
+        }
+        task = Self.startRecognition(recognizer, request: request, onUpdate: onUpdate)
+    }
+
+    /// Registers the recognition handler from outside this class's isolation,
+    /// so the closure Speech keeps cannot inherit it. It reads what it needs
+    /// off the result — `SFSpeechRecognitionResult` is not `Sendable` and has
+    /// no business leaving this queue — and passes on a string and whether the
+    /// turn is over.
+    nonisolated private static func startRecognition(
+        _ recognizer: SFSpeechRecognizer,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onUpdate: @escaping @Sendable (String?, Bool) -> Void
+    ) -> SFSpeechRecognitionTask {
+        recognizer.recognitionTask(with: request) { result, error in
+            onUpdate(
+                result?.bestTranscription.formattedString,
+                error != nil || result?.isFinal == true
+            )
         }
     }
 
