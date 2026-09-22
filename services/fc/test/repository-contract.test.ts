@@ -527,6 +527,9 @@ function contractRepo() {
       const i = ideaStore.find(i => i.id === ideaId);
       if (i) i.archived = true;
     },
+    async downloadAttachmentThumbnail(path, opts: any = {}) {
+      return { mime: "image/jpeg", bytes: Buffer.from(`thumb:${path}:${opts.width}`) };
+    },
     async setIdeaLike(ideaId, liked) {
       const i = ideaStore.find(i => i.id === ideaId);
       if (!i) throw new Error("idea not found");
