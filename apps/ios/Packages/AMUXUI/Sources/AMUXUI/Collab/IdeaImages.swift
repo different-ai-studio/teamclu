@@ -1,16 +1,18 @@
 import SwiftUI
 import ImageIO
 import UniformTypeIdentifiers
+import AMUXCore
 import AMUXSharedUI
 
 // Pictures on ideas, end to end: what gets uploaded, what a feed row draws,
 // and what a tap opens.
 //
-// The server has no image transformation. Supabase Storage can do it through
-// imgproxy, and the self-host stack even runs that container, but the storage
-// service is not configured for it and there is no route to it — asking for
-// `/render/image/...` answers 401. Belayo is a separate deployment with its
-// own answer. So the sizes have to come from this side.
+// Sizes come from the server where they can. Storage resizes through imgproxy,
+// but that path wants a key `/object/public/...` does not, and this app holds
+// no Supabase key on purpose — so `GET /v1/attachments/thumbnail` asks on its
+// behalf. When that is unavailable, which is any deployment whose Cloud API
+// predates the route, the tile falls back to the stored object and the decode
+// below keeps it from costing much to draw.
 
 /// Shrinks a picked photo before it is uploaded.
 ///
@@ -101,9 +103,16 @@ actor IdeaThumbnailLoader {
         if let running = inFlight[key] { return await running.value }
 
         let task = Task<UIImage?, Never> { [maxPixel] in
-            // URLSession's own cache covers the bytes, so a second size of the
-            // same picture does not fetch it again.
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
+            // Ask the API for a resized copy; fall back to the object itself.
+            // URLSession's own cache covers the fallback bytes, so a second
+            // size of the same picture does not fetch it again.
+            // Two statements rather than `??`: its right side is a
+            // non-async autoclosure and cannot be awaited in.
+            var bytes = await Self.resizedBytes(for: url, width: maxPixel)
+            if bytes == nil {
+                bytes = (try? await URLSession.shared.data(from: url))?.0
+            }
+            guard let data = bytes,
                   let source = CGImageSourceCreateWithData(data as CFData, nil),
                   let cgImage = IdeaImagePreparation.thumbnail(from: source, maxPixel: maxPixel)
             else { return nil }
@@ -114,6 +123,54 @@ actor IdeaThumbnailLoader {
         inFlight[key] = nil
         if let image { cache.setObject(image, forKey: key) }
         return image
+    }
+}
+
+extension IdeaThumbnailLoader {
+    /// `…/storage/v1/object/public/<bucket>/<path>` split into its two halves.
+    /// Anything shaped differently is left alone — a picture from somewhere
+    /// else is still a picture, it just does not get resized.
+    static func storageLocation(of url: URL) -> (bucket: String, path: String)? {
+        let marker = "/storage/v1/object/public/"
+        // `URL.path` has already taken the percent-encoding off, which is what
+        // the API wants — it takes the object path as a query parameter and
+        // encodes it again. Decoding a second time would corrupt a name that
+        // genuinely contains a `%`.
+        guard let range = url.path.range(of: marker) else { return nil }
+        let rest = String(url.path[range.upperBound...])
+        guard let slash = rest.firstIndex(of: "/") else { return nil }
+        let bucket = String(rest[..<slash])
+        let path = String(rest[rest.index(after: slash)...])
+        return bucket.isEmpty || path.isEmpty ? nil : (bucket, path)
+    }
+
+    /// Nil whenever the resize cannot be had — not configured, not signed in,
+    /// an older Cloud API without the route, a picture from outside storage.
+    /// The caller then fetches the object.
+    private static func resizedBytes(for url: URL, width: Int) async -> Data? {
+        guard let (bucket, path) = storageLocation(of: url),
+              let client = client()
+        else { return nil }
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "path", value: path),
+            URLQueryItem(name: "bucket", value: bucket),
+            URLQueryItem(name: "width", value: String(width)),
+        ]
+        guard let query = components.percentEncodedQuery else { return nil }
+        return try? await client.getRawBytes("/v1/attachments/thumbnail?\(query)").data
+    }
+
+    /// Built the way `AttachmentUploadManager.fromMainBundle` builds one.
+    private static func client() -> CloudAPIClient? {
+        guard let configuration = CloudAPIConfigurationStore.configuration() else { return nil }
+        let storage = KeychainSessionStorage()
+        return CloudAPIClient(configuration: configuration, accessToken: {
+            guard let session = try storage.load(), session.expiresAt.timeIntervalSinceNow > 0 else {
+                throw CloudAPIError.missingAccessToken
+            }
+            return session.accessToken
+        })
     }
 }
 
