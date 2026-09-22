@@ -57,7 +57,7 @@ import { acquireRuntimeStateStore, useRuntimeStateStore } from "@/stores/runtime
 import { findStaleLiveStreams, STALE_STREAM_SWEEP_MS } from "@/lib/stream/stale-stream-recovery";
 import { acquireActorPresenceStore } from "@/stores/actor-presence-store";
 import { type Message as TeamcluMessage } from "@/lib/proto/teamclu_pb";
-import { agentStreamKey, liveEventDedupKey, mergePendingAgentReplies, registerDiscardPendingStreamReply, rememberLiveEventId} from "@/lib/stream/live-agent-stream";
+import { agentStreamKey, mergePendingAgentReplies, registerDiscardPendingStreamReply, rememberLiveEventId, rememberLiveMessageId} from "@/lib/stream/live-agent-stream";
 import { softDeleteMessage} from "@/lib/cache/local-cache";
 import { syncActorsForTeam } from "@/lib/sync/actor-sync";
 import { syncIdeasForTeam } from "@/lib/sync/idea-sync";
@@ -110,6 +110,9 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
     {},
   );
   const seenLiveEventIdsRef = useRef<Set<string>>(new Set());
+  /// Message ids already handled, kept apart from the envelope-id Set so the
+  /// streaming deltas that dominate that one cannot evict them.
+  const seenLiveMessageIdsRef = useRef<Set<string>>(new Set());
   const [inboxIdleRevision, setInboxIdleRevision] = useState(0);
   const liveInterestSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onInboxMessagePingRef = useRef<(sessionId: string) => void>(() => {});
@@ -741,16 +744,11 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
             !rememberLiveEventId(
               seenLiveEventIdsRef.current,
               sid,
-              liveEventDedupKey(
-                decoded.envelope.eventType,
-                decoded.envelope.eventId,
-                decoded.message?.messageId,
-              ),
+              decoded.envelope.eventId,
             )
           ) {
             // Second copy of a dual-path event (local daemon SSE fast-path +
-            // MQTT deliver the same eventId), an MQTT redelivery, or — for
-            // `message.created` — the same row from a second publisher.
+            // MQTT deliver the same eventId) or an MQTT redelivery.
             bumpLiveDuplicateDropped();
             return;
           }
@@ -849,6 +847,26 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
 
           // Case 1: final message.created
           if (decoded.message) {
+            // Deliberately not folded into the envelope gate above.
+            //
+            // Two publishers of one row mint two `eventId`s, so the envelope
+            // gate cannot collapse them — but keying that gate on the message
+            // id instead would be worse in two ways. Its Set is a 2000-entry
+            // FIFO shared with every streaming delta, and a long turn emits
+            // far more than 2000, so the key guarding a reply would be evicted
+            // before the duplicate arrives. And the gate runs ahead of the
+            // `!isSessionLiveInterest` branch above, which only touches the
+            // session list and returns — a first copy consumed there would
+            // burn the key and the copy that would actually have been stored
+            // gets dropped.
+            //
+            // Claiming it here, at the one place the message is really
+            // consumed, avoids both: its own Set is untouched by deltas, and
+            // nothing claims a message it does not go on to handle.
+            if (!rememberLiveMessageId(seenLiveMessageIdsRef.current, sid, decoded.message.messageId)) {
+              bumpLiveDuplicateDropped();
+              return;
+            }
             handleLiveMessage(liveWiringCtx, decoded, sid);
             return;
           }

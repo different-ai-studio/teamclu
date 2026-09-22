@@ -17,7 +17,7 @@ import {
   mergePendingAgentReplies,
   normalizeToolResultEvent,
   normalizeToolUseEvent,
-  liveEventDedupKey,
+  rememberLiveMessageId,
   rememberLiveEventId,
   streamTranscriptHasText,
   streamTranscriptRevision,
@@ -148,38 +148,53 @@ describe("live agent stream event helpers", () => {
     expect(rememberLiveEventId(seen, "s2", "evt-1")).toBe(true);
   });
 
-  it("keys message.created on the message id, not the envelope id", () => {
-    // The same row can reach a client from two publishers — the daemon today,
-    // FC once it fans out. Each mints its own eventId, so keying on that would
-    // show the message twice.
-    expect(liveEventDedupKey("message.created", "evt-daemon", "msg-1")).toBe("message:msg-1");
-    expect(liveEventDedupKey("message.created", "evt-fc", "msg-1")).toBe("message:msg-1");
-  });
-
-  it("keys every other event on the envelope id", () => {
-    // Streaming deltas have no message id and must stay keyed per publish,
-    // or two distinct chunks would collapse into one.
-    expect(liveEventDedupKey("acp.event", "evt-1", undefined)).toBe("evt-1");
-    expect(liveEventDedupKey("session.title_updated", "evt-2", undefined)).toBe("evt-2");
-  });
-
-  it("falls back to the envelope id when message.created carries no message id", () => {
-    // A malformed envelope must not collapse onto a single shared key and
-    // silently swallow every later message in the session.
-    expect(liveEventDedupKey("message.created", "evt-3", undefined)).toBe("evt-3");
-    expect(liveEventDedupKey("message.created", "evt-4", "")).toBe("evt-4");
-  });
-
-  it("drops the second copy of one message but keeps distinct ones", () => {
+  it("handles one message once, however many publishers send it", () => {
+    // Two publishers of one row mint two eventIds, so the envelope gate cannot
+    // collapse them — this is the gate that can.
     const seen = new Set<string>();
-    const key = (eventId: string, messageId: string) =>
-      liveEventDedupKey("message.created", eventId, messageId);
-    expect(rememberLiveEventId(seen, "s1", key("evt-daemon", "msg-1"))).toBe(true);
-    expect(rememberLiveEventId(seen, "s1", key("evt-fc", "msg-1"))).toBe(false);
-    expect(rememberLiveEventId(seen, "s1", key("evt-fc", "msg-2"))).toBe(true);
-    // Session-scoped, as before: the same message id in another session is
-    // a different key.
-    expect(rememberLiveEventId(seen, "s2", key("evt-daemon", "msg-1"))).toBe(true);
+    expect(rememberLiveMessageId(seen, "s1", "msg-1")).toBe(true);
+    expect(rememberLiveMessageId(seen, "s1", "msg-1")).toBe(false);
+    expect(rememberLiveMessageId(seen, "s1", "msg-2")).toBe(true);
+    // Session-scoped, like the envelope gate.
+    expect(rememberLiveMessageId(seen, "s2", "msg-1")).toBe(true);
+  });
+
+  it("trims ids before comparing them", () => {
+    // Padding must not create a second key for one message — nor two keys that
+    // differ only in whitespace, which would let the duplicate through.
+    const seen = new Set<string>();
+    expect(rememberLiveMessageId(seen, "s1", "msg-1")).toBe(true);
+    expect(rememberLiveMessageId(seen, "s1", " msg-1 ")).toBe(false);
+  });
+
+  it("claims nothing for a blank id", () => {
+    // A blank id must not collapse onto one shared key: the first message would
+    // be handled and every later one in that session silently dropped.
+    const seen = new Set<string>();
+    expect(rememberLiveMessageId(seen, "s1", "")).toBe(true);
+    expect(rememberLiveMessageId(seen, "s1", "   ")).toBe(true);
+    expect(rememberLiveMessageId(seen, "s1", undefined)).toBe(true);
+    expect(seen.size).toBe(0);
+  });
+
+  it("is not evicted by a turn's worth of streaming deltas", () => {
+    // The reason this has its own Set. The envelope Set is dominated by one
+    // entry per output/thinking chunk, and a long turn pushes well past the
+    // cap — a message key living there would be gone before its duplicate
+    // arrived.
+    const shared = new Set<string>();
+    const dedicated = new Set<string>();
+    rememberLiveEventId(shared, "s1", "message:msg-1");
+    expect(rememberLiveMessageId(dedicated, "s1", "msg-1")).toBe(true);
+
+    for (let i = 0; i < 2_500; i++) {
+      rememberLiveEventId(shared, "s1", `delta-${i}`);
+    }
+
+    // Shared with the deltas, the key is gone and the duplicate would be
+    // processed; in its own Set it still holds.
+    expect(rememberLiveEventId(shared, "s1", "message:msg-1")).toBe(true);
+    expect(rememberLiveMessageId(dedicated, "s1", "msg-1")).toBe(false);
   });
 
   it("derives merged content from transcript parts when present", () => {
