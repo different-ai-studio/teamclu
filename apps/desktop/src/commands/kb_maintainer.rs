@@ -481,13 +481,13 @@ fn humanize_compiler_error(stderr: &str) -> String {
         return "Some pages need visual recognition. Review the estimated cost before continuing."
             .to_string();
     }
-    if (stderr.contains("unpublished external content") || stderr.contains("already has files")) {
+    if stderr.contains("unpublished external content") || stderr.contains("already has files") {
         return "Team Wiki already has older pages. Run maintenance again, then publish to replace them."
             .to_string();
     }
-    if (stderr.contains("publish destination changed")
+    if stderr.contains("publish destination changed")
         || stderr.contains("unexplained vault edits")
-        || stderr.contains("modified externally"))
+        || stderr.contains("modified externally")
     {
         return "Wiki changed after this run started. Run maintenance again before publishing."
             .to_string();
@@ -597,7 +597,7 @@ async fn run_node(
         let progress_app = app.clone();
         let stderr_thread = thread::spawn(move || {
             let mut other = String::new();
-            for line in BufReader::new(stderr).lines().flatten() {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 if let Some(payload) = line.strip_prefix("KB_PROGRESS ") {
                     if let Ok(value) = serde_json::from_str::<Value>(payload) {
                         let _ = progress_app.emit("kb-maintainer:progress", value);
@@ -614,7 +614,7 @@ async fn run_node(
 
         let stdout_text = {
             let mut buf = String::new();
-            for line in BufReader::new(stdout).lines().flatten() {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if !buf.is_empty() {
                     buf.push('\n');
                 }
