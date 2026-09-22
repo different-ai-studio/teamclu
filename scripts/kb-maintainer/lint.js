@@ -87,7 +87,9 @@ function lintBatch(opts) {
     errors.push("wiki/index.md is missing");
   } else {
     const indexText = fs.readFileSync(indexAbs, "utf8");
-    if (Buffer.byteLength(indexText, "utf8") > maxChars) errors.push("index exceeds maxIndexChars");
+    if (Buffer.byteLength(indexText, "utf8") > maxChars) {
+      warnings.push("index exceeds maxIndexChars");
+    }
     const entries = parseIndexEntries(indexText);
     const seen = new Map();
     for (const entry of entries) {

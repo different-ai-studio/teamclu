@@ -498,6 +498,14 @@ fn humanize_compiler_error(stderr: &str) -> String {
         return "The managed Agent runtime is not installed. Finish local Agent setup, then try again."
             .to_string();
     }
+    if stderr.contains("quality check failed")
+        || stderr.contains("dead wiki link")
+        || stderr.contains("did not retract")
+        || stderr.contains("compiler produced no wiki pages")
+    {
+        return "This Wiki compile needs another maintenance run before it can be published."
+            .to_string();
+    }
     stderr
         .lines()
         .find_map(|line| line.trim().strip_prefix("Error: "))
@@ -898,6 +906,12 @@ mod tests {
                 "Error: The managed Agent runtime is not installed. Finish local Agent setup, then try again."
             ),
             "The managed Agent runtime is not installed. Finish local Agent setup, then try again."
+        );
+        assert_eq!(
+            humanize_compiler_error(
+                "Error: quality check failed: pages/knowledge-base.md: dead wiki link target"
+            ),
+            "This Wiki compile needs another maintenance run before it can be published."
         );
     }
 

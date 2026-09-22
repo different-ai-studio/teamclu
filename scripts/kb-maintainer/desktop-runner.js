@@ -12,6 +12,40 @@ const { loadConfig } = require("./config");
 const { buildPublishPlan, publishWiki } = require("./publish");
 const { commitAll, headCommit } = require("./git-store");
 const { gcOrphanPages } = require("./orphan-gc");
+const { repairWiki } = require("./repair");
+
+const SKIPPED =
+  "This source was skipped this run and will be compiled again next time.";
+
+function explainFailure(error) {
+  const text = String(error || "");
+  if (text === "too_large" || /\btoo_large\b/.test(text) || /^size \d+/.test(text)) {
+    return "This source is too long. Split it into shorter files, then compile again.";
+  }
+  if (
+    /^extension /.test(text) ||
+    /^extraction /.test(text) ||
+    /unsupported source extension/.test(text) ||
+    /unsupported text extension/.test(text) ||
+    /unsupported office/.test(text)
+  ) {
+    return "This source could not be read. Replace it with a text file, then try again.";
+  }
+  if (/^deny pattern\b/.test(text) || text === "sensitive filename") {
+    return "This file is excluded from Wiki. Choose a different folder.";
+  }
+  if (/^unknown class /.test(text)) {
+    return "This folder is not set up for Wiki compile. Choose another folder.";
+  }
+  if (
+    /compiler produced no wiki pages|dead wiki link|did not retract|PII|internal leak|copy ratio|illegal type|unreadable frontmatter|managed_by|schema_version|sha256 mismatch|locator not in raw|exceeds \d+ chars|source-summary too large|index summary mismatch|index missing|index repeats|index points|changed \d+ pages|diff escapes|link not allowed|missing frontmatter|unterminated frontmatter|sources required|quality check failed|source not in current set|wiki\/index\.md is missing|path escapes|raw cache missing/.test(
+      text,
+    )
+  ) {
+    return SKIPPED;
+  }
+  return text;
+}
 
 function pageChanges(items) {
   return (items || []).filter((item) => String(item).startsWith("pages/")).length;
@@ -19,10 +53,21 @@ function pageChanges(items) {
 
 function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan }) {
   const failures = (ingest.failures || []).map(
-    (failure) => `${failure.path}: ${failure.error}`,
+    (failure) => `${failure.path}: ${explainFailure(failure.error)}`,
   );
+  const lintBlockers = [];
+  let skippedLint = false;
+  for (const error of lint.errors || []) {
+    const explained = explainFailure(error);
+    if (explained === SKIPPED) {
+      skippedLint = true;
+      continue;
+    }
+    lintBlockers.push(explained);
+  }
+  if (skippedLint) lintBlockers.unshift(SKIPPED);
   const policyBlocks = [...(plan.denied || []), ...(plan.blocked || [])].map(
-    (item) => `${item.path}: ${item.reason}`,
+    (item) => `${item.path}: ${explainFailure(item.reason)}`,
   );
   // Present sources only — deleted-from-disk retracts are counted separately so
   // the UI does not look like "3 files" when the vault only has 1 left.
@@ -40,7 +85,7 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
     ...(emptySelection ? ["No source files were found in the selected folders."] : []),
     ...policyBlocks,
     ...failures,
-    ...lintErrors,
+    ...lintBlockers,
   ];
   return {
     runId,
@@ -88,8 +133,16 @@ async function prepare(input, hooks = {}) {
   // Previous failed retracts can leave wiki pages that still cite deleted
   // sources while state no longer tracks them. Drop those orphans before lint.
   const orphans = gcOrphanPages({ wikiRoot, state });
-  if (orphans.removed.length > 0 || orphans.rewritten.length > 0) {
-    commitAll(wikiRoot, "wiki: drop pages for deleted sources");
+  const repaired = repairWiki(wikiRoot, {
+    state,
+    maxBytes: config.limits?.maxIndexChars || 8000,
+  });
+  if (
+    orphans.removed.length > 0 ||
+    orphans.rewritten.length > 0 ||
+    repaired.changed
+  ) {
+    commitAll(wikiRoot, "wiki: repair compiled pages");
   }
   const lint = lintBatch({ wikiRoot, state, config });
   const toCommit = headCommit(wikiRoot);
@@ -113,6 +166,13 @@ async function publish(input) {
   const config = loadConfig(input.configPath);
   const wikiRoot = path.join(input.workRoot, "wiki");
   const state = loadState(input.statePath);
+  const repaired = repairWiki(wikiRoot, {
+    state,
+    maxBytes: config.limits?.maxIndexChars || 8000,
+  });
+  if (repaired.changed) {
+    commitAll(wikiRoot, "wiki: repair compiled pages");
+  }
   const lint = lintBatch({ wikiRoot, state, config });
   if (!lint.ok) {
     throw new Error(`quality check failed: ${lint.errors.join("; ")}`);
@@ -152,4 +212,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { prepare, publish, summarizePreparedRun };
+module.exports = { prepare, publish, summarizePreparedRun, explainFailure };

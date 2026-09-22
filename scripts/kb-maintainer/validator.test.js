@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { validateSourceDiff, normalizeWikiLinks, rebuildIndex } = require("./validator");
+const { validateSourceDiff, normalizeWikiLinks, dropDeadWikiLinks, rebuildIndex } = require("./validator");
 
 const SHA = "ab".repeat(32);
 
@@ -162,6 +162,21 @@ test("validateSourceDiff only applies copy-ratio to pages that cite the current 
   assert.equal(bad.ok, false);
   assert.match(bad.errors.join("\n"), /pages\/leave\.md: copy ratio too high/);
   assert.doesNotMatch(bad.errors.join("\n"), /unrelated/);
+});
+
+test("dropDeadWikiLinks keeps the label and removes a link whose page was never written", () => {
+  const fx = makeWiki({
+    "pages/knowledge-base.md": pageMarkdown({
+      body: "详见 [[missing-target|还不存在的条目]] 和 [[pages/also-missing]]。",
+    }),
+    "index.md": "# LLM Wiki\n",
+  });
+  const result = dropDeadWikiLinks(fx.wiki);
+  assert.equal(result.rewritten, 1);
+  const text = fs.readFileSync(path.join(fx.wiki, "pages", "knowledge-base.md"), "utf8");
+  assert.match(text, /还不存在的条目/);
+  assert.match(text, /also-missing/);
+  assert.doesNotMatch(text, /\[\[/);
 });
 
 test("normalizeWikiLinks rewrites short links onto pages/ when the target page exists", () => {

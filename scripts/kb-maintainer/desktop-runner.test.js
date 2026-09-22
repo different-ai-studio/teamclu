@@ -131,8 +131,44 @@ test("summarizePreparedRun blocks denied and unclassified selected sources", () 
   assert.equal(summary.sourceCount, 2);
   assert.equal(summary.canPublish, false);
   assert.deepEqual(summary.blockers, [
-    "documents/hr/personnel/a.md: deny pattern",
-    "documents/misc/a.bin: extension bin",
+    "documents/hr/personnel/a.md: This file is excluded from Wiki. Choose a different folder.",
+    "documents/misc/a.bin: This source could not be read. Replace it with a text file, then try again.",
+  ]);
+});
+
+test("summarizePreparedRun turns compiler-owned failures into one skip sentence", () => {
+  const summary = summarizePreparedRun({
+    runId: "run-skip",
+    plan: {
+      add: [{ path: "documents/handbook/a.md" }],
+      update: [],
+      delete: [],
+      unchanged: [],
+    },
+    ingest: {
+      failures: [
+        { path: "documents/handbook/a.md", error: "compiler produced no wiki pages" },
+        { path: "documents/handbook/b.md", error: "too_large" },
+        { path: "documents/handbook/c.pdf", error: "extraction extraction_failed" },
+      ],
+    },
+    lint: {
+      ok: false,
+      errors: [
+        "pages/a.md: dead wiki link target",
+        "pages/b.md: source sha256 mismatch",
+      ],
+      warnings: [],
+    },
+    estimate: { visionPages: 0, estimatedCost: 0, currency: "CNY" },
+    publishPlan: { create: [], update: [], delete: [] },
+  });
+
+  assert.deepEqual(summary.blockers, [
+    "documents/handbook/a.md: This source was skipped this run and will be compiled again next time.",
+    "documents/handbook/b.md: This source is too long. Split it into shorter files, then compile again.",
+    "documents/handbook/c.pdf: This source could not be read. Replace it with a text file, then try again.",
+    "This source was skipped this run and will be compiled again next time.",
   ]);
 });
 

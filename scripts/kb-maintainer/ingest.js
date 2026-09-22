@@ -7,8 +7,8 @@ const { dryRun } = require("./dry-run");
 const { extractorCacheKey, rawRelativePath } = require("./extract-text");
 const { extractSource } = require("./extract");
 const { compile } = require("./agent-runner");
-const { validateSourceDiff, rebuildIndex, normalizeWikiLinks } = require("./validator");
-const { normalizeCompiledPage } = require("./frontmatter");
+const { validateSourceDiff, rebuildIndex, normalizeWikiLinks, dropDeadWikiLinks, listPageFiles } = require("./validator");
+const { normalizeCompiledPage, parseFrontmatter, serializeFrontmatter } = require("./frontmatter");
 const {
   ensureWikiRepo,
   headCommit,
@@ -17,6 +17,7 @@ const {
   resetHard,
   ingestMessage,
 } = require("./git-store");
+const { limitCompileDiff } = require("./repair");
 
 function loadState(statePath) {
   if (!statePath || !fs.existsSync(statePath)) {
@@ -99,9 +100,17 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
       locators: extracted.locators,
       rawMarkdown: extracted.markdown,
       maxBytes: config.limits?.maxIndexChars || 8000,
+      maxSourceSummaryChars: config.limits?.maxSourceSummaryChars || 4000,
     });
+    limitCompileDiff(
+      wikiRoot,
+      beforeCommit,
+      item.path,
+      config.limits?.maxPagesChangedPerSource ?? 15,
+    );
     rebuildIndex(wikiRoot);
     normalizeWikiLinks(wikiRoot);
+    dropDeadWikiLinks(wikiRoot);
     rebuildIndex(wikiRoot);
     const pageHits = (compiled.affectedPages || []).filter((rel) =>
       rel.startsWith("pages/"),
@@ -165,9 +174,35 @@ function normalizeCompiledPages(wikiRoot, beforeCommit, defaults) {
   }
 }
 
+function retractSourceCitations(wikiRoot, sourcePath) {
+  const removed = [];
+  const rewritten = [];
+  for (const rel of listPageFiles(wikiRoot)) {
+    const abs = path.join(wikiRoot, rel);
+    let parsed;
+    try {
+      parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
+    } catch {
+      continue;
+    }
+    const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
+    const kept = cited.filter((source) => source && source.path !== sourcePath);
+    if (kept.length === cited.length) continue;
+    if (kept.length === 0) {
+      fs.rmSync(abs);
+      removed.push(rel);
+      continue;
+    }
+    fs.writeFileSync(
+      abs,
+      serializeFrontmatter({ ...parsed.frontmatter, sources: kept }, parsed.body),
+    );
+    rewritten.push(rel);
+  }
+  return { removed, rewritten };
+}
+
 function pagesStillCiting(wikiRoot, sourcePath) {
-  const { listPageFiles } = require("./validator");
-  const { parseFrontmatter } = require("./frontmatter");
   const citing = [];
   for (const rel of listPageFiles(wikiRoot)) {
     const abs = path.join(wikiRoot, rel);
@@ -210,6 +245,12 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
     });
     rebuildIndex(wikiRoot);
     normalizeWikiLinks(wikiRoot);
+    if (pagesStillCiting(wikiRoot, item.path).length > 0) {
+      retractSourceCitations(wikiRoot, item.path);
+    }
+    dropDeadWikiLinks(wikiRoot);
+    rebuildIndex(wikiRoot);
+    limitCompileDiff(wikiRoot, beforeCommit, item.path, Number.POSITIVE_INFINITY);
     const stillCiting = pagesStillCiting(wikiRoot, item.path);
     if (stillCiting.length > 0) {
       throw new Error(

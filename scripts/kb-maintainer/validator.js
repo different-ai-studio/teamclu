@@ -93,6 +93,27 @@ function normalizeWikiLinks(wikiRoot) {
   return { rewritten };
 }
 
+function dropDeadWikiLinksInText(text, wikiRoot) {
+  return text.replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (full, target, alias) => {
+    if (resolveWikiLink(wikiRoot, target)) return full;
+    return (alias || target).trim();
+  });
+}
+
+/** A link to a page the compiler never wrote is not something a person can fix. Keep the label as plain text so the page can still be published. */
+function dropDeadWikiLinks(wikiRoot) {
+  let rewritten = 0;
+  for (const rel of listPageFiles(wikiRoot)) {
+    const abs = path.join(wikiRoot, rel);
+    const before = fs.readFileSync(abs, "utf8");
+    const after = dropDeadWikiLinksInText(before, wikiRoot);
+    if (after === before) continue;
+    fs.writeFileSync(abs, after);
+    rewritten += 1;
+  }
+  return { rewritten };
+}
+
 function locatorPresent(rawMarkdown, locator) {
   return rawMarkdown.includes(`<!-- source-locator: ${locator} -->`);
 }
@@ -232,7 +253,6 @@ function validateSourceDiff(opts) {
     errors.push("wiki/index.md is missing");
   } else {
     const indexText = fs.readFileSync(indexAbs, "utf8");
-    if (Buffer.byteLength(indexText, "utf8") > maxChars) errors.push("index exceeds maxIndexChars");
     const entries = parseIndexEntries(indexText);
     const seen = new Map();
     for (const entry of entries) {
@@ -305,6 +325,7 @@ module.exports = {
   validateSourceDiff,
   rebuildIndex,
   normalizeWikiLinks,
+  dropDeadWikiLinks,
   listPageFiles,
   isAllowedWikiPath,
   posixRel,

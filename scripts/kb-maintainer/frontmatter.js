@@ -233,7 +233,45 @@ function normalizeCompiledPage(text, defaults = {}) {
     source.locators = locatorList(source.locators);
   }
 
-  return fitPage(fm, parsed.body || "", defaults.maxBytes || 8000);
+  fm.summary = redactCompiledText(fm.summary);
+  let body = redactCompiledText(parsed.body || "");
+  body = shrinkCopiedBody(body, raw);
+  if (fm.type === "source-summary") {
+    body = shrinkToChars(body, defaults.maxSourceSummaryChars || 4000);
+  }
+  return fitPage(fm, body, defaults.maxBytes || 8000);
+}
+
+function redactCompiledText(text) {
+  return String(text || "")
+    .replace(/\d{17}[\dXx]/g, "")
+    .replace(/(?<![\d])1[3-9]\d{9}(?![\d])/g, "")
+    .replace(/(?<![\d])\d{16,19}(?![\d])/g, "")
+    .replace(/\/Users\/[^\s)]+/g, "~")
+    .replace(/\/home\/[^\s)]+/g, "~")
+    .replace(/[A-Za-z]:\\Users\\[^\s)]+/g, "~")
+    .replace(/保单号/g, "")
+    .replace(/chunk-id/gi, "")
+    .replace(/source-locator:\s*chunk=\S*/gi, "")
+    .replace(/<\/?tool\b[^>]*>/gi, "");
+}
+
+function rawBodyOf(rawMarkdown) {
+  const text = String(rawMarkdown || "");
+  const marker = text.indexOf("\n---\n");
+  return marker === -1 ? text : text.slice(marker + 5);
+}
+
+function shrinkToChars(body, maxChars) {
+  const trimmed = String(body || "").trim();
+  if (trimmed.length <= maxChars) return body;
+  return `${trimmed.slice(0, maxChars).trim()}\n`;
+}
+
+function shrinkCopiedBody(body, rawMarkdown) {
+  const raw = rawBodyOf(rawMarkdown).trim();
+  if (raw.length <= 2000) return body;
+  return shrinkToChars(body, Math.floor(raw.length * 0.85));
 }
 
 module.exports = {
@@ -241,4 +279,5 @@ module.exports = {
   serializeFrontmatter,
   quoteYamlScalar,
   normalizeCompiledPage,
+  redactCompiledText,
 };
