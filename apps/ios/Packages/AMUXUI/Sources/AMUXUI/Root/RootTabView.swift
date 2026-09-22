@@ -31,6 +31,11 @@ public struct RootTabView: View {
     /// picker, and carries the transcript waiting on that choice.
     @State private var voiceAgentChoice: VoiceAgentChoice?
 
+    /// Reduces `session/{id}/live` into the session list's leading dots.
+    /// Owned here, not by SessionsTab, so its MQTT subscriptions survive the
+    /// tab's view identity being torn down and rebuilt.
+    @State private var liveActivityStore = SessionLiveActivityStore()
+
     /// Drives the "add the team's first agent" reminder. Set once per app
     /// launch when we observe a team with zero agents; soft-dismissible so it
     /// doesn't reappear after the user closes it.
@@ -104,7 +109,8 @@ public struct RootTabView: View {
                             onReconnect: onReconnect,
                             onSignOut: onSignOut,
                             preferencesAPI: preferencesAPI,
-                            notificationPrefsStore: teamRuntime?.notificationPrefsStore)
+                            notificationPrefsStore: teamRuntime?.notificationPrefsStore,
+                            liveActivityStore: liveActivityStore)
             }
             Tab(IdeaUIPresentation.pluralTitle, systemImage: IdeaUIPresentation.systemImage, value: AppTab.ideas) {
                 IdeasTab(mqtt: mqtt,
@@ -235,6 +241,16 @@ public struct RootTabView: View {
                 teamcluService: teamcluService,
                 agentPresenceStore: teamRuntime?.agentPresenceStore
             )
+            // Session-list activity dots. Started before the inbox
+            // subscription below and the send path in TeamcluService, both of
+            // which are triggers into it.
+            liveActivityStore.start(
+                mqtt: mqtt,
+                hub: hub,
+                teamID: activeTeam?.id ?? "",
+                modelContext: modelContext
+            )
+            teamcluService?.liveActivityStore = liveActivityStore
             // Inbox red-dot subscription: per-user MQTT topic, populated by
             // FC fan-out after each message INSERT. Decoupled from the
             // per-runtime subscriptions in start() above.
@@ -250,7 +266,8 @@ public struct RootTabView: View {
                     userID: userID,
                     teamID: activeTeam?.id ?? "",
                     sessionsRepo: teamRuntime?.sessionsRepo,
-                    modelContext: modelContext
+                    modelContext: modelContext,
+                    liveActivityStore: liveActivityStore
                 )
             } else {
                 NSLog("[RootTabView] inbox: no access token subject; unread dot disabled")

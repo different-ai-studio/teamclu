@@ -34,6 +34,10 @@ struct SessionListContent: View {
     /// without the server rewind the next unread reconcile would clear the
     /// local flag again, so a purely-local flip would just flicker.
     let sessionsListRepository: (any SessionsRepository)?
+    /// Drives each row's leading dot. Nil (previews, tests) draws every row
+    /// quiet rather than guessing from the actor retain, which cannot see a
+    /// turn boundary at all.
+    let liveActivityStore: SessionLiveActivityStore?
 
     @Environment(\.modelContext) private var modelContext
 
@@ -280,7 +284,8 @@ struct SessionListContent: View {
                 runtime: runtime,
                 workspaceName: workspaceName(runtime: runtime),
                 participants: participantPreviews(for: session),
-                isMuted: notificationPrefsStore?.isMuted(session.sessionId) ?? false
+                isMuted: notificationPrefsStore?.isMuted(session.sessionId) ?? false,
+                activity: liveActivityStore?.activity(for: session.sessionId) ?? .quiet
             )
         }
         .contentShape(Rectangle())
@@ -419,19 +424,26 @@ struct AgentRowView: View {
     let workspaceName: String
     let participants: [ParticipantPreview]
     let isMuted: Bool
+    /// What the leading dot says, reduced from `session/{id}/live` by
+    /// `SessionLiveActivityStore`. Not taken from `runtime`: the actor retain
+    /// is only republished on attach/detach, so its status cannot see a turn
+    /// start or a pending permission.
+    let activity: SessionLiveActivity
 
     init(
         session: Session,
         runtime: AgentAttachment? = nil,
         workspaceName: String = "",
         participants: [ParticipantPreview] = [],
-        isMuted: Bool = false
+        isMuted: Bool = false,
+        activity: SessionLiveActivity = .quiet
     ) {
         self.session = session
         self.runtime = runtime
         self.workspaceName = workspaceName
         self.participants = participants
         self.isMuted = isMuted
+        self.activity = activity
     }
 
     private var displayTitle: String {
@@ -445,61 +457,26 @@ struct AgentRowView: View {
     // actor retain does not carry (ADR-0004), so this is the only source now.
     private var isUnread: Bool { session.hasUnread }
 
-    // Absence of an attachment means the session is cold, which is exactly what
-    // the neutral rendering below says.
-    private var isRunning: Bool { runtime?.status == 2 }
-    private var isStarting: Bool { runtime?.status == 1 }
+    /// The only thing still read off the actor retain: a torn-down attachment
+    /// dims the title. Active/Idle are deliberately NOT read here — the retain
+    /// is republished on attach/detach only, so it cannot see a turn.
     private var isStopped: Bool { runtime?.status == 5 }
 
+    /// The word beside the workspace name. Driven by the dot's signal, not by
+    /// `runtime.statusLabel`: the actor retain is only republished on
+    /// attach/detach, so its Active/Idle would contradict the dot for most of
+    /// a turn. Quiet sessions say nothing rather than "Idle" — the row's
+    /// timestamp already covers "nothing is happening".
     private var statusLabel: String {
-        guard let runtime, runtime.status != 0 else { return "" }
-        return runtime.statusLabel
-    }
-
-    private var statusForeground: Color {
-        if isRunning  { return Color.amux.sage }
-        if isStarting { return Color.amux.basalt }
-        return Color.amux.basalt
-    }
-
-    private var statusDotColor: Color {
-        if isRunning  { return Color.amux.sage }
-        if isStarting { return Color.amux.slate }
-        if isStopped  { return Color.amux.onyx.opacity(0.25) }
-        return Color.amux.slate
-    }
-
-    /// Pebble-tinted badge with a backend-keyed foreground. Per the Hai
-    /// principle of "spare the vermillion", only the Claude variant gets
-    /// Cinnabar; OpenCode/Codex sit in Basalt. Stopped sessions drop to
-    /// Slate. Background is always Pebble — the brand-color rainbow from
-    /// earlier rounds has been retired.
-    private struct AgentBadge {
-        let background: Color
-        let foreground: Color
-        let glyph: String
-    }
-
-    private var agentBadge: AgentBadge {
-        let bg = Color.amux.pebble
-        // Backend comes off the attachment's Amux_AgentType raw value, which
-        // the actor retain fills from the actor's active backend.
-        switch runtime?.agentType {
-        case 1:
-            return AgentBadge(background: bg, foreground: Color.amux.cinnabar, glyph: "CC")
-        case 2:
-            return AgentBadge(background: bg, foreground: Color.amux.basalt, glyph: "OC")
-        case 3:
-            return AgentBadge(background: bg, foreground: Color.amux.basalt, glyph: "CX")
-        default:
-            return AgentBadge(background: bg, foreground: Color.amux.slate, glyph: fallbackGlyph)
+        switch activity {
+        case .needsAttention: String(localized: "Waiting for you")
+        case .running:        String(localized: "Working")
+        case .quiet:          ""
         }
     }
 
-    private var fallbackGlyph: String {
-        let source = session.title.isEmpty ? session.sessionId : session.title
-        let last = source.split(separator: "/").last.map(String.init) ?? source
-        return last.isEmpty ? "·" : String(last.prefix(1)).uppercased()
+    private var statusForeground: Color {
+        activity == .needsAttention ? Color.amux.cinnabar : Color.amux.sage
     }
 
     private var rowTimestamp: Date {
@@ -520,7 +497,7 @@ struct AgentRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
-                badgeView
+                activityDot
                 Text(displayTitle)
                     .font(.body)
                     .fontWeight(.semibold)
@@ -560,27 +537,40 @@ struct AgentRowView: View {
         .alignmentGuide(.listRowSeparatorLeading) { _ in Self.badgeIndent }
     }
 
-    private static let badgeIndent: CGFloat = 38
+    /// Leading inset for the title's continuation lines and the row
+    /// separator: the dot's box plus the HStack's 8pt gap.
+    private static let badgeIndent: CGFloat = Self.dotBoxWidth + 8
     private var badgeIndent: CGFloat { Self.badgeIndent }
+    /// The dot keeps a fixed box whether or not it is drawn, so titles stay
+    /// on one vertical line down the list.
+    private static let dotBoxWidth: CGFloat = 10
 
-    private var badgeView: some View {
-        let badge = agentBadge
-        return HStack(spacing: 5) {
-            Circle()
-                .fill(statusDotColor)
-                .frame(width: 5, height: 5)
-                .breathingOpacity(active: isRunning)
-            Text(badge.glyph)
-                .font(.system(size: 11, weight: .bold))
-                .tracking(0.2)
-                .foregroundStyle(badge.foreground)
+    private var dotColor: Color {
+        switch activity {
+        case .needsAttention: Color.amux.cinnabar
+        case .running:        Color.amux.sage
+        // Not absent: an empty gap reads as a rendering bug. A dot at 10%
+        // Onyx is present without competing with the title.
+        case .quiet:          Color.amux.onyx.opacity(0.10)
         }
-        .padding(.horizontal, 7)
-        .frame(height: 22)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(badge.background)
-        )
+    }
+
+    /// One dot, two things worth interrupting someone for: an agent is
+    /// working here, or an agent is waiting on this person. Everything the
+    /// old badge said — backend initials, Starting/Stopped/cold — has no
+    /// reader on a list screen and is gone.
+    private var activityDot: some View {
+        Circle()
+            .fill(dotColor)
+            .frame(width: 6, height: 6)
+            .breathingOpacity(active: activity != .quiet)
+            .frame(width: Self.dotBoxWidth)
+            .accessibilityLabel(
+                activity == .needsAttention
+                    ? Text("Waiting for you")
+                    : Text("Agent working")
+            )
+            .accessibilityHidden(activity == .quiet)
     }
 
     @ViewBuilder

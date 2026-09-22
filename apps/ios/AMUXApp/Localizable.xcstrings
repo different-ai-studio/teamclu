@@ -413,6 +413,16 @@
         }
       }
     },
+    "Agent working": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 正在工作"
+          }
+        }
+      }
+    },
     "Agents": {
       "localizations": {
         "zh-Hans": {
@@ -4627,6 +4637,16 @@
         }
       }
     },
+    "Waiting for you": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等你处理"
+          }
+        }
+      }
+    },
     "We'll email you a 6-digit code.": {
       "localizations": {
         "zh-Hans": {
@@ -4653,6 +4673,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "本周"
+          }
+        }
+      }
+    },
+    "Working": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行中"
           }
         }
       }

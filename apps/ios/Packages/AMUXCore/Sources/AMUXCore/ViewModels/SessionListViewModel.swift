@@ -32,6 +32,12 @@ public final class SessionListViewModel {
 
     public init() {}
 
+    /// The session list's live-activity store. Held here because this view
+    /// model already owns the `inbox/<user>` subscription, which is the one
+    /// signal that says "something happened in session X" without the client
+    /// having to watch every session.
+    private weak var liveActivityStore: SessionLiveActivityStore?
+
     /// Written on every retained actor-state publish so presence dots have a
     /// broker-backed answer instead of heartbeat arithmetic. Held here because
     /// this view model already owns the only subscription to that topic.
@@ -188,8 +194,10 @@ public final class SessionListViewModel {
         userID: String,
         teamID: String,
         sessionsRepo: SessionsRepository?,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        liveActivityStore: SessionLiveActivityStore? = nil
     ) {
+        if let liveActivityStore { self.liveActivityStore = liveActivityStore }
         guard !userID.isEmpty else {
             NSLog("[SessionListVM] startInboxSubscription: empty userID, skipping")
             return
@@ -244,6 +252,14 @@ public final class SessionListViewModel {
     ) async {
         let sid = ping.sessionID
         let descriptor = FetchDescriptor<Session>(predicate: #Predicate { $0.sessionId == sid })
+
+        // Every ping means someone else moved in this session, which is the
+        // trigger for watching its `session/live` feed. A "read" ping is the
+        // exception: it is this user on another device clearing a badge, and
+        // says nothing about an agent.
+        if ping.type != "read" {
+            liveActivityStore?.noteActivity(sessionID: sid)
+        }
 
         if ping.type == "read" {
             // Another device marked this session read — clear the badge locally.

@@ -42,6 +42,14 @@ public final class TeamcluService {
     public private(set) var localMemberId: String = ""
     public private(set) var localDisplayName: String = ""
     private var foregroundSessionIDsSet: Set<String> = []
+    /// The session list's dot store, told whenever this device sends a prompt.
+    ///
+    /// `inbox/<user>` never covers our own sends — FC's fan-out excludes the
+    /// sender's actor (`list_session_push_targets`), and it excludes the actor,
+    /// not the device, so a prompt sent from the desktop misses the phone too.
+    /// Without this hook the dot for a turn the user just started here stays
+    /// grey until the agent's first delta lands.
+    public weak var liveActivityStore: SessionLiveActivityStore?
     private var listenerTask: Task<Void, Never>?
     private var modelContainer: ModelContainer?
     private var isTestingForegroundLifecycle = false
@@ -172,7 +180,7 @@ public final class TeamcluService {
         isConnected = false
         for sessionId in foregroundSessionIDsSet {
             let topic = MQTTTopics.sessionLive(teamID: teamId, sessionID: sessionId)
-            mqtt?.unsubscribeForLifecycleStop(topic)
+            mqtt?.unsubscribeForLifecycleStop(topic, owner: MQTTSubscriptionOwner.foregroundSession)
         }
         foregroundSessionIDsSet.removeAll()
         subscribedActorIDs.removeAll()
@@ -643,6 +651,10 @@ public final class TeamcluService {
         }
 
         let topic = MQTTTopics.sessionLive(teamID: teamId, sessionID: sessionId)
+        // Before the publish, not after: the persist-first path below can take
+        // a round-trip, and the dot should be green the moment the user hits
+        // send. A send that then fails is swept back to grey by the watchdog.
+        liveActivityStore?.noteLocalPrompt(sessionID: sessionId)
         let msgIdPrefix = String(message.messageID.prefix(8))
         let actorPrefix = String(actorId.prefix(8))
         let bytes = data.count
@@ -969,7 +981,7 @@ public final class TeamcluService {
         guard !foregroundSessionIDsSet.contains(sessionId) else { return }
 
         let topic = MQTTTopics.sessionLive(teamID: teamId, sessionID: sessionId)
-        try await mqtt.subscribe(topic)
+        try await mqtt.subscribe(topic, owner: MQTTSubscriptionOwner.foregroundSession)
         foregroundSessionIDsSet.insert(sessionId)
         await fetchRecentMessagesForForegroundSession(sessionId)
     }
@@ -979,7 +991,7 @@ public final class TeamcluService {
         guard let mqtt else { return }
 
         let topic = MQTTTopics.sessionLive(teamID: teamId, sessionID: sessionId)
-        try await mqtt.unsubscribe(topic)
+        try await mqtt.unsubscribe(topic, owner: MQTTSubscriptionOwner.foregroundSession)
         foregroundSessionIDsSet.remove(sessionId)
     }
 
@@ -1436,7 +1448,10 @@ public final class TeamcluService {
 
     private func rehydrateForegroundSessionSubscriptions(on mqtt: MQTTService) async {
         for sessionId in foregroundSessionIDsSet.sorted() {
-            try? await mqtt.subscribe(MQTTTopics.sessionLive(teamID: teamId, sessionID: sessionId))
+            try? await mqtt.subscribe(
+                MQTTTopics.sessionLive(teamID: teamId, sessionID: sessionId),
+                owner: MQTTSubscriptionOwner.foregroundSession
+            )
         }
     }
 
