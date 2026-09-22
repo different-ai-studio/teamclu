@@ -44,11 +44,13 @@ public struct SessionDetailView: View {
     /// User-prompt bubble pending delete confirmation (drives the dialog).
     @State private var pendingDeleteEvent: AgentEvent?
     private let nearBottomThreshold: CGFloat = 80
-    /// True while the software keyboard is on screen. Focus is the wrong
-    /// predicate for the composer's resting gap: with a hardware keyboard
-    /// attached the field takes focus and no keyboard appears, and the card
-    /// would hop up for nothing.
-    @State private var softwareKeyboardShown = false
+    /// Height the keyboard currently takes off the bottom of the screen — the
+    /// full software keyboard, or just the shortcut bar when a hardware one is
+    /// attached. Either shape means the system has handed the home-indicator
+    /// reserve to the keyboard, which is what the composer's resting gap turns
+    /// on. Composer focus is the wrong predicate: with a hardware keyboard the
+    /// field takes focus and nothing appears.
+    @State private var keyboardInset: CGFloat = 0
     /// How far the resting composer is pulled back into the home-indicator
     /// reserve. That reserve (34pt on current iPhones) plus the composer's own
     /// 8pt stacks to 42pt off the screen edge — a band of empty paper next to
@@ -414,16 +416,19 @@ public struct SessionDetailView: View {
             // at rest from the screen edge, with the keyboard up from the
             // keyboard. `ignoresSafeArea` on inset content doesn't give the
             // reserve back — it stacks — so the resting case pulls into it.
-            .padding(.bottom, softwareKeyboardShown ? 8 : Self.composerRestingBottomPullback)
+            .padding(.bottom, keyboardInset > 0 ? 8 : Self.composerRestingBottomPullback)
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
-            // A hardware keyboard still posts this for the shortcut bar, so
-            // go by height rather than by the notification arriving at all.
+        // `willChangeFrame` rather than `willShow`: with a hardware keyboard
+        // attached the shortcut bar is already shown, so toggling the software
+        // keyboard on only changes the frame and `willShow` never arrives. A
+        // dismissal posts a change-frame too, carrying the off-screen frame,
+        // but `willHide` follows it and settles the value at zero.
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
-            softwareKeyboardShown = (frame?.height ?? 0) > 120
+            applyKeyboardInset(frame?.height ?? 0)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            softwareKeyboardShown = false
+            applyKeyboardInset(0)
         }
         .sheet(isPresented: $isMemberSheetPresented) {
             SessionMemberSheet(
@@ -666,6 +671,32 @@ public struct SessionDetailView: View {
     /// Priority: live streaming text → most recent thinking/output text
     /// → most recent tool name → "Working…". The card truncates further
     /// at the view layer.
+    /// Tracks what the keyboard covers, and follows the bottom of the
+    /// transcript whenever it grows.
+    ///
+    /// The keyboard takes roughly half the screen and the composer rides up
+    /// with it, over whatever was at the bottom of the feed. Push the feed up
+    /// to match — but only for someone who was already reading the newest
+    /// message. Someone parked in the middle of the history is browsing, and
+    /// yanking them to the bottom because they tapped the field would lose
+    /// their place.
+    @MainActor
+    private func applyKeyboardInset(_ height: CGFloat) {
+        let grew = height > keyboardInset
+        keyboardInset = height
+        // Read before the inset lands: shrinking the scroll container is
+        // itself a geometry change, and it flips `isAtBottom`.
+        guard grew, isAtBottom else { return }
+        Task { @MainActor in
+            // Let the inset apply first, or the scroll target is computed
+            // against the pre-keyboard container height.
+            try? await Task.sleep(for: .milliseconds(50))
+            withAnimation(AMUXAnimation.fast) {
+                scrollProxy?.scrollTo("session-detail-bottom", anchor: .bottom)
+            }
+        }
+    }
+
     /// One line for the active-stream card: the turn's own message text and
     /// nothing else — the live delta buffer, else the newest `output` entry.
     ///
