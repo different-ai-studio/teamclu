@@ -7,9 +7,17 @@
       "description": "Move to event-driven architecture",
       "archived": false,
       "authorActorId": "00000000-0000-0000-0000-000000000201",
-      "actorIds": ["00000000-0000-0000-0000-000000000201"],
+      "actorIds": [
+        "00000000-0000-0000-0000-000000000201"
+      ],
       "createdAt": "2026-05-01T00:00:00Z",
-      "updatedAt": "2026-05-02T00:00:00Z"
+      "updatedAt": "2026-05-02T00:00:00Z",
+      "attachmentUrls": [
+        "https://cdn.example/idea-101-a.png"
+      ],
+      "commentCount": 2,
+      "likeCount": 3,
+      "likedByMe": true
     },
     {
       "id": "00000000-0000-0000-0000-000000000102",
@@ -20,7 +28,11 @@
       "authorActorId": "00000000-0000-0000-0000-000000000201",
       "actorIds": [],
       "createdAt": "2026-05-01T00:00:00Z",
-      "updatedAt": "2026-05-01T00:00:00Z"
+      "updatedAt": "2026-05-01T00:00:00Z",
+      "attachmentUrls": [],
+      "commentCount": 0,
+      "likeCount": 0,
+      "likedByMe": false
     }
   ],
   "nextCursor": null

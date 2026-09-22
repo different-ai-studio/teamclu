@@ -92,6 +92,19 @@ export function registerIdeas(router) {
     return { statusCode: 204, body: null };
   });
 
+  // PUT, not POST/DELETE: the body says what the like should BE, so a tap
+  // that arrives twice — two devices, a retry — settles on the same state
+  // instead of toggling back. Returns the row's fresh numbers so the caller
+  // doesn't refetch the page to see its own tap land.
+  router.put("/v1/ideas/:ideaId/like", async (ctx) => {
+    const body = ctx.json ?? {};
+    if (typeof body.liked !== "boolean") {
+      throw new ApiError(400, "validation_failed", "liked is required and must be a boolean");
+    }
+    const out = await ctx.repository.setIdeaLike(ctx.params.ideaId, body.liked);
+    return { body: out };
+  });
+
   router.post("/v1/ideas/:ideaId/activities", async (ctx) => {
     const body = ctx.json ?? {};
     const kind = body.kind ?? body.activityType ?? body.eventType;

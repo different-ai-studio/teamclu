@@ -508,6 +508,10 @@ function contractRepo() {
         actorIds: body.actorIds ?? [],
         createdAt: "2026-05-27T01:00:00Z",
         updatedAt: "2026-05-27T01:00:00Z",
+        attachmentUrls: body.attachmentUrls ?? [],
+        commentCount: 0,
+        likeCount: 0,
+        likedByMe: false,
       };
       ideaStore.push(idea);
       return idea;
@@ -522,6 +526,14 @@ function contractRepo() {
     async archiveIdea(ideaId) {
       const i = ideaStore.find(i => i.id === ideaId);
       if (i) i.archived = true;
+    },
+    async setIdeaLike(ideaId, liked) {
+      const i = ideaStore.find(i => i.id === ideaId);
+      if (!i) throw new Error("idea not found");
+      if (liked && !i.likedByMe) i.likeCount += 1;
+      if (!liked && i.likedByMe) i.likeCount -= 1;
+      i.likedByMe = liked === true;
+      return { likeCount: i.likeCount, likedByMe: i.likedByMe };
     },
     async createIdeaActivity(ideaId, body) {
       return {
