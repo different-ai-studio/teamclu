@@ -180,6 +180,28 @@ test("GET messages rejects a limit past the maximum", async () => {
   assert.equal(repo.calls.length, 0);
 });
 
+test("GET session attachments forwards limit to repository", async () => {
+  const repo = fakeRepo({ messages: [] });
+
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v1/sessions/session-1/attachments",
+    headers: { Authorization: "Bearer token" },
+    queryParameters: { limit: "20" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(repo.calls[0], {
+    method: "listSessionAttachments",
+    sessionId: "session-1",
+    limit: 20,
+    cursor: null,
+  });
+  const body = JSON.parse(response.body);
+  assert.deepEqual(body.items, []);
+  assert.equal(body.nextCursor, null);
+});
+
 // ── /v1/sync/* pagination ────────────────────────────────────────────────────
 // These were unbounded: a first-time sync of a large team returned every
 // changed row in one response (10k actors measured 3.1MB / 4.4s). They are now
@@ -2086,6 +2108,7 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async listSessionsForTeamSince(teamId, since, opts: SyncPageOpts = {}) { calls.push({ method: "listSessionsForTeamSince", teamId, since, limit: opts?.limit ?? null, cursor: opts?.cursor ?? null }); return syncStore.slice(0, opts?.limit ?? syncStore.length); },
     async listMessagesForSessionSince(sessionId, since, opts: SyncPageOpts = {}) { calls.push({ method: "listMessagesForSessionSince", sessionId, since, limit: opts?.limit ?? null, cursor: opts?.cursor ?? null }); return syncStore.slice(0, opts?.limit ?? syncStore.length); },
     async listMessages(sessionId, opts: SyncPageOpts = {}) { calls.push({ method: "listMessages", sessionId, limit: opts?.limit ?? null, cursor: opts?.cursor ?? null }); if (error) throw error; return messageStore.slice(0, opts?.limit ?? messageStore.length); },
+    async listSessionAttachments(sessionId, opts: SyncPageOpts = {}) { calls.push({ method: "listSessionAttachments", sessionId, limit: opts?.limit ?? null, cursor: opts?.cursor ?? null }); if (error) throw error; return { items: [], nextCursor: null }; },
     async insertMessage(sessionId, input) { calls.push({ method: "insertMessage", sessionId, input }); if (error) throw error; return { id: input.id, teamId: input.teamId, sessionId, turnId: null, senderActorId: input.senderActorId, replyToMessageId: null, kind: input.kind ?? "text", content: input.content, metadata: input.metadata ?? null, model: null, createdAt: "2026-05-27T01:00:00Z", updatedAt: null }; },
     async patchMessage(messageId, patch) { calls.push({ method: "patchMessage", messageId, patch }); if (error) throw error; return { id: messageId, teamId: "team-1", sessionId: "session-1", turnId: null, senderActorId: "actor-1", replyToMessageId: null, kind: "text", content: patch.content ?? "hello", metadata: patch.metadata ?? null, model: null, createdAt: "2026-05-27T01:00:00Z", updatedAt: "2026-05-27T02:00:00Z" }; },
     async deleteMessage(messageId) { calls.push({ method: "deleteMessage", messageId }); if (error) throw error; },
