@@ -27,6 +27,7 @@ import { registerTeamEnvSecrets } from "./team-env-secrets.js";
 import { registerKnowledgeAcl } from "./knowledge-acl.js";
 import { registerOrgRoles } from "./org-roles.js";
 import { registerAdmin } from "./admin.js";
+import { registerWikiMaintainer } from "./wiki-maintainer.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
@@ -61,6 +62,9 @@ export function registerAllRoutes(router) {
   // Same ordering reason as every other team-scoped module here: this owns
   // /v1/teams/:teamId/knowledge-acl* and must precede workspaces' broader match.
   registerKnowledgeAcl(router);
+  // Owns /v1/teams/:teamId/wiki-maintainer* and must precede workspaces'
+  // broader team route.
+  registerWikiMaintainer(router);
   // Org roles own /v1/teams/:teamId/roles* (OpenAPI listOrgRoles). Must register
   // before shortcuts so the old shortcuts listTeamRoles path cannot collide —
   // shortcuts now serve listTeamRoles at /shortcut-roles.

@@ -48,6 +48,7 @@ function turnTraceRpcError(error: { code?: string; message?: string }): unknown 
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
+import { makeWikiMaintainerRepo } from "./supabase-repo/wiki-maintainer.js";
 import {
   assignSystemOrgRole,
   enrichActorsWithOrgRoles,
@@ -7119,6 +7120,27 @@ export function createSupabaseBusinessRepository(options) {
     // feature exists to withhold. The module checks owner/admin itself and then
     // uses the service role, the same shape /sync/* already has.
     ...makeKnowledgeAclRepo({
+      supabase,
+      serviceRoleClient,
+      resolveCallerActorForTeam: async (teamId: string) => {
+        const { data: userData, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw userErr;
+        const userId = userData?.user?.id;
+        if (!userId) return null;
+        const { data, error } = await supabase
+          .from("actors")
+          .select("id")
+          .eq("team_id", teamId)
+          .eq("user_id", userId)
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { id: data.id } : null;
+      },
+    }),
+
+    // ─── Cross-device Wiki maintainer checkpoints ───────────────────────────
+    ...makeWikiMaintainerRepo({
       supabase,
       serviceRoleClient,
       resolveCallerActorForTeam: async (teamId: string) => {
