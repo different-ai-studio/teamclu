@@ -101,6 +101,16 @@
         }
       }
     },
+    "Add an agent before starting voice chat.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始语音会话前，请先添加一个 Agent。"
+          }
+        }
+      }
+    },
     "ADMIN": {
       "localizations": {
         "zh-Hans": {
@@ -713,6 +723,26 @@
         }
       }
     },
+    "Choose an agent for this chat.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择这次对话的 Agent。"
+          }
+        }
+      }
+    },
+    "Choose an agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择 Agent"
+          }
+        }
+      }
+    },
     "Clear conversation history": {
       "localizations": {
         "zh-Hans": {
@@ -1204,6 +1234,16 @@
         }
       }
     },
+    "Done recording": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成录音"
+          }
+        }
+      }
+    },
     "Done sorting": {
       "localizations": {
         "zh-Hans": {
@@ -1460,6 +1500,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "开始使用"
+          }
+        }
+      }
+    },
+    "Getting the microphone ready…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备麦克风…"
           }
         }
       }
@@ -1815,6 +1865,16 @@
         }
       }
     },
+    "Listening…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在聆听…"
+          }
+        }
+      }
+    },
     "Loading ideas…": {
       "localizations": {
         "zh-Hans": {
@@ -1952,6 +2012,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "消息通道尚未就绪——请稍后重试。"
+          }
+        }
+      }
+    },
+    "Microphone and speech recognition access are required for voice chat.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音会话需要麦克风和语音识别权限。"
           }
         }
       }
@@ -2132,6 +2202,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂无快捷入口"
+          }
+        }
+      }
+    },
+    "No speech was recognized. Try recording again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有识别到语音，再录一次试试。"
           }
         }
       }
@@ -2432,6 +2512,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "通知"
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好"
           }
         }
       }
@@ -3056,16 +3146,6 @@
         }
       }
     },
-    "Running %@…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在运行 %@…"
-          }
-        }
-      }
-    },
     "Runtime id missing — daemon hasn't published runtime state yet.": {
       "localizations": {
         "zh-Hans": {
@@ -3596,6 +3676,16 @@
         }
       }
     },
+    "Speech recognizer unavailable": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音识别当前不可用"
+          }
+        }
+      }
+    },
     "Start": {
       "localizations": {
         "zh-Hans": {
@@ -3642,6 +3732,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在创建会话…"
+          }
+        }
+      }
+    },
+    "Starting your agent…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启动 Agent…"
           }
         }
       }
@@ -4373,6 +4473,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "查看过程"
+          }
+        }
+      }
+    },
+    "Voice chat is not ready yet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音会话还没准备好。"
+          }
+        }
+      }
+    },
+    "Voice chat couldn't start": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音会话没能开始"
+          }
+        }
+      }
+    },
+    "Voice": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音"
+          }
+        }
+      }
+    },
+    "Voice chats go here from now on. Change it any time on the agent's page.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以后的语音会话都发给它。随时可以在 Agent 页面里改。"
           }
         }
       }

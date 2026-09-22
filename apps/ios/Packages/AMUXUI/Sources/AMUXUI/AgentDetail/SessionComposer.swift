@@ -155,7 +155,10 @@ struct SessionComposer: View {
 
             twoRowComposer
                 .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                // Bottom gap is owned by the host's `safeAreaInset` — it has
+                // to differ between resting (measured from the screen edge)
+                // and keyboard-up (measured from the keyboard).
+                .padding(.top, 8)
         }
         .onChange(of: promptText) { _, _ in
             recomputeSlashCandidates()

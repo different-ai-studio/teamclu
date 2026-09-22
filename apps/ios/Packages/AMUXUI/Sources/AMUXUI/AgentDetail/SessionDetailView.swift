@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 import AMUXCore
 import AMUXSharedUI
 
@@ -43,6 +44,20 @@ public struct SessionDetailView: View {
     /// User-prompt bubble pending delete confirmation (drives the dialog).
     @State private var pendingDeleteEvent: AgentEvent?
     private let nearBottomThreshold: CGFloat = 80
+    /// Height the keyboard currently takes off the bottom of the screen — the
+    /// full software keyboard, or just the shortcut bar when a hardware one is
+    /// attached. Either shape means the system has handed the home-indicator
+    /// reserve to the keyboard, which is what the composer's resting gap turns
+    /// on. Composer focus is the wrong predicate: with a hardware keyboard the
+    /// field takes focus and nothing appears.
+    @State private var keyboardInset: CGFloat = 0
+    /// How far the resting composer is pulled back into the home-indicator
+    /// reserve. That reserve (34pt on current iPhones) plus the composer's own
+    /// 8pt stacks to 42pt off the screen edge — a band of empty paper next to
+    /// the 22pt the tab bar's pill sits at elsewhere in the app. Taking 12pt
+    /// back lands on the same 22pt. Where the reserve is shorter the card just
+    /// ends up nearer the edge, never past it.
+    private static let composerRestingBottomPullback: CGFloat = -12
     /// Cached TeamcluService used to lazily build the OutboxSender once
     /// the modelContext (and therefore its container) is available.
     private let pendingTeamcluService: TeamcluService?
@@ -168,10 +183,34 @@ public struct SessionDetailView: View {
                 // Track whether the user is near the bottom so incoming
                 // messages don't hijack the scroll position while they are
                 // browsing history.
-                .onScrollGeometryChange(for: Bool.self) { geo in
-                    geo.contentSize.height - geo.contentOffset.y - geo.containerSize.height < nearBottomThreshold
-                } action: { _, atBottom in
-                    isAtBottom = atBottom
+                .onScrollGeometryChange(for: ScrollBottomMetrics.self) { geo in
+                    // `contentSize` excludes the bottom inset that the
+                    // composer's `safeAreaInset` adds, but `visibleRect`
+                    // includes it, so subtracting the two directly reported
+                    // ~116pt short of the bottom while sitting exactly at it —
+                    // which kept `isAtBottom` permanently false.
+                    ScrollBottomMetrics(
+                        distanceFromBottom: (geo.contentSize.height + geo.contentInsets.bottom)
+                            - geo.visibleRect.maxY,
+                        viewportHeight: geo.containerSize.height,
+                        bottomInset: geo.contentInsets.bottom
+                    )
+                } action: { old, new in
+                    // A viewport resize — the keyboard opening, the composer
+                    // growing a line — moves the bottom without the user
+                    // having scrolled, and arrives *before* the keyboard
+                    // notification does. Don't let it rewrite the flag; take
+                    // it as the cue to re-pin instead, so someone reading the
+                    // newest message keeps it in view rather than losing it
+                    // behind the composer. Someone parked mid-history stays
+                    // parked.
+                    guard new.viewportHeight == old.viewportHeight,
+                          new.bottomInset == old.bottomInset
+                    else {
+                        if isAtBottom { scrollToBottom() }
+                        return
+                    }
+                    isAtBottom = new.distanceFromBottom < nearBottomThreshold
                 }
                 // Follow the bottom whenever the feed grows after the initial
                 // settle. `.defaultScrollAnchor(.bottom, for: .initialOffset)`
@@ -396,6 +435,24 @@ public struct SessionDetailView: View {
                     )
                 }
             }
+            // The gap under the composer card lives here rather than inside
+            // the composer, because it is measured from two different things:
+            // at rest from the screen edge, with the keyboard up from the
+            // keyboard. `ignoresSafeArea` on inset content doesn't give the
+            // reserve back — it stacks — so the resting case pulls into it.
+            .padding(.bottom, keyboardInset > 0 ? 8 : Self.composerRestingBottomPullback)
+        }
+        // `willChangeFrame` rather than `willShow`: with a hardware keyboard
+        // attached the shortcut bar is already shown, so toggling the software
+        // keyboard on only changes the frame and `willShow` never arrives. A
+        // dismissal posts a change-frame too, carrying the off-screen frame,
+        // but `willHide` follows it and settles the value at zero.
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+            keyboardInset = frame?.height ?? 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardInset = 0
         }
         .sheet(isPresented: $isMemberSheetPresented) {
             SessionMemberSheet(
@@ -638,6 +695,38 @@ public struct SessionDetailView: View {
     /// Priority: live streaming text → most recent thinking/output text
     /// → most recent tool name → "Working…". The card truncates further
     /// at the view layer.
+    /// Tracks what the keyboard covers, and follows the bottom of the
+    /// transcript whenever it grows.
+    ///
+    /// The keyboard takes roughly half the screen and the composer rides up
+    /// with it, over whatever was at the bottom of the feed. Push the feed up
+    /// to match — but only for someone who was already reading the newest
+    /// message. Someone parked in the middle of the history is browsing, and
+    /// yanking them to the bottom because they tapped the field would lose
+    /// their place.
+    @MainActor
+    private func scrollToBottom() {
+        Task { @MainActor in
+            // One turn of the loop so the resize that triggered this has
+            // finished laying out; scrolling into the old geometry lands short.
+            await Task.yield()
+            withAnimation(AMUXAnimation.fast) {
+                scrollProxy?.scrollTo("session-detail-bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    /// One line for the active-stream card: the turn's own message text and
+    /// nothing else — the live delta buffer, else the newest `output` entry.
+    ///
+    /// Thinking and tool calls deliberately don't feed this line. They used
+    /// to, which made the card narrate the agent's internals ("Running
+    /// bash…", a reasoning fragment) instead of what it is saying. Both live
+    /// on the trace page behind the card's chevron.
+    ///
+    /// Returns "" when there is no message text yet, handing the fallback
+    /// copy to `ActiveStreamCardView` — it owns that string and localizes it,
+    /// whereas the literals here never were.
     private func activeStreamLastLine(agentID: String, runtimeEvents: [AgentEvent]) -> String {
         let live = viewModel.streamingTextByAgent[agentID] ?? ""
         if !live.isEmpty {
@@ -647,14 +736,11 @@ public struct SessionDetailView: View {
             return live.suffix(240).replacingOccurrences(of: "\n", with: " ")
         }
         if let last = runtimeEvents.reversed().first(where: { e in
-            (e.eventType == "output" || e.eventType == "thinking") && !(e.text ?? "").isEmpty
+            e.eventType == "output" && !(e.text ?? "").isEmpty
         }) {
             return (last.text ?? "").suffix(240).replacingOccurrences(of: "\n", with: " ")
         }
-        if let lastTool = runtimeEvents.reversed().first(where: { $0.eventType == "tool_use" }) {
-            return lastTool.toolName.map { "Running \($0)…" } ?? "Working…"
-        }
-        return "Working…"
+        return ""
     }
 
     @ViewBuilder
@@ -1057,4 +1143,13 @@ extension AgentChipBar.LifecycleChipState {
         case .error: .error
         }
     }
+}
+
+/// What `SessionDetailView` watches the transcript's scroll for: how far the
+/// bottom is, and the two numbers whose change means the viewport resized
+/// under the content rather than the user having scrolled it.
+private struct ScrollBottomMetrics: Equatable {
+    let distanceFromBottom: CGFloat
+    let viewportHeight: CGFloat
+    let bottomInset: CGFloat
 }
