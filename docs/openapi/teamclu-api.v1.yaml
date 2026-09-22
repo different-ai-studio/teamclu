@@ -4619,6 +4619,60 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+  /v1/attachments/thumbnail:
+    get:
+      operationId: getAttachmentThumbnail
+      summary: Resized copy of a stored image
+      description: >-
+        Returns the object resized by the storage service. Takes a bucket and
+        an object path rather than a URL, so it can only name something this
+        service already serves. It exists because the storage render endpoint
+        requires credentials that clients deliberately do not hold.
+      tags: [Attachments]
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: bucket
+          schema:
+            type: string
+            enum: [attachments, avatars]
+            default: attachments
+        - in: query
+          name: width
+          description: Target width in pixels. The height follows the aspect ratio.
+          schema:
+            type: integer
+            minimum: 32
+            maximum: 1600
+            default: 600
+      responses:
+        "200":
+          description: The resized image.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/attachments/{path}:
     get:
       operationId: downloadAttachment

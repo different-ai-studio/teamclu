@@ -2754,6 +2754,27 @@ export function createSupabaseBusinessRepository(options) {
       return { mime, bytes: Buffer.from(arrayBuffer) };
     },
 
+    /// Same object, resized by the storage service on its way out.
+    async downloadAttachmentThumbnail(path, { bucket, width, quality }: any = {}) {
+      const targetBucket = bucket || DEFAULT_ATTACHMENT_BUCKET;
+      // `transform` sends this through `/render/image/...`, which imgproxy
+      // serves. That path wants credentials where `/object/public/...` does
+      // not, which is the whole reason this goes through FC: the clients
+      // deliberately hold no Supabase key.
+      const { data, error } = await supabase.storage
+        .from(targetBucket)
+        .download(path, { transform: { width, resize: "contain", quality } });
+      if (error) {
+        const status = Number(error?.status || error?.statusCode || 0);
+        if (status === 404 || error?.message?.includes("not found") || error?.error === "not_found") return null;
+        throw error;
+      }
+      if (!data) return null;
+      const arrayBuffer = await data.arrayBuffer();
+      const mime = data.type || "image/jpeg";
+      return { mime, bytes: Buffer.from(arrayBuffer) };
+    },
+
     async submitFeedback(body) {
       const row = {
         message_id: body.messageId,

@@ -89,7 +89,13 @@ function toResponse(c: Context, result: any, requestId: string): Response {
   if (result?.binary) {
     return new Response(result.binary.bytes, {
       status: result.statusCode ?? 200,
-      headers: { "Content-Type": result.binary.mime, "X-Request-Id": requestId },
+      headers: {
+        "Content-Type": result.binary.mime,
+        "X-Request-Id": requestId,
+        // A binary route could always set these; until now they were accepted
+        // and dropped, which is worse than not allowing them at all.
+        ...(result.headers ?? {}),
+      },
     });
   }
   if (result?.redirect) {

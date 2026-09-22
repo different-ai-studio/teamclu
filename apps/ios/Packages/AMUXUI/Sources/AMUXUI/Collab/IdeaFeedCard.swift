@@ -173,44 +173,39 @@ struct IdeaFeedCard: View {
 struct IdeaFeedMedia: View {
     let urls: [URL]
 
+    @State private var viewing: ImageIndex?
+
     private var shown: [URL] { Array(urls.prefix(4)) }
 
     var body: some View {
-        if shown.count == 1 {
-            tile(shown[0], height: 200)
-        } else {
-            let columns = [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)]
-            LazyVGrid(columns: columns, spacing: 4) {
-                ForEach(Array(shown.enumerated()), id: \.element) { index, url in
-                    tile(url, height: 112)
-                        // An odd last picture takes the whole row rather than
-                        // leaving a hole next to it.
-                        .gridCellColumns(shown.count % 2 == 1 && index == shown.count - 1 ? 2 : 1)
+        Group {
+            if shown.count == 1 {
+                tile(shown[0], index: 0, height: 200, maxPoint: 400)
+            } else {
+                let columns = [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)]
+                LazyVGrid(columns: columns, spacing: 4) {
+                    ForEach(Array(shown.enumerated()), id: \.element) { index, url in
+                        tile(url, index: index, height: 112, maxPoint: 200)
+                            // An odd last picture takes the whole row rather
+                            // than leaving a hole next to it.
+                            .gridCellColumns(shown.count % 2 == 1 && index == shown.count - 1 ? 2 : 1)
+                    }
                 }
             }
+        }
+        // Presented from here so both the feed row and the post detail get it
+        // without either needing to know about the viewer.
+        .fullScreenCover(item: $viewing) { start in
+            IdeaImageViewer(urls: urls, index: start.value)
         }
     }
 
-    private func tile(_ url: URL, height: CGFloat) -> some View {
-        AsyncImage(url: url) { phase in
-            switch phase {
-            case .success(let image):
-                image.resizable().scaledToFill()
-            case .failure:
-                ZStack {
-                    Color.amux.pebble
-                    Image(systemName: "photo.badge.exclamationmark")
-                        .foregroundStyle(Color.amux.slate)
-                }
-            case .empty:
-                ZStack {
-                    Color.amux.pebble
-                    ProgressView().controlSize(.small)
-                }
-            @unknown default:
-                Color.amux.pebble
-            }
-        }
+    /// `maxPoint` is the tile's *width*, not its height: these fill, so for a
+    /// landscape photo in a short wide frame the width is what binds.
+    private func tile(_ url: URL, index: Int, height: CGFloat, maxPoint: CGFloat) -> some View {
+        // Decoded at tile size, not at the size of the file. Tapping opens the
+        // picture at full size.
+        IdeaThumbnail(url: url, maxPointSize: maxPoint)
         .frame(maxWidth: .infinity)
         .frame(height: height)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -218,7 +213,16 @@ struct IdeaFeedMedia: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.amux.hairline, lineWidth: 0.5)
         )
+        .contentShape(Rectangle())
+        .onTapGesture { viewing = ImageIndex(value: index) }
     }
+}
+
+/// `fullScreenCover(item:)` wants something Identifiable, and an index on its
+/// own is not.
+private struct ImageIndex: Identifiable {
+    let value: Int
+    var id: Int { value }
 }
 
 private extension Date {
