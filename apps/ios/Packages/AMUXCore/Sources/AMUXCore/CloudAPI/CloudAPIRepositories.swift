@@ -709,10 +709,19 @@ public actor CloudAPIIdeaRepository: IdeaRepository {
             title: title,
             description: input.description,
             workspaceId: Self.normalized(input.workspaceID),
-            authorActorId: memberActorID
+            authorActorId: memberActorID,
+            attachmentUrls: input.attachmentURLs.map(\.absoluteString)
         )
         let row: CloudIdea = try await client.post("/v1/ideas", body: body)
         return row.record
+    }
+
+    public func setIdeaLike(ideaID: String, liked: Bool) async throws -> IdeaLikeState {
+        let row: CloudIdeaLikeState = try await client.put(
+            "/v1/ideas/\(Self.enc(ideaID))/like",
+            body: CloudSetIdeaLikeRequest(liked: liked)
+        )
+        return row.state
     }
 
     public func updateIdea(ideaID: String, input: IdeaUpdateInput) async throws -> IdeaRecord {
@@ -1249,6 +1258,11 @@ private struct CloudIdea: Decodable, Sendable {
     let sortOrder: Int?
     let createdAt: String?
     let updatedAt: String?
+    let attachmentUrls: [String]?
+    // Only the list aggregates these; a single-idea read omits them.
+    let commentCount: Int?
+    let likeCount: Int?
+    let likedByMe: Bool?
 
     var record: IdeaRecord {
         IdeaRecord(
@@ -1262,7 +1276,11 @@ private struct CloudIdea: Decodable, Sendable {
             archived: archived,
             sortOrder: sortOrder ?? 0,
             createdAt: parseCloudDate(createdAt) ?? .distantPast,
-            updatedAt: parseCloudDate(updatedAt) ?? .distantPast
+            updatedAt: parseCloudDate(updatedAt) ?? .distantPast,
+            attachmentURLs: (attachmentUrls ?? []).compactMap(URL.init(string:)),
+            commentCount: commentCount ?? 0,
+            likeCount: likeCount ?? 0,
+            likedByMe: likedByMe ?? false
         )
     }
 }
@@ -1302,6 +1320,20 @@ private struct CloudIdeaCreateRequest: Encodable, Sendable {
     let description: String
     let workspaceId: String?
     let authorActorId: String
+    let attachmentUrls: [String]
+}
+
+private struct CloudSetIdeaLikeRequest: Encodable, Sendable {
+    let liked: Bool
+}
+
+private struct CloudIdeaLikeState: Decodable, Sendable {
+    let likeCount: Int
+    let likedByMe: Bool
+
+    var state: IdeaLikeState {
+        IdeaLikeState(likeCount: likeCount, likedByMe: likedByMe)
+    }
 }
 
 private struct CloudIdeaUpdateRequest: Encodable, Sendable {

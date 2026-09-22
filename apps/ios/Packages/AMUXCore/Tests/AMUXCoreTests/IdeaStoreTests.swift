@@ -260,10 +260,23 @@ private actor InMemoryIdeaRepository: IdeaRepository {
             status: "open",
             archived: false,
             createdAt: .now,
-            updatedAt: .now
+            updatedAt: .now,
+            attachmentURLs: input.attachmentURLs
         )
         ideasByID[idea.id] = idea
         return idea
+    }
+
+    func setIdeaLike(ideaID: String, liked: Bool) async throws -> IdeaLikeState {
+        guard var existing = ideasByID[ideaID] else {
+            throw InMemoryError.missingIdea
+        }
+        if liked != existing.likedByMe {
+            existing.likeCount = max(0, existing.likeCount + (liked ? 1 : -1))
+        }
+        existing.likedByMe = liked
+        ideasByID[ideaID] = existing
+        return IdeaLikeState(likeCount: existing.likeCount, likedByMe: existing.likedByMe)
     }
 
     func updateIdea(ideaID: String, input: IdeaUpdateInput) async throws -> IdeaRecord {

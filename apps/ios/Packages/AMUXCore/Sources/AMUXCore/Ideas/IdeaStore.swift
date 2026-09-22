@@ -43,14 +43,16 @@ public final class IdeaStore {
     }
 
     @discardableResult
-    public func createIdea(title: String, description: String, workspaceID: String) async -> Bool {
+    public func createIdea(title: String, description: String, workspaceID: String,
+                           attachmentURLs: [URL] = []) async -> Bool {
         do {
             let created = try await repository.createIdea(
                 teamID: teamID,
                 input: IdeaCreateInput(
                     title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                     description: description.trimmingCharacters(in: .whitespacesAndNewlines),
-                    workspaceID: workspaceID
+                    workspaceID: workspaceID,
+                    attachmentURLs: attachmentURLs
                 )
             )
             merge(created)
@@ -61,6 +63,53 @@ public final class IdeaStore {
         } catch {
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    /// Likes or unlikes, optimistically. The count moves under the thumb and
+    /// is corrected by whatever the server reports; a failure puts the old
+    /// values back rather than leaving a like that isn't there.
+    ///
+    /// Not a toggle over the wire: this sends the state it wants, so a slow
+    /// network and an impatient second tap can't cancel each other out.
+    public func setLiked(ideaID: String, liked: Bool) async {
+        guard let before = idea(withID: ideaID) else { return }
+        applyLikeState(
+            ideaID: ideaID,
+            state: IdeaLikeState(
+                likeCount: max(0, before.likeCount + (liked ? 1 : -1)),
+                likedByMe: liked
+            )
+        )
+        do {
+            let confirmed = try await repository.setIdeaLike(ideaID: ideaID, liked: liked)
+            applyLikeState(ideaID: ideaID, state: confirmed)
+            errorMessage = nil
+        } catch {
+            applyLikeState(
+                ideaID: ideaID,
+                state: IdeaLikeState(likeCount: before.likeCount, likedByMe: before.likedByMe)
+            )
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func idea(withID ideaID: String) -> IdeaRecord? {
+        ideas.first { $0.id == ideaID } ?? archivedIdeas.first { $0.id == ideaID }
+    }
+
+    private func applyLikeState(ideaID: String, state: IdeaLikeState) {
+        // The like count is not part of the SwiftData cache: it is a number
+        // about other people that goes stale the moment it is written, and a
+        // stale count shown offline is worse than no count. It lives only as
+        // long as the loaded page.
+        if let index = ideas.firstIndex(where: { $0.id == ideaID }) {
+            ideas[index].likeCount = state.likeCount
+            ideas[index].likedByMe = state.likedByMe
+        }
+        if let index = archivedIdeas.firstIndex(where: { $0.id == ideaID }) {
+            archivedIdeas[index].likeCount = state.likeCount
+            archivedIdeas[index].likedByMe = state.likedByMe
         }
     }
 
