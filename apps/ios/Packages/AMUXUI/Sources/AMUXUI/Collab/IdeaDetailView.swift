@@ -422,11 +422,18 @@ public struct IdeaDetailView: View {
                 .frame(maxWidth: .infinity)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
+        } else if activities.isEmpty {
+            // One quiet line, not the card an empty thread used to get. It
+            // says the thread is empty rather than broken, and stops short of
+            // telling anyone to fill it — the composer below is the invitation.
+            Text("No replies yet")
+                .font(.amuxSerif(15))
+                .foregroundStyle(Color.amux.slate)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 28)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
         } else {
-            // Nothing when there is nothing. An empty thread used to print
-            // "No activity yet." inside a card, which is a lot of furniture
-            // to say that nobody has replied; the composer below already
-            // invites the first one.
             ForEach(activities, id: \.id) { activity in
                 IdeaActivityRow(
                     activity: activity,

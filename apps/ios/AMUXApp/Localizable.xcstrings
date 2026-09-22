@@ -2116,6 +2116,16 @@
         }
       }
     },
+    "No replies yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有人回复"
+          }
+        }
+      }
+    },
     "No Scheduled Sessions": {
       "localizations": {
         "zh-Hans": {
