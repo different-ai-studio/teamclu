@@ -146,16 +146,8 @@ public final class VoiceRecorder {
                 self?.audioLevel = level
             }
         }
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            request.append(buffer)
-            guard let channelData = buffer.floatChannelData?[0] else { return }
-            let frameLength = Int(buffer.frameLength)
-            var sum: Float = 0
-            for i in 0..<frameLength { sum += abs(channelData[i]) }
-            let avg = sum / Float(max(frameLength, 1))
-            let level = min(max(avg * 5, 0), 1)
-            publishAudioLevel(level)
-        }
+        Self.installLevelTap(on: inputNode, format: format, request: request,
+                             onLevel: publishAudioLevel)
 
         engine.prepare()
         do {
@@ -186,6 +178,32 @@ public final class VoiceRecorder {
             }
         }
         task = Self.startRecognition(recognizer, request: request, onUpdate: onUpdate)
+    }
+
+    /// Installs the level tap from outside this class's isolation.
+    ///
+    /// Not capturing `self` was not enough. The block AVFAudio keeps also
+    /// captures `request`, which is not `Sendable`, and a closure formed in a
+    /// `@MainActor` method with a capture like that is isolated to the main
+    /// actor — so Swift 6 emits an executor check at its entry. Core Audio's
+    /// realtime worker is not the main actor, and the check does not return
+    /// false, it traps: `brk #1` inside `dispatch_assert_queue`, roughly fifty
+    /// times a second into a recording. That is the crash this fixes.
+    nonisolated private static func installLevelTap(
+        on inputNode: AVAudioInputNode,
+        format: AVAudioFormat,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onLevel: @escaping @Sendable (Float) -> Void
+    ) {
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            request.append(buffer)
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+            let frameLength = Int(buffer.frameLength)
+            var sum: Float = 0
+            for i in 0..<frameLength { sum += abs(channelData[i]) }
+            let avg = sum / Float(max(frameLength, 1))
+            onLevel(min(max(avg * 5, 0), 1))
+        }
     }
 
     /// Registers the recognition handler from outside this class's isolation,
