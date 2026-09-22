@@ -36,7 +36,7 @@
     "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
     "expo-web-browser": "~57.0.2",
-    "i18next": "^26.3.6",
+    "i18next": "^26.4.2",
     "mqtt": "5.15.2",
     "react": "19.2.8",
     "react-i18next": "^17.0.13",
