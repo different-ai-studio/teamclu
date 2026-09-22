@@ -18,6 +18,9 @@ public struct RootTabView: View {
     @State private var viewModel = SessionListViewModel()
     @SceneStorage("rootTab") private var selection: AppTab = .sessions
     @State private var sessionsPath: [String] = []
+    @State private var voiceRecorder = VoiceRecorder()
+    @State private var isStartingVoiceSession = false
+    @State private var voiceErrorMessage: String?
 
     /// Drives the "add the team's first agent" reminder. Set once per app
     /// launch when we observe a team with zero agents; soft-dismissible so it
@@ -126,16 +129,61 @@ public struct RootTabView: View {
                                           description: Text("Create or join a team to see actors."))
                 }
             }
-            Tab(value: AppTab.search, role: .search) {
-                SearchTab(mqtt: mqtt,
-                          pairing: pairing,
-                          teamcluService: teamcluService,
-                          viewModel: viewModel,
-                          rootSelection: $selection,
-                          sessionsPath: $sessionsPath)
+            Tab("Voice", systemImage: "mic", value: AppTab.search) {
+                VoiceTabPlaceholder(isRecording: voiceRecorder.state == .recording)
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if voiceRecorder.state == .recording || isStartingVoiceSession {
+                VoiceRecordingBar(
+                    level: voiceRecorder.audioLevel,
+                    isStartingSession: isStartingVoiceSession,
+                    onStop: voiceRecorder.stopRecording
+                )
+            }
+        }
+        .toolbarVisibility(
+            (voiceRecorder.state == .recording || isStartingVoiceSession) ? .hidden : .automatic,
+            for: .tabBar
+        )
+        .onChange(of: selection) { _, tab in
+            guard tab == .search,
+                  voiceRecorder.state != .recording,
+                  !isStartingVoiceSession
+            else { return }
+            voiceRecorder.startRecording()
+        }
+        .onChange(of: voiceRecorder.state) { _, state in
+            switch state {
+            case .done:
+                let transcript = voiceRecorder.transcribedText ?? ""
+                voiceRecorder.reset()
+                guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    selection = .sessions
+                    voiceErrorMessage = String(localized: "No speech was recognized. Try recording again.")
+                    return
+                }
+                isStartingVoiceSession = true
+                Task { await startVoiceSession(transcript) }
+            case .denied:
+                selection = .sessions
+                voiceErrorMessage = String(localized: "Microphone and speech recognition access are required for voice chat.")
+            case .error(let message):
+                selection = .sessions
+                voiceErrorMessage = message
+            case .idle, .recording:
+                break
+            }
+        }
+        .alert("Voice chat couldn't start", isPresented: Binding(
+            get: { voiceErrorMessage != nil },
+            set: { if !$0 { voiceErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(voiceErrorMessage ?? "")
+        }
         .task(id: activeTeam?.id) {
             await coordinator?.prepareTeamRuntime(modelContext: modelContext)
             // SessionListVM observes ConnectedAgentsStore directly and fans
@@ -234,6 +282,30 @@ public struct RootTabView: View {
     }
 
     @MainActor
+    private func startVoiceSession(_ transcript: String) async {
+        defer { isStartingVoiceSession = false }
+        do {
+            let sessionID = try await VoiceSessionStarter.start(
+                transcript: transcript,
+                teamID: activeTeam?.id ?? "",
+                currentActorID: currentActorID,
+                teamcluService: teamcluService,
+                actorStore: teamRuntime?.actorStore,
+                connectedAgentsStore: teamRuntime?.connectedAgentsStore,
+                workspacesRepository: teamRuntime?.workspacesRepo,
+                sessionsRepository: teamRuntime?.sessionRepo,
+                viewModel: viewModel,
+                modelContext: modelContext
+            )
+            selection = .sessions
+            sessionsPath = ["session:\(sessionID)"]
+        } catch {
+            selection = .sessions
+            voiceErrorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
     private func maybeShowFirstAgentReminder(team: TeamSummary) async {
         guard !remindedTeams.contains(team.id),
               let repo = teamRuntime?.agentAccessRepo else { return }
@@ -326,5 +398,50 @@ public struct RootTabView: View {
             viewModel.validSessionIDs = ids
             viewModel.reloadSessions(modelContext: modelContext)
         }
+    }
+}
+
+private struct VoiceTabPlaceholder: View {
+    let isRecording: Bool
+
+    var body: some View {
+        ContentUnavailableView(
+            isRecording ? "Listening…" : "Voice chat",
+            systemImage: isRecording ? "waveform" : "mic",
+            description: Text(isRecording ? "Tap stop when you are done." : "Tap Voice to start a new chat with your default agent.")
+        )
+        .background(Color.amux.mist)
+    }
+}
+
+private struct VoiceRecordingBar: View {
+    let level: Float
+    let isStartingSession: Bool
+    let onStop: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if isStartingSession {
+                ProgressView()
+                Text("Starting your agent…")
+                    .foregroundStyle(Color.amux.basalt)
+            } else {
+                RecordingWaveform(level: level)
+                Button(action: onStop) {
+                    Image(systemName: "stop.fill")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.amux.mist)
+                        .frame(width: 42, height: 42)
+                        .background(Color.amux.cinnabar, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("voice.stopRecordingButton")
+                .accessibilityLabel("Stop recording")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .background(Color.amux.mist)
+        .overlay(alignment: .top) { Color.amux.hairline.frame(height: 0.5) }
     }
 }
