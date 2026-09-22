@@ -280,6 +280,26 @@ export function mapSessionFull(row) {
     threadRootMessageId: row?.thread_root_message_id ?? null,
     createdAt: row?.created_at ?? null,
     updatedAt: row?.updated_at ?? null,
+    // Pictures posted with the idea. Distinct from an activity's attachments,
+    // which belong to the comment that carried them.
+    attachmentUrls: row?.attachment_urls ?? [],
+  };
+}
+
+/**
+ * A feed row: an idea plus the three numbers its card renders.
+ *
+ * Separate from `mapIdeaRow` on purpose. These come from `amux.idea_feed`,
+ * which aggregates; a plain `select` on ideas cannot fill them, so a single
+ * mapper would have to invent zeros for `getIdea` and report a post with
+ * comments as having none.
+ */
+export function mapIdeaFeedRow(row) {
+  return {
+    ...mapIdeaRow(row),
+    commentCount: Number(row?.comment_count ?? 0),
+    likeCount: Number(row?.like_count ?? 0),
+    likedByMe: row?.liked_by_me === true,
   };
 }
 

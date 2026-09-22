@@ -5359,6 +5359,54 @@ paths:
           description: OK
         "401":
           $ref: "#/components/responses/Error"
+  /v1/ideas/{ideaId}/like:
+    put:
+      operationId: setIdeaLike
+      summary: Like or unlike an idea
+      description: >-
+        Sets whether the calling member likes this idea. The body says what the
+        state should be rather than toggling, so a request that arrives twice
+        settles on the same answer.
+      tags: [Ideas]
+      parameters:
+        - in: path
+          name: ideaId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [liked]
+              properties:
+                liked:
+                  type: boolean
+      responses:
+        "200":
+          description: The idea's like state after the change.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [likeCount, likedByMe]
+                properties:
+                  likeCount:
+                    type: integer
+                  likedByMe:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/ideas/{ideaId}/activities:
     post:
       operationId: createIdeaActivity
@@ -11099,6 +11147,20 @@ components:
             - string
             - "null"
           format: date-time
+        attachmentUrls:
+          type: array
+          description: Pictures posted with the idea, distinct from a comment's attachments.
+          items:
+            type: string
+        commentCount:
+          type: integer
+          description: Comments on the idea. Only present on the list, which aggregates; a single idea read does not carry it.
+        likeCount:
+          type: integer
+          description: Members who have liked the idea. List only, as above.
+        likedByMe:
+          type: boolean
+          description: Whether the calling member has liked the idea. List only, as above.
     AgentRuntime:
       type: object
       required: [id, agentActorId, sessionId, runtimeId, backendSessionId]
@@ -11177,6 +11239,11 @@ components:
         authorActorId:
           type: string
           format: uuid
+        attachmentUrls:
+          type: array
+          description: Pictures to post with the idea. Applied right after creation, so a failure here leaves the idea without them.
+          items:
+            type: string
         actorIds:
           type: array
           items:
