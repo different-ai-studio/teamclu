@@ -36,6 +36,27 @@ function loadTeamGateway(ctx) {
   return { provider: JSON.parse(raw), token };
 }
 
+/** `provider/model` from the picker. A bare id is a team model saved before
+ *  the picker listed other providers. */
+function parseCompilerModel(compilerModel) {
+  const raw = String(compilerModel || "").trim();
+  if (!raw || raw === "default") return { provider: "team", modelId: "", source: "team" };
+  const slash = raw.indexOf("/");
+  if (slash > 0 && slash < raw.length - 1) {
+    const provider = raw.slice(0, slash);
+    return {
+      provider,
+      modelId: raw.slice(slash + 1),
+      source: provider === "team" ? "team" : "device",
+    };
+  }
+  return { provider: "team", modelId: raw, source: "team" };
+}
+
+function compilerNeedsTeamGateway(compilerModel) {
+  return parseCompilerModel(compilerModel).source === "team";
+}
+
 function writePiAuth(agentDir, provider, token) {
   const models = Array.isArray(provider.models) && provider.models.length > 0
     ? provider.models
@@ -81,7 +102,7 @@ function piPackageRoot() {
 }
 
 async function createLivePiSession(ctx) {
-  const { provider, token } = loadTeamGateway(ctx);
+  const selection = parseCompilerModel(ctx.compilerModel);
   const piRoot = piPackageRoot();
   const entry = path.join(piRoot, "dist/index.js");
   if (!fs.existsSync(entry)) {
@@ -91,18 +112,40 @@ async function createLivePiSession(ctx) {
   }
   const sdk = await import(pathToFileURL(entry).href);
   const wikiRoot = path.join(ctx.workRoot, "wiki");
-  const agentDir = path.join(ctx.workRoot, "state", "pi-agent");
-  writePiAuth(agentDir, provider, token);
-  const modelRuntime = await sdk.ModelRuntime.create({
-    authPath: path.join(agentDir, "auth.json"),
-    modelsPath: path.join(agentDir, "models.json"),
-    refreshOnCreate: false,
-  });
-  const wanted = ctx.compilerModel || provider.models?.[0]?.id || "default";
-  const model =
-    modelRuntime.getModel("team", wanted) || modelRuntime.getModels("team")[0];
+  let agentDir;
+  let modelRuntime;
+  let model;
+  if (selection.source === "device") {
+    // Device providers live in pi's own agent dir (auth.json / models.json).
+    agentDir =
+      typeof sdk.getAgentDir === "function"
+        ? sdk.getAgentDir()
+        : path.join(os.homedir(), ".pi", "agent");
+    modelRuntime = await sdk.ModelRuntime.create({
+      authPath: path.join(agentDir, "auth.json"),
+      modelsPath: path.join(agentDir, "models.json"),
+      refreshOnCreate: false,
+    });
+    model = modelRuntime.getModel(selection.provider, selection.modelId);
+  } else {
+    const { provider, token } = loadTeamGateway(ctx);
+    agentDir = path.join(ctx.workRoot, "state", "pi-agent");
+    writePiAuth(agentDir, provider, token);
+    modelRuntime = await sdk.ModelRuntime.create({
+      authPath: path.join(agentDir, "auth.json"),
+      modelsPath: path.join(agentDir, "models.json"),
+      refreshOnCreate: false,
+    });
+    const wanted = selection.modelId || provider.models?.[0]?.id;
+    model =
+      (wanted && modelRuntime.getModel("team", wanted)) ||
+      (!selection.modelId ? modelRuntime.getModels("team")[0] : undefined);
+  }
   if (!model) {
-    throw new Error("Team AI compiler model is not available.");
+    const label = selection.modelId
+      ? `${selection.provider}/${selection.modelId}`
+      : selection.provider;
+    throw new Error(`Compiler model is not available: ${label}`);
   }
   const ops = jailedWikiOperations(ctx.workRoot);
   const policy = piSessionPolicy();
@@ -162,5 +205,7 @@ module.exports = {
   piSessionPolicy,
   compile,
   loadTeamGateway,
+  parseCompilerModel,
+  compilerNeedsTeamGateway,
   createLivePiSession,
 };

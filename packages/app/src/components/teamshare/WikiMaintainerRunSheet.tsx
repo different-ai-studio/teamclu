@@ -10,6 +10,12 @@ export interface WikiSourceDirectory {
   label: string
 }
 
+export interface WikiCompilerModel {
+  id: string
+  name: string
+  providerName?: string
+}
+
 export interface WikiPrepareSummary {
   runId: string
   sourceCount: number
@@ -50,6 +56,23 @@ async function defaultSubscribeProgress(
   })
 }
 
+function compilerModelGroups(models: WikiCompilerModel[]): {
+  label: string
+  models: WikiCompilerModel[]
+}[] {
+  const groups = new Map<string, WikiCompilerModel[]>()
+  for (const model of models) {
+    const label = model.providerName?.trim() || ''
+    const list = groups.get(label)
+    if (list) list.push(model)
+    else groups.set(label, [model])
+  }
+  return [...groups.entries()].map(([label, groupModels]) => ({
+    label,
+    models: groupModels,
+  }))
+}
+
 function stageLabel(
   stage: string,
   t: (key: string, fallback: string) => string,
@@ -74,8 +97,11 @@ export function WikiMaintainerRunSheet({
   open,
   teamId,
   sourceDirectories,
+  compilerModels = [],
   initialSelected,
+  initialCompilerModel = '',
   onSaveSelection,
+  onSaveCompilerModel,
   onPrepare,
   onPublish,
   onCancel,
@@ -85,9 +111,16 @@ export function WikiMaintainerRunSheet({
   open: boolean
   teamId: string
   sourceDirectories: WikiSourceDirectory[]
+  compilerModels?: WikiCompilerModel[]
   initialSelected: string[]
+  initialCompilerModel?: string
   onSaveSelection: (teamId: string, paths: string[]) => void
-  onPrepare: (teamId: string, paths: string[]) => Promise<WikiPrepareSummary>
+  onSaveCompilerModel?: (teamId: string, modelId: string) => void
+  onPrepare: (
+    teamId: string,
+    paths: string[],
+    compilerModel: string,
+  ) => Promise<WikiPrepareSummary>
   onPublish: (runId: string, acceptVisionCost: boolean) => Promise<WikiPublishResult>
   onCancel?: (runId: string) => Promise<void>
   onClose: () => void
@@ -97,6 +130,7 @@ export function WikiMaintainerRunSheet({
 }) {
   const { t } = useTranslation()
   const [selected, setSelected] = React.useState<string[]>(initialSelected)
+  const [compilerModel, setCompilerModel] = React.useState(initialCompilerModel)
   const [phase, setPhase] = React.useState<Phase>('select')
   const [summary, setSummary] = React.useState<WikiPrepareSummary | null>(null)
   const [publishResult, setPublishResult] = React.useState<WikiPublishResult | null>(null)
@@ -107,6 +141,7 @@ export function WikiMaintainerRunSheet({
   React.useEffect(() => {
     if (!open) return
     setSelected(initialSelected)
+    setCompilerModel(initialCompilerModel)
     setPhase('select')
     setSummary(null)
     setPublishResult(null)
@@ -150,7 +185,8 @@ export function WikiMaintainerRunSheet({
     setPhase('preparing')
     try {
       onSaveSelection(teamId, selected)
-      const next = await onPrepare(teamId, selected)
+      onSaveCompilerModel?.(teamId, compilerModel)
+      const next = await onPrepare(teamId, selected, compilerModel)
       setSummary(next)
       setProgress(null)
       setPhase('summary')
@@ -214,7 +250,7 @@ export function WikiMaintainerRunSheet({
             {phase === 'published' ? t('common.close', 'Close') : t('common.cancel', 'Cancel')}
           </Button>
           {(phase === 'select' || phase === 'preparing') && (
-            <Button type="button" onClick={() => void prepare()} disabled={busy || selected.length === 0}>
+            <Button type="button" onClick={() => void prepare()} disabled={busy || selected.length === 0 || !compilerModel}>
               {phase === 'preparing' && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t('teamShare.wikiCheckCompile', 'Check and compile')}
             </Button>
@@ -257,6 +293,53 @@ export function WikiMaintainerRunSheet({
                 <span className="font-mono text-[10.5px] text-faint">{directory.path}</span>
               </label>
             ))}
+          </div>
+          <div className="mt-4">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-faint">
+              {t('teamShare.wikiCompilerModel', 'Compiler model')}
+            </div>
+            <select
+              className="h-8 w-full rounded-[8px] border border-border bg-paper px-2 text-[13px] text-foreground"
+              value={compilerModel}
+              onChange={(event) => {
+                const next = event.target.value
+                setCompilerModel(next)
+                onSaveCompilerModel?.(teamId, next)
+              }}
+              aria-label={t('teamShare.wikiCompilerModel', 'Compiler model')}
+              disabled={compilerModels.length === 0}
+            >
+              {compilerModels.length === 0 && (
+                <option value="">
+                  {t('teamShare.wikiCompilerModelEmpty', 'No models available')}
+                </option>
+              )}
+              {compilerModelGroups(compilerModels).map((group) =>
+                group.label ? (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.models.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.name || model.id}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : (
+                  group.models.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name || model.id}
+                    </option>
+                  ))
+                ),
+              )}
+            </select>
+            {compilerModels.length === 0 && (
+              <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
+                {t(
+                  'teamShare.wikiCompilerModelHint',
+                  'Sign in a model provider, or configure team AI, then compile Wiki.',
+                )}
+              </p>
+            )}
           </div>
           <p className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">
             {t(
@@ -396,6 +479,14 @@ export function WikiMaintainerRunSheet({
                 </div>
               ))}
             </div>
+          )}
+          {summary.canPublish && summary.failed > 0 && (
+            <p className="text-[12px] leading-relaxed text-muted-foreground">
+              {t(
+                'teamShare.wikiPartialPublish',
+                'Pages that passed are saved. You can publish them now. Failed sources are left out and can be compiled again later.',
+              )}
+            </p>
           )}
           {phase === 'published' && (
             <div className="flex items-center gap-2 rounded-[8px] border border-border bg-panel p-3 text-[12.5px]">

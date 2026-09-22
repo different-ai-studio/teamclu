@@ -5,12 +5,16 @@ const {
   listKnownDocuments,
   fetchDocuments,
   listKnowledgeAcl,
+  loadLlmConfig,
+  loadDeviceModelOptions,
   refreshExternalRoot,
 } = vi.hoisted(() => ({
   invoke: vi.fn(),
   listKnownDocuments: vi.fn(),
   fetchDocuments: vi.fn(),
   listKnowledgeAcl: vi.fn(),
+  loadLlmConfig: vi.fn(),
+  loadDeviceModelOptions: vi.fn(),
   refreshExternalRoot: vi.fn(),
 }))
 
@@ -19,8 +23,14 @@ vi.mock('@/lib/daemon/daemon-local-client', () => ({
   listKnownDocuments,
   fetchDocuments,
 }))
+vi.mock('@/lib/agent/device-default-models', () => ({
+  loadDeviceModelOptions,
+}))
 vi.mock('@/lib/backend/provider', () => ({
-  getBackend: () => ({ knowledgeAcl: { listKnowledgeAcl } }),
+  getBackend: () => ({
+    knowledgeAcl: { listKnowledgeAcl },
+    teamWorkspaceConfig: { loadLlmConfig },
+  }),
 }))
 vi.mock('@/stores/team-share-browser', () => ({
   useTeamShareBrowserStore: {
@@ -34,6 +44,8 @@ vi.mock('@/stores/workspace', () => ({
 }))
 
 import {
+  loadWikiCompilerModels,
+  pickSavedCompilerModel,
   prepareWikiMaintenance,
   publishWikiMaintenance,
 } from '../wiki-maintainer-client'
@@ -41,6 +53,7 @@ import {
 describe('wiki-maintainer-client', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    loadDeviceModelOptions.mockResolvedValue({ options: [], reason: 'no-models', defaultBackend: null })
   })
 
   it('materializes only missing documents under selected folders before prepare', async () => {
@@ -62,7 +75,7 @@ describe('wiki-maintainer-client', () => {
     })
     fetchDocuments.mockResolvedValue(1)
 
-    await prepareWikiMaintenance('team-1', ['documents/handbook/'])
+    await prepareWikiMaintenance('team-1', ['documents/handbook/'], 'glm-4.6')
 
     expect(invoke).toHaveBeenCalledWith('kb_maintainer_list_local_documents', {
       teamId: 'team-1',
@@ -76,6 +89,7 @@ describe('wiki-maintainer-client', () => {
     ])
     expect(invoke).toHaveBeenCalledWith('kb_maintainer_prepare', {
       request: expect.objectContaining({
+        compilerModel: 'glm-4.6',
         aclPrefixes: ['documents/restricted/'],
         known: [
           { path: 'documents/handbook/a.pdf', version: 1, size: 10 },
@@ -100,7 +114,7 @@ describe('wiki-maintainer-client', () => {
     fetchDocuments.mockResolvedValue(1)
 
     await expect(
-      prepareWikiMaintenance('team-1', ['documents/handbook/']),
+      prepareWikiMaintenance('team-1', ['documents/handbook/'], 'glm-4.6'),
     ).rejects.toThrow('download')
     expect(invoke).not.toHaveBeenCalledWith('kb_maintainer_prepare', expect.anything())
   })
@@ -113,5 +127,45 @@ describe('wiki-maintainer-client', () => {
     })
 
     expect(refreshExternalRoot).toHaveBeenCalledWith('/team/shared/team-sync')
+  })
+
+  it('loads device models and team gateway models for the compiler picker', async () => {
+    loadDeviceModelOptions.mockResolvedValue({
+      options: [
+        {
+          id: 'anthropic/claude-sonnet',
+          displayName: 'Claude Sonnet',
+          providerName: 'anthropic',
+          backend: 'pi',
+        },
+      ],
+      reason: 'ok',
+      defaultBackend: 'pi',
+    })
+    loadLlmConfig.mockResolvedValue({
+      enabled: true,
+      baseUrl: 'https://gateway.example/v1',
+      models: [
+        { id: 'glm-4.6', name: '标准' },
+        { id: 'glm-4-flash', name: '快速' },
+      ],
+    })
+    await expect(loadWikiCompilerModels('team-1')).resolves.toEqual([
+      { id: 'anthropic/claude-sonnet', name: 'Claude Sonnet', providerName: 'anthropic' },
+      { id: 'team/glm-4.6', name: '标准', providerName: 'team' },
+      { id: 'team/glm-4-flash', name: '快速', providerName: 'team' },
+    ])
+  })
+
+  it('keeps a previously saved team model id that predates the provider prefix', () => {
+    const models = [
+      { id: 'anthropic/claude-sonnet', name: 'Claude Sonnet', providerName: 'anthropic' },
+      { id: 'team/glm-4.6', name: '标准', providerName: 'team' },
+    ]
+    expect(pickSavedCompilerModel('glm-4.6', models)).toBe('team/glm-4.6')
+    expect(pickSavedCompilerModel('anthropic/claude-sonnet', models)).toBe(
+      'anthropic/claude-sonnet',
+    )
+    expect(pickSavedCompilerModel('', models)).toBe('anthropic/claude-sonnet')
   })
 })

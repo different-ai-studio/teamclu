@@ -28,6 +28,10 @@ vi.mock('../WikiMaintainerRunSheet', () => ({
 vi.mock('@/lib/knowledge/wiki-maintainer-client', () => ({
   discoverWikiSourceDirectories: () =>
     Promise.resolve([{ path: 'documents/handbook/', label: 'handbook' }]),
+  loadWikiCompilerModels: () =>
+    Promise.resolve([{ id: 'glm-4.6', name: '标准' }]),
+  pickSavedCompilerModel: (saved: string, models: { id: string }[]) =>
+    (saved && models.some((model) => model.id === saved) ? saved : models[0]?.id) ?? '',
   prepareWikiMaintenance: vi.fn(),
   publishWikiMaintenance: vi.fn(),
   cancelWikiMaintenance: vi.fn(),

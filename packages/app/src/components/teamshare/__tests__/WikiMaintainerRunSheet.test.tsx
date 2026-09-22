@@ -3,6 +3,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { WikiMaintainerRunSheet } from '../WikiMaintainerRunSheet'
 
+const MODELS = [
+  { id: 'glm-4.6', name: '标准' },
+  { id: 'glm-4-flash', name: '快速' },
+]
+
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async () => () => {}),
 }))
@@ -31,7 +36,10 @@ describe('WikiMaintainerRunSheet', () => {
           { path: 'documents/spec-docs/', label: 'spec-docs' },
         ]}
         initialSelected={['documents/features/', 'documents/spec-docs/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
         onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
         onPrepare={prepare}
         onPublish={vi.fn()}
         onClose={vi.fn()}
@@ -58,7 +66,10 @@ describe('WikiMaintainerRunSheet', () => {
         teamId="team-1"
         sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
         initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
         onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
         onPrepare={prepare}
         onPublish={vi.fn()}
         onClose={vi.fn()}
@@ -122,7 +133,10 @@ describe('WikiMaintainerRunSheet', () => {
           { path: 'documents/training/', label: 'training' },
         ]}
         initialSelected={[]}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
         onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
         onPrepare={prepare}
         onPublish={publish}
         onClose={vi.fn()}
@@ -133,7 +147,7 @@ describe('WikiMaintainerRunSheet', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
 
     await waitFor(() =>
-      expect(prepare).toHaveBeenCalledWith('team-1', ['documents/handbook/']),
+      expect(prepare).toHaveBeenCalledWith('team-1', ['documents/handbook/'], 'glm-4.6'),
     )
     expect(await screen.findByText('4 source files checked')).toBeTruthy()
     expect(screen.getByText('2 pages added')).toBeTruthy()
@@ -142,6 +156,42 @@ describe('WikiMaintainerRunSheet', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm publish' }))
     await waitFor(() => expect(publish).toHaveBeenCalledWith('run-1', false))
     expect(await screen.findByText('Published and synced')).toBeTruthy()
+  })
+
+  it('publishes pages that passed while failed sources stay listed', async () => {
+    const publish = vi.fn().mockResolvedValue({ syncStatus: 'synced' })
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/features/', label: 'features' }]}
+        initialSelected={['documents/features/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn().mockResolvedValue({
+          runId: 'run-partial',
+          sourceCount: 2,
+          added: 1,
+          updated: 0,
+          deleted: 0,
+          failed: 1,
+          visionPages: 0,
+          estimatedCost: 0,
+          currency: 'CNY',
+          canPublish: true,
+          blockers: ['documents/features/bad.md: quality gate'],
+        })}
+        onPublish={publish}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    expect(await screen.findByText('documents/features/bad.md: quality gate')).toBeTruthy()
+    expect(screen.getByText(/Pages that passed are saved/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm publish' }))
+    await waitFor(() => expect(publish).toHaveBeenCalledWith('run-partial', false))
   })
 
   it('blocks publishing when quality checks fail', async () => {
@@ -153,7 +203,10 @@ describe('WikiMaintainerRunSheet', () => {
         teamId="team-1"
         sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
         initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
         onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
         onPrepare={vi.fn().mockResolvedValue({
           runId: 'run-2',
           sourceCount: 1,
@@ -190,7 +243,10 @@ describe('WikiMaintainerRunSheet', () => {
         teamId="team-1"
         sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
         initialSelected={[]}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
         onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
         onPrepare={vi.fn().mockResolvedValue({
           runId: 'run-cost',
           sourceCount: 1,
@@ -219,5 +275,66 @@ describe('WikiMaintainerRunSheet', () => {
     expect(publishButton).toBeEnabled()
     fireEvent.click(publishButton)
     await waitFor(() => expect(publish).toHaveBeenCalledWith('run-cost', true))
+  })
+
+  it('compiles with the model the user picked', async () => {
+    const prepare = vi.fn().mockResolvedValue({
+      runId: 'run-model',
+      sourceCount: 1,
+      added: 1,
+      updated: 0,
+      deleted: 0,
+      failed: 0,
+      visionPages: 0,
+      estimatedCost: 0,
+      currency: 'CNY',
+      canPublish: true,
+      blockers: [],
+    })
+    const saveModel = vi.fn()
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onSaveCompilerModel={saveModel}
+        onPrepare={prepare}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Compiler model' }), {
+      target: { value: 'glm-4-flash' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    await waitFor(() =>
+      expect(prepare).toHaveBeenCalledWith('team-1', ['documents/handbook/'], 'glm-4-flash'),
+    )
+    expect(saveModel).toHaveBeenCalledWith('team-1', 'glm-4-flash')
+  })
+
+  it('does not compile until a compiler model is available', () => {
+    const prepare = vi.fn()
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        compilerModels={[]}
+        initialCompilerModel=""
+        onSaveSelection={vi.fn()}
+        onPrepare={prepare}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Check and compile' })).toBeDisabled()
+    expect(prepare).not.toHaveBeenCalled()
   })
 })

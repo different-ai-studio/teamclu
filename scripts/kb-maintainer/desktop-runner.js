@@ -13,6 +13,10 @@ const { buildPublishPlan, publishWiki } = require("./publish");
 const { commitAll, headCommit } = require("./git-store");
 const { gcOrphanPages } = require("./orphan-gc");
 
+function pageChanges(items) {
+  return (items || []).filter((item) => String(item).startsWith("pages/")).length;
+}
+
 function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan }) {
   const failures = (ingest.failures || []).map(
     (failure) => `${failure.path}: ${failure.error}`,
@@ -25,26 +29,31 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
   const sourceCount =
     plan.add.length + plan.update.length + plan.unchanged.length + policyBlocks.length;
   const retractCount = plan.delete.length;
+  const added = pageChanges(publishPlan.create);
+  const updated = pageChanges(publishPlan.update);
+  const deleted = pageChanges(publishPlan.delete);
+  const emptySelection = sourceCount === 0 && retractCount === 0;
+  const lintErrors = lint.errors || [];
+  // A source that fails is rolled back on its own. Sources that passed stay
+  // committed, so they can be published while the failures wait for a later run.
   const blockers = [
-    ...(sourceCount === 0 && retractCount === 0
-      ? ["No source files were found in the selected folders."]
-      : []),
+    ...(emptySelection ? ["No source files were found in the selected folders."] : []),
     ...policyBlocks,
     ...failures,
-    ...(lint.errors || []),
+    ...lintErrors,
   ];
   return {
     runId,
     sourceCount,
     retractCount,
-    added: publishPlan.create.filter((item) => item.startsWith("pages/")).length,
-    updated: publishPlan.update.filter((item) => item.startsWith("pages/")).length,
-    deleted: publishPlan.delete.filter((item) => item.startsWith("pages/")).length,
+    added,
+    updated,
+    deleted,
     failed: failures.length,
     visionPages: estimate.visionPages,
     estimatedCost: estimate.estimatedCost,
     currency: estimate.currency,
-    canPublish: blockers.length === 0,
+    canPublish: !emptySelection && lintErrors.length === 0 && added + updated + deleted > 0,
     blockers,
   };
 }

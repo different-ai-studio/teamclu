@@ -99,6 +99,8 @@ pub struct KnownDocument {
 pub struct PrepareRequest {
     team_id: String,
     source_directories: Vec<String>,
+    #[serde(default)]
+    compiler_model: Option<String>,
     acl_prefixes: Vec<String>,
     known: Vec<KnownDocument>,
 }
@@ -527,6 +529,19 @@ fn gateway_from_disk_team(team: &Value) -> Result<(String, String), String> {
     ))
 }
 
+/// Bare ids and `team/…` compile through the team gateway. Any other
+/// `provider/model` uses the model the user already signed in on this computer.
+fn compiler_uses_team_gateway(model: &str) -> bool {
+    let model = model.trim();
+    if model.is_empty() || model == "default" {
+        return true;
+    }
+    match model.split_once('/') {
+        Some((provider, id)) if !provider.is_empty() && !id.is_empty() => provider == "team",
+        _ => true,
+    }
+}
+
 fn load_team_gateway() -> Result<(String, String), String> {
     let team = teamclu_runtime_env::read_global_team_provider().ok_or_else(gateway_unavailable)?;
     gateway_from_disk_team(&team)
@@ -638,10 +653,21 @@ pub async fn kb_maintainer_prepare(
         .iter()
         .map(|path| normalize_source_directory(path))
         .collect::<Result<_, _>>()?;
+    let compiler_model = request
+        .compiler_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| "Choose a compiler model.".to_string())?
+        .to_string();
     let (documents_root, knowledge_root) = team_paths(&request.team_id)?;
     validate_existing_directory(&documents_root, &documents_root)?;
     validate_existing_directory(&knowledge_root, &knowledge_root)?;
-    let gateway = load_team_gateway()?;
+    let gateway = if compiler_uses_team_gateway(&compiler_model) {
+        Some(load_team_gateway()?)
+    } else {
+        None
+    };
 
     let root = work_root(&request.team_id)?;
     fs::create_dir_all(root.join("state"))
@@ -675,7 +701,7 @@ pub async fn kb_maintainer_prepare(
         "deny": { "pathPatterns": [
             "**/_secrets/**", "**/personnel/**", "**/discipline/**", "**/insurance/**"
         ]},
-        "models": { "compiler": "default", "vision": "", "visionPagePrice": 0.12, "currency": "CNY" }
+        "models": { "compiler": compiler_model, "vision": "", "visionPagePrice": 0.12, "currency": "CNY" }
     });
     if let Err(error) = write_json(&config_path, &config) {
         let _ = fs::remove_file(&lock_path);
@@ -690,6 +716,7 @@ pub async fn kb_maintainer_prepare(
         "knowledgeRoot": knowledge_root,
         "workRoot": root,
         "nodeId": node_id,
+        "compilerModel": compiler_model,
         "aclPrefixes": request.acl_prefixes,
         "known": request.known.into_iter().map(|item| json!({
             "path": item.path, "version": item.version, "size": item.size
@@ -701,7 +728,7 @@ pub async fn kb_maintainer_prepare(
         return Err(error);
     }
 
-    let result = run_node(&app, "prepare", &input_path, Some(&gateway)).await;
+    let result = run_node(&app, "prepare", &input_path, gateway.as_ref()).await;
     let summary: PrepareSummary = match result {
         Ok(value) => match serde_json::from_value(value) {
             Ok(summary) => summary,
@@ -784,6 +811,27 @@ mod tests {
         assert!(normalize_source_directory("../secrets").is_err());
         assert!(normalize_source_directory("knowledge/wiki").is_err());
         assert!(normalize_source_directory("documents/_secrets/").is_err());
+    }
+
+    #[test]
+    fn device_compiler_models_skip_the_team_gateway() {
+        assert!(compiler_uses_team_gateway("glm-4.6"));
+        assert!(compiler_uses_team_gateway("team/glm-4.6"));
+        assert!(compiler_uses_team_gateway("default"));
+        assert!(!compiler_uses_team_gateway("anthropic/claude-sonnet"));
+    }
+
+    #[test]
+    fn prepare_request_reads_compiler_model() {
+        let parsed: PrepareRequest = serde_json::from_value(json!({
+            "teamId": "team-1",
+            "sourceDirectories": ["documents/handbook/"],
+            "compilerModel": "glm-4.6",
+            "aclPrefixes": [],
+            "known": []
+        }))
+        .unwrap();
+        assert_eq!(parsed.compiler_model.as_deref(), Some("glm-4.6"));
     }
 
     #[test]

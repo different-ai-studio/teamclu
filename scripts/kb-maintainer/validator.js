@@ -278,7 +278,7 @@ function rebuildIndex(wikiRoot) {
     }
     const type = parsed.frontmatter.type;
     const display = indexAlias(pageDisplay(parsed, slug));
-    const section = SECTION_BY_TYPE[type] || type;
+    const section = SECTION_BY_TYPE[type] || (typeof type === "string" && type.trim()) || "其他";
     if (!groups.has(section)) groups.set(section, []);
     groups.get(section).push({
       slug,
@@ -287,9 +287,11 @@ function rebuildIndex(wikiRoot) {
     });
   }
   const lines = ["# LLM Wiki", ""];
-  for (const [section, pages] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], "zh"))) {
+  for (const [section, pages] of [...groups.entries()].sort((a, b) =>
+    String(a[0]).localeCompare(String(b[0]), "zh"),
+  )) {
     lines.push(`## ${section}`);
-    for (const page of pages.sort((a, b) => a.slug.localeCompare(b.slug, "zh"))) {
+    for (const page of pages.sort((a, b) => String(a.slug).localeCompare(String(b.slug), "zh"))) {
       lines.push(`- [[pages/${page.slug}|${page.display}]] — ${page.summary}`);
     }
     lines.push("");

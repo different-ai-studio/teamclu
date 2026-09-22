@@ -297,6 +297,74 @@ test("ingest rebuilds index so a compiler-written summary mismatch still imports
   assert.doesNotMatch(index, /WRONG SUMMARY/);
 });
 
+test("ingest keeps a compile whose pages omit type, use block-style sources, or run past 8000 bytes", async () => {
+  const fx = makeHarness();
+  write(
+    path.join(fx.documentsRoot, "handbook", "leave.md"),
+    "# 频道\n\n网关把消息送到会话。\n",
+  );
+  const result = await ingestBatch({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    workRoot: fx.workRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+    runner: "pi",
+    createSession: async (ctx) => ({
+      prompt: async () => {
+        const wiki = path.join(ctx.workRoot, "wiki");
+        fs.mkdirSync(path.join(wiki, "pages"), { recursive: true });
+        fs.writeFileSync(
+          path.join(wiki, "pages", "channel-gateways.md"),
+          `---
+summary: 频道网关。
+sources:
+- path: documents/handbook/leave.md
+  sha256: nope
+  locators:
+  - heading=频道
+---
+
+# 频道
+
+网关把消息送到会话。
+${"细节".repeat(5000)}
+`,
+        );
+        fs.writeFileSync(
+          path.join(wiki, "pages", "already-typed.md"),
+          `---
+type: policy
+summary: 已有类型。
+managed_by: llm-wiki
+schema_version: 1
+sources:
+  - path: documents/handbook/leave.md
+    sha256: nope
+    locators: ["heading=频道"]
+updated: 2026-09-22
+---
+
+# 已有类型
+
+短页。
+`,
+        );
+      },
+    }),
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.failures));
+  const page = fs.readFileSync(path.join(fx.workRoot, "wiki", "pages", "channel-gateways.md"), "utf8");
+  assert.match(page, /^---\ntype: policy\n/);
+  assert.ok(Buffer.byteLength(page) <= 8000);
+  const index = fs.readFileSync(path.join(fx.workRoot, "wiki", "index.md"), "utf8");
+  assert.match(index, /channel-gateways/);
+  assert.match(index, /already-typed/);
+});
+
 test("ingestBatch rewrites short wiki links before the source gate", async () => {
   const crypto = require("node:crypto");
   const { serializeFrontmatter } = require("./frontmatter");

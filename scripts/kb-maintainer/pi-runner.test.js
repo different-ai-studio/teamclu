@@ -6,7 +6,14 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { ensureWikiRepo, commitAll } = require("./git-store");
-const { ALLOWED_PI_TOOLS, EXCLUDED_PI_TOOLS, piSessionPolicy, compile } = require("./pi-runner");
+const {
+  ALLOWED_PI_TOOLS,
+  EXCLUDED_PI_TOOLS,
+  piSessionPolicy,
+  compile,
+  parseCompilerModel,
+  compilerNeedsTeamGateway,
+} = require("./pi-runner");
 
 function makeWork() {
   const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kb-pi-"));
@@ -56,6 +63,21 @@ test("compile with an injected session records wiki pages from git, not the mode
   });
   assert.match(receivedPrompt, /<source>/);
   assert.deepEqual(compiled.affectedPages, ["index.md", "pages/请假.md"]);
+});
+
+test("a device compiler model does not require the team gateway", () => {
+  assert.deepEqual(parseCompilerModel("anthropic/claude-sonnet"), {
+    provider: "anthropic",
+    modelId: "claude-sonnet",
+    source: "device",
+  });
+  assert.equal(compilerNeedsTeamGateway("anthropic/claude-sonnet"), false);
+  assert.deepEqual(parseCompilerModel("glm-4.6"), {
+    provider: "team",
+    modelId: "glm-4.6",
+    source: "team",
+  });
+  assert.equal(compilerNeedsTeamGateway("team/glm-4.6"), true);
 });
 
 test("Pi compile fails closed when the team gateway is missing", async () => {

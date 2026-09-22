@@ -9,11 +9,14 @@ import { useWikiMaintainerStore } from '@/stores/wiki-maintainer-store'
 import {
   cancelWikiMaintenance,
   discoverWikiSourceDirectories,
+  loadWikiCompilerModels,
+  pickSavedCompilerModel,
   prepareWikiMaintenance,
   publishWikiMaintenance,
 } from '@/lib/knowledge/wiki-maintainer-client'
 import {
   WikiMaintainerRunSheet,
+  type WikiCompilerModel,
   type WikiSourceDirectory,
 } from '@/components/teamshare/WikiMaintainerRunSheet'
 
@@ -30,9 +33,15 @@ export function WikiMaintainerCard() {
   const selectedByTeam = useWikiMaintainerStore((s) => s.sourceDirectoriesByTeamId)
   const selected = teamId ? (selectedByTeam[teamId] ?? NO_SOURCE_DIRECTORIES) : NO_SOURCE_DIRECTORIES
   const saveSelection = useWikiMaintainerStore((s) => s.setSourceDirectories)
+  const savedModel = useWikiMaintainerStore((s) =>
+    teamId ? (s.compilerModelByTeamId[teamId] ?? '') : '',
+  )
+  const saveCompilerModel = useWikiMaintainerStore((s) => s.setCompilerModel)
   const [open, setOpen] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
   const [directories, setDirectories] = React.useState<WikiSourceDirectory[]>([])
+  const [compilerModels, setCompilerModels] = React.useState<WikiCompilerModel[]>([])
+  const [compilerModel, setCompilerModel] = React.useState(savedModel)
   const [loadError, setLoadError] = React.useState<string | null>(null)
 
   const openMaintainer = async () => {
@@ -40,7 +49,15 @@ export function WikiMaintainerCard() {
     setLoading(true)
     setLoadError(null)
     try {
-      setDirectories(await discoverWikiSourceDirectories(teamId))
+      const [nextDirectories, nextModels] = await Promise.all([
+        discoverWikiSourceDirectories(teamId),
+        loadWikiCompilerModels(teamId),
+      ])
+      const nextModel = pickSavedCompilerModel(savedModel, nextModels)
+      setDirectories(nextDirectories)
+      setCompilerModels(nextModels)
+      setCompilerModel(nextModel)
+      if (nextModel) saveCompilerModel(teamId, nextModel)
       setOpen(true)
     } catch (reason) {
       setLoadError(reason instanceof Error ? reason.message : String(reason))
@@ -92,8 +109,11 @@ export function WikiMaintainerCard() {
           open={open}
           teamId={teamId}
           sourceDirectories={directories}
+          compilerModels={compilerModels}
           initialSelected={selected}
+          initialCompilerModel={compilerModel}
           onSaveSelection={saveSelection}
+          onSaveCompilerModel={saveCompilerModel}
           onPrepare={prepareWikiMaintenance}
           onPublish={publishWikiMaintenance}
           onCancel={cancelWikiMaintenance}

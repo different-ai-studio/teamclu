@@ -8,6 +8,7 @@ const { extractorCacheKey, rawRelativePath } = require("./extract-text");
 const { extractSource } = require("./extract");
 const { compile } = require("./agent-runner");
 const { validateSourceDiff, rebuildIndex, normalizeWikiLinks } = require("./validator");
+const { normalizeCompiledPage } = require("./frontmatter");
 const {
   ensureWikiRepo,
   headCommit,
@@ -91,6 +92,14 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
       compilerModel: opts.compilerModel,
       createSession: opts.createSession,
     });
+    normalizeCompiledPages(wikiRoot, beforeCommit, {
+      pageType: item.class === "training" ? "training" : item.class,
+      sourcePath: item.path,
+      sourceSha256: item.sourceSha256,
+      locators: extracted.locators,
+      rawMarkdown: extracted.markdown,
+      maxBytes: config.limits?.maxIndexChars || 8000,
+    });
     rebuildIndex(wikiRoot);
     normalizeWikiLinks(wikiRoot);
     rebuildIndex(wikiRoot);
@@ -142,6 +151,17 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
     }
     saveState(opts.statePath, state);
     throw error;
+  }
+}
+
+function normalizeCompiledPages(wikiRoot, beforeCommit, defaults) {
+  for (const rel of changedRelPaths(wikiRoot, beforeCommit)) {
+    if (!rel.startsWith("pages/") || !rel.endsWith(".md")) continue;
+    const abs = path.join(wikiRoot, rel);
+    if (!fs.existsSync(abs)) continue;
+    const before = fs.readFileSync(abs, "utf8");
+    const after = normalizeCompiledPage(before, defaults);
+    if (after !== before) fs.writeFileSync(abs, after);
   }
 }
 

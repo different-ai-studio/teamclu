@@ -49,6 +49,30 @@ test("summarizePreparedRun hides pipeline details behind a publish summary", () 
   });
 });
 
+test("summarizePreparedRun lets passed pages publish while failed sources wait", () => {
+  const summary = summarizePreparedRun({
+    runId: "run-partial",
+    plan: {
+      add: [{ path: "documents/features/ok.md" }, { path: "documents/features/bad.md" }],
+      update: [],
+      delete: [],
+      unchanged: [],
+    },
+    ingest: {
+      counts: { imported: 1, rolled_back: 1, retracted: 0, unchanged: 0 },
+      failures: [{ path: "documents/features/bad.md", error: "quality gate" }],
+    },
+    lint: { ok: true, errors: [], warnings: [] },
+    estimate: { visionPages: 0, estimatedCost: 0, currency: "CNY" },
+    publishPlan: { create: ["pages/ok.md", "index.md"], update: [], delete: [] },
+  });
+
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.added, 1);
+  assert.equal(summary.canPublish, true);
+  assert.deepEqual(summary.blockers, ["documents/features/bad.md: quality gate"]);
+});
+
 test("summarizePreparedRun counts present sources separately from retracts", () => {
   const summary = summarizePreparedRun({
     runId: "run-retract",

@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parseFrontmatter, serializeFrontmatter } = require("./frontmatter");
+const { parseFrontmatter, serializeFrontmatter, normalizeCompiledPage } = require("./frontmatter");
 
 test("parseFrontmatter reads YAML-like page headers", () => {
   const parsed = parseFrontmatter(`---
@@ -88,6 +88,58 @@ updated: 2026-09-21
 正文
 `);
   assert.equal(parsed.frontmatter.summary, "[本机] 家目录说明");
+});
+
+test("parseFrontmatter accepts a sources list written at column 0", () => {
+  const parsed = parseFrontmatter(`---
+summary: 频道网关。
+sources:
+- path: documents/features/07-channel-gateways.md
+  sha256: ${"ab".repeat(32)}
+  locators:
+  - heading=频道
+updated: 2026-09-22
+---
+
+正文
+`);
+  assert.equal(parsed.frontmatter.sources[0].path, "documents/features/07-channel-gateways.md");
+  assert.deepEqual(parsed.frontmatter.sources[0].locators, ["heading=频道"]);
+  assert.equal(parsed.frontmatter.type, undefined);
+});
+
+test("normalizeCompiledPage fills a missing type, keeps the real source hash, and trims to 8000 bytes", () => {
+  const raw = "<!-- source-locator: heading=频道 -->\n# 频道\n";
+  const page = normalizeCompiledPage(
+    `---
+summary: 频道网关。
+sources:
+- path: documents/features/07-channel-gateways.md
+  sha256: nope
+  locators:
+  - heading=频道
+  - heading=不存在
+---
+
+# 频道
+
+${"长".repeat(9000)}
+`,
+    {
+      pageType: "process",
+      sourcePath: "documents/features/07-channel-gateways.md",
+      sourceSha256: "cd".repeat(32),
+      locators: ["heading=频道"],
+      rawMarkdown: raw,
+      maxBytes: 8000,
+    },
+  );
+  assert.ok(Buffer.byteLength(page) <= 8000);
+  const parsed = parseFrontmatter(page);
+  assert.equal(parsed.frontmatter.type, "process");
+  assert.equal(parsed.frontmatter.managed_by, "llm-wiki");
+  assert.equal(parsed.frontmatter.sources[0].sha256, "cd".repeat(32));
+  assert.deepEqual(parsed.frontmatter.sources[0].locators, ["heading=频道"]);
 });
 
 test("serializeFrontmatter quotes summaries that would confuse the parser", () => {
