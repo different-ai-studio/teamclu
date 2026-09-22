@@ -432,12 +432,21 @@ impl PiProcessPool {
             );
         }
 
+        // Resolved once, used by both arms: whichever mode is selected, the
+        // host must end up inside the same boundary.
+        let sandbox_profile = sandbox_profile_for(sandbox_setting().as_deref());
+
         let (program, mode) = match launch.mode {
             LaunchMode::Host => {
                 let host_script = materialize_host_script().map_err(|e| {
                     crate::error::AmuxError::Agent(format!("pi host script materialize: {e}"))
                 })?;
-                let mut cmd = tokio::process::Command::new(&launch.node);
+                let mut cmd = host_base_command(
+                    &launch.node,
+                    sandbox_profile.as_deref(),
+                    worktree,
+                    &session_dir,
+                );
                 cmd.arg(&host_script)
                     .arg("--pi-package")
                     .arg(&launch.package_root)
@@ -451,7 +460,12 @@ impl PiProcessPool {
                 (cmd, PiSessionMode::Host)
             }
             LaunchMode::LegacyRpc => {
-                let mut cmd = tokio::process::Command::new(&launch.node);
+                let mut cmd = host_base_command(
+                    &launch.node,
+                    sandbox_profile.as_deref(),
+                    worktree,
+                    &session_dir,
+                );
                 // `dist/cli.js` is the package's declared `bin` (0.84.2 ships no
                 // `dist/bundle/`).
                 cmd.arg(launch.package_root.join("dist").join("cli.js"))
@@ -625,6 +639,15 @@ fn session_host_preference() -> SessionHostPreference {
     }
 }
 
+/// `[agents.pi] sandbox` from daemon.toml. Read at spawn time, same as
+/// `session_host_preference`, so flipping it needs a respawn rather than a
+/// daemon restart.
+fn sandbox_setting() -> Option<String> {
+    crate::config::DaemonConfig::load(&crate::config::DaemonConfig::default_path())
+        .ok()
+        .and_then(|c| c.agents.pi.and_then(|pi| pi.sandbox))
+}
+
 /// Stable (FNV-1a) hash of the canonical worktree path, used to name the
 /// per-worktree session directory. Must stay stable across daemon restarts —
 /// session resume depends on it — so no `DefaultHasher`.
@@ -655,6 +678,10 @@ const TEAMCLU_EXTENSION_TS: &str = include_str!("../../../assets/pi-extension/te
 
 /// The TeamClu multi-session host, embedded and materialized the same way.
 const TEAMCLU_HOST_MJS: &str = include_str!("../../../assets/pi-host/host.mjs");
+
+/// Seatbelt profile for the host. Materialized next to the host script and
+/// passed to `sandbox-exec -f`. See `assets/pi-sandbox/README.md`.
+const TEAMCLU_SANDBOX_SB: &str = include_str!("../../../assets/pi-sandbox/pi-host.sb");
 
 /// `cache/pi/` — machine-level pi runtime files (the materialized extension,
 /// host script, and per-worktree permission grants). Under `cache/` per the
@@ -716,6 +743,102 @@ fn materialize_extension() -> std::io::Result<PathBuf> {
 
 fn materialize_host_script() -> std::io::Result<PathBuf> {
     materialize(host_script_path(), TEAMCLU_HOST_MJS)
+}
+
+fn sandbox_profile_path() -> PathBuf {
+    amuxd_pi_dir().join("pi-host.sb")
+}
+
+fn materialize_sandbox_profile() -> std::io::Result<PathBuf> {
+    materialize(sandbox_profile_path(), TEAMCLU_SANDBOX_SB)
+}
+
+/// Resolve every symlink on the way.
+///
+/// `sandbox-exec` matches on the path the kernel resolves to, so a `-D` value
+/// carrying a symlink silently matches nothing: `/var/folders/...` never
+/// matches a rule written against the `/private/var/folders/...` the kernel
+/// sees. The failure is an EPERM on a path the profile plainly allows, which
+/// reads exactly like a missing rule.
+fn real_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Where the profile comes from for this spawn, or `None` to run unsandboxed.
+fn sandbox_profile_for(setting: Option<&str>) -> Option<PathBuf> {
+    let setting = setting.map(str::trim).filter(|s| !s.is_empty())?;
+    if setting.eq_ignore_ascii_case("off") || setting.eq_ignore_ascii_case("false") {
+        return None;
+    }
+    if !cfg!(target_os = "macos") {
+        warn!(
+            setting,
+            "agents.pi.sandbox is set but sandbox-exec is macOS-only; running unsandboxed"
+        );
+        return None;
+    }
+    if setting.eq_ignore_ascii_case("on") || setting.eq_ignore_ascii_case("true") {
+        return match materialize_sandbox_profile() {
+            Ok(path) => Some(path),
+            Err(e) => {
+                // Falling back to unsandboxed is the deliberate choice: the
+                // sandbox is hardening, and refusing to start would turn a
+                // hardening failure into an outage.
+                warn!(error = %e, "sandbox profile materialize failed; running unsandboxed");
+                None
+            }
+        };
+    }
+    let path = PathBuf::from(setting);
+    if path.is_file() {
+        Some(path)
+    } else {
+        warn!(path = %path.display(), "agents.pi.sandbox profile not found; running unsandboxed");
+        None
+    }
+}
+
+/// The base command for the host: either `node` directly, or `sandbox-exec`
+/// primed to exec it.
+///
+/// Both launch modes go through here on purpose. They are two arms of one
+/// `match`, and wrapping only the `Host` arm would leave `LegacyRpc` — which
+/// the `session_host = "rpc"` switch still selects — as a way around the
+/// sandbox entirely.
+///
+/// Callers append the node arguments afterwards, exactly as before; the
+/// wrapper only prepends.
+fn host_base_command(
+    node: &Path,
+    profile: Option<&Path>,
+    worktree: &str,
+    session_dir: &Path,
+) -> tokio::process::Command {
+    let Some(profile) = profile else {
+        return tokio::process::Command::new(node);
+    };
+    let node_root = node
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| node.to_path_buf());
+    let tmpdir = std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+
+    let mut cmd = tokio::process::Command::new("sandbox-exec");
+    cmd.arg("-f").arg(profile);
+    for (key, value) in [
+        ("NODE_ROOT", real_path(&node_root)),
+        ("WORKTREE", real_path(Path::new(worktree))),
+        ("PI_ROOT", real_path(&amuxd_pi_dir())),
+        ("SESSION_DIR", real_path(session_dir)),
+        ("TMPDIR", real_path(&tmpdir)),
+    ] {
+        cmd.arg("-D").arg(format!("{key}={}", value.display()));
+    }
+    cmd.arg(node);
+    cmd
 }
 
 /// Per-worktree permission rules file read by the TeamClu pi extension
@@ -1321,5 +1444,105 @@ cat > /dev/null
         .to_string();
         assert!(msg.contains("spawn pi"), "{msg}");
         assert!(!msg.contains("worktree does not exist"), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+
+    #[test]
+    fn off_and_unset_run_unsandboxed() {
+        assert!(sandbox_profile_for(None).is_none());
+        assert!(sandbox_profile_for(Some("")).is_none());
+        assert!(sandbox_profile_for(Some("  ")).is_none());
+        assert!(sandbox_profile_for(Some("off")).is_none());
+        assert!(sandbox_profile_for(Some("OFF")).is_none());
+        assert!(sandbox_profile_for(Some("false")).is_none());
+    }
+
+    #[test]
+    fn a_missing_profile_path_does_not_stop_the_spawn() {
+        // The sandbox is hardening. Refusing to launch because a profile is
+        // missing would turn a hardening failure into an outage.
+        assert!(sandbox_profile_for(Some("/nonexistent/profile.sb")).is_none());
+    }
+
+    #[test]
+    fn an_explicit_profile_path_is_used_as_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("custom.sb");
+        std::fs::write(&profile, "(version 1)(allow default)").unwrap();
+        let resolved = sandbox_profile_for(Some(profile.to_str().unwrap()));
+        if cfg!(target_os = "macos") {
+            assert_eq!(resolved.as_deref(), Some(profile.as_path()));
+        } else {
+            assert!(resolved.is_none(), "sandbox-exec is macOS-only");
+        }
+    }
+
+    #[test]
+    fn without_a_profile_the_command_is_node_itself() {
+        let cmd = host_base_command(
+            Path::new("/opt/node/bin/node"),
+            None,
+            "/ws",
+            Path::new("/sess"),
+        );
+        assert_eq!(
+            cmd.as_std().get_program(),
+            std::ffi::OsStr::new("/opt/node/bin/node")
+        );
+        assert_eq!(cmd.as_std().get_args().count(), 0, "nothing is prepended");
+    }
+
+    #[test]
+    fn with_a_profile_node_is_exec_d_through_sandbox_exec() {
+        let cmd = host_base_command(
+            Path::new("/opt/node/bin/node"),
+            Some(Path::new("/tmp/p.sb")),
+            "/ws",
+            Path::new("/sess"),
+        );
+        assert_eq!(
+            cmd.as_std().get_program(),
+            std::ffi::OsStr::new("sandbox-exec")
+        );
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-f");
+        assert_eq!(args[1], "/tmp/p.sb");
+        // node comes last so the caller's `.arg(...)` chain still lands on it.
+        assert_eq!(args.last().unwrap(), "/opt/node/bin/node");
+        for key in ["NODE_ROOT", "WORKTREE", "PI_ROOT", "SESSION_DIR", "TMPDIR"] {
+            assert!(
+                args.iter().any(|a| a.starts_with(&format!("{key}="))),
+                "profile parameter {key} must be passed"
+            );
+        }
+    }
+
+    #[test]
+    fn node_root_is_the_grandparent_of_the_binary() {
+        // The profile allows `(subpath NODE_ROOT)`; pointing it at `bin/`
+        // would leave node's own lib/ unreadable.
+        let cmd = host_base_command(
+            Path::new("/opt/node/bin/node"),
+            Some(Path::new("/tmp/p.sb")),
+            "/ws",
+            Path::new("/sess"),
+        );
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|a| a == "NODE_ROOT=/opt/node"),
+            "got {args:?}"
+        );
     }
 }

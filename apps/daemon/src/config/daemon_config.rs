@@ -423,6 +423,21 @@ pub struct PiAgentConfig {
     /// back without a daemon downgrade.
     #[serde(default)]
     pub session_host: Option<String>,
+    /// Wrap the agent host in a macOS sandbox (`sandbox-exec`).
+    ///
+    /// `"off"` / unset (default) spawns as before. `"on"` uses the profile
+    /// shipped at `assets/pi-sandbox/pi-host.sb`. Any other value is read as a
+    /// path to a profile file, so rules can be tried out without a rebuild.
+    ///
+    /// Ignored off macOS: `sandbox-exec` is a Seatbelt front-end and exists
+    /// nowhere else. A config that asks for it on Linux logs once and runs
+    /// unsandboxed rather than refusing to start — the setting is a hardening
+    /// step, not a correctness one.
+    ///
+    /// The profile denies `~/.ssh`, so an agent running under it cannot push
+    /// or deploy. That is intended; see the profile's README (#1571).
+    #[serde(default)]
+    pub sandbox: Option<String>,
 }
 
 /// Cursor SDK backend settings (`agents.local_agent = "cursor"`).
