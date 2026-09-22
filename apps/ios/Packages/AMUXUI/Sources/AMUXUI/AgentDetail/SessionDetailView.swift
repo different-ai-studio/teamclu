@@ -183,10 +183,34 @@ public struct SessionDetailView: View {
                 // Track whether the user is near the bottom so incoming
                 // messages don't hijack the scroll position while they are
                 // browsing history.
-                .onScrollGeometryChange(for: Bool.self) { geo in
-                    geo.contentSize.height - geo.contentOffset.y - geo.containerSize.height < nearBottomThreshold
-                } action: { _, atBottom in
-                    isAtBottom = atBottom
+                .onScrollGeometryChange(for: ScrollBottomMetrics.self) { geo in
+                    // `contentSize` excludes the bottom inset that the
+                    // composer's `safeAreaInset` adds, but `visibleRect`
+                    // includes it, so subtracting the two directly reported
+                    // ~116pt short of the bottom while sitting exactly at it —
+                    // which kept `isAtBottom` permanently false.
+                    ScrollBottomMetrics(
+                        distanceFromBottom: (geo.contentSize.height + geo.contentInsets.bottom)
+                            - geo.visibleRect.maxY,
+                        viewportHeight: geo.containerSize.height,
+                        bottomInset: geo.contentInsets.bottom
+                    )
+                } action: { old, new in
+                    // A viewport resize — the keyboard opening, the composer
+                    // growing a line — moves the bottom without the user
+                    // having scrolled, and arrives *before* the keyboard
+                    // notification does. Don't let it rewrite the flag; take
+                    // it as the cue to re-pin instead, so someone reading the
+                    // newest message keeps it in view rather than losing it
+                    // behind the composer. Someone parked mid-history stays
+                    // parked.
+                    guard new.viewportHeight == old.viewportHeight,
+                          new.bottomInset == old.bottomInset
+                    else {
+                        if isAtBottom { scrollToBottom() }
+                        return
+                    }
+                    isAtBottom = new.distanceFromBottom < nearBottomThreshold
                 }
                 // Follow the bottom whenever the feed grows after the initial
                 // settle. `.defaultScrollAnchor(.bottom, for: .initialOffset)`
@@ -425,10 +449,10 @@ public struct SessionDetailView: View {
         // but `willHide` follows it and settles the value at zero.
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
-            applyKeyboardInset(frame?.height ?? 0)
+            keyboardInset = frame?.height ?? 0
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            applyKeyboardInset(0)
+            keyboardInset = 0
         }
         .sheet(isPresented: $isMemberSheetPresented) {
             SessionMemberSheet(
@@ -681,16 +705,11 @@ public struct SessionDetailView: View {
     /// yanking them to the bottom because they tapped the field would lose
     /// their place.
     @MainActor
-    private func applyKeyboardInset(_ height: CGFloat) {
-        let grew = height > keyboardInset
-        keyboardInset = height
-        // Read before the inset lands: shrinking the scroll container is
-        // itself a geometry change, and it flips `isAtBottom`.
-        guard grew, isAtBottom else { return }
+    private func scrollToBottom() {
         Task { @MainActor in
-            // Let the inset apply first, or the scroll target is computed
-            // against the pre-keyboard container height.
-            try? await Task.sleep(for: .milliseconds(50))
+            // One turn of the loop so the resize that triggered this has
+            // finished laying out; scrolling into the old geometry lands short.
+            await Task.yield()
             withAnimation(AMUXAnimation.fast) {
                 scrollProxy?.scrollTo("session-detail-bottom", anchor: .bottom)
             }
@@ -1124,4 +1143,13 @@ extension AgentChipBar.LifecycleChipState {
         case .error: .error
         }
     }
+}
+
+/// What `SessionDetailView` watches the transcript's scroll for: how far the
+/// bottom is, and the two numbers whose change means the viewport resized
+/// under the content rather than the user having scrolled it.
+private struct ScrollBottomMetrics: Equatable {
+    let distanceFromBottom: CGFloat
+    let viewportHeight: CGFloat
+    let bottomInset: CGFloat
 }
