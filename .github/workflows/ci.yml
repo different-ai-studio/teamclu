@@ -432,3 +432,78 @@ jobs:
       # changes nothing; it keeps this job honest if that stops being true.
       - name: Check the desktop app compiles on Windows
         run: cargo check --manifest-path apps/desktop/Cargo.toml --locked --no-default-features
+
+  ios-build:
+    name: iOS Build & Type-Check Budget
+    runs-on: macos-26
+    # The iOS app had no pull-request coverage at all: `testflight.yml` builds
+    # it, and that only runs on main and on tags. Same hole `desktop-windows`
+    # above exists to close — code whose first compiler is the release job.
+    #
+    # It cost a release. A `body` in SessionDetailView grew to one expression
+    # the type-checker needed 7.9 seconds to solve on a fast laptop; the
+    # archive runner is slower, its solver gave up instead, and the build
+    # failed with "unable to type-check this expression in reasonable time"
+    # after the change had already been reviewed and merged. Every check on
+    # that PR was green, because none of them built the app.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app /Applications/Xcode.app 2>/dev/null | head -1)
+          sudo xcode-select -s "$XCODE/Contents/Developer" || sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Generate the Xcode project
+        run: |
+          set -euo pipefail
+          command -v xcodegen >/dev/null 2>&1 || brew install xcodegen
+          cd apps/ios && xcodegen generate
+
+      # Debug, not Release: type-checking is front-end work and costs the same
+      # either way, so this measures what the archive would hit while staying
+      # cheap. It doubles as the only "does the iOS app still compile" gate on
+      # a pull request.
+      - name: Build for the simulator, with a type-check budget
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project apps/ios/AMUX.xcodeproj \
+            -scheme AMUX \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            -derivedDataPath apps/ios/build-ci \
+            OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -warn-long-function-bodies=400 -Xfrontend -warn-long-expression-type-checking=400' \
+            build | tee "$RUNNER_TEMP/ios-build.log"
+
+      # The compiler's own limit is a solver budget, not a number of
+      # milliseconds, so there is no threshold that means "this would have
+      # failed". 2000ms is chosen to sit far above what the tree costs today
+      # (worst is a few hundred ms) and far below the one that broke, which
+      # measured 7.9s on a laptop and considerably worse here.
+      - name: Nothing may sit near the type-checker's cliff
+        run: |
+          set -euo pipefail
+          BUDGET_MS=2000
+          grep -oE '[^ ]+:[0-9]+:[0-9]+: warning: [^\"]*took [0-9]+ms to type-check' \
+            "$RUNNER_TEMP/ios-build.log" | sort -u > "$RUNNER_TEMP/slow.txt" || true
+          if [ -s "$RUNNER_TEMP/slow.txt" ]; then
+            echo "Expressions over 400ms (informational):"
+            sed 's|.*/apps/ios|apps/ios|' "$RUNNER_TEMP/slow.txt"
+          fi
+          # No gawk on a macOS runner, so no three-argument match(); pull the
+          # number out per line with grep instead.
+          : > "$RUNNER_TEMP/over.txt"
+          while IFS= read -r line; do
+            ms=$(printf '%s\n' "$line" | grep -oE 'took [0-9]+ms' | grep -oE '[0-9]+' || true)
+            if [ -n "$ms" ] && [ "$ms" -gt "$BUDGET_MS" ]; then
+              printf '%s\n' "$line" >> "$RUNNER_TEMP/over.txt"
+            fi
+          done < "$RUNNER_TEMP/slow.txt"
+          if [ -s "$RUNNER_TEMP/over.txt" ]; then
+            echo "::error::These are over the ${BUDGET_MS}ms type-check budget. Split them into smaller sub-expressions — a SwiftUI body that reaches the solver's limit fails the release archive, not the simulator build."
+            sed 's|.*/apps/ios|apps/ios|' "$RUNNER_TEMP/over.txt"
+            exit 1
+          fi
+          echo "Nothing over ${BUDGET_MS}ms."
