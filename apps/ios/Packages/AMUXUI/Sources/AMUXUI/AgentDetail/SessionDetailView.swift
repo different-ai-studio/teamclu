@@ -638,6 +638,17 @@ public struct SessionDetailView: View {
     /// Priority: live streaming text → most recent thinking/output text
     /// → most recent tool name → "Working…". The card truncates further
     /// at the view layer.
+    /// One line for the active-stream card: the turn's own message text and
+    /// nothing else — the live delta buffer, else the newest `output` entry.
+    ///
+    /// Thinking and tool calls deliberately don't feed this line. They used
+    /// to, which made the card narrate the agent's internals ("Running
+    /// bash…", a reasoning fragment) instead of what it is saying. Both live
+    /// on the trace page behind the card's chevron.
+    ///
+    /// Returns "" when there is no message text yet, handing the fallback
+    /// copy to `ActiveStreamCardView` — it owns that string and localizes it,
+    /// whereas the literals here never were.
     private func activeStreamLastLine(agentID: String, runtimeEvents: [AgentEvent]) -> String {
         let live = viewModel.streamingTextByAgent[agentID] ?? ""
         if !live.isEmpty {
@@ -647,14 +658,11 @@ public struct SessionDetailView: View {
             return live.suffix(240).replacingOccurrences(of: "\n", with: " ")
         }
         if let last = runtimeEvents.reversed().first(where: { e in
-            (e.eventType == "output" || e.eventType == "thinking") && !(e.text ?? "").isEmpty
+            e.eventType == "output" && !(e.text ?? "").isEmpty
         }) {
             return (last.text ?? "").suffix(240).replacingOccurrences(of: "\n", with: " ")
         }
-        if let lastTool = runtimeEvents.reversed().first(where: { $0.eventType == "tool_use" }) {
-            return lastTool.toolName.map { "Running \($0)…" } ?? "Working…"
-        }
-        return "Working…"
+        return ""
     }
 
     @ViewBuilder

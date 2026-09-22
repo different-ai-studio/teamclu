@@ -3146,16 +3146,6 @@
         }
       }
     },
-    "Running %@…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在运行 %@…"
-          }
-        }
-      }
-    },
     "Runtime id missing — daemon hasn't published runtime state yet.": {
       "localizations": {
         "zh-Hans": {
