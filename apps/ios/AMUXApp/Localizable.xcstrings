@@ -21,6 +21,16 @@
         }
       }
     },
+    "%@ hasn’t posted anything to the board.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 还没有在板上发过内容。"
+          }
+        }
+      }
+    },
     "%@ — Plans": {
       "localizations": {
         "zh-Hans": {
@@ -1625,6 +1635,16 @@
         }
       }
     },
+    "Ideas need a signed-in Cloud API session.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "想法需要已登录的 Cloud API 会话。"
+          }
+        }
+      }
+    },
     "Ideas you create will show up here": {
       "localizations": {
         "zh-Hans": {
@@ -2056,6 +2076,16 @@
         }
       }
     },
+    "MONTH": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本月"
+          }
+        }
+      }
+    },
     "Month": {
       "localizations": {
         "zh-Hans": {
@@ -2152,6 +2182,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂无想法"
+          }
+        }
+      }
+    },
+    "No ideas yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有想法"
           }
         }
       }
@@ -2662,6 +2702,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "所有者"
+          }
+        }
+      }
+    },
+    "Posted by %@. Archived ideas are not counted.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 发布的。不含已归档的想法。"
           }
         }
       }
@@ -4233,6 +4283,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "今天"
+          }
+        }
+      }
+    },
+    "Tokens": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Token"
           }
         }
       }

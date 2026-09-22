@@ -472,14 +472,20 @@ struct ActorDetailView: View {
     var currentActorID: String?
     var agentPresenceStore: AgentPresenceStore?
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppOnboardingCoordinator.self) private var onboarding: AppOnboardingCoordinator?
     /// Nil until the first fetch lands, so the stat row can tell "loading"
-    /// from a genuine zero.
+    /// from a genuine zero. Agents only — a person installs none of these.
     @State private var resourceCounts: TeamResourceCounts?
+    /// The member equivalent, same nil-means-loading rule.
+    @State private var memberStats: MemberActivityStats?
     /// Drives the push into skills / MCP / env. An optional rather than a
     /// `NavigationLink(value:)` per block: the three blocks share one List
     /// row, and a row activates *every* link it contains, so one tap used to
     /// push all three in the same frame. One optional can only hold one.
     @State private var resourceRoute: ActorResourceRoute?
+    /// Its own optional for the same reason `resourceRoute` is one: the member
+    /// blocks share a List row, and a row activates every link it contains.
+    @State private var ideasRoute: ActorIdeasRoute?
     @State private var authorizedHumansStore: AgentAuthorizedHumansStore?
     @State private var workspaceStore: WorkspaceStore?
     @State private var newWorkspacePath = ""
@@ -815,11 +821,19 @@ struct ActorDetailView: View {
             myDefaultAgentID = await store.getMemberDefaultAgent()
         }
         .task(id: actor.actorId) {
-            guard let repo = teamResourceRepository else { return }
+            // Three requests a member's page no longer draws anything from.
+            guard !actor.isMember, let repo = teamResourceRepository else { return }
             resourceCounts = await repo.counts(teamID: actor.teamId, actorID: actor.actorId)
+        }
+        .task(id: actor.actorId) {
+            guard actor.isMember else { return }
+            memberStats = await loadMemberStats()
         }
         .navigationDestination(item: $resourceRoute) { route in
             ActorResourceListView(route: route, repository: teamResourceRepository)
+        }
+        .navigationDestination(item: $ideasRoute) { route in
+            ActorIdeasListView(route: route, repositories: memberStatsRepositories())
         }
         .sheet(isPresented: $showInviteSheet) {
             if let createdInvite {
@@ -1079,20 +1093,93 @@ struct ActorDetailView: View {
         }
     }
 
+    /// Agents count what is installed on them; people count what they did.
+    ///
+    /// Skills and MCP are an agent's installs — a person has neither, and the
+    /// env block showed the team's number, which read identically on
+    /// everybody's page and so said nothing about the person whose page it was.
     @ViewBuilder
     private var statsSection: some View {
         Section {
-            HStack(spacing: 0) {
-                statBlock(.skills)
-                statDivider
-                statBlock(.mcp)
-                statDivider
-                statBlock(.env)
+            Group {
+                if actor.isMember {
+                    memberStatRow
+                } else {
+                    agentStatRow
+                }
             }
             .padding(.vertical, 8)
             .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             .listRowBackground(Color.amux.paper)
         }
+    }
+
+    private var agentStatRow: some View {
+        HStack(spacing: 0) {
+            statBlock(.skills)
+            statDivider
+            statBlock(.mcp)
+            statDivider
+            statBlock(.env)
+        }
+    }
+
+    private var memberStatRow: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(MemberStatKind.allCases.enumerated()), id: \.offset) { index, kind in
+                if index > 0 { statDivider }
+                memberStatBlock(kind)
+            }
+        }
+    }
+
+    /// The same shape as `statBlock`, minus the tap: there is nothing to push
+    /// into. A skills count opens a list; a token count is the whole answer.
+    private func memberStatBlock(_ kind: MemberStatKind) -> some View {
+        VStack(spacing: 2) {
+            Group {
+                if let memberStats {
+                    Text(kind.value(from: memberStats))
+                        .font(.system(size: 22, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                } else {
+                    // Same placeholder rule as the agent row: a real zero and
+                    // "not loaded yet" mean different things.
+                    Text("—")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 3) {
+                Text(kind.title.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.2)
+                    .foregroundStyle(.secondary)
+                if let tag = kind.scopeTag {
+                    Text(tag)
+                        .font(.system(size: 8, weight: .bold))
+                        .tracking(0.3)
+                        .foregroundStyle(Color.amux.basalt)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.amux.pebble)
+                        )
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .modifier(MemberStatTap(kind: kind, onOpen: openIdeas))
+    }
+
+    private func openIdeas() {
+        ideasRoute = ActorIdeasRoute(
+            actorID: actor.actorId,
+            actorName: actor.displayName,
+            teamID: actor.teamId
+        )
     }
 
     /// Skills and MCP are this actor's installs; env is the team's set and
@@ -1148,6 +1235,22 @@ struct ActorDetailView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
+    }
+
+    private func memberStatsRepositories() -> MemberStatsRepositories? {
+        MemberStatsRepositories.make(onboarding: onboarding, callerActorID: currentActorID)
+    }
+
+    /// Nil when there is no signed-in Cloud API session, which leaves the row
+    /// showing "—" rather than a fabricated zero.
+    private func loadMemberStats() async -> MemberActivityStats? {
+        guard let repositories = memberStatsRepositories() else { return nil }
+        return await MemberActivityStatsLoader.load(
+            teamID: actor.teamId,
+            actorID: actor.actorId,
+            telemetry: repositories.telemetry,
+            ideas: repositories.ideas
+        )
     }
 
     private var statDivider: some View {
@@ -1358,6 +1461,31 @@ struct ActorDetailView: View {
                     defaultsErrorMessage = store.errorMessage ?? String(localized: "Failed to set the default workspace.")
                 }
             }
+        }
+    }
+}
+
+/// The tap belongs to the ideas block alone — there is nothing behind a token
+/// count. A modifier rather than an `if` inside the block keeps both blocks one
+/// view type, so the row is not rebuilt with a new identity when the numbers
+/// land.
+private struct MemberStatTap: ViewModifier {
+    let kind: MemberStatKind
+    let onOpen: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if kind.opensList {
+            content
+                // A gesture rather than a link, same as the agent blocks: a
+                // gesture only fires inside this block's own frame, where a
+                // List row hands any tap to every link it contains.
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onOpen)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+        } else {
+            content.accessibilityElement(children: .combine)
         }
     }
 }
