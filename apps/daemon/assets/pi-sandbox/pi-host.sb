@@ -1,0 +1,112 @@
+;; macOS Seatbelt profile for the pi agent host.
+;;
+;; Not wired up yet — see the README next to this file and issue #1571. It is
+;; checked in because the two rules at the top of the read list took fourteen
+;; blind attempts to find, and nothing about the failure points at them.
+;;
+;; Applied by prefixing the spawn in
+;; apps/daemon/src/runtime/pi_rpc/process.rs (both LaunchMode::Host and
+;; LaunchMode::LegacyRpc — leaving the fallback unwrapped is a way around the
+;; whole thing):
+;;
+;;   sandbox-exec -f pi-host.sb \
+;;     -D NODE_ROOT=<managed node dir> \
+;;     -D WORKTREE=<session worktree> \
+;;     -D PI_ROOT=<~/.amuxd/cache/pi> \
+;;     -D SESSION_DIR=<session dir> \
+;;     -D TMPDIR=<tmpdir> \
+;;     <node> <host.mjs> ...
+;;
+;; Everything the host spawns inherits this, including the MCP sidecar.
+
+(version 1)
+(deny default)
+
+;; ── Process basics ──────────────────────────────────────────────────────
+(allow process-fork)
+(allow signal (target self))
+;; Without this the run dies before the profile's read rules matter at all:
+;; `sandbox-exec: execvp() of '<node>' failed: Operation not permitted`.
+;; Unlike the read rules below, this one at least names itself.
+(allow process-exec (subpath (param "NODE_ROOT")))
+(allow sysctl-read)
+(allow mach-lookup)
+(allow ipc-posix-shm)
+
+;; ── Reads needed just to start ──────────────────────────────────────────
+;;
+;; The first two entries are the ones that cost a day. Drop either and node
+;; dies with SIGABRT(134) during dynamic linking: stderr is EMPTY, the (trace)
+;; directive writes no file on macOS 26, and `log show` carries no matching
+;; deny record. There is no diagnostic — only bisection.
+;;
+;;   (literal "/")    `(subpath "/usr")` authorises what is INSIDE /usr, not
+;;                    reading `/` itself, and node stats the root on startup.
+;;   (subpath "/dev") /dev/urandom and friends. `(literal "/dev/urandom")`
+;;                    alone is not enough.
+(allow file-read* file-map-executable
+  (literal "/")
+  (subpath "/dev")
+  (subpath "/usr")
+  (subpath "/System")
+  (subpath (param "NODE_ROOT")))
+
+(allow file-write-data (literal "/dev/null"))
+
+;; ── The workspace: where the agent is meant to work ─────────────────────
+(allow file* (subpath (param "WORKTREE")))
+
+;; ── Runtime state the host owns ─────────────────────────────────────────
+(allow file-read* (subpath (param "PI_ROOT")))
+(allow file* (subpath (param "SESSION_DIR")))
+;; permissions/<worktree-hash>.json and mcp-tools/<version>/ both live under
+;; PI_ROOT and are written at runtime.
+(allow file* (subpath (param "PI_ROOT")))
+
+;; ── Temp ────────────────────────────────────────────────────────────────
+(allow file* (subpath "/private/tmp"))
+(allow file* (subpath (param "TMPDIR")))
+
+;; ── Network ─────────────────────────────────────────────────────────────
+;; Seatbelt filters by host:port, not by TLS SNI, and model endpoints move, so
+;; there is no useful way to narrow this. Outbound stays open; the boundary
+;; this profile buys is filesystem, not network.
+(allow network-outbound)
+(allow network-bind (local ip "localhost:*"))
+(allow system-socket)
+
+;; ════════════════════════════════════════════════════════════════════════
+;; Everything below is an exception that exists so the agent can still do its
+;; job. Each one narrows what this profile is worth — that is the trade, and
+;; it should be made explicitly rather than by forgetting to deny something.
+;;
+;; These paths are configuration-derived, so a real implementation should
+;; generate them rather than hard-code them as they are here.
+;; ════════════════════════════════════════════════════════════════════════
+
+;; Toolchain the agent invokes (cargo, pnpm, git, …)
+;; (allow process-exec (subpath "/usr/bin") (subpath "/bin")
+;;                     (subpath "/opt/homebrew") (subpath "/usr/local/bin"))
+;; (allow file-read*   (subpath "/opt/homebrew") (subpath "/usr/local"))
+
+;; Build caches — all outside the worktree by design. On this repo the shared
+;; cargo target alone is ~152 GB.
+;; (allow file* (subpath (param "CARGO_HOME")))
+;; (allow file* (subpath (param "CARGO_TARGET_DIR")))
+;; (allow file* (subpath (param "PNPM_STORE")))
+;; (allow file* (subpath (param "SCCACHE_DIR")))
+
+;; git identity.
+;; (allow file-read* (literal (param "GITCONFIG")))
+
+;; ⚠️ ~/.ssh is deliberately NOT listed.
+;;
+;; `origin` is git@github.com:… and the deploy path SSHes to the self-host box,
+;; so push and deploy need it — and it is also the single most valuable thing
+;; on the machine to keep away from an agent. Granting the directory hands over
+;; the private keys.
+;;
+;; The way out is SSH agent forwarding: allow the agent socket, keep the key
+;; files denied, and let signing happen outside the sandbox. That is its own
+;; piece of work. Until it exists, an agent inside this profile cannot push,
+;; and that is the intended state rather than an oversight.
