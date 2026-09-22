@@ -137,6 +137,22 @@ public struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        // A search-role tab gives us the exact detached glass circle used by
+        // the original bottom bar. SwiftUI fixes that role's glyph to search,
+        // so replace only the small glyph plate; the hit target and glass
+        // container remain the system's.
+        .overlay(alignment: .bottomTrailing) {
+            if voiceRecorder.state != .recording && !isStartingVoiceSession {
+                Image(systemName: "mic")
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(Color.amux.onyx)
+                    .frame(width: 36, height: 36)
+                    .background(Color.amux.paper, in: Circle())
+                    .allowsHitTesting(false)
+                    .padding(.trailing, 40)
+                    .padding(.bottom, 42)
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if voiceRecorder.state == .recording || isStartingVoiceSession {
                 VoiceRecordingBar(

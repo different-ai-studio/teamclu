@@ -90,7 +90,7 @@ public final class VoiceRecorder {
     // MARK: - Private
 
     private func requestAndStart() {
-        Self.requestSpeechAuthorization { [weak self] status in
+        let finishAuthorization: @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void = { [weak self] status in
             // TCC invokes this completion on a worker queue. The callback is
             // deliberately `@Sendable` and registered from a nonisolated
             // helper, so it cannot inherit this class's MainActor isolation.
@@ -101,6 +101,7 @@ public final class VoiceRecorder {
                 self.beginCapture()
             }
         }
+        Self.requestSpeechAuthorization(finishAuthorization)
     }
 
     nonisolated private static func requestSpeechAuthorization(
@@ -131,7 +132,15 @@ public final class VoiceRecorder {
 
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+        // The input-node tap runs on Core Audio's realtime worker. Keep the
+        // callback fully nonisolated; even a weak capture of this MainActor
+        // recorder makes Swift 6 assert before its body can schedule a Task.
+        let publishAudioLevel: @Sendable (Float) -> Void = { [weak self] level in
+            Task.detached { @MainActor [weak self] in
+                self?.audioLevel = level
+            }
+        }
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             request.append(buffer)
             guard let channelData = buffer.floatChannelData?[0] else { return }
             let frameLength = Int(buffer.frameLength)
@@ -139,7 +148,7 @@ public final class VoiceRecorder {
             for i in 0..<frameLength { sum += abs(channelData[i]) }
             let avg = sum / Float(max(frameLength, 1))
             let level = min(max(avg * 5, 0), 1)
-            Task { @MainActor in self?.audioLevel = level }
+            publishAudioLevel(level)
         }
 
         engine.prepare()
