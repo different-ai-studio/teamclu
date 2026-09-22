@@ -101,6 +101,16 @@
         }
       }
     },
+    "Add an agent before starting voice chat.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始语音会话前，请先添加一个 Agent。"
+          }
+        }
+      }
+    },
     "ADMIN": {
       "localizations": {
         "zh-Hans": {
@@ -709,6 +719,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "选择账号"
+          }
+        }
+      }
+    },
+    "Choose an agent for this chat.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择这次对话的 Agent。"
+          }
+        }
+      }
+    },
+    "Choose an agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择 Agent"
           }
         }
       }
@@ -3156,16 +3186,6 @@
         }
       }
     },
-    "Set an available default agent before starting voice chat.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "开始语音会话前，请先设置一个可用的默认 Agent。"
-          }
-        }
-      }
-    },
     "SKILLS": {
       "localizations": {
         "zh-Hans": {
@@ -4497,6 +4517,16 @@
         }
       }
     },
+    "Voice chats go here from now on. Change it any time on the agent's page.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以后的语音会话都发给它。随时可以在 Agent 页面里改。"
+          }
+        }
+      }
+    },
     "WORKSPACES": {
       "localizations": {
         "zh-Hans": {
@@ -4653,16 +4683,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "你的默认 Agent"
-          }
-        }
-      }
-    },
-    "Your default agent has no workspace. Add one in Agent settings.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "默认 Agent 还没有工作目录，请在 Agent 设置里添加。"
           }
         }
       }

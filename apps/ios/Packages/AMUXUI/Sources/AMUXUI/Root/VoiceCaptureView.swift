@@ -13,6 +13,9 @@ struct VoiceCaptureView: View {
         /// run, then engine start.
         case preparing
         case recording
+        /// The take is in, but there is no default agent to send it to — the
+        /// picker is up over this screen.
+        case awaitingAgent
         /// The take is in; the session is being created.
         case startingSession
     }
@@ -65,6 +68,9 @@ struct VoiceCaptureView: View {
         case .recording:
             VoiceLevelMeter(level: level, animating: true)
                 .padding(.horizontal, 32)
+        case .awaitingAgent:
+            VoiceLevelMeter(level: 0, animating: false)
+                .padding(.horizontal, 32)
         case .startingSession:
             ProgressView()
                 .controlSize(.large)
@@ -106,6 +112,8 @@ struct VoiceCaptureView: View {
             String(localized: "Getting the microphone ready\u{2026}")
         case .recording:
             transcript.isEmpty ? String(localized: "Listening\u{2026}") : nil
+        case .awaitingAgent:
+            String(localized: "Choose an agent for this chat.")
         case .startingSession:
             String(localized: "Starting your agent\u{2026}")
         }
@@ -113,7 +121,7 @@ struct VoiceCaptureView: View {
 
     @ViewBuilder
     private var actions: some View {
-        if phase != .startingSession {
+        if phase == .preparing || phase == .recording {
             VStack(spacing: 14) {
                 Button(action: onDone) {
                     Image(systemName: "checkmark")

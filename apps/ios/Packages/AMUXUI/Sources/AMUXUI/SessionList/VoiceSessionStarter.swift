@@ -3,9 +3,14 @@ import SwiftData
 import AMUXCore
 
 /// Starts a new session from a completed voice transcript. This is deliberately
-/// stricter than the manual new-session sheet: voice always addresses the
-/// viewer's effective default agent, so it must not fall back to a human-only
-/// local session when that agent or its workspace is unavailable.
+/// stricter than the manual new-session sheet: voice always addresses a single
+/// agent, so it must not fall back to a human-only local session when that
+/// agent or its workspace is unavailable.
+///
+/// Two steps, because the middle of them may need the user: `resolveTarget`
+/// works out which agent the take belongs to — the viewer's effective default
+/// when there is one, otherwise the list to offer in a picker — and `start`
+/// creates the session once an agent is settled.
 @MainActor
 enum VoiceSessionStarter {
     enum StartError: LocalizedError {
@@ -22,42 +27,85 @@ enum VoiceSessionStarter {
         }
     }
 
+    /// Everything a take needs, unwrapped once so neither agent resolution
+    /// nor session creation has to re-check it.
+    struct Context {
+        let teamID: String
+        let currentActorID: String
+        let teamcluService: TeamcluService
+        let actorStore: ActorStore
+        let connectedAgentsStore: ConnectedAgentsStore
+        let workspacesRepository: any WorkspaceRepository
+        let sessionsRepository: any SessionRepository
+
+        init(teamID: String,
+             currentActorID: String?,
+             teamcluService: TeamcluService?,
+             actorStore: ActorStore?,
+             connectedAgentsStore: ConnectedAgentsStore?,
+             workspacesRepository: (any WorkspaceRepository)?,
+             sessionsRepository: (any SessionRepository)?) throws {
+            guard !teamID.isEmpty,
+                  let currentActorID,
+                  let teamcluService,
+                  let actorStore,
+                  let connectedAgentsStore,
+                  let workspacesRepository,
+                  let sessionsRepository
+            else {
+                throw StartError.unavailable(String(localized: "Voice chat is not ready yet."))
+            }
+            self.teamID = teamID
+            self.currentActorID = currentActorID
+            self.teamcluService = teamcluService
+            self.actorStore = actorStore
+            self.connectedAgentsStore = connectedAgentsStore
+            self.workspacesRepository = workspacesRepository
+            self.sessionsRepository = sessionsRepository
+        }
+    }
+
+    /// Who the transcript goes to.
+    enum Target {
+        case agent(ConnectedAgent)
+        /// No usable default — the caller asks the user to pick from these
+        /// (never empty) and passes the choice to `start`.
+        case needsPick([ConnectedAgent])
+    }
+
+    static func resolveTarget(_ context: Context) async throws -> Target {
+        await context.connectedAgentsStore.reload()
+        let agents = context.connectedAgentsStore.agents
+        guard !agents.isEmpty else {
+            throw StartError.unavailable(String(localized: "Add an agent before starting voice chat."))
+        }
+        // A default pointing at an agent the viewer can no longer reach is as
+        // good as no default, so it falls through to the picker — whose
+        // choice then overwrites the stale pointer.
+        if let defaultAgentID = await context.actorStore.getEffectiveDefaultAgent(),
+           let agent = agents.first(where: { $0.id == defaultAgentID }) {
+            return .agent(agent)
+        }
+        return .needsPick(agents)
+    }
+
     static func start(
         transcript: String,
-        teamID: String,
-        currentActorID: String?,
-        teamcluService: TeamcluService?,
-        actorStore: ActorStore?,
-        connectedAgentsStore: ConnectedAgentsStore?,
-        workspacesRepository: (any WorkspaceRepository)?,
-        sessionsRepository: (any SessionRepository)?,
+        agent: ConnectedAgent,
+        context: Context,
         viewModel: SessionListViewModel,
         modelContext: ModelContext
     ) async throws -> String {
         let prompt = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { throw StartError.transcriptEmpty }
-        guard !teamID.isEmpty,
-              let currentActorID,
-              let teamcluService,
-              let actorStore,
-              let connectedAgentsStore,
-              let workspacesRepository,
-              let sessionsRepository
-        else {
-            throw StartError.unavailable(String(localized: "Voice chat is not ready yet."))
-        }
+        let teamID = context.teamID
+        let currentActorID = context.currentActorID
+        let teamcluService = context.teamcluService
 
-        await connectedAgentsStore.reload()
-        guard let defaultAgentID = await actorStore.getEffectiveDefaultAgent(),
-              let agent = connectedAgentsStore.agents.first(where: { $0.id == defaultAgentID })
-        else {
-            throw StartError.unavailable(String(localized: "Set an available default agent before starting voice chat."))
-        }
-
-        let workspaceStore = WorkspaceStore(teamID: teamID, repository: workspacesRepository)
+        let workspaceStore = WorkspaceStore(teamID: teamID, repository: context.workspacesRepository)
         await workspaceStore.reload(agentID: agent.id)
         guard let workspace = workspaceStore.workspaces.first else {
-            throw StartError.unavailable(String(localized: "Your default agent has no workspace. Add one in Agent settings."))
+            throw StartError.unavailable(String(localized: "This agent has no workspace. Add one in Agent settings."))
         }
 
         let agentType = AgentConfigSheet.AgentType.fromStoredValue(
@@ -98,7 +146,7 @@ enum VoiceSessionStarter {
         )
 
         let outcome = await SessionCreationUseCase(
-            repository: sessionsRepository,
+            repository: context.sessionsRepository,
             teamcluService: teamcluService,
             modelContext: modelContext
         ).create(input)

@@ -27,6 +27,9 @@ public struct RootTabView: View {
     /// the recorder has already been reset by then, and the capture screen
     /// should keep showing the words it is about to send.
     @State private var pendingVoiceTranscript: String = ""
+    /// Set when a finished take has no default agent to go to — drives the
+    /// picker, and carries the transcript waiting on that choice.
+    @State private var voiceAgentChoice: VoiceAgentChoice?
 
     /// Drives the "add the team's first agent" reminder. Set once per app
     /// launch when we observe a team with zero agents; soft-dismissible so it
@@ -145,7 +148,7 @@ public struct RootTabView: View {
                 VoiceCaptureView(
                     phase: voicePhase,
                     level: voiceRecorder.audioLevel,
-                    transcript: isStartingVoiceSession ? pendingVoiceTranscript : voiceRecorder.transcript,
+                    transcript: pendingVoiceTranscript.isEmpty ? voiceRecorder.transcript : pendingVoiceTranscript,
                     startedAt: recordingStartedAt,
                     onDone: voiceRecorder.stopRecording,
                     onCancel: cancelVoiceCapture
@@ -280,6 +283,19 @@ public struct RootTabView: View {
             guard let sessionID, !sessionID.isEmpty else { return }
             openSessionFromDeepLink(sessionID)
         }
+        .sheet(item: $voiceAgentChoice) {
+            // Swipe-dismiss and the picker's own Cancel both land here. A
+            // pick has already flipped `isStartingVoiceSession`, so this only
+            // fires for a genuine abandon.
+            if !isStartingVoiceSession { cancelVoiceCapture() }
+        } content: { choice in
+            VoiceAgentPicker(agents: choice.agents,
+                             agentPresenceStore: teamRuntime?.agentPresenceStore) { agent in
+                voiceAgentChoice = nil
+                isStartingVoiceSession = true
+                Task { await startVoiceSession(choice.transcript, with: agent) }
+            }
+        }
         .sheet(isPresented: $showFirstAgentReminder) {
             ZeroAgentReminderSheet {
                 // Switch to the Actors tab and present its existing
@@ -294,6 +310,7 @@ public struct RootTabView: View {
 
     private var voicePhase: VoiceCaptureView.Phase {
         if isStartingVoiceSession { return .startingSession }
+        if voiceAgentChoice != nil { return .awaitingAgent }
         return voiceRecorder.state == .recording ? .recording : .preparing
     }
 
@@ -301,6 +318,8 @@ public struct RootTabView: View {
     private func cancelVoiceCapture() {
         voiceRecorder.cancel()
         recordingStartedAt = nil
+        pendingVoiceTranscript = ""
+        voiceAgentChoice = nil
         selection = .sessions
     }
 
@@ -322,29 +341,71 @@ public struct RootTabView: View {
 
     @MainActor
     private func startVoiceSession(_ transcript: String) async {
-        defer {
-            isStartingVoiceSession = false
-            pendingVoiceTranscript = ""
-        }
         do {
-            let sessionID = try await VoiceSessionStarter.start(
-                transcript: transcript,
-                teamID: activeTeam?.id ?? "",
-                currentActorID: currentActorID,
-                teamcluService: teamcluService,
-                actorStore: teamRuntime?.actorStore,
-                connectedAgentsStore: teamRuntime?.connectedAgentsStore,
-                workspacesRepository: teamRuntime?.workspacesRepo,
-                sessionsRepository: teamRuntime?.sessionRepo,
-                viewModel: viewModel,
-                modelContext: modelContext
-            )
-            selection = .sessions
-            sessionsPath = ["session:\(sessionID)"]
+            let context = try voiceContext()
+            switch try await VoiceSessionStarter.resolveTarget(context) {
+            case .agent(let agent):
+                try await createVoiceSession(transcript: transcript, agent: agent, context: context)
+            case .needsPick(let agents):
+                // Park the take on the capture screen and hand over to the
+                // picker; creation resumes in `startVoiceSession(_:with:)`.
+                isStartingVoiceSession = false
+                voiceAgentChoice = VoiceAgentChoice(transcript: transcript, agents: agents)
+            }
         } catch {
-            selection = .sessions
-            voiceErrorMessage = error.localizedDescription
+            failVoiceSession(error)
         }
+    }
+
+    /// Resumes a parked take once the user has picked an agent, and remembers
+    /// the choice as their personal default so the next take doesn't ask.
+    @MainActor
+    private func startVoiceSession(_ transcript: String, with agent: ConnectedAgent) async {
+        do {
+            let context = try voiceContext()
+            _ = await context.actorStore.setMemberDefaultAgent(agentID: agent.id)
+            try await createVoiceSession(transcript: transcript, agent: agent, context: context)
+        } catch {
+            failVoiceSession(error)
+        }
+    }
+
+    @MainActor
+    private func createVoiceSession(transcript: String,
+                                    agent: ConnectedAgent,
+                                    context: VoiceSessionStarter.Context) async throws {
+        let sessionID = try await VoiceSessionStarter.start(
+            transcript: transcript,
+            agent: agent,
+            context: context,
+            viewModel: viewModel,
+            modelContext: modelContext
+        )
+        isStartingVoiceSession = false
+        pendingVoiceTranscript = ""
+        selection = .sessions
+        sessionsPath = ["session:\(sessionID)"]
+    }
+
+    @MainActor
+    private func failVoiceSession(_ error: Error) {
+        isStartingVoiceSession = false
+        pendingVoiceTranscript = ""
+        voiceAgentChoice = nil
+        selection = .sessions
+        voiceErrorMessage = error.localizedDescription
+    }
+
+    private func voiceContext() throws -> VoiceSessionStarter.Context {
+        try VoiceSessionStarter.Context(
+            teamID: activeTeam?.id ?? "",
+            currentActorID: currentActorID,
+            teamcluService: teamcluService,
+            actorStore: teamRuntime?.actorStore,
+            connectedAgentsStore: teamRuntime?.connectedAgentsStore,
+            workspacesRepository: teamRuntime?.workspacesRepo,
+            sessionsRepository: teamRuntime?.sessionRepo
+        )
     }
 
     @MainActor
@@ -441,4 +502,13 @@ public struct RootTabView: View {
             viewModel.reloadSessions(modelContext: modelContext)
         }
     }
+}
+
+/// A finished take waiting on an agent choice. Identifiable so the picker can
+/// be a `sheet(item:)` — its identity is the take, so a second take always
+/// re-presents.
+private struct VoiceAgentChoice: Identifiable {
+    let id = UUID()
+    let transcript: String
+    let agents: [ConnectedAgent]
 }
