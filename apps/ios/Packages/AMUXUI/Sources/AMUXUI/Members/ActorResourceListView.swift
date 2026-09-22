@@ -83,8 +83,16 @@ struct ActorResourceListView: View {
                 Section { rows }
             }
         }
+        // `List` otherwise keeps the system grouped canvas behind its rows,
+        // which is noticeably cooler than the Hai paper used by the actor
+        // detail it is pushed from. Hide that canvas so Skills, MCP, and Env
+        // all inherit the same Mist ground.
+        .scrollContentBackground(.hidden)
+        .background(Color.amux.mist)
         .navigationTitle(route.kind.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Color.amux.mist, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .task { await load() }
     }
 
