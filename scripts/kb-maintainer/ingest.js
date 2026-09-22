@@ -1,0 +1,352 @@
+"use strict";
+
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const { dryRun } = require("./dry-run");
+const { extractorCacheKey, rawRelativePath } = require("./extract-text");
+const { extractSource } = require("./extract");
+const { compile } = require("./agent-runner");
+const { validateSourceDiff, rebuildIndex, normalizeWikiLinks, dropDeadWikiLinks, listPageFiles } = require("./validator");
+const { normalizeCompiledPage, parseFrontmatter, serializeFrontmatter } = require("./frontmatter");
+const {
+  ensureWikiRepo,
+  headCommit,
+  changedRelPaths,
+  commitAll,
+  resetHard,
+  ingestMessage,
+} = require("./git-store");
+const { limitCompileDiff } = require("./repair");
+
+function loadState(statePath) {
+  if (!statePath || !fs.existsSync(statePath)) {
+    return { schemaVersion: 1, sources: {} };
+  }
+  return JSON.parse(fs.readFileSync(statePath, "utf8"));
+}
+
+function saveState(statePath, state) {
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  const tmp = `${statePath}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`);
+  fs.renameSync(tmp, statePath);
+}
+
+function sourceAbs(documentsRoot, documentsPath) {
+  return path.join(documentsRoot, documentsPath.slice("documents/".length));
+}
+
+function readOptional(filePath) {
+  return fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
+}
+
+function sha256String(text) {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot }) {
+  const abs = sourceAbs(opts.documentsRoot, item.path);
+  const extracted = await extractSource({
+    sourcePath: item.path,
+    bytes: fs.readFileSync(abs),
+    sourceSha256: item.sourceSha256,
+    visionExtract: opts.visionExtract,
+    visionModel: config.models?.vision,
+    promptVersion: config.models?.visionPromptVersion || "v1",
+    cache: opts.extractCache,
+  });
+  if (extracted.quality !== "accepted") {
+    throw new Error(`extraction ${extracted.quality}`);
+  }
+  if (extracted.markdown.replace(/^---[\s\S]*?\n---\n/, "").length > (config.limits.maxExtractedChars || 50000)) {
+    throw new Error("too_large");
+  }
+
+  const rawRel = rawRelativePath(item.path);
+  const rawAbs = path.join(rawRoot, rawRel);
+  fs.mkdirSync(path.dirname(rawAbs), { recursive: true });
+  fs.writeFileSync(rawAbs, extracted.markdown);
+
+  const beforeCommit = headCommit(wikiRoot);
+  const previous = state.sources[item.path] ? { ...state.sources[item.path] } : null;
+  state.sources[item.path] = {
+    ...(previous || {}),
+    pending: { action, sourceSha256: item.sourceSha256, beforeCommit },
+  };
+  saveState(opts.statePath, state);
+
+  try {
+    const compiled = await compile({
+      runner: opts.runner || "fake",
+      workRoot: opts.workRoot,
+      rawRoot,
+      action,
+      sourcePath: item.path,
+      sourceSha256: item.sourceSha256,
+      rawMarkdown: extracted.markdown,
+      locators: extracted.locators,
+      pageType: item.class === "training" ? "training" : item.class,
+      affectedPages: previous?.affectedPages,
+      schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
+      indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
+      compilerModel: opts.compilerModel,
+      createSession: opts.createSession,
+    });
+    normalizeCompiledPages(wikiRoot, beforeCommit, {
+      pageType: item.class === "training" ? "training" : item.class,
+      sourcePath: item.path,
+      sourceSha256: item.sourceSha256,
+      locators: extracted.locators,
+      rawMarkdown: extracted.markdown,
+      maxBytes: config.limits?.maxIndexChars || 8000,
+      maxSourceSummaryChars: config.limits?.maxSourceSummaryChars || 4000,
+    });
+    limitCompileDiff(
+      wikiRoot,
+      beforeCommit,
+      item.path,
+      config.limits?.maxPagesChangedPerSource ?? 15,
+    );
+    rebuildIndex(wikiRoot);
+    normalizeWikiLinks(wikiRoot);
+    dropDeadWikiLinks(wikiRoot);
+    rebuildIndex(wikiRoot);
+    const pageHits = (compiled.affectedPages || []).filter((rel) =>
+      rel.startsWith("pages/"),
+    );
+    if (pageHits.length === 0) {
+      throw new Error("compiler produced no wiki pages");
+    }
+    const changed = changedRelPaths(wikiRoot, beforeCommit);
+    const verdict = validateSourceDiff({
+      workRoot: opts.workRoot,
+      wikiRoot,
+      rawRoot,
+      changedRelPaths: changed,
+      currentSource: {
+        path: item.path,
+        sourceSha256: item.sourceSha256,
+        rawRelPath: rawRel,
+      },
+      config,
+    });
+    if (!verdict.ok) {
+      throw new Error(verdict.errors.join("; "));
+    }
+    const commit = commitAll(wikiRoot, ingestMessage(action, item.path, item.sourceSha256));
+    state.sources[item.path] = {
+      sourceSha256: item.sourceSha256,
+      extractorCacheKey: extractorCacheKey({
+        sourceSha256: item.sourceSha256,
+        extractorName: extracted.extractorName,
+        extractorVersion: extracted.extractorVersion,
+      }),
+      rawMarkdownSha256: sha256String(extracted.markdown),
+      affectedPages: compiled.affectedPages,
+      status: "imported",
+      lastImportedCommit: commit,
+    };
+    saveState(opts.statePath, state);
+  } catch (error) {
+    resetHard(wikiRoot, beforeCommit);
+    const priorPages = (previous?.affectedPages || []).filter((rel) =>
+      rel.startsWith("pages/"),
+    );
+    if (previous && previous.status === "imported" && priorPages.length > 0) {
+      state.sources[item.path] = previous;
+    } else {
+      delete state.sources[item.path];
+    }
+    saveState(opts.statePath, state);
+    throw error;
+  }
+}
+
+function normalizeCompiledPages(wikiRoot, beforeCommit, defaults) {
+  for (const rel of changedRelPaths(wikiRoot, beforeCommit)) {
+    if (!rel.startsWith("pages/") || !rel.endsWith(".md")) continue;
+    const abs = path.join(wikiRoot, rel);
+    if (!fs.existsSync(abs)) continue;
+    const before = fs.readFileSync(abs, "utf8");
+    const after = normalizeCompiledPage(before, defaults);
+    if (after !== before) fs.writeFileSync(abs, after);
+  }
+}
+
+function retractSourceCitations(wikiRoot, sourcePath) {
+  const removed = [];
+  const rewritten = [];
+  for (const rel of listPageFiles(wikiRoot)) {
+    const abs = path.join(wikiRoot, rel);
+    let parsed;
+    try {
+      parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
+    } catch {
+      continue;
+    }
+    const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
+    const kept = cited.filter((source) => source && source.path !== sourcePath);
+    if (kept.length === cited.length) continue;
+    if (kept.length === 0) {
+      fs.rmSync(abs);
+      removed.push(rel);
+      continue;
+    }
+    fs.writeFileSync(
+      abs,
+      serializeFrontmatter({ ...parsed.frontmatter, sources: kept }, parsed.body),
+    );
+    rewritten.push(rel);
+  }
+  return { removed, rewritten };
+}
+
+function pagesStillCiting(wikiRoot, sourcePath) {
+  const citing = [];
+  for (const rel of listPageFiles(wikiRoot)) {
+    const abs = path.join(wikiRoot, rel);
+    let parsed;
+    try {
+      parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
+    } catch {
+      continue;
+    }
+    const sources = parsed.frontmatter?.sources || [];
+    if (sources.some((source) => source.path === sourcePath)) {
+      citing.push(rel);
+    }
+  }
+  return citing;
+}
+
+async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
+  const previous = state.sources[item.path];
+  if (!previous) return;
+  const beforeCommit = headCommit(wikiRoot);
+  state.sources[item.path] = {
+    ...previous,
+    pending: { action: "delete", sourceSha256: previous.sourceSha256, beforeCommit },
+  };
+  saveState(opts.statePath, state);
+  try {
+    await compile({
+      runner: opts.runner || "fake",
+      workRoot: opts.workRoot,
+      rawRoot,
+      action: "delete",
+      sourcePath: item.path,
+      sourceSha256: previous.sourceSha256,
+      affectedPages: previous.affectedPages,
+      schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
+      indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
+      compilerModel: opts.compilerModel,
+      createSession: opts.createSession,
+    });
+    rebuildIndex(wikiRoot);
+    normalizeWikiLinks(wikiRoot);
+    if (pagesStillCiting(wikiRoot, item.path).length > 0) {
+      retractSourceCitations(wikiRoot, item.path);
+    }
+    dropDeadWikiLinks(wikiRoot);
+    rebuildIndex(wikiRoot);
+    limitCompileDiff(wikiRoot, beforeCommit, item.path, Number.POSITIVE_INFINITY);
+    const stillCiting = pagesStillCiting(wikiRoot, item.path);
+    if (stillCiting.length > 0) {
+      throw new Error(
+        `delete did not retract ${stillCiting.join(", ")}: still cites ${item.path}`,
+      );
+    }
+    const changed = changedRelPaths(wikiRoot, beforeCommit);
+    const verdict = validateSourceDiff({
+      workRoot: opts.workRoot,
+      wikiRoot,
+      rawRoot,
+      changedRelPaths: changed,
+      currentSource: {
+        path: item.path,
+        sourceSha256: previous.sourceSha256,
+        rawRelPath: rawRelativePath(item.path),
+      },
+      config,
+    });
+    if (!verdict.ok) {
+      throw new Error(verdict.errors.join("; "));
+    }
+    commitAll(wikiRoot, ingestMessage("delete", item.path, previous.sourceSha256));
+    delete state.sources[item.path];
+    const rawAbs = path.join(rawRoot, rawRelativePath(item.path));
+    if (fs.existsSync(rawAbs)) fs.rmSync(rawAbs);
+    saveState(opts.statePath, state);
+  } catch (error) {
+    resetHard(wikiRoot, beforeCommit);
+    state.sources[item.path] = previous;
+    saveState(opts.statePath, state);
+    throw error;
+  }
+}
+
+async function ingestBatch(opts) {
+  const planResult = dryRun(opts);
+  const config = require("./config").loadConfig(opts.configPath);
+  const wikiRoot = path.join(opts.workRoot, "wiki");
+  const rawRoot = path.join(opts.workRoot, "raw");
+  fs.mkdirSync(rawRoot, { recursive: true });
+  ensureWikiRepo(wikiRoot);
+  const state = loadState(opts.statePath);
+  if (!state.sources) state.sources = {};
+  const ingestOpts = {
+    ...opts,
+    visionExtract: opts.acceptVisionEstimate ? opts.visionExtract : undefined,
+  };
+
+  const failures = [];
+  let imported = 0;
+  let rolledBack = 0;
+  let retracted = 0;
+  const onProgress =
+    typeof opts.onProgress === "function" ? opts.onProgress : () => {};
+  const queue = [
+    ...planResult.plan.add.map((item) => ({ action: "add", item })),
+    ...planResult.plan.update.map((item) => ({ action: "update", item })),
+    ...planResult.plan.delete.map((item) => ({ action: "delete", item })),
+  ];
+  let current = 0;
+
+  for (const { action, item } of queue) {
+    current += 1;
+    onProgress({
+      stage: "ingest",
+      action,
+      path: item.path,
+      current,
+      total: queue.length,
+    });
+    try {
+      if (action === "delete") {
+        await retractOne({ item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
+        retracted += 1;
+      } else {
+        await ingestOne({ action, item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
+        imported += 1;
+      }
+    } catch (error) {
+      rolledBack += 1;
+      failures.push({ path: item.path, action, error: error.message });
+    }
+  }
+
+  return {
+    ok: failures.length === 0,
+    counts: {
+      imported,
+      rolled_back: rolledBack,
+      retracted,
+      unchanged: planResult.plan.unchanged.length,
+    },
+    failures,
+    plan: planResult.plan,
+  };
+}
+
+module.exports = { ingestBatch, loadState, saveState };

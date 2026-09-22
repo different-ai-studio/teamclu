@@ -1,0 +1,211 @@
+"use strict";
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+const { ensureWikiRepo, changedRelPaths, headCommit } = require("./git-store");
+const { buildCompilePrompt } = require("./compile-prompt");
+const { jailedWikiOperations } = require("./wiki-jail");
+
+const ALLOWED_PI_TOOLS = ["read", "write", "edit", "find"];
+const EXCLUDED_PI_TOOLS = ["bash", "grep", "ls"];
+
+function piSessionPolicy() {
+  return {
+    tools: [...ALLOWED_PI_TOOLS],
+    excludeTools: [...EXCLUDED_PI_TOOLS],
+  };
+}
+
+function amuxdHome() {
+  return process.env.AMUXD_HOME || path.join(os.homedir(), ".amuxd");
+}
+
+function loadTeamGateway(ctx) {
+  if (ctx.teamProvider && ctx.gatewayToken) {
+    return { provider: ctx.teamProvider, token: ctx.gatewayToken };
+  }
+  const raw = process.env.TEAMCLU_TEAM_PROVIDER;
+  const token = process.env.tc_gateway_token;
+  if (!raw || !token) {
+    throw new Error(
+      "Team AI gateway is not available. Open a team session once, then maintain Wiki again.",
+    );
+  }
+  return { provider: JSON.parse(raw), token };
+}
+
+/** `provider/model` from the picker. A bare id is a team model saved before
+ *  the picker listed other providers. */
+function parseCompilerModel(compilerModel) {
+  const raw = String(compilerModel || "").trim();
+  if (!raw || raw === "default") return { provider: "team", modelId: "", source: "team" };
+  const slash = raw.indexOf("/");
+  if (slash > 0 && slash < raw.length - 1) {
+    const provider = raw.slice(0, slash);
+    return {
+      provider,
+      modelId: raw.slice(slash + 1),
+      source: provider === "team" ? "team" : "device",
+    };
+  }
+  return { provider: "team", modelId: raw, source: "team" };
+}
+
+function compilerNeedsTeamGateway(compilerModel) {
+  return parseCompilerModel(compilerModel).source === "team";
+}
+
+function writePiAuth(agentDir, provider, token) {
+  const models = Array.isArray(provider.models) && provider.models.length > 0
+    ? provider.models
+    : [{ id: "default", name: "标准" }];
+  fs.mkdirSync(agentDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(agentDir, "models.json"),
+    `${JSON.stringify(
+      {
+        providers: {
+          team: {
+            name: provider.name || "Team",
+            baseUrl: provider.baseUrl,
+            api: "openai-completions",
+            apiKey: token,
+            models: models.map((model) => ({
+              id: model.id,
+              name: model.name || model.id,
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 256000,
+              maxTokens: 16000,
+            })),
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  fs.writeFileSync(
+    path.join(agentDir, "auth.json"),
+    `${JSON.stringify({ team: { type: "api_key", key: token } }, null, 2)}\n`,
+  );
+}
+
+function piPackageRoot() {
+  return path.join(
+    amuxdHome(),
+    "cache/pi/node_modules/@earendil-works/pi-coding-agent",
+  );
+}
+
+async function createLivePiSession(ctx) {
+  const selection = parseCompilerModel(ctx.compilerModel);
+  const piRoot = piPackageRoot();
+  const entry = path.join(piRoot, "dist/index.js");
+  if (!fs.existsSync(entry)) {
+    throw new Error(
+      "The managed Agent runtime is not installed. Finish local Agent setup, then try again.",
+    );
+  }
+  const sdk = await import(pathToFileURL(entry).href);
+  const wikiRoot = path.join(ctx.workRoot, "wiki");
+  let agentDir;
+  let modelRuntime;
+  let model;
+  if (selection.source === "device") {
+    // Device providers live in pi's own agent dir (auth.json / models.json).
+    agentDir =
+      typeof sdk.getAgentDir === "function"
+        ? sdk.getAgentDir()
+        : path.join(os.homedir(), ".pi", "agent");
+    modelRuntime = await sdk.ModelRuntime.create({
+      authPath: path.join(agentDir, "auth.json"),
+      modelsPath: path.join(agentDir, "models.json"),
+      refreshOnCreate: false,
+    });
+    model = modelRuntime.getModel(selection.provider, selection.modelId);
+  } else {
+    const { provider, token } = loadTeamGateway(ctx);
+    agentDir = path.join(ctx.workRoot, "state", "pi-agent");
+    writePiAuth(agentDir, provider, token);
+    modelRuntime = await sdk.ModelRuntime.create({
+      authPath: path.join(agentDir, "auth.json"),
+      modelsPath: path.join(agentDir, "models.json"),
+      refreshOnCreate: false,
+    });
+    const wanted = selection.modelId || provider.models?.[0]?.id;
+    model =
+      (wanted && modelRuntime.getModel("team", wanted)) ||
+      (!selection.modelId ? modelRuntime.getModels("team")[0] : undefined);
+  }
+  if (!model) {
+    const label = selection.modelId
+      ? `${selection.provider}/${selection.modelId}`
+      : selection.provider;
+    throw new Error(`Compiler model is not available: ${label}`);
+  }
+  const ops = jailedWikiOperations(ctx.workRoot);
+  const policy = piSessionPolicy();
+  const { session } = await sdk.createAgentSession({
+    cwd: wikiRoot,
+    agentDir,
+    modelRuntime,
+    model,
+    tools: policy.tools,
+    excludeTools: policy.excludeTools,
+    customTools: [
+      sdk.createReadToolDefinition(wikiRoot, { operations: ops }),
+      sdk.createWriteToolDefinition(wikiRoot, { operations: ops }),
+      sdk.createEditToolDefinition(wikiRoot, { operations: ops }),
+      sdk.createFindToolDefinition(wikiRoot, { operations: ops }),
+    ],
+    sessionManager: sdk.SessionManager.inMemory(wikiRoot),
+    settingsManager: sdk.SettingsManager.inMemory({ compaction: { enabled: false } }),
+  });
+  return session;
+}
+
+function affectedWikiPages(wikiRoot, fromCommit) {
+  return changedRelPaths(wikiRoot, fromCommit).filter(
+    (rel) => rel === "index.md" || rel.startsWith("index/") || rel.startsWith("pages/"),
+  );
+}
+
+async function compile(ctx) {
+  const wikiRoot = path.join(ctx.workRoot, "wiki");
+  ensureWikiRepo(wikiRoot);
+  const before = headCommit(wikiRoot);
+  const prompt = buildCompilePrompt({
+    ...ctx,
+    indexMarkdown:
+      ctx.indexMarkdown ||
+      (fs.existsSync(path.join(wikiRoot, "index.md"))
+        ? fs.readFileSync(path.join(wikiRoot, "index.md"), "utf8")
+        : ""),
+  });
+  const session = ctx.createSession
+    ? await ctx.createSession(ctx)
+    : await createLivePiSession(ctx);
+  await session.prompt(prompt);
+  if (typeof session.waitForIdle === "function") {
+    await session.waitForIdle();
+  }
+  if (typeof session.dispose === "function") {
+    await session.dispose();
+  }
+  return { affectedPages: affectedWikiPages(wikiRoot, before) };
+}
+
+module.exports = {
+  ALLOWED_PI_TOOLS,
+  EXCLUDED_PI_TOOLS,
+  piSessionPolicy,
+  compile,
+  loadTeamGateway,
+  parseCompilerModel,
+  compilerNeedsTeamGateway,
+  createLivePiSession,
+};

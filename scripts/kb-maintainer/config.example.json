@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "teamId": "00000000-0000-4000-8000-000000000000",
+  "maintainerNodeId": "replace-with-device-node-id",
+  "sources": [
+    {
+      "prefix": "documents/handbook/",
+      "class": "policy",
+      "priority": 10,
+      "allowExtensions": ["md", "txt", "pdf", "docx"]
+    },
+    {
+      "prefix": "documents/training/",
+      "class": "training",
+      "priority": 20,
+      "allowExtensions": ["pdf", "pptx"]
+    }
+  ],
+  "deny": {
+    "pathPatterns": [
+      "**/personnel/**",
+      "**/discipline/**",
+      "**/insurance/**"
+    ]
+  },
+  "models": {
+    "compiler": "",
+    "vision": "",
+    "visionPagePrice": 0.12,
+    "currency": "CNY"
+  }
+}

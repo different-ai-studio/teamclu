@@ -15,6 +15,7 @@ pub mod filewatcher;
 pub mod gateway;
 pub mod introspect_api;
 pub mod introspect_auth;
+pub mod kb_maintainer;
 pub mod local_secret_store;
 pub mod mqtt_bus;
 pub mod oauth_loopback;

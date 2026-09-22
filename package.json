@@ -53,7 +53,7 @@
     "typecheck:expo": "pnpm --filter @teamclu/expo typecheck",
     "test:extension": "pnpm --filter @teamclu/extension test",
     "typecheck:extension": "pnpm --filter @teamclu/extension typecheck",
-    "test:scripts": "node --test scripts/lib/*.test.js apps/desktop/capabilities/*.test.js",
+    "test:scripts": "node --test scripts/lib/*.test.js apps/desktop/capabilities/*.test.js scripts/kb-maintainer/*.test.js",
     "test:smoke": "vitest run --config vitest.config.v2-e2e.ts tests/v2-e2e/pr",
     "test:e2e": "pnpm test:e2e:v2:pr",
     "test:e2e:v2:pr": "vitest run --config vitest.config.v2-e2e.ts tests/v2-e2e/pr",

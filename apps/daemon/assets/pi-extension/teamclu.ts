@@ -164,7 +164,7 @@ const SESSION_SCOPED_TOOLS = new Set([
 ]);
 
 const KNOWLEDGE_VAULT_PROMPT =
-  "Team knowledge is a Markdown vault. When the question needs team process, runbooks, written decisions, or definitions, call knowledge_search then knowledge_read. Do not invent vault paths. If search returns nothing, say you do not know. Do not browse the vault with read/grep/bash on team-knowledge/.";
+  "Team knowledge is a Markdown vault. For policies, processes, terms, roles, or FAQs, knowledge_read wiki/index.md first (maxChars 12000), then knowledge_read the listed pages or knowledge_search with pathPrefix wiki/. Human-reviewed 30-decisions/ and 40-runbooks/ take precedence when both match. Only treat knowledge_read content as fact; if nothing matches, say you do not know. Do not read documents/ or browse team-knowledge/ with file tools.";
 
 function normalizeSessionScopedToolName(name: string): string {
   const raw = name.trim();

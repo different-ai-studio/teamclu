@@ -258,6 +258,11 @@ export interface FileTreeItemProps {
    */
   disallowCreate?: boolean;
   /**
+   * LLM Wiki (`knowledge/wiki/`): Agent-owned. No create / rename / delete.
+   * Drawn with a small AI mark so it does not look like a human notes folder.
+   */
+  agentOwned?: boolean;
+  /**
    * This folder carries a permission rule of its OWN.
    *
    * Not set for folders that merely sit under a restricted parent: they are
@@ -347,6 +352,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   onManagePermissions,
   localizedName,
   disallowCreate,
+  agentOwned = false,
   isPermissionRestricted,
   onImportLocal,
   isNotDownloaded,
@@ -551,6 +557,14 @@ export const FileTreeItem = React.memo(function FileTreeItem({
       >
         {displayName}
       </span>
+      {agentOwned && (
+        <span
+          className="mr-1 shrink-0 rounded-[3px] border border-coral px-1 font-mono text-[9.5px] font-semibold leading-4 text-coral"
+          aria-label={t('teamShare.wikiAiManaged', 'AI-managed')}
+        >
+          {t('teamShare.wikiAiPill', 'AI')}
+        </span>
+      )}
 
       {needsConflictDecision && (
         // The row is already red; this is the part that says a HUMAN has to do
@@ -587,7 +601,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
     <ContextMenu>
       <ContextMenuTrigger asChild>{rowContent}</ContextMenuTrigger>
       <ContextMenuContent className="w-56">
-        {isDirectory && onDisk && !disallowCreate && (
+        {isDirectory && onDisk && !disallowCreate && !agentOwned && (
           <>
             <ContextMenuItem onSelect={guardedMenuAction(() => onNewFile(node.path))}>
               <FilePlus className="h-4 w-4" />
@@ -661,7 +675,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
           {t("fileExplorer.copyRelativePath", "Copy Relative Path")}
         </ContextMenuItem>
         <ContextMenuSeparator />
-        {onDisk && (
+        {onDisk && !agentOwned && (
           <>
             <ContextMenuItem onSelect={guardedMenuAction(() => onCopy([node.path]))}>
               <Copy className="h-4 w-4" />
@@ -713,7 +727,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             {t("versionHistory.title", "Version history")}
           </ContextMenuItem>
         )}
-        {onDisk && (
+        {onDisk && !agentOwned && (
           <>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={guardedMenuAction(() => onRename(node.path))}>
@@ -729,6 +743,10 @@ export const FileTreeItem = React.memo(function FileTreeItem({
               {t("fileExplorer.delete", "Delete")}
               <ContextMenuShortcut>⌫</ContextMenuShortcut>
             </ContextMenuItem>
+          </>
+        )}
+        {onDisk && (
+          <>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={guardedMenuAction(() => onOpenTerminal(terminalPath))}>
               <Terminal className="h-4 w-4" />

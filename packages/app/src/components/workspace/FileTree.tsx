@@ -25,6 +25,7 @@ import { useTeamSyncStatusStore } from "@/stores/team-sync-status";
 import { useOssSyncStore } from "@/stores/oss-sync";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team/team-sync-badges";
 import { teamSyncKeyForPath } from "@/lib/team/team-skill-paths";
+import { isLlmWikiSyncKey } from "@/lib/knowledge/wiki-vault";
 import { basenameOf, isPathAtOrUnder, isPathUnder, isSamePath } from "@/lib/fs-path";
 import { proposeDocumentToKnowledge } from "@/lib/knowledge/propose-from-document";
 import {
@@ -1178,8 +1179,16 @@ export function FileTree({
     // sync, so it offers no create action. `teamSyncKeyForPath` returns null
     // for the root itself while returning a key for everything inside it,
     // which is precisely the distinction needed.
-    disallowCreate:
-      node.type === 'directory' && syncRoot != null && isSamePath(node.path, syncRoot),
+    ...(() => {
+      const wikiKey = teamSyncKeyForPath(node.path, { syncRoot, workspacePath });
+      const agentOwned = isLlmWikiSyncKey(wikiKey);
+      return {
+        agentOwned,
+        disallowCreate:
+          (node.type === 'directory' && syncRoot != null && isSamePath(node.path, syncRoot)) ||
+          agentOwned,
+      };
+    })(),
     localizedName: localizedRootName(node, compactName),
     // Documents only. Knowledge is shared consensus — everyone on the team sees
     // the same thing — so it is never offered a restriction. That split is

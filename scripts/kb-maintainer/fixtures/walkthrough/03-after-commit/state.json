@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "sources": {
+    "documents/handbook/leave.md": {
+      "sourceSha256": "270a1a47bbf1b54eb7b25ab0666638ffe33df16f6c164f8fbb8d5e5e0f031a85",
+      "status": "imported",
+      "affectedPages": ["pages/请假.md", "pages/销假.md"],
+      "lastImportedCommit": "a1b2c3d"
+    }
+  },
+  "publishedCommit": null
+}
