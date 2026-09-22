@@ -199,6 +199,9 @@ public struct IdeaDetailView: View {
                     let url = FileManager.default.temporaryDirectory
                         .appendingPathComponent("idea-progress-\(UUID().uuidString).jpg")
                     try? data.write(to: url)
+                    // Before it goes anywhere: a library photo is twelve
+                    // megapixels and about 4MB, and it was uploaded whole.
+                    IdeaImagePreparation.downscaleInPlace(url)
                     await addProgressImageAttachment(url, ideaID: self.ideaID, teamID: self.item?.teamID ?? "")
                 }
                 progressPhotoItems = []
