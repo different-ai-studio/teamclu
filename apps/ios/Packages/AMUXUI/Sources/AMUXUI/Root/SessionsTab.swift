@@ -32,6 +32,9 @@ public struct SessionsTab: View {
     var onSignOut: (() -> Void)?
     let preferencesAPI: (any PushPreferencesAPI)?
     let notificationPrefsStore: NotificationPrefsStore?
+    /// Drives the session rows' leading dots. Owned by RootTabView so it
+    /// outlives this tab's view identity.
+    let liveActivityStore: SessionLiveActivityStore?
 
     @Environment(\.modelContext) private var modelContext
 
@@ -68,7 +71,8 @@ public struct SessionsTab: View {
                 onReconnect: (() -> Void)? = nil,
                 onSignOut: (() -> Void)? = nil,
                 preferencesAPI: (any PushPreferencesAPI)? = nil,
-                notificationPrefsStore: NotificationPrefsStore? = nil) {
+                notificationPrefsStore: NotificationPrefsStore? = nil,
+                liveActivityStore: SessionLiveActivityStore? = nil) {
         self.mqtt = mqtt
         self.hub = hub
         self.pairing = pairing
@@ -92,6 +96,7 @@ public struct SessionsTab: View {
         self.onSignOut = onSignOut
         self.preferencesAPI = preferencesAPI
         self.notificationPrefsStore = notificationPrefsStore
+        self.liveActivityStore = liveActivityStore
     }
 
     public var body: some View {
@@ -111,7 +116,8 @@ public struct SessionsTab: View {
                     noAccessibleAgent: connectedAgentsStore?.agents.isEmpty == true,
                     onInviteFirstAgent: actorStore == nil ? nil : { showInvite = true },
                     notificationPrefsStore: notificationPrefsStore,
-                    sessionsListRepository: sessionsListRepository
+                    sessionsListRepository: sessionsListRepository,
+                    liveActivityStore: liveActivityStore
                 )
                 .navigationTitle("Sessions")
                 .navigationBarTitleDisplayMode(.large)
