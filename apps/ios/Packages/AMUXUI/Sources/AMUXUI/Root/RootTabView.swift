@@ -129,30 +129,19 @@ public struct RootTabView: View {
                                           description: Text("Create or join a team to see actors."))
                 }
             }
-            // `role: .search` is the system's separate circular control on
-            // the right of the tab bar. Keep that exact presentation; only
-            // the selected action changes from search to voice capture.
+            // `role: .search` is what gives the bottom bar its two-segment
+            // shape: the pill above plus the system's detached glass circle
+            // on the right. We keep the role for that presentation and the
+            // hit target, and supply our own label so the circle shows the
+            // mic rather than a magnifier — selecting it starts voice
+            // capture instead of search.
             Tab(value: AppTab.search, role: .search) {
                 VoiceTabPlaceholder(isRecording: voiceRecorder.state == .recording)
+            } label: {
+                Label("Voice", systemImage: "mic")
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        // A search-role tab gives us the exact detached glass circle used by
-        // the original bottom bar. SwiftUI fixes that role's glyph to search,
-        // so replace only the small glyph plate; the hit target and glass
-        // container remain the system's.
-        .overlay(alignment: .bottomTrailing) {
-            if voiceRecorder.state != .recording && !isStartingVoiceSession {
-                Image(systemName: "mic")
-                    .font(.title3.weight(.medium))
-                    .foregroundStyle(Color.amux.onyx)
-                    .frame(width: 36, height: 36)
-                    .background(Color.amux.paper, in: Circle())
-                    .allowsHitTesting(false)
-                    .padding(.trailing, 40)
-                    .padding(.bottom, 42)
-            }
-        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if voiceRecorder.state == .recording || isStartingVoiceSession {
                 VoiceRecordingBar(
