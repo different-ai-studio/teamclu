@@ -525,14 +525,17 @@ jobs:
             build | tee "$RUNNER_TEMP/ios-build.log"
 
       # The compiler's own limit is a solver budget, not a number of
-      # milliseconds, so there is no threshold that means "this would have
-      # failed". 2000ms is chosen to sit far above what the tree costs today
-      # (worst is a few hundred ms) and far below the one that broke, which
-      # measured 7.9s on a laptop and considerably worse here.
+      # milliseconds, so no threshold means "this would have failed". 3000 is
+      # picked from measurements on this runner, which is roughly three times
+      # slower than a laptop: the worst body in the tree lands near 1600ms
+      # here, and the one that failed the archive measured 7.9s on a laptop —
+      # well over 20s of this runner's time. So the budget sits under twice
+      # today's worst and far below the cliff. Set it much tighter and it
+      # flaps; much looser and it stops meaning anything.
       - name: Nothing may sit near the type-checker's cliff
         run: |
           set -euo pipefail
-          BUDGET_MS=2000
+          BUDGET_MS=3000
           grep -oE '[^ ]+:[0-9]+:[0-9]+: warning: [^\"]*took [0-9]+ms to type-check' \
             "$RUNNER_TEMP/ios-build.log" | sort -u > "$RUNNER_TEMP/slow.txt" || true
           if [ -s "$RUNNER_TEMP/slow.txt" ]; then
