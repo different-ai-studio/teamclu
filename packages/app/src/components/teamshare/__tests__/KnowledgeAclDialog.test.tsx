@@ -71,13 +71,22 @@ const rule = (pathPrefix: string, actorIds: string[]) => ({
 })
 
 /** How many people the picker would offer — i.e. what the parent chain allows. */
-function addableCount(): number {
-  const button = screen.getByRole('button', { name: /Add person/ })
+async function addableCount(): Promise<number> {
+  const button = await screen.findByRole('button', { name: /Add person/ })
   return Number(button.textContent?.match(/(\d+)\s*$/)?.[1] ?? NaN)
 }
 
+/**
+ * Also asserts the click stuck.
+ *
+ * It did not always: restrict mode used to be set by an effect that ran after
+ * the commit which first rendered the loaded dialog, so a click landing in
+ * between was reverted. Waiting here means a regression names this helper
+ * rather than whichever assertion happened to come next.
+ */
 async function enterRestrictMode() {
   fireEvent.click(await screen.findByRole('button', { name: /Restrict to specific people/ }))
+  await screen.findByRole('button', { name: /Add person/ })
 }
 
 beforeEach(() => {
@@ -115,7 +124,7 @@ describe('KnowledgeAclDialog', () => {
     render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
     await enterRestrictMode()
 
-    expect(addableCount()).toBe(3)
+    expect(await addableCount()).toBe(3)
   })
 
   it('offers only the people the parent allows', async () => {
@@ -124,7 +133,7 @@ describe('KnowledgeAclDialog', () => {
     await enterRestrictMode()
 
     // Bob and Carol would be grants the server ignores, so they are not offered.
-    expect(addableCount()).toBe(1)
+    expect(await addableCount()).toBe(1)
   })
 
   it('takes the intersection when several ancestors restrict the path', async () => {
@@ -136,7 +145,7 @@ describe('KnowledgeAclDialog', () => {
     await enterRestrictMode()
 
     // Only Bob is in both; the strictest rule wins.
-    expect(addableCount()).toBe(1)
+    expect(await addableCount()).toBe(1)
   })
 
   it("lists this folder's own grants, and offers only the rest of the inherited set", async () => {
@@ -149,7 +158,7 @@ describe('KnowledgeAclDialog', () => {
     await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy())
     expect(screen.queryByText('Bob')).toBeNull()
     // Bob and Carol remain addable; Alice is already on the list.
-    expect(addableCount()).toBe(2)
+    expect(await addableCount()).toBe(2)
   })
 
   it('the people picker opens inside the dialog, not portalled to body', async () => {
@@ -209,6 +218,24 @@ describe('KnowledgeAclDialog', () => {
     })
   })
 
+  it('a restricted folder opens restricted, with nothing left to settle', async () => {
+    // The form used to be filled in by an effect keyed on the loaded rules,
+    // which runs after the commit. So a folder that already had a rule was
+    // painted unrestricted for one frame, and — the part that actually hurt —
+    // anything the user did in that frame was overwritten when the effect ran.
+    //
+    // Settling in the same batch as the data removes the frame. This pins the
+    // visible half of that: no "Restrict to specific people" button ever, not
+    // even before the roster shows up.
+    listKnowledgeAcl.mockResolvedValue([rule('knowledge/hr/', ['alice'])])
+    render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
+
+    await waitFor(() => expect(screen.getByText('Alice')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /Restrict to specific people/ })).toBeNull()
+    // And the selection came from the rule, not from a later pass.
+    expect(await addableCount()).toBe(2)
+  })
+
   it('a sibling folder is not treated as an ancestor', async () => {
     // knowledge/hr-public/ only looks like a prefix of knowledge/hr… if the
     // trailing slash is dropped. It must not constrain this folder.
@@ -216,6 +243,6 @@ describe('KnowledgeAclDialog', () => {
     render(<KnowledgeAclDialog prefix="knowledge/hr/" open onOpenChange={() => {}} />)
     await enterRestrictMode()
 
-    expect(addableCount()).toBe(3)
+    expect(await addableCount()).toBe(3)
   })
 })
