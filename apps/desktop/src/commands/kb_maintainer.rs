@@ -253,8 +253,8 @@ fn walk_document_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(current) = stack.pop() {
-        let entries = fs::read_dir(&current)
-            .map_err(|e| format!("Cannot inspect team documents: {e}"))?;
+        let entries =
+            fs::read_dir(&current).map_err(|e| format!("Cannot inspect team documents: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("Cannot inspect team documents: {e}"))?;
             let path = entry.path();
@@ -485,7 +485,8 @@ fn humanize_compiler_error(stderr: &str) -> String {
         return "Team Wiki already has older pages. Run maintenance again, then publish to replace them."
             .to_string();
     }
-    if (stderr.contains("publish destination changed") || stderr.contains("unexplained vault edits")
+    if (stderr.contains("publish destination changed")
+        || stderr.contains("unexplained vault edits")
         || stderr.contains("modified externally"))
     {
         return "Wiki changed after this run started. Run maintenance again before publishing."
@@ -920,10 +921,7 @@ mod tests {
         let (payload, token) = gateway_from_disk_team(&disk_team("tok_live_ai_invoke")).unwrap();
         assert_eq!(token, "tok_live_ai_invoke");
         let parsed: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(
-            parsed["baseUrl"],
-            "http://127.0.0.1:43111/ai/v1/teams/abc"
-        );
+        assert_eq!(parsed["baseUrl"], "http://127.0.0.1:43111/ai/v1/teams/abc");
         assert_eq!(parsed["apiKeyEnv"], "tc_gateway_token");
         assert_eq!(parsed["models"][0]["id"], "default");
         assert!(!payload.contains("tok_live_ai_invoke"));
