@@ -1,6 +1,6 @@
 begin;
 
-select plan(8);
+select plan(9);
 
 select has_table('amux', 'wiki_maintainer_configs', 'wiki maintainer config table exists');
 select has_table('amux', 'wiki_maintainer_state', 'wiki maintainer state table exists');
