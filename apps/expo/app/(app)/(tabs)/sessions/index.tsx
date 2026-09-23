@@ -40,7 +40,7 @@ function brokerHostLabel(url: string | null): string {
 const noopSubscribe = () => () => {};
 const EMPTY_AGENTS_STATE: ConnectedAgentsStoreState = {
   agents: [],
-  runtimeInfoByAgentId: new Map(),
+  presenceByAgentId: new Map(),
   isLoading: false,
   errorMessage: null,
 };
@@ -207,7 +207,7 @@ export default function SessionsIndexRoute() {
   );
   const { runtimeBySessionId, workspaceBySessionId } = buildSessionRuntimeMaps({
     sessions: listState.sessions,
-    runtimeInfoByAgentId: agentsState.runtimeInfoByAgentId,
+    presenceByAgentId: agentsState.presenceByAgentId,
     agentActorIds: new Set(agentsState.agents.map((agent) => agent.agentId)),
   });
 

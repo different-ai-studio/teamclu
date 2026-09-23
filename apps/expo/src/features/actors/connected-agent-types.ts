@@ -7,6 +7,12 @@ export type ConnectedAgent = {
   visibility: "team" | "personal";
   isOwner: boolean;
   lastActiveAt: string | null;
+  /**
+   * From the agent's retained `ActorPresence` — the daemon's Last Will flips
+   * it to false the moment its connection drops. Undefined until the broker
+   * has said anything, when `lastActiveAt` is all there is to go on.
+   */
+  presenceOnline?: boolean;
 };
 
 export type RuntimeAvailableCommand = {
@@ -44,7 +50,11 @@ export type AgentAuthorizedHuman = {
   lastActiveAt: string | null;
 };
 
-export function isAgentOnline(agent: Pick<ConnectedAgent, "lastActiveAt">, now = Date.now()): boolean {
+export function isAgentOnline(
+  agent: Pick<ConnectedAgent, "lastActiveAt" | "presenceOnline">,
+  now = Date.now(),
+): boolean {
+  if (agent.presenceOnline !== undefined) return agent.presenceOnline;
   if (!agent.lastActiveAt) return false;
   const t = Date.parse(agent.lastActiveAt);
   if (!Number.isFinite(t)) return false;

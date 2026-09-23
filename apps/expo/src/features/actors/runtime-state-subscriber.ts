@@ -1,7 +1,13 @@
-import { extractWildcards } from "../../lib/mqtt/topic-match";
 import type { TeamMqttClient } from "../../lib/mqtt/team-mqtt";
-import type { RuntimeInfo } from "./connected-agent-types";
+import type { ActorPresenceSnapshot } from "./actor-presence";
 
+/**
+ * Watches each agent's retained `amux/{team}/{actor}/state` (`ActorPresence`).
+ *
+ * This used to subscribe `…/{actor}/runtime/+/state`, a per-spawn topic the
+ * daemon stopped publishing (ADR-0004) — so agent status, model lists and
+ * slash commands never arrived.
+ */
 export type RuntimeStateSubscriber = {
   watchActor: (actorId: string) => void;
   unwatchActor: (actorId: string) => void;
@@ -10,33 +16,26 @@ export type RuntimeStateSubscriber = {
 };
 
 type Deps = {
-  mqtt: TeamMqttClient;
+  mqtt: Pick<TeamMqttClient, "subscribe">;
   teamId: string;
-  decode: (payload: Uint8Array) => RuntimeInfo | null;
-  onRuntimeInfo: (actorId: string, runtimeId: string, info: RuntimeInfo) => void;
+  decode: (payload: Uint8Array) => ActorPresenceSnapshot | null;
+  onPresence: (actorId: string, presence: ActorPresenceSnapshot) => void;
 };
+
+export function actorStateTopic(teamId: string, actorId: string): string {
+  return `amux/${teamId}/${actorId}/state`;
+}
 
 export function createRuntimeStateSubscriber(deps: Deps): RuntimeStateSubscriber {
   const unsubscribes = new Map<string, () => void>();
 
-  function topicFor(actorId: string) {
-    return `amux/${deps.teamId}/${actorId}/runtime/+/state`;
-  }
-
   return {
     watchActor(actorId) {
       if (unsubscribes.has(actorId)) return;
-      const filter = topicFor(actorId);
-      const off = deps.mqtt.subscribe(filter, (payload, topic) => {
-        const segments = extractWildcards(
-          `amux/${deps.teamId}/+/runtime/+/state`,
-          topic,
-        );
-        if (!segments) return;
-        const [, runtimeId] = segments;
-        const info = deps.decode(payload);
-        if (!info) return;
-        deps.onRuntimeInfo(actorId, runtimeId, info);
+      const off = deps.mqtt.subscribe(actorStateTopic(deps.teamId, actorId), (payload) => {
+        const presence = deps.decode(payload);
+        if (!presence) return;
+        deps.onPresence(actorId, presence);
       });
       unsubscribes.set(actorId, off);
     },

@@ -21,7 +21,7 @@ describe("normalizeStoredAgentType", () => {
   });
 
   it("returns null for anything it does not recognise", () => {
-    expect(normalizeStoredAgentType("pi")).toBeNull();
+    expect(normalizeStoredAgentType("cursor")).toBeNull();
     expect(normalizeStoredAgentType("")).toBeNull();
     expect(normalizeStoredAgentType(null)).toBeNull();
     expect(normalizeStoredAgentType(undefined)).toBeNull();
@@ -48,16 +48,19 @@ describe("supportedAgentTypes", () => {
     expect(supportedAgentTypes(["claude", "claude_code"])).toEqual(["claude"]);
   });
 
-  it("falls back to everything when the list is empty or unusable", () => {
-    // Better to offer all than to offer none — same call iOS makes.
-    expect(supportedAgentTypes([])).toEqual(AGENT_TYPE_ORDER);
-    expect(supportedAgentTypes(null)).toEqual(AGENT_TYPE_ORDER);
-    expect(supportedAgentTypes(undefined)).toEqual(AGENT_TYPE_ORDER);
-    expect(supportedAgentTypes(["pi", "cursor"])).toEqual(AGENT_TYPE_ORDER);
+  it("falls back to pi when the list is empty or unusable", () => {
+    // The daemon runs pi only (ADR-0014); offering the legacy backends would
+    // invite a runtime_start it refuses.
+    expect(supportedAgentTypes([])).toEqual(["pi"]);
+    expect(supportedAgentTypes(null)).toEqual(["pi"]);
+    expect(supportedAgentTypes(undefined)).toEqual(["pi"]);
+    expect(supportedAgentTypes(["cursor", "mystery"])).toEqual(["pi"]);
   });
 
-  it("ignores the unrecognised entries when some are recognised", () => {
-    expect(supportedAgentTypes(["pi", "codex"])).toEqual(["codex"]);
+  it("recognises pi and ignores unrecognised entries", () => {
+    expect(supportedAgentTypes(["pi"])).toEqual(["pi"]);
+    expect(supportedAgentTypes(["cursor", "codex"])).toEqual(["codex"]);
+    expect(AGENT_TYPE_ORDER[0]).toBe("pi");
   });
 });
 

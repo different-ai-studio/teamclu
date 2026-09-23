@@ -64,25 +64,30 @@ describe("ConnectedAgentsStore", () => {
     expect(sub.watchedActors().has("a1")).toBe(false);
   });
 
-  it("runtime info handler updates lastActiveAt and runtimeInfoByAgentId", async () => {
+  it("presence handler records online state and the agent's presence", async () => {
     const sub = fakeSubscriber();
     const agents: ConnectedAgent[] = [
-      { agentId: "a1", displayName: "Claude", agentTypes: ["claude"],
-        defaultAgentType: "claude",
+      { agentId: "a1", displayName: "Pi", agentTypes: ["pi"],
+        defaultAgentType: "pi",
         permissionLevel: "team", visibility: "team", isOwner: true,
         lastActiveAt: null },
     ];
     const store = createConnectedAgentsStore({ teamId: "t", api: fakeApi(agents), subscriber: sub });
     await store.reload();
-    store.handleRuntimeInfo("a1", "r1", {
-      runtimeId: "r1", agentType: 1, worktree: "", branch: "",
-      status: 1, startedAt: 0, currentPrompt: "", workspaceId: "",
-      sessionTitle: "", toolUseCount: 0,
-      availableModels: [], currentModel: "claude-sonnet-4-6",
-      state: 0, stage: "", errorCode: "", errorMessage: "", failedStage: "",
-      availableCommands: [],
+    store.handlePresence("a1", {
+      online: true, activeAgentType: 4,
+      models: [{ id: "m1", displayName: "M1" }], availableCommands: [],
+      liveSessions: [{
+        sessionId: "s1", lifecycle: 2, status: 2, stage: "", errorCode: "",
+        errorMessage: "", failedStage: "", workspaceId: "w1", currentModel: "m1", worktree: "/x",
+      }],
     });
-    expect(store.getState().runtimeInfoByAgentId.get("a1")?.currentModel).toBe("claude-sonnet-4-6");
+    expect(store.getState().presenceByAgentId.get("a1")?.liveSessions[0].currentModel).toBe("m1");
+    expect(store.getState().agents[0].presenceOnline).toBe(true);
     expect(store.getState().agents[0].lastActiveAt).not.toBeNull();
+
+    // The Last Will: offline wins over a recent lastActiveAt.
+    store.handlePresence("a1", { online: false, activeAgentType: 0, models: [], availableCommands: [], liveSessions: [] });
+    expect(store.getState().agents[0].presenceOnline).toBe(false);
   });
 });

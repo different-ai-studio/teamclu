@@ -105,6 +105,8 @@ function agentKindLabel(defaultAgentType: string | null | undefined): string {
       return "OpenCode";
     case "codex":
       return "Codex";
+    case "pi":
+      return "Pi";
     default:
       return "Agent";
   }

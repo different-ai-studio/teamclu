@@ -127,7 +127,19 @@ describe("runtime start planning", () => {
     expect(resolveExpoAgentType("claude")).toBe(AgentType.CLAUDE_CODE);
     expect(resolveExpoAgentType("opencode")).toBe(AgentType.OPENCODE);
     expect(resolveExpoAgentType("codex")).toBe(AgentType.CODEX);
-    expect(resolveExpoAgentType("unknown")).toBe(AgentType.CLAUDE_CODE);
+    expect(resolveExpoAgentType("pi")).toBe(AgentType.PI);
+    // Unknown means "whatever the daemon runs", which is pi (ADR-0014) —
+    // defaulting to Claude Code sent a runtime_start every daemon refuses.
+    expect(resolveExpoAgentType("unknown")).toBe(AgentType.PI);
+  });
+
+  it("plans pi for a pi agent, and ignores a stale default the agent no longer lists", () => {
+    const [piPlan] = resolveAgentRuntimeStartPlans({
+      agents: [{ actorId: "a1", displayName: "Pi", agentTypes: ["pi"], defaultAgentType: "claude" }],
+      connectedAgents: [{ agentId: "a1" }],
+      workspaces: [{ id: "w1", path: "/srv", agentId: "a1" }],
+    });
+    expect(piPlan.agentType).toBe(AgentType.PI);
   });
 
   it("builds a restart plan from the existing runtime workspace and backend", () => {

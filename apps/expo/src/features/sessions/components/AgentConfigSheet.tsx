@@ -41,6 +41,7 @@ export type AgentConfigSheetProps = {
 };
 
 const AGENT_TYPE_LABELS: Record<AgentType, string> = {
+  pi: "Pi",
   claude: "Claude",
   opencode: "OpenCode",
   codex: "Codex",
@@ -49,7 +50,7 @@ const AGENT_TYPE_LABELS: Record<AgentType, string> = {
 export function AgentConfigSheet({
   actorDisplayName,
   workspaces,
-  defaultType = "claude",
+  defaultType = "pi",
   agentTypes,
   onConfirm,
   onCancel,

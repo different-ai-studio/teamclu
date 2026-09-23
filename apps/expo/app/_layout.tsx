@@ -66,7 +66,7 @@ import { tearDownCloudAuthForServerSwitch } from "../src/lib/auth/cloud-auth";
 import { createPushTokenApi } from "../src/features/notifications/push-token-api";
 import { registerNativePushToken } from "../src/features/notifications/push-registration";
 import { getDb } from "../src/lib/db/sqlite";
-import { decodeRuntimeInfo } from "../src/lib/teamclu/runtime-info";
+import { decodeActorPresence } from "../src/features/actors/actor-presence";
 
 const onboardingApi = createOnboardingApi(supabase);
 
@@ -389,9 +389,9 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       const subscriber = createRuntimeStateSubscriber({
         mqtt,
         teamId: state.currentTeam!.id,
-        decode: decodeRuntimeInfo,
-        onRuntimeInfo: (actorId, runtimeId, info) =>
-          connectedAgentsStoreRef.current?.handleRuntimeInfo(actorId, runtimeId, info),
+        decode: decodeActorPresence,
+        onPresence: (actorId, presence) =>
+          connectedAgentsStoreRef.current?.handlePresence(actorId, presence),
       });
       const store = createConnectedAgentsStore({
         teamId: state.currentTeam!.id,

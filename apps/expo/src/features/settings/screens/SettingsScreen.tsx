@@ -101,6 +101,8 @@ function agentMetaLine(agent: ConnectedAgent, t: (key: string) => string): strin
         return "OpenCode";
       case "codex":
         return "Codex";
+      case "pi":
+        return "Pi";
       default:
         return "";
     }

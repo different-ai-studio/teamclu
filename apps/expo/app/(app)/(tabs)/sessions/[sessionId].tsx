@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   Platform,
   Share,
@@ -15,6 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { routeToHref, useConnectedAgentsStore, useOnboarding, useTeamMqtt } from "../../../_layout";
 import { resolveSlashCommands } from "../../../../src/features/sessions/components/runtime-commands";
 import { BUILT_IN_SLASH_COMMANDS } from "../../../../src/features/sessions/components/slash-commands";
+import { runtimeInfoByAgentForSession, type ActorPresenceSnapshot } from "../../../../src/features/actors/actor-presence";
 import type { RuntimeInfo } from "../../../../src/features/actors/connected-agent-types";
 import { createActorsApi } from "../../../../src/features/actors/actor-api";
 import type { Actor } from "../../../../src/features/actors/actor-types";
@@ -51,6 +53,7 @@ import { getDb } from "../../../../src/lib/db/sqlite";
 import { getKnownMqttUrl } from "../../../../src/lib/mqtt/config";
 import {
   createRuntimeCommandSender,
+  NotDispatchedError,
   resolvePermissionRuntimeTarget,
 } from "../../../../src/lib/teamclu/runtime-command";
 import { createRuntimeRpcClient } from "../../../../src/lib/teamclu/runtime-rpc";
@@ -102,6 +105,16 @@ function canRenderSessionDetail(
       detailState.status === "ready" ||
       detailState.status === "error")
   );
+}
+
+/** A command error for a toast; "no attachment" gets its translated wording. */
+function commandErrorMessage(
+  err: unknown,
+  fallback: string,
+  t: (key: string) => string,
+): string {
+  if (err instanceof NotDispatchedError) return t("The agent isn't running in this session.");
+  return err instanceof Error ? err.message : fallback;
 }
 
 export default function SessionDetailRoute() {
@@ -296,7 +309,7 @@ export default function SessionDetailRoute() {
   const connectedAgentsStore = useConnectedAgentsStore();
   const emptyAgentsState = useMemo(() => ({
     agents: [],
-    runtimeInfoByAgentId: new Map() as ReadonlyMap<string, RuntimeInfo>,
+    presenceByAgentId: new Map() as ReadonlyMap<string, ActorPresenceSnapshot>,
     isLoading: false,
     errorMessage: null,
   }), []);
@@ -305,15 +318,20 @@ export default function SessionDetailRoute() {
     () => connectedAgentsStore?.getState() ?? emptyAgentsState,
     () => connectedAgentsStore?.getState() ?? emptyAgentsState,
   );
+  // Each agent's attachment for THIS session, from its retained ActorPresence.
+  const runtimeInfoByAgentId = useMemo(
+    () => runtimeInfoByAgentForSession(agentsState.presenceByAgentId, sessionId ?? ""),
+    [agentsState.presenceByAgentId, sessionId],
+  );
 
   const dynamicSlashCommands = useMemo(() => {
     const session = detailState.session;
     if (!session) return [...BUILT_IN_SLASH_COMMANDS];
     const runtimeInfos = session.participantActorIds
-      .map((id) => agentsState.runtimeInfoByAgentId.get(id))
+      .map((id) => runtimeInfoByAgentId.get(id))
       .filter((r): r is RuntimeInfo => r != null);
     return resolveSlashCommands(runtimeInfos, BUILT_IN_SLASH_COMMANDS);
-  }, [detailState.session, agentsState.runtimeInfoByAgentId]);
+  }, [detailState.session, runtimeInfoByAgentId]);
 
   const [teamActors, setTeamActors] = useState<Actor[]>([]);
   const [isMuted, setIsMuted] = useState(false);
@@ -367,7 +385,7 @@ export default function SessionDetailRoute() {
     if (!session) return null;
     const live = session.participantActorIds
       .map((id) => {
-        const info = agentsState.runtimeInfoByAgentId.get(id);
+        const info = runtimeInfoByAgentId.get(id);
         return info ? { agentId: id, info } : null;
       })
       .filter((entry): entry is { agentId: string; info: RuntimeInfo } => entry != null);
@@ -380,7 +398,7 @@ export default function SessionDetailRoute() {
       status: runtimeStatusName(info.status) ?? "unknown",
       currentModel: info.currentModel || null,
     };
-  }, [detailState.session, agentsState.runtimeInfoByAgentId]);
+  }, [detailState.session, runtimeInfoByAgentId]);
   useEffect(() => {
     if (!currentTeam?.id) return;
     let cancelled = false;
@@ -542,8 +560,11 @@ export default function SessionDetailRoute() {
   const permissionCommandSender = useMemo(() => {
     if (!teamMqtt || !currentTeam?.id || !state.currentMemberActorId) return null;
     return createRuntimeCommandSender({
-      mqtt: teamMqtt,
-      teamId: currentTeam.id,
+      rpc: createRuntimeRpcClient({
+        mqtt: teamMqtt,
+        teamId: currentTeam.id,
+        requesterActorId: state.currentMemberActorId,
+      }),
       peerId: `teamclu-expo-${state.currentMemberActorId.slice(0, 8)}`,
       senderActorId: state.currentMemberActorId,
     });
@@ -567,21 +588,17 @@ export default function SessionDetailRoute() {
       requestingActorId: message.senderActorId,
       agentParticipantIds: fallbackAgentIds,
       connectedAgents: agentsState.agents,
-      runtimeInfoByAgentId: agentsState.runtimeInfoByAgentId,
-      fallbackRuntime: runtimeInfo
-        ? { agentId: runtimeInfo.agentId, runtimeId: runtimeInfo.runtimeId }
-        : null,
     });
 
     if (!target) {
-      showToast("error", t("Couldn't locate that agent's runtime — wait for it to come online and try again."));
+      showToast("error", t("That agent is offline — wait for it to come back and try again."));
       return;
     }
 
     try {
       await permissionCommandSender.sendPermissionResponse({
         targetActorId: target.actorId,
-        runtimeId: target.runtimeId,
+        sessionId: sessionId ?? "",
         requestId,
         granted,
       });
@@ -595,9 +612,55 @@ export default function SessionDetailRoute() {
     } catch (err) {
       showToast(
         "error",
-        err instanceof Error ? err.message : t("Permission response failed"),
+        commandErrorMessage(err, t("Permission response failed"), t),
       );
     }
+  };
+
+  /** Stop the agent's current turn in this session (iOS `interruptAgent`). */
+  const handleAgentInterrupt = async (agentId: string) => {
+    if (!permissionCommandSender || !sessionId) {
+      showToast("error", t("Mobile MQTT is not connected — reconnect and try again."));
+      return;
+    }
+    try {
+      await permissionCommandSender.sendCancel({ targetActorId: agentId, sessionId });
+      selectionTick();
+      showToast("success", t("Stopped"));
+    } catch (err) {
+      showToast("error", commandErrorMessage(err, t("Couldn't stop the agent."), t));
+    }
+  };
+
+  /** The chip's X: take the agent out of this session, after confirming. */
+  const handleAgentRemove = (agentId: string) => {
+    if (!sessionId) return;
+    const name = senderNames.get(agentId) ?? t("this agent");
+    Alert.alert(
+      t("Remove {{value}} from this session?", { value: name }),
+      t("It stops replying here. You can add it back from Members."),
+      [
+        { text: t("Cancel"), style: "cancel" },
+        {
+          text: t("Remove"),
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              try {
+                await createConfiguredSessionsApi(supabase).removeParticipant(sessionId, agentId);
+                await controller?.load({ preserveExisting: true });
+                showToast("success", t("Removed from session"));
+              } catch (err) {
+                showToast(
+                  "error",
+                  err instanceof Error ? err.message : t("Couldn't remove participant"),
+                );
+              }
+            })();
+          },
+        },
+      ],
+    );
   };
 
   const pendingQuestion = detailState.pendingQuestions[0] ?? null;
@@ -617,16 +680,12 @@ export default function SessionDetailRoute() {
       requestingActorId: agentId,
       agentParticipantIds: fallbackAgentIds,
       connectedAgents: agentsState.agents,
-      runtimeInfoByAgentId: agentsState.runtimeInfoByAgentId,
-      fallbackRuntime: runtimeInfo
-        ? { agentId: runtimeInfo.agentId, runtimeId: runtimeInfo.runtimeId }
-        : null,
     });
     if (!target) return;
     try {
       await permissionCommandSender.sendRequestTurnHistory({
         targetActorId: target.actorId,
-        runtimeId: target.runtimeId,
+        sessionId: sessionId ?? "",
         turnId,
       });
     } catch {
@@ -656,13 +715,9 @@ export default function SessionDetailRoute() {
       requestingActorId: question.agentActorId,
       agentParticipantIds: fallbackAgentIds,
       connectedAgents: agentsState.agents,
-      runtimeInfoByAgentId: agentsState.runtimeInfoByAgentId,
-      fallbackRuntime: runtimeInfo
-        ? { agentId: runtimeInfo.agentId, runtimeId: runtimeInfo.runtimeId }
-        : null,
     });
     if (!target) {
-      setQuestionError(t("Couldn't locate that agent's runtime — wait for it to come online and try again."));
+      setQuestionError(t("That agent is offline — wait for it to come back and try again."));
       return;
     }
 
@@ -671,7 +726,7 @@ export default function SessionDetailRoute() {
     try {
       await permissionCommandSender.sendAnswerQuestion({
         targetActorId: target.actorId,
-        runtimeId: target.runtimeId,
+        sessionId: sessionId ?? "",
         requestId: question.id,
         answers,
         reject,
@@ -679,7 +734,7 @@ export default function SessionDetailRoute() {
       controller?.resolvePendingQuestion(question.id);
       selectionTick();
     } catch (err) {
-      setQuestionError(err instanceof Error ? err.message : t("Couldn't send the answer."));
+      setQuestionError(commandErrorMessage(err, t("Couldn't send the answer."), t));
     } finally {
       setIsAnsweringQuestion(false);
     }
@@ -754,6 +809,10 @@ export default function SessionDetailRoute() {
           onAttach={() => {
             router.push(`/(app)/attach?sessionId=${sessionId}`);
           }}
+          onAgentInterrupt={(agentId) => {
+            void handleAgentInterrupt(agentId);
+          }}
+          onAgentRemove={handleAgentRemove}
           onGrantPermission={(requestId, message) => {
             void handlePermissionResponse(requestId, message, true);
           }}
@@ -892,7 +951,7 @@ export default function SessionDetailRoute() {
             }
             currentModel={runtimeInfo.currentModel}
             models={
-              agentsState.runtimeInfoByAgentId.get(runtimeInfo.agentId ?? "")
+              runtimeInfoByAgentId.get(runtimeInfo.agentId ?? "")
                 ?.availableModels ?? []
             }
             onCancel={() => setIsModelPromptOpen(false)}
