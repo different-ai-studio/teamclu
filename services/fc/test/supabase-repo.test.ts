@@ -4706,3 +4706,42 @@ test(
     assert.ok(!ssh.calls.some((c) => c.table === "app_secrets"));
   }),
 );
+
+// ── getHomeOrgId: the login chooser's narrowing hint ─────────────────────────
+
+function homeOrgRepo(row: any, { uid = "u1", sharedOrg = "org-shared" } = {}) {
+  const seen: any[] = [];
+  const query: any = {
+    select() { return query; },
+    eq(c: string, v: any) { seen.push([c, v]); return query; },
+    is() { return query; },
+    async maybeSingle() { return { data: row, error: null }; },
+  };
+  const admin = { schema: (s: string) => { seen.push(["schema", s]); return { from: () => query }; } };
+  const supabase = { auth: { async getUser() { return { data: { user: uid ? { id: uid } : null }, error: null }; } } };
+  process.env.DEFAULT_ORG_ID = sharedOrg;
+  return { repo: createRepo(supabase, { createServiceRoleClient: () => admin }) as any, seen };
+}
+
+test("getHomeOrgId returns the caller's own org", async () => {
+  const { repo, seen } = homeOrgRepo({ org_id: "org-banana", admin_type: 3 });
+  try {
+    assert.equal(await repo.getHomeOrgId(), "org-banana");
+    assert.deepEqual(seen.filter(([c]) => c === "id" || c === "schema"), [["schema", "public"], ["id", "u1"]]);
+  } finally { delete process.env.DEFAULT_ORG_ID; }
+});
+
+test("getHomeOrgId is null for a non-employee stamped with the shared tenant", async () => {
+  const { repo } = homeOrgRepo({ org_id: "org-shared", admin_type: 1 });
+  try { assert.equal(await repo.getHomeOrgId(), null); } finally { delete process.env.DEFAULT_ORG_ID; }
+});
+
+test("getHomeOrgId keeps the shared tenant for its own employees", async () => {
+  const { repo } = homeOrgRepo({ org_id: "org-shared", admin_type: 4 });
+  try { assert.equal(await repo.getHomeOrgId(), "org-shared"); } finally { delete process.env.DEFAULT_ORG_ID; }
+});
+
+test("getHomeOrgId is null when there is no users row", async () => {
+  const { repo } = homeOrgRepo(null);
+  try { assert.equal(await repo.getHomeOrgId(), null); } finally { delete process.env.DEFAULT_ORG_ID; }
+});

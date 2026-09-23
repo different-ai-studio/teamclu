@@ -1046,6 +1046,40 @@ export function createSupabaseBusinessRepository(options) {
       }));
     },
 
+    // The org the signed-in identity belongs to, for narrowing the login-time
+    // team chooser. `listAllMyTeams` resolves membership phone-wide on purpose
+    // (#1340), so without this the account the user just picked — in the phone
+    // account picker or the admin console's — decides nothing about which teams
+    // they land among.
+    //
+    // Null when the home org says nothing about belonging: the shared tenant
+    // DEFAULT_ORG_ID that phone sign-up stamps on every account, unless the
+    // caller is an employee there — the same rule as the picker's
+    // `employee_orgs` CTE. Best effort: a lookup failure only means "don't
+    // narrow".
+    async getHomeOrgId() {
+      try {
+        const { data: authData, error: authErr } = await getCurrentUser();
+        const uid = authData?.user?.id;
+        if (authErr || !uid) return null;
+        const admin = await serviceRoleClient("resolve the caller's home org");
+        const { data, error } = await admin
+          .schema("public")
+          .from("users")
+          .select("org_id, admin_type")
+          .eq("id", uid)
+          .is("deleted_at", null)
+          .maybeSingle();
+        if (error || !data?.org_id) return null;
+        const sharedOrg = process.env.DEFAULT_ORG_ID || null;
+        if (data.org_id === sharedOrg && Number(data.admin_type ?? 0) < 2) return null;
+        return data.org_id as string;
+      } catch (e) {
+        console.warn("getHomeOrgId failed; not narrowing:", (e as Error)?.message ?? e);
+        return null;
+      }
+    },
+
     async listDiscoverableTeams() {
       const { data, error } = await supabase.rpc("list_discoverable_teams");
       if (error) throw error;

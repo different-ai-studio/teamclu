@@ -296,7 +296,8 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
                     orgID: $0.orgId
                 )
             },
-            memberActorIDByTeam: [:]
+            memberActorIDByTeam: [:],
+            homeOrgID: page.homeOrgId
         )
     }
 
@@ -585,6 +586,8 @@ private struct BindPhoneResponse: Decodable, Sendable {
 // org→team login picker DTOs.
 private struct CloudListPage<Item: Decodable & Sendable>: Decodable, Sendable {
     let items: [Item]
+    /// Only on `GET /v1/teams?scope=all`: the signed-in identity's home org.
+    let homeOrgId: String?
 }
 
 private struct CloudMembershipTeam: Decodable, Sendable {

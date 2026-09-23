@@ -67,6 +67,22 @@ export function suggestTeamName(user: { email?: string | null; userMetadata?: Re
   return local || "";
 }
 
+/**
+ * The login chooser offers only the signed-in account's org. Membership comes
+ * back phone-wide (every identity sharing the phone), so without this, picking
+ * an account — in the phone account picker or the admin console's 快捷登录 —
+ * changes nothing about which teams follow. No row flagged means the server
+ * could not name a home org, or none of these teams are in it: show them all.
+ *
+ * Only the choice is narrowed. A remembered team is still looked up in the
+ * full list: sign-out clears it, so it only survives a relaunch, where it is a
+ * cross-org switch the user made in Settings and must not be undone.
+ */
+export function narrowToHomeOrg(teams: MembershipTeam[]): MembershipTeam[] {
+  const home = teams.filter((team) => team.inHomeOrg === true);
+  return home.length > 0 ? home : teams;
+}
+
 function needsTeamPicker(teams: MembershipTeam[]): boolean {
   return memberTeams(teams).length > 1 || teams.some((team) => team.isMember === false);
 }
@@ -94,8 +110,10 @@ function pickAutoRestoreTarget(
     ? members.find((team) => team.id === lastUsedTeamId)
     : undefined;
   if (remembered) return remembered;
-  if (needsTeamPicker(teams)) return undefined;
-  return members.length === 1 ? members[0] : undefined;
+  const choices = narrowToHomeOrg(teams);
+  if (needsTeamPicker(choices)) return undefined;
+  const choiceMembers = memberTeams(choices);
+  return choiceMembers.length === 1 ? choiceMembers[0] : undefined;
 }
 
 export function AuthGate({ children }: AuthGateProps) {
@@ -618,11 +636,12 @@ export function AuthGate({ children }: AuthGateProps) {
     if (myTeams === null) {
       return null; // Still loading the team list — keep the skeleton.
     }
-    if (needsTeamPicker(myTeams)) {
+    const teamChoices = narrowToHomeOrg(myTeams);
+    if (needsTeamPicker(teamChoices)) {
       removeStartupSkeleton();
       return (
         <TeamPicker
-          teams={myTeams}
+          teams={teamChoices}
           lastUsedTeamId={lastUsedTeamId}
           onDone={() => setTeamChosen(true)}
         />

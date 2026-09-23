@@ -30,13 +30,20 @@ public struct AppBootstrap: Equatable, Sendable {
     /// one a freshly-claimed invite landed in) without re-querying the
     /// backend.
     public let memberActorIDByTeam: [String: String]
+    /// Org of the signed-in identity (`homeOrgId` on `GET /v1/teams?scope=all`).
+    /// `teams` spans every identity sharing the caller's phone, so the login
+    /// chooser narrows to this org to honour the account the user picked. Nil
+    /// when the server could not say, or the org is the shared tenant.
+    public let homeOrgID: String?
 
     public init(memberActorID: String?,
                 teams: [TeamSummary],
-                memberActorIDByTeam: [String: String] = [:]) {
+                memberActorIDByTeam: [String: String] = [:],
+                homeOrgID: String? = nil) {
         self.memberActorID = memberActorID
         self.teams = teams
         self.memberActorIDByTeam = memberActorIDByTeam
+        self.homeOrgID = homeOrgID
     }
 }
 
@@ -250,11 +257,6 @@ public final class AppOnboardingCoordinator {
     /// The OTP token stashed while the multi-user picker is shown, so
     /// `selectPhoneUser` can complete the login without re-prompting.
     public var pendingPhoneOTPTokenForMultiUser: String = ""
-    /// Org of the account picked in the multi-account sheet, consumed by the
-    /// next `bootstrap()`. Team membership is resolved phone-wide on the server
-    /// (every same-phone identity's teams come back), so without this the
-    /// account choice would have no effect on which teams the user lands among.
-    var loginOrgScope: String?
 
     /// Set when an anonymous-account upgrade collided with an identifier that
     /// already belongs to another account. The upgrade UI reads this to offer a
@@ -629,8 +631,6 @@ public final class AppOnboardingCoordinator {
             var bootstrap = try await measureOnboarding("loadBootstrap") { try await store.loadBootstrap() }
             pendingCreatedTeam = nil
             var preferred = preferringTeamID
-            let loginOrg = loginOrgScope
-            loginOrgScope = nil
 
             // Hydrate a cold-launch invite deeplink token. AMUXApp.handle(url)
             // stashes it in UserDefaults because at cold launch the
@@ -707,14 +707,7 @@ public final class AppOnboardingCoordinator {
             // so a multi-team user lands where they expect instead of an
             // arbitrary first team. Validate against current memberships; if the
             // remembered team is gone, fall back to the first team.
-            //
-            // Right after the user picked an account, only that account's org
-            // counts: a team remembered from another org must not pull them
-            // back across, and the picker shows just this org's teams.
-            let candidateTeams = Self.scoped(bootstrap.teams, toOrg: loginOrg) { $0.orgID }
-            preferred = preferred ?? persistedActiveTeamID.flatMap { id in
-                candidateTeams.contains(where: { $0.id == id }) ? id : nil
-            }
+            preferred = preferred ?? persistedActiveTeamID
             // A remembered / explicitly-requested team always wins — skip the picker.
             if let preferred,
                let team = bootstrap.teams.first(where: { $0.id == preferred }) {
@@ -729,6 +722,14 @@ public final class AppOnboardingCoordinator {
                 }
             }
 
+            // Without a remembered team, only the signed-in account's home org
+            // is on offer: membership comes back phone-wide, so otherwise the
+            // account picked at login (phone picker, admin console) would decide
+            // nothing. The remembered team above is deliberately NOT narrowed —
+            // sign-out clears it, so one that survives is a relaunch after a
+            // cross-org switch the user made in Settings.
+            let candidateTeams = Self.scoped(bootstrap.teams, toOrg: bootstrap.homeOrgID) { $0.orgID }
+
             // No remembered choice but the user belongs to >1 team — let them
             // pick (grouped by org). Load org info; fall back to bootstrap teams
             // (no org grouping) if the scope=all call fails.
@@ -737,7 +738,7 @@ public final class AppOnboardingCoordinator {
                     ?? candidateTeams.map {
                         MembershipTeam(id: $0.id, name: $0.name, slug: $0.slug, orgID: $0.orgID, orgName: nil)
                     }
-                teamChoices = Self.scoped(choices, toOrg: loginOrg) { $0.orgID }
+                teamChoices = Self.scoped(choices, toOrg: bootstrap.homeOrgID) { $0.orgID }
                 route = .selectTeam
                 return
             }
@@ -914,7 +915,6 @@ public final class AppOnboardingCoordinator {
                 return
             }
             try await cloudStore.loginWithPhoneUser(phone: phone, token: token, userId: user.id)
-            loginOrgScope = user.orgId
             phoneMultipleUsers = []
             pendingPhoneOTPTokenForMultiUser = ""
             // Clear busy before bootstrap() — it guards on !isBusy and would
