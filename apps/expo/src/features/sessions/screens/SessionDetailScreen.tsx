@@ -62,6 +62,7 @@ import {
   type SlashCommand,
 } from "../components/slash-commands";
 import { TodoDock } from "../components/TodoDock";
+import type { FeedbackKind } from "../cloud-api";
 import type {
   SessionDetailConnectionState,
   SessionDetailControllerState,
@@ -103,6 +104,9 @@ type SessionDetailScreenProps = {
   mentionPool?: ReadonlyArray<MentionTarget>;
   onAgentInterrupt?: (agentId: string) => void;
   onAgentRemove?: (agentId: string) => void;
+  /** The member's own feedback on agent replies, by message id. */
+  feedbackByMessageId?: ReadonlyMap<string, FeedbackKind>;
+  onFeedback?: (messageId: string, kind: FeedbackKind) => void;
   onAttach?: () => void;
   onBack: () => void;
   onChangeComposerText: (value: string) => void;
@@ -538,6 +542,8 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     mentionPool,
     onAgentInterrupt,
     onAgentRemove,
+    feedbackByMessageId,
+    onFeedback,
     onAttach,
     onBack,
     onChangeComposerText,
@@ -913,6 +919,8 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                     }
                   }}
                   onRetryOutbox={onRetryFailed}
+                  feedbackKind={feedbackByMessageId?.get(msg.messageId) ?? null}
+                  onFeedback={onFeedback ? (kind) => onFeedback(msg.messageId, kind) : undefined}
                   toolResult={(() => {
                     if (msg.kind.trim().toLowerCase() !== "agent_tool_call") return undefined;
                     const meta =

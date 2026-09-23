@@ -17,6 +17,7 @@ import Markdown from "react-native-markdown-display";
 
 import { t } from "../../../lib/i18n";
 import { colors, hai, iosType, radii, spacing, typography } from "../../../ui/theme";
+import type { FeedbackKind } from "../cloud-api";
 import type { MessageAttachment, SessionMessage } from "../session-types";
 import { buildThinkingBody, buildThinkingPreview } from "./agent-thinking-presentation";
 import { AudioPlayerChip } from "./AudioPlayerChip";
@@ -58,6 +59,10 @@ export type SessionMessageRowProps = {
    * `foldToolResults`. Absent means the tool is still running.
    */
   toolResult?: ToolResult;
+  /** The signed-in member's feedback on this agent reply, if any. */
+  feedbackKind?: FeedbackKind | null;
+  /** Thumbs on agent replies — iOS `CompletedTurnBubbleView.onFeedback`. */
+  onFeedback?: (kind: FeedbackKind) => void;
 };
 
 export function normalizeBody(message: SessionMessage): string {
@@ -123,6 +128,8 @@ export function SessionMessageRow({
   senderName,
   isStreaming = false,
   toolResult,
+  feedbackKind = null,
+  onFeedback,
 }: SessionMessageRowProps) {
   const { t: tHook } = useTranslation();
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
@@ -456,6 +463,30 @@ export function SessionMessageRow({
         ) : null}
 
         <View style={styles.footerRow}>
+          {isAgentReply && onFeedback && !isStreaming ? (
+            <View style={styles.feedbackGroup}>
+              {(["positive", "negative"] as const).map((kind) => {
+                const active = feedbackKind === kind;
+                const icon = kind === "positive" ? "thumbs-up" : "thumbs-down";
+                return (
+                  <Pressable
+                    accessibilityLabel={kind === "positive" ? tHook("Helpful") : tHook("Not Helpful")}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    hitSlop={8}
+                    key={kind}
+                    onPress={() => onFeedback(kind)}
+                  >
+                    <Ionicons
+                      color={active ? hai.cinnabar : colors.slate}
+                      name={active ? icon : `${icon}-outline`}
+                      size={13}
+                    />
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
           {timestamp ? (
             <Text
               style={[styles.time, isOwnMessage ? styles.timeOwn : styles.timeOther]}
@@ -891,6 +922,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 6,
     justifyContent: "flex-end",
+  },
+  feedbackGroup: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+    marginRight: "auto",
   },
   outboxDot: {
     marginLeft: 2,

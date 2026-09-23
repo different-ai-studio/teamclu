@@ -65,6 +65,16 @@ type CloudMessage = {
 };
 
 /** A row of `session_participants`, joined to the actor directory. */
+
+/** "Helpful" / "Not helpful" on an agent reply (`/v1/feedback`, iOS `setFeedback`). */
+export type FeedbackKind = "positive" | "negative";
+
+export type MessageFeedbackRecord = {
+  messageId: string;
+  actorId: string;
+  kind: FeedbackKind;
+};
+
 export type SessionParticipantRecord = {
   actorId: string;
   actorType: string | null;
@@ -269,6 +279,45 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
 
     async deleteMessage(messageId: string): Promise<void> {
       await client.del(`/v1/messages/${encodeURIComponent(messageId)}`);
+    },
+
+    /** All feedback on a session's messages; callers keep their own. */
+    async listFeedback(sessionId: string): Promise<MessageFeedbackRecord[]> {
+      const params = new URLSearchParams({ sessionId });
+      const out = await client.get<{ items?: Array<Record<string, unknown>> } | null>(
+        `/v1/feedback?${params.toString()}`,
+      );
+      return (out?.items ?? []).flatMap((row) => {
+        const messageId = typeof row.messageId === "string" ? row.messageId : "";
+        const actorId = typeof row.actorId === "string" ? row.actorId : "";
+        const kind = row.kind === "positive" || row.kind === "negative" ? row.kind : null;
+        return messageId && actorId && kind ? [{ messageId, actorId, kind }] : [];
+      });
+    },
+
+    async submitFeedback(input: {
+      messageId: string;
+      actorId: string;
+      teamId: string;
+      sessionId: string | null;
+      kind: FeedbackKind;
+    }): Promise<void> {
+      await client.post("/v1/feedback", {
+        messageId: input.messageId,
+        actorId: input.actorId,
+        teamId: input.teamId,
+        sessionId: input.sessionId,
+        kind: input.kind,
+      });
+    },
+
+    async deleteFeedback(messageId: string, actorId: string): Promise<void> {
+      const params = new URLSearchParams({ actorId });
+      await client.del(`/v1/feedback/${encodeURIComponent(messageId)}?${params.toString()}`);
+    },
+
+    async renameSession(sessionId: string, title: string): Promise<void> {
+      await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { title });
     },
 
     async setSessionArchived(sessionId: string, archivedAt: string | null): Promise<void> {

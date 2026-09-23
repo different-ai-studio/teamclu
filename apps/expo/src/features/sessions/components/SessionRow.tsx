@@ -7,6 +7,7 @@ import { AgentBadge } from "../../../ui/atoms/AgentBadge";
 import { AvatarStack, type AvatarEntry } from "../../../ui/atoms/AvatarStack";
 import { UnreadDot } from "../../../ui/atoms/UnreadDot";
 import { colors, hai, iosType, spacing } from "../../../ui/theme";
+import type { SessionLiveActivity } from "../live-activity";
 import type { SessionSummary } from "../session-types";
 
 /**
@@ -39,6 +40,11 @@ type SessionRowProps = {
   isActive?: boolean;
   isMuted?: boolean;
   isPinned?: boolean;
+  /**
+   * From the session's live stream (iOS #1567): an agent is working here, or
+   * is waiting on you. Overrides the runtime colour while lit.
+   */
+  activity?: SessionLiveActivity;
   /** Live runtime attachment for this session's agent, when known. */
   runtime?: SessionRowRuntime | null;
   session: SessionSummary;
@@ -125,6 +131,7 @@ export function SessionRow({
   isActive = false,
   isMuted = false,
   isPinned = false,
+  activity = "quiet",
   runtime,
   session,
   workspaceName = "",
@@ -157,8 +164,14 @@ export function SessionRow({
       <View style={styles.headerRow}>
         <AgentBadge
           bg={colors.pebble}
-          breathing={isRunning}
-          dotColor={statusDotColor(runtime)}
+          breathing={isRunning || activity !== "quiet"}
+          dotColor={
+            activity === "needsAttention"
+              ? hai.cinnabar
+              : activity === "running"
+                ? hai.sage
+                : statusDotColor(runtime)
+          }
           fg={badge.fg}
           label={badge.glyph}
         />

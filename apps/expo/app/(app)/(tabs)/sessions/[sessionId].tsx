@@ -33,6 +33,9 @@ import type { OutboxSqliteDb } from "../../../../src/features/sessions/outbox-db
 import { publishOutboxRowViaOptionalMqtt } from "../../../../src/features/sessions/session-outbox-publish";
 import { resetOutbox, syncOutboxFromDao } from "../../../../src/features/sessions/outbox-store";
 import { createConfiguredSessionsApi } from "../../../../src/features/sessions/api-provider";
+import type { FeedbackKind } from "../../../../src/features/sessions/cloud-api";
+import { myFeedbackByMessageId, nextFeedback } from "../../../../src/features/sessions/message-feedback";
+import { noteLocalPrompt } from "../../../../src/features/sessions/live-activity-store";
 import { createSessionDetailController } from "../../../../src/features/sessions/session-detail-controller";
 import { emptyTimelineState } from "../../../../src/features/sessions/timeline-reducer";
 import { createSessionDetailCache } from "../../../../src/features/sessions/session-detail-cache";
@@ -619,6 +622,61 @@ export default function SessionDetailRoute() {
     }
   };
 
+  // Thumbs on agent replies — iOS `loadFeedback` / `setFeedback`: my own
+  // feedback only, optimistic, rolled back if the server refuses.
+  const [feedbackByMessageId, setFeedbackByMessageId] = useState<ReadonlyMap<string, FeedbackKind>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    const me = state.currentMemberActorId;
+    if (!sessionId || !me) return;
+    let cancelled = false;
+    void createConfiguredSessionsApi(supabase)
+      .listFeedback(sessionId)
+      .then((rows) => {
+        if (!cancelled) setFeedbackByMessageId(myFeedbackByMessageId(rows, me));
+      })
+      .catch(() => {
+        // Thumbs just start empty; nothing else depends on them.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, state.currentMemberActorId]);
+
+  const handleFeedback = async (messageId: string, tapped: FeedbackKind) => {
+    const me = state.currentMemberActorId;
+    if (!me || !currentTeam?.id) return;
+    const previous = feedbackByMessageId.get(messageId);
+    const target = nextFeedback(previous, tapped);
+    const apply = (kind: FeedbackKind | null | undefined) =>
+      setFeedbackByMessageId((prev) => {
+        const next = new Map(prev);
+        if (kind) next.set(messageId, kind);
+        else next.delete(messageId);
+        return next;
+      });
+    apply(target);
+    selectionTick();
+    try {
+      const api = createConfiguredSessionsApi(supabase);
+      if (target) {
+        await api.submitFeedback({
+          messageId,
+          actorId: me,
+          teamId: currentTeam.id,
+          sessionId: sessionId ?? null,
+          kind: target,
+        });
+      } else {
+        await api.deleteFeedback(messageId, me);
+      }
+    } catch (err) {
+      apply(previous);
+      showToast("error", err instanceof Error ? err.message : t("Couldn't save feedback."));
+    }
+  };
+
   /** Stop the agent's current turn in this session (iOS `interruptAgent`). */
   const handleAgentInterrupt = async (agentId: string) => {
     if (!permissionCommandSender || !sessionId) {
@@ -819,6 +877,10 @@ export default function SessionDetailRoute() {
             void handleAgentInterrupt(agentId);
           }}
           onAgentRemove={handleAgentRemove}
+          feedbackByMessageId={feedbackByMessageId}
+          onFeedback={(messageId, kind) => {
+            void handleFeedback(messageId, kind);
+          }}
           onGrantPermission={(requestId, message) => {
             void handlePermissionResponse(requestId, message, true);
           }}
@@ -894,6 +956,9 @@ export default function SessionDetailRoute() {
             if (sessionId) {
               void saveComposerDraft(sessionId, "");
             }
+            // Our own turn never produces an inbox ping (FC excludes the
+            // sender), so tell the list's activity dot directly.
+            if (sessionId) noteLocalPrompt(sessionId);
             void controller?.sendMessage();
           }}
           onShare={
