@@ -46,7 +46,7 @@ public struct ShortcutsDrawer: View {
                         .onTapGesture { close() }
                         .transition(.opacity)
 
-                    drawer(width: drawerWidth)
+                    drawer(width: drawerWidth, bottomInset: geometry.safeAreaInsets.bottom)
                         .transition(.move(edge: .leading))
                         .gesture(closeDrag)
                         .zIndex(1)
@@ -63,10 +63,18 @@ public struct ShortcutsDrawer: View {
 
     // MARK: - Drawer layout
 
-    private func drawer(width: CGFloat) -> some View {
+    /// `bottomInset` is handed in rather than read inside: the drawer
+    /// deliberately ignores the bottom safe area so its ground runs to the
+    /// screen edge, which would otherwise put the pinned footer under the
+    /// home indicator.
+    private func drawer(width: CGFloat, bottomInset: CGFloat) -> some View {
         VStack(spacing: 0) {
             profileHeader
             shortcutList
+            // Pinned, not the last row of the scroll view: it is the drawer's
+            // one destination outside shortcuts, and a team with enough of
+            // them would scroll it off the bottom.
+            appsSection(bottomInset: bottomInset)
         }
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
@@ -186,8 +194,6 @@ public struct ShortcutsDrawer: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 4)
                 }
-
-                appsSection
             }
             .padding(.top, 16)
             .padding(.bottom, 16)
@@ -209,25 +215,35 @@ public struct ShortcutsDrawer: View {
 
     // MARK: - Team apps
 
-    /// Sits at the foot of the drawer, under both shortcut scopes. With no
+    /// The drawer's pinned foot, below the scrolling shortcut list. With no
     /// apps yet it is a pitch rather than an empty row — the one place in this
     /// client that asks for an app to exist.
+    ///
+    /// The hairline runs the full width here, unlike the inset separators
+    /// inside the list: it is the edge between two regions of the drawer, not
+    /// a divider between siblings.
     @ViewBuilder
-    private var appsSection: some View {
+    private func appsSection(bottomInset: CGFloat) -> some View {
         if let appsStore {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 0) {
                 Rectangle()
                     .fill(Color.amux.hairline)
                     .frame(height: 0.5)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 10)
 
-                if appsStore.hasLoaded && appsStore.isEmpty {
-                    appsPromo
-                } else {
-                    appsEntryRow(count: appsStore.apps.count)
+                Group {
+                    if appsStore.hasLoaded && appsStore.isEmpty {
+                        appsPromo
+                    } else {
+                        appsEntryRow(count: appsStore.apps.count)
+                    }
                 }
+                .padding(.top, 10)
+                // The drawer ignores the bottom safe area so its ground reaches
+                // the screen edge; the content has to put that inset back, or
+                // the row sits under the home indicator.
+                .padding(.bottom, bottomInset + 10)
             }
+            .background(Color.amux.mist)
             .task { await appsStore.reload() }
         }
     }
