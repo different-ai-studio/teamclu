@@ -350,6 +350,13 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
       mode?: SessionMode;
       primaryAgentId?: string | null;
       ideaId?: string | null;
+      /**
+       * Everyone to seed into `session_participants`, agents included. FC seeds
+       * only the creator plus this list — not `primaryAgentId` — so leaving the
+       * agent out produced sessions with no agent member: nothing to @-mention
+       * and nobody to answer. iOS sends the same list.
+       */
+      participantActorIds?: ReadonlyArray<string>;
     }): Promise<string> {
       const response = await client.post<{ sessionId?: string; id?: string }>("/v1/sessions", {
         teamId: input.teamId,
@@ -357,6 +364,7 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
         mode: input.mode ?? "collab",
         primaryAgentId: input.primaryAgentId ?? null,
         ideaId: input.ideaId ?? null,
+        participantActorIds: [...(input.participantActorIds ?? [])],
       });
       const sessionId = response?.sessionId ?? response?.id;
       if (!sessionId || typeof sessionId !== "string") {

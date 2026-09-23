@@ -56,23 +56,24 @@ export async function startSessionWithAgents(
   input: StartSessionInput,
 ): Promise<string> {
   const { sessionsApi } = deps;
+  // FC seeds `session_participants` with the caller plus
+  // `participantActorIds` — not the primary agent on its own — so every picked
+  // collaborator goes in that list, the primary agent first.
+  const participantActorIds = Array.from(
+    new Set(
+      [input.primaryAgentActorId, ...input.collaboratorActorIds].filter(
+        (id): id is string => typeof id === "string" && id.length > 0 && id !== input.memberActorId,
+      ),
+    ),
+  );
   const sessionId = await sessionsApi.createSession({
     teamId: input.teamId,
     title: input.title,
     mode: "collab",
     primaryAgentId: input.primaryAgentActorId,
     ideaId: input.ideaId,
+    participantActorIds,
   });
-
-  // create_session seeds session_participants with the caller and the
-  // primary agent. Add any other picked collaborators (extra agents,
-  // humans) on top.
-  const extras = input.collaboratorActorIds.filter(
-    (id) => id !== input.primaryAgentActorId && id !== input.memberActorId,
-  );
-  if (extras.length > 0) {
-    await sessionsApi.addParticipants(sessionId, extras);
-  }
 
   const content = input.message.trim();
   if (content.length > 0) {

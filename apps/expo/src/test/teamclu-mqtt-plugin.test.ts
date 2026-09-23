@@ -111,3 +111,27 @@ describe("writeMqttModuleFiles", () => {
     );
   });
 });
+
+describe("addIosSourceFiles", () => {
+  // The files were written to ios/ but never added to the target, so no iOS
+  // build ever compiled the native client and MQTT silently never connected.
+  it("adds both generated files to the app target, once", async () => {
+    const { vi } = await import("vitest");
+    const { IOSConfig } = require("expo/config-plugins");
+    const added: string[] = [];
+    const spy = vi
+      .spyOn(IOSConfig.XcodeUtils, "addBuildSourceFileToGroup")
+      .mockImplementation((...raw: unknown[]) => {
+        const args = raw[0] as { filepath: string; groupName: string };
+        expect(args.groupName).toBe("TeamCluExpo");
+        added.push(args.filepath);
+      });
+    const project = { hasFile: (p: string) => added.includes(p) };
+
+    plugin.addIosSourceFiles(project, "TeamCluExpo");
+    plugin.addIosSourceFiles(project, "TeamCluExpo");
+
+    expect(added).toEqual(["TeamCluExpo/TeamCluMqtt.swift", "TeamCluExpo/TeamCluMqttBridge.m"]);
+    spy.mockRestore();
+  });
+});

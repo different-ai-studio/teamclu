@@ -182,6 +182,7 @@ describe("startVoiceSession", () => {
       mode: "collab",
       primaryAgentId: "a1",
       ideaId: null,
+      participantActorIds: ["a1"],
     });
     expect(sessionsApi.addParticipants).not.toHaveBeenCalled();
     expect(sessionsApi.insertOutgoingMessage).toHaveBeenCalledWith(

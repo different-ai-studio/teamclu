@@ -407,6 +407,8 @@ const turnMarkdown = {
 function AgentTurnCard({
   onOpenDetail,
   onInterrupt,
+  feedbackKind = null,
+  onFeedback,
   senderAvatarGlyph,
   senderAvatarUrl,
   senderName,
@@ -414,6 +416,9 @@ function AgentTurnCard({
 }: {
   onOpenDetail?: (turn: AgentTurnFeedItem) => void;
   onInterrupt?: (agentId: string) => void;
+  /** The member's own 👍/👎 on this turn's final reply. */
+  feedbackKind?: FeedbackKind | null;
+  onFeedback?: (messageId: string, kind: FeedbackKind) => void;
   senderAvatarGlyph?: string | null;
   senderAvatarUrl?: string | null;
   senderName?: string;
@@ -509,6 +514,33 @@ function AgentTurnCard({
             <Text style={styles.turnDetailText}>
               {tHook("Process · {{count}}", { count: detailCount })}
             </Text>
+          </View>
+        ) : null}
+        {/* Completed agent replies are drawn here, not as message rows, so
+            the thumbs (iOS CompletedTurnBubbleView.onFeedback) live here too. */}
+        {turn.finalMessage && !turn.isActive && onFeedback ? (
+          <View style={styles.turnFeedbackRow}>
+            {(["positive", "negative"] as const).map((kind) => {
+              const active = feedbackKind === kind;
+              const icon = kind === "positive" ? "thumbs-up" : "thumbs-down";
+              const messageId = turn.finalMessage!.messageId;
+              return (
+                <Pressable
+                  accessibilityLabel={kind === "positive" ? tHook("Helpful") : tHook("Not Helpful")}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  hitSlop={8}
+                  key={kind}
+                  onPress={() => onFeedback(messageId, kind)}
+                >
+                  <Ionicons
+                    color={active ? hai.cinnabar : colors.slate}
+                    name={active ? icon : `${icon}-outline`}
+                    size={13}
+                  />
+                </Pressable>
+              );
+            })}
           </View>
         ) : null}
       </Pressable>
@@ -919,6 +951,12 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                   <AgentTurnCard
                     onOpenDetail={() => setSelectedTurnKey(item.key)}
                     onInterrupt={onAgentInterrupt}
+                    feedbackKind={
+                      item.turn.finalMessage
+                        ? feedbackByMessageId?.get(item.turn.finalMessage.messageId) ?? null
+                        : null
+                    }
+                    onFeedback={onFeedback}
                     senderAvatarGlyph={
                       senderAvatarGlyphs?.get(item.turn.agentId) ?? null
                     }
@@ -1236,6 +1274,11 @@ const styles = StyleSheet.create({
   },
   turnCardPressed: {
     opacity: 0.88,
+  },
+  turnFeedbackRow: {
+    flexDirection: "row",
+    gap: 14,
+    marginTop: 6,
   },
   turnDetailRow: {
     alignItems: "center",

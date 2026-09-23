@@ -26,6 +26,17 @@ export function createTeamMqttClient(deps: Deps): TeamMqttClient {
   const handlers = new Map<string, Set<TopicHandler>>();
   const brokerSubscriptions = new Set<string>();
   let messageUnsubscribe: (() => void) | null = null;
+  // The current state, replayed to every new listener. Screens subscribe after
+  // `start()` has already connected; forwarding only future changes left the
+  // daemon pill (and session detail) on "disconnected" for a live connection.
+  let connectionState: ConnectionState = "disconnected";
+  const stateListeners = new Set<(state: ConnectionState) => void>();
+  const setConnectionState = (next: ConnectionState) => {
+    if (next === connectionState) return;
+    connectionState = next;
+    for (const listener of stateListeners) listener(next);
+  };
+  adapter.onConnectionState(setConnectionState);
 
   function dispatch(message: { topic: string; payload: Uint8Array }) {
     for (const [filter, set] of handlers) {
@@ -50,6 +61,8 @@ export function createTeamMqttClient(deps: Deps): TeamMqttClient {
           reconnectPeriod: 0,
         },
       });
+      // A resolved connect is a connection, whether or not the adapter said so.
+      setConnectionState("connected");
     },
     subscribe(filter, handler) {
       let set = handlers.get(filter);
@@ -81,7 +94,11 @@ export function createTeamMqttClient(deps: Deps): TeamMqttClient {
       return adapter.publish(topic, payload, retain);
     },
     onConnectionState(listener) {
-      return adapter.onConnectionState(listener);
+      stateListeners.add(listener);
+      listener(connectionState);
+      return () => {
+        stateListeners.delete(listener);
+      };
     },
     async dispose() {
       messageUnsubscribe?.();

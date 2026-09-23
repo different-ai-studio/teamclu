@@ -63,3 +63,30 @@ describe("TeamMqttClient", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 });
+
+describe("createTeamMqttClient connection state", () => {
+  it("tells a listener the current state, including one that subscribes after connecting", async () => {
+    const { createTeamMqttClient } = await import("../lib/mqtt/team-mqtt");
+    let emit: ((s: "connecting" | "connected" | "disconnected") => void) | null = null;
+    const adapter = {
+      connect: async () => {},
+      subscribe: async () => {},
+      publish: async () => {},
+      disconnect: async () => {},
+      onMessage: () => () => {},
+      onConnectionState: (h: (s: "connecting" | "connected" | "disconnected") => void) => {
+        emit = h;
+        return () => {};
+      },
+    };
+    const client = createTeamMqttClient({ adapter: adapter as never, url: "mqtt://x", username: "u", password: "p", clientId: "c" });
+    await client.start();
+
+    const seen: string[] = [];
+    client.onConnectionState((s) => seen.push(s));
+    expect(seen).toEqual(["connected"]);
+
+    emit!("disconnected");
+    expect(seen).toEqual(["connected", "disconnected"]);
+  });
+});

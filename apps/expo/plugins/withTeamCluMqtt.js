@@ -1,11 +1,15 @@
 const fs = require("fs");
 const path = require("path");
 const {
+  IOSConfig,
   withAppBuildGradle,
   withDangerousMod,
   withMainApplication,
   withPodfile,
+  withXcodeProject,
 } = require("expo/config-plugins");
+
+const IOS_SOURCE_FILES = ["TeamCluMqtt.swift", "TeamCluMqttBridge.m"];
 
 const MQTT_DEPENDENCY = '    implementation("com.hivemq:hivemq-mqtt-client:1.3.3")';
 const PACKAGE_REGISTRATION = "            packages.add(TeamCluMqttPackage())";
@@ -438,6 +442,20 @@ function writeIosMqttModuleFiles(projectRoot, projectName) {
   fs.writeFileSync(path.join(targetDir, "TeamCluMqttBridge.m"), objcBridgeSource);
 }
 
+/** Adds the generated module files to the app target (idempotent). */
+function addIosSourceFiles(project, projectName) {
+  for (const file of IOS_SOURCE_FILES) {
+    const filepath = `${projectName}/${file}`;
+    if (project.hasFile(filepath)) continue;
+    IOSConfig.XcodeUtils.addBuildSourceFileToGroup({
+      filepath,
+      groupName: projectName,
+      project,
+    });
+  }
+  return project;
+}
+
 function withTeamCluMqtt(config) {
   config = withAppBuildGradle(config, (mod) => {
     mod.modResults.contents = addMqttPackagingExcludes(
@@ -472,6 +490,15 @@ function withTeamCluMqtt(config) {
     },
   ]);
 
+  // Writing the files is not enough: they have to be in the app target's
+  // sources, or they are never compiled. Without this every iOS build shipped
+  // without the native client, the JS fell back to mqtt.js — which cannot open
+  // a raw `mqtt://` TCP socket in React Native — and MQTT never connected.
+  config = withXcodeProject(config, (mod) => {
+    addIosSourceFiles(mod.modResults, mod.modRequest.projectName);
+    return mod;
+  });
+
   return config;
 }
 
@@ -482,3 +509,4 @@ module.exports.addPackageRegistration = addPackageRegistration;
 module.exports.addCocoaMqttPod = addCocoaMqttPod;
 module.exports.writeMqttModuleFiles = writeMqttModuleFiles;
 module.exports.writeIosMqttModuleFiles = writeIosMqttModuleFiles;
+module.exports.addIosSourceFiles = addIosSourceFiles;

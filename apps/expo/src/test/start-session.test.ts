@@ -82,6 +82,7 @@ describe("startSessionWithAgents", () => {
       mode: "collab",
       primaryAgentId: "agent-1",
       ideaId: null,
+      participantActorIds: ["agent-1"],
     });
     expect(sessionsApi.insertOutgoingMessage).toHaveBeenCalledWith({
       id: "msg-1",
@@ -101,13 +102,19 @@ describe("startSessionWithAgents", () => {
     });
   });
 
-  it("adds only collaborators beyond the caller and the primary agent", async () => {
+  // FC seeds only the caller plus participantActorIds — never the primary
+  // agent on its own — so the agent has to be in the list, or the session has
+  // no agent member to mention or answer.
+  it("seeds every collaborator, primary agent first, but not the caller", async () => {
     const { deps, sessionsApi } = fakeDeps();
     await startSessionWithAgents(deps, {
       ...baseInput,
-      collaboratorActorIds: ["agent-1", "me", "agent-2", "human-2"],
+      collaboratorActorIds: ["me", "agent-2", "agent-1", "human-2"],
     });
-    expect(sessionsApi.addParticipants).toHaveBeenCalledWith("session-1", ["agent-2", "human-2"]);
+    expect(sessionsApi.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ participantActorIds: ["agent-1", "agent-2", "human-2"] }),
+    );
+    expect(sessionsApi.addParticipants).not.toHaveBeenCalled();
   });
 
   it("skips the first message when it is blank", async () => {

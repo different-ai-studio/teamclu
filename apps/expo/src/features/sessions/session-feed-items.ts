@@ -251,7 +251,11 @@ export function buildSessionFeedSources(
       createdAt: createdAtForOpen(runtimeEvents, stream),
       daemonTurnId: daemonTurnId(runtimeEvents),
       id: turnIdForOpen(agentId, runtimeEvents, stream),
-      isActive: true,
+      // A stream the agent has closed (final delta, or its idle status) is
+      // over even when no reply row was committed — the daemon's own follow-up
+      // turns (retitling a session) end that way. Showing them as "replying"
+      // left a card spinning next to an idle agent.
+      isActive: !stream?.isComplete,
       runtimeEvents,
       stream,
     };
