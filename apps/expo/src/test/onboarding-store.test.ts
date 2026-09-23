@@ -63,8 +63,18 @@ function createApiMock(overrides: Partial<OnboardingApi> = {}): OnboardingApi {
       role: "owner",
     }),
     signOut: vi.fn().mockResolvedValue(undefined),
+    sendPhoneOTP: vi.fn().mockImplementation(async (phone: string) => ({
+      pendingPhone: phone,
+    })),
+    verifyPhoneOTP: vi.fn().mockResolvedValue({ type: "session", session: {} }),
+    loginWithPhoneAccount: vi.fn().mockResolvedValue(undefined),
+    hasAnyTeam: vi.fn().mockResolvedValue(false),
+    listPendingInvites: vi.fn().mockResolvedValue([]),
+    acceptPendingInvite: vi.fn().mockResolvedValue(null),
+    declinePendingInvite: vi.fn().mockResolvedValue(undefined),
+    claimInvite: vi.fn().mockResolvedValue(null),
     ...overrides,
-  };
+  } as OnboardingApi;
 }
 
 async function loadController() {

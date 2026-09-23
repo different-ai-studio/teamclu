@@ -1,4 +1,7 @@
 import type { BootstrapTeam } from "./bootstrap-route";
+import type { OnboardingIntent } from "./onboarding-intent";
+import type { PendingInvite } from "./pending-invites";
+import type { PhoneAccount } from "./phone-login";
 
 export type OnboardingRoute =
   | "loading"
@@ -11,6 +14,11 @@ export type OnboardingRoute =
    * wrong one is filtered to empty by RLS.
    */
   | "selectTeam"
+  /**
+   * Signed in, in no team, and the user said at onboarding they are joining an
+   * existing one — so nothing is created for them. iOS `route == .noTeam`.
+   */
+  | "noTeam"
   | "ready"
   | "failed";
 
@@ -40,6 +48,15 @@ export type OnboardingState = {
   isBusy: boolean;
   errorMessage: string | null;
   pendingEmailOTPEmail: string | null;
+  /** Phone a code was sent to; non-null puts the login screen on the code step. */
+  pendingPhoneOTPPhone: string | null;
+  /**
+   * Accounts the phone maps to, when `/v1/auth/phone/login` asked which one.
+   * Non-empty shows the account picker.
+   */
+  phoneAccounts: PhoneAccount[];
+  /** Invites addressed to this account; populated on the no-team screen. */
+  pendingInvites: PendingInvite[];
   currentTeam: TeamSummary | null;
   currentMemberActorId: string | null;
   isAnonymous: boolean;
@@ -60,8 +77,29 @@ export type OnboardingAction =
       type: "resetPendingEmail";
     }
   | {
+      type: "phoneOtpRequested";
+      phone: string;
+    }
+  | {
+      type: "resetPendingPhone";
+    }
+  | {
+      /** The phone maps to several accounts — ask which. */
+      type: "phoneAccountsOffered";
+      accounts: PhoneAccount[];
+    }
+  | {
+      type: "phoneAccountsDismissed";
+    }
+  | {
+      type: "pendingInvitesLoaded";
+      invites: PendingInvite[];
+    }
+  | {
       type: "bootstrapResolved";
       payload: BootstrapResult;
+      /** Onboarding intent at the time; `join` + no team → `noTeam`. */
+      intent?: OnboardingIntent | null;
     }
   | {
       type: "bootstrapFailed";
