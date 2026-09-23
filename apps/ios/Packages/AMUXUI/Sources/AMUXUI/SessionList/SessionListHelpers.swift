@@ -450,7 +450,10 @@ struct AgentRowView: View {
         session.title.isEmpty ? "Untitled Session" : session.title
     }
 
-    private var lastMessage: String { session.lastMessagePreview }
+    /// Mention/skill tokens rewritten (`[Mentioned: X|instruction: …]` → `@X`),
+    /// same as the bubble — the raw scaffolding would fill the one line.
+    private var lastMessage: String { MentionDisplayText.plainText(session.lastMessagePreview) }
+
     // Server-computed: `list_current_actor_sessions` derives it from
     // session_read_markers + sessions.last_message_at. The old client-side
     // signal rode on `lastOutputSummary`/`toolUseCount` deltas, which the

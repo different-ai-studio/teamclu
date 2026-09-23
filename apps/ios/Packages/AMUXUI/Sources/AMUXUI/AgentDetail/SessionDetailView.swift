@@ -847,7 +847,7 @@ public struct SessionDetailView: View {
                 )
             }
             .buttonStyle(.plain)
-        case .completedTurn(let id, let agentID, let final, _):
+        case .completedTurn(let id, let agentID, let final, let runtimeEvents):
             CompletedTurnBubbleView(
                 finalEvent: final,
                 runtime: viewModel.attachment(forAgentActorID: agentID),
@@ -856,6 +856,7 @@ public struct SessionDetailView: View {
                 onFeedback: final.supabaseMessageId.map { messageID in
                     { kind in Task { await viewModel.setFeedback(messageID: messageID, kind: kind) } }
                 },
+                attachments: turnAttachments(final: final, runtimeEvents: runtimeEvents),
                 detailIcon: {
                     // Always offer the detail entry point — even text-only
                     // turns benefit from giving the user access to the
@@ -897,6 +898,16 @@ public struct SessionDetailView: View {
                 }
             )
         }
+    }
+
+    /// Every file the turn produced, in event order, each listed once — the
+    /// same identity rule the process page uses, since a multi-segment turn
+    /// can repeat one attachment across its reply rows.
+    private func turnAttachments(final: AgentEvent, runtimeEvents: [AgentEvent]) -> [MessageAttachment] {
+        var seen = Set<String>()
+        return (runtimeEvents + [final])
+            .flatMap(\.attachments)
+            .filter { seen.insert($0.identity).inserted }
     }
 
     /// Edit/delete are offered only for the signed-in user's own prompts
