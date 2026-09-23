@@ -76,6 +76,28 @@
 ;; PI_ROOT and are written at runtime.
 (allow file* (subpath (param "PI_ROOT")))
 
+;; ── The TeamClu MCP sidecar ─────────────────────────────────────────────
+;;
+;; The host spawns `teamclu-introspect` as an MCP server. Exec has to be
+;; allowed by path or it dies with `spawn EPERM` and every TeamClu tool
+;; disappears from the model's list — the profile is working, but the agent is
+;; useless.
+;;
+;; Allowing exec does NOT widen the file boundary: children inherit this
+;; sandbox, so the sidecar reads and writes exactly what the host may. Verified
+;; on a real spawn — a child reading `~/.ssh` still gets EPERM.
+;;
+;; INTROSPECT_BIN is the path from the device MCP config, or a placeholder that
+;; cannot exist when none is configured. A profile naming an undefined
+;; `(param ...)` is rejected outright, so the key is always passed.
+(allow file-read* file-map-executable (literal (param "INTROSPECT_BIN")))
+(allow process-exec (literal (param "INTROSPECT_BIN")))
+
+;; It reaches the daemon over `run/amuxd.sock`, and its own loopback API on
+;; 127.0.0.1:13144 is covered by the outbound rule below.
+(allow file* (subpath (param "AMUXD_RUN")))
+(allow network-outbound (subpath (param "AMUXD_RUN")))
+
 ;; ── Temp ────────────────────────────────────────────────────────────────
 (allow file* (subpath "/private/tmp"))
 (allow file* (subpath (param "TMPDIR")))

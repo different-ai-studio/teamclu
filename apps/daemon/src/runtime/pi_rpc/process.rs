@@ -750,6 +750,23 @@ fn materialize_host_script() -> std::io::Result<PathBuf> {
     materialize(host_script_path(), TEAMCLU_HOST_MJS)
 }
 
+/// The `teamclu-introspect` binary, as the device MCP config names it.
+///
+/// The sandbox has to allow this one by path: the host spawns it as an MCP
+/// server, and a profile that only permits exec under the Node root kills it
+/// with `spawn EPERM`, taking every TeamClu tool with it.
+///
+/// `None` when the device config has no such entry — then nothing is allowed
+/// and the placeholder below keeps the profile well-formed.
+fn introspect_binary() -> Option<PathBuf> {
+    let server = crate::config::device_mcp::load_device_mcp().remove("teamclu-introspect")?;
+    let program = server.command.first()?.trim().to_string();
+    if program.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(program))
+}
+
 fn sandbox_profile_path() -> PathBuf {
     amuxd_pi_dir().join("pi-host.sb")
 }
@@ -837,12 +854,21 @@ fn host_base_command(
 
     let mut cmd = tokio::process::Command::new("sandbox-exec");
     cmd.arg("-f").arg(profile);
+    // A profile that names an undefined `(param ...)` is rejected outright, so
+    // every key here is always passed. With no introspect entry configured the
+    // placeholder points at a path that cannot exist, which allows nothing.
+    let introspect = introspect_binary()
+        .map(|p| real_path(&p))
+        .unwrap_or_else(|| PathBuf::from("/nonexistent/teamclu-introspect"));
+
     for (key, value) in [
         ("NODE_ROOT", real_path(&node_root)),
         ("WORKTREE", real_path(Path::new(worktree))),
         ("PI_ROOT", real_path(&amuxd_pi_dir())),
         ("SESSION_DIR", real_path(session_dir)),
         ("TMPDIR", real_path(&tmpdir)),
+        ("INTROSPECT_BIN", introspect),
+        ("AMUXD_RUN", real_path(&crate::config::layout::run_dir())),
     ] {
         cmd.arg("-D").arg(format!("{key}={}", value.display()));
     }
