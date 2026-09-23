@@ -6,6 +6,97 @@ import Testing
 @Suite("IdeaStore")
 struct IdeaStoreTests {
 
+    // MARK: - Cache-first list
+
+    @MainActor
+    @Test("a new store shows the team's cached list before any fetch")
+    func newStoreReadsCachedList() async throws {
+        let context = ModelContext(try makeInMemoryContainer())
+        let picture = URL(string: "https://example.com/p.png")!
+        let repository = InMemoryIdeaRepository(ideas: [
+            cacheTestIdea(id: "a", team: "team-1", sortOrder: 2),
+            cacheTestIdea(id: "b", team: "team-1", sortOrder: 1, attachmentURLs: [picture]),
+            cacheTestIdea(id: "c", team: "team-1", archived: true),
+        ])
+        await IdeaStore(teamID: "team-1", repository: repository, modelContext: context).reload()
+
+        // Relaunch: no repository yet, nothing fetched.
+        let cold = IdeaStore(teamID: "team-1", repository: nil, modelContext: context)
+
+        #expect(cold.isConnected == false)
+        #expect(cold.ideas.map(\.id) == ["b", "a"])
+        #expect(cold.archivedIdeas.map(\.id) == ["c"])
+        #expect(cold.idea(id: "b")?.attachmentURLs == [picture])
+        // Counts are not cached (IdeaStore.applyLikeState).
+        #expect(cold.idea(id: "a")?.likeCount == 0)
+    }
+
+    @MainActor
+    @Test("the cached list is per team")
+    func cachedListIsPerTeam() async throws {
+        let context = ModelContext(try makeInMemoryContainer())
+        let repository = InMemoryIdeaRepository(ideas: [
+            cacheTestIdea(id: "mine", team: "team-1"),
+            cacheTestIdea(id: "theirs", team: "team-2"),
+        ])
+        await IdeaStore(teamID: "team-1", repository: repository, modelContext: context).reload()
+        await IdeaStore(teamID: "team-2", repository: repository, modelContext: context).reload()
+
+        let cold = IdeaStore(teamID: "team-1", repository: nil, modelContext: context)
+        #expect(cold.ideas.map(\.id) == ["mine"])
+    }
+
+    @MainActor
+    @Test("reload drops cached ideas the server no longer lists")
+    func reloadPrunesDeletedIdeas() async throws {
+        let context = ModelContext(try makeInMemoryContainer())
+        let repository = InMemoryIdeaRepository(ideas: [
+            cacheTestIdea(id: "kept", team: "team-1"),
+            cacheTestIdea(id: "deleted", team: "team-1"),
+            cacheTestIdea(id: "other-team", team: "team-2"),
+        ])
+        await IdeaStore(teamID: "team-1", repository: repository, modelContext: context).reload()
+        await IdeaStore(teamID: "team-2", repository: repository, modelContext: context).reload()
+        await repository.remove(id: "deleted")
+
+        await IdeaStore(teamID: "team-1", repository: repository, modelContext: context).reload()
+
+        let cachedIDs = try context.fetch(FetchDescriptor<SessionIdea>()).map(\.ideaId).sorted()
+        #expect(cachedIDs == ["kept", "other-team"])
+    }
+
+    @MainActor
+    @Test("without a repository, reload keeps the cache and writes say why they did nothing")
+    func disconnectedStoreKeepsCacheAndRefusesWrites() async throws {
+        let context = ModelContext(try makeInMemoryContainer())
+        let repository = InMemoryIdeaRepository(ideas: [cacheTestIdea(id: "a", team: "team-1")])
+        await IdeaStore(teamID: "team-1", repository: repository, modelContext: context).reload()
+
+        let cold = IdeaStore(teamID: "team-1", repository: nil, modelContext: context)
+        await cold.reload()
+        let created = await cold.createIdea(title: "New", description: "", workspaceID: "")
+
+        #expect(cold.ideas.map(\.id) == ["a"])
+        #expect(created == false)
+        #expect(cold.errorMessage != nil)
+        #expect(await repository.recordedCreatedInputs().isEmpty)
+    }
+
+    @MainActor
+    @Test("attaching the repository lets the next reload fetch")
+    func attachThenReloadFetches() async throws {
+        let context = ModelContext(try makeInMemoryContainer())
+        let repository = InMemoryIdeaRepository(ideas: [cacheTestIdea(id: "fresh", team: "team-1")])
+        let store = IdeaStore(teamID: "team-1", repository: nil, modelContext: context)
+        #expect(store.ideas.isEmpty)
+
+        store.attach(repository: repository)
+        await store.reload()
+
+        #expect(store.isConnected)
+        #expect(store.ideas.map(\.id) == ["fresh"])
+    }
+
     @MainActor
     @Test("reload partitions active and archived ideas and mirrors them locally")
     func reloadPartitionsAndMirrorsIdeas() async throws {
@@ -237,6 +328,10 @@ private actor InMemoryIdeaRepository: IdeaRepository {
         self.ideasByID = Dictionary(uniqueKeysWithValues: ideas.map { ($0.id, $0) })
     }
 
+    func remove(id: String) {
+        ideasByID[id] = nil
+    }
+
     func listIdeas(teamID: String) async throws -> [IdeaRecord] {
         ideasByID.values
             .filter { $0.teamID == teamID }
@@ -366,6 +461,31 @@ private actor InMemoryIdeaRepository: IdeaRepository {
 }
 
 @MainActor
+private func cacheTestIdea(
+    id: String,
+    team: String,
+    sortOrder: Int = 0,
+    archived: Bool = false,
+    attachmentURLs: [URL] = []
+) -> IdeaRecord {
+    IdeaRecord(
+        id: id,
+        teamID: team,
+        workspaceID: "",
+        createdByActorID: "member-1",
+        title: id,
+        description: "",
+        status: "open",
+        archived: archived,
+        sortOrder: sortOrder,
+        createdAt: .distantPast,
+        updatedAt: .distantPast,
+        attachmentURLs: attachmentURLs,
+        likeCount: 3,
+        likedByMe: true
+    )
+}
+
 private func makeInMemoryContainer() throws -> ModelContainer {
     let schema = Schema(versionedSchema: AMUXSchemaV1.self)
     let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)

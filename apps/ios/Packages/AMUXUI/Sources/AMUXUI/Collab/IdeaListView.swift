@@ -61,7 +61,9 @@ public struct IdeaListView: View {
                     systemImage: "exclamationmark.triangle",
                     description: Text(errorMessage)
                 )
-            } else if ideaStore.isLoading && ideaStore.ideas.isEmpty {
+            } else if (ideaStore.isLoading || !ideaStore.isConnected) && ideaStore.ideas.isEmpty {
+                // Not connected yet is a load in progress, not an empty team:
+                // nothing cached, and the team runtime is still coming up.
                 ProgressView("Loading ideas…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if ideaStore.ideas.isEmpty {

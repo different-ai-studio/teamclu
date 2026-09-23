@@ -3876,6 +3876,16 @@
         }
       }
     },
+    "Still connecting. Try again in a moment.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接，请稍后再试。"
+          }
+        }
+      }
+    },
     "Stop": {
       "localizations": {
         "zh-Hans": {
