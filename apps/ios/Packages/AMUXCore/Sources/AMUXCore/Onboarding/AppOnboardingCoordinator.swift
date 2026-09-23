@@ -250,6 +250,11 @@ public final class AppOnboardingCoordinator {
     /// The OTP token stashed while the multi-user picker is shown, so
     /// `selectPhoneUser` can complete the login without re-prompting.
     public var pendingPhoneOTPTokenForMultiUser: String = ""
+    /// Org of the account picked in the multi-account sheet, consumed by the
+    /// next `bootstrap()`. Team membership is resolved phone-wide on the server
+    /// (every same-phone identity's teams come back), so without this the
+    /// account choice would have no effect on which teams the user lands among.
+    var loginOrgScope: String?
 
     /// Set when an anonymous-account upgrade collided with an identifier that
     /// already belongs to another account. The upgrade UI reads this to offer a
@@ -624,6 +629,8 @@ public final class AppOnboardingCoordinator {
             var bootstrap = try await measureOnboarding("loadBootstrap") { try await store.loadBootstrap() }
             pendingCreatedTeam = nil
             var preferred = preferringTeamID
+            let loginOrg = loginOrgScope
+            loginOrgScope = nil
 
             // Hydrate a cold-launch invite deeplink token. AMUXApp.handle(url)
             // stashes it in UserDefaults because at cold launch the
@@ -700,7 +707,14 @@ public final class AppOnboardingCoordinator {
             // so a multi-team user lands where they expect instead of an
             // arbitrary first team. Validate against current memberships; if the
             // remembered team is gone, fall back to the first team.
-            preferred = preferred ?? persistedActiveTeamID
+            //
+            // Right after the user picked an account, only that account's org
+            // counts: a team remembered from another org must not pull them
+            // back across, and the picker shows just this org's teams.
+            let candidateTeams = Self.scoped(bootstrap.teams, toOrg: loginOrg) { $0.orgID }
+            preferred = preferred ?? persistedActiveTeamID.flatMap { id in
+                candidateTeams.contains(where: { $0.id == id }) ? id : nil
+            }
             // A remembered / explicitly-requested team always wins — skip the picker.
             if let preferred,
                let team = bootstrap.teams.first(where: { $0.id == preferred }) {
@@ -718,17 +732,18 @@ public final class AppOnboardingCoordinator {
             // No remembered choice but the user belongs to >1 team — let them
             // pick (grouped by org). Load org info; fall back to bootstrap teams
             // (no org grouping) if the scope=all call fails.
-            if bootstrap.teams.count > 1 {
-                teamChoices = (try? await store.listAllMyTeams())
-                    ?? bootstrap.teams.map {
-                        MembershipTeam(id: $0.id, name: $0.name, slug: $0.slug, orgID: nil, orgName: nil)
+            if candidateTeams.count > 1 {
+                let choices = (try? await store.listAllMyTeams())
+                    ?? candidateTeams.map {
+                        MembershipTeam(id: $0.id, name: $0.name, slug: $0.slug, orgID: $0.orgID, orgName: nil)
                     }
+                teamChoices = Self.scoped(choices, toOrg: loginOrg) { $0.orgID }
                 route = .selectTeam
                 return
             }
 
             // Exactly one team — adopt it directly.
-            if let team = bootstrap.teams.first {
+            if let team = candidateTeams.first {
                 let result = try await store.switchActiveTeam(teamID: team.id)
                 if !result.refreshToken.isEmpty {
                     try await store.setSession(refreshToken: result.refreshToken)
@@ -899,6 +914,7 @@ public final class AppOnboardingCoordinator {
                 return
             }
             try await cloudStore.loginWithPhoneUser(phone: phone, token: token, userId: user.id)
+            loginOrgScope = user.orgId
             phoneMultipleUsers = []
             pendingPhoneOTPTokenForMultiUser = ""
             // Clear busy before bootstrap() — it guards on !isBusy and would
@@ -1013,6 +1029,15 @@ public final class AppOnboardingCoordinator {
     public func currentUserID() async -> String? {
         guard let token = try? await store.accessToken() else { return nil }
         return SessionStore.jwtSubject(token)
+    }
+
+    /// Narrow `items` to one org. Falls back to the whole list when `org` is nil
+    /// or none of the items belong to it, so the scope can only focus the
+    /// choice, never strand the user without a team.
+    nonisolated static func scoped<T>(_ items: [T], toOrg org: String?, orgID: (T) -> String?) -> [T] {
+        guard let org else { return items }
+        let inOrg = items.filter { orgID($0) == org }
+        return inOrg.isEmpty ? items : inOrg
     }
 
     public func signOut() async {

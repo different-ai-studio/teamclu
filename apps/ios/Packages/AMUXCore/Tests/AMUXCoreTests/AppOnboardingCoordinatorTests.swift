@@ -187,6 +187,56 @@ struct AppOnboardingCoordinatorTests {
         #expect(defaults.string(forKey: "teamclu.activeTeamID") == nil)
     }
 
+    // MARK: - Account-picker org scope
+
+    @MainActor
+    @Test("after picking an account, a remembered team from another org is ignored")
+    func loginOrgScopeOverridesRememberedTeamFromOtherOrg() async throws {
+        let betly = TeamSummary(id: "team-betly", name: "Betly", slug: "betly", role: "member", orgID: "org-betly")
+        let banana = TeamSummary(id: "team-banana", name: "Banana", slug: "banana", role: "member", orgID: "org-banana")
+        let defaults = ephemeralDefaults()
+        defaults.set("team-betly", forKey: "teamclu.activeTeamID")
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: "m", teams: [betly, banana])
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: defaults)
+        coordinator.loginOrgScope = "org-banana"
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.currentContext?.team.id == "team-banana")
+        #expect(coordinator.route == .ready)
+        // Consumed: a later bootstrap goes back to the remembered team.
+        #expect(coordinator.loginOrgScope == nil)
+    }
+
+    @MainActor
+    @Test("the remembered team still wins when it is in the picked account's org")
+    func loginOrgScopeKeepsRememberedTeamInSameOrg() async throws {
+        let a1 = TeamSummary(id: "team-a1", name: "A1", slug: "a1", role: "member", orgID: "org-a")
+        let a2 = TeamSummary(id: "team-a2", name: "A2", slug: "a2", role: "member", orgID: "org-a")
+        let b = TeamSummary(id: "team-b", name: "B", slug: "b", role: "member", orgID: "org-b")
+        let defaults = ephemeralDefaults()
+        defaults.set("team-a2", forKey: "teamclu.activeTeamID")
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: "m", teams: [a1, a2, b])
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: defaults)
+        coordinator.loginOrgScope = "org-a"
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.currentContext?.team.id == "team-a2")
+    }
+
+    @Test("org scope narrows, and falls back to everything when the org has nothing")
+    func scopedFallsBack() {
+        let items: [(id: String, org: String?)] = [("t1", "o1"), ("t2", "o2"), ("t3", "o1")]
+        #expect(AppOnboardingCoordinator.scoped(items, toOrg: "o1") { $0.org }.map(\.id) == ["t1", "t3"])
+        #expect(AppOnboardingCoordinator.scoped(items, toOrg: "o9") { $0.org }.map(\.id) == ["t1", "t2", "t3"])
+        #expect(AppOnboardingCoordinator.scoped(items, toOrg: nil) { $0.org }.map(\.id) == ["t1", "t2", "t3"])
+    }
+
     // MARK: - Invite claim during bootstrap
 
     @MainActor

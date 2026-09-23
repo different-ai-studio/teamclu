@@ -122,6 +122,34 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     db: { schema: "public" }, realtime: REALTIME_TRANSPORT_OPTS,
   });
 
+  // On belayo `public.users` is the partner's gym MEMBERSHIP table: one row per
+  // gym this person holds a card at (admin_type = 1). Those rows are not
+  // accounts anyone signs in to TeamClu as, and offering them turns the account
+  // picker into a list of every gym the person ever climbed at. Keep a row only
+  // when it is
+  //   - a live employee record (admin_type >= 2 — the same rule as
+  //     amux.caller_employee_orgs(), which the team picker already applies), or
+  //   - an identity that already holds an actor: a phone sign-up's own row is
+  //     admin_type 1 yet owns the teams it created.
+  // When nothing survives, fall back to the unfiltered rows so a person who only
+  // has membership rows signs in exactly as before.
+  async function accountsForPicker(rows: any[]): Promise<any[]> {
+    if (rows.length <= 1) return rows;
+    const { data: actorRows, error } = await admin
+      .schema("amux")
+      .from("actors")
+      .select("user_id")
+      .in("user_id", rows.map((r) => r.id));
+    if (error) {
+      // Narrowing is cosmetic; never let it block sign-in.
+      console.error("phone login: actor lookup failed, offering every account:", error.message);
+      return rows;
+    }
+    const withActor = new Set((actorRows ?? []).map((a: any) => a.user_id));
+    const kept = rows.filter((r) => Number(r.admin_type ?? 0) >= 2 || withActor.has(r.id));
+    return kept.length > 0 ? kept : rows;
+  }
+
   function syntheticEmail(phone: string): string {
     return `${phone}@${phoneEmailDomain}`;
   }
@@ -278,10 +306,13 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
         .eq("mobile", phone)
         .is("deleted_at", null);
       if (userId && userId.trim() !== "") q = q.eq("id", userId);
-      const { data: users, error: usersErr } = await q;
+      const { data: matched, error: usersErr } = await q;
       if (usersErr) {
         throw new ApiError(500, "internal", `users query failed: ${usersErr.message}`);
       }
+      // An explicit pick is honoured as-is; the narrowing only shapes what the
+      // picker offers (and whether there is a picker at all).
+      const users = userId && userId.trim() !== "" ? matched : await accountsForPicker(matched ?? []);
 
       // Ambiguous: let the client pick (org/account picker). Don't consume the code.
       if (users && users.length > 1) {

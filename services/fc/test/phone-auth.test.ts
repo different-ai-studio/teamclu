@@ -4,7 +4,7 @@ import { createPhoneAuthRepository } from "../src/lib/supabase-repo/phone-auth.j
 
 // ── Minimal in-memory fake of the Supabase query builder + auth admin ────────
 // Supports exactly the chains phone-auth.ts uses.
-function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authStore: any) {
+function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[]; actors?: any[] }, authStore: any) {
   let idSeq = 1;
   function builder(table: string) {
     const filters: Array<[string, string, any]> = [];
@@ -14,11 +14,12 @@ function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authSto
     let maybe = false;
 
     const rowsMatching = () =>
-      db[table].filter((r: any) =>
+      (db[table] ?? []).filter((r: any) =>
         filters.every(([col, kind, val]) => {
           if (kind === "eq") return r[col] === val;
           if (kind === "gt") return r[col] > val;
           if (kind === "is_null") return r[col] == null;
+          if (kind === "in") return val.includes(r[col]);
           return true;
         }),
       );
@@ -53,6 +54,7 @@ function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authSto
       eq(c: string, v: any) { filters.push([c, "eq", v]); return api; },
       gt(c: string, v: any) { filters.push([c, "gt", v]); return api; },
       is(c: string, v: any) { filters.push([c, "is_null", v]); return api; },
+      in(c: string, v: any[]) { filters.push([c, "in", v]); return api; },
       order() { return api; },
       limit() { return api; },
       single() { single = true; return Promise.resolve(resolve()); },
@@ -64,6 +66,8 @@ function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[] }, authSto
 
   const client = {
     from: (t: string) => builder(t),
+    // phone-auth reads amux.actors; the fake keeps every table in one namespace.
+    schema: () => ({ from: (t: string) => builder(t) }),
     auth: {
       admin: {
         generateLink: async () => ({ data: { properties: { hashed_token: "ht_123" } }, error: null }),
@@ -268,6 +272,63 @@ test("login offers the picker across DIFFERENT orgs, not just within one", async
   assert.equal(r.multiUser, true);
   assert.deepEqual(r.users.map((u: any) => u.org_id).sort(), ["org-acme", "org-default"]);
   assert.equal(db.auth_verify_code[0].used, false);
+});
+
+test("login drops gym-membership rows from the account picker", async () => {
+  // belayo's public.users is the partner's membership table: one admin_type=1
+  // row per gym card. Only employee records and identities that own an actor
+  // are accounts.
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000020", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "emp", org_id: "org-a", admin_type: 3, mobile: "13700000020", auth_user_id: "a1", deleted_at: null },
+      { id: "shadow", org_id: "org-default", admin_type: 1, mobile: "13700000020", auth_user_id: "a2", deleted_at: null },
+      { id: "card-1", org_id: "org-gym1", admin_type: 1, mobile: "13700000020", deleted_at: null },
+      { id: "card-2", org_id: "org-gym2", admin_type: 1, mobile: "13700000020", deleted_at: null },
+    ],
+    actors: [{ id: "act1", user_id: "shadow", team_id: "t1" }],
+  };
+  const repo = repoWith(db, { users: [] });
+  const r: any = await repo.login({ phone: "13700000020", code: "123456" });
+  assert.equal(r.multiUser, true);
+  assert.deepEqual(r.users.map((u: any) => u.id).sort(), ["emp", "shadow"]);
+});
+
+test("login signs straight in when membership rows leave a single account", async () => {
+  const authStore = { users: [{ id: "a1", email: "boss@acme.test", app_metadata: { org_id: "org-a" } }] };
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000021", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "emp", org_id: "org-a", admin_type: 2, mobile: "13700000021", auth_user_id: "a1", deleted_at: null },
+      { id: "card-1", org_id: "org-gym1", admin_type: 1, mobile: "13700000021", deleted_at: null },
+    ],
+  };
+  const repo = repoWith(db, authStore);
+  const r: any = await repo.login({ phone: "13700000021", code: "123456" });
+  assert.equal(r.multiUser, undefined);
+  assert.equal(r.user.id, "emp");
+  assert.equal(db.auth_verify_code[0].used, true);
+});
+
+test("login still honours an explicit pick of a row the picker would hide", async () => {
+  // A client holding yesterday's list must not be bounced back to the picker.
+  const authStore = { users: [{ id: "card-1", email: "13700000022@phone.example.test" }] };
+  const db = {
+    auth_verify_code: [
+      { id: "c1", phone: "13700000022", code: "123456", used: false, expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x" },
+    ],
+    users: [
+      { id: "emp", org_id: "org-a", admin_type: 2, mobile: "13700000022", auth_user_id: "a1", deleted_at: null },
+      { id: "card-1", org_id: "org-gym1", admin_type: 1, mobile: "13700000022", deleted_at: null },
+    ],
+  };
+  const repo = repoWith(db, authStore);
+  const r: any = await repo.login({ phone: "13700000022", code: "123456", userId: "card-1" });
+  assert.equal(r.user.id, "card-1");
 });
 
 test("login rejects a wrong/expired code", async () => {
