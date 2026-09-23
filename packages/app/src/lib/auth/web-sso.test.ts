@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock
 const fetchPublicConfigMock = vi.fn(async () => {});
 vi.mock("@/lib/config/bootstrap", () => ({ fetchPublicConfig: (...a: unknown[]) => fetchPublicConfigMock(...a) }));
 
-import { ssoConfig, runWebSso, cancelWebSso } from "@/lib/auth/web-sso";
+import { ssoConfig, runWebSso, cancelWebSso, webSsoLayout } from "@/lib/auth/web-sso";
 
 const TEST_CFG = {
   webSsoLoginUrl: "https://admin.example.test/sign-in",
@@ -78,6 +78,24 @@ describe("runWebSso", () => {
       expectedHost: "admin.example.test",
     }));
     expect(invokeMock).toHaveBeenCalledWith("webview_close", { label: "websso-login" });
+  });
+
+  it("brings the webview on screen at the panel bounds, since webview_create parks it off-window", async () => {
+    const session = JSON.stringify({ access_token: "AT", refresh_token: "RT", user: { id: "u1" } });
+    invokeMock.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "webview_read_local_storage" ? session : undefined),
+    );
+    await runWebSso({ pollMs: 1, timeoutMs: 1000 });
+    const l = webSsoLayout();
+    expect(invokeMock).toHaveBeenCalledWith("webview_show", {
+      label: "websso-login",
+      x: l.webviewX,
+      y: l.webviewY,
+      width: l.webviewW,
+      height: l.webviewH,
+    });
+    const cmds = invokeMock.mock.calls.map((c) => c[0]);
+    expect(cmds.indexOf("webview_show")).toBeGreaterThan(cmds.indexOf("webview_create"));
   });
 
   it("keeps polling while localStorage is empty, then resolves", async () => {
