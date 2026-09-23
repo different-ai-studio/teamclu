@@ -600,7 +600,8 @@
       "failedClickToRetry": "发送失败 — 点击重试",
       "rejectedTitle": "消息没有发出去",
       "rejectedNotParticipant": "你不在这个会话里，消息发不出去。请把自己加回会话成员，或让会话的创建者加你。",
-      "rejectedForbidden": "服务器拒绝了这条消息：你没有权限在这个会话里发言。"
+      "rejectedForbidden": "服务器拒绝了这条消息：你没有权限在这个会话里发言。",
+      "rejectedWorkspaceUnavailable": "这个 agent 绑定的工作目录不在它那台机器上，所以起不来。请在它的设置里换一个本机存在的工作目录。"
     },
     "newChat": "新聊天",
     "advancedSession": "高级会话",

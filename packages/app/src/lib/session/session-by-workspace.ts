@@ -35,7 +35,22 @@ export async function sessionBelongsToWorkspace(
   return workspacePathsMatch(targetPath, workspacePath);
 }
 
-/** Switch the desktop workspace when opening a session bound to another folder. */
+/**
+ * Switch the desktop workspace when opening a session bound to another folder.
+ *
+ * Only to a folder that exists here. A session's bound path is whatever machine
+ * created it, so opening a teammate's session otherwise switches this window to
+ * *their* path — and `setWorkspace` persists it to `teamclu-workspace-path`,
+ * where it outlives the session view and becomes this client's idea of "the
+ * current folder". Everything downstream that resolves a folder to a cloud
+ * workspace then matches on the path string and hands back the row that other
+ * machine owns.
+ *
+ * That is how a daemon ended up seated on `/Users/<someone-else>/TeamClu` on
+ * 2026-09-23: every new session with it was refused with
+ * WORKSPACE_PATH_UNAVAILABLE and retried forever, which reads as "the agent is
+ * offline". See #1579.
+ */
 export async function switchToSessionWorkspaceIfNeeded(
   teamId: string,
   sessionId: string,
@@ -47,7 +62,34 @@ export async function switchToSessionWorkspaceIfNeeded(
   const currentPath = useWorkspaceStore.getState().workspacePath;
   if (currentPath && workspacePathsMatch(currentPath, targetPath)) return;
 
+  if (!(await workspacePathAvailableHere(targetPath))) {
+    console.info(
+      "[session] session workspace is not on this machine; staying put:",
+      targetPath,
+    );
+    return;
+  }
+
   await useWorkspaceStore.getState().setWorkspace(targetPath);
+}
+
+/**
+ * Whether `path` is a folder this machine has.
+ *
+ * Errors count as unavailable: the only caller uses this to decide whether to
+ * adopt and persist a path, and adopting one we could not check is the failure
+ * this guard exists to prevent.
+ */
+async function workspacePathAvailableHere(path: string): Promise<boolean> {
+  const trimmed = path.trim();
+  if (!trimmed) return false;
+  try {
+    const { exists } = await import("@tauri-apps/plugin-fs");
+    return await exists(trimmed);
+  } catch (error) {
+    console.warn("[session] could not check session workspace path:", error);
+    return false;
+  }
 }
 
 /**

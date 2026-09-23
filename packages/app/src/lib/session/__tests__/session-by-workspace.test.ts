@@ -27,6 +27,9 @@ vi.mock("@/stores/workspace", () => ({
   },
 }));
 
+const { exists } = vi.hoisted(() => ({ exists: vi.fn(async () => true) }));
+vi.mock("@tauri-apps/plugin-fs", () => ({ exists }));
+
 import {
   loadSessionIdsForWorkspace,
   resolveSessionWorkspacePath,
@@ -147,6 +150,8 @@ describe("switchToSessionWorkspaceIfNeeded", () => {
     resolveSessionWorkspaceForViewer.mockReset();
     workspaceStoreState.workspacePath = null;
     workspaceStoreState.setWorkspace.mockClear();
+    exists.mockReset();
+    exists.mockResolvedValue(true);
   });
 
   it("does not switch for observer sessions (null path)", async () => {
@@ -160,5 +165,30 @@ describe("switchToSessionWorkspaceIfNeeded", () => {
     resolveSessionWorkspaceForViewer.mockResolvedValue("/Users/me/copilot-ws-v3");
     await switchToSessionWorkspaceIfNeeded("teamA", "s1");
     expect(workspaceStoreState.setWorkspace).toHaveBeenCalledWith("/Users/me/copilot-ws-v3");
+  });
+
+  it("stays put when the session's folder is not on this machine", async () => {
+    // A teammate's session carries their path. Adopting it would persist
+    // another machine's folder as this client's current one (#1579).
+    workspaceStoreState.workspacePath = "/Users/me/mine";
+    resolveSessionWorkspaceForViewer.mockResolvedValue("/Users/someone-else/TeamClu");
+    exists.mockResolvedValue(false);
+
+    await switchToSessionWorkspaceIfNeeded("teamA", "s1");
+
+    expect(workspaceStoreState.setWorkspace).not.toHaveBeenCalled();
+    expect(workspaceStoreState.workspacePath).toBe("/Users/me/mine");
+  });
+
+  it("stays put when the folder cannot be checked", async () => {
+    // Unverifiable is treated as unavailable: adopting a path we could not
+    // check is the failure this guard exists to prevent.
+    workspaceStoreState.workspacePath = "/Users/me/mine";
+    resolveSessionWorkspaceForViewer.mockResolvedValue("/Users/someone-else/TeamClu");
+    exists.mockRejectedValue(new Error("fs unavailable"));
+
+    await switchToSessionWorkspaceIfNeeded("teamA", "s1");
+
+    expect(workspaceStoreState.setWorkspace).not.toHaveBeenCalled();
   });
 });
