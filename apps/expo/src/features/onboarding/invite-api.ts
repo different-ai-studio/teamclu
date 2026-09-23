@@ -158,6 +158,19 @@ const INVITE_SCHEMES: ReadonlySet<string> = new Set([
   "amux:",
 ]);
 
+/**
+ * What the user typed into the invite sheet: an invite link, or a bare token.
+ * Any other URL is rejected rather than posted as a token (iOS
+ * `InviteJoinSheet.parseToken`).
+ */
+export function parseInviteInput(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim() ?? "";
+  if (!trimmed) return null;
+  const fromLink = parseInviteToken(trimmed);
+  if (fromLink) return fromLink;
+  return trimmed.includes("://") ? null : trimmed;
+}
+
 export function parseInviteToken(url: string | null | undefined): string | null {
   if (!url) return null;
   const trimmed = url.trim();

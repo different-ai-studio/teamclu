@@ -15,8 +15,23 @@ import {
   View,
 } from "react-native";
 
+import {
+  availableLoginMethods,
+  coerceLoginMethod,
+  FAIL_OPEN_AUTH_FLAGS,
+  type LoginMethod,
+  type PublicAuthFlags,
+} from "../../../lib/cloud-api/public-config";
+import { SheetModal } from "../../../ui/SheetModal";
 import { colors, radii, shadows, spacing, typography } from "../../../ui/theme";
 import { OTP_CODE_LENGTH, sanitizeOtpInput } from "../auth-otp";
+import {
+  canSendPhoneCode,
+  DEFAULT_PHONE_PREFIX,
+  normalizePhoneInput,
+  type PhoneAccount,
+} from "../phone-login";
+import { PhoneAccountPickerSheet } from "./PhoneAccountPickerSheet";
 
 type AuthScreenProps = {
   errorMessage: string | null;
@@ -29,10 +44,23 @@ type AuthScreenProps = {
   onResetPendingEmail: () => void;
   onSignInWithApple?: () => Promise<void> | void;
   onSignInWithGoogle?: () => Promise<void> | void;
+  /**
+   * Remote gating for the optional methods (`features.auth` from
+   * `GET /v1/config/public`). Fail-open until the server answers.
+   */
+  authFlags?: PublicAuthFlags;
+  /** Phone a code was sent to; non-null puts the screen on the code step. */
+  pendingPhone?: string | null;
+  /** Non-empty when the phone maps to several accounts — shows the picker. */
+  phoneAccounts?: PhoneAccount[];
+  onRequestPhoneOtp?: (phone: string) => Promise<void>;
+  onVerifyPhoneOtp?: (code: string) => Promise<void>;
+  onResetPendingPhone?: () => void;
+  onSelectPhoneAccount?: (account: PhoneAccount) => Promise<void>;
+  onDismissPhoneAccounts?: () => void;
+  /** Opened from an invite link: say the team is joined after sign-in. */
+  showInviteNotice?: boolean;
 };
-
-/** iOS `LoginView.LoginMethod`, minus `phone` — not implemented here yet. */
-type LoginMethod = "email" | "password";
 
 function isValidEmail(value: string) {
   return /\S+@\S+\.\S+/.test(value);
@@ -40,13 +68,12 @@ function isValidEmail(value: string) {
 
 /**
  * Port of `apps/ios/AMUXApp/LoginView.swift`: a segmented method picker over
- * email-OTP and email+password, then "Sign in with Apple" / "Sign in with
- * Google" rails below an "or" divider. Guest / private-workspace lives on the
- * ChooseAuthScreen — same as iOS.
+ * email-OTP, email+password and phone, then "Sign in with Apple" / "Sign in
+ * with Google" rails below an "or" divider.
  *
- * iOS also offers a `phone` method with a multi-account picker sheet; that is
- * deliberately not ported yet, so the picker here shows two tabs rather than
- * three.
+ * Password, phone and Google are gated by `features.auth` from
+ * `GET /v1/config/public`, as on iOS; email OTP and Apple never are. A phone
+ * number that maps to several accounts opens an account picker.
  */
 export function AuthScreen({
   errorMessage,
@@ -59,10 +86,20 @@ export function AuthScreen({
   onResetPendingEmail,
   onSignInWithApple,
   onSignInWithGoogle,
+  authFlags = FAIL_OPEN_AUTH_FLAGS,
+  pendingPhone = null,
+  phoneAccounts = [],
+  onRequestPhoneOtp,
+  onVerifyPhoneOtp,
+  onResetPendingPhone,
+  onSelectPhoneAccount,
+  onDismissPhoneAccounts,
+  showInviteNotice = false,
 }: AuthScreenProps) {
   const { t } = useTranslation();
   const [email, setEmail] = useState(pendingEmail ?? "");
   const [password, setPassword] = useState("");
+  const [phone, setPhone] = useState(pendingPhone ?? DEFAULT_PHONE_PREFIX);
   const [code, setCode] = useState("");
   const [method, setMethod] = useState<LoginMethod>("email");
 
@@ -70,13 +107,20 @@ export function AuthScreen({
     if (pendingEmail) setEmail(pendingEmail);
   }, [pendingEmail]);
 
-  const isCodeStep = pendingEmail != null;
+  // If the selected method just got gated off, land on email rather than a
+  // blank pane (iOS does the same when the flags arrive).
+  useEffect(() => {
+    setMethod((current) => coerceLoginMethod(current, authFlags));
+  }, [authFlags]);
 
-  const sendCode = async () => {
-    const next = email.trim().toLowerCase();
-    if (!isValidEmail(next)) return;
+  const methods = availableLoginMethods(authFlags);
+  const isPhoneCodeStep = pendingPhone != null;
+  const isCodeStep = pendingEmail != null || isPhoneCodeStep;
+  const codeDestination = pendingPhone ?? pendingEmail;
+
+  const swallow = async (work: () => Promise<void>) => {
     try {
-      await onRequestOtp(next);
+      await work();
     } catch {
       // The onboarding store records the message into `errorMessage` and
       // rethrows; it is already on screen. Swallowing here only stops the
@@ -84,29 +128,41 @@ export function AuthScreen({
     }
   };
 
+  const sendCode = async () => {
+    const next = email.trim().toLowerCase();
+    if (!isValidEmail(next)) return;
+    await swallow(() => onRequestOtp(next));
+  };
+
+  const sendPhoneCode = async () => {
+    if (!onRequestPhoneOtp || !canSendPhoneCode(phone)) return;
+    const next = normalizePhoneInput(phone);
+    await swallow(() => onRequestPhoneOtp(next));
+  };
+
   const submitPassword = async () => {
     const next = email.trim().toLowerCase();
     if (!isValidEmail(next) || password.length === 0) return;
-    try {
-      await onSignInWithPassword(next, password);
-    } catch {
-      // Already surfaced via `errorMessage` — see sendCode.
-    }
+    await swallow(() => onSignInWithPassword(next, password));
   };
 
   const verify = async () => {
     const next = code.trim();
     if (next.length !== OTP_CODE_LENGTH) return;
-    try {
-      await onVerifyOtp(next);
-    } catch {
-      // Already surfaced via `errorMessage` — see sendCode.
+    if (isPhoneCodeStep) {
+      if (onVerifyPhoneOtp) await swallow(() => onVerifyPhoneOtp(next));
+      return;
     }
+    await swallow(() => onVerifyOtp(next));
   };
 
-  const useDifferentEmail = () => {
+  const useDifferentDestination = () => {
     setCode("");
-    onResetPendingEmail();
+    if (isPhoneCodeStep) {
+      onResetPendingPhone?.();
+    } else {
+      onResetPendingEmail();
+    }
   };
 
   const handleApple = () => {
@@ -125,19 +181,31 @@ export function AuthScreen({
     Alert.alert(t("Sign in with Google"), t("Coming soon on Expo. Use email for now."));
   };
 
+  const primaryAction = () => {
+    if (method === "password") return submitPassword();
+    if (method === "phone") return sendPhoneCode();
+    return sendCode();
+  };
+
   const canSubmit = isCodeStep
     ? code.length === OTP_CODE_LENGTH
     : method === "password"
       ? email.trim().length > 0 && password.length > 0
-      : email.trim().length > 0;
+      : method === "phone"
+        ? canSendPhoneCode(phone)
+        : email.trim().length > 0;
 
   // Mirrors iOS `headerSubtitle`: the copy tracks the selected method, so the
   // screen never promises a code when the user picked password.
-  const subtitle = isCodeStep
-    ? t("Check your inbox for a 6-digit code.")
-    : method === "password"
-      ? t("Use your email and password to sign in.")
-      : t("We'll email you a 6-digit code.");
+  const subtitle = isPhoneCodeStep
+    ? t("Check your messages for a 6-digit code.")
+    : isCodeStep
+      ? t("Check your inbox for a 6-digit code.")
+      : method === "phone"
+        ? t("We'll text you a 6-digit code.")
+        : method === "password"
+          ? t("Use your email and password to sign in.")
+          : t("We'll email you a 6-digit code.");
 
   // "Code sent to {{email}}" places the address at the end in both locales,
   // so splitting on the interpolated value keeps the address bold without
@@ -145,6 +213,9 @@ export function AuthScreen({
   const [codeSentPrefix, codeSentSuffix] = t("Code sent to {{email}}", {
     email: "\u0000",
   }).split("\u0000");
+
+  const methodLabel = (value: LoginMethod) =>
+    value === "password" ? t("Password") : value === "phone" ? t("Phone") : t("Email");
 
   return (
     <KeyboardAvoidingView
@@ -165,6 +236,15 @@ export function AuthScreen({
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
       >
+        {showInviteNotice ? (
+          <View style={styles.inviteNotice} testID="onboarding.inviteNotice">
+            <View style={styles.inviteNoticeDot} />
+            <Text style={styles.inviteNoticeText}>
+              {t("You've got a team invite. Sign in and you'll join the team automatically.")}
+            </Text>
+          </View>
+        ) : null}
+
         <View style={styles.header}>
           <Text style={styles.title}>
             {isCodeStep ? t("Enter the code") : t("Sign in")}
@@ -172,20 +252,17 @@ export function AuthScreen({
           <Text style={styles.subtitle}>{subtitle}</Text>
         </View>
 
-        {!isCodeStep ? (
+        {!isCodeStep && methods.length > 1 ? (
           <View style={styles.methodPicker} testID="login.methodPicker">
-            <MethodTab
-              disabled={isBusy}
-              label={t("Email")}
-              onPress={() => setMethod("email")}
-              selected={method === "email"}
-            />
-            <MethodTab
-              disabled={isBusy}
-              label={t("Password")}
-              onPress={() => setMethod("password")}
-              selected={method === "password"}
-            />
+            {methods.map((value) => (
+              <MethodTab
+                disabled={isBusy}
+                key={value}
+                label={methodLabel(value)}
+                onPress={() => setMethod(value)}
+                selected={method === value}
+              />
+            ))}
           </View>
         ) : null}
 
@@ -193,7 +270,7 @@ export function AuthScreen({
           <View style={styles.section}>
             <Text style={styles.helper}>
               {codeSentPrefix}
-              <Text style={styles.helperStrong}>{pendingEmail}</Text>
+              <Text style={styles.helperStrong}>{codeDestination}</Text>
               {codeSentSuffix}
             </Text>
 
@@ -208,6 +285,7 @@ export function AuthScreen({
                 placeholderTextColor={colors.slate}
                 selectionColor={colors.cinnabar}
                 style={styles.fieldText}
+                testID="login.codeField"
                 textContentType="oneTimeCode"
                 value={code}
               />
@@ -225,14 +303,47 @@ export function AuthScreen({
             <Pressable
               accessibilityRole="button"
               disabled={isBusy}
-              onPress={useDifferentEmail}
+              onPress={useDifferentDestination}
               style={({ pressed }) => [
                 styles.linkButton,
                 pressed && styles.pressed,
               ]}
             >
-              <Text style={styles.linkText}>{t("Use a different email")}</Text>
+              <Text style={styles.linkText}>
+                {isPhoneCodeStep ? t("Use a different number") : t("Use a different email")}
+              </Text>
             </Pressable>
+          </View>
+        ) : method === "phone" ? (
+          <View style={styles.section}>
+            <View style={styles.authField}>
+              <TextInput
+                accessibilityLabel={t("Phone number")}
+                autoComplete="tel"
+                editable={!isBusy}
+                keyboardType="phone-pad"
+                onChangeText={setPhone}
+                onSubmitEditing={() => {
+                  void sendPhoneCode();
+                }}
+                placeholder={t("Phone number")}
+                placeholderTextColor={colors.slate}
+                selectionColor={colors.cinnabar}
+                style={styles.fieldText}
+                testID="login.phoneField"
+                textContentType="telephoneNumber"
+                value={phone}
+              />
+            </View>
+
+            <PrimaryButton
+              busy={isBusy}
+              enabled={canSubmit}
+              label={t("Send code")}
+              onPress={() => {
+                void sendPhoneCode();
+              }}
+            />
           </View>
         ) : (
           <View style={styles.section}>
@@ -285,7 +396,7 @@ export function AuthScreen({
               enabled={canSubmit}
               label={method === "password" ? t("Sign in") : t("Send code")}
               onPress={() => {
-                void (method === "password" ? submitPassword() : sendCode());
+                void primaryAction();
               }}
             />
           </View>
@@ -308,14 +419,29 @@ export function AuthScreen({
             label={t("Sign in with Apple")}
             onPress={handleApple}
           />
-          <SocialButton
-            disabled={isBusy}
-            icon="globe-outline"
-            label={t("Sign in with Google")}
-            onPress={handleGoogle}
-          />
+          {authFlags.google ? (
+            <SocialButton
+              disabled={isBusy}
+              icon="globe-outline"
+              label={t("Sign in with Google")}
+              onPress={handleGoogle}
+            />
+          ) : null}
         </View>
       </ScrollView>
+
+      <SheetModal
+        onRequestClose={() => onDismissPhoneAccounts?.()}
+        visible={phoneAccounts.length > 0}
+      >
+        <PhoneAccountPickerSheet
+          accounts={phoneAccounts}
+          onCancel={() => onDismissPhoneAccounts?.()}
+          onSelect={(account) => {
+            if (onSelectPhoneAccount) void swallow(() => onSelectPhoneAccount(account));
+          }}
+        />
+      </SheetModal>
     </KeyboardAvoidingView>
   );
 }
@@ -496,6 +622,28 @@ const styles = StyleSheet.create({
   helperStrong: {
     color: colors.basalt,
     fontWeight: "700",
+  },
+  inviteNotice: {
+    alignItems: "flex-start",
+    backgroundColor: colors.pebble,
+    borderRadius: 4,
+    flexDirection: "row",
+    gap: 10,
+    padding: 12,
+  },
+  inviteNoticeDot: {
+    backgroundColor: colors.cinnabar,
+    borderRadius: 4,
+    height: 7,
+    marginTop: 6,
+    width: 7,
+  },
+  inviteNoticeText: {
+    color: colors.onyx,
+    flex: 1,
+    fontFamily: typography.sans.fontFamily,
+    fontSize: 13,
+    lineHeight: 18,
   },
   linkButton: {
     alignItems: "center",

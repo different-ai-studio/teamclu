@@ -1,13 +1,14 @@
 import { Redirect, useRouter } from "expo-router";
 
-import { ChooseAuthScreen } from "../src/features/onboarding/screens/ChooseAuthScreen";
 import { savePendingInviteToken } from "../src/features/onboarding/pending-invite";
+import { OnboardingChoiceScreen } from "../src/features/onboarding/screens/OnboardingChoiceScreen";
 
 import { routeToHref, useOnboarding } from "./_layout";
 
+/** The join / create fork before sign-in. iOS `OnboardingChoiceView`. */
 export default function ChooseAuthRoute() {
   const router = useRouter();
-  const { state, applyServerChange } = useOnboarding();
+  const { controller, state, applyServerChange } = useOnboarding();
 
   if (state.route !== "needsAuth") {
     const href = routeToHref(state.route);
@@ -15,20 +16,25 @@ export default function ChooseAuthRoute() {
   }
 
   return (
-    <ChooseAuthScreen
+    <OnboardingChoiceScreen
       errorMessage={state.errorMessage}
       isBusy={state.isBusy}
       onServerChanged={applyServerChange}
-      onSignInOrRegister={() => {
-        router.push("/auth");
+      onJoin={() => {
+        void controller.setIntent("join").then(() => router.push("/auth"));
       }}
-      onJoinWithToken={async (token) => {
-        // Stash the token and route to sign-in. Member invites cannot be
-        // claimed without a real account, so the claim happens after auth —
-        // RootLayout's pending-invite effect picks it up once the route
-        // reaches `ready`.
+      onCreate={() => {
+        void controller
+          .setIntent("create")
+          .then(() => router.push("/desktop-guide?mode=beforeSignIn"));
+      }}
+      onInviteToken={async (token) => {
+        // Sign in first; the claim runs as that account once the route is
+        // signed in (RootLayout's pending-invite effect). Member invites
+        // cannot be claimed without a real account.
         await savePendingInviteToken(token);
-        router.push("/auth");
+        await controller.setIntent("join");
+        router.push("/auth?invited=1");
       }}
     />
   );

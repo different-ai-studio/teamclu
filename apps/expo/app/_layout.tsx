@@ -29,6 +29,7 @@ import { ToastHost, showToast } from "../src/ui/Toast";
 import { createConfiguredInviteApi, parseInviteToken } from "../src/features/onboarding/invite-api";
 import { isOAuthCallbackUrl } from "../src/features/onboarding/onboarding-oauth";
 import { createOnboardingController } from "../src/features/onboarding/onboarding-store";
+import { createIntroFlagStore } from "../src/features/onboarding/onboarding-intent";
 import type {
   OnboardingRoute,
   OnboardingState,
@@ -70,6 +71,11 @@ import { decodeActorPresence } from "../src/features/actors/actor-presence";
 import { setActiveUnreadTeam } from "../src/features/sessions/unread-store";
 
 const onboardingApi = createOnboardingApi(supabase);
+const introFlagStore = createIntroFlagStore();
+
+function isSignedInRoute(route: OnboardingRoute): boolean {
+  return route === "ready" || route === "noTeam" || route === "createTeam";
+}
 
 type OnboardingController = ReturnType<typeof createOnboardingController>;
 
@@ -117,6 +123,8 @@ export function routeToHref(route: OnboardingRoute): string | null {
       return "/create-team";
     case "selectTeam":
       return "/select-team";
+    case "noTeam":
+      return "/no-team";
     case "ready":
       return "/(app)/sessions";
     case "loading":
@@ -210,8 +218,19 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     };
   }, [controller]);
 
+  // Anyone who has reached the app skips the first-install intro later (after
+  // a sign-out), including people upgrading from a build without it — iOS
+  // sets the same flag from ContentView.
   useEffect(() => {
     if (state.route !== "ready") return;
+    void introFlagStore.markSeen();
+  }, [state.route]);
+
+  // Redeem a stashed invite once signed in. Not only on `ready`: a joiner
+  // with no team yet sits on `noTeam` (or, without a recorded intent, on
+  // `createTeam`), and the invite is exactly what gets them out of there.
+  useEffect(() => {
+    if (!isSignedInRoute(state.route)) return;
     let cancelled = false;
     void (async () => {
       const token = await loadPendingInviteToken();

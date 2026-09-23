@@ -221,4 +221,86 @@ describe("createOnboardingApi (cloud-only)", () => {
     expect(post).toHaveBeenCalledWith("/v1/teams", { name: "Team Claw" });
     expect(get).toHaveBeenCalledWith("/v1/teams");
   });
+
+  it("loadBootstrap narrows to the signed-in identity's home org (#1585)", async () => {
+    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const get = vi.fn().mockResolvedValue({
+      homeOrgId: "org-gym",
+      items: [
+        { id: "t-betly", name: "Betly", orgId: "org-betly", orgName: "Betly" },
+        { id: "t-gym", name: "Gym", orgId: "org-gym", orgName: "Gym" },
+      ],
+    });
+    const post = vi.fn().mockResolvedValue({ actorId: "actor-9", refreshToken: "" });
+    const client = makeClient({ session: { user: { id: "user-1" } }, get, post });
+
+    const result = await createOnboardingApi(client).loadBootstrap();
+    expect(result.team?.id).toBe("t-gym");
+    expect(post).toHaveBeenCalledWith("/v1/teams/t-gym/activate");
+  });
+
+  it("phone verify and account login go through the auth client", async () => {
+    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const phoneLogin = vi
+      .fn()
+      .mockResolvedValueOnce({ type: "multiUser", accounts: [] })
+      .mockResolvedValueOnce({ type: "session", session: {} });
+    const phoneSendCode = vi.fn().mockResolvedValue(undefined);
+    const client = makeClient({ auth: { phoneLogin, phoneSendCode } });
+    const api = createOnboardingApi(client);
+
+    await expect(api.sendPhoneOTP("+86138")).resolves.toEqual({ pendingPhone: "+86138" });
+    expect(phoneSendCode).toHaveBeenCalledWith("+86138");
+    await expect(api.verifyPhoneOTP("+86138", "123456")).resolves.toEqual({
+      type: "multiUser",
+      accounts: [],
+    });
+    expect(phoneLogin).toHaveBeenLastCalledWith({ phone: "+86138", code: "123456" });
+    await api.loginWithPhoneAccount("+86138", "123456", "u2");
+    expect(phoneLogin).toHaveBeenLastCalledWith({ phone: "+86138", code: "123456", userId: "u2" });
+  });
+
+  it("loginWithPhoneAccount fails when the server asks again instead of signing in", async () => {
+    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const phoneLogin = vi.fn().mockResolvedValue({ type: "multiUser", accounts: [] });
+    const api = createOnboardingApi(makeClient({ auth: { phoneLogin } }));
+    await expect(api.loginWithPhoneAccount("+86138", "1", "u")).rejects.toThrow();
+  });
+
+  it("claimInvite posts the token and adopts the minted session", async () => {
+    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const post = vi.fn().mockResolvedValue({ actorId: "a", teamId: "t-1", refreshToken: "rt" });
+    const setRefreshSession = vi.fn().mockResolvedValue({ data: {}, error: null });
+    const api = createOnboardingApi(makeClient({ post, auth: { setRefreshSession } }));
+
+    await expect(api.claimInvite("  tok ")).resolves.toBe("t-1");
+    expect(post).toHaveBeenCalledWith("/v1/invites/claim", { token: "tok" });
+    expect(setRefreshSession).toHaveBeenCalledWith("rt");
+  });
+
+  it("acceptPendingInvite posts to the invite's accept route", async () => {
+    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const post = vi.fn().mockResolvedValue({ actorId: "a", teamId: "t-2", refreshToken: null });
+    const setRefreshSession = vi.fn();
+    const api = createOnboardingApi(makeClient({ post, auth: { setRefreshSession } }));
+
+    await expect(api.acceptPendingInvite("inv 1")).resolves.toBe("t-2");
+    expect(post).toHaveBeenCalledWith("/v1/invites/inv%201/accept", {});
+    expect(setRefreshSession).not.toHaveBeenCalled();
+  });
+
+  it("listPendingInvites and hasAnyTeam read without side effects", async () => {
+    const { createOnboardingApi } = await import("../lib/supabase/onboarding-api");
+    const get = vi.fn(async (path: string) =>
+      path === "/v1/invites/pending"
+        ? { items: [{ inviteId: "i", teamId: "t" }] }
+        : { items: [{ id: "t", name: "T", isMember: false }] },
+    );
+    const post = vi.fn();
+    const api = createOnboardingApi(makeClient({ get, post }));
+
+    await expect(api.listPendingInvites()).resolves.toHaveLength(1);
+    await expect(api.hasAnyTeam()).resolves.toBe(false);
+    expect(post).not.toHaveBeenCalled();
+  });
 });
