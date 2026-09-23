@@ -414,6 +414,14 @@ export interface MembershipTeam {
   memberCount?: number | null;
   /** Display name of the team's owner. */
   ownerName?: string | null;
+  /**
+   * True when the team sits in the signed-in identity's home org (FC's
+   * `homeOrgId`). The list itself spans every identity sharing the caller's
+   * phone, so the login chooser narrows to these rows to honour the account
+   * the user just picked. Absent on every row when the server could not say
+   * (or the home org is the shared tenant) — then nothing is narrowed.
+   */
+  inHomeOrg?: boolean;
 }
 
 export interface TeamInviteResult {

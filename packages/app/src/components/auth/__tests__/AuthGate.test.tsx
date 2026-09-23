@@ -317,6 +317,65 @@ describe("AuthGate", () => {
     expect(screen.queryByText(/Team picker/)).not.toBeInTheDocument();
   });
 
+  /*
+   * Membership is phone-wide, so an account picked in the phone account picker
+   * or the admin console (快捷登录) used to change nothing: its sibling
+   * identities' teams in other orgs came back too. The server now flags the
+   * rows in the signed-in identity's home org and the login chooser keeps those.
+   */
+  it("shows only the home org's teams when several remain to choose from", async () => {
+    backendMock.teams.listAllMyTeams.mockResolvedValue([
+      { id: "team-betly", name: "Betly", slug: "betly", orgId: "org-betly", orgName: "Betly", inHomeOrg: false },
+      { id: "team-a1", name: "A1", slug: "a1", orgId: "org-a", orgName: "OrgA", inHomeOrg: true },
+      { id: "team-a2", name: "A2", slug: "a2", orgId: "org-a", orgName: "OrgA", inHomeOrg: true },
+    ]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Team picker: A1, A2")).toBeInTheDocument());
+  });
+
+  it("narrows the login chooser to the signed-in account's home org", async () => {
+    backendMock.teams.listAllMyTeams.mockResolvedValue([
+      { id: "team-betly", name: "Betly", slug: "betly", orgId: "org-betly", orgName: "Betly", inHomeOrg: false },
+      { id: "team-test", name: "Test", slug: "test", orgId: "org-test", orgName: "Test", inHomeOrg: false },
+      { id: "team-banana", name: "Banana", slug: "banana", orgId: "org-banana", orgName: "Banana", inHomeOrg: true },
+    ]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(currentTeamMock.switchToTeam).toHaveBeenCalledWith("team-banana"));
+    await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
+    expect(screen.queryByText(/Team picker/)).not.toBeInTheDocument();
+  });
+
+  // Sign-out clears the remembered team, so one that survives is a relaunch
+  // after the user crossed orgs in Settings — narrowing must not undo that.
+  it("keeps a remembered team outside the home org across a relaunch", async () => {
+    cachedTeamMock.value = { team: { id: "team-betly" }, teamUserId: "user-1" };
+    backendMock.teams.listAllMyTeams.mockResolvedValue([
+      { id: "team-betly", name: "Betly", slug: "betly", orgId: "org-betly", orgName: "Betly", inHomeOrg: false },
+      { id: "team-banana", name: "Banana", slug: "banana", orgId: "org-banana", orgName: "Banana", inHomeOrg: true },
+    ]);
+
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(currentTeamMock.switchToTeam).toHaveBeenCalledWith("team-betly"));
+    expect(currentTeamMock.switchToTeam).not.toHaveBeenCalledWith("team-banana");
+  });
+
   it("falls back to the picker when the remembered team is no longer a membership", async () => {
     cachedTeamMock.value = { team: { id: "team-gone" }, teamUserId: "user-1" };
     backendMock.teams.listAllMyTeams.mockResolvedValue([

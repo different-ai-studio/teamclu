@@ -105,6 +105,18 @@ paths:
                     type:
                       - string
                       - "null"
+                  homeOrgId:
+                    description: |
+                      Only with `scope=all`. The org of the signed-in identity,
+                      for narrowing a login-time team chooser to the account
+                      the user picked (`items` resolves membership across every
+                      identity sharing the caller's phone). Null when that org
+                      is the shared tenant every phone sign-up is stamped with
+                      and the caller is not an employee there, or when it could
+                      not be resolved; clients then show every item.
+                    type:
+                      - string
+                      - "null"
         "401":
           $ref: "#/components/responses/Error"
     post:

@@ -30,13 +30,20 @@ public struct AppBootstrap: Equatable, Sendable {
     /// one a freshly-claimed invite landed in) without re-querying the
     /// backend.
     public let memberActorIDByTeam: [String: String]
+    /// Org of the signed-in identity (`homeOrgId` on `GET /v1/teams?scope=all`).
+    /// `teams` spans every identity sharing the caller's phone, so the login
+    /// chooser narrows to this org to honour the account the user picked. Nil
+    /// when the server could not say, or the org is the shared tenant.
+    public let homeOrgID: String?
 
     public init(memberActorID: String?,
                 teams: [TeamSummary],
-                memberActorIDByTeam: [String: String] = [:]) {
+                memberActorIDByTeam: [String: String] = [:],
+                homeOrgID: String? = nil) {
         self.memberActorID = memberActorID
         self.teams = teams
         self.memberActorIDByTeam = memberActorIDByTeam
+        self.homeOrgID = homeOrgID
     }
 }
 
@@ -715,20 +722,29 @@ public final class AppOnboardingCoordinator {
                 }
             }
 
+            // Without a remembered team, only the signed-in account's home org
+            // is on offer: membership comes back phone-wide, so otherwise the
+            // account picked at login (phone picker, admin console) would decide
+            // nothing. The remembered team above is deliberately NOT narrowed —
+            // sign-out clears it, so one that survives is a relaunch after a
+            // cross-org switch the user made in Settings.
+            let candidateTeams = Self.scoped(bootstrap.teams, toOrg: bootstrap.homeOrgID) { $0.orgID }
+
             // No remembered choice but the user belongs to >1 team — let them
             // pick (grouped by org). Load org info; fall back to bootstrap teams
             // (no org grouping) if the scope=all call fails.
-            if bootstrap.teams.count > 1 {
-                teamChoices = (try? await store.listAllMyTeams())
-                    ?? bootstrap.teams.map {
-                        MembershipTeam(id: $0.id, name: $0.name, slug: $0.slug, orgID: nil, orgName: nil)
+            if candidateTeams.count > 1 {
+                let choices = (try? await store.listAllMyTeams())
+                    ?? candidateTeams.map {
+                        MembershipTeam(id: $0.id, name: $0.name, slug: $0.slug, orgID: $0.orgID, orgName: nil)
                     }
+                teamChoices = Self.scoped(choices, toOrg: bootstrap.homeOrgID) { $0.orgID }
                 route = .selectTeam
                 return
             }
 
             // Exactly one team — adopt it directly.
-            if let team = bootstrap.teams.first {
+            if let team = candidateTeams.first {
                 let result = try await store.switchActiveTeam(teamID: team.id)
                 if !result.refreshToken.isEmpty {
                     try await store.setSession(refreshToken: result.refreshToken)
@@ -1013,6 +1029,15 @@ public final class AppOnboardingCoordinator {
     public func currentUserID() async -> String? {
         guard let token = try? await store.accessToken() else { return nil }
         return SessionStore.jwtSubject(token)
+    }
+
+    /// Narrow `items` to one org. Falls back to the whole list when `org` is nil
+    /// or none of the items belong to it, so the scope can only focus the
+    /// choice, never strand the user without a team.
+    nonisolated static func scoped<T>(_ items: [T], toOrg org: String?, orgID: (T) -> String?) -> [T] {
+        guard let org else { return items }
+        let inOrg = items.filter { orgID($0) == org }
+        return inOrg.isEmpty ? items : inOrg
     }
 
     public func signOut() async {

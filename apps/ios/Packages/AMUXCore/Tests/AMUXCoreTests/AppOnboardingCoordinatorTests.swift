@@ -187,6 +187,67 @@ struct AppOnboardingCoordinatorTests {
         #expect(defaults.string(forKey: "teamclu.activeTeamID") == nil)
     }
 
+    // MARK: - Home-org narrowing
+
+    @MainActor
+    @Test("with no remembered team, lands on the only team in the account's home org")
+    func homeOrgNarrowsToSingleTeam() async throws {
+        let betly = TeamSummary(id: "team-betly", name: "Betly", slug: "betly", role: "member", orgID: "org-betly")
+        let test = TeamSummary(id: "team-test", name: "Test", slug: "test", role: "member", orgID: "org-test")
+        let banana = TeamSummary(id: "team-banana", name: "Banana", slug: "banana", role: "member", orgID: "org-banana")
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: "m", teams: [betly, test, banana], homeOrgID: "org-banana")
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .ready)
+        #expect(coordinator.currentContext?.team.id == "team-banana")
+    }
+
+    @MainActor
+    @Test("a remembered team outside the home org still wins across a relaunch")
+    func rememberedTeamOutsideHomeOrgSurvivesRelaunch() async throws {
+        // Sign-out clears the remembered team, so one that survives is a
+        // cross-org switch made in Settings; narrowing must not undo it.
+        let betly = TeamSummary(id: "team-betly", name: "Betly", slug: "betly", role: "member", orgID: "org-betly")
+        let banana = TeamSummary(id: "team-banana", name: "Banana", slug: "banana", role: "member", orgID: "org-banana")
+        let defaults = ephemeralDefaults()
+        defaults.set("team-betly", forKey: "teamclu.activeTeamID")
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: "m", teams: [betly, banana], homeOrgID: "org-banana")
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: defaults)
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.currentContext?.team.id == "team-betly")
+    }
+
+    @MainActor
+    @Test("without a home org every team stays on offer")
+    func noHomeOrgKeepsPicker() async throws {
+        let a = TeamSummary(id: "team-a", name: "A", slug: "a", role: "member", orgID: "org-a")
+        let b = TeamSummary(id: "team-b", name: "B", slug: "b", role: "member", orgID: "org-b")
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: "m", teams: [a, b])
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .selectTeam)
+    }
+
+    @Test("org scope narrows, and falls back to everything when the org has nothing")
+    func scopedFallsBack() {
+        let items: [(id: String, org: String?)] = [("t1", "o1"), ("t2", "o2"), ("t3", "o1")]
+        #expect(AppOnboardingCoordinator.scoped(items, toOrg: "o1") { $0.org }.map(\.id) == ["t1", "t3"])
+        #expect(AppOnboardingCoordinator.scoped(items, toOrg: "o9") { $0.org }.map(\.id) == ["t1", "t2", "t3"])
+        #expect(AppOnboardingCoordinator.scoped(items, toOrg: nil) { $0.org }.map(\.id) == ["t1", "t2", "t3"])
+    }
+
     // MARK: - Invite claim during bootstrap
 
     @MainActor

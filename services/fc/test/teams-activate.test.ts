@@ -8,11 +8,13 @@ import { createApp } from "../src/app.js";
 // which owns switchActiveTeam (it forwards the bearer itself).
 function makeApp({
   listAllMyTeams,
+  getHomeOrgId,
   listDiscoverableTeams,
   bootstrapTeam,
   switchActiveTeam,
 }: {
   listAllMyTeams?: (...args: any[]) => any;
+  getHomeOrgId?: (...args: any[]) => any;
   listDiscoverableTeams?: (...args: any[]) => any;
   bootstrapTeam?: (...args: any[]) => any;
   switchActiveTeam?: (...args: any[]) => any;
@@ -21,6 +23,7 @@ function makeApp({
     createRepository: ({ accessToken }: { accessToken: string }) => ({
       listTeams: async () => [{ id: "active-only", name: "Active", accessToken }],
       listAllMyTeams,
+      getHomeOrgId,
       listDiscoverableTeams,
       bootstrapTeam,
     }),
@@ -53,6 +56,28 @@ test("GET /v1/teams?scope=all returns orgName and takes no listing options", asy
   assert.equal(body.items.length, 2);
   assert.equal(body.items[0].orgName, "Org One");
   assert.equal(body.nextCursor, null);
+});
+
+test("GET /v1/teams?scope=all carries the caller's home org alongside the full list", async () => {
+  const app = makeApp({
+    listAllMyTeams: async () => [
+      { id: "t1", name: "Alpha", orgId: "o1", orgName: "Org One" },
+      { id: "t2", name: "Beta", orgId: "o2", orgName: "Org Two" },
+    ],
+    getHomeOrgId: async () => "o2",
+  });
+  const res = await app.request("/v1/teams?scope=all", { headers: { authorization: "Bearer x" } });
+  const body = (await res.json()) as any;
+  assert.equal(body.homeOrgId, "o2");
+  // Narrowing is the client's call (login chooser only); the list stays whole.
+  assert.equal(body.items.length, 2);
+});
+
+test("GET /v1/teams?scope=all reports homeOrgId null when the repo cannot say", async () => {
+  const app = makeApp({ listAllMyTeams: async () => [] });
+  const res = await app.request("/v1/teams?scope=all", { headers: { authorization: "Bearer x" } });
+  const body = (await res.json()) as any;
+  assert.equal(body.homeOrgId, null);
 });
 
 test("GET /v1/teams?scope=discoverable is gone — it falls through to the member listing", async () => {

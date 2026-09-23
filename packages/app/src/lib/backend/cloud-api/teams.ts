@@ -109,7 +109,10 @@ export function createTeamsModule(client: CloudApiClient): TeamsBackend {
       );
     },
     async listAllMyTeams() {
-      const page = await client.get<Page<CloudMembershipTeam>>(`/v1/teams?scope=all`);
+      const page = await client.get<Page<CloudMembershipTeam> & { homeOrgId?: string | null }>(
+        `/v1/teams?scope=all`,
+      );
+      const homeOrgId = page.homeOrgId ?? null;
       return page.items.map((r) => ({
         id: r.id,
         name: r.name,
@@ -122,6 +125,7 @@ export function createTeamsModule(client: CloudApiClient): TeamsBackend {
         createdAt: r.createdAt ?? null,
         memberCount: r.memberCount ?? null,
         ownerName: r.ownerName ?? null,
+        ...(homeOrgId ? { inHomeOrg: r.orgId === homeOrgId } : {}),
       }));
     },
     async activateTeam(teamId: string) {

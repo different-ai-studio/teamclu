@@ -12,8 +12,14 @@ export function registerTeams(router) {
     // is gone with anonymous browsing.
     const scope = ctx.query?.get?.("scope") ?? null;
     if (scope === "all") {
-      const items = await ctx.repository.listAllMyTeams();
-      return { body: { items, nextCursor: null } };
+      // `homeOrgId` lets a client narrow its login-time chooser to the org of
+      // the account the user signed in as; `items` stays the full phone-wide
+      // list so Settings → Switch Team can still cross orgs.
+      const [items, homeOrgId] = await Promise.all([
+        ctx.repository.listAllMyTeams(),
+        ctx.repository.getHomeOrgId ? ctx.repository.getHomeOrgId() : Promise.resolve(null),
+      ]);
+      return { body: { items, nextCursor: null, homeOrgId: homeOrgId ?? null } };
     }
     const items = await ctx.repository.listTeams({ limit: 50 });
     return { body: { items, nextCursor: null } };
