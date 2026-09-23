@@ -146,6 +146,23 @@ Layers survive for `php` and `java` only, and the platform supplies their
 region. Node and Python no longer reference a layer at all, which removes
 region-scoped ARNs from the two languages in actual use.
 
+**Two consequences of D5 that the table alone does not show.**
+
+*The short form is refused for `php` and `java` until their mount paths are
+verified.* Their interpreter lives inside a layer whose mount path this design
+has not observed, so the platform cannot emit an absolute path for them without
+guessing — and D5 forbids shipping a platform choice on a guess. Those two kinds
+get a validation error naming the passthrough form as the way to deploy today.
+The rows stay in the table because the moment §9's question 2 is answered, they
+become one-line changes rather than new design.
+
+*`defaultLayersForKind` and `LAYER_VERSIONS` are not touched.* They serve the
+passthrough form, where omitting `layers` still yields the pinned `Nodejs20`
+ARN. Repointing them at the profile table would silently strip the layer from
+every existing repo that omits the field while running `/opt/nodejs20/bin/node`
+— breaking working apps, which §10 forbids. The two mechanisms coexist: profiles
+for intent, `LAYER_VERSIONS` for passthrough.
+
 ## 6. Resolution and data flow
 
 `parseAppDeployDeclaration` gains a resolution step: short form → profile lookup
