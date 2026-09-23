@@ -74,6 +74,43 @@ function toIdeaStatus(value: string): IdeaStatus {
   return value === "in_progress" || value === "done" ? value : "open";
 }
 
+/**
+ * The cached slice of an idea. Feed counts (`commentCount`, `likeCount`,
+ * `likedByMe`) are deliberately left out: they are numbers about other people
+ * that go stale the moment they are written, and a stale count shown offline
+ * is worse than none (iOS keeps them out of SwiftData for the same reason).
+ * `attachmentUrls` has no column in `cached_ideas` either, so a cache-painted
+ * idea shows its pictures once the refresh lands.
+ */
+export function toCachedIdea(idea: Idea): CachedIdea {
+  return {
+    ideaId: idea.ideaId,
+    teamId: idea.teamId,
+    workspaceId: idea.workspaceId,
+    workspaceName: idea.workspaceName,
+    createdByActorId: idea.createdByActorId,
+    title: idea.title,
+    description: idea.description,
+    status: idea.status,
+    archived: idea.archived,
+    sortOrder: idea.sortOrder,
+    createdAt: idea.createdAt,
+    updatedAt: idea.updatedAt,
+  };
+}
+
+/** A cached row back as an `Idea`, with the uncached feed fields zeroed. */
+export function fromCachedIdea(row: CachedIdea): Idea {
+  return {
+    ...row,
+    status: toIdeaStatus(row.status),
+    attachmentUrls: [],
+    commentCount: 0,
+    likeCount: 0,
+    likedByMe: false,
+  };
+}
+
 export function createIdeasCache(
   getCacheDb: () => Promise<CacheDb> = openCacheDb,
 ): TeamCache<Idea> {
@@ -81,9 +118,9 @@ export function createIdeasCache(
   return {
     async load(teamId) {
       const cached = await rows.load(teamId);
-      return cached?.map((row) => ({ ...row, status: toIdeaStatus(row.status) })) ?? null;
+      return cached?.map(fromCachedIdea) ?? null;
     },
-    save: (teamId, ideas) => rows.save(teamId, ideas as ReadonlyArray<CachedIdea>),
+    save: (teamId, ideas) => rows.save(teamId, ideas.map(toCachedIdea)),
   };
 }
 

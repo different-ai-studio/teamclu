@@ -142,6 +142,11 @@ export default function IdeasIndexRoute() {
       onSelectIdea={(ideaId) => {
         router.push(`/(app)/idea-detail?ideaId=${ideaId}`);
       }}
+      onToggleLike={(ideaId, liked) => {
+        void controller.setLiked(ideaId, liked).then((error) => {
+          if (error) showToast("error", error);
+        });
+      }}
       state={listState}
     />
   );

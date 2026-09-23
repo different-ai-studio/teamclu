@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useOnboarding } from "../_layout";
@@ -9,6 +9,7 @@ import {
   imageOnlyProgressContent,
   useIdeaImageAttachments,
 } from "../../src/features/ideas/idea-image-attachments";
+import { createLikeSequencer, likeStateOf } from "../../src/features/ideas/idea-likes";
 import type { Idea, IdeaActivity, IdeaStatus } from "../../src/features/ideas/idea-types";
 import type { IdeaActivityAuthor } from "../../src/features/ideas/components/IdeaActivityTimeline";
 import { IdeaDetailScreen } from "../../src/features/ideas/screens/IdeaDetailScreen";
@@ -245,6 +246,41 @@ export default function IdeaDetailRoute() {
       }
     : undefined;
 
+  // Same optimistic like the list does (iOS `IdeaStore.setLiked`): move now,
+  // adopt the server's count, roll back on failure. The list refetches on
+  // focus, so its row catches up when the user goes back.
+  const ideaRef = useRef<Idea | null>(null);
+  ideaRef.current = idea;
+  const runLikeRef = useRef(createLikeSequencer());
+  const handleToggleLike = useCallback(
+    async (liked: boolean) => {
+      if (!ideaId) return;
+      const result = await runLikeRef.current({
+        ideaId,
+        liked,
+        read: () => (ideaRef.current ? likeStateOf(ideaRef.current) : null),
+        write: (likeState) => {
+          setIdea((prev) => {
+            if (!prev) return prev;
+            const next = { ...prev, ...likeState };
+            ideaRef.current = next;
+            return next;
+          });
+        },
+        send: (id, value) => ideasApi.setLike(id, value),
+      });
+      if (result.ok === false) {
+        showToast(
+          "error",
+          result.error instanceof Error && result.error.message
+            ? result.error.message
+            : tHook("Couldn't update the like."),
+        );
+      }
+    },
+    [ideaId, ideasApi, tHook],
+  );
+
   const handleArchive = idea
     ? async () => {
         setBusyAction("archive");
@@ -319,6 +355,13 @@ export default function IdeaDetailRoute() {
       onSubmitProgress={(text) => {
         void handleSubmitProgress(text);
       }}
+      onToggleLike={
+        idea
+          ? (liked) => {
+              void handleToggleLike(liked);
+            }
+          : undefined
+      }
       onToggleStatus={handleToggleStatus}
       relatedSessions={relatedSessions}
     />
