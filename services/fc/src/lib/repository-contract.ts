@@ -993,6 +993,23 @@ test("repository contract: getTeamDirectory returns actors and members", async (
     assert.equal(out.llm.baseUrl, "https://proxy.example.com/v1");
     assert.deepEqual(out.llm.models, [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude", name: "Claude" }]);
   });
+
+  test("repository contract: Wiki maintainer config and status round-trip", async () => {
+    const repo = createRepository();
+    const initial = await repo.getWikiMaintainerStatus("team-wiki-contract");
+    assert.equal(initial.generation, 0);
+    assert.equal(initial.stage, "idle");
+
+    const saved = await repo.putWikiMaintainerConfig("team-wiki-contract", {
+      expectedVersion: 0,
+      config: { sourceDirectories: ["documents/handbook/"], compilerModel: "team/default" },
+    });
+    assert.equal(saved.version, 1);
+
+    const after = await repo.getWikiMaintainerStatus("team-wiki-contract");
+    assert.equal(after.config.version, 1);
+    assert.deepEqual(after.config.config.sourceDirectories, ["documents/handbook/"]);
+  });
 }
 
 export function runAuthRepositoryContract({ test, assert, createAuthRepository, createRepository = createAuthRepository }) {

@@ -25,6 +25,40 @@ vi.mock('react-i18next', () => ({
 }))
 
 describe('WikiMaintainerRunSheet', () => {
+  it('opens directly on a recovered cross-device publish summary', () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[]}
+        initialSelected={[]}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        initialSummary={{
+          runId: 'run-recovered',
+          sourceCount: 2,
+          added: 1,
+          updated: 0,
+          deleted: 0,
+          failed: 0,
+          visionPages: 0,
+          estimatedCost: null,
+          currency: 'CNY',
+          canPublish: true,
+          blockers: [],
+        }}
+        onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
+        onPrepare={vi.fn()}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('2 source files checked')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeEnabled()
+  })
+
   it('does not compile until the user clicks Check and compile', async () => {
     const prepare = vi.fn()
     render(
@@ -154,7 +188,13 @@ describe('WikiMaintainerRunSheet', () => {
     expect(screen.getByText('1 source failed')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm publish' }))
-    await waitFor(() => expect(publish).toHaveBeenCalledWith('run-1', false))
+    await waitFor(() =>
+      expect(publish).toHaveBeenCalledWith(
+        'team-1',
+        expect.objectContaining({ runId: 'run-1' }),
+        false,
+      ),
+    )
     expect(await screen.findByText('Published and synced')).toBeTruthy()
   })
 
@@ -191,7 +231,13 @@ describe('WikiMaintainerRunSheet', () => {
     expect(await screen.findByText('documents/features/bad.md: quality gate')).toBeTruthy()
     expect(screen.getByText(/Pages that passed are saved/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm publish' }))
-    await waitFor(() => expect(publish).toHaveBeenCalledWith('run-partial', false))
+    await waitFor(() =>
+      expect(publish).toHaveBeenCalledWith(
+        'team-1',
+        expect.objectContaining({ runId: 'run-partial' }),
+        false,
+      ),
+    )
   })
 
   it('blocks publishing when quality checks fail', async () => {
@@ -274,7 +320,13 @@ describe('WikiMaintainerRunSheet', () => {
     )
     expect(publishButton).toBeEnabled()
     fireEvent.click(publishButton)
-    await waitFor(() => expect(publish).toHaveBeenCalledWith('run-cost', true))
+    await waitFor(() =>
+      expect(publish).toHaveBeenCalledWith(
+        'team-1',
+        expect.objectContaining({ runId: 'run-cost' }),
+        true,
+      ),
+    )
   })
 
   it('compiles with the model the user picked', async () => {
@@ -336,5 +388,67 @@ describe('WikiMaintainerRunSheet', () => {
     )
     expect(screen.getByRole('button', { name: 'Check and compile' })).toBeDisabled()
     expect(prepare).not.toHaveBeenCalled()
+  })
+
+  it('waits for an explicit model when the checkpoint compiler is missing', () => {
+    const prepare = vi.fn()
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/handbook/', label: 'handbook' }]}
+        initialSelected={['documents/handbook/']}
+        compilerModels={MODELS}
+        initialCompilerModel=""
+        checkpointModel="missing-model"
+        onSaveSelection={vi.fn()}
+        onSaveCompilerModel={vi.fn()}
+        onPrepare={prepare}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/does not have the model/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Check and compile' })).toBeDisabled()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Compiler model' }), {
+      target: { value: 'glm-4.6' },
+    })
+    expect(screen.getByRole('button', { name: 'Check and compile' })).toBeEnabled()
+    expect(prepare).not.toHaveBeenCalled()
+  })
+
+  it('keeps a finished result publishable when the compiler model is missing', () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[]}
+        initialSelected={[]}
+        compilerModels={MODELS}
+        initialCompilerModel=""
+        checkpointModel="missing-model"
+        initialSummary={{
+          runId: 'run-recovered',
+          sourceCount: 1,
+          added: 1,
+          updated: 0,
+          deleted: 0,
+          failed: 0,
+          visionPages: 0,
+          estimatedCost: null,
+          currency: 'CNY',
+          canPublish: true,
+          blockers: [],
+        }}
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn()}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText(/does not have the model/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeEnabled()
   })
 })

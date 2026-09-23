@@ -8,6 +8,7 @@ use std::thread;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
 const ALLOWED_EXTENSIONS: &[&str] = &[
@@ -100,9 +101,17 @@ pub struct PrepareRequest {
     team_id: String,
     source_directories: Vec<String>,
     #[serde(default)]
+    expected_generation: u64,
+    #[serde(default = "default_config_version")]
+    config_version: u64,
+    #[serde(default)]
     compiler_model: Option<String>,
     acl_prefixes: Vec<String>,
     known: Vec<KnownDocument>,
+}
+
+fn default_config_version() -> u64 {
+    1
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +131,10 @@ pub struct DiscoverResponse {
 #[serde(rename_all = "camelCase")]
 pub struct PrepareSummary {
     run_id: String,
+    node_id: String,
+    base_tree_hash: Option<String>,
+    target_commit: String,
+    target_tree_hash: String,
     source_count: usize,
     #[serde(default)]
     retract_count: usize,
@@ -140,6 +153,34 @@ pub struct PrepareSummary {
 #[serde(rename_all = "camelCase")]
 pub struct PublishResult {
     sync_status: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointUploadRequest {
+    team_id: String,
+    checkpoint_path: PathBuf,
+    url: String,
+    sha256: String,
+    size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointRestoreRequest {
+    team_id: String,
+    url: String,
+    sha256: String,
+    size: u64,
+    published_commit: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalCheckpointStatus {
+    generation: u64,
+    manifest: Option<Value>,
+    published_commit: Option<String>,
 }
 
 fn safe_team_id(team_id: &str) -> Result<&str, String> {
@@ -253,8 +294,8 @@ fn walk_document_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(current) = stack.pop() {
-        let entries = fs::read_dir(&current)
-            .map_err(|e| format!("Cannot inspect team documents: {e}"))?;
+        let entries =
+            fs::read_dir(&current).map_err(|e| format!("Cannot inspect team documents: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("Cannot inspect team documents: {e}"))?;
             let path = entry.path();
@@ -343,6 +384,51 @@ fn work_root(team_id: &str) -> Result<PathBuf, String> {
         .join(super::home_storage_dir_name())
         .join("kb-maintainer")
         .join(team_id))
+}
+
+fn validate_checkpoint_file_path(work_root: &Path, candidate: &Path) -> Result<PathBuf, String> {
+    let checkpoints = work_root.join("state/checkpoints");
+    let allowed = checkpoints
+        .canonicalize()
+        .map_err(|e| format!("Wiki checkpoint folder is unavailable: {e}"))?;
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|e| format!("Wiki checkpoint is unavailable: {e}"))?;
+    if !candidate.is_file() || !candidate.starts_with(&allowed) {
+        return Err("Wiki checkpoint path escaped the team work folder.".to_string());
+    }
+    Ok(candidate)
+}
+
+fn validate_checkpoint_url(input: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(input).map_err(|_| "Invalid Wiki checkpoint URL.".to_string())?;
+    let local_http =
+        url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
+    if url.scheme() != "https" && !local_http {
+        return Err("Wiki checkpoint URL must use HTTPS.".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Wiki checkpoint URL must not contain credentials.".to_string());
+    }
+    Ok(url)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn validate_checkpoint_bytes(
+    bytes: &[u8],
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    if bytes.len() as u64 != expected_size {
+        return Err("Wiki checkpoint size did not match the Cloud API.".to_string());
+    }
+    if sha256_hex(bytes) != expected_sha256 {
+        return Err("Wiki checkpoint hash did not match the Cloud API.".to_string());
+    }
+    Ok(())
 }
 
 fn validate_existing_directory(path: &Path, expected_parent: &Path) -> Result<(), String> {
@@ -481,12 +567,13 @@ fn humanize_compiler_error(stderr: &str) -> String {
         return "Some pages need visual recognition. Review the estimated cost before continuing."
             .to_string();
     }
-    if (stderr.contains("unpublished external content") || stderr.contains("already has files")) {
+    if stderr.contains("unpublished external content") || stderr.contains("already has files") {
         return "Team Wiki already has older pages. Run maintenance again, then publish to replace them."
             .to_string();
     }
-    if (stderr.contains("publish destination changed") || stderr.contains("unexplained vault edits")
-        || stderr.contains("modified externally"))
+    if stderr.contains("publish destination changed")
+        || stderr.contains("unexplained vault edits")
+        || stderr.contains("modified externally")
     {
         return "Wiki changed after this run started. Run maintenance again before publishing."
             .to_string();
@@ -496,6 +583,16 @@ fn humanize_compiler_error(stderr: &str) -> String {
     }
     if stderr.contains("managed Agent runtime is not installed") {
         return "The managed Agent runtime is not installed. Finish local Agent setup, then try again."
+            .to_string();
+    }
+    if stderr.contains("Upgrade TeamClu") {
+        return "Upgrade TeamClu to restore this Wiki checkpoint.".to_string();
+    }
+    if stderr.contains("maintenance cancelled") {
+        return "Wiki maintenance was cancelled. The unfinished source was discarded.".to_string();
+    }
+    if stderr.contains("missing sources") {
+        return "Some published Wiki pages do not cite a source. Fix those pages before adopting the Wiki."
             .to_string();
     }
     if stderr.contains("quality check failed")
@@ -584,6 +681,8 @@ async fn run_node(
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Cannot start Wiki compiler: {e}"))?;
+        let pid_path = input_path.with_file_name("compiler.pid");
+        let _ = fs::write(&pid_path, child.id().to_string());
         let stderr = child
             .stderr
             .take()
@@ -628,6 +727,7 @@ async fn run_node(
             .join()
             .unwrap_or_else(|_| "Wiki compiler stderr reader failed.".to_string());
 
+        let _ = fs::remove_file(&pid_path);
         if !status.success() {
             let stderr = stderr_text.trim();
             return Err(if stderr.is_empty() {
@@ -645,6 +745,157 @@ async fn run_node(
     })
     .await
     .map_err(|e| format!("Wiki compiler task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_upload_checkpoint(
+    request: CheckpointUploadRequest,
+) -> Result<(), String> {
+    let root = work_root(&request.team_id)?;
+    let checkpoint = validate_checkpoint_file_path(&root, &request.checkpoint_path)?;
+    let url = validate_checkpoint_url(&request.url)?;
+    tokio::task::spawn_blocking(move || {
+        let bytes =
+            fs::read(checkpoint).map_err(|e| format!("Cannot read Wiki checkpoint: {e}"))?;
+        validate_checkpoint_bytes(&bytes, request.size, &request.sha256)?;
+        reqwest::blocking::Client::new()
+            .put(url)
+            .body(bytes)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|e| format!("Cannot upload Wiki checkpoint: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Wiki checkpoint upload task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_ack_checkpoint(
+    team_id: String,
+    generation: u64,
+    accepted: bool,
+    manifest: Option<Value>,
+) -> Result<(), String> {
+    let root = work_root(&team_id)?;
+    if accepted {
+        let manifest = manifest
+            .ok_or_else(|| "Accepted Wiki checkpoint is missing its manifest.".to_string())?;
+        if manifest.get("generation").and_then(Value::as_u64) != Some(generation)
+            || manifest.get("teamId").and_then(Value::as_str) != Some(team_id.as_str())
+        {
+            return Err("Wiki checkpoint acknowledgement does not match its manifest.".to_string());
+        }
+        write_json(&root.join("state/checkpoint-manifest.json"), &manifest)?;
+    }
+    let path = root
+        .join("state")
+        .join(format!("checkpoint-ack-{generation}.json"));
+    write_json(&path, &json!({ "accepted": accepted }))
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_local_checkpoint_status(
+    team_id: String,
+) -> Result<LocalCheckpointStatus, String> {
+    let root = work_root(&team_id)?;
+    let published_commit = fs::read(root.join("state/state.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|state| {
+            state
+                .get("publishedCommit")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    let path = root.join("state/checkpoint-manifest.json");
+    if !path.is_file() {
+        return Ok(LocalCheckpointStatus {
+            generation: 0,
+            manifest: None,
+            published_commit,
+        });
+    }
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(path).map_err(|e| format!("Cannot read local Wiki checkpoint: {e}"))?,
+    )
+    .map_err(|e| format!("Invalid local Wiki checkpoint: {e}"))?;
+    let generation = manifest
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "Local Wiki checkpoint has no generation.".to_string())?;
+    Ok(LocalCheckpointStatus {
+        generation,
+        manifest: Some(manifest),
+        published_commit,
+    })
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_recovered_summary(
+    team_id: String,
+) -> Result<Option<PrepareSummary>, String> {
+    let path = work_root(&team_id)?.join("state/prepared-run.json");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let summary = serde_json::from_slice(
+        &fs::read(path).map_err(|e| format!("Cannot read recovered Wiki summary: {e}"))?,
+    )
+    .map_err(|e| format!("Invalid recovered Wiki summary: {e}"))?;
+    Ok(Some(summary))
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_restore_checkpoint(
+    app: tauri::AppHandle,
+    request: CheckpointRestoreRequest,
+) -> Result<Value, String> {
+    let root = work_root(&request.team_id)?;
+    fs::create_dir_all(root.join("state/checkpoints"))
+        .map_err(|e| format!("Cannot create Wiki checkpoint folder: {e}"))?;
+    let url = validate_checkpoint_url(&request.url)?;
+    let package_path = root
+        .join("state/checkpoints")
+        .join(format!("download-{}.zip", request.sha256));
+    let package_for_download = package_path.clone();
+    let expected_size = request.size;
+    let expected_sha256 = request.sha256.clone();
+    let expected_team_id = request.team_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let response = reqwest::blocking::Client::new()
+            .get(url)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|e| format!("Cannot download Wiki checkpoint: {e}"))?;
+        let bytes = response
+            .bytes()
+            .map_err(|e| format!("Cannot read Wiki checkpoint download: {e}"))?;
+        validate_checkpoint_bytes(&bytes, expected_size, &expected_sha256)?;
+        fs::write(package_for_download, &bytes)
+            .map_err(|e| format!("Cannot save Wiki checkpoint: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Wiki checkpoint download task failed: {e}"))??;
+
+    let input_path = root.join("state/restore-input.json");
+    write_json(
+        &input_path,
+        &json!({
+            "teamId": request.team_id,
+            "workRoot": root,
+            "checkpointPath": package_path,
+            "publishedCommit": request.published_commit,
+        }),
+    )?;
+    let result = run_node(&app, "restore", &input_path, None).await;
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(package_path);
+    let manifest = result?;
+    if manifest.get("teamId").and_then(Value::as_str) != Some(expected_team_id.as_str()) {
+        return Err("Wiki checkpoint belongs to another team.".to_string());
+    }
+    Ok(manifest)
 }
 
 #[tauri::command]
@@ -699,7 +950,6 @@ pub async fn kb_maintainer_prepare(
     let config = json!({
         "schemaVersion": 1,
         "teamId": request.team_id,
-        "maintainerNodeId": node_id,
         "sources": sources.iter().enumerate().map(|(index, prefix)| json!({
             "prefix": prefix,
             "class": "process",
@@ -718,6 +968,8 @@ pub async fn kb_maintainer_prepare(
     }
     let input = json!({
         "runId": run_id,
+        "expectedGeneration": request.expected_generation,
+        "configVersion": request.config_version,
         "configPath": config_path,
         "statePath": root.join("state/state.json"),
         "documentsRoot": documents_root,
@@ -736,6 +988,7 @@ pub async fn kb_maintainer_prepare(
         return Err(error);
     }
 
+    let _ = fs::remove_file(root.join("state/cancel-requested"));
     let result = run_node(&app, "prepare", &input_path, gateway.as_ref()).await;
     let summary: PrepareSummary = match result {
         Ok(value) => match serde_json::from_value(value) {
@@ -769,13 +1022,77 @@ pub async fn kb_maintainer_prepare(
 pub async fn kb_maintainer_publish(
     app: tauri::AppHandle,
     state: tauri::State<'_, KbMaintainerState>,
+    team_id: Option<String>,
     run_id: String,
     accept_vision_cost: bool,
+    cloud_publishing_recovery: bool,
+    target_commit: String,
+    target_tree_hash: String,
+    base_tree_hash: Option<String>,
 ) -> Result<PublishResult, String> {
-    let run = state.take_for_publish(&run_id)?;
+    let run = match state.take_for_publish(&run_id) {
+        Ok(run) => run,
+        Err(original) => {
+            let Some(team_id) = team_id else {
+                return Err(original);
+            };
+            let root = work_root(&team_id)?;
+            let prepared_path = root.join("state/prepared-run.json");
+            let prepared: PrepareSummary = serde_json::from_slice(
+                &fs::read(&prepared_path)
+                    .map_err(|_| "No recovered Wiki summary is available.".to_string())?,
+            )
+            .map_err(|e| format!("Invalid recovered Wiki summary: {e}"))?;
+            if prepared.run_id != run_id || !prepared.can_publish {
+                return Err("The recovered Wiki summary is not publishable.".to_string());
+            }
+            let (_, knowledge_root) = team_paths(&team_id)?;
+            let lock_path = root.join("state/run.lock");
+            acquire_run_lock(&lock_path)?;
+            let input_path = root.join(format!("state/recovered-publish-{run_id}.json"));
+            if let Err(error) = write_json(
+                &input_path,
+                &json!({
+                    "configPath": root.join("config.json"),
+                    "statePath": root.join("state/state.json"),
+                    "knowledgeRoot": knowledge_root,
+                    "workRoot": root,
+                }),
+            ) {
+                let _ = fs::remove_file(&lock_path);
+                return Err(error);
+            }
+            ActiveRun {
+                run_id: run_id.clone(),
+                team_id,
+                input_path,
+                lock_path,
+                requires_cost_acceptance: prepared.estimated_cost.unwrap_or_default() > 0.0,
+            }
+        }
+    };
     if run.requires_cost_acceptance && !accept_vision_cost {
         let _ = state.set_active(run);
         return Err("Confirm the estimated visual recognition cost before publishing.".to_string());
+    }
+    let prepare_publish_input = || -> Result<(), String> {
+        let mut publish_input: Value = serde_json::from_slice(
+            &fs::read(&run.input_path)
+                .map_err(|e| format!("Cannot read Wiki publish input: {e}"))?,
+        )
+        .map_err(|e| format!("Invalid Wiki publish input: {e}"))?;
+        publish_input["cloudPublishingRecovery"] = Value::Bool(cloud_publishing_recovery);
+        publish_input["expectedTargetCommit"] = Value::String(target_commit.clone());
+        publish_input["expectedTargetTreeHash"] = Value::String(target_tree_hash.clone());
+        publish_input["expectedBaseTreeHash"] = base_tree_hash
+            .clone()
+            .map(Value::String)
+            .unwrap_or(Value::Null);
+        write_json(&run.input_path, &publish_input)
+    };
+    if let Err(error) = prepare_publish_input() {
+        let _ = state.set_active(run);
+        return Err(error);
     }
     let publish = run_node(&app, "publish", &run.input_path, None).await;
     if let Err(error) = publish {
@@ -800,10 +1117,150 @@ pub async fn kb_maintainer_cancel(
     state: tauri::State<'_, KbMaintainerState>,
     run_id: String,
 ) -> Result<(), String> {
-    let run = state.take_for_publish(&run_id)?;
+    let Ok(run) = state.take_for_publish(&run_id) else {
+        // A summary restored from a cloud checkpoint has no in-memory
+        // ActiveRun. Closing it is still an idempotent local operation.
+        return Ok(());
+    };
+    let root = work_root(&run.team_id)?;
+    let _ = fs::write(root.join("state/cancel-requested"), b"1");
+    stop_compiler(&root.join("state/compiler.pid"));
+    rollback_unfinished_wiki(&root.join("wiki"))?;
     let _ = fs::remove_file(run.lock_path);
     let _ = fs::remove_file(run.input_path);
     Ok(())
+}
+
+fn stop_compiler(pid_path: &Path) {
+    let Ok(text) = fs::read_to_string(pid_path) else {
+        return;
+    };
+    let Ok(pid) = text.trim().parse::<u32>() else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        let _ = StdCommand::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = StdCommand::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .status();
+    }
+}
+
+fn rollback_unfinished_wiki(wiki_root: &Path) -> Result<(), String> {
+    if !wiki_root.join(".git").is_dir() {
+        return Ok(());
+    }
+    let reset = StdCommand::new("git")
+        .args(["reset", "--hard", "HEAD"])
+        .current_dir(wiki_root)
+        .status()
+        .map_err(|error| format!("Cannot roll back the unfinished Wiki source: {error}"))?;
+    if !reset.success() {
+        return Err("Cannot roll back the unfinished Wiki source.".to_string());
+    }
+    let clean = StdCommand::new("git")
+        .args(["clean", "-fd"])
+        .current_dir(wiki_root)
+        .status()
+        .map_err(|error| format!("Cannot discard unfinished Wiki files: {error}"))?;
+    if !clean.success() {
+        return Err("Cannot discard unfinished Wiki files.".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaselineRequest {
+    team_id: String,
+    expected_generation: u64,
+    config_version: u64,
+    node_id: String,
+    compiler_model: String,
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_create_baseline(
+    app: tauri::AppHandle,
+    request: BaselineRequest,
+) -> Result<Value, String> {
+    let root = work_root(&request.team_id)?;
+    let input_path = root.join("state/baseline-input.json");
+    write_json(
+        &input_path,
+        &json!({
+            "workRoot": root,
+            "configPath": root.join("config.json"),
+            "expectedGeneration": request.expected_generation,
+            "configVersion": request.config_version,
+            "nodeId": request.node_id,
+            "compilerModel": request.compiler_model,
+        }),
+    )?;
+    let result = run_node(&app, "baseline", &input_path, None).await;
+    let _ = fs::remove_file(input_path);
+    result
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_inspect_vault(
+    app: tauri::AppHandle,
+    team_id: String,
+) -> Result<Value, String> {
+    let (_documents, knowledge) = team_paths(&team_id)?;
+    let root = work_root(&team_id)?;
+    fs::create_dir_all(root.join("state"))
+        .map_err(|error| format!("Cannot create Wiki work folder: {error}"))?;
+    let input_path = root.join("state/inspect-input.json");
+    write_json(&input_path, &json!({ "knowledgeRoot": knowledge }))?;
+    let result = run_node(&app, "inspect-vault", &input_path, None).await;
+    let _ = fs::remove_file(input_path);
+    result
+}
+
+#[tauri::command]
+pub async fn kb_maintainer_adopt_wiki(
+    app: tauri::AppHandle,
+    team_id: String,
+) -> Result<Value, String> {
+    let root = work_root(&team_id)?;
+    let (_documents, knowledge) = team_paths(&team_id)?;
+    fs::create_dir_all(root.join("state"))
+        .map_err(|error| format!("Cannot create Wiki work folder: {error}"))?;
+    let config_path = root.join("config.json");
+    if !config_path.is_file() {
+        write_json(
+            &config_path,
+            &json!({
+                "schemaVersion": 1,
+                "teamId": team_id,
+                "sources": [],
+            }),
+        )?;
+    }
+    let input_path = root.join("state/adopt-input.json");
+    write_json(
+        &input_path,
+        &json!({
+            "knowledgeRoot": knowledge,
+            "workRoot": root,
+            "configPath": config_path,
+            "teamId": team_id,
+            "expectedGeneration": 0,
+            "configVersion": 1,
+            "nodeId": gethostname::gethostname().to_string_lossy().to_string(),
+            "compilerModel": "default",
+        }),
+    )?;
+    let result = run_node(&app, "adopt", &input_path, None).await;
+    let _ = fs::remove_file(input_path);
+    result
 }
 
 #[cfg(test)]
@@ -920,10 +1377,7 @@ mod tests {
         let (payload, token) = gateway_from_disk_team(&disk_team("tok_live_ai_invoke")).unwrap();
         assert_eq!(token, "tok_live_ai_invoke");
         let parsed: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(
-            parsed["baseUrl"],
-            "http://127.0.0.1:43111/ai/v1/teams/abc"
-        );
+        assert_eq!(parsed["baseUrl"], "http://127.0.0.1:43111/ai/v1/teams/abc");
         assert_eq!(parsed["apiKeyEnv"], "tc_gateway_token");
         assert_eq!(parsed["models"][0]["id"], "default");
         assert!(!payload.contains("tok_live_ai_invoke"));
@@ -943,5 +1397,21 @@ mod tests {
         fs::write(&lock, b"").unwrap();
         acquire_run_lock(&lock).unwrap();
         assert!(acquire_run_lock(&lock).is_err());
+    }
+
+    #[test]
+    fn checkpoint_transfer_never_reads_outside_the_team_work_root() {
+        let root = tempfile::tempdir().unwrap();
+        let checkpoints = root.path().join("state/checkpoints");
+        fs::create_dir_all(&checkpoints).unwrap();
+        let inside = checkpoints.join("1-checkpoint.zip");
+        fs::write(&inside, b"checkpoint").unwrap();
+        assert_eq!(
+            validate_checkpoint_file_path(root.path(), &inside).unwrap(),
+            inside.canonicalize().unwrap()
+        );
+
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        assert!(validate_checkpoint_file_path(root.path(), outside.path()).is_err());
     }
 }

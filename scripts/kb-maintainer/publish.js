@@ -136,6 +136,7 @@ function buildPublishPlan({ wikiRoot, fromCommit, toCommit }) {
   del.sort();
   return {
     fromCommit: fromCommit || null,
+    baseTreeHash: fromCommit ? treeHashFromCommit(wikiRoot, fromCommit) : null,
     toCommit,
     create,
     update,
@@ -178,18 +179,59 @@ function assertNoConflicts(knowledgeRoot) {
   }
 }
 
-function assertVaultBaseline({ knowledgeRoot, wikiRoot, publishedCommit, replaying }) {
+function assertVaultBaseline({
+  knowledgeRoot,
+  wikiRoot,
+  publishedCommit,
+  targetCommit,
+  replaying,
+}) {
   if (replaying) return;
   const vault = vaultWikiRoot(knowledgeRoot);
   if (!publishedCommit) {
-    // First publish takes over knowledge/wiki/. Leftover pages from earlier
-    // experiments are replaced by applyPlan pruning — do not block the run.
-    return;
+    const files = listWikiRelFromDir(vault);
+    if (files.length === 0 || treeHashFromDir(vault) === treeHashFromCommit(wikiRoot, targetCommit)) {
+      return;
+    }
+    throw new Error("knowledge/wiki has unexplained content; refuse the first publish");
   }
   const expected = treeHashFromCommit(wikiRoot, publishedCommit);
   const actual = treeHashFromDir(vault);
   if (actual !== expected) {
     throw new Error("knowledge/wiki was modified externally; refuse to overwrite");
+  }
+}
+
+function assertReplayableVault({ knowledgeRoot, wikiRoot, plan }) {
+  const vault = vaultWikiRoot(knowledgeRoot);
+  const base = new Set(
+    plan.fromCommit ? listWikiFilesAtCommit(wikiRoot, plan.fromCommit) : [],
+  );
+  const target = new Set(listWikiFilesAtCommit(wikiRoot, plan.toCommit));
+  const all = new Set([...base, ...target]);
+  for (const rel of listWikiRelFromDir(vault)) {
+    if (!all.has(rel)) {
+      throw new Error(`knowledge/wiki contains an unexplained file during recovery: ${rel}`);
+    }
+  }
+  for (const rel of all) {
+    const dest = resolveInside(vault, rel);
+    if (!fs.existsSync(dest)) {
+      if (base.has(rel) && target.has(rel)) {
+        throw new Error(`knowledge/wiki is missing an unexplained file during recovery: ${rel}`);
+      }
+      continue;
+    }
+    const current = fs.readFileSync(dest);
+    const matchesBase =
+      plan.fromCommit &&
+      base.has(rel) &&
+      current.equals(fileAtCommit(wikiRoot, plan.fromCommit, rel));
+    const matchesTarget =
+      target.has(rel) && current.equals(fileAtCommit(wikiRoot, plan.toCommit, rel));
+    if (!matchesBase && !matchesTarget) {
+      throw new Error(`knowledge/wiki has unexplained content during recovery: ${rel}`);
+    }
   }
 }
 
@@ -244,17 +286,10 @@ async function publishWiki(opts) {
   const state = loadState(opts.statePath);
   const toCommit = headCommit(wikiRoot);
   const marker = readMarker(workRoot);
-  const replaying = Boolean(marker);
+  const replaying = Boolean(marker || opts.forceReplay);
   if (marker && marker.toCommit !== toCommit) {
     throw new Error(`incomplete publish for ${marker.toCommit} must be replayed before publishing ${toCommit}`);
   }
-  assertNoConflicts(knowledgeRoot);
-  assertVaultBaseline({
-    knowledgeRoot,
-    wikiRoot,
-    publishedCommit: state.publishedCommit,
-    replaying,
-  });
   const plan =
     opts.planOverride ||
     buildPublishPlan({
@@ -262,6 +297,25 @@ async function publishWiki(opts) {
       fromCommit: state.publishedCommit || null,
       toCommit,
     });
+  assertNoConflicts(knowledgeRoot);
+  assertVaultBaseline({
+    knowledgeRoot,
+    wikiRoot,
+    publishedCommit: state.publishedCommit,
+    targetCommit: plan.toCommit,
+    replaying,
+  });
+  if (
+    opts.expectedTargetCommit &&
+    (plan.toCommit !== opts.expectedTargetCommit ||
+      plan.targetTreeHash !== opts.expectedTargetTreeHash ||
+      (plan.baseTreeHash ?? null) !== (opts.expectedBaseTreeHash ?? null))
+  ) {
+    throw new Error("local Wiki publish target does not match the cloud checkpoint");
+  }
+  if (replaying) {
+    assertReplayableVault({ knowledgeRoot, wikiRoot, plan });
+  }
   for (const rel of [...plan.create, ...plan.update, ...plan.delete]) {
     assertSafeRel(rel);
   }

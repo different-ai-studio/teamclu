@@ -46,7 +46,7 @@ select is(
     'wiki-maintainer/teams/t/checkpoints/sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.zip',
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     10,
-    '{"readyToPublish":true}',
+    '{"readyToPublish":true,"configVersion":1,"targetCommit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","targetTreeHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","baseTreeHash":null,"nodeId":"node-a"}',
     '00000000-0000-0000-0043-000000000020'
   ) ->> 'generation',
   '1',

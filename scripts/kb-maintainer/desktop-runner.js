@@ -13,6 +13,7 @@ const { buildPublishPlan, publishWiki } = require("./publish");
 const { commitAll, headCommit } = require("./git-store");
 const { gcOrphanPages } = require("./orphan-gc");
 const { repairWiki } = require("./repair");
+const { createCheckpoint, restoreCheckpoint } = require("./checkpoint");
 
 const SKIPPED =
   "This source was skipped this run and will be compiled again next time.";
@@ -89,6 +90,9 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
   ];
   return {
     runId,
+    baseTreeHash: publishPlan.baseTreeHash ?? null,
+    targetCommit: publishPlan.toCommit,
+    targetTreeHash: publishPlan.targetTreeHash,
     sourceCount,
     retractCount,
     added,
@@ -106,6 +110,48 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
 async function prepare(input, hooks = {}) {
   const onProgress =
     typeof hooks.onProgress === "function" ? hooks.onProgress : () => {};
+  const onCheckpoint =
+    typeof hooks.onCheckpoint === "function" ? hooks.onCheckpoint : null;
+  let generation = Number.isSafeInteger(input.expectedGeneration)
+    ? input.expectedGeneration
+    : 0;
+  const configVersion = Number.isSafeInteger(input.configVersion)
+    ? input.configVersion
+    : 1;
+  const checkpoint = async (preparedRun, readyToPublish) => {
+    if (!onCheckpoint) return;
+    fs.writeFileSync(
+      path.join(input.workRoot, "state", "prepared-run.json"),
+      `${JSON.stringify(preparedRun, null, 2)}\n`,
+    );
+    const expectedGeneration = generation;
+    generation += 1;
+    const out = createCheckpoint({
+      workRoot: input.workRoot,
+      configPath: input.configPath,
+      teamId: loadConfig(input.configPath).teamId,
+      generation,
+      parentGeneration: expectedGeneration,
+      configVersion,
+      nodeId: input.nodeId,
+      compilerModel: input.compilerModel || "default",
+      preparedRun,
+      readyToPublish,
+    });
+    const directory = path.join(input.workRoot, "state", "checkpoints");
+    fs.mkdirSync(directory, { recursive: true });
+    const checkpointPath = path.join(directory, `${generation}-${out.sha256}.zip`);
+    if (!fs.existsSync(checkpointPath)) fs.writeFileSync(checkpointPath, out.bytes);
+    await onCheckpoint({
+      expectedGeneration,
+      configVersion,
+      checkpointPath,
+      sha256: out.sha256,
+      size: out.size,
+      manifest: out.manifest,
+      preparedRun,
+    });
+  };
   const common = {
     configPath: input.configPath,
     statePath: input.statePath,
@@ -117,9 +163,19 @@ async function prepare(input, hooks = {}) {
     aclPrefixes: input.aclPrefixes,
     runner: input.runner || "pi",
     compilerModel: input.compilerModel || "default",
+    cancelPath: path.join(input.workRoot, "state", "cancel-requested"),
     acceptVisionEstimate: false,
     createSession: input.createSession,
     onProgress,
+    onCheckpoint: async (source) =>
+      checkpoint(
+        {
+          runId: input.runId,
+          status: "compiling",
+          lastSource: source,
+        },
+        false,
+      ),
   };
   onProgress({ stage: "plan" });
   const dry = dryRun(common);
@@ -151,8 +207,7 @@ async function prepare(input, hooks = {}) {
     fromCommit: state.publishedCommit || null,
     toCommit,
   });
-  onProgress({ stage: "done" });
-  return summarizePreparedRun({
+  const summary = summarizePreparedRun({
     runId: input.runId,
     plan: dry.plan,
     ingest,
@@ -160,6 +215,10 @@ async function prepare(input, hooks = {}) {
     estimate,
     publishPlan,
   });
+  summary.nodeId = input.nodeId;
+  await checkpoint(summary, summary.canPublish);
+  onProgress({ stage: "done" });
+  return summary;
 }
 
 async function publish(input) {
@@ -182,23 +241,119 @@ async function publish(input) {
     knowledgeRoot: input.knowledgeRoot,
     statePath: input.statePath,
     workRoot: input.workRoot,
+    forceReplay: input.cloudPublishingRecovery === true,
+    expectedTargetCommit: input.expectedTargetCommit,
+    expectedTargetTreeHash: input.expectedTargetTreeHash,
+    expectedBaseTreeHash: input.expectedBaseTreeHash,
   });
 }
 
 const { writeProgress } = require("./progress");
+const { adoptExistingWiki, inspectExistingWiki } = require("./adopt");
+
+function writeCheckpointPackage(input, out) {
+  const directory = path.join(input.workRoot, "state", "checkpoints");
+  fs.mkdirSync(directory, { recursive: true });
+  const checkpointPath = path.join(
+    directory,
+    `${out.manifest.generation}-${out.sha256}.zip`,
+  );
+  fs.writeFileSync(checkpointPath, out.bytes);
+  fs.writeFileSync(
+    path.join(input.workRoot, "state", "checkpoint-manifest.json"),
+    `${JSON.stringify(out.manifest, null, 2)}\n`,
+  );
+  return {
+    expectedGeneration: out.manifest.parentGeneration,
+    configVersion: out.manifest.configVersion,
+    checkpointPath,
+    sha256: out.sha256,
+    size: out.size,
+    manifest: out.manifest,
+  };
+}
+
+function createBaseline(input) {
+  const generation = input.expectedGeneration + 1;
+  return writeCheckpointPackage(
+    input,
+    createCheckpoint({
+      workRoot: input.workRoot,
+      configPath: input.configPath,
+      teamId: loadConfig(input.configPath).teamId,
+      generation,
+      parentGeneration: input.expectedGeneration,
+      configVersion: input.configVersion,
+      nodeId: input.nodeId,
+      compilerModel: input.compilerModel || "default",
+      preparedRun: { status: "published" },
+      readyToPublish: false,
+      baseline: true,
+    }),
+  );
+}
+
+function checkpointAckPath(input, generation) {
+  return path.join(input.workRoot, "state", `checkpoint-ack-${generation}.json`);
+}
+
+async function publishCheckpointAndWait(input, checkpoint) {
+  const ackPath = checkpointAckPath(input, checkpoint.manifest.generation);
+  if (fs.existsSync(ackPath)) fs.rmSync(ackPath);
+  writeProgress({ stage: "checkpoint", ...checkpoint });
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(ackPath)) {
+      const ack = JSON.parse(fs.readFileSync(ackPath, "utf8"));
+      fs.rmSync(ackPath, { force: true });
+      if (ack.accepted === true) return;
+      throw new Error("checkpoint generation conflict");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("checkpoint upload acknowledgement timed out");
+}
+
+function restore(input) {
+  const bytes = fs.readFileSync(input.checkpointPath);
+  const manifest = restoreCheckpoint({
+    workRoot: input.workRoot,
+    bytes,
+    expectedTeamId: input.teamId,
+    publishedCommit: input.publishedCommit,
+  });
+  fs.writeFileSync(
+    path.join(input.workRoot, "state", "checkpoint-manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  return manifest;
+}
 
 async function main() {
   const command = process.argv[2];
   const inputPath = process.argv[3];
   if (!command || !inputPath) {
-    throw new Error("usage: desktop-runner.js <prepare|publish> <input.json>");
+    throw new Error(
+      "usage: desktop-runner.js <prepare|publish|restore|baseline|adopt|inspect-vault> <input.json>",
+    );
   }
   const input = JSON.parse(fs.readFileSync(inputPath, "utf8"));
   const result =
     command === "prepare"
-      ? await prepare(input, { onProgress: writeProgress })
+      ? await prepare(input, {
+          onProgress: writeProgress,
+          onCheckpoint: (checkpoint) => publishCheckpointAndWait(input, checkpoint),
+        })
       : command === "publish"
         ? await publish(input)
+        : command === "restore"
+          ? restore(input)
+          : command === "baseline"
+            ? createBaseline(input)
+            : command === "adopt"
+              ? adoptExistingWiki(input)
+              : command === "inspect-vault"
+                ? inspectExistingWiki(input.knowledgeRoot)
         : (() => {
             throw new Error(`unknown command: ${command}`);
           })();
@@ -212,4 +367,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { prepare, publish, summarizePreparedRun, explainFailure };
+module.exports = {
+  prepare,
+  publish,
+  restore,
+  publishCheckpointAndWait,
+  summarizePreparedRun,
+  explainFailure,
+};

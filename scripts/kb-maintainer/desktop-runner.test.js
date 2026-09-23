@@ -24,6 +24,10 @@ test("summarizePreparedRun hides pipeline details behind a publish summary", () 
       currency: "CNY",
     },
     publishPlan: {
+      fromCommit: "a".repeat(40),
+      toCommit: "b".repeat(40),
+      baseTreeHash: "d".repeat(64),
+      targetTreeHash: "c".repeat(64),
       create: ["pages/a.md", "index.md"],
       update: ["pages/b.md"],
       delete: [],
@@ -32,6 +36,9 @@ test("summarizePreparedRun hides pipeline details behind a publish summary", () 
 
   assert.deepEqual(summary, {
     runId: "run-1",
+    baseTreeHash: "d".repeat(64),
+    targetCommit: "b".repeat(40),
+    targetTreeHash: "c".repeat(64),
     sourceCount: 3,
     retractCount: 0,
     added: 1,
@@ -209,9 +216,12 @@ test("prepare emits plan → estimate → ingest → lint → done progress", as
   );
 
   const events = [];
-  await prepare(
+  const checkpoints = [];
+  const summary = await prepare(
     {
       runId: "run-progress",
+      expectedGeneration: 7,
+      configVersion: 3,
       configPath: path.join(root, "config.json"),
       statePath: path.join(workRoot, "state", "state.json"),
       documentsRoot,
@@ -225,6 +235,7 @@ test("prepare emits plan → estimate → ingest → lint → done progress", as
     },
     {
       onProgress: (event) => events.push(event),
+      onCheckpoint: async (checkpoint) => checkpoints.push(checkpoint),
     },
   );
 
@@ -236,4 +247,15 @@ test("prepare emits plan → estimate → ingest → lint → done progress", as
   assert.equal(events[2].total, 1);
   assert.equal(events[2].path, "documents/handbook/leave.md");
   assert.equal(events[2].action, "add");
+  assert.deepEqual(
+    checkpoints.map((checkpoint) => ({
+      generation: checkpoint.manifest.generation,
+      readyToPublish: checkpoint.manifest.readyToPublish,
+    })),
+    [
+      { generation: 8, readyToPublish: false },
+      { generation: 9, readyToPublish: true },
+    ],
+  );
+  assert.equal(checkpoints[1].preparedRun.runId, summary.runId);
 });

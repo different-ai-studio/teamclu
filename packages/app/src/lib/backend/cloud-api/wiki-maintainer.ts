@@ -27,6 +27,7 @@ export interface WikiMaintainerStatus {
   config: { version: number; config: Record<string, unknown>; updatedAt: string } | null
   generation: number
   stage: WikiMaintainerStage
+  publishedCommit?: string | null
   checkpoint: WikiCheckpoint | null
   publishing: Record<string, unknown> | null
   syncStatus: string | null
@@ -64,6 +65,10 @@ export interface WikiMaintainerBackend {
   downloadLatestCheckpoint(
     teamId: string,
   ): Promise<WikiCheckpoint & { url: string }>
+  downloadCheckpoint(
+    teamId: string,
+    generation: number,
+  ): Promise<WikiCheckpoint & { url: string }>
   beginPublish(
     teamId: string,
     input: {
@@ -100,6 +105,8 @@ export function createWikiMaintainerModule(client: CloudApiClient): WikiMaintain
       client.post(`${base(teamId)}/checkpoints/complete`, input),
     downloadLatestCheckpoint: (teamId) =>
       client.get(`${base(teamId)}/checkpoints/latest/download`),
+    downloadCheckpoint: (teamId, generation) =>
+      client.get(`${base(teamId)}/checkpoints/${generation}/download`),
     beginPublish: (teamId, input) =>
       client.post(`${base(teamId)}/publish/begin`, input),
     completePublish: (teamId, input) =>

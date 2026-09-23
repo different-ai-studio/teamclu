@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ApiError } from "../http-utils.js";
+import { retainedCheckpointGenerations } from "../wiki-maintainer-storage.js";
 
 interface WikiMaintainerHost {
   supabase: any;
@@ -49,6 +50,36 @@ export function hashPublishToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+export function assertCheckpointManifest(teamId: string, body: any) {
+  const manifest = body?.manifest;
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new ApiError(400, "validation_failed", "checkpoint manifest is invalid");
+  }
+  const expectedGeneration = integer(body.expectedGeneration, "expectedGeneration");
+  const configVersion = integer(body.configVersion, "configVersion");
+  if (
+    manifest.schemaVersion !== 1 ||
+    manifest.teamId !== teamId ||
+    manifest.parentGeneration !== expectedGeneration ||
+    manifest.generation !== expectedGeneration + 1 ||
+    manifest.configVersion !== configVersion ||
+    typeof manifest.readyToPublish !== "boolean"
+  ) {
+    throw new ApiError(400, "validation_failed", "checkpoint manifest metadata does not match");
+  }
+  requiredHash(manifest.wikiHead, "manifest.wikiHead", GIT_COMMIT_RE);
+  if (manifest.readyToPublish) {
+    if (manifest.targetCommit !== manifest.wikiHead) {
+      throw new ApiError(400, "validation_failed", "checkpoint target commit does not match Wiki HEAD");
+    }
+    requiredHash(manifest.targetTreeHash, "manifest.targetTreeHash");
+    if (manifest.baseTreeHash != null) {
+      requiredHash(manifest.baseTreeHash, "manifest.baseTreeHash");
+    }
+  }
+  return manifest;
+}
+
 function mapCheckpoint(row: any) {
   if (!row) return null;
   return {
@@ -79,6 +110,7 @@ function mapState(row: any, config: any, checkpoint: any) {
     config: mapConfig(config),
     generation: Number(row?.generation ?? 0),
     stage: STAGES.has(row?.stage) ? row.stage : "idle",
+    publishedCommit: row?.published_commit ?? null,
     checkpoint: mapCheckpoint(checkpoint),
     publishing: row?.publishing ?? null,
     syncStatus: row?.sync_status ?? null,
@@ -95,9 +127,14 @@ function mapRpcError(error: any): never {
 }
 
 export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
-  async function requireTeamAdmin(teamId: string): Promise<string> {
+  async function requireTeamMember(teamId: string): Promise<string> {
     const actor = await host.resolveCallerActorForTeam(teamId);
     if (!actor) throw new ApiError(403, "forbidden", "not a member of this team");
+    return actor.id;
+  }
+
+  async function requireTeamAdmin(teamId: string): Promise<string> {
+    const actorId = await requireTeamMember(teamId);
     const { data, error } = await host.supabase.rpc("current_team_role", {
       target_team_id: teamId,
     });
@@ -105,16 +142,18 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
     if (data !== "owner" && data !== "admin") {
       throw new ApiError(403, "forbidden", "team owner or admin access required");
     }
-    return actor.id;
+    return actorId;
   }
 
-  async function admin(teamId: string, what: string) {
-    const actorId = await requireTeamAdmin(teamId);
+  async function access(teamId: string, what: string, adminRequired = true) {
+    const actorId = adminRequired
+      ? await requireTeamAdmin(teamId)
+      : await requireTeamMember(teamId);
     return { actorId, db: await host.serviceRoleClient(what) };
   }
 
-  async function load(teamId: string, what: string) {
-    const { db } = await admin(teamId, what);
+  async function load(teamId: string, what: string, adminRequired = true) {
+    const { db } = await access(teamId, what, adminRequired);
     const [{ data: config, error: configError }, { data: state, error: stateError }] =
       await Promise.all([
         db
@@ -151,12 +190,12 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
 
   return {
     async getWikiMaintainerStatus(teamId: string) {
-      return (await load(teamId, "read wiki maintainer state")).view;
+      return (await load(teamId, "read wiki maintainer state", false)).view;
     },
 
     async putWikiMaintainerConfig(teamId: string, body: any = {}) {
       const parsed = parseWikiConfigWrite(body);
-      const { actorId, db } = await admin(teamId, "update wiki maintainer config");
+      const { actorId, db } = await access(teamId, "update wiki maintainer config");
       return rpc(db, "wiki_maintainer_put_config", {
         p_team_id: teamId,
         p_expected_version: parsed.expectedVersion,
@@ -184,7 +223,8 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
     },
 
     async completeWikiMaintainerCheckpoint(teamId: string, body: any = {}) {
-      const { actorId, db } = await admin(teamId, "complete wiki maintainer checkpoint");
+      const manifest = assertCheckpointManifest(teamId, body);
+      const { actorId, db } = await access(teamId, "complete wiki maintainer checkpoint");
       return rpc(db, "wiki_maintainer_complete_checkpoint", {
         p_team_id: teamId,
         p_expected_generation: integer(body.expectedGeneration, "expectedGeneration"),
@@ -192,7 +232,7 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
         p_object_key: String(body.objectKey ?? ""),
         p_sha256: requiredHash(body.sha256, "sha256"),
         p_size: integer(body.size, "size"),
-        p_manifest: body.manifest ?? {},
+        p_manifest: manifest,
         p_created_by: actorId,
       });
     },
@@ -202,8 +242,90 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
       return mapCheckpoint(loaded.checkpoint);
     },
 
+    async getWikiMaintainerCheckpointByGeneration(teamId: string, generation: number) {
+      const { db } = await access(teamId, "download wiki maintainer checkpoint");
+      const { data, error } = await db
+        .from("wiki_maintainer_checkpoints")
+        .select("*")
+        .eq("team_id", teamId)
+        .eq("generation", generation)
+        .maybeSingle();
+      if (error) throw error;
+      return mapCheckpoint(data);
+    },
+
+    async recordWikiMaintainerUpload(teamId: string, objectKey: string) {
+      const { db } = await access(teamId, "record wiki maintainer upload");
+      const { error } = await db.from("wiki_maintainer_uploads").upsert({
+        object_key: objectKey,
+        team_id: teamId,
+        created_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+    },
+
+    async pruneWikiMaintainerCheckpoints(teamId: string): Promise<string[]> {
+      const { db } = await access(teamId, "prune wiki maintainer checkpoints");
+      const { data, error } = await db
+        .from("wiki_maintainer_checkpoints")
+        .select("id,generation,object_key,manifest")
+        .eq("team_id", teamId);
+      if (error) throw error;
+      const rows = data ?? [];
+      const { data: stateRow, error: stateError } = await db
+        .from("wiki_maintainer_state")
+        .select("current_checkpoint_id")
+        .eq("team_id", teamId)
+        .maybeSingle();
+      if (stateError) throw stateError;
+      const keep = new Set(
+        retainedCheckpointGenerations(
+          rows.map((row: any) => ({
+            generation: Number(row.generation),
+            baseline: row.manifest?.baseline === true,
+          })),
+        ),
+      );
+      const current = rows.find((row: any) => row.id === stateRow?.current_checkpoint_id);
+      if (current) keep.add(Number(current.generation));
+      const dropped = rows.filter((row: any) => !keep.has(Number(row.generation)));
+      if (dropped.length === 0) return [];
+      const { error: deleteError } = await db
+        .from("wiki_maintainer_checkpoints")
+        .delete()
+        .in(
+          "id",
+          dropped.map((row: any) => row.id),
+        );
+      if (deleteError) throw deleteError;
+      return dropped.map((row: any) => String(row.object_key));
+    },
+
+    async sweepWikiMaintainerUploads(teamId: string): Promise<string[]> {
+      const { db } = await access(teamId, "sweep wiki maintainer uploads");
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const [{ data: uploads, error: uploadError }, { data: checkpoints, error: checkpointError }] =
+        await Promise.all([
+          db
+            .from("wiki_maintainer_uploads")
+            .select("object_key,created_at")
+            .eq("team_id", teamId)
+            .lt("created_at", cutoff),
+          db.from("wiki_maintainer_checkpoints").select("object_key").eq("team_id", teamId),
+        ]);
+      if (uploadError) throw uploadError;
+      if (checkpointError) throw checkpointError;
+      const referenced = new Set((checkpoints ?? []).map((row: any) => row.object_key));
+      const expired = (uploads ?? []).filter((row: any) => !referenced.has(row.object_key));
+      if (expired.length === 0) return [];
+      const keys = expired.map((row: any) => String(row.object_key));
+      const { error } = await db.from("wiki_maintainer_uploads").delete().in("object_key", keys);
+      if (error) throw error;
+      return keys;
+    },
+
     async beginWikiMaintainerPublish(teamId: string, body: any = {}) {
-      const { actorId, db } = await admin(teamId, "begin wiki maintainer publish");
+      const { actorId, db } = await access(teamId, "begin wiki maintainer publish");
       const token = randomBytes(32).toString("base64url");
       const state = await rpc(db, "wiki_maintainer_begin_publish", {
         p_team_id: teamId,
@@ -223,7 +345,7 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
     },
 
     async completeWikiMaintainerPublish(teamId: string, body: any = {}) {
-      const { db } = await admin(teamId, "complete wiki maintainer publish");
+      const { db } = await access(teamId, "complete wiki maintainer publish");
       const syncStatus = String(body.syncStatus ?? "");
       if (!["synced", "published_local_sync_pending"].includes(syncStatus)) {
         throw new ApiError(400, "validation_failed", "syncStatus is invalid");
@@ -236,7 +358,7 @@ export function makeWikiMaintainerRepo(host: WikiMaintainerHost) {
     },
 
     async recoverWikiMaintainerPublish(teamId: string) {
-      const { actorId, db } = await admin(teamId, "recover wiki maintainer publish");
+      const { actorId, db } = await access(teamId, "recover wiki maintainer publish");
       const token = randomBytes(32).toString("base64url");
       const state = await rpc(db, "wiki_maintainer_recover_publish", {
         p_team_id: teamId,

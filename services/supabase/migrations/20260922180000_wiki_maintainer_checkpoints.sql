@@ -158,6 +158,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = amux, pg_temp AS $$
 DECLARE
   v_state amux.wiki_maintainer_state;
   v_publishing jsonb;
+  v_manifest jsonb;
 BEGIN
   SELECT * INTO v_state FROM amux.wiki_maintainer_state
     WHERE team_id = p_team_id FOR UPDATE;
@@ -169,6 +170,17 @@ BEGIN
   END IF;
   IF v_state.stage <> 'ready_to_publish' THEN
     RAISE EXCEPTION 'wiki is not ready to publish (stage %)', v_state.stage;
+  END IF;
+  SELECT manifest INTO v_manifest
+    FROM amux.wiki_maintainer_checkpoints
+    WHERE id = v_state.current_checkpoint_id;
+  IF NOT FOUND
+     OR ((v_manifest->>'configVersion')::bigint) IS DISTINCT FROM p_config_version
+     OR (v_manifest->>'targetCommit') IS DISTINCT FROM p_target_commit
+     OR (v_manifest->>'targetTreeHash') IS DISTINCT FROM p_target_tree_hash
+     OR (v_manifest->>'baseTreeHash') IS DISTINCT FROM p_base_tree_hash
+     OR (v_manifest->>'nodeId') IS DISTINCT FROM p_node_id THEN
+    RAISE EXCEPTION 'wiki publish target does not match current checkpoint';
   END IF;
   v_publishing := jsonb_build_object(
     'generation', p_generation,

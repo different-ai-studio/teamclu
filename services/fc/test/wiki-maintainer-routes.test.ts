@@ -16,6 +16,12 @@ function stubRepository() {
             size: 0,
           });
         }
+        if (
+          prop === "pruneWikiMaintainerCheckpoints" ||
+          prop === "sweepWikiMaintainerUploads"
+        ) {
+          return async () => [];
+        }
         return async () => ({ stage: "idle", generation: 0 });
       },
     },
@@ -49,6 +55,7 @@ describe("wiki maintainer phase-one routes are registered", () => {
     ],
     ["POST", `/v1/teams/${TEAM}/wiki-maintainer/checkpoints/complete`, {}],
     ["GET", `/v1/teams/${TEAM}/wiki-maintainer/checkpoints/latest/download`],
+    ["GET", `/v1/teams/${TEAM}/wiki-maintainer/checkpoints/2/download`],
     ["POST", `/v1/teams/${TEAM}/wiki-maintainer/publish/begin`, {}],
     ["POST", `/v1/teams/${TEAM}/wiki-maintainer/publish/complete`, {}],
     ["POST", `/v1/teams/${TEAM}/wiki-maintainer/publish/recover`, {}],

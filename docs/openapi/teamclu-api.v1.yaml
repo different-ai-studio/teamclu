@@ -3256,7 +3256,7 @@ paths:
     get:
       operationId: getWikiMaintainerStatus
       summary: Get the team's portable Wiki compiler state
-      description: Owner/admin only. Returns configuration, checkpoint generation, prepared result, and interrupted publish state.
+      description: Team members may read the current generation and state; only owner/admin callers may mutate it or download checkpoint contents.
       tags: [WikiMaintainer]
       parameters:
         - $ref: "#/components/parameters/TeamId"
@@ -3341,6 +3341,22 @@ paths:
         - $ref: "#/components/parameters/TeamId"
       responses:
         "200": { description: Latest checkpoint and presigned download URL. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/{generation}/download:
+    get:
+      operationId: downloadWikiMaintainerCheckpoint
+      summary: Download one retained checkpoint generation
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: generation
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Checkpoint metadata and presigned download URL. }
+        "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
   /v1/teams/{teamId}/wiki-maintainer/publish/begin:
@@ -8948,6 +8964,10 @@ components:
         stage:
           type: string
           enum: [idle, ready_to_publish, publishing, sync_pending, needs_attention]
+        publishedCommit:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{40}$"
+          description: Last Wiki commit successfully published into the team vault.
         checkpoint:
           oneOf:
             - $ref: "#/components/schemas/WikiCheckpoint"

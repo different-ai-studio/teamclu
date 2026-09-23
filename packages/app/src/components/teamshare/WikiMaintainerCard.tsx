@@ -10,6 +10,8 @@ import {
   cancelWikiMaintenance,
   discoverWikiSourceDirectories,
   loadWikiCompilerModels,
+  adoptExistingWiki,
+  loadWikiMaintenanceBootstrap,
   pickSavedCompilerModel,
   prepareWikiMaintenance,
   publishWikiMaintenance,
@@ -17,6 +19,7 @@ import {
 import {
   WikiMaintainerRunSheet,
   type WikiCompilerModel,
+  type WikiPrepareSummary,
   type WikiSourceDirectory,
 } from '@/components/teamshare/WikiMaintainerRunSheet'
 
@@ -42,6 +45,10 @@ export function WikiMaintainerCard() {
   const [directories, setDirectories] = React.useState<WikiSourceDirectory[]>([])
   const [compilerModels, setCompilerModels] = React.useState<WikiCompilerModel[]>([])
   const [compilerModel, setCompilerModel] = React.useState(savedModel)
+  const [recoveredSummary, setRecoveredSummary] =
+    React.useState<WikiPrepareSummary | null>(null)
+  const [checkpointModel, setCheckpointModel] = React.useState('')
+  const [needsAdopt, setNeedsAdopt] = React.useState(false)
   const [loadError, setLoadError] = React.useState<string | null>(null)
 
   const openMaintainer = async () => {
@@ -49,14 +56,26 @@ export function WikiMaintainerCard() {
     setLoading(true)
     setLoadError(null)
     try {
-      const [nextDirectories, nextModels] = await Promise.all([
+      const [nextDirectories, nextModels, bootstrap] = await Promise.all([
         discoverWikiSourceDirectories(teamId),
         loadWikiCompilerModels(teamId),
+        loadWikiMaintenanceBootstrap(teamId),
       ])
-      const nextModel = pickSavedCompilerModel(savedModel, nextModels)
+      const requiredModel = bootstrap.checkpointModel ?? ''
+      const nextModel = requiredModel
+        ? nextModels.some((model) => model.id === requiredModel)
+          ? requiredModel
+          : ''
+        : pickSavedCompilerModel(bootstrap.compilerModel || savedModel, nextModels)
       setDirectories(nextDirectories)
       setCompilerModels(nextModels)
       setCompilerModel(nextModel)
+      setCheckpointModel(requiredModel)
+      setNeedsAdopt(bootstrap.needsAdopt === true)
+      setRecoveredSummary(bootstrap.recoveredSummary)
+      if (bootstrap.sourceDirectories.length > 0) {
+        saveSelection(teamId, bootstrap.sourceDirectories)
+      }
       if (nextModel) saveCompilerModel(teamId, nextModel)
       setOpen(true)
     } catch (reason) {
@@ -112,6 +131,10 @@ export function WikiMaintainerCard() {
           compilerModels={compilerModels}
           initialSelected={selected}
           initialCompilerModel={compilerModel}
+          initialSummary={recoveredSummary}
+          checkpointModel={checkpointModel}
+          needsAdopt={needsAdopt}
+          onAdopt={adoptExistingWiki}
           onSaveSelection={saveSelection}
           onSaveCompilerModel={saveCompilerModel}
           onPrepare={prepareWikiMaintenance}

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  assertCheckpointManifest,
   assertExpectedGeneration,
   hashPublishToken,
   parseWikiConfigWrite,
@@ -33,4 +34,37 @@ test("publish tokens are stored as hashes", () => {
     "ba509c407b1569c6f2ad3762bd3c13a8868e3d5f63156f8138754b92dece0be5",
   );
   assert.notEqual(hashPublishToken("publish-secret"), "publish-secret");
+});
+
+test("ready checkpoint manifests bind the CAS generation and publish target", () => {
+  const teamId = "11111111-1111-1111-1111-111111111111";
+  const manifest = {
+    schemaVersion: 1,
+    teamId,
+    parentGeneration: 2,
+    generation: 3,
+    configVersion: 4,
+    readyToPublish: true,
+    wikiHead: "a".repeat(40),
+    targetCommit: "a".repeat(40),
+    targetTreeHash: "b".repeat(64),
+    baseTreeHash: null,
+  };
+  assert.equal(
+    assertCheckpointManifest(teamId, {
+      expectedGeneration: 2,
+      configVersion: 4,
+      manifest,
+    }),
+    manifest,
+  );
+  assert.throws(
+    () =>
+      assertCheckpointManifest(teamId, {
+        expectedGeneration: 1,
+        configVersion: 4,
+        manifest,
+      }),
+    /metadata does not match/,
+  );
 });
