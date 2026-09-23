@@ -107,6 +107,7 @@ function dryRun(opts) {
   const denied = [];
   const blocked = [];
   const ignored = [];
+  const retained = [];
   for (const item of [...union.values()].sort((a, b) => a.path.localeCompare(b.path))) {
     const verdict = classifySource(item, config);
     if (verdict.status === "allowed") {
@@ -115,11 +116,15 @@ function dryRun(opts) {
       denied.push(verdict);
     } else if (verdict.status === "ignored") {
       ignored.push(verdict);
+      // A folder left unchecked still has its files. That is not a deletion.
+      if (item.local !== false && importedSources[item.path]) {
+        retained.push(item.path);
+      }
     } else {
       blocked.push(verdict);
     }
   }
-  const queues = reconcile({ current: allowed, state });
+  const queues = reconcile({ current: allowed, state, retain: retained });
   const plan = {
     add: queues.add,
     update: queues.update,

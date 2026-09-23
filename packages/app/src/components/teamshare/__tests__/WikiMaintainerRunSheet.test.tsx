@@ -240,6 +240,57 @@ describe('WikiMaintainerRunSheet', () => {
     )
   })
 
+  it('collapses a wall of identical compiler skips into one notice', async () => {
+    render(
+      <WikiMaintainerRunSheet
+        open
+        teamId="team-1"
+        sourceDirectories={[{ path: 'documents/seahelm-log/', label: 'seahelm-log' }]}
+        initialSelected={['documents/seahelm-log/']}
+        compilerModels={MODELS}
+        initialCompilerModel="glm-4.6"
+        onSaveSelection={vi.fn()}
+        onPrepare={vi.fn().mockResolvedValue({
+          runId: 'run-skip-wall',
+          sourceCount: 3,
+          added: 0,
+          updated: 0,
+          deleted: 0,
+          failed: 3,
+          visionPages: 0,
+          estimatedCost: 0,
+          currency: 'CNY',
+          canPublish: false,
+          blockers: [
+            'documents/seahelm-log/a.txt: The compiler did not write a Wiki page for this source.',
+            'documents/seahelm-log/b.txt: The compiler did not write a Wiki page for this source.',
+            'documents/features/09-apps-platform.md: The compiler did not write a Wiki page for this source.',
+          ],
+        })}
+        onPublish={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check and compile' }))
+    expect(
+      await screen.findByText(
+        'The compiler finished without writing Wiki pages for 3 sources. Try another compiler model, then compile again.',
+      ),
+    ).toBeTruthy()
+    expect(screen.getByText('documents/seahelm-log/a.txt')).toBeTruthy()
+    expect(screen.getByText('documents/features/09-apps-platform.md')).toBeTruthy()
+    expect(
+      screen.queryByText(/This source was skipped this run and will be compiled again next time/),
+    ).toBeNull()
+    expect(
+      screen.getByText(
+        'Review the result, then confirm publish. Nothing is written to the knowledge base until you confirm.',
+      ),
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Confirm publish' })).toBeDisabled()
+  })
+
   it('blocks publishing when quality checks fail', async () => {
     const publish = vi.fn()
     const cancel = vi.fn().mockResolvedValue(undefined)

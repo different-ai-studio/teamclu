@@ -201,3 +201,30 @@ test("dryRun treats an imported-but-missing known path as delete, not would_fetc
   );
   assert.ok(!result.plan.would_fetch.some((item) => item.path === "documents/handbook/gone.pdf"));
 });
+
+test("dryRun does not retract an imported source that still exists outside the selection", () => {
+  const fx = makeFixture();
+  const features = path.join(fx.documentsRoot, "features");
+  fs.mkdirSync(features, { recursive: true });
+  fs.writeFileSync(path.join(features, "shell.md"), "# shell\n");
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    sources: {
+      "documents/features/shell.md": {
+        sourceSha256: "ab".repeat(32),
+        status: "imported",
+        affectedPages: ["pages/3col-shell.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [],
+    aclPrefixes: [],
+  });
+  assert.deepEqual(result.plan.delete, []);
+});

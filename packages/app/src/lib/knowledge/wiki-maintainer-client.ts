@@ -34,6 +34,14 @@ function isUnderSelected(path: string, selected: string[]): boolean {
   return selected.some((prefix) => path.startsWith(prefix))
 }
 
+/** A Wiki source is one folder inside Documents. The Documents root is not a source. */
+export function wikiSourceFolders(paths: string[]): string[] {
+  return paths.filter((path) => {
+    const match = /^documents\/([^/]+)\/$/.exec(path)
+    return match !== null && match[1] !== '.' && match[1] !== '..'
+  })
+}
+
 async function restoreCheckpointGeneration(
   teamId: string,
   generation: number,
@@ -163,11 +171,13 @@ export async function loadWikiMaintenanceBootstrap(teamId: string): Promise<{
 }> {
   const status = await getBackend().wikiMaintainer.getStatus(teamId)
   const config = status.config?.config
-  const sourceDirectories = Array.isArray(config?.sourceDirectories)
-    ? config.sourceDirectories.filter(
-        (path): path is string => typeof path === 'string',
-      )
-    : []
+  const sourceDirectories = wikiSourceFolders(
+    Array.isArray(config?.sourceDirectories)
+      ? config.sourceDirectories.filter(
+          (path): path is string => typeof path === 'string',
+        )
+      : [],
+  )
   const compilerModel =
     typeof config?.compilerModel === 'string' ? config.compilerModel : ''
   const manifest = status.checkpoint?.manifest
@@ -290,11 +300,17 @@ export async function prepareWikiMaintenance(
   sourceDirectories: string[],
   compilerModel: string,
 ): Promise<WikiPrepareSummary> {
+  const folders = wikiSourceFolders(sourceDirectories)
+  if (folders.length === 0) {
+    throw new Error(
+      'Choose a folder inside Documents. Files placed directly in Documents are not compiled.',
+    )
+  }
   const maintainer = getBackend().wikiMaintainer
   const status = await maintainer.getStatus(teamId)
   const desiredConfig = {
     schemaVersion: 1,
-    sourceDirectories,
+    sourceDirectories: folders,
     compilerModel,
   }
   let configVersion = status.config?.version ?? 0
@@ -315,12 +331,12 @@ export async function prepareWikiMaintenance(
   const acl = await getBackend().knowledgeAcl.listKnowledgeAcl(teamId)
   const known = await listKnownDocuments(teamId)
   const selectedKnown = known.filter((item) =>
-    isUnderSelected(item.path, sourceDirectories),
+    isUnderSelected(item.path, folders),
   )
   const [localPaths, importedPaths] = await Promise.all([
     invoke<string[]>('kb_maintainer_list_local_documents', {
       teamId,
-      sourceDirectories,
+      sourceDirectories: folders,
     }),
     invoke<string[]>('kb_maintainer_imported_source_paths', { teamId }),
   ])
@@ -406,7 +422,7 @@ export async function prepareWikiMaintenance(
     summary = await invoke<WikiPrepareSummary>('kb_maintainer_prepare', {
       request: {
         teamId,
-        sourceDirectories,
+        sourceDirectories: folders,
         compilerModel,
         expectedGeneration: status.generation,
         configVersion,

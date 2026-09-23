@@ -17,9 +17,13 @@ const { createCheckpoint, restoreCheckpoint } = require("./checkpoint");
 
 const SKIPPED =
   "This source was skipped this run and will be compiled again next time.";
+const NO_PAGES = "The compiler did not write a Wiki page for this source.";
 
 function explainFailure(error) {
   const text = String(error || "");
+  if (/compiler produced no wiki pages/.test(text)) {
+    return NO_PAGES;
+  }
   if (text === "too_large" || /\btoo_large\b/.test(text) || /^size \d+/.test(text)) {
     return "This source is too long. Split it into shorter files, then compile again.";
   }
@@ -39,7 +43,7 @@ function explainFailure(error) {
     return "This folder is not set up for Wiki compile. Choose another folder.";
   }
   if (
-    /compiler produced no wiki pages|dead wiki link|did not retract|PII|internal leak|copy ratio|illegal type|unreadable frontmatter|managed_by|schema_version|sha256 mismatch|locator not in raw|exceeds \d+ chars|source-summary too large|index summary mismatch|index missing|index repeats|index points|changed \d+ pages|diff escapes|link not allowed|missing frontmatter|unterminated frontmatter|sources required|quality check failed|source not in current set|wiki\/index\.md is missing|path escapes|raw cache missing/.test(
+    /dead wiki link|did not retract|PII|internal leak|copy ratio|illegal type|unreadable frontmatter|managed_by|schema_version|sha256 mismatch|locator not in raw|exceeds \d+ chars|source-summary too large|index summary mismatch|index missing|index repeats|index points|changed \d+ pages|diff escapes|link not allowed|missing frontmatter|unterminated frontmatter|sources required|quality check failed|source not in current set|wiki\/index\.md is missing|path escapes|raw cache missing/.test(
       text,
     )
   ) {
@@ -239,6 +243,7 @@ async function publish(input) {
   return publishWiki({
     wikiRoot,
     knowledgeRoot: input.knowledgeRoot,
+    documentsRoot: input.documentsRoot,
     statePath: input.statePath,
     workRoot: input.workRoot,
     forceReplay: input.cloudPublishingRecovery === true,
