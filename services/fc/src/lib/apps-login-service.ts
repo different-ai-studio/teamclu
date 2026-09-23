@@ -17,6 +17,7 @@ import {
   verifyLoginState,
   verifySsoSession,
 } from "./apps-auth-session.js";
+import { appAdmitsAnyAudience } from "./apps-auth-paths.js";
 import { isRateLimited, resolveClientIp } from "./rate-limit.js";
 import { resolveFeatures } from "./routes/config.js";
 
@@ -56,6 +57,20 @@ export type LoginApp = {
   teamName?: string | null;
   /** `apps.auth_mode`. Only `platform` has a login wall at all. */
   authMode: string;
+  /**
+   * `apps.org_id` — the tenant this login page belongs to.
+   *
+   * Every identity decision on this page is narrowed to it. Without it the
+   * page had no idea which tenant was asking, so it offered a phone number's
+   * identity in EVERY org and the gateway rejected the wrong pick afterwards.
+   */
+  orgId?: string | null;
+  /** `apps.auth_audience` / `auth_scope` / `auth_rules` — read together, and
+   * only to answer whether this app invites the public
+   * (see {@link appAdmitsAnyAudience}). */
+  authAudience?: string | null;
+  authScope?: string | null;
+  authRules?: unknown;
   /** `apps.custom_domain`. A valid return origin only once verified. */
   customDomain?: string | null;
   /**
@@ -77,7 +92,7 @@ export type LookupLoginApp = (appId: string) => Promise<LoginApp | null>;
  * custom domain was refused as "返回地址与该应用不符".
  */
 const LOGIN_APP_COLUMNS =
-  "id, slug, name, team_id, auth_mode, custom_domain, custom_domain_verified_at";
+  "id, slug, name, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -109,6 +124,10 @@ export function makeSupabaseLoginAppLookup(
       name: data.name ?? null,
       teamName: await readTeamName(client, data.team_id ?? null),
       authMode: data.auth_mode ?? "none",
+      orgId: data.org_id ?? null,
+      authAudience: data.auth_audience ?? null,
+      authScope: data.auth_scope ?? null,
+      authRules: data.auth_rules ?? null,
       customDomain: data.custom_domain ?? null,
       customDomainVerifiedAt: data.custom_domain_verified_at ?? null,
     };
@@ -159,13 +178,21 @@ type PhoneLoginUser = {
   id: string;
   org_id?: string | null;
   org_name?: string | null;
+  /** `public.users.admin_type`: 1 = member, >= 2 = staff. */
+  admin_type?: number;
   nickname?: string | null;
   email?: string | null;
 };
 
 type PhoneAuthRepository = {
   phoneSendCode: (args: { phone: string; captchaVerify?: string }) => Promise<unknown>;
-  phoneLogin: (args: { phone: string; code: string; userId?: string }) => Promise<unknown>;
+  phoneLogin: (args: {
+    phone: string;
+    code: string;
+    userId?: string;
+    tenantOrgId?: string;
+    allowSignup?: boolean;
+  }) => Promise<unknown>;
 };
 
 // ---------------------------------------------------------------------------
@@ -601,6 +628,20 @@ function phoneCodePage(ctx: LoginContext, phone: string, error = "", status = 20
   );
 }
 
+/**
+ * What `public.users.admin_type` means to the person choosing.
+ *
+ * The column is the partner's, and only the 1 / >=2 split is documented
+ * (`amux.caller_employee_orgs` draws the employee line at 2), so this says no
+ * more than that split supports. An unknown value gets no label at all rather
+ * than a guessed one.
+ */
+function kindLabel(adminType: number | undefined): string {
+  if (adminType === 1) return "会员";
+  if (typeof adminType === "number" && adminType >= 2) return "员工";
+  return "";
+}
+
 function phoneAccountPage(
   ctx: LoginContext,
   phone: string,
@@ -612,7 +653,13 @@ function phoneAccountPage(
   const choices = users
     .map((user) => {
       const label = user.nickname?.trim() || user.email?.trim() || "账号";
-      const detail = user.org_name?.trim() || user.email?.trim() || "";
+      // Every entry now sits in the SAME org, so the org name — which used to
+      // be the whole detail line — is identical on all of them and tells the
+      // visitor nothing. What actually differs is the kind of identity and the
+      // email, so show those; the org name is dropped rather than repeated.
+      const detail = [kindLabel(user.admin_type), user.email?.trim()]
+        .filter((part): part is string => !!part)
+        .join(" · ");
       return (
         `<button class="account" type="submit" name="userId" value="${esc(user.id)}">` +
         `${mark(user.id, label, "mark mark-sm")}` +
@@ -743,7 +790,25 @@ async function phoneLoginResult(
   try {
     const repository = await authRepository(deps);
     if (!repository) return phoneCodePage(ctx, phone, "手机号登录尚未配置。", 503);
-    const result = (await repository.phoneLogin({ phone, code, userId })) as any;
+    // An app whose tenant is unknown cannot narrow anything, and widening to
+    // every org is the behaviour this change exists to remove. Refuse instead:
+    // a null org_id is an operator's problem (see the gateway's `no_app_org`),
+    // and it is the same one, said in the same place the visitor is standing.
+    if (!ctx.app.orgId) {
+      return phoneCodePage(ctx, phone, "该应用未关联组织，无法登录。", 503);
+    }
+    const result = (await repository.phoneLogin({
+      phone,
+      code,
+      userId,
+      tenantOrgId: ctx.app.orgId,
+      // App-level, never derived from `next` — see appAdmitsAnyAudience.
+      allowSignup: appAdmitsAnyAudience(
+        ctx.app.authScope,
+        ctx.app.authRules,
+        ctx.app.authAudience,
+      ),
+    })) as any;
     if (result?.multiUser && Array.isArray(result.users)) {
       return phoneAccountPage(ctx, phone, code, result.users as PhoneLoginUser[]);
     }

@@ -364,3 +364,47 @@ export function resolvePathPolicy(
     roles: winner.roles !== undefined ? winner.roles : null,
   };
 }
+
+/**
+ * Does this app let in anyone with a platform account, anywhere in it?
+ *
+ * The login page asks this to decide whether a phone number with no identity
+ * in the app's tenant may have one created (`allowSignup`). It is deliberately
+ * an APP-LEVEL question rather than a per-path one, even though admission
+ * itself is per path.
+ *
+ * Why not per path: the login page only knows which path the visitor is headed
+ * for from the `next` query parameter, which the visitor supplies. Deciding
+ * "may an account be created for you in this tenant" from a value the caller
+ * controls means anyone can name an `any` path, get an identity written into a
+ * customer's org, and then go elsewhere with it. Coarser is the safer error
+ * here: this answers yes for a mixed app, and the gate still refuses that new
+ * identity at every path it is not entitled to.
+ *
+ * `roles: []` counts. Its documented meaning is "any authenticated user — skip
+ * the org / role check", which is the same openness `audience: "any"` states,
+ * written the newer way. Missing it would make a modern rule set stricter here
+ * than it is at the gate.
+ */
+export function appAdmitsAnyAudience(
+  scope: unknown,
+  rawRules: unknown,
+  appAudience: unknown,
+): boolean {
+  if (appAudience === "any") return true;
+  // `parseAuthRules` is the WRITE-side parser and throws on anything malformed.
+  // Here that must not surface as a failed login, and the safe direction is
+  // obvious: a rule set nobody can read is not evidence that this app invites
+  // the public, so it does not earn the right to write a row into a tenant.
+  let rules: AuthRule[];
+  try {
+    rules = parseAuthRules(rawRules);
+  } catch {
+    return false;
+  }
+  return rules.some(
+    (r) =>
+      r.auth === "required" &&
+      (r.audience === "any" || (Array.isArray(r.roles) && r.roles.length === 0)),
+  );
+}
