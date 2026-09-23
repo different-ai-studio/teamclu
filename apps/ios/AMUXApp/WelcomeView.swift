@@ -48,7 +48,6 @@ private struct IntroCard: Identifiable {
     let eyebrow: String
     let title: LocalizedStringKey
     let body: LocalizedStringKey
-    let placeholder: String
 }
 
 private struct IntroView: View {
@@ -58,16 +57,13 @@ private struct IntroView: View {
     private let cards: [IntroCard] = [
         IntroCard(id: 0, eyebrow: "01",
                   title: "Work alongside your AI allies",
-                  body: "Teammates and AI allies share one conversation — discuss, split the work, ship it.",
-                  placeholder: "ILLUSTRATION · SHARED SESSION"),
+                  body: "Teammates and AI allies share one conversation — discuss, split the work, ship it."),
         IntroCard(id: 1, eyebrow: "02",
                   title: "Team knowledge stays in sync",
-                  body: "The docs and know-how your team builds up are there for every member and every agent.",
-                  placeholder: "ILLUSTRATION · TEAM KNOWLEDGE"),
+                  body: "The docs and know-how your team builds up are there for every member and every agent."),
         IntroCard(id: 2, eyebrow: "03",
                   title: "Your computer works, your phone follows",
-                  body: "Agents do the work on your computer. Follow along and make the call from your phone.",
-                  placeholder: "ILLUSTRATION · DESKTOP + PHONE"),
+                  body: "Agents do the work on your computer. Follow along and make the call from your phone."),
     ]
 
     var body: some View {
@@ -120,8 +116,10 @@ private struct IntroCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            StripedPlaceholder(caption: card.placeholder)
+            illustration
+                .frame(maxWidth: .infinity)
                 .frame(height: 260)
+                .accessibilityHidden(true)
                 .padding(.bottom, 36)
 
             Text(card.eyebrow)
@@ -146,37 +144,14 @@ private struct IntroCardView: View {
         .padding(.horizontal, 28)
         .padding(.top, 28)
     }
-}
 
-/// Stand-in for an illustration that hasn't been drawn yet (DESIGN.md: no
-/// hand-drawn SVG — stripes plus a mono caption naming the missing asset).
-private struct StripedPlaceholder: View {
-    let caption: String
-
-    var body: some View {
-        ZStack {
-            Canvas { context, size in
-                let step: CGFloat = 10
-                var path = Path()
-                var x: CGFloat = -size.height
-                while x < size.width {
-                    path.move(to: CGPoint(x: x, y: size.height))
-                    path.addLine(to: CGPoint(x: x + size.height, y: 0))
-                    x += step
-                }
-                context.stroke(path, with: .color(Color.amux.hairline), lineWidth: 1)
-            }
-            Text(caption)
-                .font(.system(size: 10, design: .monospaced))
-                .tracking(2)
-                .foregroundStyle(Color.amux.slate)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.amux.mist)
+    @ViewBuilder
+    private var illustration: some View {
+        switch card.id {
+        case 0: SharedSessionIllustration()
+        case 1: TeamKnowledgeIllustration()
+        default: DesktopPhoneIllustration()
         }
-        .background(Color.amux.pebble.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-        .accessibilityHidden(true)
     }
 }
 

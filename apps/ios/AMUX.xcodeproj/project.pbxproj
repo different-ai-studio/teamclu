@@ -20,6 +20,7 @@
 		4553E608B533CD245A887A39 /* AMUXSessionStreamingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7089CE9863C2F15703551691 /* AMUXSessionStreamingUITests.swift */; };
 		48A4F0655EACAE64B0B0232B /* AMUXUI in Frameworks */ = {isa = PBXBuildFile; productRef = 984FDD5CB983CACB65198166 /* AMUXUI */; };
 		5D9C7760A6A171683819C4A0 /* PushAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */; };
+		5E27EDA155611636668E8AED /* IntroIllustrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */; };
 		65085082F4465D5B43C99A9A /* DesktopGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E733A6BFCE193CA325C33B /* DesktopGuideView.swift */; };
 		6D7C607A8E4F961DF0CEE0ED /* OnboardingNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93B9C49BF75FC26DA4EBA5C5 /* OnboardingNavigation.swift */; };
 		70245B4A62E76BFBC234FE03 /* PushBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 933101253D0E0056ED286BFB /* PushBootstrap.swift */; };
@@ -46,6 +47,7 @@
 		36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteJoinSheet.swift; sourceTree = "<group>"; };
 		37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrgTeamPickerView.swift; sourceTree = "<group>"; };
 		499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXApp.swift; sourceTree = "<group>"; };
+		49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntroIllustrations.swift; sourceTree = "<group>"; };
 		4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		514F7615E8C226A5F3660A5F /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		537E64EAD78ACC7946325945 /* Analytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Analytics.swift; sourceTree = "<group>"; };
@@ -129,6 +131,7 @@
 				F467BD534BE686B6EACBD702 /* ContentView.swift */,
 				B3E733A6BFCE193CA325C33B /* DesktopGuideView.swift */,
 				FDEFC0BF7C8A215582AF7257 /* Info.plist */,
+				49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */,
 				36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */,
 				4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */,
 				514F7615E8C226A5F3660A5F /* LoginView.swift */,
@@ -265,6 +268,7 @@
 				BADAD9E3FCAD93B7FBAC2B28 /* Analytics.swift in Sources */,
 				2C36DC72B69CF16E00B4ECB5 /* ContentView.swift in Sources */,
 				65085082F4465D5B43C99A9A /* DesktopGuideView.swift in Sources */,
+				5E27EDA155611636668E8AED /* IntroIllustrations.swift in Sources */,
 				A5C58ED1E2D4F96A34494416 /* InviteJoinSheet.swift in Sources */,
 				EC3990515ABE38A90617C32E /* LoginView.swift in Sources */,
 				F7495A3C8805D7956FA5B578 /* NoTeamView.swift in Sources */,
