@@ -24,6 +24,7 @@ import { AudioPlayerChip } from "./AudioPlayerChip";
 import { ImageLightbox } from "./ImageLightbox";
 import { PermissionBanner } from "./PermissionBanner";
 import { ToolCallLine } from "./ToolCallLine";
+import { mentionPlainText } from "../mention-display";
 import { toolCallPresentation, type ToolResult } from "../tool-display";
 
 const HIDDEN_MESSAGE_KINDS = new Set<string>([]);
@@ -357,12 +358,14 @@ export function SessionMessageRow({
     );
   }
 
-  const body = normalizeBody(message);
   const attachments = message.attachments ?? [];
   // iOS splits three bubble shapes, not two: the user's own prompt, another
   // human's prompt, and an assistant reply. Only the third one runs full-bleed
   // and carries the "{Agent} · {Model}" caption.
   const isAgentReply = !isOwnMessage && message.kind.trim().toLowerCase() === "agent_reply";
+  // People's messages from the desktop carry mention/skill tokens written for
+  // the model; show them as @Name and /name (iOS MentionDisplayText).
+  const body = isAgentReply ? normalizeBody(message) : mentionPlainText(normalizeBody(message)) || normalizeBody(message);
   const captionLabel = isOwnMessage
     ? tHook("You")
     : isAgentReply

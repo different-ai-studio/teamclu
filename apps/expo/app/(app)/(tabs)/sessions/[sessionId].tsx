@@ -1,5 +1,6 @@
 import { Redirect, Stack, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -37,6 +38,11 @@ import type { FeedbackKind } from "../../../../src/features/sessions/cloud-api";
 import { myFeedbackByMessageId, nextFeedback } from "../../../../src/features/sessions/message-feedback";
 import { noteLocalPrompt } from "../../../../src/features/sessions/live-activity-store";
 import { loadTurnTrace } from "../../../../src/features/sessions/turn-trace";
+import {
+  allowOnceOption,
+  autoApproveStorageKey,
+  permissionOptionsOf,
+} from "../../../../src/features/sessions/permission-options";
 import { createSessionDetailController } from "../../../../src/features/sessions/session-detail-controller";
 import { emptyTimelineState } from "../../../../src/features/sessions/timeline-reducer";
 import { createSessionDetailCache } from "../../../../src/features/sessions/session-detail-cache";
@@ -580,6 +586,7 @@ export default function SessionDetailRoute() {
     requestId: string,
     message: SessionMessage,
     granted: boolean,
+    optionId?: string,
   ) => {
     if (!permissionCommandSender) {
       showToast("error", t("Mobile MQTT is not connected — reconnect and try again."));
@@ -607,6 +614,7 @@ export default function SessionDetailRoute() {
         sessionId: sessionId ?? "",
         requestId,
         granted,
+        optionId,
       });
       setResolvedPermissions((prev) => {
         const next = new Map(prev);
@@ -723,6 +731,43 @@ export default function SessionDetailRoute() {
       ],
     );
   };
+
+  // Auto-approve (iOS `Session.autoApprovePermissions`): per session, this
+  // device only, and only while the session is open here — the answer comes
+  // from this client, so a backgrounded phone can't give it. Only requests
+  // that arrive live are answered, never ones replayed from history, and only
+  // with a once-scoped allow: permanently widening an agent's permissions is
+  // never the toggle's call.
+  const [autoApprove, setAutoApprove] = useState(false);
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    void AsyncStorage.getItem(autoApproveStorageKey(sessionId)).then((value) => {
+      if (!cancelled) setAutoApprove(value === "1");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+  const openedAt = useRef(Date.now());
+  const autoAnswered = useRef(new Set<string>());
+  useEffect(() => {
+    if (!autoApprove || !permissionCommandSender) return;
+    for (const message of detailState.messages) {
+      if (message.kind !== "permission_request") continue;
+      const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+      const requestId = typeof metadata.request_id === "string" ? metadata.request_id : "";
+      if (!requestId || autoAnswered.current.has(requestId) || resolvedPermissions.has(requestId)) continue;
+      // A few seconds of slack for clock skew; anything older is history.
+      if (Date.parse(message.createdAt) < openedAt.current - 5_000) continue;
+      const option = allowOnceOption(permissionOptionsOf(message));
+      if (!option) continue;
+      autoAnswered.current.add(requestId);
+      void handlePermissionResponse(requestId, message, true, option.id);
+    }
+    // handlePermissionResponse is recreated each render; the ref guards repeats.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoApprove, detailState.messages, permissionCommandSender, resolvedPermissions]);
 
   const pendingQuestion = detailState.pendingQuestions[0] ?? null;
 
@@ -1001,6 +1046,21 @@ export default function SessionDetailRoute() {
                   } catch {
                     // user cancelled or platform refused
                   }
+                }
+              : undefined
+          }
+          autoApprove={autoApprove}
+          onToggleAutoApprove={
+            sessionId
+              ? () => {
+                  const next = !autoApprove;
+                  setAutoApprove(next);
+                  selectionTick();
+                  void AsyncStorage.setItem(autoApproveStorageKey(sessionId), next ? "1" : "0");
+                  showToast(
+                    "success",
+                    next ? t("Auto-approving permissions in this session") : t("Permissions need your approval again"),
+                  );
                 }
               : undefined
           }

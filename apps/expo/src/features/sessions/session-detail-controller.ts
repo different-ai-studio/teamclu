@@ -339,6 +339,13 @@ function runtimeMessageFromAcpEvent(
           request_id: event.value.requestId,
           tool_id: event.value.requestId,
           tool_name: event.value.toolName,
+          // The agent's own choices (allow once / always / reject). Dropped
+          // before, so a reply could never name the option it picked.
+          options: event.value.options.map((option) => ({
+            id: option.optionId,
+            kind: option.kind,
+            name: option.name,
+          })),
         },
         teamId,
       });

@@ -7,6 +7,7 @@ import { AgentBadge } from "../../../ui/atoms/AgentBadge";
 import { AvatarStack, type AvatarEntry } from "../../../ui/atoms/AvatarStack";
 import { UnreadDot } from "../../../ui/atoms/UnreadDot";
 import { colors, hai, iosType, spacing } from "../../../ui/theme";
+import { mentionPlainText } from "../mention-display";
 import type { SessionLiveActivity } from "../live-activity";
 import type { SessionSummary } from "../session-types";
 
@@ -140,7 +141,7 @@ export function SessionRow({
   unreadCount = 0,
 }: SessionRowProps) {
   const title = session.title.trim() || "Untitled session";
-  const lastMessage = session.lastMessagePreview.trim();
+  const lastMessage = mentionPlainText(session.lastMessagePreview).trim();
   const timeLabel = formatRelativeTime(session.lastMessageAt || session.createdAt);
   const isUnread = unreadCount > 0 || Boolean(session.hasUnread);
   const isRunning = runtime?.status === STATUS_RUNNING;

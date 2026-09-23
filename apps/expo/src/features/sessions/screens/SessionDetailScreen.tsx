@@ -134,6 +134,9 @@ type SessionDetailScreenProps = {
   onSend: () => void;
   onShare?: () => void;
   onToggleMute?: () => void;
+  /** Per-session, this device only — grant allow-once requests automatically. */
+  autoApprove?: boolean;
+  onToggleAutoApprove?: () => void;
   /** Oldest unanswered opencode question; replaces the composer while set. */
   pendingQuestion?: PendingAcpQuestion | null;
   isAnsweringQuestion?: boolean;
@@ -201,6 +204,8 @@ function SessionHeader({
   onTogglePlans,
   plansPanelOpen,
   onToggleMute,
+  autoApprove,
+  onToggleAutoApprove,
   session,
 }: {
   connectionState: SessionDetailConnectionState;
@@ -212,6 +217,8 @@ function SessionHeader({
   onTogglePlans?: () => void;
   plansPanelOpen?: boolean;
   onToggleMute?: () => void;
+  autoApprove?: boolean;
+  onToggleAutoApprove?: () => void;
   session: SessionSummary;
 }) {
   const { t: tHook } = useTranslation();
@@ -295,6 +302,24 @@ function SessionHeader({
             <Ionicons
               color={isMuted ? colors.cinnabar : colors.onyx}
               name={isMuted ? "notifications-off-outline" : "notifications-outline"}
+              size={20}
+            />
+          </Pressable>
+        ) : null}
+        {onToggleAutoApprove ? (
+          <Pressable
+            accessibilityLabel={
+              autoApprove ? tHook("Stop auto-approving permissions") : tHook("Auto-approve permissions")
+            }
+            accessibilityRole="switch"
+            accessibilityState={{ checked: Boolean(autoApprove) }}
+            hitSlop={8}
+            onPress={onToggleAutoApprove}
+            style={styles.headerSlot}
+          >
+            <Ionicons
+              color={autoApprove ? colors.cinnabar : colors.onyx}
+              name={autoApprove ? "shield-checkmark" : "shield-checkmark-outline"}
               size={20}
             />
           </Pressable>
@@ -570,6 +595,8 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     onSend,
     onShare,
     onToggleMute,
+    autoApprove,
+    onToggleAutoApprove,
     onAnswerQuestion,
     onSkipQuestion,
     pendingQuestion,
@@ -769,6 +796,8 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         }
         plansPanelOpen={plansPanelOpen && planSnapshots.length > 0}
         onToggleMute={onToggleMute}
+        autoApprove={autoApprove}
+        onToggleAutoApprove={onToggleAutoApprove}
         session={session}
       />
       <ConnectionBannerOverlay
