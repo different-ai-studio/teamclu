@@ -1,5 +1,5 @@
 import { ApiError } from "../http-utils.js";
-import { parseLayerRef, type LayerRef } from "./app-runtime-profiles.js";
+import { RUNTIME_PROFILES, parseLayerRef, type LayerRef } from "./app-runtime-profiles.js";
 
 export type AppBuildKind =
   | "node"
@@ -39,6 +39,12 @@ export interface AppStartSpec {
    */
   layers?: string[];
   healthCheckPath?: string;
+  /**
+   * Short form only, and only before resolution: the script inside the code
+   * package. `resolveIntent` replaces it with the profile's command/args, so a
+   * resolved spec never carries it.
+   */
+  entry?: string;
 }
 
 export interface AppDeployDeclaration {
@@ -171,7 +177,69 @@ function parseStringArray(raw: unknown, label: string, { required }: { required:
   return out;
 }
 
+/** Default listen port. FC's own default, and what every template uses. */
+const DEFAULT_PORT = 9000;
+
+/** A path that stays inside the code package. */
+function requirePackageRelative(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("/") || trimmed.split("/").includes("..")) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      `${label} must be a path inside the build output directory (no leading "/", no "..")`,
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * Expand a declaration of intent into the FC start fields.
+ *
+ * The author names a language and an entry point; which Debian image, which
+ * interpreter, and which layers are the platform's problem — they are values
+ * only the platform can know, and asking the repository to guess them is what
+ * produced twelve fix commits and four wrong regions.
+ */
+export function resolveIntent(
+  kind: AppBuildKind,
+  intent: { entry?: string; port: number; healthCheckPath?: string },
+): AppStartSpec {
+  if (isContainerKind(kind)) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      "a container app declares its start through its image, not start.entry",
+    );
+  }
+  const profile = RUNTIME_PROFILES[kind as Exclude<AppBuildKind, "container">];
+  if (!profile.verified) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      `start.entry is not supported for build.kind "${kind}" yet: its interpreter comes from a layer whose mount path has not been verified, and the platform will not guess one. Declare fcRuntime, command, args and layers explicitly for now.`,
+    );
+  }
+  if (profile.entryRequired && !intent.entry) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      `start.entry is required for build.kind "${kind}" — the path to run inside the build output directory`,
+    );
+  }
+  const entry = intent.entry ? requirePackageRelative(intent.entry, "start.entry") : undefined;
+  return {
+    fcRuntime: profile.fcRuntime,
+    command: [profile.interpreter],
+    args: profile.argsFor === "entry" && entry ? [entry] : [],
+    port: intent.port,
+    layers: [...profile.layers],
+    ...(intent.healthCheckPath ? { healthCheckPath: intent.healthCheckPath } : {}),
+  };
+}
+
 function parsePort(raw: unknown): number {
+  if (raw === undefined) return DEFAULT_PORT;
   const port = typeof raw === "number" ? raw : Number.NaN;
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new ApiError(400, "validation_failed", "start.port must be a TCP port between 1 and 65535");
@@ -247,6 +315,25 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
       ...(layers !== undefined ? { layers } : {}),
       ...(healthCheckPath ? { healthCheckPath } : {}),
     };
+  }
+
+  const entryRaw = typeof s.entry === "string" ? s.entry.trim() : "";
+  const passthroughFields = ["fcRuntime", "command", "args", "layers"].filter((k) =>
+    Object.prototype.hasOwnProperty.call(s, k),
+  );
+  if (entryRaw && passthroughFields.length > 0) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      `start declares both forms: "entry" together with ${passthroughFields.join(", ")}. Use start.entry and let the platform choose, or declare the Function Compute fields yourself — not both.`,
+    );
+  }
+  if (entryRaw || (!fcRuntimeRaw && passthroughFields.length === 0)) {
+    return resolveIntent(build.kind, {
+      entry: entryRaw || undefined,
+      port,
+      ...(healthCheckPath ? { healthCheckPath } : {}),
+    });
   }
 
   if (!fcRuntimeRaw) {

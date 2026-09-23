@@ -9082,8 +9082,18 @@ components:
           description: Relative Docker build context.
     AppStartSpec:
       type: object
-      required: [port]
+      description: |
+        How the built artifact starts. Two mutually exclusive forms: declare
+        `entry` and let the platform resolve the runtime from `build.kind`, or
+        declare the Function Compute fields yourself. Both at once is rejected.
       properties:
+        entry:
+          type: string
+          description: |
+            Short form. The path to run, relative to the build output
+            directory. The platform supplies `fcRuntime`, `command` and
+            `layers` from the profile for `build.kind`. Mutually exclusive
+            with `fcRuntime` / `command` / `args` / `layers`.
         fcRuntime:
           type: string
           description: Function Compute runtime for non-container builds.
@@ -9097,10 +9107,17 @@ components:
           type: integer
           minimum: 1
           maximum: 65535
+          default: 9000
+          description: Listen port. Defaults to 9000.
         layers:
           type: array
           items: { type: string }
-          description: Function Compute layer ARNs; an empty list disables defaults.
+          description: |
+            Function Compute layers. An official layer may be named
+            region-free as `Name:version` (e.g. `Nodejs20:3`), expanded
+            against the app's deploy region; a full ARN is accepted but must
+            already name that region. An empty list disables the defaults for
+            `build.kind`; omitting the field applies them.
         healthCheckPath:
           type: string
           pattern: "^/"

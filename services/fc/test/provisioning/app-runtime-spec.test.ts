@@ -138,3 +138,141 @@ test("layers: garbage is refused with a message naming both accepted forms", () 
     (e: any) => /Name:version/.test(String(e?.message ?? e)),
   );
 });
+
+// ---------------------------------------------------------------------------
+// The short form: the author declares intent, the platform resolves it.
+// ---------------------------------------------------------------------------
+
+test("intent: node short form expands to the image's own interpreter, no layer", () => {
+  const d = parseAppDeployDeclaration({
+    build: { kind: "node", output: ".output" },
+    start: { entry: "server/index.mjs", port: 9000 },
+  });
+  assert.deepEqual(d.start, {
+    fcRuntime: "custom.debian10",
+    command: ["/var/fc/lang/nodejs20/bin/node"],
+    args: ["server/index.mjs"],
+    port: 9000,
+    layers: [],
+  });
+});
+
+test("intent: python short form uses 3.10.9, not the system python3", () => {
+  const d = parseAppDeployDeclaration({
+    build: { kind: "python", output: "." },
+    start: { entry: "app.py", port: 9000 },
+  });
+  assert.deepEqual(d.start.command, ["/var/fc/lang/python3.10/bin/python3"]);
+  assert.deepEqual(d.start.layers, []);
+});
+
+test("intent: port defaults to 9000 and healthCheckPath survives", () => {
+  const d = parseAppDeployDeclaration({
+    build: { kind: "node" },
+    start: { entry: "server/index.mjs", healthCheckPath: "/health" },
+  });
+  assert.equal(d.start.port, 9000);
+  assert.equal(d.start.healthCheckPath, "/health");
+});
+
+test("intent: go needs no entry and runs its built binary", () => {
+  const d = parseAppDeployDeclaration({
+    build: { kind: "go", output: "." },
+    start: { port: 9000 },
+  });
+  assert.deepEqual(d.start.command, ["./main"]);
+  assert.deepEqual(d.start.args, []);
+});
+
+test("intent: a missing entry is an error, never an inferred default", () => {
+  assert.throws(
+    () => parseAppDeployDeclaration({ build: { kind: "node" }, start: { port: 9000 } }),
+    (e: any) => {
+      const m = String(e?.message ?? e);
+      return /start\.entry/.test(m) && /node/.test(m);
+    },
+  );
+});
+
+test("intent: entry may not escape the code package", () => {
+  for (const bad of ["../secrets.mjs", "/etc/passwd"]) {
+    assert.throws(
+      () =>
+        parseAppDeployDeclaration({
+          build: { kind: "node" },
+          start: { entry: bad, port: 9000 },
+        }),
+      (e: any) => /start\.entry/.test(String(e?.message ?? e)),
+      bad,
+    );
+  }
+});
+
+test("intent: php and java are refused until their layer mount is verified", () => {
+  for (const kind of ["php", "java"] as const) {
+    assert.throws(
+      () => parseAppDeployDeclaration({ build: { kind }, start: { entry: "app", port: 9000 } }),
+      (e: any) => {
+        const m = String(e?.message ?? e);
+        return m.includes(kind) && /fcRuntime/.test(m);
+      },
+      kind,
+    );
+  }
+});
+
+test("intent: mixing the two forms is an error, not a precedence rule", () => {
+  assert.throws(
+    () =>
+      parseAppDeployDeclaration({
+        build: { kind: "node" },
+        start: { entry: "server/index.mjs", fcRuntime: "custom.debian10", port: 9000 },
+      }),
+    (e: any) => /both/i.test(String(e?.message ?? e)),
+  );
+});
+
+test("regression: every live app's passthrough spec still parses to itself", () => {
+  // Read off the live apps in cn-shenzhen on 2026-09-23. These must keep
+  // deploying byte-identically; the profile table applies only to the short form.
+  const live = [
+    {
+      build: { kind: "node", output: ".output" },
+      start: {
+        fcRuntime: "custom.debian10",
+        command: ["/opt/nodejs20/bin/node"],
+        args: ["server/index.mjs"],
+        port: 9000,
+        layers: ["acs:fc:cn-shenzhen:official:layers/Nodejs20/versions/2"],
+      },
+    },
+    {
+      build: { kind: "python", output: "." },
+      start: {
+        fcRuntime: "custom",
+        command: ["/bin/bash"],
+        args: [
+          "-c",
+          "PYTHONPATH=/code/lib python3 -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --loop asyncio",
+        ],
+        port: 9000,
+        layers: [],
+      },
+    },
+  ];
+  for (const decl of live) {
+    const d = parseAppDeployDeclaration(decl);
+    assert.equal(d.start.fcRuntime, decl.start.fcRuntime);
+    assert.deepEqual(d.start.command, decl.start.command);
+    assert.deepEqual(d.start.args, decl.start.args);
+    assert.deepEqual(d.start.layers, decl.start.layers);
+  }
+});
+
+test("regression: passthrough omitting layers still gets the pinned Nodejs20", () => {
+  // LAYER_VERSIONS must not be repointed at the profile table: doing so would
+  // strip the layer from existing repos that omit the field.
+  assert.deepEqual(resolveLayers("cn-shenzhen", "node", undefined), [
+    layerArn("cn-shenzhen", "Nodejs20", 3),
+  ]);
+});
