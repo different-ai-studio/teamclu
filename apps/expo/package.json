@@ -18,7 +18,7 @@
     "@sentry/react-native": "~8.23.0",
     "@teamclu/app": "workspace:*",
     "buffer": "^6.0.3",
-    "expo": "~57.0.11",
+    "expo": "~57.0.24",
     "expo-audio": "^57.0.5",
     "expo-blur": "~57.0.2",
     "expo-clipboard": "^57.0.1",
