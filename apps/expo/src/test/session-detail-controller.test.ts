@@ -623,6 +623,49 @@ describe("createSessionDetailController", () => {
     expect(controller.getState().messages).toEqual([]);
   });
 
+  it("closes a stream that goes silent — iOS's stale-run watchdog", async () => {
+    const { createSessionDetailController } = await import(
+      "../features/sessions/session-detail-controller"
+    );
+    const mqtt = createMockMqtt();
+    const api = {
+      getSession: vi.fn().mockResolvedValue(createSession()),
+      insertOutgoingMessage: vi.fn(),
+      listMessagesPage: vi.fn().mockResolvedValue(page([])),
+      resolveMemberActorId: vi.fn().mockResolvedValue("actor-1"),
+      markSessionRead: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = createSessionDetailController({
+      api: api as any,
+      currentMemberActorId: "actor-1",
+      getAuth: vi.fn().mockResolvedValue({ accessToken: "jwt-token", userId: "user-1" }),
+      mqtt: mqtt as any,
+      mqttUrl: "wss://broker.example.com/mqtt",
+      sessionId: "session-1",
+      teamId: "team-1",
+      staleStreamTimeoutMs: 40,
+    });
+    await controller.load();
+
+    const emit = (text: string, seq: number) =>
+      mqtt.emit(
+        "amux/team-1/session/session-1/live",
+        createAcpOutputPayload({ actorId: "actor-agent", eventId: `e-${seq}`, text, sequence: BigInt(seq) }),
+      );
+    emit("Hel", 11);
+    await new Promise((r) => setTimeout(r, 25));
+    emit("lo", 12); // a delta re-arms the timer
+    await new Promise((r) => setTimeout(r, 25));
+    expect(controller.getState().streamingByAgent.get("actor-agent")?.isComplete).toBeFalsy();
+
+    await new Promise((r) => setTimeout(r, 40)); // now silent past the window
+    expect(controller.getState().streamingByAgent.get("actor-agent")).toMatchObject({
+      isComplete: true,
+      text: "Hello",
+    });
+    await controller.dispose();
+  });
+
   it("preserves raw acp thinking chunks including leading spaces and punctuation", async () => {
     const { createSessionDetailController } = await import(
       "../features/sessions/session-detail-controller"
