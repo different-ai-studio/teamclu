@@ -84,6 +84,12 @@ public final class SessionDetailViewModel {
     /// to reveal the scroll view only after the first real layout pass can
     /// anchor against actual content.
     public private(set) var hasLoadedInitialFeed: Bool = false
+    /// True once the first Cloud API history fetch after `start` has
+    /// returned — with rows, with none, or with an error. Until then an
+    /// empty feed means "not loaded yet", not "no messages": a session never
+    /// opened on this device has no local cache, and its history is still on
+    /// the way.
+    public private(set) var hasFinishedInitialSeed: Bool = false
     /// Per-agent streaming output buffer. Keyed by the agent actor id. An
     /// entry exists only between the first delta of an `output` stream and
     /// its `isComplete` event (or an idle status flush). Concurrent agents
@@ -183,6 +189,9 @@ public final class SessionDetailViewModel {
     // property on an @Observable type, where plain `nonisolated` is rejected.
     // The deinit read is safe in practice (see the note above).
     nonisolated(unsafe) private var task: Task<Void, Never>?
+    /// The Cloud API history fetch `start` fires before the MQTT loop. Holds
+    /// `self` weakly, so the deinit doesn't need to reach it; `stop` cancels.
+    @ObservationIgnored private var initialSeedTask: Task<Void, Never>?
     /// Actor IDs for which this session-detail view has added an MQTT
     /// runtime-state subscription (beyond what SessionListViewModel manages
     /// for ConnectedAgentsStore agents). Tracked so we can unsubscribe on stop().
@@ -1585,6 +1594,22 @@ public final class SessionDetailViewModel {
         // the synthetic rows once their bytes are back in the buffers.
         restoreStreamingAgentSetFromIncompleteOutput()
 
+        // Fetch history from the Cloud API now, not behind the MQTT loop
+        // below. That loop seeds only after the broker is connected and the
+        // SUBACK is back, so a session with no local cache sat on "No
+        // messages yet" for as long as MQTT took — quick when it happened
+        // to be connected, much longer mid-reconnect — though the fetch is a
+        // plain HTTP call. The loop's own seed stays: it closes the gap
+        // between this fetch and the subscribe, and dedupes on
+        // `supabaseMessageId`, so running both costs one extra request.
+        hasFinishedInitialSeed = false
+        initialSeedTask?.cancel()
+        initialSeedTask = Task { @MainActor [weak self, modelContext] in
+            await self?.seedFromSupabaseMessages(modelContext: modelContext)
+            guard let self, !Task.isCancelled else { return }
+            self.hasFinishedInitialSeed = true
+        }
+
         // Single subscription path: session/{sid}/live. iOS only ever
         // resolves a session-backed detail view — bare-runtime navigation
         // was deleted alongside RuntimeDestinationView. Daemon mirrors this
@@ -1684,6 +1709,7 @@ public final class SessionDetailViewModel {
 
     public func stop() {
         task?.cancel(); task = nil
+        initialSeedTask?.cancel(); initialSeedTask = nil
         spawningPollTask?.cancel(); spawningPollTask = nil
         streamingMirrorFlushTask?.cancel(); streamingMirrorFlushTask = nil
         for (_, t) in interruptTimeoutTasks { t.cancel() }

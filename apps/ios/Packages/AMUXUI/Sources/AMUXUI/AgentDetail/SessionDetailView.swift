@@ -168,7 +168,15 @@ public struct SessionDetailView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if viewModel.events.isEmpty && viewModel.streamingAgentSet.isEmpty {
+                    if viewModel.events.isEmpty && viewModel.streamingAgentSet.isEmpty
+                        && !viewModel.hasFinishedInitialSeed {
+                        // No local cache and the history fetch hasn't come
+                        // back — loading, not empty. Claiming "No messages
+                        // yet" here flashed on every first open.
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 60)
+                    } else if viewModel.events.isEmpty && viewModel.streamingAgentSet.isEmpty {
                         VStack(spacing: 12) {
                             Image(systemName: "bubble.left.and.bubble.right")
                                 .font(.system(size: 40))
