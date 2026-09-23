@@ -195,8 +195,10 @@ export function SessionComposerShell({
         </View>
       </View>
 
-      {recordError ? (
-        <Text style={styles.helperTextError}>{recordError}</Text>
+      {recordError ?? (recorder.errorMessage ? t(recorder.errorMessage) : null) ? (
+        <Text style={styles.helperTextError}>
+          {recordError ?? t(recorder.errorMessage ?? "")}
+        </Text>
       ) : presentation.helperText ? (
         <Text style={styles.helperText}>{presentation.helperText}</Text>
       ) : null}

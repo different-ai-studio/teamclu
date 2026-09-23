@@ -95,6 +95,13 @@ export default function VoiceCaptureRoute() {
     dispatch({ type: "failed", error: payload });
   }, []);
 
+  // The recognizer can give up mid-take (no mic, service unavailable); say
+  // why instead of sitting on a dead "listening" screen.
+  useEffect(() => {
+    if (recorder.errorMessage) fail(new Error(t(recorder.errorMessage)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recorder.errorMessage]);
+
   // Start listening the moment the screen opens — it is the take, not a
   // landing page.
   useEffect(() => {

@@ -5,6 +5,7 @@ import {
   normalizeMeteringLevel,
   waveformBarHeight,
   dictationLanguage,
+  speechErrorMessage,
   normalizeSpeechVolume,
 } from "../features/sessions/voice-level";
 
@@ -89,5 +90,18 @@ describe("dictationLanguage", () => {
     expect(dictationLanguage("en-GB")).toBe("en-US");
     expect(dictationLanguage("ja-JP")).toBe("en-US");
     expect(dictationLanguage(null)).toBe("en-US");
+  });
+});
+
+describe("speechErrorMessage", () => {
+  it("explains a failed take, and stays quiet for a cancel or silence", () => {
+    expect(speechErrorMessage("aborted")).toBeNull();
+    expect(speechErrorMessage("no-speech")).toBeNull();
+    expect(speechErrorMessage("not-allowed")).toBe("Microphone or speech recognition permission denied.");
+    expect(speechErrorMessage("service-not-allowed")).toBe("Speech recognition isn't available on this device right now.");
+    expect(speechErrorMessage("language-not-supported")).toBe("Speech recognition isn't available on this device right now.");
+    expect(speechErrorMessage("audio-capture")).toBe("Couldn't access microphone.");
+    expect(speechErrorMessage("network")).toBe("Speech recognition needs a network connection.");
+    expect(speechErrorMessage("something-new")).toBe("Speech recognition stopped unexpectedly.");
   });
 });

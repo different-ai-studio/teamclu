@@ -40,6 +40,31 @@ export function dictationLanguage(localeTag: string | null | undefined): string 
 }
 
 /**
+ * What to tell someone when the recognizer gives up mid-take. The codes are
+ * expo-speech-recognition's `error` event (Web Speech API names). Returns an
+ * English i18n key; "aborted" is our own cancel and says nothing.
+ */
+export function speechErrorMessage(code: string | null | undefined): string | null {
+  switch (code) {
+    case "aborted":
+    case "no-speech":
+      return null;
+    case "not-allowed":
+      return "Microphone or speech recognition permission denied.";
+    case "language-not-supported":
+    case "service-not-allowed":
+      return "Speech recognition isn't available on this device right now.";
+    case "network":
+      return "Speech recognition needs a network connection.";
+    case "audio-capture":
+    case "interrupted":
+      return "Couldn't access microphone.";
+    default:
+      return "Speech recognition stopped unexpectedly.";
+  }
+}
+
+/**
  * Words the recognizer should expect — iOS `SessionDetailView`'s
  * `VoiceRecorder(contextualStrings:)`, kept in step.
  */

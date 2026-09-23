@@ -5,6 +5,7 @@ import {
   DICTATION_CONTEXTUAL_STRINGS,
   dictationLanguage,
   normalizeSpeechVolume,
+  speechErrorMessage,
 } from "../voice-level";
 
 export type VoiceRecorder = {
@@ -14,6 +15,12 @@ export type VoiceRecorder = {
   level: number;
   /** What has been recognised so far in this take. */
   transcript: string;
+  /**
+   * Why the last take ended early (an i18n key), or null. The recognizer
+   * reports failures as an event, not from `start()`, so without this a
+   * failed take just stopped with no word to the user.
+   */
+  errorMessage: string | null;
   start: () => Promise<void>;
   /** Stops listening and resolves with the final transcript ("" if nothing was heard). */
   stop: () => Promise<string>;
@@ -45,6 +52,7 @@ export function useVoiceRecorder(): VoiceRecorder {
   const [isRecording, setIsRecording] = useState(false);
   const [level, setLevel] = useState(0);
   const [transcript, setTranscript] = useState("");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const transcriptRef = useRef("");
@@ -69,7 +77,10 @@ export function useVoiceRecorder(): VoiceRecorder {
     setLevel(normalizeSpeechVolume(event.value));
   });
   useSpeechRecognitionEvent("end", settle);
-  useSpeechRecognitionEvent("error", settle);
+  useSpeechRecognitionEvent("error", (event) => {
+    setErrorMessage(speechErrorMessage(event.error));
+    settle();
+  });
 
   useEffect(() => {
     if (startedAt === null) return;
@@ -87,7 +98,9 @@ export function useVoiceRecorder(): VoiceRecorder {
     durationMs: startedAt === null ? 0 : Math.max(0, now - startedAt),
     level,
     transcript,
+    errorMessage,
     async start() {
+      setErrorMessage(null);
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
         throw new Error("Microphone or speech recognition permission denied.");
