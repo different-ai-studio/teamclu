@@ -13,6 +13,10 @@ import { resolveInitialMessageMentionActorIds } from "../../src/features/session
 import { resolveAgentRuntimeStartPlans } from "../../src/features/sessions/runtime-start";
 import { createConfiguredSessionsApi } from "../../src/features/sessions/api-provider";
 import {
+  deriveSessionTitle,
+  startSessionWithAgents,
+} from "../../src/features/sessions/start-session";
+import {
   NewSessionScreen,
   type AgentWorkspaceChoice,
 } from "../../src/features/sessions/screens/NewSessionScreen";
@@ -22,13 +26,6 @@ import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
 import { uuidV4 } from "../../src/lib/uuid";
 import { showToast } from "../../src/ui/Toast";
 import { t } from "../../src/lib/i18n";
-
-function deriveTitle(firstMessage: string): string {
-  const trimmed = firstMessage.trim();
-  if (!trimmed) return t("New Session");
-  const firstLine = trimmed.split(/\n/)[0] ?? trimmed;
-  return firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine;
-}
 
 export default function NewSessionRoute() {
   const { t: tHook } = useTranslation();
@@ -170,65 +167,45 @@ export default function NewSessionRoute() {
             ? ideas.find((row) => row.ideaId === chosenIdeaId)
             : undefined;
           const expandedMessage = buildFirstMessageWithIdea(firstMessage, idea);
-          const sessionId = await sessionsApi.createSession({
-            teamId: state.currentTeam.id,
-            title: deriveTitle(firstMessage),
-            mode: "collab",
-            primaryAgentId: primaryAgentActorId,
-            ideaId: chosenIdeaId,
-          });
-
-          // create_session seeds session_participants with the caller and the
-          // primary agent. Add any other picked collaborators (extra agents,
-          // humans) on top.
-          const extras = collaboratorActorIds.filter(
-            (id) => id !== primaryAgentActorId && id !== memberActorId,
-          );
-          if (extras.length > 0) {
-            await sessionsApi.addParticipants(sessionId, extras);
-          }
-
-          if (expandedMessage.trim().length > 0) {
-            const mentionActorIds = resolveInitialMessageMentionActorIds({
-              collaboratorActorIds,
-              teamActors: actors,
-            });
-            await sessionsApi.insertOutgoingMessage({
-              id: uuidV4(),
-              teamId: state.currentTeam.id,
-              sessionId,
-              senderActorId: memberActorId,
-              content: expandedMessage.trim(),
-              metadata: { mention_actor_ids: mentionActorIds },
-            });
-          }
-
-          if (runtimePlans.length > 0 && teamMqtt) {
-            const runtimeRpc = createRuntimeRpcClient({
-              mqtt: teamMqtt,
-              teamId: state.currentTeam.id,
-              requesterActorId: memberActorId,
-            });
-            for (const plan of runtimePlans) {
-              const actorName =
-                actorById.get(plan.agentActorId)?.displayName ?? tHook("Agent");
-              void runtimeRpc.runtimeStart({
-                targetActorId: plan.targetActorId,
-                workspaceId: plan.workspaceId,
-                worktree: plan.worktree,
-                sessionId,
-                agentType: plan.agentType,
-                initialPrompt: "",
-              }).catch((err) => {
+          const runtimeRpc =
+            runtimePlans.length > 0 && teamMqtt
+              ? createRuntimeRpcClient({
+                  mqtt: teamMqtt,
+                  teamId: state.currentTeam.id,
+                  requesterActorId: memberActorId,
+                })
+              : null;
+          const sessionId = await startSessionWithAgents(
+            {
+              sessionsApi,
+              runtimeRpc,
+              newMessageId: uuidV4,
+              onRuntimeStartError: (plan, err) => {
+                const actorName =
+                  actorById.get(plan.agentActorId)?.displayName ?? tHook("Agent");
                 showToast(
                   "error",
                   err instanceof Error
                     ? tHook("Couldn't start {{value}}: {{message}}", { value: actorName, message: err.message })
                     : tHook("Couldn't start {{value}}.", { value: actorName }),
                 );
-              });
-            }
-          }
+              },
+            },
+            {
+              teamId: state.currentTeam.id,
+              memberActorId,
+              title: deriveSessionTitle(firstMessage, t("New Session")),
+              message: expandedMessage,
+              primaryAgentActorId,
+              ideaId: chosenIdeaId,
+              collaboratorActorIds,
+              mentionActorIds: resolveInitialMessageMentionActorIds({
+                collaboratorActorIds,
+                teamActors: actors,
+              }),
+              runtimePlans,
+            },
+          );
 
           router.replace(`/(app)/sessions/${sessionId}`);
         } catch (error) {

@@ -18,6 +18,18 @@ export default function AppLayout() {
           }}
         />
         <Stack.Screen
+          name="voice-capture"
+          options={{
+            // Full-bleed like iOS's capture surface; the screen owns its own
+            // Cancel, and a swipe-down mid-take would be easy to trigger by
+            // accident.
+            presentation: "fullScreenModal",
+            animation: "slide_from_bottom",
+            gestureEnabled: false,
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
           name="settings"
           options={{
             presentation: "modal",

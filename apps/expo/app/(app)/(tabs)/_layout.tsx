@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Tabs, usePathname } from "expo-router";
+import { Tabs, usePathname, useRouter } from "expo-router";
 import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -16,6 +16,13 @@ import {
   tabBarLabelStyle,
 } from "../../../src/ui/tab-bar";
 import { colors } from "../../../src/ui/theme";
+
+/**
+ * The Voice tab (iOS #1557) is an action, not a place: pressing it opens the
+ * full-screen capture modal and leaves the selected tab where it was. iOS
+ * swapped Search out for it; Expo keeps Search and adds Voice last.
+ */
+const VOICE_CAPTURE_HREF = "/(app)/voice-capture";
 
 type TabIconProps = {
   // `ColorValue`, not `string`: this is what expo-router hands `tabBarIcon`,
@@ -76,6 +83,7 @@ export default function TabsLayout() {
  */
 function IosNativeTabs({ unread }: { unread: number }) {
   const { t } = useTranslation();
+  const router = useRouter();
   // Session detail covers the composer; hide the system tab bar while that
   // route is showing. Driven from pathname (not a child setOptions) because
   // NativeTabs is a real UITabBar — JS `tabBarStyle` cannot reach it.
@@ -117,12 +125,25 @@ function IosNativeTabs({ unread }: { unread: number }) {
         <NativeTabs.Trigger.Icon sf="magnifyingglass" />
         <NativeTabs.Trigger.Label>{t("Search")}</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
+
+      {/* `disabled` stops the native bar from selecting the tab, but the
+          navigator still emits `tabPress` (with `isPrevented`), which is the
+          hook for opening the capture modal instead. */}
+      <NativeTabs.Trigger
+        disabled
+        listeners={{ tabPress: () => router.push(VOICE_CAPTURE_HREF) }}
+        name="voice"
+      >
+        <NativeTabs.Trigger.Icon sf="mic" />
+        <NativeTabs.Trigger.Label>{t("Voice")}</NativeTabs.Trigger.Label>
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }
 
 function AndroidPlainTabs({ unread }: { unread: number }) {
   const { t } = useTranslation();
+  const router = useRouter();
   // The bar owns the bottom inset now: it sits flush against the display edge
   // and pads its own content clear of the gesture pill. The root reserves the
   // top only — see the note there.
@@ -184,6 +205,19 @@ function AndroidPlainTabs({ unread }: { unread: number }) {
         options={{
           title: t("Search"),
           tabBarIcon: makeIcon("search", "search-outline"),
+        }}
+      />
+      <Tabs.Screen
+        listeners={{
+          tabPress: (event) => {
+            event.preventDefault();
+            router.push(VOICE_CAPTURE_HREF);
+          },
+        }}
+        name="voice"
+        options={{
+          title: t("Voice"),
+          tabBarIcon: makeIcon("mic", "mic-outline"),
         }}
       />
     </Tabs>
