@@ -436,6 +436,29 @@ async function adoptSession(sessionManager) {
   return { sessionId, session };
 }
 
+/**
+ * pi's `AgentSession.dispose()` marks this session's extension runner stale
+ * and then invalidates the process-wide `ExtensionRuntime`. This host loads
+ * extensions once and shares that runtime across every session in the
+ * worktree, so the second step makes `pi.registerTool` / `pi.sendMessage`
+ * throw in sessions that are still open — the "extension ctx is stale"
+ * banner on the chat you were actually looking at.
+ *
+ * Keep the per-session runner stale (its own `ctx` must not be reused) and
+ * leave the shared runtime alone.
+ */
+function scopeRunnerInvalidation(session) {
+  const runner = session?.extensionRunner;
+  if (!runner || typeof runner.invalidate !== "function") return;
+  if (runner.invalidate.keepsSharedRuntime) return;
+  function invalidateRunnerOnly(message) {
+    if (this.staleMessage) return;
+    this.staleMessage = message;
+  }
+  invalidateRunnerOnly.keepsSharedRuntime = true;
+  runner.invalidate = invalidateRunnerOnly;
+}
+
 async function closeSession(sessionId) {
   const entry = sessions.get(sessionId);
   if (!entry) return false;
@@ -460,6 +483,7 @@ async function closeSession(sessionId) {
     log(`abort during close failed (${sessionId}): ${e}`);
   }
   try {
+    scopeRunnerInvalidation(entry.session);
     entry.session.dispose();
   } catch (e) {
     log(`dispose failed (${sessionId}): ${e}`);

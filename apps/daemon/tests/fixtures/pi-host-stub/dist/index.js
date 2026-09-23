@@ -193,9 +193,13 @@ function createStubModelRuntime() {
 }
 
 export async function createAgentSessionServices(options) {
+  // One runtime per host process, same as pi's resource loader. dispose()
+  // invalidates it unless the host scopes that call to the closing session.
+  const extensionRuntime = { staleMessage: undefined };
   return {
     cwd: options.cwd,
     agentDir: "",
+    extensionRuntime,
     modelRuntime: createStubModelRuntime(),
     settingsManager: {
       getGlobalSettings: () => ({}),
@@ -223,8 +227,21 @@ class StubAgentSession {
     this.running = false;
     this.disposed = false;
     this.ui = undefined;
+    this.onError = undefined;
+    this.extensionRuntime = services.extensionRuntime;
     this._model = { provider: "stub", id: "stub-model" };
-    this.extensionRunner = {
+    const runtime = services.extensionRuntime;
+    this._extensionRunner = {
+      staleMessage: undefined,
+      runtime,
+      // Mirrors pi 0.84.2: invalidating one runner also poisons the shared runtime.
+      invalidate(message) {
+        if (this.staleMessage) return;
+        this.staleMessage =
+          message ??
+          "This extension ctx is stale after session replacement or reload.";
+        runtime.staleMessage = this.staleMessage;
+      },
       getRegisteredCommands: () => [
         { invocationName: "stub-cmd", description: "A stub extension command" },
       ],
@@ -260,6 +277,9 @@ class StubAgentSession {
   get sessionName() {
     return undefined;
   }
+  get extensionRunner() {
+    return this._extensionRunner;
+  }
   get autoCompactionEnabled() {
     return false;
   }
@@ -278,10 +298,20 @@ class StubAgentSession {
 
   async bindExtensions(bindings) {
     this.ui = bindings.uiContext;
+    this.onError = bindings.onError;
   }
 
   async prompt(text, options) {
     options?.preflightResult?.(true);
+    // A poisoned shared runtime surfaces on the session that is still prompting,
+    // which is the banner the desktop shows after another session was closed.
+    if (this.extensionRuntime?.staleMessage) {
+      this.onError?.({
+        extensionPath: "stub",
+        event: "prompt",
+        error: this.extensionRuntime.staleMessage,
+      });
+    }
     this.running = true;
     this.aborted = false;
     void this.runTurn(text);
@@ -334,6 +364,9 @@ class StubAgentSession {
   }
 
   dispose() {
+    this._extensionRunner.invalidate(
+      "This extension ctx is stale after session replacement or reload.",
+    );
     this.disposed = true;
     this.listeners.clear();
   }
