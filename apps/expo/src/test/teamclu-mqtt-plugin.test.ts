@@ -54,6 +54,26 @@ describe("withTeamCluMqtt config plugin helpers", () => {
     expect(twice.match(/TeamCluMqttPackage/g)).toHaveLength(1);
   });
 
+  it("registers the package in the SDK 57 PackageList.apply template", () => {
+    const mainApplication = [
+      "        packageList =",
+      "          PackageList(this).packages.apply {",
+      "            // Packages that cannot be autolinked yet can be added manually here, for example:",
+      "            // add(MyReactNativePackage())",
+      "          }",
+    ].join("\n");
+
+    const once = plugin.addPackageRegistration(mainApplication);
+    const twice = plugin.addPackageRegistration(once);
+
+    expect(once).toContain("            // add(MyReactNativePackage())\n            add(TeamCluMqttPackage())");
+    expect(twice.match(/TeamCluMqttPackage/g)).toHaveLength(1);
+  });
+
+  it("fails the prebuild when MainApplication has no known anchor", () => {
+    expect(() => plugin.addPackageRegistration("class MainApplication {}")).toThrow(/TeamCluMqttPackage/);
+  });
+
   it("adds the CocoaMQTT pod once", () => {
     const podfile = [
       "platform :ios, '15.1'",

@@ -68,6 +68,7 @@ class TeamCluMqttModule(
     val keepalive = if (options.hasKey("keepalive")) options.getDouble("keepalive").toInt() else 90
 
     emitConnectionState("connecting")
+    var built: Mqtt3AsyncClient? = null
     val nextClient = MqttClient.builder()
       .useMqttVersion3()
       .identifier(clientId)
@@ -76,7 +77,19 @@ class TeamCluMqttModule(
       .also { builder ->
         if (useTls) builder.sslWithDefaultConfig()
       }
+      // A drop after the connect succeeded (network change, broker kick) has
+      // no other path to JS: without this the app kept showing a live
+      // connection that was gone. A failed connect and disconnect() report
+      // through their own paths, and a replaced client is not \`client\`.
+      .addDisconnectedListener { _ ->
+        val self = built
+        if (self != null && client === self) {
+          client = null
+          emitConnectionState("disconnected")
+        }
+      }
       .buildAsync()
+    built = nextClient
 
     val connectBuilder = nextClient.connectWith().keepAlive(keepalive)
     if (!username.isNullOrBlank() && password != null) {
@@ -398,11 +411,28 @@ function addMqttPackagingExcludes(contents) {
   );
 }
 
+/**
+ * Registers the package in MainApplication. Two templates are in the wild:
+ * the older `packages.add(...)` form and SDK 57's `PackageList(this).packages
+ * .apply { add(...) }`. Only the first used to be matched, and `replace` on a
+ * missing anchor is a silent no-op — so on SDK 57 the package was never
+ * registered, the module never existed, and Android MQTT never connected.
+ * An unrecognised template now fails the prebuild instead.
+ */
 function addPackageRegistration(contents) {
   if (contents.includes("TeamCluMqttPackage()")) return contents;
-  return contents.replace(
-    "            // packages.add(MyReactNativePackage())",
-    `            // packages.add(MyReactNativePackage())\n${PACKAGE_REGISTRATION}`,
+  const legacy = "            // packages.add(MyReactNativePackage())";
+  if (contents.includes(legacy)) {
+    return contents.replace(legacy, `${legacy}\n${PACKAGE_REGISTRATION}`);
+  }
+  const applyBlock = /^([ \t]*)\/\/ add\(MyReactNativePackage\(\)\)$/m;
+  const match = contents.match(applyBlock);
+  if (match) {
+    return contents.replace(applyBlock, `${match[0]}\n${match[1]}add(TeamCluMqttPackage())`);
+  }
+  throw new Error(
+    "withTeamCluMqtt: couldn't find where to register TeamCluMqttPackage in MainApplication; " +
+      "the template changed — update addPackageRegistration.",
   );
 }
 

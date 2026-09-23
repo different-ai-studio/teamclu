@@ -397,7 +397,14 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
         url: mqttUrl,
         username: state.currentMemberActorId!,
         password: accessToken,
-        clientId: `teamclu-expo-${state.currentMemberActorId!.slice(0, 8)}`,
+        // One id per connection, like the native app. A fixed per-actor id made
+        // the same person's phone and tablet take the broker session from each
+        // other: each connect kicked the other device offline.
+        clientId: `teamclu-expo-${state.currentMemberActorId!.slice(0, 8)}-${Math.random()
+          .toString(16)
+          .slice(2, 10)}`,
+        refreshPassword: async () =>
+          (await supabase.auth.getSession()).data?.session?.access_token ?? null,
       });
       try {
         await mqtt.start();
