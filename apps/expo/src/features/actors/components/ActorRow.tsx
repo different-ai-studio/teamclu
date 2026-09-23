@@ -26,17 +26,6 @@ function agentForeground(defaultAgentType: string | null | undefined): string {
   }
 }
 
-/**
- * Deterministic per-actor session count. This is placeholder data on iOS too
- * (`MemberListContent.ActorRow.mockActiveSessions`) — stable per actor so it
- * doesn't churn between renders, and skewed higher for online actors. Ported as
- *-is so the two apps agree until a real aggregate lands.
- */
-function mockActiveSessions(actorId: string, online: boolean): number {
-  const buckets = online ? [0, 1, 1, 1, 2, 2, 3] : [0, 0, 0, 0, 1, 1];
-  return buckets[actorIdHash(actorId) % buckets.length];
-}
-
 type AvatarStyle = { background: string; foreground: string; isSquare: boolean };
 
 function avatarInitials(displayName: string): string {
@@ -149,7 +138,6 @@ export function ActorRow({ actor, isMe = false }: ActorRowProps) {
   const initials = agentKindGlyph(actor) ?? avatarInitials(actor.displayName);
   const online = isActorOnline(actor);
   const subtitleStyle = isMe || actor.actorType !== "member" ? styles.subtitleMono : styles.subtitle;
-  const activeSessions = mockActiveSessions(actor.actorId, online);
 
   return (
     <View style={styles.row}>
@@ -192,30 +180,11 @@ export function ActorRow({ actor, isMe = false }: ActorRowProps) {
         </Text>
       </View>
 
-      {activeSessions > 0 ? (
-        <View style={styles.activeChip}>
-          <StatusDot
-            breathing={online}
-            color={online ? hai.sage : hai.slate}
-            size={6}
-          />
-          <Text style={styles.activeChipCount}>{activeSessions}</Text>
-        </View>
-      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  activeChip: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 4,
-  },
-  activeChipCount: {
-    color: colors.basalt,
-    ...iosType.caption,
-  },
   avatar: {
     alignItems: "center",
     height: 40,

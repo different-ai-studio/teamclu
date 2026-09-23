@@ -327,6 +327,59 @@ export function createOnboardingController(
     }
   };
 
+  /**
+   * Remember `teamId` and re-bootstrap into it. The bootstrap adopts the
+   * remembered team (activating it, which mints a session for its org), so
+   * `currentTeam` / `currentMemberActorId` flip together and everything keyed
+   * on them — MQTT, the connected-agents store, team caches — rebuilds.
+   *
+   * A bootstrap failure is not rethrown: it is already in state as
+   * `route: "failed"`, whose screen offers retry and sign-out.
+   */
+  const landOnTeam = async (token: number, teamId: string) => {
+    await rememberedTeam.save(teamId);
+    try {
+      await bootstrap(token);
+    } catch {
+      // Rendered from controller state.
+    }
+  };
+
+  /**
+   * Settings → Switch Team (iOS `beginTeamSwitch` + `selectTeam`). Unlike the
+   * login-time `selectTeam`, a failed activation leaves the current team in
+   * place — there is a working context to stay in — and rethrows so the
+   * picker can say why.
+   */
+  const switchTeam = async (teamId: string) => {
+    const token = beginOperation();
+    dispatchIfCurrent(token, { type: "beginBusy" });
+    try {
+      await api.activateTeam(teamId);
+    } catch (error) {
+      if (isActiveOperation(token)) setState({ ...state, isBusy: false });
+      throw error;
+    }
+    await landOnTeam(token, teamId);
+  };
+
+  /**
+   * Lands on a team the user just joined (an accepted pending invite). The
+   * server may mint a session for the joined team's org; adopt it first, as
+   * iOS does, then land exactly like a switch.
+   */
+  const joinedTeam = async (teamId: string, refreshToken: string | null) => {
+    const token = beginOperation();
+    dispatchIfCurrent(token, { type: "beginBusy" });
+    try {
+      if (refreshToken) await api.adoptRefreshSession(refreshToken);
+    } catch (error) {
+      if (isActiveOperation(token)) setState({ ...state, isBusy: false });
+      throw error;
+    }
+    await landOnTeam(token, teamId);
+  };
+
   const signOut = async () => {
     const token = beginOperation();
     await api.signOut();
@@ -357,6 +410,8 @@ export function createOnboardingController(
     },
     bootstrap,
     selectTeam,
+    switchTeam,
+    joinedTeam,
     requestOtp,
     verifyOtp,
     signInWithPassword,

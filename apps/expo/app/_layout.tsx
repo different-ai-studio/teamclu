@@ -67,6 +67,7 @@ import { createPushTokenApi } from "../src/features/notifications/push-token-api
 import { registerNativePushToken } from "../src/features/notifications/push-registration";
 import { getDb } from "../src/lib/db/sqlite";
 import { decodeActorPresence } from "../src/features/actors/actor-presence";
+import { setActiveUnreadTeam } from "../src/features/sessions/unread-store";
 
 const onboardingApi = createOnboardingApi(supabase);
 
@@ -345,6 +346,13 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       heartbeat?.dispose();
     };
   }, [state.route]);
+
+  // The Sessions badge belongs to one team. Switching (or signing out) zeroes
+  // it, and a late answer from the previous team's list is dropped.
+  const activeTeamId = state.currentTeam?.id ?? null;
+  useEffect(() => {
+    setActiveUnreadTeam(activeTeamId);
+  }, [activeTeamId]);
 
   // Wire up team-scoped MQTT + ConnectedAgentsStore when the user is ready.
   // Tears down and recreates automatically when the team or actor changes.

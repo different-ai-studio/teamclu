@@ -110,7 +110,7 @@ export function createSessionsController(
       // Don't clobber rows that arrived from the network while disk I/O
       // was in flight — the network is authoritative.
       if (state.sessions.length > 0) return;
-      setUnreadSessionCount(cached.filter((s) => s.hasUnread).length);
+      setUnreadSessionCount(cached.filter((s) => s.hasUnread).length, teamId);
       setState(buildDerivedState(cached));
     } catch {
       // best-effort
@@ -130,7 +130,7 @@ export function createSessionsController(
         return;
       }
 
-      setUnreadSessionCount(sessions.filter((s) => s.hasUnread).length);
+      setUnreadSessionCount(sessions.filter((s) => s.hasUnread).length, teamId);
       setState(buildDerivedState(sessions));
       void cache?.save(teamId, sessions);
     } catch (error) {
@@ -154,7 +154,7 @@ export function createSessionsController(
         return;
       }
 
-      setUnreadSessionCount(sessions.filter((s) => s.hasUnread).length);
+      setUnreadSessionCount(sessions.filter((s) => s.hasUnread).length, teamId);
       setState(buildDerivedState(sessions));
       void cache?.save(teamId, sessions);
     } catch (error) {
