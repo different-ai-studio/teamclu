@@ -13,6 +13,12 @@ import {
 } from "../../src/features/actors/actor-management";
 import type { Actor } from "../../src/features/actors/actor-types";
 import type { AgentAuthorizedHuman } from "../../src/features/actors/connected-agent-types";
+import { createLeaderboardApi } from "../../src/features/actors/leaderboard-api";
+import {
+  loadMemberActivityStats,
+  MEMBER_TOKEN_PERIOD,
+  type MemberActivityStats,
+} from "../../src/features/actors/member-activity-stats";
 import {
   ActorDetailScreen,
   type AgentWorkspaceChoice,
@@ -79,7 +85,7 @@ export default function ActorDetailRoute() {
   const [isSavingAgentDefaults, setIsSavingAgentDefaults] = useState(false);
   const [isUpdatingAgentVisibility, setIsUpdatingAgentVisibility] = useState(false);
   const [recentSessions, setRecentSessions] = useState<RecentSession[]>([]);
-  const [stats, setStats] = useState<{ sessions: number; ideas: number } | null>(null);
+  const [memberStats, setMemberStats] = useState<MemberActivityStats | null>(null);
   const [resourceCounts, setResourceCounts] = useState<TeamResourceCounts | null>(null);
   const [myDefaultAgentId, setMyDefaultAgentId] = useState<string | null>(null);
   const [isSavingMyDefaultAgent, setIsSavingMyDefaultAgent] = useState(false);
@@ -100,10 +106,11 @@ export default function ActorDetailRoute() {
       !authorizedHumanIds.has(row.actorId),
   );
 
-  // Three concurrent reads that decorate the header; a failing leg reports 0
-  // rather than blanking the screen (iOS `TeamResourceRepository.counts`).
+  // Three concurrent reads that decorate an agent's header; a failing leg
+  // reports 0 rather than blanking the screen (iOS
+  // `TeamResourceRepository.counts`). A person's page draws none of them.
   useEffect(() => {
-    if (!teamId || !actorId) return;
+    if (!teamId || !actorId || actor?.actorType !== "agent") return;
     let cancelled = false;
     void teamResourcesApi.counts(teamId, actorId).then((counts) => {
       if (!cancelled) setResourceCounts(counts);
@@ -111,7 +118,27 @@ export default function ActorDetailRoute() {
     return () => {
       cancelled = true;
     };
-  }, [actorId, teamId, teamResourcesApi]);
+  }, [actor?.actorType, actorId, teamId, teamResourcesApi]);
+
+  // A person's equivalent: tokens this month and ideas still on the board
+  // (iOS #1568). Null until loaded, so the row shows "—", not a fake zero.
+  useEffect(() => {
+    if (!teamId || !actorId || actor?.actorType !== "member") return;
+    let cancelled = false;
+    setMemberStats(null);
+    const getAccessToken = supabaseAccessToken(supabase);
+    void loadMemberActivityStats({
+      actorId,
+      loadLeaderboard: () =>
+        createLeaderboardApi({ getAccessToken }).getLeaderboard(teamId, MEMBER_TOKEN_PERIOD),
+      loadIdeas: () => createIdeasApi({ getAccessToken }).listIdeas(teamId),
+    }).then((next) => {
+      if (!cancelled) setMemberStats(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [actor?.actorType, actorId, teamId]);
 
   // `members.default_agent_id` — the viewer's own default, distinct from the
   // agent-owned defaults below and from the team-wide default in Settings.
@@ -258,15 +285,6 @@ export default function ActorDetailRoute() {
           })
           .slice(0, 5);
         setRecentSessions(sessions);
-
-        const ideas = teamId
-          ? await createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) }).listIdeas(teamId)
-          : [];
-        if (cancelled) return;
-        setStats({
-          sessions: sessionIds.length,
-          ideas: ideas.filter((idea) => idea.createdByActorId === actorId).length,
-        });
       } catch {
         if (!cancelled) {
           setActor(null);
@@ -274,7 +292,6 @@ export default function ActorDetailRoute() {
           setAgentWorkspaces([]);
           setAuthorizedHumans([]);
           setRecentSessions([]);
-          setStats(null);
         }
       } finally {
         if (!cancelled) setIsLoadingAuthorizedHumans(false);
@@ -615,7 +632,17 @@ export default function ActorDetailRoute() {
       onUpdateAgentDefaults={actor?.actorType === "agent" ? updateAgentDefaults : undefined}
       recentSessions={recentSessions}
       resourceCounts={resourceCounts}
-      stats={stats ?? undefined}
+      memberStats={memberStats}
+      onOpenMemberIdeas={
+        actorId
+          ? () => {
+              const name = encodeURIComponent(actor?.displayName ?? t("This actor"));
+              router.push(
+                `/(app)/actor-ideas?actorId=${encodeURIComponent(actorId)}&actorName=${name}`,
+              );
+            }
+          : undefined
+      }
     />
   );
 }

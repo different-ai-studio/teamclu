@@ -1,5 +1,5 @@
 import Constants from "expo-constants";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ActionSheetIOS, Alert, Platform } from "react-native";
@@ -17,6 +17,7 @@ import {
   SettingsScreen,
   type SettingsTeamDetails,
 } from "../../src/features/settings/screens/SettingsScreen";
+import { createConfiguredInviteApi } from "../../src/features/onboarding/invite-api";
 import { createTeamsApi } from "../../src/features/teams/teams-api";
 import { cloudApiBaseUrl, supabaseAccessToken } from "../../src/lib/cloud-api/client";
 import { getKnownMqttUrl } from "../../src/lib/mqtt/config";
@@ -66,6 +67,27 @@ export default function SettingsRoute() {
   const pushPrefsApi = useMemo(
     () => createNotificationPrefsApi({ getAccessToken: supabaseAccessToken(supabase) }),
     [],
+  );
+  const inviteApi = useMemo(() => createConfiguredInviteApi(supabase), []);
+  const [pendingInviteCount, setPendingInviteCount] = useState(0);
+
+  // Refreshed on every focus, so declining in the invites sheet updates the
+  // badge on return. A failure reads as none (iOS `refreshPendingInvites`).
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void inviteApi
+        .listPending()
+        .then((rows) => {
+          if (!cancelled) setPendingInviteCount(rows.length);
+        })
+        .catch(() => {
+          if (!cancelled) setPendingInviteCount(0);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [inviteApi]),
   );
 
   useEffect(() => {
@@ -296,6 +318,9 @@ export default function SettingsRoute() {
       onEditProfile={() => router.push("/(app)/edit-profile")}
       onOpenNotifications={() => router.push("/(app)/notifications")}
       onOpenTeams={() => router.push("/(app)/teams")}
+      onOpenPendingInvites={() => router.push("/(app)/pending-invites")}
+      onSwitchTeam={() => router.push("/(app)/switch-team")}
+      pendingInviteCount={pendingInviteCount}
       onOpenWorkspaces={() => router.push("/(app)/workspaces")}
       onPickTeamDefaultAgent={pickTeamDefaultAgent}
       onShareAgentToTeam={(agentId) => {

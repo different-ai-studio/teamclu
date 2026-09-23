@@ -68,6 +68,32 @@ export default function AppLayout() {
           }}
         />
         <Stack.Screen
+          name="actor-ideas"
+          options={{
+            presentation: "card",
+            animation: "slide_from_right",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
+          name="pending-invites"
+          options={{
+            presentation: "formSheet",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+            sheetAllowedDetents: [0.6, 1],
+            sheetGrabberVisible: true,
+          }}
+        />
+        <Stack.Screen
+          name="switch-team"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
           name="idea-detail"
           options={{
             presentation: "modal",

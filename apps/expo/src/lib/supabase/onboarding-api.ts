@@ -96,6 +96,16 @@ export function createOnboardingApi(client: CloudAuthClient) {
       return activation.actorId ?? null;
     },
 
+    /**
+     * Adopt a session minted server-side (e.g. by accepting an invite, which
+     * may land the user in another org). Silent, like the activation path, so
+     * it does not race a bootstrap through the auth listener.
+     */
+    async adoptRefreshSession(refreshToken: string): Promise<void> {
+      const result = await client.auth.setRefreshSession(refreshToken);
+      if (result.error) throw new Error(result.error.message);
+    },
+
     async sendEmailOTP(email: string) {
       await client.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
       return { pendingEmail: email };

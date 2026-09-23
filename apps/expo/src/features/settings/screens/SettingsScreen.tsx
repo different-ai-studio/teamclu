@@ -45,6 +45,11 @@ export type SettingsScreenProps = {
   onOpenNotifications?: () => void;
   onOpenTeams?: () => void;
   onOpenWorkspaces?: () => void;
+  /** Settings → Switch Team: opens the org → team picker. */
+  onSwitchTeam?: () => void;
+  /** Invites addressed to the user's verified contact; the row hides at 0. */
+  pendingInviteCount?: number;
+  onOpenPendingInvites?: () => void;
   onSignOut?: () => void;
   onToggleNotifications?: (enabled: boolean) => void;
   team: SettingsTeam | null;
@@ -132,7 +137,10 @@ export function SettingsScreen({
   onOpenNotifications,
   onOpenTeams,
   onOpenWorkspaces,
+  onOpenPendingInvites,
   onPickTeamDefaultAgent,
+  onSwitchTeam,
+  pendingInviteCount = 0,
   onShareAgentToTeam,
   onSignOut,
   onToggleNotifications,
@@ -355,6 +363,42 @@ export function SettingsScreen({
                   </Pressable>
                 </>
               ) : null}
+              {/* Only when there is something waiting, as on iOS: an always-on
+                  row reading 0 is noise on every visit. */}
+              {onOpenPendingInvites && pendingInviteCount > 0 ? (
+                <>
+                  <Hairline />
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={onOpenPendingInvites}
+                    style={({ pressed }) => [
+                      styles.row,
+                      pressed ? styles.rowPressed : null,
+                    ]}
+                  >
+                    <Text style={styles.rowLabel}>{t("Pending Invites")}</Text>
+                    <View style={styles.countBadge}>
+                      <Text style={styles.countBadgeText}>{pendingInviteCount}</Text>
+                    </View>
+                  </Pressable>
+                </>
+              ) : null}
+              {onSwitchTeam ? (
+                <>
+                  <Hairline />
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={onSwitchTeam}
+                    style={({ pressed }) => [
+                      styles.row,
+                      pressed ? styles.rowPressed : null,
+                    ]}
+                  >
+                    <Text style={styles.rowLabel}>{t("Switch Team")}</Text>
+                    <Ionicons color={colors.slate} name="swap-horizontal" size={16} />
+                  </Pressable>
+                </>
+              ) : null}
             </View>
           </View>
         ) : null}
@@ -533,6 +577,17 @@ const styles = StyleSheet.create({
   },
   agentStatus: {
     ...typography.caption,
+  },
+  countBadge: {
+    backgroundColor: hai.cinnabar,
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  countBadgeText: {
+    color: hai.mist,
+    fontSize: 12,
+    fontWeight: "600",
   },
   emptyBlock: {
     gap: 4,
