@@ -2,186 +2,188 @@ import SwiftUI
 import AMUXCore
 import AMUXSharedUI
 
+/// Signed-out root (`route == .needsAuth`):
+///   - first install → the intro cards, then the join/create choice
+///   - later (after sign-out, a revoked session) → straight to the choice
+///   - holding an invite deep link → straight to sign-in; bootstrap claims it
 struct WelcomeView: View {
     @Bindable var coordinator: AppOnboardingCoordinator
     /// Called after the user saves a different server address so the app
     /// shell can rebuild the Cloud API stack against it.
     var onServerChanged: () -> Void = {}
-    @State private var showChoose = false
-    @State private var showServerSettings = false
+
+    @AppStorage(OnboardingFlags.hasSeenIntroKey) private var hasSeenIntro = false
+    /// Written by `AMUXApp.handle(url:)` for `teamclu://invite?token=`, and by
+    /// `claimInviteSmart` when a member invite needs sign-in first.
+    @AppStorage(InviteDeepLink.pendingTokenDefaultsKey) private var pendingInviteLinkToken = ""
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                Spacer()
-
-                VStack(spacing: 16) {
-                    RoleCardsIllustration()
-                        .padding(.bottom, 6)
-
-                    Text("TeamClu")
-                        .font(.amuxSerif(44, weight: .regular))
-                        .foregroundStyle(Color.amux.onyx)
-
-                    VStack(spacing: 6) {
-                        Text("AI digital employees")
-                        Text("for every role.")
+            Group {
+                if !pendingInviteLinkToken.isEmpty {
+                    InvitedLoginView(coordinator: coordinator)
+                } else if hasSeenIntro {
+                    OnboardingChoiceView(coordinator: coordinator, onServerChanged: onServerChanged)
+                } else {
+                    IntroView {
+                        Analytics.track("onboarding_intro_completed")
+                        withAnimation(.easeOut(duration: 0.25)) { hasSeenIntro = true }
                     }
-                        .font(.body)
-                        .foregroundStyle(Color.amux.basalt)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-
-                    Text("Your Ally. Together.")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Color.amux.slate)
-                        .padding(.top, 2)
                 }
-
-                Spacer()
-
-                if let err = coordinator.errorMessage, !err.isEmpty {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Color.amux.cinnabar)
-                        Text(err)
-                            .font(.footnote)
-                            .foregroundStyle(Color.amux.onyx)
-                    }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.amux.pebble)
-                    )
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 8)
-                }
-
-                Button {
-                    showChoose = true
-                } label: {
-                    Text("Get Started")
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                }
-                .glassProminentButtonStyle()
-                .padding(.horizontal, 24)
-                .padding(.bottom, 48)
-                .accessibilityIdentifier("welcome.getStartedButton")
-            }
-            .background(Color.amux.mist)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showServerSettings = true
-                    } label: {
-                        Image(systemName: "network")
-                    }
-                    .tint(Color.amux.slate)
-                    .accessibilityLabel("Server settings")
-                    .accessibilityIdentifier("welcome.serverSettingsButton")
-                }
-            }
-            .sheet(isPresented: $showServerSettings) {
-                ServerSettingsSheet(onSaved: onServerChanged)
-            }
-            .navigationDestination(isPresented: $showChoose) {
-                ChooseAuthView(coordinator: coordinator, onServerChanged: onServerChanged)
             }
         }
     }
 }
 
-private struct RoleCardsIllustration: View {
-    private let cards: [RoleCard] = [
-        .init(title: "Sales", accent: Color.amux.cinnabar, offset: CGSize(width: -40, height: -18)),
-        .init(title: "Support", accent: Color.amux.sage, offset: CGSize(width: 42, height: 2)),
-        .init(title: "Ops", accent: Color.amux.basalt, offset: CGSize(width: -8, height: 42)),
+enum OnboardingFlags {
+    /// Set once the intro has been seen — or once the user has ever reached
+    /// the app, so people upgrading from a build without the intro skip it.
+    static let hasSeenIntroKey = "teamclu.hasSeenIntro"
+}
+
+// MARK: - Intro
+
+private struct IntroCard: Identifiable {
+    let id: Int
+    let eyebrow: String
+    let title: LocalizedStringKey
+    let body: LocalizedStringKey
+}
+
+private struct IntroView: View {
+    let onFinish: () -> Void
+    @State private var page = 0
+
+    private let cards: [IntroCard] = [
+        IntroCard(id: 0, eyebrow: "01",
+                  title: "Work alongside your AI allies",
+                  body: "Teammates and AI allies share one conversation — discuss, split the work, ship it."),
+        IntroCard(id: 1, eyebrow: "02",
+                  title: "Team knowledge stays in sync",
+                  body: "The docs and know-how your team builds up are there for every member and every agent."),
+        IntroCard(id: 2, eyebrow: "03",
+                  title: "Your computer works, your phone follows",
+                  body: "Agents do the work on your computer. Follow along and make the call from your phone."),
     ]
 
     var body: some View {
-        ZStack {
-            connectionLine
+        VStack(spacing: 0) {
+            Text(BrandInfo.appName)
+                .font(.amuxSerif(22, weight: .regular))
+                .foregroundStyle(Color.amux.onyx)
+                .padding(.top, 24)
 
-            ForEach(cards) { card in
-                RoleCardView(card: card)
-                    .offset(card.offset)
+            TabView(selection: $page) {
+                ForEach(cards) { card in
+                    IntroCardView(card: card).tag(card.id)
+                }
             }
+            .tabViewStyle(.page(indexDisplayMode: .never))
 
-            Circle()
-                .fill(Color.amux.cinnabar)
-                .frame(width: 8, height: 8)
-                .offset(x: 72, y: -36)
-            Circle()
-                .stroke(Color.amux.cinnabar.opacity(0.32), lineWidth: 1)
-                .frame(width: 20, height: 20)
-                .offset(x: 72, y: -36)
+            pageDots
+                .padding(.bottom, 24)
+
+            Button(action: onFinish) {
+                Text("Get Started")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            }
+            .glassProminentButtonStyle()
+            .padding(.horizontal, 24)
+            .padding(.bottom, 48)
+            .accessibilityIdentifier("welcome.getStartedButton")
         }
-        .frame(width: 236, height: 144)
+        .background(Color.amux.mist)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var pageDots: some View {
+        HStack(spacing: 8) {
+            ForEach(cards) { card in
+                Circle()
+                    .fill(card.id == page ? Color.amux.onyx : Color.amux.slate.opacity(0.4))
+                    .frame(width: 6, height: 6)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: page)
         .accessibilityHidden(true)
     }
+}
 
-    private var connectionLine: some View {
-        Path { path in
-            path.move(to: CGPoint(x: 50, y: 42))
-            path.addCurve(
-                to: CGPoint(x: 172, y: 38),
-                control1: CGPoint(x: 82, y: 18),
-                control2: CGPoint(x: 136, y: 18)
-            )
-            path.move(to: CGPoint(x: 70, y: 84))
-            path.addCurve(
-                to: CGPoint(x: 168, y: 74),
-                control1: CGPoint(x: 96, y: 98),
-                control2: CGPoint(x: 134, y: 96)
-            )
+private struct IntroCardView: View {
+    let card: IntroCard
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            illustration
+                .frame(maxWidth: .infinity)
+                .frame(height: 260)
+                .accessibilityHidden(true)
+                .padding(.bottom, 36)
+
+            Text(card.eyebrow)
+                .font(.system(size: 11, design: .monospaced))
+                .tracking(3)
+                .foregroundStyle(Color.amux.slate)
+                .padding(.bottom, 10)
+
+            Text(card.title)
+                .font(.amuxSerif(30, weight: .regular))
+                .foregroundStyle(Color.amux.onyx)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 12)
+
+            Text(card.body)
+                .font(.body)
+                .foregroundStyle(Color.amux.basalt)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
         }
-        .stroke(Color.amux.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 6]))
+        .padding(.horizontal, 28)
+        .padding(.top, 28)
+    }
+
+    @ViewBuilder
+    private var illustration: some View {
+        switch card.id {
+        case 0: SharedSessionIllustration()
+        case 1: TeamKnowledgeIllustration()
+        default: DesktopPhoneIllustration()
+        }
     }
 }
 
-private struct RoleCard: Identifiable {
-    let id = UUID()
-    let title: String
-    let accent: Color
-    let offset: CGSize
-}
+// MARK: - Invited sign-in
 
-private struct RoleCardView: View {
-    let card: RoleCard
+/// Sign-in for someone who opened an invite link. LoginView itself is left
+/// untouched; the note rides above it. Records a `join` intent so a claim that
+/// fails after sign-in lands on the no-team screen, not a fresh team.
+private struct InvitedLoginView: View {
+    @Bindable var coordinator: AppOnboardingCoordinator
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(card.accent)
-                    .frame(width: 9, height: 9)
-                Text(card.title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.amux.onyx)
-                Spacer(minLength: 0)
+        LoginView(coordinator: coordinator)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                HStack(alignment: .top, spacing: 10) {
+                    Circle()
+                        .fill(Color.amux.cinnabar)
+                        .frame(width: 7, height: 7)
+                        .padding(.top, 6)
+                    Text("You've got a team invite. Sign in and you'll join the team automatically.")
+                        .font(.footnote)
+                        .foregroundStyle(Color.amux.onyx)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(12)
+                .background(Color.amux.pebble)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .accessibilityIdentifier("onboarding.inviteNotice")
             }
-
-            VStack(alignment: .leading, spacing: 5) {
-                Capsule()
-                    .fill(Color.amux.basalt.opacity(0.32))
-                    .frame(width: 62, height: 5)
-                Capsule()
-                    .fill(Color.amux.slate.opacity(0.28))
-                    .frame(width: 42, height: 5)
-            }
-        }
-        .padding(12)
-        .frame(width: 104, height: 70)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.amux.paper)
-                .shadow(color: Color.amux.onyx.opacity(0.08), radius: 16, x: 0, y: 10)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.amux.hairline, lineWidth: 1)
-        )
+            .onAppear { coordinator.onboardingIntent = .join }
     }
 }

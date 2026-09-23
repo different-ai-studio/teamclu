@@ -123,6 +123,12 @@ struct ContentView: View {
         .environment(navigationRouter)
         .environment(featureFlags)
         .task {
+            // Asked here, once signed in and in a team, rather than at launch:
+            // at launch the system prompt lands on top of the intro cards,
+            // before the user knows what the app would notify them about.
+            _ = await PushPermissionManager.requestIfUndetermined()
+        }
+        .task {
             if let team = onboarding.currentContext?.team {
                 OnboardingLocalCacheBootstrapper.ensureWorkspaceExists(team: team, modelContext: modelContext)
             }
@@ -168,6 +174,8 @@ struct ContentView: View {
                 CreateTeamView(coordinator: onboarding)
             case .selectTeam:
                 OrgTeamPickerView(coordinator: onboarding)
+            case .noTeam:
+                NoTeamView(coordinator: onboarding, onSignOut: { signOut() })
             case .ready:
                 readyView
             case .failed:
@@ -227,6 +235,13 @@ struct ContentView: View {
                 isConnecting = false
                 await mqtt.disconnect()
                 await onboarding.wipeLocalCache(modelContext: modelContext)
+            }
+        }
+        .onChange(of: onboarding.route) { _, route in
+            // Anyone who has made it into the app — including people upgrading
+            // from a build without the intro — never needs the intro cards.
+            if route == .ready {
+                UserDefaults.standard.set(true, forKey: OnboardingFlags.hasSeenIntroKey)
             }
         }
         .onChange(of: onboarding.pendingCreatedTeam) { _, createdTeam in

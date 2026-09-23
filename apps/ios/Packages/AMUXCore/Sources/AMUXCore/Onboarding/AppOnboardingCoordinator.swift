@@ -107,8 +107,23 @@ public enum AppOnboardingRoute: Equatable, Sendable {
     /// — show the org→team picker (`teamChoices`). See
     /// docs/specs/2026-06-17-teamclu-phone-login-and-tenancy.md §6.
     case selectTeam
+    /// Signed in, no team, and the user said at onboarding that they are
+    /// joining an existing team — so no team is auto-created for them. The UI
+    /// offers pending invites, pasting an invite, switching account, or
+    /// creating a team after all.
+    case noTeam
     case ready
     case failed
+}
+
+/// What the user said they are here to do on the pre-login choice screen.
+/// Decides whether a signed-in user with no team gets one auto-created
+/// (`create`) or is shown the no-team screen (`join`). Absent for users who
+/// never saw that screen (installs before it shipped), who keep the old
+/// auto-create behaviour.
+public enum OnboardingIntent: String, Sendable {
+    case join
+    case create
 }
 
 public protocol AppOnboardingStore: Sendable {
@@ -331,7 +346,51 @@ public final class AppOnboardingCoordinator {
         currentContext = context
         if let teamID = context?.team.id {
             persistActiveTeam(teamID)
+            // In a team now: the onboarding choice has done its job.
+            onboardingIntent = nil
         }
+    }
+
+    // MARK: - Onboarding intent
+
+    private static let onboardingIntentKey = "teamclu.onboardingIntent"
+
+    /// Persisted until the user lands in a team, so a joiner who relaunches
+    /// before their invite arrives still isn't handed a fresh team.
+    public var onboardingIntent: OnboardingIntent? {
+        get { defaults.string(forKey: Self.onboardingIntentKey).flatMap(OnboardingIntent.init(rawValue:)) }
+        set {
+            if let newValue {
+                defaults.set(newValue.rawValue, forKey: Self.onboardingIntentKey)
+            } else {
+                defaults.removeObject(forKey: Self.onboardingIntentKey)
+            }
+        }
+    }
+
+    /// No-team screen → "create a team instead": switch the intent and let
+    /// bootstrap auto-create, exactly as for a user who chose create up front.
+    public func createTeamFromNoTeam() async {
+        onboardingIntent = .create
+        await bootstrap()
+    }
+
+    /// No-team screen → paste an invite. Claims as the signed-in user; unlike
+    /// `claimInviteSmart` it must not sign out first. Bootstrap's claim path
+    /// already adopts a returned session and lands on the claimed team; on
+    /// failure it leaves the user on `.noTeam` with the error.
+    public func joinWithInvite(token: String) async {
+        pendingInviteToken = token
+        await bootstrap()
+    }
+
+    /// No-team screen refresh (button, return to foreground). Checks quietly
+    /// first so the screen doesn't flash through `.loading` (the splash) on
+    /// every foreground; only a newly-present team runs the full bootstrap.
+    public func refreshNoTeam() async {
+        await refreshPendingInvites()
+        guard let bootstrap = try? await store.loadBootstrap(), !bootstrap.teams.isEmpty else { return }
+        await self.bootstrap()
     }
 
     /// Commit the org→team picker choice: switch the active team (mints a fresh
@@ -767,6 +826,14 @@ public final class AppOnboardingCoordinator {
                     route = .ready
                     return
                 }
+            }
+
+            // No team, and the user said they are joining an existing one:
+            // auto-creating would drop them into an empty team that looks
+            // like the right place. Show the no-team screen instead.
+            if onboardingIntent == .join {
+                route = .noTeam
+                return
             }
 
             // No team yet. Auto-create one after invite handling so newly

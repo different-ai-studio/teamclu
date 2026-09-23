@@ -5026,6 +5026,366 @@
           }
         }
       }
+    },
+    "Work alongside your AI allies": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "和 AI 搭档一起干活"
+          }
+        }
+      }
+    },
+    "Teammates and AI allies share one conversation — discuss, split the work, ship it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队成员和 AI 搭档在同一个会话里讨论、分工、交付。"
+          }
+        }
+      }
+    },
+    "Team knowledge stays in sync": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队知识自动同步"
+          }
+        }
+      }
+    },
+    "The docs and know-how your team builds up are there for every member and every agent.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队沉淀的文档和经验，每个成员、每个 agent 都能随时用上。"
+          }
+        }
+      }
+    },
+    "Your computer works, your phone follows": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑干活，手机跟进"
+          }
+        }
+      }
+    },
+    "Agents do the work on your computer. Follow along and make the call from your phone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 在电脑上替你干活，你在手机上随时跟进、拍板。"
+          }
+        }
+      }
+    },
+    "You've got a team invite. Sign in and you'll join the team automatically.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你收到了一个团队邀请，登录后会自动加入。"
+          }
+        }
+      }
+    },
+    "How are you starting?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你打算怎么开始？"
+          }
+        }
+      }
+    },
+    "%@ works best when your whole team is on it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整个团队一起用 %@，效果最好。"
+          }
+        }
+      }
+    },
+    "Join my team": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加入我的团队"
+          }
+        }
+      }
+    },
+    "My team already uses %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "我的团队已经在用 %@。"
+          }
+        }
+      }
+    },
+    "Start a new team": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建新团队"
+          }
+        }
+      }
+    },
+    "Set up %@ for my team.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为我的团队开始使用 %@。"
+          }
+        }
+      }
+    },
+    "Have an invite link?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有邀请链接？"
+          }
+        }
+      }
+    },
+    "No invite yet? Ask your team admin to invite you.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没收到邀请？让团队管理员邀请你。"
+          }
+        }
+      }
+    },
+    "Get the desktop app": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先装桌面端"
+          }
+        }
+      }
+    },
+    "Your team's agents run on a computer. Install %@ for Mac or Windows there — that's where you create the team and invite people.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队的 agent 跑在电脑上。请在电脑上安装 %@（Mac 或 Windows），在那里创建团队、邀请成员。"
+          }
+        }
+      }
+    },
+    "Share download link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分享下载链接"
+          }
+        }
+      }
+    },
+    "Sign in on this phone first": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先在手机上登录"
+          }
+        }
+      }
+    },
+    "Create my team now": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现在创建我的团队"
+          }
+        }
+      }
+    },
+    "Copied": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已复制"
+          }
+        }
+      }
+    },
+    "Paste the link your teammate shared to join their team with this account.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴同事发给你的链接，用当前账号加入团队。"
+          }
+        }
+      }
+    },
+    "Not in a team yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没加入任何团队"
+          }
+        }
+      }
+    },
+    "%@ isn't in any team yet. Ask your team admin to invite this account, then refresh.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 还没有加入任何团队。请让团队管理员邀请这个账号，然后刷新。"
+          }
+        }
+      }
+    },
+    "This account isn't in any team yet. Ask your team admin to invite it, then refresh.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个账号还没有加入任何团队。请让团队管理员邀请它，然后刷新。"
+          }
+        }
+      }
+    },
+    "INVITES FOR YOU": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你收到的邀请"
+          }
+        }
+      }
+    },
+    "A team": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一个团队"
+          }
+        }
+      }
+    },
+    "Checking…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查…"
+          }
+        }
+      }
+    },
+    "Refresh": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新"
+          }
+        }
+      }
+    },
+    "Check again after your admin sends the invite.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理员发出邀请后，再检查一次。"
+          }
+        }
+      }
+    },
+    "Paste an invite link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴邀请链接"
+          }
+        }
+      }
+    },
+    "A teammate sent you a link.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同事给你发了链接。"
+          }
+        }
+      }
+    },
+    "Use another account": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "换个账号"
+          }
+        }
+      }
+    },
+    "The invite went to a different email or phone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "邀请发到了别的邮箱或手机号。"
+          }
+        }
+      }
+    },
+    "Start a new team instead": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "改为创建新团队"
+          }
+        }
+      }
+    },
+    "Set up %@ for your own team.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为你自己的团队开始使用 %@。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
