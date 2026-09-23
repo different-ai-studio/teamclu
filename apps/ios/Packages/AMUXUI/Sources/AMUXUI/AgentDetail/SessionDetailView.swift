@@ -13,9 +13,21 @@ public struct SessionDetailView: View {
     /// Single actor-directory query shared by all EventBubbleView instances
     /// in this session, replacing per-row @Query registrations.
     @Query(sort: \CachedActor.displayName) private var cachedActors: [CachedActor]
+    /// Built once per transcript pass and handed to every row — it used to be
+    /// a computed property read per row, rebuilding the whole directory for
+    /// each bubble on screen.
     private var cachedActorMap: CachedActorMap {
-        CachedActorMap(nameByActorID: Dictionary(uniqueKeysWithValues: cachedActors.map { ($0.actorId, $0.displayName) }))
+        CachedActorMap(nameByActorID: Dictionary(
+            cachedActors.map { ($0.actorId, $0.displayName) },
+            uniquingKeysWith: { first, _ in first }
+        ))
     }
+    /// This session's attachment rows. A `@Query` rather than a fetch per
+    /// row: rows used to run a SwiftData fetch each time they rendered, and
+    /// the lifecycle watcher fetched the whole table on every body pass.
+    /// The query also tracks writes from `SessionListViewModel`, which the
+    /// view model's own fields never saw.
+    @Query private var sessionAttachments: [AgentAttachment]
     @State private var promptText = ""
     /// Composer focus lives here, not in `SessionComposer`, so the transcript
     /// can give the keyboard's space back to the messages on scroll or tap.
@@ -36,8 +48,10 @@ public struct SessionDetailView: View {
     @State private var plansPageIndex: Int = 0
     @State private var hasAutoOpenedPlans: Bool = false
     @State private var isInitialFeedVisible: Bool = false
-    @State private var initialAutoScrollSettled: Bool = false
     @State private var isAtBottom: Bool = true
+    /// A finger is on the transcript. Content growth never re-pins the
+    /// bottom while this is set, so a drag isn't fought mid-gesture.
+    @State private var isUserScrolling: Bool = false
     @State private var scrollProxy: ScrollViewProxy? = nil
     /// User-prompt bubble currently being edited (drives the edit sheet).
     @State private var editingEvent: AgentEvent?
@@ -83,6 +97,8 @@ public struct SessionDetailView: View {
                 notificationPrefsStore: NotificationPrefsStore? = nil,
                 actorStore: ActorStore? = nil,
                 agentPresenceStore: AgentPresenceStore? = nil) {
+        let sessionID = session.sessionId
+        _sessionAttachments = Query(filter: #Predicate<AgentAttachment> { $0.sessionID == sessionID })
         _viewModel = State(initialValue: SessionDetailViewModel(
             runtime: nil, mqtt: mqtt, hub: hub, teamID: session.teamId,
             peerId: peerId, session: session,
@@ -144,7 +160,12 @@ public struct SessionDetailView: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
+        let actorMap = cachedActorMap
+        let attachmentsByActor = Dictionary(
+            sessionAttachments.map { ($0.actorID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
                     if viewModel.events.isEmpty && viewModel.streamingAgentSet.isEmpty {
@@ -160,7 +181,7 @@ public struct SessionDetailView: View {
                     }
 
                     ForEach(viewModel.feedItems) { item in
-                        feedItemRow(item)
+                        feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
                             .id(item.id)
                     }
 
@@ -175,19 +196,10 @@ public struct SessionDetailView: View {
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .task(id: viewModel.hasLoadedInitialFeed) {
                 guard viewModel.hasLoadedInitialFeed, !isInitialFeedVisible else { return }
-                initialAutoScrollSettled = false
                 await Task.yield()
                 proxy.scrollTo("session-detail-bottom", anchor: .bottom)
                 await Task.yield()
                 isInitialFeedVisible = true
-                try? await Task.sleep(for: .milliseconds(1_200))
-                proxy.scrollTo("session-detail-bottom", anchor: .bottom)
-                initialAutoScrollSettled = true
-            }
-            .task(id: initialFeedScrollKey) {
-                guard viewModel.hasLoadedInitialFeed, !initialAutoScrollSettled else { return }
-                await Task.yield()
-                proxy.scrollTo("session-detail-bottom", anchor: .bottom)
             }
             // Store the proxy so the composer's onSend callback (inside
             // safeAreaInset, outside this ScrollViewReader scope) can
@@ -206,7 +218,8 @@ public struct SessionDetailView: View {
                     distanceFromBottom: (geo.contentSize.height + geo.contentInsets.bottom)
                         - geo.visibleRect.maxY,
                     viewportHeight: geo.containerSize.height,
-                    bottomInset: geo.contentInsets.bottom
+                    bottomInset: geo.contentInsets.bottom,
+                    contentHeight: geo.contentSize.height
                 )
             } action: { old, new in
                 // A viewport resize — the keyboard opening, the composer
@@ -223,21 +236,22 @@ public struct SessionDetailView: View {
                     if isAtBottom { scrollToBottom() }
                     return
                 }
-                isAtBottom = new.distanceFromBottom < nearBottomThreshold
-            }
-            // Follow the bottom whenever the feed grows after the initial
-            // settle. `.defaultScrollAnchor(.bottom, for: .initialOffset)`
-            // only governs first paint, so without this the just-sent
-            // message lands beneath the composer's safeAreaInset and the
-            // user has to scroll manually to see it.
-            .onChange(of: viewModel.feedItems.count) { oldCount, newCount in
-                guard initialAutoScrollSettled, newCount > oldCount, isAtBottom else { return }
-                Task { @MainActor in
-                    await Task.yield()
-                    withAnimation(AMUXAnimation.fast) {
-                        proxy.scrollTo("session-detail-bottom", anchor: .bottom)
-                    }
+                // The content grew or shrank under a reader who was at the
+                // bottom: a new message, the active-stream card changing
+                // height, or — right after opening — lazy rows swapping
+                // their estimated height for the real one as they render.
+                // `.defaultScrollAnchor(.bottom, for: .initialOffset)` only
+                // places the first frame, so without this the view came to
+                // rest short of the newest message. Re-pin in place (no
+                // animation, so it doesn't read as a jump), and leave
+                // `isAtBottom` alone — the distance only grew because the
+                // content moved, not because the reader did. Never while a
+                // finger is on the list.
+                if new.contentHeight != old.contentHeight, isAtBottom, !isUserScrolling {
+                    proxy.scrollTo("session-detail-bottom", anchor: .bottom)
+                    return
                 }
+                isAtBottom = new.distanceFromBottom < nearBottomThreshold
             }
             // Any scroll on the chat surface dismisses the keyboard.
             // .interactively (iMessage-style finger-tracks-keyboard)
@@ -254,6 +268,7 @@ public struct SessionDetailView: View {
             // phases — `.animating` is excluded so the auto-scroll that
             // follows an incoming message never steals focus mid-typing.
             .onScrollPhaseChange { _, phase in
+                isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
                 guard composerFocused, phase == .tracking || phase == .interacting else { return }
                 composerFocused = false
             }
@@ -603,7 +618,7 @@ public struct SessionDetailView: View {
             await viewModel.refreshMemberSheet()
             await viewModel.loadFeedback()
         }
-        .onChange(of: viewModel.attachmentStateKey) { _, _ in
+        .onChange(of: attachmentStateKey) { _, _ in
             // An attachment for this session changed lifecycle (attached →
             // running → idle → detached). Re-shape the member sheet so the
             // row dot colour and the model list track it.
@@ -688,8 +703,13 @@ public struct SessionDetailView: View {
         return current
     }
 
-    private var initialFeedScrollKey: String {
-        "\(viewModel.hasLoadedInitialFeed)-\(viewModel.feedItems.count)-\(viewModel.feedItems.last?.id ?? "none")"
+    /// Change-detection key over this session's attachments, read from the
+    /// `@Query` — a handful of rows, no fetch.
+    private var attachmentStateKey: String {
+        sessionAttachments
+            .sorted(by: { $0.id < $1.id })
+            .map { "\($0.id):\($0.lifecycle):\($0.status):\($0.currentModel ?? "")" }
+            .joined(separator: "|")
     }
 
     private func considerAutoOpeningPlans(count: Int) {
@@ -735,10 +755,6 @@ public struct SessionDetailView: View {
             ?? String(agentID.prefix(8))
     }
 
-    /// Pick the best single-line summary for the active-stream card.
-    /// Priority: live streaming text → most recent thinking/output text
-    /// → most recent tool name → "Working…". The card truncates further
-    /// at the view layer.
     /// Tracks what the keyboard covers, and follows the bottom of the
     /// transcript whenever it grows.
     ///
@@ -760,40 +776,17 @@ public struct SessionDetailView: View {
         }
     }
 
-    /// One line for the active-stream card: the turn's own message text and
-    /// nothing else — the live delta buffer, else the newest `output` entry.
-    ///
-    /// Thinking and tool calls deliberately don't feed this line. They used
-    /// to, which made the card narrate the agent's internals ("Running
-    /// bash…", a reasoning fragment) instead of what it is saying. Both live
-    /// on the trace page behind the card's chevron.
-    ///
-    /// Returns "" when there is no message text yet, handing the fallback
-    /// copy to `ActiveStreamCardView` — it owns that string and localizes it,
-    /// whereas the literals here never were.
-    private func activeStreamLastLine(agentID: String, runtimeEvents: [AgentEvent]) -> String {
-        let live = viewModel.streamingTextByAgent[agentID] ?? ""
-        if !live.isEmpty {
-            // The card is lineLimit(1). Operate on the buffer tail so a
-            // 50KB reply doesn't get copied and newline-replaced in full
-            // on every token — the visible output is identical.
-            return live.suffix(240).replacingOccurrences(of: "\n", with: " ")
-        }
-        if let last = runtimeEvents.reversed().first(where: { e in
-            e.eventType == "output" && !(e.text ?? "").isEmpty
-        }) {
-            return (last.text ?? "").suffix(240).replacingOccurrences(of: "\n", with: " ")
-        }
-        return ""
-    }
-
     @ViewBuilder
-    private func feedItemRow(_ item: FeedItem) -> some View {
+    private func feedItemRow(
+        _ item: FeedItem,
+        actorMap: CachedActorMap,
+        attachmentsByActor: [String: AgentAttachment]
+    ) -> some View {
         switch item {
         case .userMessage(let event), .permission(let event), .todo(let event), .error(let event):
             EventBubbleView(
                 event: event,
-                runtime: viewModel.attachment(forAgentActorID: event.senderActorID ?? ""),
+                runtime: attachmentsByActor[event.senderActorID ?? ""],
                 onGrant: { id, agentID in Task { try? await viewModel.grantPermission(requestId: id, agentActorID: agentID) } },
                 onDeny: { id, agentID in Task { try? await viewModel.denyPermission(requestId: id, agentActorID: agentID) } },
                 onGrantOption: { id, optionID, agentID in
@@ -805,7 +798,7 @@ public struct SessionDetailView: View {
                         Task { await sender.retry(messageID: msgID) }
                     }
                 },
-                actorMap: cachedActorMap,
+                actorMap: actorMap,
                 onEdit: canModifyMessage(event) ? { editingEvent = event } : nil,
                 onDelete: canModifyMessage(event) ? { pendingDeleteEvent = event } : nil,
                 replyQuote: viewModel.replyQuote(forSupabaseMessageID: event.supabaseMessageId),
@@ -832,25 +825,24 @@ public struct SessionDetailView: View {
             // /`streamingTextByAgent` and flips `isPending` false, at
             // which point the dot transitions to sage and the label
             // switches to the live last-line preview.
-            let liveText = viewModel.streamingTextByAgent[agentID] ?? ""
-            let isPending = runtimeEvents.isEmpty && liveText.isEmpty
             NavigationLink(
                 destination: StreamingDetailView(
                     route: TurnRoute(agentID: agentID, frozenTurnID: nil),
                     viewModel: viewModel
                 )
             ) {
-                ActiveStreamCardView(
+                ActiveStreamRow(
+                    viewModel: viewModel,
+                    agentID: agentID,
                     agentName: agentDisplayName(for: agentID),
-                    lastLine: activeStreamLastLine(agentID: agentID, runtimeEvents: runtimeEvents),
-                    isPending: isPending
+                    runtimeEvents: runtimeEvents
                 )
             }
             .buttonStyle(.plain)
         case .completedTurn(let id, let agentID, let final, let runtimeEvents):
             CompletedTurnBubbleView(
                 finalEvent: final,
-                runtime: viewModel.attachment(forAgentActorID: agentID),
+                runtime: attachmentsByActor[agentID],
                 agentName: agentDisplayName(for: agentID),
                 feedbackKind: final.supabaseMessageId.flatMap { viewModel.feedbackByMessageID[$0] },
                 onFeedback: final.supabaseMessageId.map { messageID in
@@ -936,6 +928,55 @@ public struct SessionDetailView: View {
             MentionTarget(id: a.id, displayName: a.displayName, subtitle: a.agentType, kind: .agent)
         }
         return agents + members
+    }
+}
+
+// MARK: - Active-stream row
+
+/// The feed's in-progress card for one agent. Its own view so the ~10 Hz
+/// `streamingTextByAgent` mirror invalidates only this card: read from the
+/// transcript's row builder, that dependency landed on `SessionDetailView`
+/// itself and rebuilt every visible row, toolbar and composer per flush.
+private struct ActiveStreamRow: View {
+    let viewModel: SessionDetailViewModel
+    let agentID: String
+    let agentName: String
+    let runtimeEvents: [AgentEvent]
+
+    var body: some View {
+        let liveText = viewModel.streamingTextByAgent[agentID] ?? ""
+        ActiveStreamCardView(
+            agentName: agentName,
+            lastLine: lastLine,
+            isPending: runtimeEvents.isEmpty && liveText.isEmpty
+        )
+    }
+
+    /// One line for the active-stream card: the turn's own message text and
+    /// nothing else — the live delta buffer, else the newest `output` entry.
+    ///
+    /// Thinking and tool calls deliberately don't feed this line. They used
+    /// to, which made the card narrate the agent's internals ("Running
+    /// bash…", a reasoning fragment) instead of what it is saying. Both live
+    /// on the trace page behind the card's chevron.
+    ///
+    /// Returns "" when there is no message text yet, handing the fallback
+    /// copy to `ActiveStreamCardView` — it owns that string and localizes it,
+    /// whereas the literals here never were.
+    private var lastLine: String {
+        let live = viewModel.streamingTextByAgent[agentID] ?? ""
+        if !live.isEmpty {
+            // The card is lineLimit(1). Operate on the buffer tail so a
+            // 50KB reply doesn't get copied and newline-replaced in full
+            // on every token — the visible output is identical.
+            return live.suffix(240).replacingOccurrences(of: "\n", with: " ")
+        }
+        if let last = runtimeEvents.reversed().first(where: { e in
+            e.eventType == "output" && !(e.text ?? "").isEmpty
+        }) {
+            return (last.text ?? "").suffix(240).replacingOccurrences(of: "\n", with: " ")
+        }
+        return ""
     }
 }
 
@@ -1207,4 +1248,5 @@ private struct ScrollBottomMetrics: Equatable {
     let distanceFromBottom: CGFloat
     let viewportHeight: CGFloat
     let bottomInset: CGFloat
+    let contentHeight: CGFloat
 }

@@ -898,22 +898,6 @@ public final class SessionDetailViewModel {
         attachment(forAgentActorID: actorID)?.availableModels.map(\.id) ?? []
     }
 
-    /// Cheap change-detection key over this session's attachments. SwiftData
-    /// mutations don't re-evaluate nested optionals through `@Observable`, so
-    /// views observe this scalar instead of reaching into a row.
-    public var attachmentStateKey: String {
-        guard let ctx = startModelContext,
-              let sessionID = session?.sessionId, !sessionID.isEmpty
-        else { return "" }
-        let suffix = "::\(sessionID)"
-        let rows = (try? ctx.fetch(FetchDescriptor<AgentAttachment>()))?
-            .filter { $0.id.hasSuffix(suffix) }
-            .sorted(by: { $0.id < $1.id }) ?? []
-        return rows
-            .map { "\($0.id):\($0.lifecycle):\($0.status):\($0.currentModel ?? "")" }
-            .joined(separator: "|")
-    }
-
     /// The model the next send will actually run on: the selected agent's, or
     /// the sole agent's when the chip bar has no explicit selection. Nil when
     /// no agent is attached — the session is cold and the daemon picks on spawn.
