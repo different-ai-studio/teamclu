@@ -341,6 +341,10 @@ final class SessionDetailViewModelTests: XCTestCase {
         viewModel._test_setMemberSheetAgentsAndRelabel([
             makeAgent(actorID: "agent-actor-1", runtimeID: "agent-actor-1")
         ])
+        // The send has to mention the agent: an unmentioned message is
+        // silent-queued by the daemon and raises no card (see
+        // `testSendPromptWithoutAgentMentionRaisesNoCard`).
+        viewModel.lightAgentChip("agent-actor-1")
 
         // Precondition: no busy state and no active-stream card.
         XCTAssertFalse(viewModel.isAgentWorking)
@@ -365,6 +369,58 @@ final class SessionDetailViewModelTests: XCTestCase {
             activeStreamForAgent,
             "Expected an .activeStream feed item for agent-actor-1 with empty runtimeEvents immediately after sendPrompt"
         )
+    }
+
+    /// A message that mentions no agent is silent-queued by the daemon, so
+    /// no agent is going to answer it. The "Agent loading…" card used to go
+    /// up anyway — in a single-agent session `streamingAgentIDs` pins the
+    /// busy flag on the only agent — and sat there until the 60s reset.
+    func testSendPromptWithoutAgentMentionRaisesNoCard() async throws {
+        let mqtt = MQTTService(
+            subscribeHook: { _ in },
+            unsubscribeHook: { _ in },
+            publishHook: { _, _, _ in }
+        )
+        let teamcluService = TeamcluService()
+        let container = try ModelContainer(
+            for: Session.self, AgentAttachment.self, AgentEvent.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        teamcluService.configureRuntimeForTesting(
+            mqtt: mqtt,
+            teamId: "team-1",
+            peerId: "peer-1",
+            modelContainer: container
+        )
+        teamcluService.setLocalMemberIdForTesting("human-1")
+
+        let context = container.mainContext
+        let session = Session(sessionId: "session-1", teamId: "team-1")
+        session.primaryAgentId = "agent-actor-1"
+        context.insert(session)
+        try context.save()
+
+        let viewModel = SessionDetailViewModel(
+            runtime: nil,
+            mqtt: mqtt,
+            hub: MQTTMessageHub(mqtt: mqtt),
+            teamID: "team-1",
+            peerId: "peer-1",
+            session: session,
+            teamcluService: teamcluService
+        )
+        viewModel._test_setMemberSheetAgentsAndRelabel([
+            makeAgent(actorID: "agent-actor-1", runtimeID: "agent-actor-1")
+        ])
+        XCTAssertTrue(viewModel.agentChipSelection.isEmpty)
+
+        try await viewModel.sendPrompt("还可以", modelContext: context)
+
+        XCTAssertFalse(viewModel.isAgentWorking)
+        XCTAssertFalse(viewModel.feedItems.contains { item in
+            if case .activeStream = item { return true }
+            return false
+        })
     }
 
     func testInterruptAgentInSessionModePublishesCancelToThatAgentsRuntime() async throws {
