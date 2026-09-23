@@ -36,6 +36,7 @@ import { createConfiguredSessionsApi } from "../../../../src/features/sessions/a
 import type { FeedbackKind } from "../../../../src/features/sessions/cloud-api";
 import { myFeedbackByMessageId, nextFeedback } from "../../../../src/features/sessions/message-feedback";
 import { noteLocalPrompt } from "../../../../src/features/sessions/live-activity-store";
+import { loadTurnTrace } from "../../../../src/features/sessions/turn-trace";
 import { createSessionDetailController } from "../../../../src/features/sessions/session-detail-controller";
 import { emptyTimelineState } from "../../../../src/features/sessions/timeline-reducer";
 import { createSessionDetailCache } from "../../../../src/features/sessions/session-detail-cache";
@@ -730,7 +731,34 @@ export default function SessionDetailRoute() {
    * turn detail already shows whatever this device streamed, so a missing
    * runtime target or a publish failure is not worth interrupting the user for.
    */
+  // Finished turns: read the uploaded trace first (iOS #1499); only a turn with
+  // no trace falls back to asking the daemon to replay it.
+  const [traceEventsByTurnId, setTraceEventsByTurnId] = useState<
+    ReadonlyMap<string, SessionMessage[]>
+  >(() => new Map());
+  const traceLookups = useRef(new Set<string>());
   const requestTurnHistory = async (turnId: string, agentId: string) => {
+    if (sessionId && currentTeam?.id && !traceLookups.current.has(turnId)) {
+      traceLookups.current.add(turnId);
+      const teamId = currentTeam.id;
+      try {
+        const trace = await loadTurnTrace({
+          locate: () =>
+            createConfiguredSessionsApi(supabase).turnTraceLocation(teamId, sessionId, turnId),
+          ctx: { turnId, agentId, sessionId, teamId },
+        });
+        if (trace && trace.events.length > 0) {
+          setTraceEventsByTurnId((prev) => new Map(prev).set(turnId, trace.events));
+          return;
+        }
+      } catch {
+        // Fall through to the daemon replay.
+      }
+    }
+    await requestTurnHistoryFromDaemon(turnId, agentId);
+  };
+
+  const requestTurnHistoryFromDaemon = async (turnId: string, agentId: string) => {
     if (!permissionCommandSender) return;
     const fallbackAgentIds =
       agentParticipantIds.length > 0
@@ -867,6 +895,7 @@ export default function SessionDetailRoute() {
           onSkipQuestion={(question) => {
             void handleQuestionResponse(question, [], true);
           }}
+          traceEventsByTurnId={traceEventsByTurnId}
           onRequestTurnHistory={(turnId, agentId) => {
             void requestTurnHistory(turnId, agentId);
           }}

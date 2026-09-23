@@ -124,6 +124,11 @@ type SessionDetailScreenProps = {
   onOpenMembers?: () => void;
   /** Backfill a turn's daemon-recorded events when its detail is opened. */
   onRequestTurnHistory?: (turnId: string, agentId: string) => void;
+  /**
+   * A finished turn's recorded trace, by daemon turn id (iOS #1499). When
+   * present it replaces what this device streamed: it is the whole turn.
+   */
+  traceEventsByTurnId?: ReadonlyMap<string, SessionMessage[]>;
   onRetryFailed?: (messageId: string) => void;
   onReplyToMessage?: (messageId: string) => void;
   onSend: () => void;
@@ -559,6 +564,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     onReconnect,
     onRefresh,
     onRequestTurnHistory,
+    traceEventsByTurnId,
     onRetryFailed,
     onReplyToMessage,
     onSend,
@@ -608,8 +614,12 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
   const [selectedTurnKey, setSelectedTurnKey] = useState<string | null>(null);
   const selectedTurn = useMemo(() => {
     const source = feedSources.find((item) => item.key === selectedTurnKey);
-    return source?.kind === "agentTurn" ? source.turn : null;
-  }, [feedSources, selectedTurnKey]);
+    if (source?.kind !== "agentTurn") return null;
+    const trace = source.turn.daemonTurnId
+      ? traceEventsByTurnId?.get(source.turn.daemonTurnId)
+      : undefined;
+    return trace && trace.length > 0 ? { ...source.turn, runtimeEvents: trace } : source.turn;
+  }, [feedSources, selectedTurnKey, traceEventsByTurnId]);
 
   // Ask the daemon to replay this turn's thinking / tool-call events when the
   // detail opens. Live streams already receive deltas over MQTT and the

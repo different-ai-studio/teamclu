@@ -8,6 +8,7 @@ import {
   type SessionMessage,
   type SessionSummary,
 } from "./session-types";
+import type { TurnTraceLocation } from "./turn-trace";
 
 type CreateCloudSessionsApiOptions = {
   getAccessToken: () => Promise<string | null>;
@@ -314,6 +315,25 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
     async deleteFeedback(messageId: string, actorId: string): Promise<void> {
       const params = new URLSearchParams({ actorId });
       await client.del(`/v1/feedback/${encodeURIComponent(messageId)}?${params.toString()}`);
+    },
+
+    /** Where a finished turn's trace lives; null when none was uploaded (404). */
+    async turnTraceLocation(
+      teamId: string,
+      sessionId: string,
+      turnId: string,
+    ): Promise<TurnTraceLocation | null> {
+      const params = new URLSearchParams({ teamId });
+      try {
+        const out = await client.get<{ downloadUrl?: string; size?: number; sha256?: string } | null>(
+          `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/trace?${params.toString()}`,
+        );
+        if (!out?.downloadUrl) return null;
+        return { downloadUrl: out.downloadUrl, size: out.size ?? 0, sha256: out.sha256 ?? "" };
+      } catch (err) {
+        if (err instanceof CloudApiError && err.status === 404) return null;
+        throw err;
+      }
     },
 
     async renameSession(sessionId: string, title: string): Promise<void> {
