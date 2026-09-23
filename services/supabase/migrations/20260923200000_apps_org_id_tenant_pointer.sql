@@ -61,7 +61,73 @@ comment on column amux.apps.org_id is
   'The app''s tenant org — live, not historical. The login page narrows its account picker to this org and the proxy gateway resolves the app''s audience against it. Kept in step with the team''s org by amux.upgrade_account_to_org. Was previously "the org database the schema was created in"; that meaning was retired by 20260923200000.';
 
 -- ============================================================================
--- 3. Reparenting an account now moves its apps too.
+-- 3. The database half of `org_id`, and the guard that keeps it honest.
+--
+-- `needsDatabase` in `services/fc/src/lib/validation/app-type.ts` is the
+-- authority on which app types own a schema; this is the same rule in SQL
+-- because the guard below has to answer it inside a transaction. The two lists
+-- must be changed together — a type added there and not here would be treated
+-- as schemaless and allowed through the guard.
+-- ============================================================================
+create or replace function amux.app_type_needs_database(p_type text)
+returns boolean
+language sql
+immutable
+as $function$
+  select coalesce(btrim(p_type), '') not in ('static_web', 'slides', 'imported');
+$function$;
+
+/*
+ * Refuse to move a team that owns an app with a database.
+ *
+ * Reparenting rewrites `teams.oid`, and an app's `org_id` names the database
+ * its schema lives in. There is no correct value to give such an app
+ * afterwards: following the team loses the data, staying behind makes
+ * "org_id is the tenant" false. So the move itself is refused, loudly, while
+ * the person can still act on it.
+ *
+ * A trigger rather than a check inside `upgrade_account_to_org`, because the
+ * rule is about `teams.oid` and not about one function that happens to write
+ * it today. 20260827020000 noted "FC has no code path that writes it" — this
+ * makes that true by construction for anything that would break an app.
+ */
+create or replace function amux.guard_team_org_move()
+returns trigger
+language plpgsql
+as $function$
+declare
+  v_apps text;
+begin
+  if new.oid is not distinct from old.oid then
+    return new;
+  end if;
+
+  select string_agg(slug, ', ' order by slug) into v_apps
+  from amux.apps
+  where team_id = new.id
+    and amux.app_type_needs_database(type)
+    and org_id is not null;
+
+  if v_apps is not null then
+    raise exception
+      'cannot move team % to another org: app(s) % keep their data in the '
+      'current org''s database, and moving the team would point them at an '
+      'empty schema in the new one',
+      new.id, v_apps
+      using errcode = '23514';
+  end if;
+
+  return new;
+end
+$function$;
+
+drop trigger if exists guard_team_org_move on amux.teams;
+create trigger guard_team_org_move
+  before update of oid on amux.teams
+  for each row execute function amux.guard_team_org_move();
+
+-- ============================================================================
+-- 4. Reparenting an account now moves its schemaless apps too.
 --
 -- Byte-identical to `20260618010000_upgrade_account_to_org.sql` except for
 -- step 5 at the end, so the diff shows exactly what changed.
@@ -125,10 +191,26 @@ begin
   -- 4. Reparent + rename the team.
   update amux.teams set oid = v_org_id, name = v_name where id = p_team_id;
 
-  -- 5. Carry this team's apps to the new org. `amux.apps.org_id` is a live
-  --    tenant pointer (see 20260923200000): leaving it behind would point the
-  --    app's login wall and account picker at the org the team just left.
-  update amux.apps set org_id = v_org_id where team_id = p_team_id;
+  -- 5. Carry this team's apps to the new org — but ONLY the ones with no
+  --    schema anywhere.
+  --
+  --    `amux.apps.org_id` carries two facts at once, and they move differently.
+  --    As the TENANT it must follow the team, or the app's login wall and
+  --    account picker point at the org the team just left. As the DATABASE
+  --    (`orgDatabaseName()` builds `tc_org_<hex>` from it) it must NOT follow:
+  --    the app's schema stays in the database it was created in, and
+  --    repointing it means the next deploy provisions a fresh EMPTY schema in
+  --    `tc_org_<new>` and takes the app live with no data while the real data
+  --    sits untouched in `tc_org_<old>`.
+  --
+  --    The guard trigger below makes this case unreachable — a team owning an
+  --    app with a database cannot be upgraded at all. This predicate is the
+  --    same rule said a second time, so that dropping the trigger degrades to
+  --    "the tenant stops following" rather than to silent data loss.
+  update amux.apps
+  set org_id = v_org_id
+  where team_id = p_team_id
+    and not amux.app_type_needs_database(type);
 
   return query select v_org_id, p_team_id, v_name;
 end;

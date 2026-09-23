@@ -47,7 +47,7 @@ admin_type=1**，不变式明写「不得以门店组织的会员/员工身份�
 2. 不照搬 betly：按租户过滤 + 保留选择器 + 自动开户。
 3. 选择器展示 `admin_type` 和 email。
 4. `apps.org_id` 改成**活的租户指针**。
-5. 一次迁移完成回填 + 外键 + `upgrade_account_to_org` 级联；`NOT NULL` 推迟。
+5. 一次迁移完成回填 + 外键 + `upgrade_account_to_org` 级联；`NOT NULL` 随后补上。
 6. 网关一并改读 `apps.org_id`，`teams.oid` 在 apps 链路上不再被读。
 7. **所有** app 登录页都按租户过滤，不看 `auth_audience`。
 8. 过滤只做在 apps-login 层；`phone-auth.login()` 加可选参数，`/v1` 不传即零变化。
@@ -60,6 +60,44 @@ admin_type=1**，不变式明写「不得以门店组织的会员/员工身份�
 15. `banana-hire2` 的 `/admin` 由运营在桌面 UI 加角色（`auth_audience` 是推导值，
     由 `buildAuthPolicyPatch` 从各路径的 roles 算出，不能直接设）。
 16. 补绑 `auth_user_id` **只对 `admin_type = 1` 的行**做。
+17. （09-24 追加）`apps.org_id` 加 `NOT NULL`；`createApp` 在建 app 时就写入，团队没有
+    org 时返回 409 `team_has_no_org` 而不是让约束以 500 冒出来；finalize 那个
+    `needsDatabase` 条件去掉——新语义下静态 app 也有租户。
+18. （09-24 追加）用触发器挡住「带数据库 app 的团队升级账号」，不拆列。
+
+## 后续发现：这个列确实身兼二职，用触发器把冲突挡在门外
+
+2026-09-24 做 `NOT NULL` 那一步时发现，`apps.org_id` **同时是数据库定位符**——
+`orgDatabaseName(orgId)` 拼出 `tc_org_<hex>`，app 的 schema 就在那个库里。
+`supabase-repo.test.ts` 有一条测试把话说死了：
+
+> **The whole point of the column.** Re-deriving here would provision a fresh
+> empty schema in `tc_org_<new>` and take the app live with no data, while the
+> real data sits untouched in `tc_org_<old>`.
+
+于是决策 5 的级联是危险的：账号升级会把 app 的 `org_id` 指向新 org，而 schema 还在
+旧库，下次部署就在新库建一个空 schema 上线。**测试套件抓不到**，因为级联在迁移里、
+不在代码里；CI 当时是全绿的。
+
+暴露面：`upgrade_account_to_org` 要求团队当前在 DEFAULT_ORG，而那 15 个团队名下
+0 个 app，所以**当时触发不了**，是埋着的雷。
+
+**取法（产品方选定）**：不拆列，用触发器把冲突挡在门外。
+
+- `amux.app_type_needs_database(text)` —— `validation/app-type.ts` 里 `needsDatabase`
+  的 SQL 版本。**两处必须同改**：那边加了新类型而这边没加，会被当成无 schema 放行。
+- `guard_team_org_move` —— `before update of oid on amux.teams`，团队名下有带数据库
+  且 `org_id` 非空的 app 时直接 `raise`，并点名是哪几个 app。做成触发器而不是写在
+  `upgrade_account_to_org` 里面，是因为这条规则是关于 `teams.oid` 的，不是关于某一个
+  恰好在写它的函数。
+- 级联同时收窄成「只搬无 schema 的 app」。规则说了两遍：触发器被删掉时，退化成
+  「租户不再跟着走」而不是「静默丢数据」。
+
+实测：带数据库的团队被拦下并点名 `banana-hire2, banana-store-scheduling-assistant`；
+只有静态 app 的团队放行。
+
+**代价**：带数据库 app 的团队从此不能升级账号。这是刻意的——在「丢数据」和
+「拦住一个不常见操作」之间选后者。
 
 ## 两处必须记录的取舍
 

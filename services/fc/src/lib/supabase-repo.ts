@@ -4580,6 +4580,28 @@ export function createSupabaseBusinessRepository(options) {
         throw giteaUnavailable(giteaUnavailableReason);
       }
 
+      // The app's tenant, settled here rather than at the first finalize.
+      //
+      // `apps.org_id` is a live tenant pointer (migration 20260923200000): the
+      // login page narrows its account picker by it and the proxy gateway
+      // resolves admission against it, so an app that reaches either of them
+      // without one is simply broken — and it used to reach them that way for
+      // its whole life before a successful deploy.
+      //
+      // `teams.oid` is nullable by design (a team is created before it has an
+      // org), so this can legitimately fail. It is answered with a 409 naming
+      // the cause, because the alternative once org_id is NOT NULL is a
+      // constraint violation surfacing as a 500 at the moment someone is
+      // trying to create an app.
+      const appOrgId = await this.resolveTeamOrgId(input.teamId);
+      if (!appOrgId) {
+        throw new ApiError(
+          409,
+          "team_has_no_org",
+          "该团队尚未关联组织，无法创建应用",
+        );
+      }
+
       // 1:1 workspace for the app. created_by_member_id = the resolved actor so
       // the workspace RLS insert policy is satisfied (same actor identity).
       const { data: ws, error: wsErr } = await supabase
@@ -4598,6 +4620,7 @@ export function createSupabaseBusinessRepository(options) {
         .insert({
           team_id: input.teamId,
           created_by_actor_id: createdByActorId,
+          org_id: appOrgId,
           name: input.name,
           slug,
           type: input.type,
@@ -5183,10 +5206,20 @@ export function createSupabaseBusinessRepository(options) {
             // that just went live. Compared against env_updated_at to tell the
             // operator their last env change is not live yet.
             env_deployed_at: envDeployedAt,
-            // Pin the org on the first success; a no-op on every later one.
-            // Static apps have no schema anywhere, so they get no ledger entry
-            // — a non-null org_id on one would claim data exists that does not.
-            ...(orgId && needsDatabase(existing.type) ? { org_id: orgId } : {}),
+            // Backfill for rows created before createApp settled the tenant.
+            //
+            // This used to be gated on `needsDatabase(existing.type)`, because
+            // org_id then meant "the org database this app's schema lives in"
+            // and a static app has no schema anywhere. Under the live-tenant
+            // meaning (20260923200000) every app has a tenant, static ones
+            // included — they have a login wall like any other.
+            //
+            // The data plane does not get confused by that: it gates on the
+            // app TYPE before it ever reads org_id (the `app_has_no_database`
+            // 409 above the read in appDataTarget, and the same check in
+            // app-deploy), so a non-null org_id on a static app never sends
+            // anyone looking for a schema.
+            ...(orgId ? { org_id: orgId } : {}),
             provision_error: null,
             deploy_token: null,
             deploy_started_at: null,
