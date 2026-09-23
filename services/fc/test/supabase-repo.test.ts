@@ -1821,9 +1821,11 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
     app_env_vars: [...(seed.app_env_vars ?? [])],
     app_secrets: [...(seed.app_secrets ?? [])],
     app_cron_jobs: [...(seed.app_cron_jobs ?? [])],
-    // resolveTeamOrgId reads this; unseeded it yields no row, i.e. "team has
-    // no org", which is what most apps tests want.
-    teams: [...(seed.teams ?? [])],
+    // resolveTeamOrgId reads this. It defaults to a team WITH an org because
+    // createApp now refuses a team without one (409 team_has_no_org) — the
+    // app's tenant is settled at creation so `apps.org_id` can be NOT NULL.
+    // A test that wants the no-org case seeds `teams: []` explicitly.
+    teams: [...(seed.teams ?? [{ id: "team-1", oid: "org-1" }])],
     agents: [...(seed.agents ?? [])],
     session_participants: [...(seed.session_participants ?? [])],
     agent_member_access: [...(seed.agent_member_access ?? [])],
@@ -3595,9 +3597,19 @@ test("apps: finalizeDeploy deploys to the stored org even after teams.oid change
   assert.equal(seen[0].orgId, "org-old", "provision must target the database the data is already in");
 });
 
-test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
-  // static_web has no schema in any database, so claiming one would be a lie
-  // the data browser would later act on.
+test("apps: finalizeDeploy stamps org_id on a static app too", async () => {
+  // This used to assert the opposite, and the reason it flipped matters.
+  //
+  // `org_id` then meant "the org database this app's schema lives in", and
+  // static_web has a schema nowhere — claiming one would have been a lie the
+  // data browser acted on. It now also carries the app's TENANT, which a
+  // static app has like any other: it sits behind the same login wall, and
+  // the login page narrows its account picker by exactly this column.
+  //
+  // Nothing is misled by the stamp, because every data-plane reader gates on
+  // the app TYPE before it reads org_id — `appDataTarget` throws
+  // `app_has_no_database` above the read, and app-deploy only provisions when
+  // `needsDatabase`. The test below this one pins the half that must NOT move.
   const calls: any[] = [];
   const repo = appsRepo(
     appsSupabase({
@@ -3620,7 +3632,24 @@ test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
 
   const upd = calls.filter((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
   assert.equal(upd.length, 1);
-  assert.equal("org_id" in upd[0].row, false);
+  assert.equal(upd[0].row.org_id, "org-old", "the tenant is stamped, database or not");
+});
+
+test("apps: createApp refuses a team with no org rather than writing a tenantless app", async () => {
+  // `apps.org_id` is NOT NULL, so without this the insert would fail on the
+  // constraint — a 500 at the moment someone is creating an app, naming
+  // neither the cause nor anything they could act on.
+  const repo = appsRepo(appsSupabase({ seed: { teams: [] }, actorRow: { id: "actor-app-1" } }));
+  await assert.rejects(
+    () =>
+      repo.createApp({
+        teamId: "team-1",
+        name: "My App",
+        type: "fullstack_tanstack_postgres",
+        visibility: "team",
+      }),
+    (e: any) => e.statusCode === 409 && e.code === "team_has_no_org",
+  );
 });
 
 test("apps: finalizeDeploy stamps deployed_type with the type it deployed", async () => {

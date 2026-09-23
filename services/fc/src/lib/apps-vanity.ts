@@ -23,8 +23,17 @@ export interface VanityApp {
   slug: string;
   fcEndpoint: string | null;
   fcStatus: string | null;
-  /** `apps.team_id`. The org gate resolves the app's org through it. */
+  /** `apps.team_id`. Identity of the owning team; no longer the org source. */
   teamId: string | null;
+  /**
+   * `apps.org_id` — the app's tenant org, read straight off the row.
+   *
+   * Was resolved through `teamId → teams.oid` until 20260923200000 made this
+   * column the live tenant pointer. One read instead of two, and the same
+   * value the login page narrows its account picker by — the gate and the
+   * login page disagreeing about an app's tenant is the bug that change fixed.
+   */
+  orgId: string | null;
   /** `apps.auth_mode`. `platform` is the only value with a login wall. */
   authMode: string | null;
   /** `apps.auth_audience`: `any` | `org`. Only read when authMode is platform. */
@@ -76,7 +85,7 @@ export function selectByIdPrefix(rows: VanityApp[], idPrefix: string): VanityApp
  * result. At most one row per team shares a slug, so the list is tiny.
  */
 const LOOKUP_COLUMNS =
-  "id, slug, fc_endpoint, fc_status, team_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
+  "id, slug, fc_endpoint, fc_status, team_id, org_id, auth_mode, auth_audience, auth_scope, auth_rules, custom_domain, custom_domain_verified_at";
 
 function mapVanityRow(r: any): VanityApp {
   return {
@@ -85,6 +94,7 @@ function mapVanityRow(r: any): VanityApp {
     fcEndpoint: r.fc_endpoint ?? null,
     fcStatus: r.fc_status ?? null,
     teamId: r.team_id ?? null,
+    orgId: r.org_id ?? null,
     authMode: r.auth_mode ?? null,
     authAudience: r.auth_audience ?? null,
     authScope: r.auth_scope ?? null,

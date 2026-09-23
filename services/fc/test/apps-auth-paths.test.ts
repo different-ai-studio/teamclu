@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  appAdmitsAnyAudience,
   normalizeRulePath,
   parseAuthRules,
   parseAuthScope,
@@ -366,4 +367,48 @@ test("an unreadable roles value invalidates the set", () => {
     roles: null,
     unreadable: true,
   });
+});
+
+// --- appAdmitsAnyAudience ----------------------------------------------------
+//
+// The login page's signup gate. Coarse on purpose: see the function's own note
+// on why it is an app-level question and not a per-path one.
+
+test("appAdmitsAnyAudience: the app-level audience alone can open it", () => {
+  assert.equal(appAdmitsAnyAudience("all", [], "any"), true);
+  assert.equal(appAdmitsAnyAudience("all", [], "org"), false);
+  // Unset reads as org everywhere else, and must not widen here either.
+  assert.equal(appAdmitsAnyAudience("all", [], null), false);
+});
+
+test("appAdmitsAnyAudience: one public-facing path is enough", () => {
+  const rules = [
+    { path: "/admin", auth: "required", roles: ["admin"] },
+    { path: "/apply", auth: "required", audience: "any" },
+  ];
+  assert.equal(appAdmitsAnyAudience("paths", rules, "org"), true);
+});
+
+test("appAdmitsAnyAudience: an empty roles list counts as any", () => {
+  // `roles: []` is documented as "any authenticated user — skip the org check",
+  // which is `audience: any` written the newer way. Missing it would make a
+  // modern rule set stricter here than it is at the gate.
+  const rules = [{ path: "/apply", auth: "required", roles: [] }];
+  assert.equal(appAdmitsAnyAudience("paths", rules, "org"), true);
+});
+
+test("appAdmitsAnyAudience: a public path does not open signup", () => {
+  // A public path needs no account at all, so it is no evidence that this app
+  // wants one created inside its tenant.
+  const rules = [{ path: "/health", auth: "public" }];
+  assert.equal(appAdmitsAnyAudience("all", rules, "org"), false);
+});
+
+test("appAdmitsAnyAudience: an unreadable rule set refuses rather than throws", () => {
+  // parseAuthRules is the write-side parser and throws. Here a throw would be a
+  // failed login, and the safe answer is "no account gets written".
+  assert.equal(appAdmitsAnyAudience("paths", "not-an-array", "org"), false);
+  assert.equal(appAdmitsAnyAudience("paths", [{ path: "/x", auth: "bogus" }], "org"), false);
+  // ...but a readable set that says `any` at the app level still opens it.
+  assert.equal(appAdmitsAnyAudience("paths", "not-an-array", "any"), true);
 });

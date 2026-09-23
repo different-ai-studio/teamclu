@@ -17,7 +17,10 @@ import {
 } from "../src/lib/apps-login-service.js";
 
 const APP_ID = "11111111-2222-3333-4444-555555555555";
-const APP: LoginApp = { id: APP_ID, slug: "report", authMode: "platform" };
+const ORG_ID = "cccccccc-dddd-4eee-8fff-000000000000";
+// `orgId` is not optional in practice: every identity decision on this page is
+// narrowed to it, and a null one is refused as a misconfigured app.
+const APP: LoginApp = { id: APP_ID, slug: "report", authMode: "platform", orgId: ORG_ID };
 const ORIGIN = "https://report-11111111.apps.example.com";
 
 const BASE_ENV = {
@@ -599,7 +602,18 @@ test("phone login uses the existing auth repository and does not bootstrap a tea
       );
       assert.equal(verified?.status, 302);
       assert.match(verified!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
-      assert.deepEqual(calls[1], ["login", { phone: "+8613700000000", code: "123456", userId: undefined }]);
+      // The tenant travels with every call from this page, and signup is off
+      // because this fixture's app names no `any` audience anywhere.
+      assert.deepEqual(calls[1], [
+        "login",
+        {
+          phone: "+8613700000000",
+          code: "123456",
+          userId: undefined,
+          tenantOrgId: ORG_ID,
+          allowSignup: false,
+        },
+      ]);
       assert.match(verified!.headers.get("set-cookie")!, new RegExp(`^${SSO_COOKIE}=`));
     },
   );
@@ -616,7 +630,13 @@ test("phone login supports the repository's multi-account picker", async () => {
           phoneLogin: async (args: any) => {
             selected.push(args);
             if (!args.userId) {
-              return { multiUser: true, users: [{ id: "u-2", nickname: "小王", org_name: "研发部" }] };
+              return {
+                multiUser: true,
+                users: [
+                  { id: "u-2", nickname: "小王", org_name: "研发部", admin_type: 1, email: "wang@x.test" },
+                  { id: "u-3", nickname: "小王", org_name: "研发部", admin_type: 2, email: "wang@corp.test" },
+                ],
+              };
             }
             return { session: { user: { id: "u-2", email: "u-2@example.com" } } };
           },
@@ -627,7 +647,15 @@ test("phone login supports the repository's multi-account picker", async () => {
         d,
       );
       assert.equal(picker?.status, 200);
-      assert.match(await picker!.text(), /研发部/);
+      const pickerHtml = await picker!.text();
+      // Every entry is in the SAME tenant now, so the org name is identical on
+      // all of them and is not what the visitor is choosing between. The kind
+      // of identity and the email are.
+      assert.match(pickerHtml, /会员/);
+      assert.match(pickerHtml, /员工/);
+      assert.match(pickerHtml, /wang@x\.test/);
+      assert.match(pickerHtml, /wang@corp\.test/);
+      assert.doesNotMatch(pickerHtml, /研发部/, "the org name is the same on every row; showing it says nothing");
 
       const completed = await handleLoginRequest(
         post("/phone/select", { ...flow, phone: "13700000000", code: "123456", userId: "u-2" }),
@@ -754,13 +782,23 @@ test("the app lookup reads the custom domain columns the return check needs", as
     name: "周报",
     teamName: "研发效能部",
     authMode: "platform",
+    orgId: null,
+    authAudience: null,
+    authScope: null,
+    authRules: null,
     customDomain: "hire.example.org",
     customDomainVerifiedAt: "2026-09-10T10:43:48Z",
   });
   const selected = calls.find((c) => c[0] === "select" && c[1] === "apps")[2]
     .split(",")
     .map((col: string) => col.trim());
-  for (const col of ["custom_domain", "custom_domain_verified_at", "name", "team_id", "auth_mode"]) {
+  // org_id and the three auth_* columns decide who the picker may offer and
+  // whether an account may be created — a column missing here is the bug this
+  // assertion exists to catch, which is how the custom-domain pair got here.
+  for (const col of [
+    "custom_domain", "custom_domain_verified_at", "name", "team_id", "auth_mode",
+    "org_id", "auth_audience", "auth_scope", "auth_rules",
+  ]) {
     assert.ok(selected.includes(col), `the apps lookup must select ${col}`);
   }
   assert.deepEqual(calls.find((c) => c[0] === "eq" && c[1] === "teams"), ["eq", "teams", "id", TEAM_ID]);

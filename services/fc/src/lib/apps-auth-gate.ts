@@ -34,8 +34,10 @@ import type { ProxyIdentity } from "./apps-vanity.js";
 export type GateApp = {
   id: string;
   slug: string;
-  /** `apps.team_id` — the org audience resolves the app's org through it. */
+  /** `apps.team_id` — identity of the owning team. Not the org source. */
   teamId: string | null;
+  /** `apps.org_id` — the app's tenant org. Null is a misconfigured app. */
+  orgId: string | null;
   /** `apps.auth_mode`; only `platform` has a wall. */
   authMode: string | null;
   /** `apps.auth_audience`: `any` | `org`. Unset is read as `org` (fail closed). */
@@ -46,30 +48,41 @@ export type GateApp = {
   authRules: unknown;
 };
 
-export type OrgPair = {
-  /** `public.users.org_id` for the signed-in visitor; null when they have none. */
-  visitorOrgId: string | null;
-  /** `teams.oid` for the app's team; null when the team has no org. */
-  appOrgId: string | null;
-};
-
 export type GateDeps = {
   /**
-   * The two org ids the `org` audience / role checks need.
+   * The visitor's identity row IN THIS ORG — `public.users.id` for the row
+   * whose `auth_user_id` is this auth user and whose `org_id` is the app's —
+   * or null when they hold no identity there.
    *
-   * Injected because answering it needs two control-plane reads that this
-   * module has no business owning. It returns both ids rather than a verdict so
-   * the gateway can tell "this visitor has no role in the app org" (their
-   * problem) from "this app's team has no org at all" (an operator's problem) —
-   * and so the app org can be forwarded when the visitor is admitted by role.
+   * WHY THIS IS AN EXISTENCE CHECK AND NOT "the visitor's org". It used to be
+   * the latter: one `public.users` row was read by `id = <auth uid>` and its
+   * `org_id` compared to the app's. That can only ever answer with a single
+   * org, because `public.users.id` IS the auth user id for signed-in users
+   * (78,767 of the 78,779 rows that carry an `auth_user_id`). One person
+   * legitimately holds a row per tenant, so the single-row read silently
+   * pinned every visitor to whichever row happened to be their primary one —
+   * and the account picker's "sign in as my identity in tenant B" never
+   * reached the gate at all. Asking whether an identity EXISTS in the app's
+   * org is the question the multi-tenant model actually poses.
+   *
+   * Returns the row id, not a boolean, because the role check below must be
+   * keyed by THAT row: `roles_users.user_id` references `public.users.id`
+   * (2,246 of 2,246 rows), so keying roles by the auth uid would grade the
+   * primary row's roles against this tenant's door.
+   *
+   * Injected because answering it is a control-plane read this module has no
+   * business owning.
    */
-  resolveOrgs: (userId: string, teamId: string | null) => Promise<OrgPair>;
+  resolveTenantIdentity: (userId: string, orgId: string) => Promise<string | null>;
   /**
-   * Active role codes for the visitor in the given org (`roles_users` ∩
-   * active `roles`). Used for non-empty `roles` intersection and for legacy
-   * `audience: org` (any assignment).
+   * Active role codes for a tenant identity (`roles_users` ∩ active `roles`).
+   * Used for non-empty `roles` intersection and for legacy `audience: org`
+   * (any assignment).
+   *
+   * `identityId` is what {@link resolveTenantIdentity} returned — a
+   * `public.users.id`, NOT the auth user id.
    */
-  resolveVisitorRoles: (userId: string, orgId: string) => Promise<string[]>;
+  resolveVisitorRoles: (identityId: string, orgId: string) => Promise<string[]>;
   env?: NodeJS.ProcessEnv;
   /** False only on a plain-http local box. */
   secureCookies?: boolean;
@@ -373,23 +386,29 @@ async function admitByRoles(
   deps: GateDeps,
   required: string[] | null,
 ): Promise<Admission> {
-  const orgs = await deps.resolveOrgs(session.sub, app.teamId);
-  // A team with no org cannot admit anyone under a role check — the lookup
-  // has nothing to succeed against. That is a configuration fault (R10), not a
+  // An app with no org cannot admit anyone under a role check — the lookup has
+  // nothing to succeed against. That is a configuration fault (R10), not a
   // rejected visitor, and saying so is what stops an operator from hunting for
   // a permissions bug that is not there.
-  if (!orgs.appOrgId) return { ok: false, denial: "no_app_org", orgId: null };
+  if (!app.orgId) return { ok: false, denial: "no_app_org", orgId: null };
 
-  const codes = await deps.resolveVisitorRoles(session.sub, orgs.appOrgId);
+  // No identity in this tenant is a rejected visitor, not a missing role: they
+  // may well be an admin somewhere else. Both end in `wrong_org`, but the
+  // order matters — asking for roles first would query `roles_users` with an
+  // auth uid that means nothing in this org.
+  const identityId = await deps.resolveTenantIdentity(session.sub, app.orgId);
+  if (!identityId) return { ok: false, denial: "wrong_org", orgId: null };
+
+  const codes = await deps.resolveVisitorRoles(identityId, app.orgId);
   if (required === null) {
     if (codes.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
-    return { ok: true, denial: "none", orgId: orgs.appOrgId };
+    return { ok: true, denial: "none", orgId: app.orgId };
   }
   const have = new Set(codes);
   if (!required.some((code) => have.has(code))) {
     return { ok: false, denial: "wrong_org", orgId: null };
   }
-  return { ok: true, denial: "none", orgId: orgs.appOrgId };
+  return { ok: true, denial: "none", orgId: app.orgId };
 }
 
 /**

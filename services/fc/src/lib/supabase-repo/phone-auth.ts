@@ -154,6 +154,99 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     return `${phone}@${phoneEmailDomain}`;
   }
 
+  /**
+   * The auth user this phone already signs in as, if any.
+   *
+   * Asked of `public.users` rather than GoTrue because that is where this
+   * module keeps the phone↔account mapping, and because the admin API offers
+   * no lookup by email — only `getUserById` and a paged `listUsers`, and
+   * paging every account to answer one login is not a trade worth making.
+   *
+   * Residual case: an auth user whose `public.users` row never landed (the
+   * rollback below is best-effort) is invisible here, and creating it again
+   * fails loudly on the duplicate email rather than silently minting a second
+   * account for one person.
+   */
+  async function findAuthUserIdForPhone(phone: string): Promise<string | null> {
+    const { data, error } = await admin
+      .from("users")
+      .select("auth_user_id")
+      .eq("mobile", phone)
+      .is("deleted_at", null);
+    if (error) {
+      throw new ApiError(500, "internal", `auth user lookup by phone failed: ${error.message}`);
+    }
+    // Filtered here rather than with `.not(...)`: one phone holds at most a
+    // handful of rows (the busiest number in production has eight), so the
+    // predicate costs nothing to apply locally and the query stays a plain
+    // equality that every caller of this module can reason about.
+    return (data ?? []).map((r: any) => r.auth_user_id).find((id: any) => !!id) ?? null;
+  }
+
+  /**
+   * Claim an unbound identity row for this auth user — MEMBER ROWS ONLY.
+   *
+   * Binding is how a partner row that has never signed in becomes reachable:
+   * 550,666 of 629,445 rows carry no `auth_user_id`, and the gateway resolves a
+   * visitor's tenant identity by that column, so an unbound row is invisible to
+   * it. It is also irreversible in practice, and Chinese mobile numbers get
+   * recycled — so whoever verifies an SMS on a recycled number would inherit
+   * whatever the previous holder had.
+   *
+   * Hence `admin_type === 1` only, by product decision: inheriting a membership
+   * is a nuisance, inheriting a coach's or an accountant's staff row is a
+   * privilege escalation, and staff rows are exactly what the `org` audience
+   * admits an app on. A staff row stays unbound and someone has to grant it.
+   *
+   * The `is("auth_user_id", null)` guard is not redundant with the early
+   * return: two concurrent logins on one number would otherwise race, and the
+   * loser must not overwrite the winner's binding.
+   */
+  /**
+   * The auth account for this phone, creating it only if there is none.
+   *
+   * One person, one auth account, identities per tenant — so both callers (a
+   * first sign-in on an unbound partner row, and a tenant sign-up) go through
+   * here rather than each deciding for itself whether to call `createUser`.
+   *
+   * `created` is returned because it is the only safe basis for rollback: an
+   * auth user we reused carries the person's other tenant identities and must
+   * survive a failure further down.
+   */
+  async function ensureAuthUserForPhone(
+    phone: string,
+  ): Promise<{ authId: string; created: boolean }> {
+    const existing = await findAuthUserIdForPhone(phone);
+    if (existing) return { authId: existing, created: false };
+    const { data: created, error: createErr } = await admin.auth.admin.createUser({
+      email: syntheticEmail(phone),
+      password: deterministicPassword(phone, encryptionKey),
+      email_confirm: true,
+      // Never a tenant org: see the claim-sync note in login(). The platform
+      // side of a phone identity stays in DEFAULT_ORG.
+      app_metadata: { org_id: defaultOrgId },
+    });
+    if (createErr || !created?.user) {
+      throw new ApiError(500, "internal", `createUser failed: ${createErr?.message ?? "no user"}`);
+    }
+    return { authId: created.user.id, created: true };
+  }
+
+  async function bindMemberIdentity(user: any, authId: string): Promise<boolean> {
+    if (user.auth_user_id) return true;
+    if (Number(user.admin_type ?? 0) !== 1) return false;
+    const { error } = await admin
+      .from("users")
+      .update({ auth_user_id: authId })
+      .eq("id", user.id)
+      .is("auth_user_id", null);
+    if (error) {
+      throw new ApiError(500, "internal", `identity binding failed: ${error.message}`);
+    }
+    user.auth_user_id = authId;
+    return true;
+  }
+
   // admin magiclink → anon verifyOtp(token_hash) → session (the partner's
   // generateSessionByEmail, ported).
   async function generateSessionByEmail(email: string) {
@@ -260,7 +353,31 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
      * verify code → resolve public.users by (defaultOrgId, mobile) → MULTI_USER
      * / reuse / create (synthetic email) → mint session via magiclink.
      */
-    async login({ phone: rawPhone, code, userId }: { phone: string; code: string; userId?: string }) {
+    /**
+     * `tenantOrgId` / `allowSignup` are the app login page's, and ONLY its.
+     *
+     * Two HTTP surfaces reach this method: the FC-hosted app login page, which
+     * always knows which app — and so which tenant — is asking, and
+     * `/v1/auth/phone/login`, which the desktop and iOS clients call with no app
+     * in sight and therefore no tenant to scope to. Omitting both options must
+     * leave this method behaving exactly as it did, because that is the
+     * contract those two clients are already shipped against.
+     */
+    async login({
+      phone: rawPhone,
+      code,
+      userId,
+      tenantOrgId,
+      allowSignup,
+    }: {
+      phone: string;
+      code: string;
+      userId?: string;
+      /** Narrow every identity decision to this org. Absent = platform-wide. */
+      tenantOrgId?: string;
+      /** Create an identity in `tenantOrgId` when the caller holds none. */
+      allowSignup?: boolean;
+    }) {
       const phone = normalizePhone(rawPhone);
       if (!PHONE_RE.test(phone)) {
         throw new ApiError(400, "validation_failed", "请输入有效的手机号码");
@@ -300,11 +417,18 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       // A phone number can legitimately have a row per org (that is how a
       // cross-tenant employee is represented); more than one row is not an
       // error, it is the account picker below.
+      //
+      // `tenantOrgId` narrows that to one tenant. It does NOT reintroduce the
+      // defaultOrgId filter the paragraph above retired: that one pinned every
+      // phone identity to a FIXED org for all callers, which is what broke on
+      // the first switch_active_team. This one is the asking app's own org,
+      // supplied per request, and the platform-wide path still has no filter.
       let q = admin
         .from("users")
         .select("*, orgs(id, name, logo)")
         .eq("mobile", phone)
         .is("deleted_at", null);
+      if (tenantOrgId) q = q.eq("org_id", tenantOrgId);
       if (userId && userId.trim() !== "") q = q.eq("id", userId);
       const { data: matched, error: usersErr } = await q;
       if (usersErr) {
@@ -312,15 +436,35 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       }
       // An explicit pick is honoured as-is; the narrowing only shapes what the
       // picker offers (and whether there is a picker at all).
-      const users = userId && userId.trim() !== "" ? matched : await accountsForPicker(matched ?? []);
+      //
+      // `accountsForPicker` is skipped under tenant scoping, and its own
+      // rationale is why: it exists because an unscoped picker "turns into a
+      // list of every gym the person ever climbed at", which is a statement
+      // about rows in OTHER orgs. Inside one tenant there is no such list —
+      // there are at most a couple of rows, the org filter has already done the
+      // narrowing, and dropping the member row would leave someone who holds
+      // both a membership and a staff record with no way to sign in as a
+      // member at all.
+      const explicitPick = !!(userId && userId.trim() !== "");
+      const users = explicitPick
+        ? matched
+        : tenantOrgId
+          ? (matched ?? [])
+          : await accountsForPicker(matched ?? []);
 
       // Ambiguous: let the client pick (org/account picker). Don't consume the code.
       if (users && users.length > 1) {
+        // `admin_type` rides along so a picker narrowed to ONE org still tells
+        // its entries apart: within a tenant the org name is the same on every
+        // row, and what actually differs is the kind of identity (1 = member,
+        // >=2 = staff) and the email. 1,220 phone numbers hold two rows in one
+        // org today, 795 of them differing by admin_type and 796 by email.
         const picker = users.map((u: any) => ({
           id: u.id,
           org_id: u.org_id,
           org_name: (u.orgs as any)?.name ?? null,
           org_logo: (u.orgs as any)?.logo ?? null,
+          admin_type: Number(u.admin_type ?? 0),
           nickname: u.nickname ?? "",
           email: u.email ?? "",
         }));
@@ -336,7 +480,24 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
 
       if (users && users.length === 1) {
         const user = users[0];
-        const authId = user.auth_user_id || user.id;
+
+        // An unbound row has no auth user behind it, and `user.id` is then just
+        // a partner uuid — `getUserById` on it fails. Claim it instead, which
+        // is only allowed for a member row (see bindMemberIdentity). Checked
+        // BEFORE ensuring an auth user, so a staff row never causes one to be
+        // minted for a number that is not entitled to sign in.
+        if (!user.auth_user_id) {
+          if (Number(user.admin_type ?? 0) !== 1) {
+            throw new ApiError(403, "forbidden", "该账号尚未开通手机号登录，请联系管理员");
+          }
+          const { authId: ensured } = await ensureAuthUserForPhone(phone);
+          await bindMemberIdentity(user, ensured);
+          if (!user.auth_user_id) {
+            throw new ApiError(403, "forbidden", "该账号尚未开通手机号登录，请联系管理员");
+          }
+        }
+
+        const authId = user.auth_user_id;
         const { data: authUser, error: authErr } = await admin.auth.admin.getUserById(authId);
         if (authErr || !authUser?.user?.email) {
           throw new ApiError(500, "internal", `auth user lookup failed: ${authErr?.message ?? "no email"}`);
@@ -345,8 +506,14 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
         // public.users.org_id, so a stale claim would pin the session to
         // whichever org was stamped at sign-up no matter which account the
         // picker resolved. Sync it to the row we actually logged in as.
+        //
+        // NOT for an app login. That claim is one value on an auth user both
+        // surfaces share, so writing it here would make "I opened an app on my
+        // phone" silently reassign the org of the same person's desktop and iOS
+        // sessions. The app's tenant travels in the app session cookie instead,
+        // which is scoped to the app that issued it.
         const claimedOrg = (authUser.user.app_metadata as any)?.org_id ?? null;
-        if (user.org_id && claimedOrg !== user.org_id) {
+        if (!tenantOrgId && user.org_id && claimedOrg !== user.org_id) {
           const { error: syncErr } = await admin.auth.admin.updateUserById(authId, {
             app_metadata: { org_id: user.org_id },
           });
@@ -359,34 +526,59 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
         return { session: sessionPayload(session), user };
       }
 
-      // No user yet → create (synthetic email + public.users row, NO side-effects).
-      const email = syntheticEmail(phone);
-      const password = deterministicPassword(phone, encryptionKey);
-      const { data: created, error: createErr } = await admin.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-        app_metadata: { org_id: defaultOrgId },
-      });
-      if (createErr || !created?.user) {
-        throw new ApiError(500, "internal", `createUser failed: ${createErr?.message ?? "no user"}`);
+      // Nobody here, and the caller did not ask us to create anyone.
+      //
+      // Saying so beats falling back to the unscoped list: that fallback would
+      // offer identities in OTHER tenants, every one of which the gateway then
+      // refuses — a picker whose every entry is a dead end — and it would tell
+      // whoever holds this phone which other tenants the number has accounts in.
+      if (tenantOrgId && !allowSignup) {
+        throw new ApiError(403, "forbidden", "该手机号在本租户没有账号，请联系管理员开通");
       }
-      const authId = created.user.id;
+
+      // No identity here yet → create one.
+      //
+      // The org is the asking tenant when there is one, and DEFAULT_ORG on the
+      // platform-wide path exactly as before.
+      const signupOrgId = tenantOrgId ?? defaultOrgId;
+      const email = syntheticEmail(phone);
+
+      // The auth user may already exist, and under tenant scoping it usually
+      // does: a phone with a row in tenant A but none in tenant B now reaches
+      // this branch, and `createUser` on the same synthetic email would collide
+      // (15,459 phone numbers already carry one). Reuse it — one person, one
+      // auth account, identities per tenant. That is the same "same phone =
+      // same person" rule the account picker is built on.
+      const { authId, created: createdAuthUser } = await ensureAuthUserForPhone(phone);
+
       const nickname = `user_${Math.random().toString(36).slice(2, 6)}_${phone.slice(-4)}`;
       const { data: userRow, error: insUserErr } = await admin
         .from("users")
         .insert({
-          id: authId,
-          org_id: defaultOrgId,
+          // Only the FIRST row for a person can take the auth user's own id;
+          // `public.users.id` is the primary key and a second tenant identity
+          // would collide on it. Let the database generate one and carry the
+          // link in `auth_user_id`, which is what the gateway resolves by.
+          ...(createdAuthUser ? { id: authId } : {}),
+          org_id: signupOrgId,
           mobile: phone,
           auth_user_id: authId,
+          // Decided by the product owner over this module's objection: on
+          // belayo `public.users` is the partner's membership table and
+          // admin_type 1 reads as "holds a card at this gym", which is not true
+          // of someone who only signed in to an app. Recorded here because the
+          // row it writes is indistinguishable from a real membership.
+          admin_type: 1,
           nickname,
         })
         .select()
         .single();
       if (insUserErr) {
-        // Roll back the orphan auth user so a retry can succeed.
-        try { await admin.auth.admin.deleteUser(authId); } catch { /* best effort */ }
+        // Roll back ONLY an auth user this call created. Deleting a reused one
+        // would destroy the person's existing identities in other tenants.
+        if (createdAuthUser) {
+          try { await admin.auth.admin.deleteUser(authId); } catch { /* best effort */ }
+        }
         throw new ApiError(500, "internal", `create public.users failed: ${insUserErr.message}`);
       }
 
