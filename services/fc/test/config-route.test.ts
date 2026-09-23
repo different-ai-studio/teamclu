@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleBusinessApiRequest } from "../src/lib/business-api.js";
-import { buildBootstrapConfig, buildPublicConfig } from "../src/lib/routes/config.js";
+import {
+  buildBootstrapConfig,
+  buildPublicConfig,
+  DEFAULT_DESKTOP_DOWNLOAD_URL,
+} from "../src/lib/routes/config.js";
 import { FEATURE_PROFILES } from "../src/lib/feature-profiles.js";
 
 async function withEnv(overrides: Record<string, any>, fn: () => any) {
@@ -257,11 +261,54 @@ test("GET /v1/config/public returns webSso WITHOUT auth (login-time config)", as
       const body = JSON.parse(response.body);
       // webSso is present; the sensitive mqtt block is NEVER in the public config.
       assert.deepEqual(body, {
+        desktopDownloadUrl: DEFAULT_DESKTOP_DOWNLOAD_URL,
         webSso: {
           loginUrl: "https://admin.example.test/sign-in",
           storageKey: "sb-test-supa-auth-token",
         },
       });
+    },
+  );
+});
+
+test("desktopDownloadUrl defaults to the GitHub releases page when unset or blank", () => {
+  for (const value of [undefined, "", "   "]) {
+    withEnv({ DESKTOP_DOWNLOAD_URL: value }, () => {
+      assert.equal(buildPublicConfig().desktopDownloadUrl, "https://github.com/different-ai-studio/teamclu/releases");
+    });
+  }
+});
+
+test("DESKTOP_DOWNLOAD_URL overrides the desktop download link", () => {
+  withEnv({ DESKTOP_DOWNLOAD_URL: "  https://download.example.test/desktop  " }, () => {
+    assert.equal(buildPublicConfig().desktopDownloadUrl, "https://download.example.test/desktop");
+  });
+});
+
+test("a non-http(s) DESKTOP_DOWNLOAD_URL falls back to the default instead of being served", () => {
+  for (const value of ["not a url", "javascript:alert(1)", "ftp://files.example.test/app.dmg"]) {
+    withEnv({ DESKTOP_DOWNLOAD_URL: value }, () => {
+      assert.equal(buildPublicConfig().desktopDownloadUrl, DEFAULT_DESKTOP_DOWNLOAD_URL);
+    });
+  }
+});
+
+test("desktopDownloadUrl is public-only — bootstrap does not carry it", () => {
+  withEnv({ DESKTOP_DOWNLOAD_URL: "https://download.example.test/desktop" }, () => {
+    assert.equal("desktopDownloadUrl" in buildBootstrapConfig(), false);
+  });
+});
+
+test("GET /v1/config/public serves desktopDownloadUrl without a bearer", async () => {
+  await withEnv(
+    { DESKTOP_DOWNLOAD_URL: "https://download.example.test/desktop", WEBSSO_LOGIN_URL: undefined },
+    async () => {
+      const response = await handleBusinessApiRequest(
+        { httpMethod: "GET", path: "/v1/config/public", headers: {} },
+        { createRepository: () => ({}), createAuthRepository: () => ({}) },
+      );
+      assert.equal(response.statusCode, 200);
+      assert.equal(JSON.parse(response.body).desktopDownloadUrl, "https://download.example.test/desktop");
     },
   );
 });
@@ -277,7 +324,7 @@ test("no profile and no override emits no features block at all", () => {
     { MQTT_BROKER_URL: "wss://mqtt.example.com/mqtt", WEBSSO_LOGIN_URL: undefined, ...NO_FEATURES },
     () => {
       assert.deepEqual(buildBootstrapConfig(), { mqtt: { url: "wss://mqtt.example.com/mqtt" } });
-      assert.deepEqual(buildPublicConfig(), {});
+      assert.deepEqual(buildPublicConfig(), { desktopDownloadUrl: DEFAULT_DESKTOP_DOWNLOAD_URL });
     },
   );
 });
@@ -289,7 +336,7 @@ test("an unknown profile name degrades to no overrides instead of throwing", () 
       // A misspelled profile is a config mistake, not an outage: the deploy
       // must still serve, just without overrides.
       assert.deepEqual(buildBootstrapConfig(), {});
-      assert.deepEqual(buildPublicConfig(), {});
+      assert.deepEqual(buildPublicConfig(), { desktopDownloadUrl: DEFAULT_DESKTOP_DOWNLOAD_URL });
     },
   );
 });
@@ -307,7 +354,10 @@ test("auth goes to public ONLY and channels to bootstrap ONLY — never both", (
       }),
     },
     () => {
-      assert.deepEqual(buildPublicConfig(), { features: { auth: { google: true, phone: false } } });
+      assert.deepEqual(buildPublicConfig(), {
+        desktopDownloadUrl: DEFAULT_DESKTOP_DOWNLOAD_URL,
+        features: { auth: { google: true, phone: false } },
+      });
       assert.deepEqual(buildBootstrapConfig(), {
         features: { channels: { discord: false }, apps: true },
       });
@@ -373,6 +423,7 @@ test("APP_FEATURES_JSON overrides the profile key-by-key, not block-by-block", (
       () => {
         // Turning off exactly one flag in an emergency must not wipe the rest.
         assert.deepEqual(buildPublicConfig(), {
+          desktopDownloadUrl: DEFAULT_DESKTOP_DOWNLOAD_URL,
           features: { auth: { google: false, phone: true } },
         });
         assert.deepEqual(buildBootstrapConfig(), {
@@ -419,7 +470,7 @@ test("GET /v1/config/public serves auth flags without a bearer, and still no mqt
       );
       assert.equal(response.statusCode, 200);
       const body = JSON.parse(response.body);
-      assert.deepEqual(body, { features: { auth: { webSSO: true } } });
+      assert.deepEqual(body, { desktopDownloadUrl: DEFAULT_DESKTOP_DOWNLOAD_URL, features: { auth: { webSSO: true } } });
     },
   );
 });

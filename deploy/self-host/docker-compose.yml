@@ -506,6 +506,9 @@ services:
       # kept in step with it (and failed silently when it was not).
       WEBSSO_LOGIN_URL: "${WEBSSO_LOGIN_URL:-}"
       WEBSSO_STORAGE_KEY: "${WEBSSO_STORAGE_KEY:-}"
+      # Desktop download link served by /v1/config/public (iOS onboarding).
+      # Empty falls back to the GitHub releases page inside FC.
+      DESKTOP_DOWNLOAD_URL: "${DESKTOP_DOWNLOAD_URL:-}"
       # Runtime feature flags served by /v1/config/{public,bootstrap}. The
       # durable values live in services/fc/src/lib/feature-profiles.ts, in git;
       # APP_FEATURES_JSON here is an emergency override only. Keep both vars in

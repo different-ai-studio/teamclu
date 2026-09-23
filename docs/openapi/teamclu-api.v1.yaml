@@ -9993,8 +9993,19 @@ components:
       type: object
       description: >-
         Unauthenticated pre-sign-in configuration. Same "absent means fall back
-        to the build config" rule as BootstrapConfig.
+        to the build config" rule as BootstrapConfig, except
+        `desktopDownloadUrl`, which is always present.
+      required: [desktopDownloadUrl]
       properties:
+        desktopDownloadUrl:
+          type: string
+          format: uri
+          description: >-
+            Where to download the desktop app, shown by clients that send the
+            user to a computer (iOS onboarding). Set by FC's
+            `DESKTOP_DOWNLOAD_URL`; unset, blank, or non-http(s) values fall
+            back to `https://github.com/different-ai-studio/teamclu/releases`.
+          example: https://github.com/different-ai-studio/teamclu/releases
         webSso:
           $ref: "#/components/schemas/WebSsoConfig"
         features:
