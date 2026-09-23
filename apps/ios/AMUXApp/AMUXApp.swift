@@ -82,7 +82,6 @@ struct AMUXApp: App {
                 // toggle accents, and other system tinted surfaces to the Hai
                 // Cinnabar accent without disturbing liquid-glass behaviour.
                 .tint(Color.amux.cinnabar)
-                .task { _ = await PushPermissionManager.requestIfUndetermined() }
         }
         .modelContainer(modelContainer)
         .onChange(of: scenePhase) { _, newPhase in

@@ -123,6 +123,12 @@ struct ContentView: View {
         .environment(navigationRouter)
         .environment(featureFlags)
         .task {
+            // Asked here, once signed in and in a team, rather than at launch:
+            // at launch the system prompt lands on top of the intro cards,
+            // before the user knows what the app would notify them about.
+            _ = await PushPermissionManager.requestIfUndetermined()
+        }
+        .task {
             if let team = onboarding.currentContext?.team {
                 OnboardingLocalCacheBootstrapper.ensureWorkspaceExists(team: team, modelContext: modelContext)
             }
