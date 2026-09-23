@@ -18,17 +18,40 @@ public final class IdeaStore {
     public var errorMessage: String?
 
     private let teamID: String
-    private let repository: any IdeaRepository
+    /// Nil until the team runtime is up. At a cold launch the Ideas tab can be
+    /// on screen before it is; the store is made anyway so the cached list
+    /// shows at once, and the repository is attached when it arrives.
+    private var repository: (any IdeaRepository)?
     private let modelContext: ModelContext
 
-    public init(teamID: String, repository: any IdeaRepository, modelContext: ModelContext) {
+    /// Whether the store can reach the server yet — false while waiting for
+    /// the team runtime, when only the cached list is on show.
+    public var isConnected: Bool { repository != nil }
+
+    public init(teamID: String, repository: (any IdeaRepository)?, modelContext: ModelContext) {
         self.teamID = teamID
         self.repository = repository
         self.modelContext = modelContext
+        apply(IdeaCacheSynchronizer.cachedIdeas(teamID: teamID, modelContext: modelContext))
+    }
+
+    public func attach(repository: any IdeaRepository) {
+        self.repository = repository
+    }
+
+    /// The repository for a write, or nil with a message saying why the tap
+    /// did nothing. Only reachable in the moment between launch and the team
+    /// runtime coming up.
+    private func connectedRepository() -> (any IdeaRepository)? {
+        if let repository { return repository }
+        errorMessage = String(localized: "Still connecting. Try again in a moment.")
+        return nil
     }
 
     public func reload() async {
-        guard !isLoading else { return }
+        // Not connected yet: the cached list stays up, and the caller reloads
+        // once the repository is attached.
+        guard let repository, !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
 
@@ -36,6 +59,13 @@ public final class IdeaStore {
             let remoteIdeas = try await repository.listIdeas(teamID: teamID)
             apply(remoteIdeas)
             IdeaCacheSynchronizer.upsert(remoteIdeas, modelContext: modelContext)
+            // The list is the team's complete set, archived included, so
+            // anything cached and missing from it is gone on the server.
+            IdeaCacheSynchronizer.prune(
+                teamID: teamID,
+                keeping: Set(remoteIdeas.map(\.id)),
+                modelContext: modelContext
+            )
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -45,6 +75,7 @@ public final class IdeaStore {
     @discardableResult
     public func createIdea(title: String, description: String, workspaceID: String,
                            attachmentURLs: [URL] = []) async -> Bool {
+        guard let repository = connectedRepository() else { return false }
         do {
             let created = try await repository.createIdea(
                 teamID: teamID,
@@ -81,7 +112,8 @@ public final class IdeaStore {
     /// Not a toggle over the wire: this sends the state it wants, so a slow
     /// network and an impatient second tap can't cancel each other out.
     public func setLiked(ideaID: String, liked: Bool) async {
-        guard let before = idea(withID: ideaID) else { return }
+        guard let before = idea(withID: ideaID),
+              let repository = connectedRepository() else { return }
         applyLikeState(
             ideaID: ideaID,
             state: IdeaLikeState(
@@ -129,6 +161,7 @@ public final class IdeaStore {
         status: String,
         workspaceID: String
     ) async -> Bool {
+        guard let repository = connectedRepository() else { return false }
         do {
             let updated = try await repository.updateIdea(
                 ideaID: ideaID,
@@ -152,6 +185,7 @@ public final class IdeaStore {
 
     @discardableResult
     public func setArchived(ideaID: String, archived: Bool) async -> Bool {
+        guard let repository = connectedRepository() else { return false }
         do {
             let updated = try await repository.setArchived(ideaID: ideaID, archived: archived)
             merge(updated)
@@ -174,7 +208,7 @@ public final class IdeaStore {
     }
 
     public func reloadActivities(ideaID: String) async {
-        guard !isLoadingActivities else { return }
+        guard let repository, !isLoadingActivities else { return }
         isLoadingActivities = true
         defer { isLoadingActivities = false }
 
@@ -195,6 +229,7 @@ public final class IdeaStore {
         metadata: [String: String] = [:],
         attachmentURLs: [URL] = []
     ) async -> Bool {
+        guard let repository = connectedRepository() else { return false }
         do {
             let activity = try await repository.createIdeaActivity(
                 ideaID: ideaID,
@@ -218,6 +253,7 @@ public final class IdeaStore {
     }
 
     public func moveIdeas(from source: IndexSet, to destination: Int) {
+        guard let repository = connectedRepository() else { return }
         let movedRecords = source.compactMap { index in
             ideas.indices.contains(index) ? ideas[index] : nil
         }

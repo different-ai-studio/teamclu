@@ -14,6 +14,15 @@ public final class SessionIdea {
     public var createdAt: Date
     public var archived: Bool
     public var sortOrder: Int
+    /// The rest of what the Ideas list needs to draw a cached row before the
+    /// network answers (see `IdeaCacheSynchronizer.cachedIdeas`). Defaulted
+    /// so lightweight migration covers them; rows written before 1.20 carry
+    /// an empty `teamId` and simply aren't read back until the next refresh
+    /// rewrites them. Like and comment counts are deliberately absent — see
+    /// `IdeaStore.applyLikeState`.
+    public var teamId: String = ""
+    public var updatedAt: Date = Date(timeIntervalSince1970: 0)
+    public var attachmentURLsJSON: String = ""
 
     public init(
         ideaId: String,
