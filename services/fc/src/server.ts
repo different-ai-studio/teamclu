@@ -7,7 +7,7 @@ import {
   vanityLookup,
   loginAppLookup,
   traefikCustomDomainsLookup,
-  appOrgsLookup,
+  tenantIdentityLookup,
   visitorRolesLookup,
 } from "./index.js";
 
@@ -24,7 +24,7 @@ const app = createApp({
   // Registers /internal/traefik/dynamic; it answers 404 until
   // APPS_TRAEFIK_PROVIDER_TOKEN is set, which only belayo does.
   listTraefikCustomDomains: traefikCustomDomainsLookup(),
-  resolveAppOrgs: appOrgsLookup(),
+  resolveTenantIdentity: tenantIdentityLookup(),
   resolveVisitorRoles: visitorRolesLookup(),
 });
 

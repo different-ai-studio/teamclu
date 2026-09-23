@@ -21,16 +21,17 @@ export type AppDeps = {
   /** Resolves an app id for the central login service; same injection reason. */
   lookupLoginApp?: LookupLoginApp;
   /**
-   * Reads the visitor's and the app's org for role / legacy-org checks.
+   * Resolves the visitor's identity row in the app's tenant org, for role /
+   * legacy-org checks.
    *
-   * Absent, every org-/role-gated app answers "team has no org" rather than
+   * Absent, every org-/role-gated app denies every visitor rather than
    * opening — fail closed, because the alternative is serving a page that was
    * marked as staff-only to whoever asks.
    */
-  resolveAppOrgs?: GateDeps["resolveOrgs"];
+  resolveTenantIdentity?: GateDeps["resolveTenantIdentity"];
   /**
-   * Active role codes for a visitor in an org. Absent, role / legacy-org
-   * checks see an empty set (deny).
+   * Active role codes for a tenant identity. Absent, role / legacy-org checks
+   * see an empty set (deny).
    */
   resolveVisitorRoles?: GateDeps["resolveVisitorRoles"];
   /**
@@ -196,9 +197,7 @@ export function createApp(deps: AppDeps): Hono {
       // on a plain-HTTP response, and the redirect is what guarantees the
       // login round trip happens over TLS.
       const gate = await applyAuthGate(c.req.raw, target, {
-        resolveOrgs:
-          deps.resolveAppOrgs ??
-          (async () => ({ visitorOrgId: null, appOrgId: null })),
+        resolveTenantIdentity: deps.resolveTenantIdentity ?? (async () => null),
         resolveVisitorRoles: deps.resolveVisitorRoles ?? (async () => []),
         secureCookies: forwardedProto(c) === "https",
       });

@@ -379,81 +379,91 @@ export function traefikCustomDomainsLookup() {
 }
 
 /**
- * Org ids for the `org` audience: the visitor's and the app's.
+ * Does this visitor hold an identity in the app's tenant org, and which row is it?
  *
- * Two reads, both with the service role for the same tokenless reason as
- * {@link vanityLookup}. They live in one function so the gateway makes one call
- * per request rather than two, and so the cache below covers both.
+ * One read, with the service role for the same tokenless reason as
+ * {@link vanityLookup}: the request carries an app-session cookie, not a
+ * Supabase JWT. The app's own org no longer needs a read at all — it comes off
+ * `apps.org_id`, which the vanity lookup already loaded.
  *
- * `public.users.id`, NOT `auth_user_id` — that is the column `amux.current_org_id()`
- * matches `auth.uid()` against, and two different answers to "which org is this
- * user in" is exactly the kind of split that shows up as an access bug nobody
- * can reproduce. `users` also lives in `public` while everything else here is
- * in `amux`, hence the explicit schema.
+ * `users` lives in `public` while everything else here is in `amux`, hence the
+ * explicit schema.
  *
- * A visitor who signed up through an app's login page has no `public.users` row
- * at all (that table mirrors saas-mono), so they resolve to a null org and are
- * refused by the org audience. That is the intended meaning of "staff only".
+ * A visitor with no row in that org resolves to null and is refused by the org
+ * audience. That is the intended meaning of "staff only", and it still holds
+ * for someone who signed up through a different tenant's login page.
  *
- * Errors are thrown, not swallowed into a null pair: a database fault must not
- * masquerade as "this team has no organisation", which is what the gateway
- * would then tell the operator to go and fix.
+ * Errors are thrown, not swallowed into a null: a database fault must not
+ * masquerade as "this person does not belong here", which is a denial the
+ * visitor cannot act on and an operator cannot diagnose.
  */
-type OrgPair = { visitorOrgId: string | null; appOrgId: string | null };
-
 const ORG_CACHE_TTL_MS = 60_000;
 const ORG_CACHE_MAX = 5_000;
-const orgPairCache = new Map<string, { value: OrgPair; expiresAt: number }>();
+const identityCache = new Map<string, { value: string | null; expiresAt: number }>();
 
-export function appOrgsLookup() {
-  return async (userId: string, teamId: string | null): Promise<OrgPair> => {
-    const empty: OrgPair = { visitorOrgId: null, appOrgId: null };
-    if (!UUID_RE.test(userId)) return empty;
+export function tenantIdentityLookup() {
+  return async (userId: string, orgId: string): Promise<string | null> => {
+    if (!UUID_RE.test(userId) || !UUID_RE.test(orgId)) return null;
 
-    const key = `${userId}|${teamId ?? ""}`;
+    const key = `${userId}|${orgId}`;
     const now = Date.now();
-    const hit = orgPairCache.get(key);
+    const hit = identityCache.get(key);
     if (hit && hit.expiresAt > now) return hit.value;
 
+    // `auth_user_id`, not `id`. They are equal for a primary row, but a person
+    // who holds an identity in several tenants has one row per tenant and only
+    // one of them can carry the auth user's own id — see the contract note on
+    // GateDeps.resolveTenantIdentity for why keying by `id` silently pinned
+    // every visitor to that single row.
+    //
+    // `limit(1)` rather than `maybeSingle()`: two rows for one person in one
+    // org is duplicate data (1,220 phone numbers have exactly that today), and
+    // `maybeSingle()` would turn it into a 500 that locks them out of an app
+    // they are entitled to enter. Either row grants the same admission.
     const admin = createServiceRoleClient();
-    const [visitor, team] = await Promise.all([
-      admin.schema("public").from("users").select("org_id").eq("id", userId).maybeSingle(),
-      teamId && UUID_RE.test(teamId)
-        ? admin.from("teams").select("oid").eq("id", teamId).maybeSingle()
-        : Promise.resolve({ data: null, error: null } as any),
-    ]);
-    if (visitor.error) throw new Error(`visitor org lookup failed: ${visitor.error.message}`);
-    if (team.error) throw new Error(`app org lookup failed: ${team.error.message}`);
+    const { data, error } = await admin
+      .schema("public")
+      .from("users")
+      .select("id")
+      .eq("auth_user_id", userId)
+      .eq("org_id", orgId)
+      .is("deleted_at", null)
+      .limit(1);
+    if (error) throw new Error(`tenant identity lookup failed: ${error.message}`);
 
-    const value: OrgPair = {
-      visitorOrgId: visitor.data?.org_id ?? null,
-      appOrgId: team.data?.oid ?? null,
-    };
-    if (orgPairCache.size >= ORG_CACHE_MAX) {
-      for (const [k, v] of orgPairCache) if (v.expiresAt <= now) orgPairCache.delete(k);
-      if (orgPairCache.size >= ORG_CACHE_MAX) orgPairCache.clear();
+    const value: string | null = data?.[0]?.id ?? null;
+    if (identityCache.size >= ORG_CACHE_MAX) {
+      for (const [k, v] of identityCache) if (v.expiresAt <= now) identityCache.delete(k);
+      if (identityCache.size >= ORG_CACHE_MAX) identityCache.clear();
     }
-    orgPairCache.set(key, { value, expiresAt: now + ORG_CACHE_TTL_MS });
+    identityCache.set(key, { value, expiresAt: now + ORG_CACHE_TTL_MS });
     return value;
   };
 }
 
 /**
- * Active role codes for a visitor in an org — gateway role admit + legacy
+ * Active role codes for a tenant identity — gateway role admit + legacy
  * `audience: org` (any `roles_users` row).
  *
- * Service-role for the same tokenless reason as {@link appOrgsLookup}: the
- * request carries an app-session cookie, not a Supabase JWT.
+ * `identityId` is a `public.users.id` from {@link tenantIdentityLookup}, NOT an
+ * auth user id. `roles_users.user_id` references `public.users.id` (2,246 of
+ * 2,246 rows resolve there), so for a person holding identities in several
+ * tenants the auth uid would fetch their PRIMARY row's roles and grade them
+ * against this tenant's door. The two are equal only for a primary row, which
+ * is why the mistake is invisible until someone is cross-tenant.
+ *
+ * Service-role for the same tokenless reason as {@link tenantIdentityLookup}:
+ * the request carries an app-session cookie, not a Supabase JWT.
  */
 const ROLE_CACHE_TTL_MS = 60_000;
 const ROLE_CACHE_MAX = 5_000;
 const visitorRoleCache = new Map<string, { value: string[]; expiresAt: number }>();
 
 export function visitorRolesLookup() {
-  return async (userId: string, orgId: string): Promise<string[]> => {
-    if (!UUID_RE.test(userId) || !orgId) return [];
+  return async (identityId: string, orgId: string): Promise<string[]> => {
+    if (!UUID_RE.test(identityId) || !orgId) return [];
 
-    const key = `${userId}|${orgId}`;
+    const key = `${identityId}|${orgId}`;
     const now = Date.now();
     const hit = visitorRoleCache.get(key);
     if (hit && hit.expiresAt > now) return hit.value;
@@ -464,7 +474,7 @@ export function visitorRolesLookup() {
       .from("roles_users")
       .select("role_id")
       .eq("org_id", orgId)
-      .eq("user_id", userId)
+      .eq("user_id", identityId)
       .eq("status", "active");
     if (bindErr) throw new Error(`visitor roles lookup failed: ${bindErr.message}`);
 
@@ -567,7 +577,7 @@ const app = createApp({
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
   listTraefikCustomDomains: traefikCustomDomainsLookup(),
-  resolveAppOrgs: appOrgsLookup(),
+  resolveTenantIdentity: tenantIdentityLookup(),
   resolveVisitorRoles: visitorRolesLookup(),
 });
 
