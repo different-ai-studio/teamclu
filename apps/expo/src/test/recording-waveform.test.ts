@@ -4,6 +4,8 @@ import {
   daemonStatusLabel,
   normalizeMeteringLevel,
   waveformBarHeight,
+  dictationLanguage,
+  normalizeSpeechVolume,
 } from "../features/sessions/voice-level";
 
 describe("normalizeMeteringLevel", () => {
@@ -65,5 +67,27 @@ describe("daemonStatusLabel", () => {
     expect(daemonStatusLabel("connecting")).toBe("daemon connecting");
     expect(daemonStatusLabel("reconnecting")).toBe("daemon connecting");
     expect(daemonStatusLabel("disconnected")).toBe("daemon offline");
+  });
+});
+
+describe("normalizeSpeechVolume", () => {
+  it("maps the recognizer's -2…10 volume onto 0…1, silence at or below 0", () => {
+    expect(normalizeSpeechVolume(-2)).toBe(0);
+    expect(normalizeSpeechVolume(0)).toBe(0);
+    expect(normalizeSpeechVolume(5)).toBe(0.5);
+    expect(normalizeSpeechVolume(10)).toBe(1);
+    expect(normalizeSpeechVolume(14)).toBe(1);
+    expect(normalizeSpeechVolume(undefined)).toBe(0);
+    expect(normalizeSpeechVolume(Number.NaN)).toBe(0);
+  });
+});
+
+describe("dictationLanguage", () => {
+  it("recognises Chinese for any Chinese locale and English otherwise", () => {
+    expect(dictationLanguage("zh-Hans-CN")).toBe("zh-CN");
+    expect(dictationLanguage("zh-TW")).toBe("zh-CN");
+    expect(dictationLanguage("en-GB")).toBe("en-US");
+    expect(dictationLanguage("ja-JP")).toBe("en-US");
+    expect(dictationLanguage(null)).toBe("en-US");
   });
 });

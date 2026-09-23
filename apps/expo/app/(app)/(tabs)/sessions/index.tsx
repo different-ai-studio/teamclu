@@ -12,6 +12,7 @@ import { successTone, selectionTick } from "../../../../src/lib/haptics";
 import { createConfiguredSessionsApi } from "../../../../src/features/sessions/api-provider";
 import { createSessionsCache } from "../../../../src/features/sessions/session-cache";
 import { createSessionsController } from "../../../../src/features/sessions/session-controller";
+import { inboxTopic, parseInboxPing } from "../../../../src/features/sessions/inbox";
 import { buildSessionRuntimeMaps } from "../../../../src/features/sessions/session-row-runtime";
 import type { ConnectedAgentsStoreState } from "../../../../src/features/actors/connected-agents-store";
 import { SessionsListScreen } from "../../../../src/features/sessions/screens/SessionsListScreen";
@@ -177,14 +178,8 @@ export default function SessionsIndexRoute() {
     }
   }, [activeTeamId]);
 
-  if (state.route !== "ready") {
-    return <Redirect href={href ?? "/"} />;
-  }
-
-  if (state.currentTeam === null) {
-    return <Redirect href="/" />;
-  }
-
+  // Every hook sits above the redirects below: they used to follow them,
+  // so the hook count changed between renders whenever the route flipped.
   // Daemon reachability for the pill above the list. `useTeamMqtt` hands out the
   // shared client, so this tracks the same connection the sessions stream uses.
   const teamMqtt = useTeamMqtt();
@@ -197,6 +192,35 @@ export default function SessionsIndexRoute() {
     return teamMqtt.onConnectionState(setDaemonState);
   }, [teamMqtt]);
 
+  // Unread dots: FC pings `inbox/<auth user id>` when a session gets a message
+  // (iOS #1555). Without this the list only learned about new messages when
+  // it was refreshed by hand or regained focus.
+  useEffect(() => {
+    if (!teamMqtt || !activeTeamId) return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      const topic = inboxTopic(data.session?.user?.id ?? "");
+      if (!topic) return;
+      unsubscribe = teamMqtt.subscribe(topic, (payload) => {
+        if (!parseInboxPing(payload, activeTeamId)) return;
+        // A burst of messages is one refresh, not one per message.
+        if (refreshTimer) return;
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          void controllerRef.current?.refresh();
+        }, 400);
+      });
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [teamMqtt, activeTeamId]);
+
   // Badge dot, status label and workspace name come off the live runtime, the
   // same three facts iOS reads from its per-session AgentAttachment.
   const agentsStore = useConnectedAgentsStore();
@@ -205,6 +229,15 @@ export default function SessionsIndexRoute() {
     agentsStore?.getState ?? emptyAgentsState,
     agentsStore?.getState ?? emptyAgentsState,
   );
+
+  if (state.route !== "ready") {
+    return <Redirect href={href ?? "/"} />;
+  }
+
+  if (state.currentTeam === null) {
+    return <Redirect href="/" />;
+  }
+
   const { runtimeBySessionId, workspaceBySessionId } = buildSessionRuntimeMaps({
     sessions: listState.sessions,
     presenceByAgentId: agentsState.presenceByAgentId,

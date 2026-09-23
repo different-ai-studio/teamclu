@@ -273,13 +273,15 @@ export default function SessionDetailRoute() {
     };
   }, []);
 
-  if (state.route !== "ready") {
-    return <Redirect href={href ?? "/"} />;
-  }
-
-  if (!sessionId || currentTeam === null) {
-    return <Redirect href="/(app)/sessions" />;
-  }
+  // Where to send someone who can't be here. Returned just before the JSX
+  // below, not here: every hook in this component has to run on every render,
+  // and returning early skipped the ones after it whenever the route flipped.
+  const redirectHref =
+    state.route !== "ready"
+      ? href ?? "/"
+      : !sessionId || currentTeam === null
+        ? "/(app)/sessions"
+        : null;
 
   const detailState = useSyncExternalStore(
     controller?.subscribe ?? (() => () => {}),
@@ -739,6 +741,10 @@ export default function SessionDetailRoute() {
       setIsAnsweringQuestion(false);
     }
   };
+
+  if (redirectHref !== null) {
+    return <Redirect href={redirectHref} />;
+  }
 
   return (
     <View style={styles.screen}>

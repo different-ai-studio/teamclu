@@ -70,15 +70,15 @@ export function SessionComposerShell({
     setRecordError(null);
     try {
       if (recorder.isRecording) {
-        const uri = await recorder.stop();
-        if (uri) {
-          onChangeText(`${composerText}${composerText.length > 0 ? " " : ""}🎙️ ${uri}`);
+        const text = await recorder.stop();
+        if (text) {
+          onChangeText(`${composerText}${composerText.length > 0 ? " " : ""}${text}`);
         }
       } else {
         await recorder.start();
       }
     } catch (err) {
-      setRecordError(err instanceof Error ? err.message : t("Couldn't access microphone."));
+      setRecordError(err instanceof Error ? t(err.message) : t("Couldn't access microphone."));
     }
   };
 
@@ -175,7 +175,7 @@ export function SessionComposerShell({
           ) : (
             <Pressable
               accessibilityLabel={
-                rightButton === "stopRecording" ? t("Stop recording") : t("Voice memo")
+                rightButton === "stopRecording" ? t("Stop recording") : t("Voice input")
               }
               accessibilityRole="button"
               onPress={handleMicToggle}

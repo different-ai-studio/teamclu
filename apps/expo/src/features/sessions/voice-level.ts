@@ -22,6 +22,36 @@ export function normalizeMeteringLevel(decibels: number | undefined): number {
 }
 
 /**
+ * Convert `expo-speech-recognition`'s `volumechange` value (-2…10, below 0 is
+ * inaudible) to the same 0…1 level the waveform takes.
+ */
+export function normalizeSpeechVolume(value: number | undefined): number {
+  if (value === undefined || Number.isNaN(value) || value <= 0) return 0;
+  return Math.min(1, value / 10);
+}
+
+/**
+ * The recognizer language for this device: Chinese for any Chinese locale,
+ * otherwise US English. Mirrors iOS, which lets `SFSpeechRecognizer` follow the
+ * system language.
+ */
+export function dictationLanguage(localeTag: string | null | undefined): string {
+  return (localeTag ?? "").toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+}
+
+/**
+ * Words the recognizer should expect — iOS `SessionDetailView`'s
+ * `VoiceRecorder(contextualStrings:)`, kept in step.
+ */
+export const DICTATION_CONTEXTUAL_STRINGS = [
+  "Claude", "Claude Code", "Sonnet", "Opus", "Haiku",
+  "MQTT", "protobuf", "SwiftUI", "SwiftData",
+  "agent", "daemon", "worktree", "workspace",
+  "commit", "push", "merge", "pull request",
+  "API", "JSON", "YAML", "REST", "gRPC",
+];
+
+/**
  * Height of one waveform bar, matching the iOS `RecordingWaveform.barHeight`
  * arithmetic exactly so both apps swing the same amount for the same input:
  * a continuous sine per bar, biased and scaled by the live level, so silence
