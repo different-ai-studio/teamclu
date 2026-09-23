@@ -51,6 +51,19 @@
   (subpath "/System")
   (subpath (param "NODE_ROOT")))
 
+;; Metadata on every path, content on almost none.
+;;
+;; node resolves its entry script with realpathSync, which lstat()s every
+;; component on the way — `/`, `/Users`, `/Users/<you>`, … — so without this
+;; the host dies before running a line with
+;; `EPERM: operation not permitted, lstat '/Users'`. An inline `node -e` never
+;; hits it, which is exactly how this survived synthetic testing and only
+;; surfaced on a real spawn.
+;;
+;; Metadata alone reveals that a path exists, not what is in it: the read-data
+;; rules above still decide that, and `~/.ssh` stays unreadable.
+(allow file-read-metadata)
+
 (allow file-write-data (literal "/dev/null"))
 
 ;; ── The workspace: where the agent is meant to work ─────────────────────

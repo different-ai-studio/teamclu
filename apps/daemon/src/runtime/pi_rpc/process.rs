@@ -537,12 +537,17 @@ impl PiProcessPool {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
+        // `sandboxed` is on this line because nothing else can report it:
+        // `sandbox-exec` execs into node, so the process it leaves behind
+        // shows node's own command line and `ps` cannot tell a sandboxed host
+        // from an unsandboxed one.
         info!(
             node = %launch.node.display(),
             package_root = %launch.package_root.display(),
             mode = ?mode,
             worktree,
             session_dir = %session_dir.display(),
+            sandboxed = sandbox_profile.is_some(),
             "spawning pi child"
         );
         let mut child = cmd
@@ -779,7 +784,10 @@ fn sandbox_profile_for(setting: Option<&str>) -> Option<PathBuf> {
     }
     if setting.eq_ignore_ascii_case("on") || setting.eq_ignore_ascii_case("true") {
         return match materialize_sandbox_profile() {
-            Ok(path) => Some(path),
+            Ok(path) => {
+                info!(profile = %path.display(), "pi host sandbox enabled");
+                Some(path)
+            }
             Err(e) => {
                 // Falling back to unsandboxed is the deliberate choice: the
                 // sandbox is hardening, and refusing to start would turn a
@@ -791,6 +799,7 @@ fn sandbox_profile_for(setting: Option<&str>) -> Option<PathBuf> {
     }
     let path = PathBuf::from(setting);
     if path.is_file() {
+        info!(profile = %path.display(), "pi host sandbox enabled (profile from config)");
         Some(path)
     } else {
         warn!(path = %path.display(), "agents.pi.sandbox profile not found; running unsandboxed");
