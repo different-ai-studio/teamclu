@@ -189,9 +189,10 @@ public final class SessionDetailViewModel {
     private var sessionAgentSubscribedActorIDs: Set<String> = []
 
     // MARK: - Chip-bar state
-    /// Agent actors currently selected in the chip bar. Empty = no specific
-    /// mention; all agents will receive the message (broadcast semantics on
-    /// the daemon side). Populated by bootstrapChips / toggleAgentChip.
+    /// Agent actors currently selected in the chip bar — the send's
+    /// `mentionActorIDs`. Empty = no agent mentioned: the daemon silent-queues
+    /// the message (`route_session_message_to_runtimes`) and no agent
+    /// replies. Populated by bootstrapChips / toggleAgentChip.
     public private(set) var agentChipSelection: Set<String> = []
     /// Session + context bound together; both are always set or neither is.
     private var sessionBinding: (session: Session, modelContext: ModelContext)?
@@ -289,9 +290,10 @@ public final class SessionDetailViewModel {
         didSet { registerOutboxDeliveryHook() }
     }
 
-    /// Messages this VM sent that are still waiting on the outbox. The
-    /// agent's placeholder card is raised when one of these is delivered,
-    /// not when the user taps send — see `sendPrompt`.
+    /// Messages this VM sent to an agent that are still waiting on the
+    /// outbox. The agent's placeholder card is raised when one of these is
+    /// delivered, not when the user taps send — see `sendPrompt`. A send
+    /// that mentions no agent never enters this set.
     private var sendsAwaitingDelivery: Set<String> = []
 
     /// Point the sender's delivery hook back at this VM. Called whenever
@@ -2707,8 +2709,14 @@ public final class SessionDetailViewModel {
             //    above a message whose own status dot still read "sending".
             //    `handleOutboxDelivered` flips it once the row lands, which
             //    is the same moment the dot turns into a checkmark.
+            //
+            //    Only a send that mentions an agent raises the card at all:
+            //    the daemon silent-queues an unmentioned message, so no
+            //    agent is about to start and the card would sit on
+            //    "Agent loading…" until the 60s safety reset.
+            let engagesAgent = !mentionIDs.isEmpty
             if let outboxSender {
-                sendsAwaitingDelivery.insert(messageID)
+                if engagesAgent { sendsAwaitingDelivery.insert(messageID) }
                 await outboxSender.enqueue(
                     messageID: messageID,
                     sessionID: session.sessionId,
@@ -2735,8 +2743,9 @@ public final class SessionDetailViewModel {
                     messageID: messageID
                 )
                 // Same rule as the outbox path: the card goes up once the
-                // message is out, not when the button was pressed.
-                markAgentWorking()
+                // message is out, not when the button was pressed — and
+                // only when an agent was mentioned.
+                if engagesAgent { markAgentWorking() }
             } catch {
                 surfaceSendError(error)
                 throw error

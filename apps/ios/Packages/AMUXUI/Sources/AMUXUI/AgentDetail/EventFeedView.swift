@@ -94,7 +94,7 @@ public struct EventBubbleView: View {
     }
 
     /// True when this event was produced by an actor other than the
-    /// signed-in user. Drives the "You / @other" label and bubble alignment
+    /// signed-in user. Drives the "You / @other" label and bubble tint
     /// for user-prompt rows.
     private var isFromOtherUser: Bool {
         guard let senderID = event.senderActorID, !senderID.isEmpty else { return false }
@@ -196,10 +196,10 @@ public struct EventBubbleView: View {
 
     // MARK: - User Bubble
     //
-    // Local user → right-aligned, Cinnabar-tinted glass with "You" label.
-    // Another collaborator → left-aligned plain glass with their display
-    // name. Mirrors the iMessage convention where outgoing and incoming
-    // bubbles read at opposite edges of the canvas.
+    // Every human sits on the right; agents keep the left. The edge says
+    // "person or agent", the color says whose: the local user gets the
+    // Cinnabar-tinted glass with a "You" label, another collaborator a
+    // slate-tinted glass under their display name.
 
     private var userBubble: some View {
         if isFromOtherUser {
@@ -257,7 +257,7 @@ public struct EventBubbleView: View {
                             AttachmentFileCard(url: url)
                         }
                         if !parsed.text.isEmpty {
-                            Text(parsed.text)
+                            Text(Self.displayText(parsed.text))
                                 .font(.subheadline)
                                 .foregroundStyle(Color.amux.mist)
                                 .textSelection(.enabled)
@@ -267,7 +267,7 @@ public struct EventBubbleView: View {
                                              tint: Color.amux.cinnabar,
                                              interactive: false)
                                 .contextMenu {
-                                    MessageContextMenu(text: event.text ?? "")
+                                    MessageContextMenu(text: MentionDisplayText.plainText(event.text ?? ""))
                                     if onEdit != nil || onDelete != nil {
                                         Divider()
                                     }
@@ -297,39 +297,57 @@ public struct EventBubbleView: View {
     }
 
     private var otherUserBubble: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .trailing, spacing: 2) {
             Text(senderDisplayName)
                 .font(.caption)
                 .foregroundStyle(Color.amux.basalt)
-                .padding(.leading, 4)
+                .padding(.trailing, 4)
 
-            HStack {
-                VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: 6) {
                     if let replyQuote {
                         ReplyQuoteChip(
                             quote: replyQuote,
                             actorMap: actorMap,
-                            alignment: .leading,
+                            alignment: .trailing,
                             onTap: onTapQuote
                         )
                     }
-                    Text(event.text ?? "")
+                    Text(Self.displayText(event.text ?? ""))
                         .font(.subheadline)
                         .foregroundStyle(Color.amux.onyx)
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .liquidGlass(in: RoundedRectangle(cornerRadius: 18), interactive: false)
+                        .liquidGlass(in: RoundedRectangle(cornerRadius: 18),
+                                     tint: Color.amux.slate,
+                                     interactive: false)
                         .contextMenu {
-                            MessageContextMenu(text: event.text ?? "")
+                            MessageContextMenu(text: MentionDisplayText.plainText(event.text ?? ""))
                         }
                 }
-                .frame(maxWidth: sizeClass == .regular ? 500 : 260, alignment: .leading)
-                Spacer()
+                .frame(maxWidth: sizeClass == .regular ? 500 : 260, alignment: .trailing)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
+    }
+
+    /// A human message with the desktop's mention/skill tokens rewritten
+    /// (`[Mentioned: X|instruction: …]` → `@X`). The tokens are set in
+    /// semibold rather than a color: the bubble tint already carries color,
+    /// and weight reads on both the cinnabar and the slate glass.
+    static func displayText(_ raw: String) -> AttributedString {
+        var result = AttributedString()
+        for segment in MentionDisplayText.segments(raw) {
+            var run = AttributedString(segment.text)
+            if segment.kind != .text {
+                run.inlinePresentationIntent = .stronglyEmphasized
+            }
+            result += run
+        }
+        return result
     }
 
     // MARK: - Assistant Bubble (gray, left-aligned, markdown)
@@ -535,7 +553,8 @@ public struct ActiveStreamCardView: View {
 // `EventBubbleView.assistantBubble` (gray glass, markdown, model caption)
 // but with an extra detail-icon overlay bottom-right that pushes the
 // streaming detail when the turn produced any thinking / tool runs the
-// user might want to inspect.
+// user might want to inspect. The turn's files sit directly under the
+// bubble; the process page lists them too.
 
 public struct CompletedTurnBubbleView<DetailIcon: View>: View {
     public let finalEvent: AgentEvent
@@ -546,6 +565,11 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
     /// — kept generic here so this view doesn't depend on the navigation
     /// route type defined in `StreamingDetailView.swift`.
     @ViewBuilder public let detailIcon: () -> DetailIcon
+    /// Every file the turn produced, deduplicated by the parent. Rendered
+    /// under the bubble so the reader doesn't have to open the process
+    /// page to find what came out of the turn.
+    public let attachments: [MessageAttachment]
+    @State private var fullscreenAttachment: MessageAttachment?
 
     /// The signed-in user's feedback for this message ("positive" /
     /// "negative"), nil when none. Rendered as a small thumb next to the
@@ -560,6 +584,7 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                 agentName: String?,
                 feedbackKind: String? = nil,
                 onFeedback: ((String) -> Void)? = nil,
+                attachments: [MessageAttachment] = [],
                 @ViewBuilder detailIcon: @escaping () -> DetailIcon = { EmptyView() }) {
         self.finalEvent = finalEvent
         self.runtime = runtime
@@ -567,6 +592,7 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
         self.feedbackKind = feedbackKind
         self.onFeedback = onFeedback
         self.detailIcon = detailIcon
+        self.attachments = attachments
     }
 
     private var modelDisplayName: String? {
@@ -618,6 +644,19 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                 detailIcon()
             }
 
+            // Under the bubble, not inside it — same placement as
+            // `EventBubbleView.assistantBubble`.
+            if !attachments.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    MessageAttachmentsView(
+                        attachments: attachments,
+                        onTapImage: { fullscreenAttachment = $0 }
+                    )
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+            }
+
             HStack(spacing: 6) {
                 if let modelName = modelDisplayName {
                     Text(modelName)
@@ -635,6 +674,9 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
+        .fullScreenCover(item: $fullscreenAttachment) { item in
+            FullScreenAttachmentViewer(attachment: item)
+        }
     }
 }
 

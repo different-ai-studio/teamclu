@@ -78,6 +78,7 @@ struct AttachmentPreviewSheet: View {
     @State private var localURL: URL?
     @State private var htmlData: Data?
     @State private var failure: String?
+    @State private var isSavingToFiles = false
 
     var body: some View {
         NavigationStack {
@@ -88,12 +89,32 @@ struct AttachmentPreviewSheet: View {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Done") { dismiss() }
                     }
+                    // Download is its own button rather than a row buried
+                    // in the share sheet: keeping the file is the common ask.
+                    // It needs the local copy, so it appears once loaded.
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if localURL != nil {
+                            Button {
+                                isSavingToFiles = true
+                            } label: {
+                                Image(systemName: "arrow.down.circle")
+                            }
+                            .accessibilityLabel("Save to Files")
+                        }
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         if let shareURL = localURL ?? source.externalURL {
                             ShareLink(item: shareURL) {
                                 Image(systemName: "square.and.arrow.up")
                             }
+                            .accessibilityLabel("Share")
                         }
+                    }
+                }
+                .sheet(isPresented: $isSavingToFiles) {
+                    if let localURL {
+                        SaveToFilesPicker(url: localURL)
+                            .ignoresSafeArea()
                     }
                 }
         }
@@ -156,7 +177,7 @@ struct AttachmentPreviewSheet: View {
                 if AttachmentPreview.rendersInWebView(source) {
                     htmlData = try Data(contentsOf: url)
                 }
-                // Set either way: it is also what Share hands out.
+                // Set either way: it is also what Share and Save hand out.
                 localURL = url
             } catch {
                 failure = String(localized: "Couldn't load this attachment.")
@@ -202,7 +223,8 @@ struct AttachmentPreviewSheet: View {
 
 // MARK: - FullScreenAttachmentViewer
 
-/// Fullscreen view of one message-carried image.
+/// Fullscreen view of one message-carried image, with Share and Save to
+/// Files once its bytes are on disk.
 ///
 /// Deliberately not `FullScreenSessionImageViewer`: that one pages through
 /// the local outbox by URL, and a managed attachment is addressed by bucket
@@ -210,6 +232,10 @@ struct AttachmentPreviewSheet: View {
 struct FullScreenAttachmentViewer: View {
     let attachment: MessageAttachment
     @Environment(\.dismiss) private var dismiss
+    /// The downloaded copy — what Share and Save hand out. Comes from the
+    /// same loader cache the image itself was drawn from.
+    @State private var localURL: URL?
+    @State private var isSavingToFiles = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -228,7 +254,53 @@ struct FullScreenAttachmentViewer: View {
             .padding(.top, 56)
             .padding(.trailing, 20)
         }
+        .overlay(alignment: .bottom) {
+            if let localURL {
+                HStack(spacing: 40) {
+                    ShareLink(item: localURL) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Share")
+                    Button {
+                        isSavingToFiles = true
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                    }
+                    .accessibilityLabel("Save to Files")
+                }
+                .font(.title2)
+                .foregroundStyle(.white)
+                .buttonStyle(.plain)
+                .padding(.bottom, 24)
+            }
+        }
+        .sheet(isPresented: $isSavingToFiles) {
+            if let localURL {
+                SaveToFilesPicker(url: localURL)
+                    .ignoresSafeArea()
+            }
+        }
+        .task(id: attachment.identity) {
+            guard localURL == nil, let path = attachment.bucketPath, !path.isEmpty else { return }
+            localURL = try? await AttachmentContentLoader.shared.localURL(
+                bucketPath: path, fileName: attachment.filename
+            )
+        }
     }
+}
+
+// MARK: - SaveToFilesPicker
+
+/// The system "Save to Files" picker for one local file. Exports a copy, so
+/// the loader's cached original stays where it is.
+struct SaveToFilesPicker: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
 }
 
 // MARK: - QuickLookPreview

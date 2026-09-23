@@ -3296,6 +3296,16 @@
         }
       }
     },
+    "Save to Files": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储到文件"
+          }
+        }
+      }
+    },
     "Saving": {
       "localizations": {
         "zh-Hans": {
