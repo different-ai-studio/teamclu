@@ -49,6 +49,39 @@ export type WikiCompileProgress = {
 
 type Phase = 'select' | 'waiting_for_model' | 'preparing' | 'summary' | 'publishing' | 'published'
 
+const NO_PAGES_SENTENCE = 'The compiler did not write a Wiki page for this source.'
+const SKIPPED_SENTENCE =
+  'This source was skipped this run and will be compiled again next time.'
+
+function takePrefixed(blocker: string, sentence: string): string | null {
+  if (blocker === sentence) return ''
+  const suffix = `: ${sentence}`
+  if (!blocker.endsWith(suffix)) return null
+  return blocker.slice(0, -suffix.length)
+}
+
+function groupBlockers(blockers: string[]) {
+  const noPages: string[] = []
+  const skipped: string[] = []
+  let skippedCount = 0
+  const rest: string[] = []
+  for (const blocker of blockers) {
+    const noPagePath = takePrefixed(blocker, NO_PAGES_SENTENCE)
+    if (noPagePath !== null) {
+      if (noPagePath) noPages.push(noPagePath)
+      continue
+    }
+    const skippedPath = takePrefixed(blocker, SKIPPED_SENTENCE)
+    if (skippedPath !== null) {
+      skippedCount += 1
+      if (skippedPath) skipped.push(skippedPath)
+      continue
+    }
+    rest.push(blocker)
+  }
+  return { noPages, skipped, skippedCount, rest }
+}
+
 const STAGES = ['plan', 'estimate', 'ingest', 'lint', 'done'] as const
 
 async function defaultSubscribeProgress(
@@ -262,10 +295,17 @@ export function WikiMaintainerRunSheet({
   return (
     <ModalShell
       title={t('teamShare.wikiMaintainTitle', 'Maintain Wiki')}
-      hint={t(
-        'teamShare.wikiMaintainHint',
-        'Choose source folders, then check and compile. Nothing is published until you confirm.',
-      )}
+      hint={
+        phase === 'summary' || phase === 'publishing' || phase === 'published'
+          ? t(
+              'teamShare.wikiMaintainSummaryHint',
+              'Review the result, then confirm publish. Nothing is written to the knowledge base until you confirm.',
+            )
+          : t(
+              'teamShare.wikiMaintainHint',
+              'Choose source folders, then check and compile. Nothing is published until you confirm.',
+            )
+      }
       onClose={close}
       footer={
         <>
@@ -532,14 +572,7 @@ export function WikiMaintainerRunSheet({
             </label>
           )}
           {summary.blockers.length > 0 && (
-            <div className="rounded-[8px] border border-destructive/30 bg-destructive/5 p-3">
-              {summary.blockers.map((blocker) => (
-                <div key={blocker} className="flex gap-2 text-[12px] text-destructive">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>{blocker}</span>
-                </div>
-              ))}
-            </div>
+            <BlockerList blockers={summary.blockers} />
           )}
           {summary.canPublish && summary.failed > 0 && (
             <p className="text-[12px] leading-relaxed text-muted-foreground">
@@ -574,4 +607,63 @@ export function WikiMaintainerRunSheet({
 
 function SummaryItem({ text }: { text: string }) {
   return <div className="rounded-[8px] border border-border-soft bg-panel px-3 py-2">{text}</div>
+}
+
+function BlockerList({ blockers }: { blockers: string[] }) {
+  const { t } = useTranslation()
+  const grouped = groupBlockers(blockers)
+  return (
+    <div className="space-y-2">
+      {grouped.noPages.length > 0 && (
+        <SkippedNotice
+          message={t(
+            'teamShare.wikiCompilerWroteNothing',
+            'The compiler finished without writing Wiki pages for {{count}} sources. Try another compiler model, then compile again.',
+            { count: grouped.noPages.length },
+          )}
+          paths={grouped.noPages}
+        />
+      )}
+      {grouped.skippedCount > 0 && (
+        <SkippedNotice
+          message={t(
+            'teamShare.wikiSourcesSkipped',
+            '{{count}} sources were skipped this run and can be compiled again next time.',
+            { count: grouped.skippedCount },
+          )}
+          paths={grouped.skipped}
+        />
+      )}
+      {grouped.rest.length > 0 && (
+        <div className="rounded-[8px] border border-destructive/30 bg-destructive/5 p-3">
+          {grouped.rest.map((blocker) => (
+            <div key={blocker} className="flex gap-2 text-[12px] text-destructive">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{blocker}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SkippedNotice({ message, paths }: { message: string; paths: string[] }) {
+  return (
+    <div className="rounded-[8px] border border-border bg-panel p-3">
+      <div className="flex gap-2 text-[12.5px] text-ink-2">
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span>{message}</span>
+      </div>
+      {paths.length > 0 && (
+        <ul className="mt-2 max-h-32 space-y-0.5 overflow-y-auto pl-5 font-mono text-[11px] text-faint">
+          {paths.map((path) => (
+            <li key={path} className="truncate">
+              {path}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 }

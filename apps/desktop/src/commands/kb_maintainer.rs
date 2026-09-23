@@ -206,7 +206,10 @@ fn normalize_source_directory(input: &str) -> Result<String, String> {
     }
     let relative = normalized.trim_start_matches("documents/");
     if relative.is_empty() {
-        return Ok("documents/".to_string());
+        return Err(
+            "Files placed directly in Documents are not a Wiki source. Choose a folder inside Documents."
+                .to_string(),
+        );
     }
     if relative.split('/').any(|part| {
         matches!(
@@ -234,8 +237,10 @@ fn team_paths(team_id: &str) -> Result<(PathBuf, PathBuf), String> {
 fn first_directory(path: &str) -> Option<String> {
     let normalized = path.replace('\\', "/");
     let relative = normalized.strip_prefix("documents/")?;
-    let first = relative.split('/').next()?;
-    if first.is_empty() {
+    let mut parts = relative.split('/');
+    let first = parts.next()?;
+    let nested = parts.next().is_some();
+    if !nested || first.is_empty() || first == "." || first == ".." {
         return None;
     }
     Some(format!("documents/{first}/"))
@@ -259,9 +264,9 @@ pub async fn kb_maintainer_discover(
                 .is_dir()
             {
                 let name = entry.file_name().to_string_lossy().to_string();
-                paths.insert(format!("documents/{name}/"));
-            } else {
-                paths.insert("documents/".to_string());
+                if !name.is_empty() && name != "." && name != ".." {
+                    paths.insert(format!("documents/{name}/"));
+                }
             }
         }
     }
@@ -583,6 +588,12 @@ fn humanize_compiler_error(stderr: &str) -> String {
     }
     if stderr.contains("managed Agent runtime is not installed") {
         return "The managed Agent runtime is not installed. Finish local Agent setup, then try again."
+            .to_string();
+    }
+    if stderr.contains("source prefix escape is not allowed")
+        || stderr.contains("Files placed directly in Documents")
+    {
+        return "Files placed directly in Documents are not a Wiki source. Choose a folder inside Documents."
             .to_string();
     }
     if stderr.contains("Upgrade TeamClu") {
@@ -1276,6 +1287,13 @@ mod tests {
         assert!(normalize_source_directory("../secrets").is_err());
         assert!(normalize_source_directory("knowledge/wiki").is_err());
         assert!(normalize_source_directory("documents/_secrets/").is_err());
+        assert!(normalize_source_directory("documents/").is_err());
+        assert_eq!(
+            first_directory("documents/features/leave.md").as_deref(),
+            Some("documents/features/")
+        );
+        assert_eq!(first_directory("documents/readme.md"), None);
+        assert_eq!(first_directory("documents/"), None);
     }
 
     #[test]
@@ -1351,6 +1369,10 @@ mod tests {
         assert_eq!(
             humanize_compiler_error("Error: knowledge/_schema.md is missing\n at dryRun"),
             "Set up the team knowledge base before maintaining Wiki."
+        );
+        assert_eq!(
+            humanize_compiler_error("Error: source prefix escape is not allowed"),
+            "Files placed directly in Documents are not a Wiki source. Choose a folder inside Documents."
         );
         assert_eq!(
             humanize_compiler_error(

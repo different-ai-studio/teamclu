@@ -172,7 +172,7 @@ test("summarizePreparedRun turns compiler-owned failures into one skip sentence"
   });
 
   assert.deepEqual(summary.blockers, [
-    "documents/handbook/a.md: This source was skipped this run and will be compiled again next time.",
+    "documents/handbook/a.md: The compiler did not write a Wiki page for this source.",
     "documents/handbook/b.md: This source is too long. Split it into shorter files, then compile again.",
     "documents/handbook/c.pdf: This source could not be read. Replace it with a text file, then try again.",
     "This source was skipped this run and will be compiled again next time.",

@@ -84,6 +84,7 @@ import {
   loadWikiCompilerModels,
   loadWikiMaintenanceBootstrap,
   pickSavedCompilerModel,
+  wikiSourceFolders,
   prepareWikiMaintenance,
   publishWikiMaintenance,
 } from '../wiki-maintainer-client'
@@ -499,6 +500,17 @@ describe('wiki-maintainer-client', () => {
       'anthropic/claude-sonnet',
     )
     expect(pickSavedCompilerModel('', models)).toBe('anthropic/claude-sonnet')
+  })
+
+  it('drops the Documents root saved by another computer', () => {
+    expect(
+      wikiSourceFolders([
+        'documents/',
+        'documents/features/',
+        'documents/../secrets/',
+        'knowledge/wiki/',
+      ]),
+    ).toEqual(['documents/features/'])
   })
 
   it('loads shared source and model preferences from the team config', async () => {
