@@ -29,6 +29,10 @@ function idea(partial: Partial<Idea> & { ideaId: string }): Idea {
     sortOrder: 0,
     createdAt: "2026-05-20T11:00:00.000Z",
     updatedAt: "2026-05-20T11:00:00.000Z",
+    attachmentUrls: [],
+    commentCount: 0,
+    likeCount: 0,
+    likedByMe: false,
     ...partial,
   };
 }

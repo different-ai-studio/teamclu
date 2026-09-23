@@ -21,6 +21,8 @@ import { SectionEyebrow } from "../../../ui/atoms/SectionEyebrow";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../../ui/GlassHeader";
 import { colors, hai, radii, spacing, typography } from "../../../ui/theme";
 import { ImageLightbox } from "../../sessions/components/ImageLightbox";
+import { IdeaFeedActions } from "../components/IdeaFeedActions";
+import { IdeaFeedMedia } from "../components/IdeaFeedMedia";
 import {
   IdeaActivityTimeline,
   type IdeaActivityAuthor,
@@ -47,6 +49,8 @@ export type IdeaDetailScreenProps = {
   onSetStatus?: (next: IdeaStatus) => void;
   onStartSession?: () => void;
   onToggleStatus?: () => void;
+  /** Like/unlike the idea; `liked` is the desired state, not a toggle. */
+  onToggleLike?: (liked: boolean) => void;
   relatedSessions?: ReadonlyArray<{
     sessionId: string;
     title: string;
@@ -121,6 +125,7 @@ export function IdeaDetailScreen({
   onSetStatus,
   onStartSession,
   onToggleStatus,
+  onToggleLike,
   relatedSessions,
   activities,
   activityAuthorsById,
@@ -248,6 +253,16 @@ export function IdeaDetailScreen({
                   value={descDraft}
                 />
               </View>
+            </View>
+
+            {idea.attachmentUrls.length > 0 ? (
+              <View style={styles.section}>
+                <IdeaFeedMedia urls={idea.attachmentUrls} />
+              </View>
+            ) : null}
+
+            <View style={styles.engagement}>
+              <IdeaFeedActions idea={idea} onToggleLike={onToggleLike} />
             </View>
 
             {dirty && onSaveContent ? (
@@ -443,6 +458,9 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
+  engagement: {
+    paddingHorizontal: spacing.xs,
+  },
   actionArchive: {
     backgroundColor: "rgba(184,75,54,0.10)",
   },
