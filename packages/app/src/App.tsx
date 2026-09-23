@@ -5,6 +5,7 @@ import { Toaster, toast } from "sonner";
 import { cn, isTauri, removeStartupSkeleton } from "@/lib/utils";
 import { capabilities } from "@/lib/config/platform";
 import { isSoloBuild } from "@/lib/config/solo-build";
+import { isAgentReplyForkEnabled } from "@/lib/config/agent-reply-fork-build";
 import { scheduleReleaseStuckModalLayers } from "@/lib/ui/modal-layer-cleanup";
 import { appDisplayName } from "@/lib/config/build-config";
 import { daemonHomeDisplayPath } from "@/lib/daemon/daemon-paths";
@@ -214,7 +215,7 @@ function AppContent() {
   const settingsOpen = currentView === "settings";
   /** Extension welcome has its own empty state — skip duplicate "New Chat" header. */
   const showChatSessionHeader = !(embedMode && !activeSession);
-  const teamShareHeaderTitle =
+  const sectionHeaderTitle =
     sidebarFilter.kind === "teamShare"
       ? sidebarFilter.section === "skills"
         ? t("teamShare.skills", "Skills")
@@ -223,7 +224,9 @@ function AppContent() {
           : sidebarFilter.section === "env"
             ? t("teamShare.env", "Environment Variables")
             : t("teamShare.knowledge", "Knowledge")
-      : null;
+      : sidebarFilter.kind === "ideas"
+        ? t("ideas.allTitle", "Ideas")
+        : null;
 
   const handleCloseSettings = React.useCallback(() => {
     setFeedbackOpen(false);
@@ -618,7 +621,7 @@ function AppContent() {
               }}
               disabled={!hasActiveFileTab}
             >
-              {teamShareHeaderTitle || activeSession?.title || t("chat.newChat", "New Chat")}
+              {sectionHeaderTitle || activeSession?.title || t("chat.newChat", "New Chat")}
             </button>
             {activeSession && !isSoloBuild() && (
               <button
@@ -676,7 +679,7 @@ function AppContent() {
               {capabilities.workspace && sessionWorkspacePath && showSkillsRefresh && (
                 <RefreshSkillsHeaderButton workspacePath={sessionWorkspacePath} />
               )}
-              {activeSession && hasCurrentSession && (
+              {activeSession && hasCurrentSession && isAgentReplyForkEnabled() && (
                 <SessionThreadsHeaderButton sessionId={activeSession.id} />
               )}
               {hasCurrentSession && !isSoloBuild() && (

@@ -112,6 +112,11 @@ fn validate_inbound_message(
                 .map(|_| ())
                 .map_err(|error| format!("invalid Notify: {error}"))
         }
+        IncomingMessage::TeamcluAgentInbox { payload, .. } => {
+            serde_json::from_slice::<serde_json::Value>(payload)
+                .map(|_| ())
+                .map_err(|error| format!("invalid agent inbox JSON: {error}"))
+        }
         // JSON hint — malformed payloads are dropped in the dispatcher, not
         // dead-lettered here (hints are best-effort; timer is the fallback).
         IncomingMessage::SyncHint { .. } => Ok(()),

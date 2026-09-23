@@ -63,6 +63,7 @@ import { ThreadPanel } from "./ThreadPanel";
 import { ThreadListPanel } from "./ThreadListPanel";
 import { useThreadPanelStore } from "@/stores/thread-panel-store";
 import { useThreadListPanelStore } from "@/stores/thread-list-panel-store";
+import { isAgentReplyForkEnabled } from "@/lib/config/agent-reply-fork-build";
 import type { Todo } from "@/stores/session-types";
 import {
   isStreamInterruptible,
@@ -1304,10 +1305,10 @@ export function ChatPanel({ compact = false }: ChatPanelProps) {
         </React.Suspense>
       )}
     </div>
-    {displaySessionId && threadListParentSessionId === displaySessionId ? (
+    {displaySessionId && isAgentReplyForkEnabled() && threadListParentSessionId === displaySessionId ? (
       <ThreadListPanel parentSessionId={displaySessionId} />
     ) : null}
-    {displaySessionId && threadParentSessionId === displaySessionId ? (
+    {displaySessionId && isAgentReplyForkEnabled() && threadParentSessionId === displaySessionId ? (
       <ThreadPanel parentSessionId={displaySessionId} />
     ) : null}
     </div>

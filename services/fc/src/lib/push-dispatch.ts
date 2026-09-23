@@ -1,6 +1,99 @@
 // services/fc/lib/push-dispatch.mjs
 import { inDnd, isForegroundDevice, truncate } from './push-filters.js';
 
+/** Payload version on `<agent>/inbox`. Bump when the shape changes. */
+const AGENT_INBOX_PAYLOAD_VERSION = 1;
+
+/**
+ * Deliver a message to every agent participant's own inbox topic.
+ *
+ * This is the agent's *only* delivery path (#1455 Phase 1): a daemon no longer
+ * subscribes to `session/<sid>/live` to hear inbound messages, so a publish
+ * that does not happen here is a message the agent never sees until its next
+ * reconcile.
+ *
+ * Two consequences for the code below:
+ *
+ *  - It runs BEFORE `push_idempotency_claim`. That claim exists to stop a
+ *    duplicate APNs alert; letting it gate this path would mean a retried or
+ *    re-entered dispatch silently skips the agent. Re-publishing is harmless
+ *    the other way round — the daemon dedups on `message_id`.
+ *  - Failures are logged with the ids needed to chase them, not swallowed
+ *    quietly. The daemon's reconcile-on-connect is the backstop, but a silent
+ *    failure here is indistinguishable from "nobody was mentioned".
+ *
+ * The payload carries the whole `amux.messages` row. Trace bodies stay out of
+ * MQTT: `metadata.trace` is a pointer into OSS (§7.2) and the agent fetches it
+ * on demand.
+ */
+export async function publishAgentInbox(msg, deps) {
+  const { sb, mqtt } = deps;
+  if (!mqtt) return { skipped: 'no_mqtt' };
+  if (msg.kind === 'system') return { skipped: 'system_kind' };
+  if (!msg.team_id) return { skipped: 'no_team_id' };
+
+  let agentActorIds;
+  try {
+    agentActorIds = await sb.listSessionAgentActorIds(msg.session_id, msg.sender_actor_id ?? null);
+  } catch (err) {
+    console.error('[fanout] agent participant lookup failed', {
+      messageId: msg.id, sessionId: msg.session_id, error: String(err),
+    });
+    return { failed: 'lookup', targets: 0, sent: 0 };
+  }
+  if (agentActorIds.length === 0) return { targets: 0, sent: 0 };
+
+  const payload = JSON.stringify({
+    v: AGENT_INBOX_PAYLOAD_VERSION,
+    type: 'message.created',
+    message: {
+      id: msg.id,
+      team_id: msg.team_id,
+      session_id: msg.session_id,
+      turn_id: msg.turn_id ?? null,
+      sender_actor_id: msg.sender_actor_id ?? null,
+      reply_to_message_id: msg.reply_to_message_id ?? null,
+      kind: msg.kind ?? 'text',
+      content: msg.content ?? '',
+      metadata: msg.metadata ?? {},
+      model: msg.model ?? null,
+      created_at: msg.created_at ?? null,
+    },
+  });
+
+  const results = await Promise.allSettled(
+    agentActorIds.map((actorId) =>
+      mqtt.publish(`amux/${msg.team_id}/${actorId}/inbox`, payload)),
+  );
+
+  let sent = 0;
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === 'fulfilled') { sent++; continue; }
+    console.error('[fanout] agent inbox publish failed', {
+      messageId: msg.id,
+      sessionId: msg.session_id,
+      agentActorId: agentActorIds[i],
+      error: String(result.reason),
+    });
+  }
+  return { targets: agentActorIds.length, sent, failed: agentActorIds.length - sent };
+}
+
+/**
+ * Everything that happens after a message row lands: agent delivery first,
+ * then the notification side-effects.
+ *
+ * `dispatchPush` stays a separate export because `/push/dispatch` (the admin
+ * re-send endpoint) must NOT reach the agent inbox — re-sending a push would
+ * otherwise re-trigger the agent's turn.
+ */
+export async function fanoutMessage(msg, deps) {
+  const agentInbox = await publishAgentInbox(msg, deps);
+  const push = await dispatchPush(msg, deps);
+  return { ...push, agentInbox };
+}
+
 export async function dispatchPush(msg, deps) {
   const { id: messageId, session_id, sender_actor_id, kind, content } = msg;
   const { sb, apns, mqtt, now = () => new Date() } = deps;
@@ -47,8 +140,19 @@ export async function dispatchPush(msg, deps) {
   const inboxUserIds = mqtt
     ? [...new Set(ctx.recipients.filter((r) => !r.muted).map((r) => r.user_id))]
     : [];
+  // `team_id` and an explicit `type` are B7: without the team a receiving
+  // client cannot build the session/live topic it may want to subscribe to,
+  // and `type` was only ever implied. Both are additive — the field readers on
+  // desktop and iOS default a missing `type` to "message".
   const inboxPayload = mqtt
-    ? JSON.stringify({ session_id, ts: now().getTime() })
+    ? JSON.stringify({
+        v: 2,
+        type: 'message',
+        team_id: msg.team_id ?? null,
+        session_id,
+        message_id: messageId,
+        ts: now().getTime(),
+      })
     : null;
 
   const [apnsResults, inboxResults] = await Promise.all([

@@ -245,12 +245,15 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
       const teamId = useCurrentTeamStore.getState().team?.id
       if (!teamId) return
 
+      const actorId = await resolveActorId(teamId)
       const data = await getBackend().telemetry.listFeedbacks({ teamId, sessionId })
 
       set((state) => {
         const fb = new Map(state.feedbackCache)
         const sr = new Map(state.starRatingCache)
         for (const r of data ?? []) {
+          const rowActorId = typeof r.actorId === 'string' ? r.actorId : null
+          if (actorId && rowActorId && rowActorId !== actorId) continue
           const messageId = typeof r.messageId === 'string' ? r.messageId : null
           if (messageId) {
             fb.set(messageId, r.kind as FeedbackRating)

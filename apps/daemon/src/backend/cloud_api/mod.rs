@@ -1278,10 +1278,15 @@ impl Backend for CloudApiBackend {
         team_id: &str,
         cursor: Option<&str>,
         limit: u32,
-    ) -> BackendResult<(Vec<String>, Option<String>)> {
+    ) -> BackendResult<(Vec<crate::backend::ActorSessionRef>, Option<String>)> {
         #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
         struct ListItem {
             id: String,
+            // Already on the wire — `Session` in the OpenAPI carries it — and
+            // was simply being discarded here.
+            #[serde(default)]
+            last_message_at: Option<String>,
         }
         #[derive(serde::Deserialize)]
         struct Page {
@@ -1297,7 +1302,14 @@ impl Backend for CloudApiBackend {
             path.push_str(cursor);
         }
         let page: Page = self.get(&path).await?;
-        let ids = page.items.into_iter().map(|row| row.id).collect();
+        let ids = page
+            .items
+            .into_iter()
+            .map(|row| crate::backend::ActorSessionRef {
+                session_id: row.id,
+                last_message_at: row.last_message_at,
+            })
+            .collect();
         let next = page
             .next_cursor
             .filter(|cursor| !cursor.is_empty());

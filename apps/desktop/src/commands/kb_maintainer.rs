@@ -695,7 +695,7 @@ async fn run_node(
         let progress_app = app.clone();
         let stderr_thread = thread::spawn(move || {
             let mut other = String::new();
-            for line in BufReader::new(stderr).lines().flatten() {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 if let Some(payload) = line.strip_prefix("KB_PROGRESS ") {
                     if let Ok(value) = serde_json::from_str::<Value>(payload) {
                         let _ = progress_app.emit("kb-maintainer:progress", value);
@@ -712,7 +712,7 @@ async fn run_node(
 
         let stdout_text = {
             let mut buf = String::new();
-            for line in BufReader::new(stdout).lines().flatten() {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if !buf.is_empty() {
                     buf.push('\n');
                 }

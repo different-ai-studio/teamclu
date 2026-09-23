@@ -36,6 +36,12 @@ struct SessionComposer: View {
     let onSend: ([URL]) -> Void
     let onAgentMention: (MentionTarget) -> Void
 
+    /// Owned by the host, not by this view. The field sits in the detail
+    /// view's bottom `safeAreaInset` — outside the transcript's ScrollView —
+    /// so `.scrollDismissesKeyboard` can't reach its focus. Hoisting the
+    /// state lets the transcript drop the keyboard on scroll and on tap.
+    @FocusState.Binding var inputFocused: Bool
+
     @State private var showDrawer = false
     @State private var showAgentsSheet = false
     @State private var slashCandidates: [SlashCommand] = []
@@ -46,7 +52,6 @@ struct SessionComposer: View {
     /// available or when the SupabaseProjectConfiguration lookup fails (in
     /// which case the drawer falls back to no-op upload behavior).
     @State private var uploadManager: AttachmentUploadManager?
-    @FocusState private var inputFocused: Bool
     @Environment(\.modelContext) private var modelContext
 
     private var hasText: Bool {
@@ -139,7 +144,7 @@ struct SessionComposer: View {
                             AttachmentThumbnailTile(
                                 url: url,
                                 upload: uploadingAttachments[url.absoluteString],
-                                onRemove: { attachments.removeAll { $0 == url } }
+                                onRemove: { discardAttachment(url) }
                             )
                         }
                     }
@@ -150,7 +155,10 @@ struct SessionComposer: View {
 
             twoRowComposer
                 .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                // Bottom gap is owned by the host's `safeAreaInset` — it has
+                // to differ between resting (measured from the screen edge)
+                // and keyboard-up (measured from the keyboard).
+                .padding(.top, 8)
         }
         .onChange(of: promptText) { _, _ in
             recomputeSlashCandidates()
@@ -174,6 +182,11 @@ struct SessionComposer: View {
                 sessionID: sessionID,
                 teamID: teamID,
                 onUploadStarted: { key, upload in
+                    // The drawer appends to the tray first and starts the
+                    // upload after an await, so the tile can be removed
+                    // before this lands. Dropping a record for a URL that is
+                    // no longer in the tray keeps removal authoritative.
+                    guard attachments.contains(where: { $0.absoluteString == key }) else { return }
                     uploadingAttachments[key] = upload
                 }
             )
@@ -314,8 +327,16 @@ struct SessionComposer: View {
                     let storageURLs = uploadingAttachments.values
                         .compactMap { $0.storageURL }
                         .compactMap { URL(string: $0) }
+                    // Drop focus before handing the text off: the keyboard
+                    // goes away and the IME commits any marked text, so the
+                    // host's `promptText = ""` empties the field for real.
+                    inputFocused = false
                     onSend(storageURLs)
                     hasPendingSlashCommand = false
+                    // The host clears the `attachments` tray; these are the
+                    // matching upload records. Without this they ride along
+                    // as storage URLs on the *next* message too.
+                    uploadingAttachments = [:]
                 }
             } label: {
                 Image(systemName: "arrow.up")
@@ -363,6 +384,19 @@ struct SessionComposer: View {
         }
         uploadManager = mgr
         return mgr
+    }
+
+    /// Forget an attachment the user pulled out of the tray. The tray binding
+    /// is only half of it: the send button builds its storage URLs from
+    /// `uploadingAttachments`, so a record left behind re-attaches a file that
+    /// was explicitly removed. Deleting the row also aborts an upload still in
+    /// flight — `performUpload` re-fetches by id at each step and bails once
+    /// the row is gone, before the bytes reach the network.
+    private func discardAttachment(_ url: URL) {
+        attachments.removeAll { $0 == url }
+        guard let upload = uploadingAttachments.removeValue(forKey: url.absoluteString) else { return }
+        modelContext.delete(upload)
+        try? modelContext.save()
     }
 
     private func recomputeSlashCandidates() {

@@ -367,11 +367,8 @@ struct TeamStatsSheet: View {
             .foregroundStyle(Color.amux.basalt.opacity(0.7))
     }
 
-    private func formattedTokens(_ n: Int) -> String {
-        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
-        if n >= 1_000     { return String(format: "%.1fK", Double(n) / 1_000) }
-        return "\(n)"
-    }
+    /// Shared with the member stat row — see `formattedTokenCount`.
+    private func formattedTokens(_ n: Int) -> String { formattedTokenCount(n) }
 
     private func initials(_ name: String) -> String {
         let parts = name.split(whereSeparator: { $0.isWhitespace }).prefix(2)

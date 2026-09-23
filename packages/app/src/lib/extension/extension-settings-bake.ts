@@ -23,6 +23,8 @@ export interface ExtensionTeamOnboardingBake {
 export interface ExtensionPackConfig {
   /** Solo-agent UI (hide permission control + model on mention pills; force narrow layout). */
   solo: boolean
+  /** Agent-reply thread fork affordances in the extension side panel. Omitted → enabled. */
+  agentReplyFork: boolean
   /** Side-panel host allowlist (`*.example.com` or `example.com`). Empty = ungated. */
   domains: string[]
   /** Extension-only policy for the post-login team assignment flow. */
@@ -37,6 +39,7 @@ const DEFAULT_EXTENSION_SETTINGS_BAKE: ExtensionSettingsBake = {
 
 export const DEFAULT_EXTENSION_PACK_CONFIG: ExtensionPackConfig = {
   solo: false,
+  agentReplyFork: true,
   domains: [],
   teamOnboarding: {
     autoCreateTeam: true,
@@ -120,6 +123,7 @@ export function parseExtensionPackConfig(raw: unknown): ExtensionPackConfig {
   if (!raw || typeof raw !== 'object') {
     return {
       solo: false,
+      agentReplyFork: true,
       domains: [],
       teamOnboarding: {
         autoCreateTeam: DEFAULT_EXTENSION_PACK_CONFIG.teamOnboarding.autoCreateTeam,
@@ -131,6 +135,7 @@ export function parseExtensionPackConfig(raw: unknown): ExtensionPackConfig {
 
   const row = raw as {
     solo?: unknown
+    agentReplyFork?: unknown
     domains?: unknown
     teamOnboarding?: unknown
     settings?: unknown
@@ -152,6 +157,7 @@ export function parseExtensionPackConfig(raw: unknown): ExtensionPackConfig {
 
   return {
     solo: row.solo === true,
+    agentReplyFork: row.agentReplyFork !== false,
     domains,
     teamOnboarding: {
       autoCreateTeam: teamOnboardingRaw?.autoCreateTeam !== false,

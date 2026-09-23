@@ -37,6 +37,47 @@ export function discardPendingStreamReply(sessionId: string, actorId: string): v
 
 const SEEN_LIVE_EVENT_IDS_CAP = 2_000;
 
+/** Message ids kept per session. Separate cap from the envelope Set — see below. */
+const SEEN_LIVE_MESSAGE_IDS_CAP = 2_000;
+
+/**
+ * Claim a `message.created` by its message id, so one row is handled once
+ * however many times it is published.
+ *
+ * The envelope-id gate cannot do this job: `eventId` is minted per publish, so
+ * two publishers of one row — the daemon today, FC once it fans out (#1455
+ * Phase 3) — produce two ids and both copies pass. An outbox retry already
+ * does the same thing today, rebuilding the envelope with a fresh uuid for an
+ * unchanged `messageId`.
+ *
+ * It deliberately keeps its own Set rather than sharing the envelope one. That
+ * Set is dominated by streaming deltas — one envelope per output/thinking
+ * chunk — and a single long turn pushes well past the cap, so a message key
+ * living there would be evicted before the duplicate it guards against ever
+ * arrives.
+ *
+ * Ids are trimmed before comparison, as they are everywhere else they are
+ * compared (`removeMessageById`, `registerFlushedTurn`). An id that is empty
+ * or blank claims nothing: collapsing those onto one shared key would swallow
+ * every later message in the session.
+ */
+export function rememberLiveMessageId(
+  seen: Set<string>,
+  sessionId: string,
+  messageId: string | undefined,
+): boolean {
+  const trimmed = messageId?.trim();
+  if (!trimmed) return true;
+  const key = `${sessionId}::${trimmed}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  if (seen.size > SEEN_LIVE_MESSAGE_IDS_CAP) {
+    const oldest = seen.values().next().value;
+    if (oldest) seen.delete(oldest);
+  }
+  return true;
+}
+
 /** Dedupe MQTT live envelopes that may be redelivered with the same eventId. */
 export function rememberLiveEventId(
   seen: Set<string>,

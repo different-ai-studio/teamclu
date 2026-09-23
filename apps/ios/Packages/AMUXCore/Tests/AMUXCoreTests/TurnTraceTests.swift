@@ -373,3 +373,91 @@ struct ReducerTraceClosesTurnTests {
         #expect(state.entries.first(where: { $0.id == "tool" })?.isComplete == false)
     }
 }
+
+// MARK: - Splicing a trace onto local rows
+
+@Suite("LoadedTurnTrace.merged(withLocal:)")
+struct LoadedTurnTraceMergeTests {
+
+    private func event(
+        _ id: String,
+        _ eventType: String,
+        at offset: TimeInterval,
+        isComplete: Bool = true
+    ) -> AgentEvent {
+        let e = AgentEvent(agentId: "scope", sequence: Int(offset), eventType: eventType)
+        e.id = id
+        e.isComplete = isComplete
+        e.timestamp = Date(timeIntervalSince1970: 1_700_000_000 + offset)
+        return e
+    }
+
+    @Test("local rows inside the trace's span are dropped, not reconciled")
+    func dropsOverlappingLocalRows() {
+        let trace = LoadedTurnTrace(
+            events: [event("t1", "thinking", at: 1), event("t2", "output", at: 2)],
+            droppedEvents: 0
+        )
+        // The same thinking the trace already holds, as the finer-grained
+        // local copy. Merging these by content is what produced the
+        // duplicated-head-plus-fragments rows.
+        let local = [event("l1", "thinking", at: 1), event("l2", "output", at: 2)]
+
+        let merged = trace.merged(withLocal: local)
+
+        #expect(merged.map(\.id) == ["t1", "t2"])
+    }
+
+    @Test("rows past the trace's last event are spliced on in order")
+    func splicesTheTail() {
+        let trace = LoadedTurnTrace(
+            events: [event("t1", "thinking", at: 1)],
+            droppedEvents: 4
+        )
+        let local = [
+            event("l-early", "thinking", at: 1),
+            event("l-late", "tool_use", at: 5),
+            event("l-later", "output", at: 9),
+        ]
+
+        let merged = trace.merged(withLocal: local)
+
+        #expect(merged.map(\.id) == ["t1", "l-late", "l-later"])
+    }
+
+    @Test("a trimmed trace that lost the reply keeps the local one regardless of its timestamp")
+    func keepsTheReplyATrimmedTraceLost() {
+        // The local reply carries the turn's START time (Supabase
+        // `created_at`), so it never clears the boundary on its own.
+        let trace = LoadedTurnTrace(
+            events: [event("t1", "thinking", at: 4)],
+            droppedEvents: 2
+        )
+        let local = [event("reply", "output", at: 1)]
+
+        let merged = trace.merged(withLocal: local)
+
+        #expect(merged.map(\.id) == ["t1", "reply"])
+    }
+
+    @Test("a trace that already carries the reply doesn't take the local copy too")
+    func doesNotDoubleTheReply() {
+        let trace = LoadedTurnTrace(
+            events: [event("t1", "thinking", at: 4), event("t-reply", "output", at: 6)],
+            droppedEvents: 0
+        )
+        let local = [event("reply", "output", at: 1)]
+
+        let merged = trace.merged(withLocal: local)
+
+        #expect(merged.map(\.id) == ["t1", "t-reply"])
+    }
+
+    @Test("an empty trace falls back to the local rows in order")
+    func emptyTraceFallsBack() {
+        let trace = LoadedTurnTrace(events: [], droppedEvents: 0)
+        let local = [event("b", "output", at: 5), event("a", "thinking", at: 1)]
+
+        #expect(trace.merged(withLocal: local).map(\.id) == ["a", "b"])
+    }
+}

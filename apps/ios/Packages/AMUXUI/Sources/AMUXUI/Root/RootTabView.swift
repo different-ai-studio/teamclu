@@ -18,6 +18,23 @@ public struct RootTabView: View {
     @State private var viewModel = SessionListViewModel()
     @SceneStorage("rootTab") private var selection: AppTab = .sessions
     @State private var sessionsPath: [String] = []
+    @State private var voiceRecorder = VoiceRecorder()
+    @State private var isStartingVoiceSession = false
+    @State private var voiceErrorMessage: String?
+    /// Start of the current take, for the capture screen's elapsed readout.
+    @State private var recordingStartedAt: Date?
+    /// The finished transcript, held while the session is being created —
+    /// the recorder has already been reset by then, and the capture screen
+    /// should keep showing the words it is about to send.
+    @State private var pendingVoiceTranscript: String = ""
+    /// Set when a finished take has no default agent to go to — drives the
+    /// picker, and carries the transcript waiting on that choice.
+    @State private var voiceAgentChoice: VoiceAgentChoice?
+
+    /// Reduces `session/{id}/live` into the session list's leading dots.
+    /// Owned here, not by SessionsTab, so its MQTT subscriptions survive the
+    /// tab's view identity being torn down and rebuilt.
+    @State private var liveActivityStore = SessionLiveActivityStore()
 
     /// Drives the "add the team's first agent" reminder. Set once per app
     /// launch when we observe a team with zero agents; soft-dismissible so it
@@ -62,7 +79,12 @@ public struct RootTabView: View {
 
     private var teamRuntime: TeamRuntimeContext? { coordinator?.teamRuntimeContext }
 
-    public var body: some View {
+    // Split across three properties rather than one expression. As one, the
+    // type-checker took over two seconds on CI to solve it — the same shape
+    // that failed the release archive in SessionDetailView, one feature away
+    // from doing it here. Each `some View` boundary is its own problem.
+
+    private var tabs: some View {
         TabView(selection: $selection) {
             Tab("Sessions", systemImage: "bubble.left.and.bubble.right", value: AppTab.sessions) {
                 SessionsTab(mqtt: mqtt,
@@ -76,6 +98,7 @@ public struct RootTabView: View {
                             navigationPath: $sessionsPath,
                             connectedAgentsStore: teamRuntime?.connectedAgentsStore,
                             actorStore: teamRuntime?.actorStore,
+                            agentPresenceStore: teamRuntime?.agentPresenceStore,
                             shortcutsStore: teamRuntime?.shortcutsStore,
                             messagesRepository: teamRuntime?.messagesRepo,
                             workspacesRepository: teamRuntime?.workspacesRepo,
@@ -86,7 +109,8 @@ public struct RootTabView: View {
                             onReconnect: onReconnect,
                             onSignOut: onSignOut,
                             preferencesAPI: preferencesAPI,
-                            notificationPrefsStore: teamRuntime?.notificationPrefsStore)
+                            notificationPrefsStore: teamRuntime?.notificationPrefsStore,
+                            liveActivityStore: liveActivityStore)
             }
             Tab(IdeaUIPresentation.pluralTitle, systemImage: IdeaUIPresentation.systemImage, value: AppTab.ideas) {
                 IdeasTab(mqtt: mqtt,
@@ -100,7 +124,9 @@ public struct RootTabView: View {
                          workspacesRepository: teamRuntime?.workspacesRepo,
                          sessionsRepository: teamRuntime?.sessionRepo,
                          ideasRepository: teamRuntime?.ideasRepo,
-                         currentActorID: currentActorID)
+                         currentActorID: currentActorID,
+                         actorStore: teamRuntime?.actorStore,
+                         agentPresenceStore: teamRuntime?.agentPresenceStore)
             }
             Tab("Actors", systemImage: "person.2", value: AppTab.members) {
                 if let actorStore = teamRuntime?.actorStore {
@@ -112,6 +138,7 @@ public struct RootTabView: View {
                                currentActorID: currentActorID,
                                store: actorStore,
                                connectedAgentsStore: teamRuntime?.connectedAgentsStore,
+                               agentPresenceStore: teamRuntime?.agentPresenceStore,
                                workspacesRepository: teamRuntime?.workspacesRepo,
                                agentAccessRepository: teamRuntime?.agentAccessRepo,
                                teamResourceRepository: teamRuntime?.teamResourceRepo,
@@ -122,16 +149,83 @@ public struct RootTabView: View {
                                           description: Text("Create or join a team to see actors."))
                 }
             }
+            // `role: .search` is what gives the bottom bar its two-segment
+            // shape: the pill above plus the system's detached glass circle
+            // on the right. We keep the role for that presentation and the
+            // hit target, and supply our own label so the circle shows the
+            // mic rather than a magnifier — selecting it starts voice
+            // capture instead of search.
             Tab(value: AppTab.search, role: .search) {
-                SearchTab(mqtt: mqtt,
-                          pairing: pairing,
-                          teamcluService: teamcluService,
-                          viewModel: viewModel,
-                          rootSelection: $selection,
-                          sessionsPath: $sessionsPath)
+                VoiceCaptureView(
+                    phase: voicePhase,
+                    level: voiceRecorder.audioLevel,
+                    transcript: pendingVoiceTranscript.isEmpty ? voiceRecorder.transcript : pendingVoiceTranscript,
+                    startedAt: recordingStartedAt,
+                    onDone: voiceRecorder.stopRecording,
+                    onCancel: cancelVoiceCapture
+                )
+                // On the tab content, not on the TabView: the modifier only
+                // takes effect from inside the tab whose bar it hides.
+                .toolbarVisibility(.hidden, for: .tabBar)
+            } label: {
+                Label("Voice", systemImage: "mic")
             }
         }
+    }
+
+    /// The tabs, plus what reacts to a tab change or the team loading.
+    private var wiredTabs: some View {
+        tabs
         .tabViewStyle(.sidebarAdaptable)
+        .onChange(of: selection) { previous, tab in
+            if previous == .search, tab != .search {
+                // Belt and braces: the iPad sidebar can switch away mid-take,
+                // and a running engine with no visible surface is the worst
+                // outcome. Finished takes are already `.done` here, so this
+                // only catches a genuine abandon.
+                if voiceRecorder.state == .recording { voiceRecorder.cancel() }
+                recordingStartedAt = nil
+                return
+            }
+            guard tab == .search,
+                  voiceRecorder.state != .recording,
+                  !isStartingVoiceSession
+            else { return }
+            voiceRecorder.startRecording()
+        }
+        .onChange(of: voiceRecorder.state) { _, state in
+            switch state {
+            case .done:
+                let transcript = voiceRecorder.transcribedText ?? ""
+                voiceRecorder.reset()
+                guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    selection = .sessions
+                    voiceErrorMessage = String(localized: "No speech was recognized. Try recording again.")
+                    return
+                }
+                pendingVoiceTranscript = transcript
+                isStartingVoiceSession = true
+                Task { await startVoiceSession(transcript) }
+            case .denied:
+                selection = .sessions
+                voiceErrorMessage = String(localized: "Microphone and speech recognition access are required for voice chat.")
+            case .error(let message):
+                selection = .sessions
+                voiceErrorMessage = message
+            case .recording:
+                recordingStartedAt = Date()
+            case .idle:
+                break
+            }
+        }
+        .alert("Voice chat couldn't start", isPresented: Binding(
+            get: { voiceErrorMessage != nil },
+            set: { if !$0 { voiceErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(voiceErrorMessage ?? "")
+        }
         .task(id: activeTeam?.id) {
             await coordinator?.prepareTeamRuntime(modelContext: modelContext)
             // SessionListVM observes ConnectedAgentsStore directly and fans
@@ -144,26 +238,50 @@ public struct RootTabView: View {
                 teamID: activeTeam?.id ?? "",
                 connectedAgentsStore: teamRuntime?.connectedAgentsStore,
                 modelContext: modelContext,
-                teamcluService: teamcluService
+                teamcluService: teamcluService,
+                agentPresenceStore: teamRuntime?.agentPresenceStore
             )
+            // Session-list activity dots. Started before the inbox
+            // subscription below and the send path in TeamcluService, both of
+            // which are triggers into it.
+            liveActivityStore.start(
+                mqtt: mqtt,
+                hub: hub,
+                teamID: activeTeam?.id ?? "",
+                modelContext: modelContext
+            )
+            teamcluService?.liveActivityStore = liveActivityStore
             // Inbox red-dot subscription: per-user MQTT topic, populated by
             // FC fan-out after each message INSERT. Decoupled from the
             // per-runtime subscriptions in start() above.
-            if let actorID = currentActorID {
+            //
+            // The id here is the authenticated user's, taken from the access
+            // token's `sub`. FC publishes to `inbox/<auth user id>`, which is
+            // a different UUID from `currentActorID` — this used to pass the
+            // actor id and so subscribed to a topic nothing is published to.
+            if let userID = await coordinator?.currentUserID() {
                 viewModel.startInboxSubscription(
                     mqtt: mqtt,
                     hub: hub,
-                    actorID: actorID,
+                    userID: userID,
                     teamID: activeTeam?.id ?? "",
                     sessionsRepo: teamRuntime?.sessionsRepo,
-                    modelContext: modelContext
+                    modelContext: modelContext,
+                    liveActivityStore: liveActivityStore
                 )
+            } else {
+                NSLog("[RootTabView] inbox: no access token subject; unread dot disabled")
             }
             await refreshSessionsFromBackend()
             if let team = activeTeam {
                 await maybeShowFirstAgentReminder(team: team)
             }
         }
+    }
+
+    /// …plus the invite, deep-link and lifecycle observers.
+    private var observedTabs: some View {
+        wiredTabs
         .onReceive(NotificationCenter.default.publisher(for: .amuxInviteTokenReceived)) { note in
             guard let token = note.userInfo?["token"] as? String,
                   let store = teamRuntime?.actorStore else { return }
@@ -177,6 +295,10 @@ public struct RootTabView: View {
             if ready { replayPendingInviteIfNeeded() }
         }
         .onAppear {
+            // The voice tab is an action, not a place. `@SceneStorage` will
+            // happily restore it, which would strand the user on a capture
+            // screen with nothing recording — so bounce to Sessions.
+            if selection == .search { selection = .sessions }
             // Cold launch from a push: the intent may have been recorded
             // before this view mounted, so `onChange` never sees the
             // transition. Consume any already-pending session here.
@@ -193,6 +315,23 @@ public struct RootTabView: View {
             guard let sessionID, !sessionID.isEmpty else { return }
             openSessionFromDeepLink(sessionID)
         }
+    }
+
+    public var body: some View {
+        observedTabs
+        .sheet(item: $voiceAgentChoice) {
+            // Swipe-dismiss and the picker's own Cancel both land here. A
+            // pick has already flipped `isStartingVoiceSession`, so this only
+            // fires for a genuine abandon.
+            if !isStartingVoiceSession { cancelVoiceCapture() }
+        } content: { choice in
+            VoiceAgentPicker(agents: choice.agents,
+                             agentPresenceStore: teamRuntime?.agentPresenceStore) { agent in
+                voiceAgentChoice = nil
+                isStartingVoiceSession = true
+                Task { await startVoiceSession(choice.transcript, with: agent) }
+            }
+        }
         .sheet(isPresented: $showFirstAgentReminder) {
             ZeroAgentReminderSheet {
                 // Switch to the Actors tab and present its existing
@@ -203,6 +342,21 @@ public struct RootTabView: View {
                 showInviteAfterReminder = true
             }
         }
+    }
+
+    private var voicePhase: VoiceCaptureView.Phase {
+        if isStartingVoiceSession { return .startingSession }
+        if voiceAgentChoice != nil { return .awaitingAgent }
+        return voiceRecorder.state == .recording ? .recording : .preparing
+    }
+
+    @MainActor
+    private func cancelVoiceCapture() {
+        voiceRecorder.cancel()
+        recordingStartedAt = nil
+        pendingVoiceTranscript = ""
+        voiceAgentChoice = nil
+        selection = .sessions
     }
 
     /// Push/deep-link entry point: reveal the Sessions tab and push the given
@@ -219,6 +373,75 @@ public struct RootTabView: View {
         // Consume the intent so a repeat deep link to the same session
         // re-triggers the observer (nil -> id transition).
         navigationRouter?.pendingSessionID = nil
+    }
+
+    @MainActor
+    private func startVoiceSession(_ transcript: String) async {
+        do {
+            let context = try voiceContext()
+            switch try await VoiceSessionStarter.resolveTarget(context) {
+            case .agent(let agent):
+                try await createVoiceSession(transcript: transcript, agent: agent, context: context)
+            case .needsPick(let agents):
+                // Park the take on the capture screen and hand over to the
+                // picker; creation resumes in `startVoiceSession(_:with:)`.
+                isStartingVoiceSession = false
+                voiceAgentChoice = VoiceAgentChoice(transcript: transcript, agents: agents)
+            }
+        } catch {
+            failVoiceSession(error)
+        }
+    }
+
+    /// Resumes a parked take once the user has picked an agent, and remembers
+    /// the choice as their personal default so the next take doesn't ask.
+    @MainActor
+    private func startVoiceSession(_ transcript: String, with agent: ConnectedAgent) async {
+        do {
+            let context = try voiceContext()
+            _ = await context.actorStore.setMemberDefaultAgent(agentID: agent.id)
+            try await createVoiceSession(transcript: transcript, agent: agent, context: context)
+        } catch {
+            failVoiceSession(error)
+        }
+    }
+
+    @MainActor
+    private func createVoiceSession(transcript: String,
+                                    agent: ConnectedAgent,
+                                    context: VoiceSessionStarter.Context) async throws {
+        let sessionID = try await VoiceSessionStarter.start(
+            transcript: transcript,
+            agent: agent,
+            context: context,
+            viewModel: viewModel,
+            modelContext: modelContext
+        )
+        isStartingVoiceSession = false
+        pendingVoiceTranscript = ""
+        selection = .sessions
+        sessionsPath = ["session:\(sessionID)"]
+    }
+
+    @MainActor
+    private func failVoiceSession(_ error: Error) {
+        isStartingVoiceSession = false
+        pendingVoiceTranscript = ""
+        voiceAgentChoice = nil
+        selection = .sessions
+        voiceErrorMessage = error.localizedDescription
+    }
+
+    private func voiceContext() throws -> VoiceSessionStarter.Context {
+        try VoiceSessionStarter.Context(
+            teamID: activeTeam?.id ?? "",
+            currentActorID: currentActorID,
+            teamcluService: teamcluService,
+            actorStore: teamRuntime?.actorStore,
+            connectedAgentsStore: teamRuntime?.connectedAgentsStore,
+            workspacesRepository: teamRuntime?.workspacesRepo,
+            sessionsRepository: teamRuntime?.sessionRepo
+        )
     }
 
     @MainActor
@@ -315,4 +538,13 @@ public struct RootTabView: View {
             viewModel.reloadSessions(modelContext: modelContext)
         }
     }
+}
+
+/// A finished take waiting on an agent choice. Identifiable so the picker can
+/// be a `sheet(item:)` — its identity is the take, so a second take always
+/// re-presents.
+private struct VoiceAgentChoice: Identifiable {
+    let id = UUID()
+    let transcript: String
+    let agents: [ConnectedAgent]
 }

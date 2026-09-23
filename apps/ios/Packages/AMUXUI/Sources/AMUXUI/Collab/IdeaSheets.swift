@@ -155,6 +155,9 @@ struct CreateIdeaSheet: View {
                     let url = FileManager.default.temporaryDirectory
                         .appendingPathComponent("idea-photo-\(UUID().uuidString).jpg")
                     try? data.write(to: url)
+                    // Before it goes anywhere: a library photo is twelve
+                    // megapixels and about 4MB, and it was uploaded whole.
+                    IdeaImagePreparation.downscaleInPlace(url)
                     await addImageAttachment(url)
                 }
                 photoItems = []
@@ -226,23 +229,16 @@ struct CreateIdeaSheet: View {
         guard !isSaving, canSave else { return }
         isSaving = true
         Task {
-            let knownIdeaIDs = Set((ideaStore.ideas + ideaStore.archivedIdeas).map(\.id))
+            // The pictures go with the post. They used to be posted after it
+            // as a "progress" activity with an invented "Attached 2 images."
+            // body, which put a comment nobody wrote on every illustrated
+            // idea — and the feed counts comments.
             let ok = await ideaStore.createIdea(
                 title: title,
                 description: description,
-                workspaceID: ""
+                workspaceID: "",
+                attachmentURLs: uploadedImageURLs
             )
-            if ok, !uploadedImageURLs.isEmpty {
-                let created = ideaStore.ideas.first { !knownIdeaIDs.contains($0.id) } ?? ideaStore.ideas.first
-                if let created {
-                    _ = await ideaStore.createActivity(
-                        ideaID: created.id,
-                        activityType: "progress",
-                        content: "Attached \(uploadedImageURLs.count) image\(uploadedImageURLs.count == 1 ? "" : "s").",
-                        attachmentURLs: uploadedImageURLs
-                    )
-                }
-            }
             isSaving = false
             if ok {
                 onCreated()

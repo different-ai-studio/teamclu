@@ -68,11 +68,24 @@ pub(crate) fn is_read_action(body: &[u8], reads: &[&str]) -> bool {
 }
 
 /// The agent host a sidecar says it runs under.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct AgentCaller {
     pub(crate) token: String,
     pub(crate) host_generation_id: String,
     pub(crate) backend_kind: String,
+}
+
+/// Hand-written so the runtime-context token cannot reach a log through a
+/// `{:?}`. This value now travels past the gate into handlers, so the next
+/// person to debug-print one should not be the one who finds this out.
+impl std::fmt::Debug for AgentCaller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentCaller")
+            .field("token", &"<redacted>")
+            .field("host_generation_id", &self.host_generation_id)
+            .field("backend_kind", &self.backend_kind)
+            .finish()
+    }
 }
 
 /// All three caller headers, or `None`.
@@ -213,8 +226,16 @@ pub(crate) async fn caller_gate(
     };
     let rejection = match caller_from_headers(request.headers()) {
         None => CallerRejection::NotAnAgent,
-        Some(caller) => match verifier(caller).await {
-            Ok(()) => return next.run(request).await,
+        Some(caller) => match verifier(caller.clone()).await {
+            Ok(()) => {
+                // Handlers that scope something to *who* asked need the caller,
+                // and only this gate knows it has been vouched for. Carrying it
+                // as an extension means an unverified request cannot produce
+                // one: nothing else in the router inserts it.
+                let mut request = request;
+                request.extensions_mut().insert(caller);
+                return next.run(request).await;
+            }
             Err(rejection) => rejection,
         },
     };
@@ -229,6 +250,18 @@ mod tests {
     use axum::routing::post;
     use axum::Router;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn debugging_a_caller_does_not_print_its_token() {
+        let caller = AgentCaller {
+            token: "super-secret-runtime-token".into(),
+            host_generation_id: "host-1".into(),
+            backend_kind: "pi".into(),
+        };
+        let shown = format!("{caller:?}");
+        assert!(!shown.contains("super-secret-runtime-token"), "{shown}");
+        assert!(shown.contains("host-1"), "{shown}");
+    }
 
     #[test]
     fn reads_are_open_and_everything_else_is_agent_only() {
@@ -374,6 +407,54 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(echoed, body);
         assert_eq!(asked.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_verified_caller_reaches_the_handler_and_an_unverified_one_never_does() {
+        // The deploy gate scopes a remembered approval to the host that asked,
+        // so it has to be able to tell. Only this middleware inserts the
+        // extension, which is what makes its presence proof of verification.
+        let seen: Arc<std::sync::Mutex<Option<AgentCaller>>> = Arc::default();
+        let captured = seen.clone();
+        let router = Router::new()
+            .route(
+                "/app-manage",
+                post(
+                    move |caller: Option<axum::Extension<AgentCaller>>, _body: Bytes| {
+                        let captured = captured.clone();
+                        async move {
+                            *captured.lock().unwrap() =
+                                caller.map(|axum::Extension(caller)| caller);
+                            "ok"
+                        }
+                    },
+                ),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                stub_verifier(|| Ok(())).0,
+                caller_gate,
+            ));
+
+        let (status, _) = call(
+            router.clone(),
+            "/app-manage",
+            r#"{"action":"deploy"}"#,
+            Some(caller_headers("rtctx_a", "pi-1", "pi")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let caller = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("caller reached handler");
+        assert_eq!(caller.host_generation_id, "pi-1");
+
+        // A read needs no caller, and must not arrive carrying one.
+        *seen.lock().unwrap() = None;
+        let (status, _) = call(router, "/app-manage", r#"{"action":"list"}"#, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(seen.lock().unwrap().is_none());
     }
 
     #[tokio::test]

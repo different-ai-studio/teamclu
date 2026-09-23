@@ -62,6 +62,10 @@ pub fn build(state: HttpState) -> Router {
             post(crate::http::runtime_context::session_prompt),
         )
         .route(
+            "/internal/runtime-context/session-attach",
+            post(crate::http::runtime_context::session_attach),
+        )
+        .route(
             "/internal/runtime-context/verify",
             post(crate::http::runtime_context::verify_runtime_caller),
         )

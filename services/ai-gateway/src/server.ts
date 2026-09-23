@@ -14,9 +14,9 @@ const catalog = loadCatalog(cfg.catalogPath);
 const sql = connect(cfg.databaseUrl);
 const tokens = new TokenCache(cfg.tokenCacheTtlMs, makeVerifier(cfg));
 
-// Orphaned holds (crashed process, client vanished mid-stream) would keep
-// credit reserved forever. Sweeping is cheap — one partial-index update — so it
-// runs often enough that a stuck hold is a blip rather than an outage.
+// Orphaned holds (a crashed process) would keep credit reserved forever.
+// Sweeping is cheap — one partial-index update — so it runs often enough that
+// a stuck hold is a blip rather than an outage.
 if (cfg.creditsEnforced) {
   setInterval(() => {
     sweepExpired(sql)

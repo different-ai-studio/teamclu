@@ -6,7 +6,7 @@ import {
   publishableKeyFromEnv,
 } from "./lib/supabase-repo.js";
 import { queryParams } from "./lib/routing-utils.js";
-import { dispatchPush } from "./lib/push-dispatch.js";
+import { fanoutMessage } from "./lib/push-dispatch.js";
 import { pushDeps } from "./lib/admin-handlers.js";
 import { ApiError } from "./lib/http-utils.js";
 import {
@@ -521,7 +521,7 @@ export function makeBusinessRepoFactory() {
       supabasePublicUrl: SUPABASE_PUBLIC_URL_FN(),
       publishableKey: SUPABASE_PUBLISHABLE_KEY(),
       accessToken,
-      dispatchPush: async (record) => { await dispatchPush(record, pushDeps()); },
+      fanoutMessage: async (record) => { await fanoutMessage(record, pushDeps()); },
       ...makeDeployDeps(),
       ...makeTeardownDeps(),
       ...makeAppDataDeps(),

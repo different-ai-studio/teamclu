@@ -48,6 +48,10 @@ public final class VoiceRecorder {
     private var audioEngine: AVAudioEngine?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    /// Bumped by every start and every teardown. Authorization is answered
+    /// asynchronously, so a take cancelled while TCC is still thinking would
+    /// otherwise come back and start capturing with no UI attached.
+    private var startEpoch = 0
 
     public init(contextualStrings: [String] = []) {
         self.contextualStrings = contextualStrings
@@ -90,18 +94,31 @@ public final class VoiceRecorder {
     // MARK: - Private
 
     private func requestAndStart() {
-        SFSpeechRecognizer.requestAuthorization { [weak self] status in
-            DispatchQueue.main.async {
-                guard let self else { return }
+        startEpoch += 1
+        let epoch = startEpoch
+        let finishAuthorization: @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void = { [weak self] status in
+            // TCC invokes this completion on a worker queue. The callback is
+            // deliberately `@Sendable` and registered from a nonisolated
+            // helper, so it cannot inherit this class's MainActor isolation.
+            // Hop back only after TCC has called it.
+            Task.detached { @MainActor [weak self] in
+                guard let self, self.startEpoch == epoch else { return }
                 guard status == .authorized else { self.state = .denied; return }
                 self.beginCapture()
             }
         }
+        Self.requestSpeechAuthorization(finishAuthorization)
+    }
+
+    nonisolated private static func requestSpeechAuthorization(
+        _ completion: @escaping @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void
+    ) {
+        SFSpeechRecognizer.requestAuthorization(completion)
     }
 
     private func beginCapture() {
         guard let recognizer, recognizer.isAvailable else {
-            state = .error("Speech recognizer unavailable")
+            state = .error(String(localized: "Speech recognizer unavailable"))
             return
         }
 
@@ -121,16 +138,16 @@ public final class VoiceRecorder {
 
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            request.append(buffer)
-            guard let channelData = buffer.floatChannelData?[0] else { return }
-            let frameLength = Int(buffer.frameLength)
-            var sum: Float = 0
-            for i in 0..<frameLength { sum += abs(channelData[i]) }
-            let avg = sum / Float(max(frameLength, 1))
-            let level = min(max(avg * 5, 0), 1)
-            Task { @MainActor in self?.audioLevel = level }
+        // The input-node tap runs on Core Audio's realtime worker. Keep the
+        // callback fully nonisolated; even a weak capture of this MainActor
+        // recorder makes Swift 6 assert before its body can schedule a Task.
+        let publishAudioLevel: @Sendable (Float) -> Void = { [weak self] level in
+            Task.detached { @MainActor [weak self] in
+                self?.audioLevel = level
+            }
         }
+        Self.installLevelTap(on: inputNode, format: format, request: request,
+                             onLevel: publishAudioLevel)
 
         engine.prepare()
         do {
@@ -146,16 +163,64 @@ public final class VoiceRecorder {
         self.audioLevel = 0
         self.state = .recording
 
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-            Task { @MainActor in
-                if let result {
-                    self.transcript = result.bestTranscription.formattedString
-                }
-                if error != nil || result?.isFinal == true {
-                    self.finalizeRecognition()
-                }
+        // Same treatment as the two callbacks above, and for the same reason.
+        // Speech runs this on its own queue, and the handler used to deref
+        // `self` there — a strong one, which is more than the weak capture the
+        // tap note says is already enough to trip Swift 6's isolation checking.
+        // Nothing that touches this object crosses onto a framework thread
+        // now: the closure Speech holds forwards two plain values, and the hop
+        // happens on our side.
+        let onUpdate: @Sendable (String?, Bool) -> Void = { [weak self] text, finished in
+            Task.detached { @MainActor [weak self] in
+                guard let self else { return }
+                if let text { self.transcript = text }
+                if finished { self.finalizeRecognition() }
             }
+        }
+        task = Self.startRecognition(recognizer, request: request, onUpdate: onUpdate)
+    }
+
+    /// Installs the level tap from outside this class's isolation.
+    ///
+    /// Not capturing `self` was not enough. The block AVFAudio keeps also
+    /// captures `request`, which is not `Sendable`, and a closure formed in a
+    /// `@MainActor` method with a capture like that is isolated to the main
+    /// actor — so Swift 6 emits an executor check at its entry. Core Audio's
+    /// realtime worker is not the main actor, and the check does not return
+    /// false, it traps: `brk #1` inside `dispatch_assert_queue`, roughly fifty
+    /// times a second into a recording. That is the crash this fixes.
+    nonisolated private static func installLevelTap(
+        on inputNode: AVAudioInputNode,
+        format: AVAudioFormat,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onLevel: @escaping @Sendable (Float) -> Void
+    ) {
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            request.append(buffer)
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+            let frameLength = Int(buffer.frameLength)
+            var sum: Float = 0
+            for i in 0..<frameLength { sum += abs(channelData[i]) }
+            let avg = sum / Float(max(frameLength, 1))
+            onLevel(min(max(avg * 5, 0), 1))
+        }
+    }
+
+    /// Registers the recognition handler from outside this class's isolation,
+    /// so the closure Speech keeps cannot inherit it. It reads what it needs
+    /// off the result — `SFSpeechRecognitionResult` is not `Sendable` and has
+    /// no business leaving this queue — and passes on a string and whether the
+    /// turn is over.
+    nonisolated private static func startRecognition(
+        _ recognizer: SFSpeechRecognizer,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onUpdate: @escaping @Sendable (String?, Bool) -> Void
+    ) -> SFSpeechRecognitionTask {
+        recognizer.recognitionTask(with: request) { result, error in
+            onUpdate(
+                result?.bestTranscription.formattedString,
+                error != nil || result?.isFinal == true
+            )
         }
     }
 
@@ -178,6 +243,7 @@ public final class VoiceRecorder {
     /// Explicit teardown — used by toggle/cancel/reset. Targets either
     /// `.idle` or another state, and optionally clears the transcript.
     private func tearDown(targetState: State, clearTranscript: Bool) {
+        startEpoch += 1
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         request?.endAudio()

@@ -12,6 +12,17 @@ public struct MQTTIncoming: Sendable {
     public let retained: Bool
 }
 
+/// Identifies who holds a topic subscription, so one consumer leaving does not
+/// unsubscribe another's feed. See `MQTTService.topicOwners`.
+public enum MQTTSubscriptionOwner {
+    /// Consumers that own their topics outright and never share them.
+    public static let `default` = "default"
+    /// The open session detail screen (`TeamcluService` foreground session).
+    public static let foregroundSession = "foreground-session"
+    /// The session list's live-activity store.
+    public static let sessionListActivity = "session-list-activity"
+}
+
 @Observable
 public final class MQTTService: NSObject, @unchecked Sendable {
     typealias TopicHook = @Sendable (String) async throws -> Void
@@ -38,6 +49,14 @@ public final class MQTTService: NSObject, @unchecked Sendable {
     private var continuations: [UUID: AsyncStream<MQTTIncoming>.Continuation] = [:]
     private var connectContinuation: CheckedContinuation<Void, Error>?
     private var subscribeContinuations: [String: [CheckedContinuation<Void, Error>]] = [:]
+    /// Who asked for each topic. `session/{id}/live` now has two independent
+    /// owners — the open session detail and the list's activity store — and
+    /// without this the first one to leave UNSUBSCRIBEd the other's feed too.
+    ///
+    /// Owners, not a counter: every consumer re-subscribes after a reconnect
+    /// without a matching unsubscribe, so a counter would climb forever and
+    /// the topic could never be released.
+    private var topicOwners: [String: Set<String>] = [:]
 
     public override init() {
         subscribeHook = nil
@@ -146,7 +165,13 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         for c in conts { c.finish() }
     }
 
-    public func subscribe(_ topic: String) async throws {
+    public func subscribe(_ topic: String, owner: String = MQTTSubscriptionOwner.default) async throws {
+        // Claim ownership before the SUBSCRIBE, not after: a failure still
+        // leaves the claim, and the next reconnect's re-subscribe repairs it.
+        // Dropping the claim on failure would let a sibling owner's
+        // unsubscribe silently kill a topic we are about to retry.
+        stateQueue.sync { _ = topicOwners[topic, default: []].insert(owner) }
+
         if let subscribeHook {
             try await subscribeHook(topic)
             if recordTopicOperations {
@@ -157,13 +182,18 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         guard self.mqtt != nil, connectionState == .connected else {
             throw MQTTConnectionError.notConnected
         }
+        // Always re-issue the SUBSCRIBE even when another owner already holds
+        // the topic: a reconnect wipes the broker's subscription table, and
+        // callers repair theirs by calling this again. SUBSCRIBE is idempotent.
         try await waitForSubscribeAck(topic: topic)
         if recordTopicOperations {
             subscribedTopics.append(topic)
         }
     }
 
-    public func unsubscribe(_ topic: String) async throws {
+    public func unsubscribe(_ topic: String, owner: String = MQTTSubscriptionOwner.default) async throws {
+        guard releaseOwner(owner, of: topic) else { return }
+
         if let unsubscribeHook {
             try await unsubscribeHook(topic)
             if recordTopicOperations {
@@ -180,7 +210,31 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         }
     }
 
-    internal func unsubscribeForLifecycleStop(_ topic: String) {
+    /// Drops `owner`'s claim on `topic`. Returns true when nobody is left and
+    /// the real UNSUBSCRIBE should go out.
+    private func releaseOwner(_ owner: String, of topic: String) -> Bool {
+        stateQueue.sync {
+            guard var owners = topicOwners[topic] else {
+                // Never claimed (or already released by a lifecycle stop) —
+                // let the UNSUBSCRIBE through rather than stranding a topic
+                // nothing is tracking.
+                return true
+            }
+            owners.remove(owner)
+            if owners.isEmpty {
+                topicOwners.removeValue(forKey: topic)
+                return true
+            }
+            topicOwners[topic] = owners
+            return false
+        }
+    }
+
+    internal func unsubscribeForLifecycleStop(
+        _ topic: String,
+        owner: String = MQTTSubscriptionOwner.default
+    ) {
+        guard releaseOwner(owner, of: topic) else { return }
         if let unsubscribeHook {
             Task {
                 try? await unsubscribeHook(topic)

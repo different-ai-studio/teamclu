@@ -64,6 +64,45 @@ public struct LoadedTurnTrace {
         self.events = events
         self.droppedEvents = droppedEvents
     }
+
+    /// The trace, followed by whatever the local rows hold past its end.
+    ///
+    /// Spliced by time, never reconciled event by event. Inside the span the
+    /// trace covers, the daemon's record is the whole truth and the local
+    /// rows are a second, finer-grained copy of the same events — merging
+    /// those two produces the duplicated-head-plus-fragments mess that
+    /// `pruneReplayedTurnRuntimeRows` exists to prevent. What the trace can't
+    /// speak for is its own tail: it is trimmed to a size budget from the end
+    /// (`droppedEvents`), and the local rows may still carry what it lost.
+    public func merged(withLocal localEvents: [AgentEvent]) -> [AgentEvent] {
+        guard let boundary = events.map(\.timestamp).max() else {
+            return Self.chronologically(localEvents)
+        }
+        var tail = localEvents.filter { $0.timestamp > boundary }
+
+        // A trimmed trace can lose the reply itself. The local reply's
+        // timestamp is the turn's START (Supabase `created_at`), so it never
+        // clears the boundary on its own — keep it explicitly rather than
+        // render a process with no answer at the end of it.
+        if !events.contains(where: { $0.eventType == "output" }),
+           let reply = localEvents.last(where: { $0.eventType == "output" && $0.isComplete }),
+           !tail.contains(where: { $0.id == reply.id }) {
+            tail.append(reply)
+        }
+
+        guard !tail.isEmpty else { return events }
+        // The trace is already in the order the daemon recorded it; only the
+        // spliced tail needs ordering.
+        return events + Self.chronologically(tail)
+    }
+
+    private static func chronologically(_ events: [AgentEvent]) -> [AgentEvent] {
+        events.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            if lhs.sequence != rhs.sequence { return lhs.sequence < rhs.sequence }
+            return lhs.id < rhs.id
+        }
+    }
 }
 
 public enum TurnTraceError: Error, Equatable, Sendable {

@@ -11,7 +11,7 @@
 > |---|---|
 > | Cloud API (`/v1`) | `https://api.teamclu-dev.ucar.cc` |
 > | Supabase 网关 | `https://supabase.teamclu-dev.ucar.cc` |
-> | Studio | `https://studio.teamclu-dev.ucar.cc` |
+> | Studio | `https://studio.teamclu-dev.ucar.cc`（经 Kong basic-auth，账号见机器上 `.env` 的 `DASHBOARD_*`） |
 > | EMQX Dashboard | `https://emqx.teamclu-dev.ucar.cc` |
 > | MQTT over WSS | `wss://mqtt.teamclu-dev.ucar.cc/mqtt`（443）；明文 `47.112.210.217:1883` |
 >

@@ -192,6 +192,8 @@ pub fn apply_violations_to_emitted(
         metadata_json: failure_metadata_json(violations),
         turn_id: turn_id.to_string(),
         cloud_persist: true,
+        attachments: Vec::new(),
+        attachment_urls: Vec::new(),
     });
 }
 
@@ -543,6 +545,8 @@ mod tests {
             metadata_json: String::new(),
             turn_id: "turn-1".into(),
             cloud_persist: true,
+            attachments: Vec::new(),
+            attachment_urls: Vec::new(),
         }];
         apply_violations_to_emitted(&mut emitted, &violations, "turn-1");
         assert_eq!(emitted.len(), 1);

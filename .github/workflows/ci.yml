@@ -432,3 +432,128 @@ jobs:
       # changes nothing; it keeps this job honest if that stops being true.
       - name: Check the desktop app compiles on Windows
         run: cargo check --manifest-path apps/desktop/Cargo.toml --locked --no-default-features
+
+  # Whether this change can affect the iOS app. The job below burns a macOS
+  # runner and downloads the iOS platform, so it should not run for a change
+  # to the daemon or the web app.
+  ios-touched:
+    name: Detect iOS changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          # Fail open. A missing or unreachable base (a new branch, a force
+          # push) means we cannot tell, and skipping the only iOS gate there
+          # is on the strength of a guess is the wrong way to be wrong.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE" HEAD \
+             | grep -qE '^(apps/ios/|\.github/workflows/ci\.yml$)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  ios-build:
+    name: iOS Build & Type-Check Budget
+    needs: ios-touched
+    if: needs.ios-touched.outputs.changed == 'true'
+    runs-on: macos-26
+    # The iOS app had no pull-request coverage at all: `testflight.yml` builds
+    # it, and that only runs on main and on tags. Same hole `desktop-windows`
+    # above exists to close — code whose first compiler is the release job.
+    #
+    # It cost a release. A `body` in SessionDetailView grew to one expression
+    # the type-checker needed 7.9 seconds to solve on a fast laptop; the
+    # archive runner is slower, its solver gave up instead, and the build
+    # failed with "unable to type-check this expression in reasonable time"
+    # after the change had already been reviewed and merged. Every check on
+    # that PR was green, because none of them built the app.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app /Applications/Xcode.app 2>/dev/null | head -1)
+          sudo xcode-select -s "$XCODE/Contents/Developer" || sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      # The runner image ships Xcode without the iOS platform, so every
+      # destination is "ineligible" until this runs. testflight.yml does the
+      # same thing.
+      - name: Install the iOS platform
+        run: |
+          set -euo pipefail
+          xcodebuild -downloadPlatform iOS
+          xcodebuild -showsdks | grep -qi iphonesimulator
+
+      - name: Generate the Xcode project
+        run: |
+          set -euo pipefail
+          command -v xcodegen >/dev/null 2>&1 || brew install xcodegen
+          cd apps/ios && xcodegen generate
+
+      # Debug, not Release: type-checking is front-end work and costs the same
+      # either way, so this measures what the archive would hit while staying
+      # cheap. It doubles as the only "does the iOS app still compile" gate on
+      # a pull request.
+      - name: Build for the simulator, with a type-check budget
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project apps/ios/AMUX.xcodeproj \
+            -scheme AMUX \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            -derivedDataPath apps/ios/build-ci \
+            OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -warn-long-function-bodies=400 -Xfrontend -warn-long-expression-type-checking=400' \
+            build | tee "$RUNNER_TEMP/ios-build.log"
+
+      # The compiler's own limit is a solver budget, not a number of
+      # milliseconds, so no threshold means "this would have failed". 3000 is
+      # picked from measurements on this runner, which is roughly three times
+      # slower than a laptop: the worst body in the tree lands near 1600ms
+      # here, and the one that failed the archive measured 7.9s on a laptop —
+      # well over 20s of this runner's time. So the budget sits under twice
+      # today's worst and far below the cliff. Set it much tighter and it
+      # flaps; much looser and it stops meaning anything.
+      - name: Nothing may sit near the type-checker's cliff
+        run: |
+          set -euo pipefail
+          BUDGET_MS=3000
+          grep -oE '[^ ]+:[0-9]+:[0-9]+: warning: [^\"]*took [0-9]+ms to type-check' \
+            "$RUNNER_TEMP/ios-build.log" | sort -u > "$RUNNER_TEMP/slow.txt" || true
+          if [ -s "$RUNNER_TEMP/slow.txt" ]; then
+            echo "Expressions over 400ms (informational):"
+            sed 's|.*/apps/ios|apps/ios|' "$RUNNER_TEMP/slow.txt"
+          fi
+          # No gawk on a macOS runner, so no three-argument match(); pull the
+          # number out per line with grep instead.
+          : > "$RUNNER_TEMP/over.txt"
+          while IFS= read -r line; do
+            ms=$(printf '%s\n' "$line" | grep -oE 'took [0-9]+ms' | grep -oE '[0-9]+' || true)
+            if [ -n "$ms" ] && [ "$ms" -gt "$BUDGET_MS" ]; then
+              printf '%s\n' "$line" >> "$RUNNER_TEMP/over.txt"
+            fi
+          done < "$RUNNER_TEMP/slow.txt"
+          if [ -s "$RUNNER_TEMP/over.txt" ]; then
+            echo "::error::These are over the ${BUDGET_MS}ms type-check budget. Split them into smaller sub-expressions — a SwiftUI body that reaches the solver's limit fails the release archive, not the simulator build."
+            sed 's|.*/apps/ios|apps/ios|' "$RUNNER_TEMP/over.txt"
+            exit 1
+          fi
+          echo "Nothing over ${BUDGET_MS}ms."

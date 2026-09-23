@@ -915,6 +915,20 @@ impl DaemonServer {
                     .await
                     .handle_response(&topic, &payload);
             }
+            subscriber::IncomingMessage::TeamcluAgentInbox { actor_id, payload } => {
+                if actor_id != self.actor_id {
+                    // Wildcards never produced this, but a stale SUB after an
+                    // actor change would — and routing another actor's mail
+                    // would start turns this daemon does not own.
+                    warn!(
+                        addressed = %actor_id,
+                        mine = %self.actor_id,
+                        "agent inbox message for another actor; dropping"
+                    );
+                } else if let Err(e) = self.ingest_agent_inbox(&payload).await {
+                    warn!(err = %e, payload_bytes = payload.len(), "agent inbox ingest failed");
+                }
+            }
             subscriber::IncomingMessage::TeamcluSessionLive {
                 session_id,
                 payload,

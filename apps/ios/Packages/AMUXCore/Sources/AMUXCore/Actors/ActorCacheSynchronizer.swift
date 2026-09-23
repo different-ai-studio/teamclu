@@ -23,6 +23,7 @@ public enum ActorCacheSynchronizer {
             existing.createdAt        = record.createdAt
             existing.updatedAt        = record.updatedAt
             existing.memberStatus     = record.memberStatus
+            existing.roles            = record.roles
             existing.teamRole         = record.teamRole
             existing.agentTypes         = record.agentTypes
             existing.agentKind          = record.agentKind
@@ -40,7 +41,7 @@ public enum ActorCacheSynchronizer {
                 avatarURL: record.avatarURL,
                 lastActiveAt: record.lastActiveAt,
                 createdAt: record.createdAt, updatedAt: record.updatedAt,
-                memberStatus: record.memberStatus, teamRole: record.teamRole,
+                memberStatus: record.memberStatus, roles: record.roles, teamRole: record.teamRole,
                 agentTypes: record.agentTypes, agentKind: record.agentKind, defaultAgentType: record.defaultAgentType,
                 agentStatus: record.agentStatus, defaultWorkspaceId: record.defaultWorkspaceID,
                 email: record.email, phone: record.phone

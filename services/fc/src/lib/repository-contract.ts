@@ -702,7 +702,36 @@ test("repository contract: getTeamDirectory returns actors and members", async (
       "teamId",
       "title",
       "updatedAt",
+      // The feed card renders these, and it renders a page at a time — a
+      // backend that leaves them to the client turns one list into N+1
+      // requests, so they belong to the list contract.
+      "attachmentUrls",
+      "commentCount",
+      "likeCount",
+      "likedByMe",
     ].sort());
+  });
+
+  test("repository contract: setIdeaLike settles on the requested state", async () => {
+    const repo = createRepository();
+    const page = await repo.listIdeas({ teamId: "team-1", archived: false, limit: 50, cursor: null });
+    const target = page.items.find((i) => i.likedByMe === false);
+    assert.ok(target, "contract fixture must include an idea the caller has not liked");
+    const before = target.likeCount;
+
+    const liked = await repo.setIdeaLike(target.id, true);
+    assert.equal(liked.likedByMe, true);
+    assert.equal(liked.likeCount, before + 1);
+
+    // Same request twice is the same answer, not a toggle back: two devices
+    // tapping at once, or a retry, must not cancel the like.
+    const again = await repo.setIdeaLike(target.id, true);
+    assert.equal(again.likedByMe, true);
+    assert.equal(again.likeCount, before + 1);
+
+    const unliked = await repo.setIdeaLike(target.id, false);
+    assert.equal(unliked.likedByMe, false);
+    assert.equal(unliked.likeCount, before);
   });
 
   test("repository contract: getIdea returns single idea", async () => {

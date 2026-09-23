@@ -4787,6 +4787,60 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+  /v1/attachments/thumbnail:
+    get:
+      operationId: getAttachmentThumbnail
+      summary: Resized copy of a stored image
+      description: >-
+        Returns the object resized by the storage service. Takes a bucket and
+        an object path rather than a URL, so it can only name something this
+        service already serves. It exists because the storage render endpoint
+        requires credentials that clients deliberately do not hold.
+      tags: [Attachments]
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: bucket
+          schema:
+            type: string
+            enum: [attachments, avatars]
+            default: attachments
+        - in: query
+          name: width
+          description: Target width in pixels. The height follows the aspect ratio.
+          schema:
+            type: integer
+            minimum: 32
+            maximum: 1600
+            default: 600
+      responses:
+        "200":
+          description: The resized image.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/attachments/{path}:
     get:
       operationId: downloadAttachment
@@ -5511,10 +5565,69 @@ paths:
           schema:
             type: string
             format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                archived:
+                  type: boolean
+                  default: true
+                  description: Pass false to restore an archived idea.
       responses:
         "204":
           description: OK
         "401":
+          $ref: "#/components/responses/Error"
+  /v1/ideas/{ideaId}/like:
+    put:
+      operationId: setIdeaLike
+      summary: Like or unlike an idea
+      description: >-
+        Sets whether the calling member likes this idea. The body says what the
+        state should be rather than toggling, so a request that arrives twice
+        settles on the same answer.
+      tags: [Ideas]
+      parameters:
+        - in: path
+          name: ideaId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [liked]
+              properties:
+                liked:
+                  type: boolean
+      responses:
+        "200":
+          description: The idea's like state after the change.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [likeCount, likedByMe]
+                properties:
+                  likeCount:
+                    type: integer
+                  likedByMe:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
   /v1/ideas/{ideaId}/activities:
     post:
@@ -11301,6 +11414,20 @@ components:
             - string
             - "null"
           format: date-time
+        attachmentUrls:
+          type: array
+          description: Pictures posted with the idea, distinct from a comment's attachments.
+          items:
+            type: string
+        commentCount:
+          type: integer
+          description: Comments on the idea. Only present on the list, which aggregates; a single idea read does not carry it.
+        likeCount:
+          type: integer
+          description: Members who have liked the idea. List only, as above.
+        likedByMe:
+          type: boolean
+          description: Whether the calling member has liked the idea. List only, as above.
     AgentRuntime:
       type: object
       required: [id, agentActorId, sessionId, runtimeId, backendSessionId]
@@ -11379,6 +11506,11 @@ components:
         authorActorId:
           type: string
           format: uuid
+        attachmentUrls:
+          type: array
+          description: Pictures to post with the idea. Applied right after creation, so a failure here leaves the idea without them.
+          items:
+            type: string
         actorIds:
           type: array
           items:

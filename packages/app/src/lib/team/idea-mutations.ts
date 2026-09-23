@@ -90,6 +90,30 @@ async function resolveActivityActorId(ideaId: string): Promise<string> {
   throw new Error('member actor not found for current user')
 }
 
+const STATUS_ACTIVITY_LABEL: Record<IdeaStatus, string> = {
+  open: 'Open',
+  in_progress: 'In Progress',
+  done: 'Done',
+}
+
+/**
+ * The server does not derive an activity from a status PATCH — the client that
+ * made the change records it. Content and metadata match what iOS writes
+ * (`IdeaStore.merge`), so each client can render the other's rows.
+ */
+export async function recordIdeaStatusChange(
+  ideaId: string,
+  from: IdeaStatus,
+  to: IdeaStatus,
+): Promise<void> {
+  if (from === to) return
+  await createIdeaActivity(ideaId, {
+    activityType: 'status_change',
+    content: `Changed status from ${STATUS_ACTIVITY_LABEL[from]} to ${STATUS_ACTIVITY_LABEL[to]}`,
+    metadata: { from_status: from, to_status: to },
+  })
+}
+
 export async function createIdeaActivity(ideaId: string, input: IdeaActivityInput): Promise<void> {
   const actorId = await resolveActivityActorId(ideaId)
   await getBackend().ideas.createIdeaActivity({

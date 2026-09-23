@@ -10,9 +10,18 @@ import SwiftData
 /// 2. Introduce a new schema version that points at the live models.
 /// 3. Register a migration stage for the transition.
 public enum AMUXSchemaV1: VersionedSchema {
+    // 1.19.0: CachedActor grew `roles` — the member's org role assignments
+    // (`roles_users`), which replace `teamRole` as the source of truth for role
+    // display. Additive with a default, so lightweight migration covers it and
+    // pre-1.19 rows read as "no roles cached" until the next actors fetch.
+    // 1.18.0: AgentEvent grew `attachmentsJSON` — the message's files as
+    // stored in `metadata.attachments` (see `MessageAttachment`). Additive and
+    // optional, so lightweight migration covers it and pre-1.18 rows read as
+    // "no attachments" with nothing to backfill: the column is a mirror of
+    // what the server already holds.
     // 1.17.0: AgentEvent grew diffPath/diffOldText/diffNewText and Session
     // grew autoApprovePermissions + source (additive, lightweight migration).
-    public static var versionIdentifier: Schema.Version { Schema.Version(1, 17, 0) }
+    public static var versionIdentifier: Schema.Version { Schema.Version(1, 19, 0) }
 
     public static var models: [any PersistentModel.Type] {
         [

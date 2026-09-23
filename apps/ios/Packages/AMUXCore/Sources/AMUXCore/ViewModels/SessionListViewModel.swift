@@ -32,12 +32,28 @@ public final class SessionListViewModel {
 
     public init() {}
 
+    /// The session list's live-activity store. Held here because this view
+    /// model already owns the `inbox/<user>` subscription, which is the one
+    /// signal that says "something happened in session X" without the client
+    /// having to watch every session.
+    private weak var liveActivityStore: SessionLiveActivityStore?
+
+    /// Written on every retained actor-state publish so presence dots have a
+    /// broker-backed answer instead of heartbeat arithmetic. Held here because
+    /// this view model already owns the only subscription to that topic.
+    private var agentPresenceStore: AgentPresenceStore?
+
     public func start(mqtt: MQTTService,
                       hub: MQTTMessageHub,
                       teamID: String = "",
                       connectedAgentsStore: ConnectedAgentsStore?,
                       modelContext: ModelContext,
-                      teamcluService: TeamcluService? = nil) {
+                      teamcluService: TeamcluService? = nil,
+                      agentPresenceStore: AgentPresenceStore? = nil) {
+        // Never clobber a live store with nil: start() is called from both
+        // RootTabView and SessionsTab, and whichever ran last would otherwise
+        // decide whether presence is recorded at all.
+        if let agentPresenceStore { self.agentPresenceStore = agentPresenceStore }
         // Create a dedicated context from the same container for async work
         let container = modelContext.container
         let ctx = ModelContext(container)
@@ -119,13 +135,25 @@ public final class SessionListViewModel {
 
                 for await msg in stream {
                     if let actorID = Self.parseActorStateTopic(msg.topic, teamID: teamID) {
-                        // An empty payload is the LWT / offline marker; a
-                        // presence-only publish carries no attachments either.
-                        // Both mean the same thing here: nothing live to show.
-                        guard !msg.payload.isEmpty,
-                              let presence = try? ProtoMQTTCoder.decode(
-                                  Amux_ActorPresence.self, from: msg.payload
-                              ) else { continue }
+                        guard let presence = try? ProtoMQTTCoder.decode(
+                            Amux_ActorPresence.self, from: msg.payload
+                        ) else { continue }
+
+                        // Record presence from EVERY publish, the offline ones
+                        // included. The daemon's Last Will is an ordinary
+                        // encoded `ActorPresence { online: false }`, published
+                        // retained by the broker the instant the connection
+                        // drops (apps/daemon/src/mqtt/client.rs); a cleared
+                        // retain is an empty payload, which decodes to the same
+                        // defaults. This used to be dropped on the floor, which
+                        // is why a dead agent kept a green dot until its
+                        // heartbeat aged out.
+                        self.agentPresenceStore?.record(actorID: actorID, online: presence.online)
+
+                        // An empty payload carries no attachments either, so
+                        // there is nothing to project — and projecting from it
+                        // would prune live rows on a bare retain clear.
+                        guard !msg.payload.isEmpty else { continue }
                         self.syncActorPresence(presence, actorID: actorID, modelContext: ctx)
                         self.refreshSessions(modelContext: ctx)
                     }
@@ -151,22 +179,30 @@ public final class SessionListViewModel {
     // has_unread itself is computed server-side from `session_read_markers`
     // + `sessions.last_message_at` — see SupabaseSessionsRepository.
 
-    /// Subscribes to `inbox/<actorID>` on the MQTT broker and updates
+    /// Subscribes to `inbox/<userID>` on the MQTT broker and updates
     /// Session.hasUnread on each ping. Safe to call after start(); cancels
     /// any previous inbox subscription.
+    ///
+    /// `userID` is the **authenticated user id**, not the member actor id.
+    /// FC publishes to `inbox/<auth user id>` (`push-dispatch.ts`), and the
+    /// two are different UUIDs — subscribing with the actor id, as this did
+    /// until 2026-09-21, yields a topic nothing is ever published to, so the
+    /// unread dot and the list re-sort never fired on iOS at all.
     public func startInboxSubscription(
         mqtt: MQTTService,
         hub: MQTTMessageHub,
-        actorID: String,
+        userID: String,
         teamID: String,
         sessionsRepo: SessionsRepository?,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        liveActivityStore: SessionLiveActivityStore? = nil
     ) {
-        guard !actorID.isEmpty else {
-            NSLog("[SessionListVM] startInboxSubscription: empty actorID, skipping")
+        if let liveActivityStore { self.liveActivityStore = liveActivityStore }
+        guard !userID.isEmpty else {
+            NSLog("[SessionListVM] startInboxSubscription: empty userID, skipping")
             return
         }
-        let topic = "inbox/\(actorID)"
+        let topic = "inbox/\(userID)"
 
         inboxTask?.cancel()
         let container = modelContext.container
@@ -197,7 +233,7 @@ public final class SessionListViewModel {
             let stream = await hub.messages(matching: { msg in msg.topic == topic })
             for await msg in stream {
                 if Task.isCancelled { return }
-                switch parseInboxEnvelope(topic: msg.topic, payload: msg.payload, expectedUserID: actorID) {
+                switch parseInboxEnvelope(topic: msg.topic, payload: msg.payload, expectedUserID: userID) {
                 case .success(let ping):
                     await self.applyInboxPing(ping, teamID: teamID, sessionsRepo: sessionsRepo, modelContext: ctx)
                 case .failure(let err):
@@ -216,6 +252,14 @@ public final class SessionListViewModel {
     ) async {
         let sid = ping.sessionID
         let descriptor = FetchDescriptor<Session>(predicate: #Predicate { $0.sessionId == sid })
+
+        // Every ping means someone else moved in this session, which is the
+        // trigger for watching its `session/live` feed. A "read" ping is the
+        // exception: it is this user on another device clearing a badge, and
+        // says nothing about an agent.
+        if ping.type != "read" {
+            liveActivityStore?.noteActivity(sessionID: sid)
+        }
 
         if ping.type == "read" {
             // Another device marked this session read — clear the badge locally.

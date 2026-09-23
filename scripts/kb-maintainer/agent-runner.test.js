@@ -45,6 +45,12 @@ test("agent-runner sends runner=pi to the Pi compiler", async () => {
         rawMarkdown: "# 请假\n",
         locators: [],
       }),
-    /Team AI gateway/i,
+    // Either message is a pass. `compile` reaches `createLivePiSession`,
+    // which checks for the managed runtime before it ever looks for the
+    // gateway, so a machine with pi installed fails on the gateway and one
+    // without it fails on the runtime. Neither test can install a runtime,
+    // and pinning only the gateway message is what made this pass on a
+    // developer's Mac and fail on CI.
+    /Team AI gateway|managed Agent runtime/i,
   );
 });

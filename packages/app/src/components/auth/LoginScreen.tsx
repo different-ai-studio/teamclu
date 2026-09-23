@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/stores/auth-store";
 import { appDisplayName } from "@/lib/config/build-config";
+import { appLogoUrl } from "@/lib/config/app-logo-url";
 import { useFeatures } from "@/lib/config/remote-features";
 import { hasBackendConfig } from "@/lib/backend";
 import { displayHost, getEffectiveServerConfigSync } from "@/lib/config/server-config";
@@ -203,7 +204,7 @@ export function LoginScreen({ embedded = false, onBack }: LoginScreenProps) {
       {!embedded && (
         <div className="mb-8 flex flex-col items-center gap-3">
           <img
-            src="/logo.png"
+            src={appLogoUrl()}
             alt={`${appDisplayName} logo`}
             width={128}
             height={128}

@@ -51,6 +51,7 @@ mod channels;
 mod command_executor;
 mod cron;
 mod messaging;
+mod offline_restart;
 mod peers_workspaces;
 mod remote_tools;
 mod rpc;
@@ -265,6 +266,14 @@ pub struct DaemonServer {
     cold_attach_tx: mpsc::Sender<crate::channels::ColdAttach>,
     /// Receiver half, `take()`n by whichever run loop is active.
     cold_attach_rx: Option<mpsc::Receiver<crate::channels::ColdAttach>>,
+    /// Newest `last_message_at` the catch-up scan has seen, so a reconnect
+    /// only has to look at sessions that moved since.
+    ///
+    /// Memory only, and deliberately so: a fresh process has none and falls
+    /// back to the full scan, which is the behaviour that existed before.
+    /// Persisting it would mean a restart trusts a watermark written by a
+    /// process that may have died mid-scan.
+    offline_restart_watermark: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// Single control command parsed off `amuxd.sock`. Variants correspond to the
@@ -850,6 +859,7 @@ impl DaemonServer {
             chat_decision_rx: Some(chat_decision_rx),
             cold_attach_tx,
             cold_attach_rx: Some(cold_attach_rx),
+            offline_restart_watermark: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -1215,6 +1225,12 @@ impl DaemonServer {
                     self.backend.clone(),
                 ),
             ));
+            let session_attach = Some(Arc::new(
+                crate::runtime::session_attach::SessionAttachService::new(
+                    self.agents.clone(),
+                    self.backend.clone(),
+                ),
+            ));
             match crate::http::spawn_with_refresh_watch_registry(
                 http_cfg,
                 meta,
@@ -1236,6 +1252,7 @@ impl DaemonServer {
                 self.refresh_watch_registry.clone(),
                 Some(self.runtime_context.clone()),
                 session_prompt,
+                session_attach,
                 Some(self.managed_llm.clone()),
             )
             .await
@@ -1725,6 +1742,9 @@ impl DaemonServer {
             .cold_attach_rx
             .take()
             .expect("cold_attach_rx already taken (MQTT run loop entered twice)");
+        // Sessions that need a runtime to drain messages sent while the
+        // daemon was down; the scan runs in the background (`offline_restart`).
+        let (offline_restart_tx, mut offline_restart_rx) = mpsc::channel(16);
 
         'outer: loop {
             // ── 0. Self-heal team_id from daemon.toml ──
@@ -1973,9 +1993,16 @@ impl DaemonServer {
                 // when clean_session=true clients are offline, so anything
                 // posted by desktop/iOS/expo between daemon stop and start
                 // exists only in the `messages` table and would otherwise
-                // never reach any agent.
-                self.auto_restart_offline_sessions().await;
+                // never reach any agent. Scanned in the background: awaited
+                // here, it held the loop below for up to a minute.
+                self.spawn_offline_restart_planning(offline_restart_tx.clone());
                 first_connect = false;
+            } else {
+                // A reconnect, not a restart. The broker dropped anything
+                // published while we were away (clean_session=true), and the
+                // in-memory subscription set says nothing about sessions this
+                // process never subscribed to — so ask the backend what moved.
+                self.spawn_offline_restart_reconcile(offline_restart_tx.clone());
             }
 
             // ── 5. Business/control loop ──
@@ -2168,6 +2195,11 @@ impl DaemonServer {
                             self.serve_cold_attach(request).await;
                         }
                     }
+                    Some(entry) = offline_restart_rx.recv() => {
+                        // One session per pass, so commands get served between
+                        // runtime starts.
+                        self.apply_offline_restart(entry).await;
+                    }
                     event = mqtt_supervisor.events.recv() => {
                         match event {
                             Some(MqttSupervisorEvent::TransportConnected { generation, worker_generation }) => {
@@ -2350,6 +2382,8 @@ impl DaemonServer {
             .cold_attach_rx
             .take()
             .expect("cold_attach_rx already taken (NATS run loop entered twice)");
+        // See the matching channel in the MQTT loop.
+        let (offline_restart_tx, mut offline_restart_rx) = mpsc::channel(16);
 
         'outer: loop {
             // 1. Fresh backend access_token; same retry cadence as MQTT path.
@@ -2447,8 +2481,14 @@ impl DaemonServer {
             info!(actor_id = %self.config.actor.id, "NATS connected, listening for runtime commands");
 
             if first_connect {
-                self.auto_restart_offline_sessions().await;
+                self.spawn_offline_restart_planning(offline_restart_tx.clone());
                 first_connect = false;
+            } else {
+                // A reconnect, not a restart. The broker dropped anything
+                // published while we were away (clean_session=true), and the
+                // in-memory subscription set says nothing about sessions this
+                // process never subscribed to — so ask the backend what moved.
+                self.spawn_offline_restart_reconcile(offline_restart_tx.clone());
             }
 
             // 5. Proactive reconnect timer (mirrors MQTT path: refresh ~5min
@@ -2648,6 +2688,9 @@ impl DaemonServer {
                             self.serve_cold_attach(request).await;
                         }
                     }
+                    Some(entry) = offline_restart_rx.recv() => {
+                        self.apply_offline_restart(entry).await;
+                    }
                     frame = inbound.recv() => {
                         match frame {
                             Some(f) => {
@@ -2682,254 +2725,6 @@ impl DaemonServer {
             // loop exited → outer: get fresh token and reconnect
             let _ = DeliveryGuarantee::AtLeastOnce; // touch import so it stays
         }
-    }
-
-    /// Re-engage with sessions that had a runtime before the daemon was
-    /// last shut down so we can replay messages that landed in the cloud backend
-    /// while the daemon was offline.
-    ///
-    /// Daemon-owned runtimes are subprocesses; they die when the daemon
-    /// process exits. MQTT live publishes against those sessions are
-    /// dropped by the broker (clean_session=true), so the only record of
-    /// those messages is the `messages` table. The user-facing symptom is
-    /// "messages I sent while the daemon was off never get a reply"
-    /// (mentions go unanswered, silent messages never enter the runtime's
-    /// pending_silent queue).
-    ///
-    /// Strategy: for each session this daemon is a member of, look up the
-    /// most recent `agent_runtimes` row owned by this daemon. If the row
-    /// has unread messages strictly after the row's
-    /// `last_processed_message_id` cursor, spawn the runtime (reusing the
-    /// row's `workspace_id` + `backend_type`). The existing
-    /// `catchup_runtime` path then routes those messages through
-    /// `route_session_message`, which sends `[Context]` prefixes for
-    /// un-mentioned rows and a real prompt for mentions.
-    ///
-    /// Self-authored rows are filtered out — they are the daemon's own
-    /// prior agent replies, not user input that needs processing.
-    pub(crate) async fn auto_restart_offline_sessions(&mut self) {
-        let plan = self.plan_auto_restart_offline_sessions().await;
-        if plan.is_empty() {
-            return;
-        }
-        info!(
-            count = plan.len(),
-            "auto_restart_offline_sessions: spawning {} runtime(s) for sessions with offline messages",
-            plan.len()
-        );
-        for entry in plan {
-            info!(
-                session_id = %entry.session_id,
-                workspace_id = %entry.local_workspace_id,
-                backend = ?entry.backend,
-                unread = entry.unread_count,
-                "auto_restart_offline_sessions: spawning runtime to drain offline messages"
-            );
-            match self
-                .apply_start_runtime(
-                    entry.backend,
-                    &entry.local_workspace_id,
-                    "",
-                    &entry.session_id,
-                    "",
-                    None,
-                    "",
-                    false,
-                    entry.fork_from,
-                    "",
-                )
-                .await
-            {
-                Ok(outcome) => {
-                    info!(
-                        session_id = %entry.session_id,
-                        runtime_id = %outcome.runtime_id,
-                        "auto_restart_offline_sessions: runtime spawned, catchup_runtime engaged"
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        session_id = %entry.session_id,
-                        error = %err.error_message,
-                        stage = %err.failed_stage,
-                        "auto_restart_offline_sessions: apply_start_runtime failed"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Pure-decision half of [`auto_restart_offline_sessions`]: walks
-    /// membership sessions, queries the cloud backend, and returns the subset that
-    /// should be re-spawned. Extracted so unit tests can drive the
-    /// branching logic (no prior row → skip, only self-authored unread →
-    /// skip, already-running runtime → skip, etc.) without booting a real
-    /// ACP backend.
-    async fn list_all_actor_session_ids(&self) -> Vec<String> {
-        let team_id = match self.config.team_id.as_deref() {
-            Some(team_id) if !team_id.is_empty() => team_id,
-            _ => return Vec::new(),
-        };
-        let mut session_ids = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let (page, next) = match self
-                .backend
-                .list_actor_session_ids(team_id, cursor.as_deref(), 50)
-                .await
-            {
-                Ok(page) => page,
-                Err(e) => {
-                    warn!(
-                        ?e,
-                        team_id,
-                        "list_all_actor_session_ids: Cloud session list failed"
-                    );
-                    break;
-                }
-            };
-            session_ids.extend(page);
-            cursor = next.filter(|c| !c.is_empty());
-            if cursor.is_none() {
-                break;
-            }
-        }
-        session_ids
-    }
-
-    pub(crate) async fn plan_auto_restart_offline_sessions(&self) -> Vec<OfflineRestartPlan> {
-        if self.teamclu.is_none() {
-            return Vec::new();
-        }
-        let session_ids = self.list_all_actor_session_ids().await;
-        if session_ids.is_empty() {
-            return Vec::new();
-        }
-        info!(
-            count = session_ids.len(),
-            "plan_auto_restart_offline_sessions: scanning Cloud regular sessions for offline messages"
-        );
-
-        let mut plan = Vec::new();
-        let my_actor = self.actor_id.clone();
-        for session_id in session_ids {
-            // The cursor comes from this actor's participant row (ADR-0005).
-            // `None` means "never read anything here", which is materially
-            // different from the old "no runtime row → skip the session": a
-            // session this daemon has joined but never answered in should still
-            // be planned for restart, from the beginning.
-            let prior_cursor = match self
-                .backend
-                .fetch_session_cursor(&session_id, &my_actor)
-                .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(
-                        ?e,
-                        session_id = %session_id,
-                        "plan_auto_restart_offline_sessions: fetch_session_cursor failed"
-                    );
-                    continue;
-                }
-            };
-
-            // If a live runtime is already serving this session (e.g. a
-            // network blip rather than a full daemon restart), skip — the
-            // live MQTT path will deliver the messages directly.
-            let already_running = !self
-                .agents
-                .lock()
-                .await
-                .runtime_ids_for_session(&session_id)
-                .is_empty();
-            if already_running {
-                continue;
-            }
-
-            // A chat-bound session (WeCom and the other gateways) belongs to
-            // its gateway, which answers in the chat on its own turn. Its
-            // cursor never moves — gateway turns do not go through
-            // `route_session_message` — so every restart used to find "unread"
-            // messages the gateway had long since answered. And a runtime
-            // started here cannot reply into the chat anyway: the answer would
-            // land in the session only, which nobody in the chat sees. The
-            // daemon's participant row in these sessions carries no workspace
-            // either, so the attempt failed on workspace identity to boot.
-            if self.session_has_gateway_binding(&session_id).await {
-                info!(
-                    session_id = %session_id,
-                    "plan_auto_restart_offline_sessions: skipping chat-bound session; its gateway answers it"
-                );
-                continue;
-            }
-
-            let cursor = prior_cursor.as_deref().filter(|s| !s.is_empty());
-            let messages = match self
-                .backend
-                .messages_after_cursor(&session_id, cursor)
-                .await
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(
-                        ?e,
-                        session_id = %session_id,
-                        "plan_auto_restart_offline_sessions: messages_after_cursor failed"
-                    );
-                    continue;
-                }
-            };
-
-            if !slice_has_actionable_inbound(&messages, &my_actor) {
-                continue;
-            }
-
-            let unread_count = messages
-                .iter()
-                .filter(|m| m.sender_actor_id != my_actor)
-                .count();
-
-            // One backend is active per actor at a time (ADR-0002), so the
-            // restart uses the daemon's own rather than replaying whatever a
-            // prior spawn happened to record.
-            let backend = resolve_requested_agent_type(amux::AgentType::Unknown);
-
-            // Workspace comes from the participant row that owns it (ADR-0005).
-            // Empty means "resolve at spawn from the agent's default", the same
-            // fallback a session with no prior runtime always took.
-            let local_workspace_id = self
-                .backend
-                .fetch_session_workspace(&session_id, &my_actor)
-                .await
-                .unwrap_or_default()
-                .unwrap_or_default();
-
-            let fork_from = match self
-                .backend
-                .fetch_session_with_participants(&session_id)
-                .await
-            {
-                Ok(sp) => sp.session.thread_fork_from(),
-                Err(e) => {
-                    warn!(
-                        ?e,
-                        session_id = %session_id,
-                        "plan_auto_restart_offline_sessions: fetch_session_with_participants failed"
-                    );
-                    None
-                }
-            };
-
-            plan.push(OfflineRestartPlan {
-                session_id,
-                backend,
-                local_workspace_id,
-                unread_count,
-                fork_from,
-            });
-        }
-        plan
     }
 }
 
@@ -4179,6 +3974,7 @@ pub(crate) mod tests {
                 chat_decision_rx: Some(chat_decision_rx),
                 cold_attach_tx,
                 cold_attach_rx: Some(cold_attach_rx),
+                offline_restart_watermark: Arc::new(std::sync::Mutex::new(None)),
             },
             _tmp: tmp,
             _mqtt_eventloop: mqtt.eventloop,
@@ -4279,8 +4075,12 @@ pub(crate) mod tests {
         // The default test fixture has no Cloud session list mock, so
         // `list_actor_session_ids` fails and offline restart scans zero
         // sessions without spawning runtimes.
-        let mut fixture = test_server();
-        fixture.server.auto_restart_offline_sessions().await;
+        let fixture = test_server();
+        assert!(fixture
+            .server
+            .plan_auto_restart_offline_sessions()
+            .await
+            .is_empty());
         // No runtimes added beyond the fixture's seeded "session-1".
         let agents = fixture.server.agents.lock().await;
         assert!(
@@ -5050,7 +4850,7 @@ pub(crate) mod tests {
                     "sender_actor_id": "external-wecom-user",
                     "kind": "text",
                     "content": "查一下今天的数据",
-                    "metadata": {},
+                    "metadata": { "mention_actor_ids": ["agent-actor"] },
                     "created_at": "2025-05-22T01:00:00Z"
                 }
             ]),
@@ -5165,7 +4965,7 @@ pub(crate) mod tests {
                     "sender_actor_id": "human-actor",
                     "kind": "text",
                     "content": "hi",
-                    "metadata": {},
+                    "metadata": { "mention_actor_ids": ["agent-actor"] },
                     "created_at": "2025-05-22T01:00:00Z"
                 }
             ]),
@@ -5420,6 +5220,129 @@ pub(crate) mod tests {
             plan.is_empty(),
             "already-answered @mention should not schedule auto_restart"
         );
+    }
+
+    #[tokio::test]
+    pub(crate) async fn plan_skips_session_whose_unread_is_all_unmentioned() {
+        // The shape seven sessions had on 2026-09-18, planned again on every
+        // restart: the @ was answered, then more was said without one. Those
+        // rows are silent context, which never moves the cursor, so a runtime
+        // started for them changed nothing and the next restart found them
+        // again.
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        mock_agent_runtime_row(&srv, "sess-silent", None, None, "pi").await;
+        mock_messages_response(
+            &srv,
+            "sess-silent",
+            serde_json::json!([
+                make_message_row(
+                    "msg-ask",
+                    "sess-silent",
+                    "human-1",
+                    &["agent-actor"],
+                    "12345",
+                    "2025-05-22T01:00:01Z",
+                ),
+                make_message_row(
+                    "msg-reply",
+                    "sess-silent",
+                    "agent-actor",
+                    &[],
+                    "收到",
+                    "2025-05-22T01:00:02Z",
+                ),
+                make_message_row(
+                    "msg-aside",
+                    "sess-silent",
+                    "human-1",
+                    &[],
+                    "测试一下断句",
+                    "2025-05-22T01:00:03Z",
+                ),
+            ]),
+        )
+        .await;
+
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        add_membership(&srv, &mut fixture, "sess-silent").await;
+
+        assert!(fixture
+            .server
+            .plan_auto_restart_offline_sessions()
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    pub(crate) async fn offline_restart_scan_hands_sessions_back_through_the_channel() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        mock_agent_runtime_row(&srv, "sess-offline", None, None, "pi").await;
+        mock_messages_response(
+            &srv,
+            "sess-offline",
+            serde_json::json!([make_message_row(
+                "msg-ask",
+                "sess-offline",
+                "human-1",
+                &["agent-actor"],
+                "are you there?",
+                "2025-05-22T01:00:01Z",
+            )]),
+        )
+        .await;
+        mock_session_detail(&srv, "sess-offline", serde_json::json!({})).await;
+
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        add_membership(&srv, &mut fixture, "sess-offline").await;
+
+        let (tx, mut rx) = mpsc::channel(16);
+        fixture.server.spawn_offline_restart_planning(tx);
+
+        let entry = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("scan finished")
+            .expect("one session needs a runtime");
+        assert_eq!(entry.session_id, "sess-offline");
+        assert_eq!(entry.unread_count, 1);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("scan task ends")
+                .is_none(),
+            "only the one session was planned"
+        );
+    }
+
+    #[tokio::test]
+    pub(crate) async fn offline_restart_skips_a_session_started_while_the_scan_ran() {
+        // The fixture already runs a runtime for "session-1" — as if the
+        // desktop had started it between the scan and the hand-back.
+        let mut fixture = test_server();
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        fixture
+            .server
+            .apply_offline_restart(OfflineRestartPlan {
+                session_id: "session-1".to_string(),
+                backend: amux::AgentType::Unknown,
+                local_workspace_id: String::new(),
+                unread_count: 1,
+                fork_from: None,
+            })
+            .await;
+
+        let logs = capture.text();
+        assert!(logs.contains("runtime already running; skipping"), "{logs}");
+        assert!(!logs.contains("spawning runtime"), "{logs}");
     }
 
     #[tokio::test]

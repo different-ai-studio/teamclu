@@ -16,6 +16,8 @@ public struct SessionsTab: View {
     let refreshSessionsFromBackend: () async -> Void
     let connectedAgentsStore: ConnectedAgentsStore?
     let actorStore: ActorStore?
+    /// Broker-backed agent presence for the dots drawn further down.
+    let agentPresenceStore: AgentPresenceStore?
     let shortcutsStore: ShortcutsStore?
     let messagesRepository: (any MessagesRepository)?
     let workspacesRepository: (any WorkspaceRepository)?
@@ -30,6 +32,9 @@ public struct SessionsTab: View {
     var onSignOut: (() -> Void)?
     let preferencesAPI: (any PushPreferencesAPI)?
     let notificationPrefsStore: NotificationPrefsStore?
+    /// Drives the session rows' leading dots. Owned by RootTabView so it
+    /// outlives this tab's view identity.
+    let liveActivityStore: SessionLiveActivityStore?
 
     @Environment(\.modelContext) private var modelContext
 
@@ -55,6 +60,7 @@ public struct SessionsTab: View {
                 navigationPath: Binding<[String]>,
                 connectedAgentsStore: ConnectedAgentsStore? = nil,
                 actorStore: ActorStore? = nil,
+                agentPresenceStore: AgentPresenceStore? = nil,
                 shortcutsStore: ShortcutsStore? = nil,
                 messagesRepository: (any MessagesRepository)? = nil,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
@@ -65,7 +71,8 @@ public struct SessionsTab: View {
                 onReconnect: (() -> Void)? = nil,
                 onSignOut: (() -> Void)? = nil,
                 preferencesAPI: (any PushPreferencesAPI)? = nil,
-                notificationPrefsStore: NotificationPrefsStore? = nil) {
+                notificationPrefsStore: NotificationPrefsStore? = nil,
+                liveActivityStore: SessionLiveActivityStore? = nil) {
         self.mqtt = mqtt
         self.hub = hub
         self.pairing = pairing
@@ -77,6 +84,7 @@ public struct SessionsTab: View {
         self._navigationPath = navigationPath
         self.connectedAgentsStore = connectedAgentsStore
         self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
         self.shortcutsStore = shortcutsStore
         self.messagesRepository = messagesRepository
         self.workspacesRepository = workspacesRepository
@@ -88,6 +96,7 @@ public struct SessionsTab: View {
         self.onSignOut = onSignOut
         self.preferencesAPI = preferencesAPI
         self.notificationPrefsStore = notificationPrefsStore
+        self.liveActivityStore = liveActivityStore
     }
 
     public var body: some View {
@@ -107,7 +116,8 @@ public struct SessionsTab: View {
                     noAccessibleAgent: connectedAgentsStore?.agents.isEmpty == true,
                     onInviteFirstAgent: actorStore == nil ? nil : { showInvite = true },
                     notificationPrefsStore: notificationPrefsStore,
-                    sessionsListRepository: sessionsListRepository
+                    sessionsListRepository: sessionsListRepository,
+                    liveActivityStore: liveActivityStore
                 )
                 .navigationTitle("Sessions")
                 .navigationBarTitleDisplayMode(.large)
@@ -151,11 +161,14 @@ public struct SessionsTab: View {
                         workspacesRepository: workspacesRepository,
                         sessionsRepository: sessionsRepository,
                         preferencesAPI: preferencesAPI,
-                        notificationPrefsStore: notificationPrefsStore
+                        notificationPrefsStore: notificationPrefsStore,
+                        actorStore: actorStore,
+                        agentPresenceStore: agentPresenceStore
                     )
                 }
                 .sheet(isPresented: $showSettings) {
                     SettingsView(connectedAgentsStore: connectedAgentsStore,
+                                 agentPresenceStore: agentPresenceStore,
                                  activeTeam: activeTeam,
                                  onSignOut: onSignOut,
                                  notificationPrefsStore: notificationPrefsStore,
@@ -170,6 +183,8 @@ public struct SessionsTab: View {
                                    currentActorID: currentActorID,
                                    isAgentAvailable: pairing.isPaired,
                                    connectedAgentsStore: connectedAgentsStore,
+                                   actorStore: actorStore,
+                                   agentPresenceStore: agentPresenceStore,
                                    workspacesRepository: workspacesRepository,
                                    sessionsRepository: sessionsRepository,
                                    viewModel: viewModel) { agentId in
@@ -194,7 +209,8 @@ public struct SessionsTab: View {
                         teamID: activeTeam?.id ?? "",
                         connectedAgentsStore: connectedAgentsStore,
                         modelContext: modelContext,
-                        teamcluService: teamcluService
+                        teamcluService: teamcluService,
+                        agentPresenceStore: agentPresenceStore
                     )
                 }
                 .onChange(of: teamcluService?.sessions.count) {
@@ -258,6 +274,9 @@ private struct SessionDestinationView: View {
     let sessionsRepository: (any SessionRepository)?
     let preferencesAPI: (any PushPreferencesAPI)?
     let notificationPrefsStore: NotificationPrefsStore?
+    /// Reaches AddMemberSheet's picker, which refreshes presence on open.
+    let actorStore: ActorStore?
+    let agentPresenceStore: AgentPresenceStore?
 
     @Environment(\.modelContext) private var modelContext
 
@@ -285,7 +304,9 @@ private struct SessionDestinationView: View {
                     workspacesRepository: workspacesRepository,
                     sessionsRepository: sessionsRepository,
                     pushPrefs: preferencesAPI,
-                    notificationPrefsStore: notificationPrefsStore
+                    notificationPrefsStore: notificationPrefsStore,
+                    actorStore: actorStore,
+                    agentPresenceStore: agentPresenceStore
                 )
                 .id("session:\(session.sessionId)")
             } else {

@@ -346,16 +346,21 @@ public actor CloudAPIMessagesRepository: MessagesRepository {
                 replyToMessageID: row.replyToMessageId,
                 mentionActorIDs: row.metadata?.mentionActorIds ?? [],
                 sequence: 0,
-                trace: row.metadata?.trace
+                trace: row.metadata?.trace,
+                attachments: row.metadata?.attachments ?? []
             )
         }
         return MessagePage(messages: messages, nextCursor: page.nextCursor)
     }
 
     public func insert(_ input: MessageInsertInput) async throws {
-        let metadata: [String: [String]]? = input.mentionActorIDs.isEmpty
-            ? nil
-            : ["mention_actor_ids": input.mentionActorIDs]
+        let candidate = CloudInsertMessageMetadata(
+            mentionActorIds: input.mentionActorIDs.isEmpty ? nil : input.mentionActorIDs,
+            attachments: input.attachments.isEmpty ? nil : input.attachments
+        )
+        // Sending `{}` would overwrite nothing but still costs a write of an
+        // empty object; nil keeps the column at its default.
+        let metadata: CloudInsertMessageMetadata? = candidate.isEmpty ? nil : candidate
         let body = CloudInsertMessageRequest(
             id: input.id,
             teamId: input.teamID,
@@ -704,10 +709,19 @@ public actor CloudAPIIdeaRepository: IdeaRepository {
             title: title,
             description: input.description,
             workspaceId: Self.normalized(input.workspaceID),
-            authorActorId: memberActorID
+            authorActorId: memberActorID,
+            attachmentUrls: input.attachmentURLs.map(\.absoluteString)
         )
         let row: CloudIdea = try await client.post("/v1/ideas", body: body)
         return row.record
+    }
+
+    public func setIdeaLike(ideaID: String, liked: Bool) async throws -> IdeaLikeState {
+        let row: CloudIdeaLikeState = try await client.put(
+            "/v1/ideas/\(Self.enc(ideaID))/like",
+            body: CloudSetIdeaLikeRequest(liked: liked)
+        )
+        return row.state
     }
 
     public func updateIdea(ideaID: String, input: IdeaUpdateInput) async throws -> IdeaRecord {
@@ -980,15 +994,22 @@ private struct CloudSession: Decodable, Sendable {
 private struct CloudMessageMetadata: Decodable, Sendable {
     let mentionActorIds: [String]?
     let trace: TurnTracePointer?
+    /// `metadata.attachments` — where every producer actually puts a
+    /// message's files (see `MessageAttachment`).
+    let attachments: [MessageAttachment]?
 
     private enum CodingKeys: String, CodingKey {
         case mentionActorIds = "mention_actor_ids"
         case trace
+        case attachments
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         mentionActorIds = try container.decodeIfPresent([String].self, forKey: .mentionActorIds)
+        // Same tolerance as `trace`: a malformed list costs the files, not
+        // the whole message page.
+        attachments = try? container.decodeIfPresent([MessageAttachment].self, forKey: .attachments)
         // A malformed pointer must not fail the whole message page; the turn
         // detail just falls back to asking the daemon.
         trace = try? container.decodeIfPresent(TurnTracePointer.self, forKey: .trace)
@@ -1055,6 +1076,15 @@ private struct CloudSessionParticipant: Decodable, Sendable {
     let model: String?
 }
 
+/// `Actor.roles[]` — the member's org role assignments (`roles_users`). The
+/// contract marks this the source of truth for role UI and `teamRole` legacy,
+/// so both ride along and `ActorRoleResolution` prefers this one.
+private struct CloudMemberRoleRef: Decodable, Sendable {
+    let id: String
+    let code: String
+    let name: String
+}
+
 private struct CloudActor: Decodable, Sendable {
     let id: String
     let teamId: String?
@@ -1063,6 +1093,7 @@ private struct CloudActor: Decodable, Sendable {
     let avatarUrl: String?
     let userId: String?
     let invitedByActorId: String?
+    let roles: [CloudMemberRoleRef]?
     let teamRole: String?
     let memberStatus: String?
     let agentStatus: String?
@@ -1089,6 +1120,7 @@ private struct CloudActor: Decodable, Sendable {
             createdAt: parseCloudDate(createdAt) ?? .distantPast,
             updatedAt: parseCloudDate(updatedAt) ?? .distantPast,
             memberStatus: memberStatus,
+            roles: (roles ?? []).map { ActorRoleRef(id: $0.id, code: $0.code, name: $0.name) },
             teamRole: teamRole,
             agentTypes: agentTypes ?? [],
             agentKind: agentKind,
@@ -1226,6 +1258,11 @@ private struct CloudIdea: Decodable, Sendable {
     let sortOrder: Int?
     let createdAt: String?
     let updatedAt: String?
+    let attachmentUrls: [String]?
+    // Only the list aggregates these; a single-idea read omits them.
+    let commentCount: Int?
+    let likeCount: Int?
+    let likedByMe: Bool?
 
     var record: IdeaRecord {
         IdeaRecord(
@@ -1239,7 +1276,11 @@ private struct CloudIdea: Decodable, Sendable {
             archived: archived,
             sortOrder: sortOrder ?? 0,
             createdAt: parseCloudDate(createdAt) ?? .distantPast,
-            updatedAt: parseCloudDate(updatedAt) ?? .distantPast
+            updatedAt: parseCloudDate(updatedAt) ?? .distantPast,
+            attachmentURLs: (attachmentUrls ?? []).compactMap(URL.init(string:)),
+            commentCount: commentCount ?? 0,
+            likeCount: likeCount ?? 0,
+            likedByMe: likedByMe ?? false
         )
     }
 }
@@ -1279,6 +1320,20 @@ private struct CloudIdeaCreateRequest: Encodable, Sendable {
     let description: String
     let workspaceId: String?
     let authorActorId: String
+    let attachmentUrls: [String]
+}
+
+private struct CloudSetIdeaLikeRequest: Encodable, Sendable {
+    let liked: Bool
+}
+
+private struct CloudIdeaLikeState: Decodable, Sendable {
+    let likeCount: Int
+    let likedByMe: Bool
+
+    var state: IdeaLikeState {
+        IdeaLikeState(likeCount: likeCount, likedByMe: likedByMe)
+    }
 }
 
 private struct CloudIdeaUpdateRequest: Encodable, Sendable {
@@ -1380,6 +1435,21 @@ private struct CloudInsertMessageRequest<Metadata: Encodable & Sendable>: Encoda
     let replyToMessageId: String?
     let model: String?
     let createdAt: String?
+}
+
+/// `messages.metadata` as this client writes it. Mentions have always lived
+/// here; attachments join them rather than taking the unused
+/// `messages.attachments` column — see `MessageAttachment` for why.
+private struct CloudInsertMessageMetadata: Encodable, Sendable {
+    let mentionActorIds: [String]?
+    let attachments: [MessageAttachment]?
+
+    private enum CodingKeys: String, CodingKey {
+        case mentionActorIds = "mention_actor_ids"
+        case attachments
+    }
+
+    var isEmpty: Bool { (mentionActorIds?.isEmpty ?? true) && (attachments?.isEmpty ?? true) }
 }
 
 // The notifications endpoints are the one Cloud API surface that speaks raw

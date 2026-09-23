@@ -218,14 +218,20 @@ services:
       GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: ${MAILER_URLPATHS_EMAIL_CHANGE}
       # OTP-only auth emails — no magic link. Templates are served by
       # templates-server on the internal docker network (see email-templates/).
+      #
+      # GoTrue's own default for MAILER_OTP_EXP is 86400 (one day, see
+      # internal/conf/configuration.go). An emailed code that stays valid for a
+      # day is a long window for something that lands in an inbox, so pin it to
+      # ten minutes — the number the templates print.
+      GOTRUE_MAILER_OTP_EXP: ${MAILER_OTP_EXP:-600}
       GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: http://templates-server/magic-link.html
-      GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: ${MAILER_SUBJECTS_MAGIC_LINK:-您的验证码：{{ .Token }}}
+      GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: ${MAILER_SUBJECTS_MAGIC_LINK:-TeamClu 登录验证码：{{ .Token }}}
       GOTRUE_MAILER_TEMPLATES_EMAIL_CHANGE: http://templates-server/email-change.html
-      GOTRUE_MAILER_SUBJECTS_EMAIL_CHANGE: ${MAILER_SUBJECTS_EMAIL_CHANGE:-您的验证码：{{ .Token }}}
+      GOTRUE_MAILER_SUBJECTS_EMAIL_CHANGE: ${MAILER_SUBJECTS_EMAIL_CHANGE:-TeamClu 邮箱变更验证码：{{ .Token }}}
       GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://templates-server/confirmation.html
-      GOTRUE_MAILER_SUBJECTS_CONFIRMATION: ${MAILER_SUBJECTS_CONFIRMATION:-您的验证码：{{ .Token }}}
+      GOTRUE_MAILER_SUBJECTS_CONFIRMATION: ${MAILER_SUBJECTS_CONFIRMATION:-TeamClu 注册验证码：{{ .Token }}}
       GOTRUE_MAILER_TEMPLATES_RECOVERY: http://templates-server/recovery.html
-      GOTRUE_MAILER_SUBJECTS_RECOVERY: ${MAILER_SUBJECTS_RECOVERY:-您的验证码：{{ .Token }}}
+      GOTRUE_MAILER_SUBJECTS_RECOVERY: ${MAILER_SUBJECTS_RECOVERY:-TeamClu 账号找回验证码：{{ .Token }}}
 
       GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP}
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}

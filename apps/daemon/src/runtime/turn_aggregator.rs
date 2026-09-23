@@ -192,7 +192,7 @@ fn proto_tool_content_json(content: &[amux::AcpToolCallContent]) -> Vec<serde_js
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct EmittedMessage {
     pub kind: MessageKind,
     pub content: String,
@@ -208,6 +208,10 @@ pub struct EmittedMessage {
     /// including interrupted) and may be written to the cloud backend.
     /// Mid-turn ToolUse flushes keep this false (live + local TOML only).
     pub cloud_persist: bool,
+    /// `session_attach_file` results collected during this turn (turn-final only).
+    pub attachments: Vec<teamclu_gateway::AttachmentRecord>,
+    /// Public download URLs parallel to `attachments` (live proto / MQTT).
+    pub attachment_urls: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -237,6 +241,9 @@ pub struct TurnAggregator {
     /// Synthetic Active→Idle from idle-runtime graceful detach.
     turn_detach_idle_timeout: bool,
     turn_detach_approval_timeout: bool,
+    tool_names: std::collections::HashMap<String, String>,
+    turn_attachments: Vec<teamclu_gateway::AttachmentRecord>,
+    turn_attachment_urls: Vec<String>,
 }
 
 impl TurnAggregator {
@@ -276,12 +283,16 @@ impl TurnAggregator {
                 self.flush_thinking_into(&mut out);
                 self.flush_reply_into(&mut out, false);
                 let metadata = tool_use_metadata(tu);
+                self.tool_names
+                    .insert(tu.tool_id.clone(), tu.tool_name.clone());
                 out.push(EmittedMessage {
                     kind: MessageKind::AgentToolCall,
                     content: tu.tool_name.clone(),
                     metadata_json: metadata,
                     turn_id: self.current_turn_id.clone().unwrap_or_default(),
                     cloud_persist: false,
+                    attachments: Vec::new(),
+                    attachment_urls: Vec::new(),
                 });
             }
             Some(amux::acp_event::Event::ToolResult(tr)) => {
@@ -292,6 +303,19 @@ impl TurnAggregator {
                 {
                     self.turn_saw_abort_tool_result = true;
                 }
+                let tool_name = self
+                    .tool_names
+                    .get(&tr.tool_id)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                if let Some(parsed) =
+                    crate::runtime::session_attach::parse_session_attach_tool_result(tool_name, tr)
+                {
+                    if !parsed.public_url.is_empty() {
+                        self.turn_attachment_urls.push(parsed.public_url);
+                    }
+                    self.turn_attachments.push(parsed.record);
+                }
                 let metadata = tool_result_metadata(tr);
                 out.push(EmittedMessage {
                     kind: MessageKind::AgentToolResult,
@@ -299,6 +323,8 @@ impl TurnAggregator {
                     metadata_json: metadata,
                     turn_id: self.current_turn_id.clone().unwrap_or_default(),
                     cloud_persist: false,
+                    attachments: Vec::new(),
+                    attachment_urls: Vec::new(),
                 });
             }
             Some(amux::acp_event::Event::Error(err)) => {
@@ -338,6 +364,9 @@ impl TurnAggregator {
                     self.turn_was_interrupted = false;
                     self.turn_failed = false;
                     self.turn_saw_abort_tool_result = false;
+                    self.tool_names.clear();
+                    self.turn_attachments.clear();
+                    self.turn_attachment_urls.clear();
                     self.ensure_turn_started();
                 }
                 // Active -> Idle is the canonical "turn ended" signal.
@@ -387,13 +416,11 @@ impl TurnAggregator {
                         } else {
                             prose
                         };
-                        out.push(EmittedMessage {
-                            kind: MessageKind::AgentReply,
+                        out.push(self.emit_agent_reply(
                             content,
-                            metadata_json: metadata.to_string(),
-                            turn_id: self.current_turn_id.clone().unwrap_or_default(),
-                            cloud_persist: true,
-                        });
+                            metadata.to_string(),
+                            true,
+                        ));
                         self.turn_had_reply = true;
                     } else {
                         // Non-empty Idle prose → one cloud-final AgentReply.
@@ -403,13 +430,11 @@ impl TurnAggregator {
                         let had_final_prose = !self.reply_buf.trim().is_empty();
                         self.flush_reply_into(&mut out, true);
                         if !had_final_prose && self.turn_had_activity {
-                            out.push(EmittedMessage {
-                                kind: MessageKind::AgentReply,
-                                content: NO_FINAL_REPLY_AGENT_CONTENT.to_string(),
-                                metadata_json: NO_FINAL_REPLY_METADATA_JSON.to_string(),
-                                turn_id: self.current_turn_id.clone().unwrap_or_default(),
-                                cloud_persist: true,
-                            });
+                            out.push(self.emit_agent_reply(
+                                NO_FINAL_REPLY_AGENT_CONTENT.to_string(),
+                                NO_FINAL_REPLY_METADATA_JSON.to_string(),
+                                true,
+                            ));
                             self.turn_had_reply = true;
                         }
                     }
@@ -420,6 +445,9 @@ impl TurnAggregator {
                     self.turn_saw_abort_tool_result = false;
                     self.turn_detach_idle_timeout = false;
                     self.turn_detach_approval_timeout = false;
+                    self.tool_names.clear();
+                    self.turn_attachments.clear();
+                    self.turn_attachment_urls.clear();
                     self.current_turn_id = None;
                 }
             }
@@ -445,20 +473,46 @@ impl TurnAggregator {
                 metadata_json: String::new(),
                 turn_id: self.current_turn_id.clone().unwrap_or_default(),
                 cloud_persist: false,
+                attachments: Vec::new(),
+                attachment_urls: Vec::new(),
             });
         }
     }
 
     fn flush_reply_into(&mut self, out: &mut Vec<EmittedMessage>, cloud_persist: bool) {
         if !self.reply_buf.is_empty() {
-            out.push(EmittedMessage {
-                kind: MessageKind::AgentReply,
-                content: std::mem::take(&mut self.reply_buf),
-                metadata_json: String::new(),
-                turn_id: self.current_turn_id.clone().unwrap_or_default(),
-                cloud_persist,
-            });
+            let content = std::mem::take(&mut self.reply_buf);
+            if cloud_persist {
+                out.push(self.emit_agent_reply(content, String::new(), true));
+            } else {
+                out.push(EmittedMessage {
+                    kind: MessageKind::AgentReply,
+                    content,
+                    metadata_json: String::new(),
+                    turn_id: self.current_turn_id.clone().unwrap_or_default(),
+                    cloud_persist: false,
+                    attachments: Vec::new(),
+                    attachment_urls: Vec::new(),
+                });
+            }
             self.turn_had_reply = true;
+        }
+    }
+
+    fn emit_agent_reply(
+        &mut self,
+        content: String,
+        metadata_json: String,
+        cloud_persist: bool,
+    ) -> EmittedMessage {
+        EmittedMessage {
+            kind: MessageKind::AgentReply,
+            content,
+            metadata_json,
+            turn_id: self.current_turn_id.clone().unwrap_or_default(),
+            cloud_persist,
+            attachments: std::mem::take(&mut self.turn_attachments),
+            attachment_urls: std::mem::take(&mut self.turn_attachment_urls),
         }
     }
 
@@ -468,7 +522,7 @@ impl TurnAggregator {
     pub fn cloud_persistent(msg: &EmittedMessage) -> bool {
         matches!(msg.kind, MessageKind::AgentReply)
             && msg.cloud_persist
-            && !msg.content.trim().is_empty()
+            && (!msg.content.trim().is_empty() || !msg.attachments.is_empty())
     }
 
     /// English status notices (interrupt / no_final_reply) meant for agent
@@ -1093,6 +1147,29 @@ mod tests {
         assert!(idle[0]
             .metadata_json
             .contains("\"turn_status\":\"no_final_reply\""));
+        assert!(TurnAggregator::cloud_persistent(&idle[0]));
+    }
+
+    #[test]
+    fn session_attach_file_result_rides_on_turn_final_agent_reply() {
+        let json = r#"{"ok":true,"fileName":"r.pdf","mimeType":"application/pdf","size":9,"storagePath":"t/s/r.pdf","url":"https://x/r.pdf"}"#;
+        let mut agg = TurnAggregator::new();
+        agg.ingest(&status_change(
+            amux::AgentStatus::Idle,
+            amux::AgentStatus::Active,
+        ));
+        agg.ingest(&tool_use("att-1", "session_attach_file", "upload"));
+        agg.ingest(&tool_result("att-1", true, json));
+        agg.ingest(&output_chunk("done"));
+        let idle = agg.ingest(&status_change(
+            amux::AgentStatus::Active,
+            amux::AgentStatus::Idle,
+        ));
+        assert_eq!(idle.len(), 1);
+        assert_eq!(idle[0].content, "done");
+        assert_eq!(idle[0].attachments.len(), 1);
+        assert_eq!(idle[0].attachments[0].filename, "r.pdf");
+        assert_eq!(idle[0].attachment_urls, vec!["https://x/r.pdf"]);
         assert!(TurnAggregator::cloud_persistent(&idle[0]));
     }
 }

@@ -134,6 +134,33 @@ describe("adaptTeamcluMessages", () => {
     expect(msg.timestamp).toEqual(new Date(1 * 1000));
   });
 
+  it("collapses equivalent assistant Sdk rows after turn group plus no-turnId replay", () => {
+    const body = "已上传小文件 session-upload.txt 到当前 session。";
+    const msgs = [
+      tmsg({
+        kind: MessageKind.AGENT_TOOL_CALL,
+        turnId: "turn-attach",
+        t: 1,
+        metadataJson: JSON.stringify({ tool_id: "tool-1", tool_name: "session_attach_file" }),
+      }),
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content: body,
+        turnId: "turn-attach",
+        t: 2,
+      }),
+      tmsg({
+        kind: MessageKind.AGENT_REPLY,
+        content: body,
+        turnId: "",
+        t: 3,
+      }),
+    ];
+    const result = adaptTeamcluMessages(msgs, { deferProcess: true })!;
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toBe(body);
+  });
+
   it("dedupes repeated same-turn AGENT_REPLY rows from live cache plus Supabase replay", () => {
     const msgs = [
       tmsg({

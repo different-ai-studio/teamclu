@@ -28,9 +28,14 @@ public struct ConnectedAgent: Identifiable, Hashable, Sendable {
         self.lastActiveAt = lastActiveAt
     }
 
-    public var isOnline: Bool {
-        guard let lastActiveAt else { return false }
-        return Date().timeIntervalSince(lastActiveAt) < 120
+    /// Heartbeat-only presence. Prefer `isOnline(devicePresence:)` wherever an
+    /// `AgentPresenceStore` is in reach — the broker knows sooner.
+    public var isOnline: Bool { isOnline(devicePresence: .unknown) }
+
+    public func isOnline(devicePresence: AgentDevicePresence) -> Bool {
+        ActorPresence.isOnline(actorType: "agent",
+                               lastActiveAt: lastActiveAt,
+                               devicePresence: devicePresence)
     }
 }
 
@@ -51,7 +56,6 @@ public struct AgentAuthorizedHuman: Identifiable, Hashable, Sendable {
     }
 
     public var isOnline: Bool {
-        guard let lastActiveAt else { return false }
-        return Date().timeIntervalSince(lastActiveAt) < 120
+        ActorPresence.isOnline(actorType: "member", lastActiveAt: lastActiveAt)
     }
 }

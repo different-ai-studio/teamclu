@@ -219,6 +219,74 @@ pub async fn session_prompt(
     Json(response).into_response()
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SessionAttachRequest {
+    #[serde(flatten)]
+    pub resolve: ResolveRuntimeContextRequest,
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+pub async fn session_attach(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<SessionAttachRequest>,
+) -> Response {
+    if !runtime_context_peer_allowed(peer) {
+        return problem(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Runtime context resolve is loopback-only",
+        );
+    }
+    let Some(context_service) = state.runtime_context.clone() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime_context_unavailable",
+            "Runtime context service is not configured",
+        );
+    };
+    let Some(attach_service) = state.session_attach.clone() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_attach_unavailable",
+            "Session attach service is not configured",
+        );
+    };
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .trim();
+    let resolved = match context_service.resolve_with_token(bearer, &body.resolve) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            return problem(
+                StatusCode::from_u16(err.http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                err.code(),
+                session_context_error_message(&err),
+            );
+        }
+    };
+    let caption = body.message.as_deref();
+    match attach_service
+        .attach_file(&resolved, &body.file_path, caption)
+        .await
+    {
+        Ok(out) => Json(out).into_response(),
+        Err(err) => problem(
+            StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            err.code(),
+            &err.message(),
+        ),
+    }
+}
+
 fn problem(status: StatusCode, code: &str, detail: &str) -> Response {
     (
         status,

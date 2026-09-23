@@ -29,6 +29,25 @@ interface TeamMember {
 }
 
 /**
+ * The folders above `prefix` that constrain it.
+ *
+ * Never `prefix` itself, and never a sibling that merely shares a name —
+ * `knowledge/hr-public/` is not an ancestor of `knowledge/hr/`, which it would
+ * be if the trailing slash were dropped.
+ */
+function ancestorRulesOf(rules: KnowledgeAclRule[], prefix: string): KnowledgeAclRule[] {
+  return rules.filter((r) => r.pathPrefix !== prefix && prefix.startsWith(r.pathPrefix))
+}
+
+/** Who the parent chain allows here — everyone when no ancestor restricts. */
+function inheritedActors(ancestors: KnowledgeAclRule[], members: TeamMember[]): Set<string> {
+  return ancestors.reduce<Set<string>>(
+    (allowed, rule) => new Set(rule.actorIds.filter((id) => allowed.has(id))),
+    new Set(members.map((m) => m.id)),
+  )
+}
+
+/**
  * Who may see one knowledge directory.
  *
  * Opened from a folder's context menu, so the directory is already decided.
@@ -107,48 +126,48 @@ export function KnowledgeAclDialog({
         getBackend().knowledgeAcl.listKnowledgeAcl(teamId),
         getBackend().actors.listTeamMembersForAccess(teamId),
       ])
+      const memberList = memberRows.map((m: { id: string; displayName: string }) => ({
+        id: m.id,
+        displayName: m.displayName,
+      }))
+      // The form is settled here, in the same batch as the data it derives
+      // from — not in an effect keyed on that data.
+      //
+      // An effect runs after the commit, so it leaves a window in which the
+      // dialog is already on screen and clickable but not yet settled. A click
+      // landing in that window was thrown away when the effect ran: "Restrict
+      // to specific people" turned itself back off, which is what made this
+      // dialog's tests fail on a loaded CI machine and never on a developer's
+      // Mac. The same window also wiped the impact panel out from under a
+      // reload once (see `checkImpact`).
+      const own = items.find((r: KnowledgeAclRule) => r.pathPrefix === prefix) ?? null
+      const allowed = inheritedActors(ancestorRulesOf(items, prefix), memberList)
       setRules(items)
-      setMembers(
-        memberRows.map((m: { id: string; displayName: string }) => ({
-          id: m.id,
-          displayName: m.displayName,
-        })),
-      )
+      setMembers(memberList)
+      setRestricting(own !== null)
+      setSelected(own ? own.actorIds.filter((id) => allowed.has(id)) : [])
+      setImpact(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setRules([])
     }
-  }, [teamId, open])
+  }, [teamId, open, prefix])
 
   React.useEffect(() => {
     void load()
   }, [load])
 
-  const ancestorRules = React.useMemo(
-    () => (rules ?? []).filter((r) => r.pathPrefix !== prefix && prefix.startsWith(r.pathPrefix)),
-    [rules, prefix],
-  )
+  const ancestorRules = React.useMemo(() => ancestorRulesOf(rules ?? [], prefix), [rules, prefix])
 
   const ownRule = React.useMemo(
     () => (rules ?? []).find((r) => r.pathPrefix === prefix) ?? null,
     [rules, prefix],
   )
 
-  /** Who the parent chain allows here — everyone when no ancestor restricts. */
-  const inherited = React.useMemo(() => {
-    if (ancestorRules.length === 0) return new Set(members.map((m) => m.id))
-    return ancestorRules.reduce<Set<string>>(
-      (acc, rule) => new Set(rule.actorIds.filter((id) => acc.has(id))),
-      new Set(members.map((m) => m.id)),
-    )
-  }, [ancestorRules, members])
-
-  React.useEffect(() => {
-    if (rules === null) return
-    setRestricting(ownRule !== null)
-    setSelected(ownRule ? ownRule.actorIds.filter((id) => inherited.has(id)) : [])
-    setImpact(null)
-  }, [rules, ownRule, inherited])
+  const inherited = React.useMemo(
+    () => inheritedActors(ancestorRules, members),
+    [ancestorRules, members],
+  )
 
   const byId = React.useMemo(() => new Map(members.map((m) => [m.id, m])), [members])
   const selectedMembers = selected.map((id) => byId.get(id)).filter(Boolean) as TeamMember[]
@@ -184,11 +203,10 @@ export function KnowledgeAclDialog({
 
   /**
    * Dry run. Deliberately NOT routed through `run`, which reloads the rules
-   * afterwards: the reload replaces `rules`, which recomputes `inherited`,
-   * which fires the effect that resets `impact` to null. The panel would appear
-   * and vanish in the same tick, the button would flip back to "check impact",
-   * and there would be no way to ever reach save — which is exactly what
-   * happened.
+   * afterwards — and a reload settles the whole form again, `impact` included.
+   * The panel would appear and vanish in the same tick, the button would flip
+   * back to "check impact", and there would be no way to ever reach save —
+   * which is exactly what happened.
    *
    * Nothing here writes, so there is nothing to reload for.
    */

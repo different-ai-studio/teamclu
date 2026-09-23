@@ -159,16 +159,32 @@ Nothing in the product writes that status today — removal deletes the actor ro
 the messages SELECT policy that `20260810040000`/`20260811000000` spent two
 migrations trimming. Documented in `002_rls.sql` where the assertion used to be.
 
-### The attachments bucket is public, and one policy pretends otherwise
+### The attachments bucket is public, but its paths must not be listable
 
 `20260530000001_attachments_bucket_public.sql` deliberately made `attachments`
 public (clients render attachment URLs with no bearer; the unguessable path is
-the capability). It dropped the session-scoped read policy as redundant but left
-`team_members_can_download_idea_attachments` in place, where it now does nothing
-— permissive policies OR together, so `attachments_public_read` always wins. The
-dead policy reads like team isolation to anyone auditing the schema.
-`019_idea_attachment_storage_rls.sql` now asserts the public model, plus the
-invariant that actually matters: `team-skills` and `team-blobs` stay private.
+the capability). It also added `attachments_public_read`, a `to public` SELECT
+policy, "so the intent is visible". Serving a public URL never consults RLS, so
+that policy did nothing for the URLs — what it did was open
+`/storage/v1/object/list/attachments` to anyone with the anon key, which ships
+in every deployed app's browser bundle. A listed path is a working public URL,
+so "unguessable" had become "enumerable".
+
+`20260920000000_attachments_bucket_team_scoped_policies.sql` keeps the bucket
+public and scopes what RLS does govern — listing, and upload including the
+read-back storage-api does for an upsert — to members of the team in the first
+path segment. By-path reads are not among them: on a public bucket storage-api
+v1.54.1 serves the authenticated download, HEAD and `/object/info` routes
+without consulting RLS, exactly like `/object/public`, so a path remains a
+capability until the bucket itself goes private. `019_idea_attachment_storage_rls.sql`
+asserts that, pins the policy set on `storage.objects` — permissive policies OR
+together, so one broad policy added later would undo it silently — and keeps the
+older invariant that `team-skills` and `team-blobs` stay private.
+
+Two things that file cannot show, because CI runs against a stub of the storage
+schema rather than storage-api: the anon assertion is made on `pg_policies`
+(the stub grants anon no table privilege, which would mask a bad policy), and
+the upsert read-back is modelled as `INSERT … RETURNING`.
 
 ### A daemon can relay for any session participant
 

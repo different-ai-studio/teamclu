@@ -170,7 +170,7 @@ import {
   APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
-  mapActor, mapTeamMember, mapIdeaRow, mapShortcutRow, mapIdeaActivityRow,
+  mapActor, mapTeamMember, mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
   mapFeedbackRow, mapLeaderboardRow, chunkedIn,
 } from "./supabase-repo/shared.js";
 export { publishableKeyFromEnv } from "./supabase-repo/shared.js";
@@ -625,9 +625,11 @@ export function createSupabaseBusinessRepository(options) {
     appLogs,
     appLogsUnavailableReason,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
-    // Optional push hook — called after every successful message INSERT. Best-effort:
-    // errors are logged and swallowed so insert outcome is never affected.
-    dispatchPush,
+    // Optional fan-out hook — called after every successful message INSERT.
+    // Best-effort: errors are logged and swallowed so the insert outcome is
+    // never affected. It delivers to agent inboxes as well as sending the
+    // notifications, hence the name change from `dispatchPush`.
+    fanoutMessage,
   } = options;
 
   if (!supabaseUrl) throw new Error("SUPABASE_URL is required");
@@ -2059,16 +2061,12 @@ export function createSupabaseBusinessRepository(options) {
         .single();
       if (error) throw error;
 
-      if (dispatchPush) {
-        dispatchPush({
-          id: data.id,
-          session_id: data.session_id,
-          team_id: data.team_id,
-          sender_actor_id: data.sender_actor_id ?? null,
-          kind: data.kind ?? "text",
-          content: data.content ?? "",
-        }).catch((err: unknown) => {
-          console.error("[push] dispatchPush failed (swallowed):", err);
+      if (fanoutMessage) {
+        // The whole row, not a six-field digest: the agent inbox carries the
+        // message itself (#1455 Phase 1), so `metadata` — which holds
+        // `mention_actor_ids` and the attachment refs — has to travel with it.
+        fanoutMessage(data).catch((err: unknown) => {
+          console.error("[fanout] fanoutMessage failed (swallowed):", err);
         });
       }
 
@@ -2459,21 +2457,25 @@ export function createSupabaseBusinessRepository(options) {
     },
 
     async listIdeas({ teamId, archived = false, limit = 50, cursor = null }: any = {}) {
-      let query = supabase
-        .from("ideas")
-        .select("*")
-        .eq("team_id", teamId)
-        .eq("archived", archived)
-        .order("updated_at", { ascending: false })
-        .order("id", { ascending: false })
-        .limit(limit + 1);
-      if (cursor?.updatedAt) {
-        query = query.lt("updated_at", cursor.updatedAt);
-      }
-      const { data, error } = await query;
+      // `amux.idea_feed` rather than a select on ideas: the feed card shows a
+      // comment count, a like count and whether the viewer has liked it, and
+      // a plain select would mean N more round trips per page.
+      //
+      // It also fixes the keyset, which the select got wrong: `lt(updated_at)`
+      // alone drops every row sharing the page boundary's timestamp. The
+      // function compares the (updated_at, id) pair the cursor already
+      // carried.
+      const { data, error } = await supabase.rpc("idea_feed", {
+        p_team_id: teamId,
+        p_archived: archived,
+        // One past the page, so the route can tell whether to emit a cursor.
+        p_limit: limit + 1,
+        p_before_updated_at: cursor?.updatedAt ?? null,
+        p_before_id: cursor?.id ?? null,
+      });
       if (error) throw error;
       const rows = (data ?? []).slice(0, limit);
-      return { items: rows.map(mapIdeaRow) };
+      return { items: rows.map(mapIdeaFeedRow) };
     },
 
     async getIdea(ideaId) {
@@ -2500,7 +2502,32 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
       const id = requiredString(row?.id, "ideas.createIdea", "id");
+      // Pictures are a second call rather than a fifth argument to
+      // create_idea — see the migration for why that function is left alone.
+      // Not one transaction: a failure here leaves the post without its
+      // images, which is visible and fixable.
+      const attachmentUrls = body.attachmentUrls ?? body.attachment_urls;
+      if (Array.isArray(attachmentUrls) && attachmentUrls.length > 0) {
+        const { error: attachError } = await supabase.rpc("set_idea_attachments", {
+          p_idea_id: id,
+          p_attachment_urls: attachmentUrls,
+        });
+        if (attachError) throw attachError;
+      }
       return this.getIdea(id);
+    },
+
+    async setIdeaLike(ideaId, liked) {
+      const { data, error } = await supabase.rpc("set_idea_like", {
+        p_idea_id: ideaId,
+        p_liked: liked === true,
+      });
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : data;
+      return {
+        likeCount: Number(row?.like_count ?? 0),
+        likedByMe: row?.liked_by_me === true,
+      };
     },
 
     async updateIdea(ideaId, body) {
@@ -2725,6 +2752,27 @@ export function createSupabaseBusinessRepository(options) {
       if (!data) return null;
       const arrayBuffer = await data.arrayBuffer();
       const mime = data.type || "application/octet-stream";
+      return { mime, bytes: Buffer.from(arrayBuffer) };
+    },
+
+    /// Same object, resized by the storage service on its way out.
+    async downloadAttachmentThumbnail(path, { bucket, width, quality }: any = {}) {
+      const targetBucket = bucket || DEFAULT_ATTACHMENT_BUCKET;
+      // `transform` sends this through `/render/image/...`, which imgproxy
+      // serves. That path wants credentials where `/object/public/...` does
+      // not, which is the whole reason this goes through FC: the clients
+      // deliberately hold no Supabase key.
+      const { data, error } = await supabase.storage
+        .from(targetBucket)
+        .download(path, { transform: { width, resize: "contain", quality } });
+      if (error) {
+        const status = Number(error?.status || error?.statusCode || 0);
+        if (status === 404 || error?.message?.includes("not found") || error?.error === "not_found") return null;
+        throw error;
+      }
+      if (!data) return null;
+      const arrayBuffer = await data.arrayBuffer();
+      const mime = data.type || "image/jpeg";
       return { mime, bytes: Buffer.from(arrayBuffer) };
     },
 

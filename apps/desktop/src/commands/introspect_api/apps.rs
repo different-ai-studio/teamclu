@@ -593,7 +593,11 @@ const MANAGE_ACTIONS: [&str; 11] = [
 /// `manage_app` — the app itself: find it, create it, read its settings,
 /// change them, put its code on this machine, publish it, read its logs,
 /// delete it.
-pub(super) async fn handle_app_manage(app: &AppHandle, body: &[u8]) -> Result<String, String> {
+pub(super) async fn handle_app_manage(
+    app: &AppHandle,
+    caller: Option<&super::caller::AgentCaller>,
+    body: &[u8],
+) -> Result<String, String> {
     let v = parse_body(body)?;
     let action = require_action(&v, &MANAGE_ACTIONS)?;
     // Argument mistakes are refused before anything is resolved, so they cost
@@ -620,7 +624,21 @@ pub(super) async fn handle_app_manage(app: &AppHandle, body: &[u8]) -> Result<St
     }
     let row = resolve_app_row(app, &api, &v).await?;
     let zh = crate::commands::prefers_zh_locale();
+
+    // A publish the user already approved and that has not gone through yet is
+    // not asked about again — a deploy that fails, is fixed and retried is one
+    // publish, and asking per attempt only teaches people to click through. The
+    // key is everything the dialog says, so anything it would word differently
+    // still asks. Every other action here asks every time.
+    let deploy_key = (action == "deploy")
+        .then(|| caller.map(|c| super::confirm::DeployKey::new(&c.host_generation_id, &row)))
+        .flatten();
+    let approved = deploy_key
+        .as_ref()
+        .is_some_and(super::confirm::deploy_already_approved);
+
     let confirmation = match action.as_str() {
+        "deploy" if approved => None,
         "deploy" => Some(super::confirm::app_deploy(zh, &row)),
         "delete" => Some(super::confirm::app_delete(zh, &row)),
         "update" => super::confirm::app_exposure_change(zh, &row, &update_patch(&v)?),
@@ -628,6 +646,9 @@ pub(super) async fn handle_app_manage(app: &AppHandle, body: &[u8]) -> Result<St
     };
     if let Some(confirmation) = confirmation {
         super::confirm::confirm_with_user(app, confirmation).await?;
+        if let Some(key) = deploy_key.clone() {
+            super::confirm::remember_deploy_approval(key);
+        }
     }
     let out = match action.as_str() {
         "status" => json!({ "action": "status", "app": app_status(&api, &row).await }),
@@ -640,6 +661,13 @@ pub(super) async fn handle_app_manage(app: &AppHandle, body: &[u8]) -> Result<St
             let deployed = run_app_deploy(&api, &row).await;
             // Either way the row moved — to live, or to deploy_error.
             notify_app_changed(app, &row);
+            if deployed.is_ok() {
+                // Spent. The publish the user approved has happened; a further
+                // one is a fresh intent and asks again.
+                if let Some(key) = deploy_key.as_ref() {
+                    super::confirm::spend_deploy_approval(key);
+                }
+            }
             json!({ "ok": true, "action": "deploy", "app": app_brief(&deployed?) })
         }
         "logs" => read_app_logs(&api, &row, &v).await?,

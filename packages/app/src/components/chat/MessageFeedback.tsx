@@ -10,26 +10,41 @@ interface MessageFeedbackProps {
   messageId: string
 }
 
+const feedbackBtnBase =
+  'inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-[7px] bg-transparent transition-colors hover:bg-selected'
+
 export function MessageFeedback({ sessionId, messageId }: MessageFeedbackProps) {
   const { t } = useTranslation()
   const setFeedback = useTelemetryStore((s) => s.setFeedback)
   const removeFeedback = useTelemetryStore((s) => s.removeFeedback)
   const feedbackCache = useTelemetryStore((s) => s.feedbackCache)
 
-  // Re-read on cache change
   const currentRating = feedbackCache.get(messageId) as FeedbackRating | undefined
+  const [clickPop, setClickPop] = React.useState<FeedbackRating | null>(null)
+  const popTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  React.useEffect(() => {
+    return () => {
+      if (popTimerRef.current) clearTimeout(popTimerRef.current)
+    }
+  }, [])
+
+  const playClickPop = React.useCallback((rating: FeedbackRating) => {
+    setClickPop(rating)
+    if (popTimerRef.current) clearTimeout(popTimerRef.current)
+    popTimerRef.current = setTimeout(() => setClickPop(null), 450)
+  }, [])
 
   const handleClick = React.useCallback(
     async (rating: FeedbackRating) => {
+      playClickPop(rating)
       if (currentRating === rating) {
-        // Toggle off
         await removeFeedback(sessionId, messageId)
       } else {
-        // Set or switch
         await setFeedback(sessionId, messageId, rating)
       }
     },
-    [currentRating, sessionId, messageId, setFeedback, removeFeedback],
+    [currentRating, sessionId, messageId, setFeedback, removeFeedback, playClickPop],
   )
 
   const isRated = currentRating !== undefined
@@ -38,32 +53,40 @@ export function MessageFeedback({ sessionId, messageId }: MessageFeedbackProps) 
     <div
       className={cn(
         'inline-flex items-center gap-0.5 transition-opacity duration-200',
-        isRated ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+        isRated ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100',
       )}
     >
       <button
-        onClick={() => handleClick('positive')}
-        className={cn(
-          'p-0.5 rounded transition-colors',
-          currentRating === 'positive'
-            ? 'text-green-500'
-            : 'text-muted-foreground/50 hover:text-green-500/70',
-        )}
+        type="button"
+        onClick={() => void handleClick('positive')}
+        aria-pressed={currentRating === 'positive'}
+        aria-label={t('chat.feedback.goodResponse')}
         title={t('chat.feedback.goodResponse')}
+        className={cn(
+          feedbackBtnBase,
+          currentRating === 'positive'
+            ? 'text-[#2eb872] hover:text-[#2eb872]'
+            : 'text-muted-foreground/50 hover:text-ink-2',
+          clickPop === 'positive' && 'message-feedback-click-pop',
+        )}
       >
-        <ThumbsUp className="h-3.5 w-3.5" />
+        <ThumbsUp className="h-3.5 w-3.5" strokeWidth={2} />
       </button>
       <button
-        onClick={() => handleClick('negative')}
-        className={cn(
-          'p-0.5 rounded transition-colors',
-          currentRating === 'negative'
-            ? 'text-red-500'
-            : 'text-muted-foreground/50 hover:text-red-500/70',
-        )}
+        type="button"
+        onClick={() => void handleClick('negative')}
+        aria-pressed={currentRating === 'negative'}
+        aria-label={t('chat.feedback.poorResponse')}
         title={t('chat.feedback.poorResponse')}
+        className={cn(
+          feedbackBtnBase,
+          currentRating === 'negative'
+            ? 'text-red-500 hover:text-red-500'
+            : 'text-muted-foreground/50 hover:text-ink-2',
+          clickPop === 'negative' && 'message-feedback-click-pop',
+        )}
       >
-        <ThumbsDown className="h-3.5 w-3.5" />
+        <ThumbsDown className="h-3.5 w-3.5" strokeWidth={2} />
       </button>
     </div>
   )

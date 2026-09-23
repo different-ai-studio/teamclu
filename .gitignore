@@ -61,6 +61,10 @@ apps/desktop/.tauri_private_key.pub
 coverage/
 tests/screenshots/
 apps/ios/build/
+# Any other derived-data path someone points -derivedDataPath at. A
+# measurement run with its own output directory has committed 19k files
+# of SourcePackages checkouts more than once.
+apps/ios/build-*/
 apps/ios/DerivedData/
 apps/ios/**/.build/
 apps/ios/**/xcuserdata/

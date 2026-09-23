@@ -2,6 +2,10 @@ import { create } from "zustand";
 import type { Message } from "@/lib/proto/teamclu_pb";
 import { MessageKind } from "@/lib/proto/teamclu_pb";
 import { useSessionSelectionStore } from "./session-selection-store";
+import {
+  mergeTurnAgentReplyProto,
+  protoPartsJson,
+} from "@/lib/messages/merge-turn-agent-reply";
 
 const EMPTY_MESSAGES: Message[] = [];
 
@@ -64,19 +68,23 @@ export const useSessionMessageStore = create<SessionMessageState>((set, get) => 
       get().appendMessage(sessionId, message);
       return;
     }
-    const rest = cur.filter(
+    const existingInTurn = cur.filter(
       (row) =>
-        !(
-          row.turnId === turnId &&
-          row.senderActorId === senderActorId &&
-          row.kind === MessageKind.AGENT_REPLY
-        ),
+        row.turnId === turnId &&
+        row.senderActorId === senderActorId &&
+        row.kind === MessageKind.AGENT_REPLY,
     );
-    const withoutSameId = rest.filter((row) => row.messageId !== message.messageId);
+    const rest = cur.filter((row) => !existingInTurn.includes(row));
+    const prior =
+      existingInTurn.find((row) => protoPartsJson(row).length > 0) ??
+      existingInTurn[existingInTurn.length - 1];
+    const merged =
+      prior != null ? mergeTurnAgentReplyProto(prior, message) : message;
+    const withoutSameId = rest.filter((row) => row.messageId !== merged.messageId);
     set({
       messages: {
         ...get().messages,
-        [sessionId]: insertProtoMessageSorted(withoutSameId, message),
+        [sessionId]: insertProtoMessageSorted(withoutSameId, merged),
       },
     });
   },

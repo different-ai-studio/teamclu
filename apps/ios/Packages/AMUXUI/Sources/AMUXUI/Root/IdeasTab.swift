@@ -17,6 +17,10 @@ public struct IdeasTab: View {
     /// Drives the "Mine" filter on the ideas list — compared against
     /// `IdeaRecord.createdByActorID`. `nil` hides the chip.
     let currentActorID: String?
+    /// Forwarded through the detail views to the member picker, so it can
+    /// refresh presence when it opens.
+    let actorStore: ActorStore?
+    let agentPresenceStore: AgentPresenceStore?
 
     @Environment(\.modelContext) private var modelContext
 
@@ -42,7 +46,9 @@ public struct IdeasTab: View {
         workspacesRepository: (any WorkspaceRepository)? = nil,
         sessionsRepository: (any SessionRepository)? = nil,
         ideasRepository: (any IdeaRepository)? = nil,
-        currentActorID: String? = nil
+        currentActorID: String? = nil,
+        actorStore: ActorStore? = nil,
+        agentPresenceStore: AgentPresenceStore? = nil
     ) {
         self.mqtt = mqtt
         self.hub = hub
@@ -56,6 +62,8 @@ public struct IdeasTab: View {
         self.sessionsRepository = sessionsRepository
         self.ideasRepository = ideasRepository
         self.currentActorID = currentActorID
+        self.actorStore = actorStore
+        self.agentPresenceStore = agentPresenceStore
     }
 
     public var body: some View {
@@ -107,6 +115,8 @@ public struct IdeasTab: View {
                                 peerId: "ios-\(pairing.authToken.prefix(6))",
                                 sessionsRepository: sessionsRepository,
                                 connectedAgentsStore: connectedAgentsStore,
+                                actorStore: actorStore,
+                                agentPresenceStore: agentPresenceStore,
                                 navigationPath: $navigationPath
                             )
                         } else {
@@ -127,7 +137,9 @@ public struct IdeasTab: View {
                                 connectedAgentsStore: connectedAgentsStore,
                                 messagesRepository: messagesRepository,
                                 workspacesRepository: workspacesRepository,
-                                sessionsRepository: sessionsRepository
+                                sessionsRepository: sessionsRepository,
+                                actorStore: actorStore,
+                                agentPresenceStore: agentPresenceStore
                             )
                         } else {
                             Text("Session not found")

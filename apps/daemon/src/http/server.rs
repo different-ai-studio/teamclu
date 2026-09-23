@@ -120,6 +120,10 @@ async fn spawn_dedicated_runtime_context_listener(
             post(crate::http::runtime_context::session_prompt),
         )
         .route(
+            "/internal/runtime-context/session-attach",
+            post(crate::http::runtime_context::session_attach),
+        )
+        .route(
             "/internal/runtime-context/verify",
             post(crate::http::runtime_context::verify_runtime_caller),
         )
@@ -168,6 +172,7 @@ pub async fn spawn(
     team_skills: Option<Arc<crate::runtime::team_skills::TeamSkillReconciler>>,
     runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
     session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
+    session_attach: Option<Arc<crate::runtime::session_attach::SessionAttachService>>,
 ) -> anyhow::Result<HttpHandle> {
     spawn_with_refresh_watch_registry(
         http,
@@ -188,6 +193,7 @@ pub async fn spawn(
         None,
         runtime_context,
         session_prompt,
+        session_attach,
         None,
     )
     .await
@@ -217,6 +223,7 @@ pub async fn spawn_with_refresh_watch_registry(
     >,
     runtime_context: Option<Arc<crate::runtime::context_service::RuntimeContextService>>,
     session_prompt: Option<Arc<crate::runtime::session_prompt::SessionPromptService>>,
+    session_attach: Option<Arc<crate::runtime::session_attach::SessionAttachService>>,
     // Shared with the daemon spawn path. `None` in focused HTTP tests, which
     // then fall back to a resolver built from `backend` if one is present.
     managed_llm: Option<Arc<crate::runtime::managed_llm::ManagedLlmResolver>>,
@@ -305,6 +312,7 @@ pub async fn spawn_with_refresh_watch_registry(
         state
     };
     let state = state.with_session_prompt(session_prompt);
+    let state = state.with_session_attach(session_attach);
 
     let mut runtime_context_join = None;
     let mut runtime_context_shutdown = None;
@@ -455,6 +463,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -483,6 +492,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -539,6 +549,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -764,6 +775,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -837,6 +849,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -926,6 +939,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -1030,6 +1044,7 @@ mod tests {
             None,
             None,
             test_dispatcher(),
+            None,
             None,
             None,
             None,
@@ -1161,6 +1176,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1280,6 +1296,7 @@ mod tests {
             Some(reconciler),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1395,6 +1412,7 @@ mod tests {
             None,
             None,
             Some(Arc::clone(&service)),
+            None,
             None,
         )
         .await
@@ -1670,6 +1688,7 @@ mod tests {
             None,
             Some(Arc::clone(&service)),
             Some(prompt_service),
+            None,
         )
         .await
         .unwrap();
@@ -1747,6 +1766,7 @@ mod tests {
             None,
             None,
             Some(Arc::clone(&service)),
+            None,
             None,
         )
         .await

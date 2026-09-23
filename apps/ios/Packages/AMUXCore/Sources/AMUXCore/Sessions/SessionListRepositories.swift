@@ -103,6 +103,10 @@ public struct MessageRecord: Equatable, Sendable {
     /// Only turn-final agent replies carry one, and it lands a few seconds
     /// after the reply itself, so nil does not mean the turn has no trace.
     public var trace: TurnTracePointer? = nil
+    /// `messages.attachments`: files carried by this message, structured.
+    /// Empty for everything written before the column was plumbed through —
+    /// those messages have their URLs inlined in `content` instead.
+    public var attachments: [MessageAttachment] = []
 }
 
 /// Input shape for inserting a chat message into Supabase. iOS writes
@@ -122,6 +126,10 @@ public struct MessageInsertInput: Equatable, Sendable {
     /// routing context and the seed path can reconstruct directed vs
     /// broadcast turn groupings.
     public let mentionActorIDs: [String]
+    /// Files this message carries, written to `messages.attachments`. The
+    /// same URLs also ride on `Teamclu_Message.attachment_urls` for the
+    /// daemon to feed the agent; this is the copy that survives on the row.
+    public let attachments: [MessageAttachment]
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -130,7 +138,8 @@ public struct MessageInsertInput: Equatable, Sendable {
         senderActorID: String,
         kind: String = "text",
         content: String,
-        mentionActorIDs: [String] = []
+        mentionActorIDs: [String] = [],
+        attachments: [MessageAttachment] = []
     ) {
         self.id = id
         self.teamID = teamID
@@ -139,6 +148,7 @@ public struct MessageInsertInput: Equatable, Sendable {
         self.kind = kind
         self.content = content
         self.mentionActorIDs = mentionActorIDs
+        self.attachments = attachments
     }
 }
 

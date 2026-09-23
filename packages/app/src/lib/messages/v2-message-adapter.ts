@@ -17,6 +17,11 @@ import type {
   ToolCall,
 } from "@/stores/session-types";
 import { parseToolContentBlocks } from "@/components/chat/tool-calls/tool-call-content";
+import {
+  agentReplyAttachmentsFromTeamcluMessage,
+  agentReplyAttachmentsFromTurnReplies,
+} from "@/lib/attachments/agent-reply-attachments";
+import { agentReplyTextsEquivalent } from "@/lib/agent/agent-reply-text";
 
 function kindToRole(kind: MessageKind): SdkMessage["role"] {
   switch (kind) {
@@ -63,6 +68,10 @@ function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
     ? parseNativeSkillViolations(m)
     : undefined;
   const displayContent = displayContentForReply(m);
+  const replyAttachments =
+    m.kind === MessageKind.AGENT_REPLY
+      ? agentReplyAttachmentsFromTeamcluMessage(m)
+      : undefined;
   return {
     id: m.messageId,
     sessionId: m.sessionId,
@@ -101,7 +110,17 @@ function adaptTeamcluMessageToSdk(m: TeamcluMessage): SdkMessage {
       : [],
     toolCalls: [],
     timestamp: new Date(Number(m.createdAt) * 1000),
+    replyAttachments: replyAttachments?.length ? replyAttachments : undefined,
   };
+}
+
+function withTurnReplyAttachments(
+  msg: SdkMessage,
+  uniqueReplies: TeamcluMessage[],
+): SdkMessage {
+  const replyAttachments = agentReplyAttachmentsFromTurnReplies(uniqueReplies);
+  if (!replyAttachments?.length) return msg;
+  return { ...msg, replyAttachments };
 }
 
 function parseMetadata(m: TeamcluMessage): Record<string, unknown> {
@@ -311,8 +330,15 @@ function mergeTurnPartsFromReplies(replies: TeamcluMessage[]): MessagePart[] {
       if (part.type === "text") {
         const text = partText(part);
         if (!text) continue;
-        const last = out[out.length - 1];
-        if (last?.type === "text" && partText(last) === text) continue;
+        if (
+          out.some(
+            (existing) =>
+              existing.type === "text" &&
+              agentReplyTextsEquivalent(partText(existing), text),
+          )
+        ) {
+          continue;
+        }
         out.push(part);
       }
     }
@@ -555,21 +581,24 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
       .map((part) => part.text || part.content || "")
       .filter(Boolean)
       .join("\n\n");
-    return {
-      id: canonicalReply.messageId,
-      sessionId: canonicalReply.sessionId,
-      senderActorId: canonicalReply.senderActorId,
-      role: "assistant",
-      content: replyText || partsText,
-      modelID: canonicalModelID,
-      parts: mergedPersistedParts,
-      toolCalls: canonicalToolCalls,
-      replyToMessageId: firstNonEmptyReplyToMessageId(group),
-      turnId: group[0]?.turnId?.trim() || undefined,
-      turnStatus,
-      nativeSkillViolations,
-      timestamp: new Date(Number(group[0].createdAt) * 1000),
-    };
+    return withTurnReplyAttachments(
+      {
+        id: canonicalReply.messageId,
+        sessionId: canonicalReply.sessionId,
+        senderActorId: canonicalReply.senderActorId,
+        role: "assistant",
+        content: replyText || partsText,
+        modelID: canonicalModelID,
+        parts: mergedPersistedParts,
+        toolCalls: canonicalToolCalls,
+        replyToMessageId: firstNonEmptyReplyToMessageId(group),
+        turnId: group[0]?.turnId?.trim() || undefined,
+        turnStatus,
+        nativeSkillViolations,
+        timestamp: new Date(Number(group[0].createdAt) * 1000),
+      },
+      uniqueReplies,
+    );
   }
 
   const canonicalReply = [...uniqueReplies]
@@ -591,21 +620,24 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
         uniqueReplies[uniqueReplies.length - 1]?.model ||
         group.find((m) => m.model)?.model ||
         undefined;
-      return {
-        id: canonicalReply.messageId,
-        sessionId: canonicalReply.sessionId,
-        senderActorId: canonicalReply.senderActorId,
-        role: "assistant",
-        content: replyText || canonicalText,
-        modelID: canonicalModelID,
-        parts: canonicalParts,
-        toolCalls: canonicalToolCalls,
-        replyToMessageId: firstNonEmptyReplyToMessageId(group),
-        turnId: group[0]?.turnId?.trim() || undefined,
-        turnStatus,
-        nativeSkillViolations,
-        timestamp: new Date(Number(group[0].createdAt) * 1000),
-      };
+      return withTurnReplyAttachments(
+        {
+          id: canonicalReply.messageId,
+          sessionId: canonicalReply.sessionId,
+          senderActorId: canonicalReply.senderActorId,
+          role: "assistant",
+          content: replyText || canonicalText,
+          modelID: canonicalModelID,
+          parts: canonicalParts,
+          toolCalls: canonicalToolCalls,
+          replyToMessageId: firstNonEmptyReplyToMessageId(group),
+          turnId: group[0]?.turnId?.trim() || undefined,
+          turnStatus,
+          nativeSkillViolations,
+          timestamp: new Date(Number(group[0].createdAt) * 1000),
+        },
+        uniqueReplies,
+      );
     }
   }
 
@@ -657,21 +689,24 @@ export function buildFullTurnSdkMessageFromGroup(group: TeamcluMessage[]): SdkMe
     group.find((m) => m.model)?.model ||
     undefined;
 
-  return {
-    id: groupId,
-    sessionId: group[0].sessionId,
-    senderActorId: group[0].senderActorId,
-    role: "assistant",
-    content: replyText,
-    modelID,
-    parts,
-    toolCalls,
-    replyToMessageId: firstNonEmptyReplyToMessageId(group),
-    turnId: group[0]?.turnId?.trim() || undefined,
-    turnStatus,
-    nativeSkillViolations,
-    timestamp: new Date(Number(group[0].createdAt) * 1000),
-  };
+  return withTurnReplyAttachments(
+    {
+      id: groupId,
+      sessionId: group[0].sessionId,
+      senderActorId: group[0].senderActorId,
+      role: "assistant",
+      content: replyText,
+      modelID,
+      parts,
+      toolCalls,
+      replyToMessageId: firstNonEmptyReplyToMessageId(group),
+      turnId: group[0]?.turnId?.trim() || undefined,
+      turnStatus,
+      nativeSkillViolations,
+      timestamp: new Date(Number(group[0].createdAt) * 1000),
+    },
+    uniqueReplies,
+  );
 }
 
 function countTurnProcessMeta(group: TeamcluMessage[]): {
@@ -815,30 +850,33 @@ function buildDeferredProcessTurnSdkMessage(group: TeamcluMessage[]): SdkMessage
   const turnId = group[0]?.turnId?.trim() || undefined;
   const processMeta = countTurnProcessMeta(group);
 
-  return {
-    id: groupId,
-    sessionId: group[0].sessionId,
-    senderActorId: group[0].senderActorId,
-    role: "assistant",
-    content: finalText,
-    modelID,
-    parts: finalParts,
-    toolCalls: [],
-    replyToMessageId: firstNonEmptyReplyToMessageId(group),
-    turnId,
-    turnStatus,
-    nativeSkillViolations,
-    timestamp: new Date(Number(group[0].createdAt) * 1000),
-    processDeferred: true,
-    processMeta,
-    lazyProcessRef: turnId
-      ? {
-          sessionId: group[0].sessionId,
-          turnId,
-          senderActorId: group[0].senderActorId,
-        }
-      : undefined,
-  };
+  return withTurnReplyAttachments(
+    {
+      id: groupId,
+      sessionId: group[0].sessionId,
+      senderActorId: group[0].senderActorId,
+      role: "assistant",
+      content: finalText,
+      modelID,
+      parts: finalParts,
+      toolCalls: [],
+      replyToMessageId: firstNonEmptyReplyToMessageId(group),
+      turnId,
+      turnStatus,
+      nativeSkillViolations,
+      timestamp: new Date(Number(group[0].createdAt) * 1000),
+      processDeferred: true,
+      processMeta,
+      lazyProcessRef: turnId
+        ? {
+            sessionId: group[0].sessionId,
+            turnId,
+            senderActorId: group[0].senderActorId,
+          }
+        : undefined,
+    },
+    uniqueReplies,
+  );
 }
 
 type BuildTurnSdkMessageOptions = {
@@ -860,6 +898,42 @@ function buildTurnSdkMessage(
     return buildDeferredProcessTurnSdkMessage(group);
   }
   return buildFullTurnSdkMessageFromGroup(group);
+}
+
+function mergeDuplicateAssistantSdkRow(prev: SdkMessage, next: SdkMessage): SdkMessage {
+  return {
+    ...prev,
+    replyAttachments: prev.replyAttachments?.length
+      ? prev.replyAttachments
+      : next.replyAttachments,
+    processDeferred: prev.processDeferred || next.processDeferred,
+    processMeta: prev.processMeta ?? next.processMeta,
+    toolCalls: prev.toolCalls?.length ? prev.toolCalls : next.toolCalls,
+    parts: prev.parts.length >= next.parts.length ? prev.parts : next.parts,
+    content: prev.content.length >= next.content.length ? prev.content : next.content,
+  };
+}
+
+/** Live flush + late MQTT append can yield two SDK rows for one turn-final reply. */
+function collapseDuplicateAssistantSdkMessages(msgs: SdkMessage[]): SdkMessage[] {
+  const out: SdkMessage[] = [];
+  for (const msg of msgs) {
+    if (msg.role !== "assistant") {
+      out.push(msg);
+      continue;
+    }
+    const prev = out[out.length - 1];
+    if (
+      prev?.role === "assistant" &&
+      prev.senderActorId === msg.senderActorId &&
+      agentReplyTextsEquivalent(prev.content || "", msg.content || "")
+    ) {
+      out[out.length - 1] = mergeDuplicateAssistantSdkRow(prev, msg);
+      continue;
+    }
+    out.push(msg);
+  }
+  return out;
 }
 
 function groupByTurn(
@@ -900,5 +974,5 @@ export function adaptTeamcluMessages(
 ): SdkMessage[] | undefined {
   if (!msgs) return undefined;
   const sorted = [...msgs].sort(compareTeamcluMessages);
-  return groupByTurn(sorted, opts);
+  return collapseDuplicateAssistantSdkMessages(groupByTurn(sorted, opts));
 }

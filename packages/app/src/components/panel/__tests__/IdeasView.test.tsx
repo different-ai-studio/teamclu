@@ -6,6 +6,15 @@ import { useIdeaDetailStore } from '@/stores/idea-detail'
 const listIdeasMock = vi.fn()
 const listActorDirectoryMock = vi.fn()
 const updateIdeaMock = vi.fn()
+const createIdeaMock = vi.fn()
+const archiveIdeaMock = vi.fn()
+const updateIdeaStatusMock = vi.fn()
+const recordIdeaStatusChangeMock = vi.fn()
+
+vi.mock('@/lib/team/idea-mutations', () => ({
+  updateIdeaStatus: (...args: unknown[]) => updateIdeaStatusMock(...args),
+  recordIdeaStatusChange: (...args: unknown[]) => recordIdeaStatusChangeMock(...args),
+}))
 
 vi.mock('@/lib/backend', () => ({
   getBackend: () => ({
@@ -14,6 +23,8 @@ vi.mock('@/lib/backend', () => ({
     ideas: {
       listIdeas: listIdeasMock,
       updateIdea: updateIdeaMock,
+      createIdea: createIdeaMock,
+      archiveIdea: archiveIdeaMock,
     },
     actors: {
       listActorDirectory: listActorDirectoryMock,
@@ -58,6 +69,13 @@ beforeEach(() => {
   listActorDirectoryMock.mockReset()
   updateIdeaMock.mockReset()
   updateIdeaMock.mockResolvedValue(undefined)
+  createIdeaMock.mockReset()
+  archiveIdeaMock.mockReset()
+  archiveIdeaMock.mockResolvedValue(undefined)
+  updateIdeaStatusMock.mockReset()
+  updateIdeaStatusMock.mockResolvedValue(undefined)
+  recordIdeaStatusChangeMock.mockReset()
+  recordIdeaStatusChangeMock.mockResolvedValue(undefined)
   useIdeaDetailStore.setState({ target: null, mutationTick: 0 })
   vi.useRealTimers()
 })
@@ -116,6 +134,84 @@ describe('IdeasView', () => {
     fireEvent.click(screen.getByLabelText('Create idea'))
 
     expect(useIdeaDetailStore.getState().target).toEqual({ kind: 'create', teamId: 'team-1' })
+  })
+
+  it('captures an idea from the quick input on Enter and opens it', async () => {
+    mockIdeasResponse([], [])
+    createIdeaMock.mockResolvedValue({
+      id: 'i-new', title: 'Voice notes', status: 'open', created_by_actor_id: 'a-1', sort_order: 1000, updated_at: '2026-05-10T00:00:00Z',
+    })
+    render(<IdeasView />)
+    await waitFor(() => expect(screen.getByText(/no ideas yet/i)).toBeInTheDocument())
+
+    const input = screen.getByLabelText('Jot an idea down, Enter to save') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '  Voice notes ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(createIdeaMock).toHaveBeenCalledWith({
+      teamId: 'team-1', title: 'Voice notes', workspaceId: null, body: null,
+    }))
+    await waitFor(() => expect(input.value).toBe(''))
+    expect(useIdeaDetailStore.getState().target).toMatchObject({ kind: 'edit', idea: { id: 'i-new' } })
+  })
+
+  it('does not create while an IME composition is confirming with Enter', async () => {
+    mockIdeasResponse([], [])
+    render(<IdeasView />)
+    await waitFor(() => expect(screen.getByText(/no ideas yet/i)).toBeInTheDocument())
+
+    const input = screen.getByLabelText('Jot an idea down, Enter to save')
+    fireEvent.change(input, { target: { value: '语音' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+
+    expect(createIdeaMock).not.toHaveBeenCalled()
+  })
+
+  it('filters by status from the inline tabs', async () => {
+    mockIdeasResponse(
+      [
+        { id: 'i-1', title: 'Shipped thing', status: 'done', created_by_actor_id: 'a-1', sort_order: 1000, updated_at: '2026-05-10T00:00:00Z' },
+        { id: 'i-2', title: 'Parked thing', status: 'open', created_by_actor_id: 'a-1', sort_order: 2000, updated_at: '2026-05-10T00:00:00Z' },
+      ],
+      [{ id: 'a-1', display_name: 'Alice' }],
+    )
+    render(<IdeasView />)
+    await waitFor(() => expect(screen.getByText('Shipped thing')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('tab', { name: /Done/ }))
+
+    expect(screen.getByText('Shipped thing')).toBeInTheDocument()
+    expect(screen.queryByText('Parked thing')).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Done/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('changes status from the row context menu, records it, and keeps the open idea in step', async () => {
+    const row = { id: 'i-1', title: 'Launch beta', status: 'open', created_by_actor_id: 'a-1', sort_order: 1000, updated_at: '2026-05-10T00:00:00Z' }
+    mockIdeasResponse([row], [{ id: 'a-1', display_name: 'Alice' }])
+    render(<IdeasView />)
+    await waitFor(() => expect(screen.getByText('Launch beta')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('Drag idea Launch beta'))
+
+    fireEvent.contextMenu(screen.getByLabelText('Drag idea Launch beta'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Done/ }))
+
+    await waitFor(() => expect(updateIdeaStatusMock).toHaveBeenCalledWith('i-1', 'done'))
+    await waitFor(() => expect(recordIdeaStatusChangeMock).toHaveBeenCalledWith('i-1', 'open', 'done'))
+    expect(useIdeaDetailStore.getState().target).toMatchObject({ kind: 'edit', idea: { id: 'i-1', status: 'done' } })
+  })
+
+  it('archives from the row context menu and closes the open idea', async () => {
+    const row = { id: 'i-1', title: 'Launch beta', status: 'open', created_by_actor_id: 'a-1', sort_order: 1000, updated_at: '2026-05-10T00:00:00Z' }
+    mockIdeasResponse([row], [{ id: 'a-1', display_name: 'Alice' }])
+    render(<IdeasView />)
+    await waitFor(() => expect(screen.getByText('Launch beta')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('Drag idea Launch beta'))
+
+    fireEvent.contextMenu(screen.getByLabelText('Drag idea Launch beta'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Archive/ }))
+
+    await waitFor(() => expect(archiveIdeaMock).toHaveBeenCalledWith('i-1'))
+    await waitFor(() => expect(useIdeaDetailStore.getState().target).toBeNull())
   })
 
   it('paginates the list and pages through it', async () => {

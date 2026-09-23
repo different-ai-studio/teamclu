@@ -500,7 +500,7 @@ impl Backend for MockBackend {
         _team_id: &str,
         _cursor: Option<&str>,
         _limit: u32,
-    ) -> BackendResult<(Vec<String>, Option<String>)> {
+    ) -> BackendResult<(Vec<super::ActorSessionRef>, Option<String>)> {
         let ids = self
             .state
             .lock()
@@ -508,6 +508,10 @@ impl Backend for MockBackend {
             .sessions
             .keys()
             .cloned()
+            .map(|session_id| super::ActorSessionRef {
+                session_id,
+                last_message_at: None,
+            })
             .collect();
         Ok((ids, None))
     }

@@ -45,10 +45,25 @@ public actor OutboxSender {
     private weak var teamclu: TeamcluService?
     private let modelContainer: ModelContainer
     private var task: Task<Void, Never>?
+    private var onDelivered: (@Sendable (String) async -> Void)?
 
     public init(teamclu: TeamcluService, modelContainer: ModelContainer) {
         self.teamclu = teamclu
         self.modelContainer = modelContainer
+    }
+
+    /// Called with the message id each time a row reaches `.delivered`.
+    ///
+    /// The chat view model uses it to hold the agent's placeholder card back
+    /// until the message is actually out: the send button only enqueues, and
+    /// an attachment upload plus the FC round trip sit between the tap and
+    /// the broker. Raising the card on tap put "agent working" on screen
+    /// above a message whose own status dot still read "sending".
+    ///
+    /// Fires for every session this sender drains, so a handler must check
+    /// the id is one of its own.
+    public func setOnDelivered(_ handler: (@Sendable (String) async -> Void)?) {
+        onDelivered = handler
     }
 
     public func start() {
@@ -186,6 +201,56 @@ public actor OutboxSender {
         return false
     }
 
+    /// Structured records for this row's uploaded files, so the message row
+    /// carries them and not just a URL buried in its text.
+    ///
+    /// Matched by storage URL rather than by `messageID`: the composer hands
+    /// the outbox completed URLs, and `AttachmentUpload.messageID` is a
+    /// throwaway id minted per upload, not the message's own. An upload with
+    /// no matching record still contributes an entry built from its URL — a
+    /// sizeless entry beats dropping the file from the row.
+    private func attachmentRefs(for row: OutboxMessage, in ctx: ModelContext) -> [MessageAttachment] {
+        let urls = row.attachmentURLs
+        guard !urls.isEmpty else { return [] }
+        let uploads = (try? ctx.fetch(FetchDescriptor<AttachmentUpload>())) ?? []
+        let byURL = Dictionary(
+            uploads.compactMap { upload -> (String, AttachmentUpload)? in
+                guard let storageURL = upload.storageURL else { return nil }
+                return (storageURL, upload)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return urls.map { url in
+            let upload = byURL[url.absoluteString]
+            let name = upload?.fileName
+                ?? url.lastPathComponent.removingPercentEncoding
+                ?? url.lastPathComponent
+            return MessageAttachment(
+                filename: name,
+                mime: AttachmentUploadManager.mimeType(forFileName: name),
+                size: Int(upload?.fileSize ?? 0),
+                bucketPath: Self.bucketPath(fromStorageURL: url)
+            )
+        }
+    }
+
+    /// The object's path inside the attachments bucket, recovered from the
+    /// public URL storage handed back at upload time.
+    ///
+    /// Rebuilding it from the upload record instead would need the team id,
+    /// which `AttachmentUpload` doesn't keep; the URL already encodes the
+    /// exact path the server stored. Everything after the bucket segment is
+    /// the path. Nil when there's no recognisable bucket segment, which
+    /// leaves the entry readable by name but not fetchable.
+    static func bucketPath(fromStorageURL url: URL) -> String? {
+        let components = url.pathComponents
+        guard let bucketIndex = components.lastIndex(of: "attachments"),
+              bucketIndex + 1 < components.count
+        else { return nil }
+        let path = components[(bucketIndex + 1)...].joined(separator: "/")
+        return path.removingPercentEncoding ?? path
+    }
+
     private func attempt(rowID: PersistentIdentifier, messageID: String) async {
         guard await OutboxAttemptLeases.shared.acquire(messageID) else {
             outboxLogger.notice("outbox attempt skipped msgId=\(String(messageID.prefix(8)), privacy: .public) already leased")
@@ -240,6 +305,7 @@ public actor OutboxSender {
                 modelId: row.modelID,
                 mentionActorIDs: row.mentionActorIDs,
                 attachmentURLs: row.attachmentURLs,
+                attachments: attachmentRefs(for: row, in: ctx),
                 persistFirst: true,
                 messageID: row.messageID
             )
@@ -247,6 +313,7 @@ public actor OutboxSender {
             row.lastError = nil
             try? ctx.save()
             outboxLogger.notice("outbox delivered msgId=\(msgPrefix, privacy: .public) attempts=\(row.attemptCount + 1, privacy: .public)")
+            await onDelivered?(row.messageID)
         } catch {
             // 409 Conflict: the server already persisted this message (idempotent
             // duplicate from a retry or MQTT re-delivery). Treat as delivered.
@@ -255,6 +322,7 @@ public actor OutboxSender {
                 row.lastError = nil
                 try? ctx.save()
                 outboxLogger.notice("outbox delivered (409 conflict, idempotent) msgId=\(msgPrefix, privacy: .public)")
+                await onDelivered?(row.messageID)
                 return
             }
             row.attemptCount += 1

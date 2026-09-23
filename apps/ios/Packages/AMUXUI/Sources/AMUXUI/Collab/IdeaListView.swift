@@ -6,14 +6,15 @@ import AMUXSharedUI
 public struct IdeaListView: View {
     @Bindable var ideaStore: IdeaStore
 
-    @Query(filter: #Predicate<CachedActor> { $0.actorType == "member" },
-           sort: \CachedActor.displayName)
-    private var members: [CachedActor]
+    // Every actor, not only members: an agent can post too, and filtering
+    // them out left their rows with no avatar and no name.
+    @Query(sort: \CachedActor.displayName)
+    private var actors: [CachedActor]
 
     @Query(sort: \Workspace.displayName) private var workspaces: [Workspace]
 
-    private var memberById: [String: CachedActor] {
-        Dictionary(uniqueKeysWithValues: members.map { ($0.actorId, $0) })
+    private var actorByID: [String: CachedActor] {
+        Dictionary(uniqueKeysWithValues: actors.map { ($0.actorId, $0) })
     }
 
     private var workspaceNameById: [String: String] {
@@ -23,13 +24,9 @@ public struct IdeaListView: View {
     @Binding var showCreate: Bool
     @Binding var navigationPath: [String]
     @State private var showArchived = false
-    @State private var filter: Filter = .all
-    @State private var editMode: EditMode = .inactive
 
-    /// `Mine` compares against `IdeaRecord.createdByActorID`. `nil` hides
-    /// the "Mine" chip from the filter bar (the user hasn't been mapped
-    /// to a Supabase actor yet — happens on cold boot before the team
-    /// loads).
+    /// Kept for callers and for future "only mine" affordances; the feed
+    /// itself no longer slices by author.
     let currentActorID: String?
 
     public init(
@@ -44,43 +41,16 @@ public struct IdeaListView: View {
         self.currentActorID = currentActorID
     }
 
-    enum Filter: Hashable {
-        case all, mine, open, done
-    }
-
-    /// Source ideas — already filtered to `archived == false` by the store.
-    /// We keep the original order (most-recently-updated first) and slice
-    /// per the segment selection.
-    private var filteredIdeas: [IdeaRecord] {
-        switch filter {
-        case .all:  return ideaStore.ideas
-        case .mine:
-            guard let me = currentActorID, !me.isEmpty else { return [] }
-            return ideaStore.ideas.filter { $0.createdByActorID == me }
-        case .open: return ideaStore.ideas.filter { $0.status == "open" }
-        case .done: return ideaStore.ideas.filter { $0.status == "done" }
+    /// Newest post first. The store's canonical order is the board's
+    /// (`sort_order`, then most-recently-touched), which is what reordering
+    /// and the desktop's columns are built on — a feed reads by when things
+    /// were said, and a comment arriving should not bump a week-old post back
+    /// to the top the way `updated_at` would.
+    private var feedIdeas: [IdeaRecord] {
+        ideaStore.ideas.sorted { lhs, rhs in
+            if lhs.createdAt == rhs.createdAt { return lhs.id > rhs.id }
+            return lhs.createdAt > rhs.createdAt
         }
-    }
-
-    private var filterSegments: [SegmentedFilterBar<Filter>.Segment] {
-        var segments: [SegmentedFilterBar<Filter>.Segment] = [
-            .init(tag: .all, title: String(localized: "All"), count: ideaStore.ideas.count)
-        ]
-        if let me = currentActorID, !me.isEmpty {
-            let mineCount = ideaStore.ideas.filter { $0.createdByActorID == me }.count
-            segments.append(.init(tag: .mine, title: String(localized: "Mine"), count: mineCount))
-        }
-        segments.append(.init(
-            tag: .open,
-            title: String(localized: "Open"),
-            count: ideaStore.ideas.filter { $0.status == "open" }.count
-        ))
-        segments.append(.init(
-            tag: .done,
-            title: String(localized: "Done"),
-            count: ideaStore.ideas.filter { $0.status == "done" }.count
-        ))
-        return segments
     }
 
     public var body: some View {
@@ -102,48 +72,55 @@ public struct IdeaListView: View {
                 )
             } else {
                 List {
-                    Section {
-                        SegmentedFilterBar(segments: filterSegments, selection: $filter)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 4)
-                            .padding(.bottom, 12)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets())
-                    }
-
-                    if filteredIdeas.isEmpty {
-                        emptyFilterRow
-                    } else {
-                        ForEach(filteredIdeas) { item in
+                    // Anything that goes wrong after the first load — a like
+                    // that didn't land, pictures the backend dropped — used
+                    // to be written to `errorMessage` and never shown, because
+                    // the only place that read it was the empty state.
+                    if let errorMessage = ideaStore.errorMessage {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 12))
+                            Text(errorMessage)
+                                .font(.footnote)
+                            Spacer(minLength: 8)
                             Button {
-                                navigationPath.append("idea:\(item.id)")
+                                ideaStore.errorMessage = nil
                             } label: {
-                                IdeaRow(
-                                    item: item,
-                                    creator: memberById[item.createdByActorID],
-                                    workspaceName: workspaceNameById[item.workspaceID]
-                                )
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 11, weight: .semibold))
                             }
                             .buttonStyle(.plain)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparatorTint(Color.amux.hairline)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button {
-                                    Task { await ideaStore.setArchived(ideaID: item.id, archived: true) }
-                                } label: {
-                                    Label("Archive", systemImage: "archivebox.fill")
-                                }
-                                .tint(.gray)
-                            }
+                            .accessibilityLabel("Dismiss")
                         }
-                        .onMove(perform: ideaStore.moveIdeas)
-                        .moveDisabled(filter != .all)
+                        .foregroundStyle(Color.amux.cinnabarDeep)
+                        .padding(.vertical, 10)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                    }
+                    ForEach(feedIdeas) { item in
+                        IdeaFeedCard(
+                            item: item,
+                            author: actorByID[item.createdByActorID],
+                            onOpen: { navigationPath.append("idea:\(item.id)") },
+                            onToggleLike: {
+                                Task { await ideaStore.setLiked(ideaID: item.id, liked: !item.likedByMe) }
+                            }
+                        )
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                        .listRowSeparatorTint(Color.amux.hairline)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button {
+                                Task { await ideaStore.setArchived(ideaID: item.id, archived: true) }
+                            } label: {
+                                Label("Archive", systemImage: "archivebox.fill")
+                            }
+                            .tint(.gray)
+                        }
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
-                .environment(\.editMode, $editMode)
                 .refreshable {
                     await ideaStore.reload()
                 }
@@ -152,23 +129,6 @@ public struct IdeaListView: View {
         .background(Color.amux.mist)
         .navigationTitle(IdeaUIPresentation.pluralTitle)
         .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            if filter == .all, filteredIdeas.count > 1 {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.16)) {
-                            editMode = editMode.isEditing ? .inactive : .active
-                        }
-                    } label: {
-                        Image(systemName: editMode.isEditing ? "checkmark" : "arrow.up.arrow.down")
-                            .font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.primary)
-                    .accessibilityLabel(editMode.isEditing ? "Done sorting" : "Sort ideas")
-                }
-            }
-        }
         .safeAreaInset(edge: .bottom) {
             if !ideaStore.archivedIdeas.isEmpty {
                 Button {
@@ -193,44 +153,6 @@ public struct IdeaListView: View {
         }
         .sheet(isPresented: $showArchived) {
             ArchivedIdeasView(ideaStore: ideaStore)
-        }
-        .onChange(of: filter) { _, newValue in
-            if newValue != .all {
-                editMode = .inactive
-            }
-        }
-    }
-
-    private var emptyFilterRow: some View {
-        VStack(spacing: 6) {
-            Text(emptyFilterTitle)
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundStyle(Color.amux.basalt)
-            Text(emptyFilterSubtitle)
-                .font(.footnote)
-                .foregroundStyle(Color.amux.slate)
-        }
-        .frame(maxWidth: .infinity, minHeight: 180)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-    }
-
-    private var emptyFilterTitle: String {
-        switch filter {
-        case .all:  return String(localized: "No Ideas")
-        case .mine: return String(localized: "Nothing here yet")
-        case .open: return String(localized: "No open ideas")
-        case .done: return String(localized: "No completed ideas")
-        }
-    }
-
-    private var emptyFilterSubtitle: String {
-        switch filter {
-        case .all:  return String(localized: "Tap + to create an idea")
-        case .mine: return String(localized: "Ideas you create will show up here")
-        case .open: return String(localized: "Open ideas will appear once created")
-        case .done: return String(localized: "Mark an idea as Done to see it here")
         }
     }
 }

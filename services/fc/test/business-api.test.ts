@@ -1624,6 +1624,98 @@ test("GET /v1/ideas returns idea page", async () => {
   assert.deepEqual(repo.calls[0], { method: "listIdeas", args: { teamId: "team-1", archived: false, limit: 50, cursor: null } });
 });
 
+test("GET /v1/attachments/thumbnail resizes through the repository", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v1/attachments/thumbnail",
+    headers: { Authorization: "Bearer token" },
+    queryStringParameters: { path: "team/ideas/photo.jpg", width: "600" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(repo.calls[0], {
+    method: "downloadAttachmentThumbnail",
+    path: "team/ideas/photo.jpg",
+    bucket: "attachments",
+    width: 600,
+    quality: 70,
+  });
+});
+
+test("GET /v1/attachments/thumbnail takes a path, never a URL", async () => {
+  // The parameter names an object in a bucket this service already serves. A
+  // URL parameter would have made it a fetcher for anything the network can
+  // reach, so there is deliberately nowhere to put one.
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v1/attachments/thumbnail",
+    headers: { Authorization: "Bearer token" },
+    queryStringParameters: { url: "http://169.254.169.254/latest/meta-data/", width: "600" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(repo.calls.length, 0);
+});
+
+test("GET /v1/attachments/thumbnail refuses a width outside the allowed range", async () => {
+  const repo = fakeRepo();
+  for (const width of ["0", "4000", "abc", "600.5"]) {
+    const response = await handleBusinessApiRequest({
+      httpMethod: "GET",
+      path: "/v1/attachments/thumbnail",
+      headers: { Authorization: "Bearer token" },
+      queryStringParameters: { path: "team/ideas/photo.jpg", width },
+    }, { createRepository: () => repo });
+    assert.equal(response.statusCode, 400, `width=${width} should be refused`);
+  }
+  assert.equal(repo.calls.length, 0);
+});
+
+test("GET /v1/attachments/thumbnail refuses a bucket it does not serve", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "GET",
+    path: "/v1/attachments/thumbnail",
+    headers: { Authorization: "Bearer token" },
+    queryStringParameters: { path: "x.jpg", bucket: "secrets" },
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(repo.calls.length, 0);
+});
+
+test("PUT /v1/ideas/:ideaId/like sets the like state", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PUT",
+    path: "/v1/ideas/idea-1/like",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ liked: true }),
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { likeCount: 1, likedByMe: true });
+  assert.deepEqual(repo.calls[0], { method: "setIdeaLike", ideaId: "idea-1", liked: true });
+});
+
+test("PUT /v1/ideas/:ideaId/like rejects a missing liked flag", async () => {
+  // Not defaulting to true: a body without the flag is a caller bug, and
+  // guessing would turn a malformed unlike into a like.
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PUT",
+    path: "/v1/ideas/idea-1/like",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({}),
+  }, { createRepository: () => repo });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(JSON.parse(response.body).error.code, "validation_failed");
+  assert.equal(repo.calls.length, 0);
+});
+
 test("GET /v1/ideas/:ideaId returns 404 for missing idea", async () => {
   const response = await handleBusinessApiRequest({
     httpMethod: "GET",
@@ -2109,6 +2201,8 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async listMutedSessions() { calls.push({ method: "listMutedSessions" }); if (error) throw error; return { items: [] }; },
     async listIdeas(args) { calls.push({ method: "listIdeas", args }); if (error) throw error; return { items: ideaStore }; },
     async getIdea(ideaId) { calls.push({ method: "getIdea", ideaId }); if (error) throw error; return ideaStore.find(i => i.id === ideaId) ?? null; },
+    async setIdeaLike(ideaId, liked) { calls.push({ method: "setIdeaLike", ideaId, liked }); if (error) throw error; return { likeCount: liked ? 1 : 0, likedByMe: liked === true }; },
+    async downloadAttachmentThumbnail(path, opts: any = {}) { calls.push({ method: "downloadAttachmentThumbnail", path, ...opts }); if (error) throw error; return { mime: "image/jpeg", bytes: Buffer.from("thumb") }; },
     async createIdea(input) { calls.push({ method: "createIdea", input }); if (error) throw error; const idea = { id: input.id ?? "idea-new", teamId: input.teamId, title: input.title, description: input.description ?? null, archived: false, authorActorId: input.authorActorId, actorIds: input.actorIds ?? [], createdAt: "2026-05-27T01:00:00Z", updatedAt: "2026-05-27T01:00:00Z" }; ideaStore.push(idea); return idea; },
     async updateIdea(ideaId, patch) { calls.push({ method: "updateIdea", ideaId, patch }); if (error) throw error; const i = ideaStore.find(i => i.id === ideaId); if (!i) return null; if (patch.title !== undefined) i.title = patch.title; if (patch.description !== undefined) i.description = patch.description; return i; },
     async archiveIdea(ideaId) { calls.push({ method: "archiveIdea", ideaId }); if (error) throw error; const i = ideaStore.find(i => i.id === ideaId); if (i) i.archived = true; },

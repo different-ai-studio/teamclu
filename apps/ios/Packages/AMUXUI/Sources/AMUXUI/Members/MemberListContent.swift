@@ -26,6 +26,8 @@ public struct MemberListContent: View {
     /// Source of truth for the "current user has no accessible agent" notice.
     /// `nil` keeps the notice hidden (e.g. before the team is configured).
     let connectedAgentsStore: ConnectedAgentsStore?
+    /// Broker-backed agent presence for the row dots.
+    let agentPresenceStore: AgentPresenceStore?
     /// Invoked when the user taps the inline notice's CTA. Parent surfaces
     /// the existing MemberInviteSheet (Agent kind preset).
     let onAddYourAgent: (() -> Void)?
@@ -38,6 +40,7 @@ public struct MemberListContent: View {
         teamcluService: TeamcluService?,
         currentActorID: String? = nil,
         connectedAgentsStore: ConnectedAgentsStore? = nil,
+        agentPresenceStore: AgentPresenceStore? = nil,
         onAddYourAgent: (() -> Void)? = nil
     ) {
         self.store = store
@@ -47,6 +50,7 @@ public struct MemberListContent: View {
         self.teamcluService = teamcluService
         self.currentActorID = currentActorID
         self.connectedAgentsStore = connectedAgentsStore
+        self.agentPresenceStore = agentPresenceStore
         self.onAddYourAgent = onAddYourAgent
     }
 
@@ -63,7 +67,8 @@ public struct MemberListContent: View {
         guard !q.isEmpty else { return actors }
         let norm = q.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
         return actors.filter { a in
-            [a.displayName, a.roleLabel, a.defaultAgentType ?? "", a.actorId]
+            [a.displayName, a.roleLabel, a.roles.map(\.name).joined(separator: " "),
+             a.defaultAgentType ?? "", a.actorId]
                 .joined(separator: " ")
                 .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
                 .contains(norm)
@@ -150,13 +155,19 @@ public struct MemberListContent: View {
     @ViewBuilder
     private func detailLink(_ a: CachedActor) -> some View {
         NavigationLink(value: a.actorId) {
-            ActorRow(actor: a, isMe: a.actorId == currentActorID)
+            ActorRow(actor: a, isMe: a.actorId == currentActorID,
+                     devicePresence: devicePresence(a))
         }
         // Plain-list rows would otherwise pick up systemBackground (white)
         // and a default-tinted separator. Clear the fill so Mist shows
         // through and pin the hairline to the Hai token.
         .listRowBackground(Color.clear)
         .listRowSeparatorTint(Color.amux.hairline)
+    }
+
+    private func devicePresence(_ actor: CachedActor) -> AgentDevicePresence {
+        guard actor.isAgent, let agentPresenceStore else { return .unknown }
+        return agentPresenceStore.presence(forAgent: actor.actorId)
     }
 
     private func sectionHeader(title: String, count: Int) -> some View {
@@ -207,6 +218,18 @@ public struct MemberListContent: View {
 private struct ActorRow: View {
     let actor: CachedActor
     var isMe: Bool = false
+    var devicePresence: AgentDevicePresence = .unknown
+
+    /// `isMe` is exactly the "current user" case ActorPresence wants: you are
+    /// holding the phone, so your own row is online regardless of when the
+    /// heartbeat last landed. For agents the broker's retained state wins over
+    /// the heartbeat in both directions.
+    private var isOnline: Bool {
+        ActorPresence.isOnline(actorType: actor.actorType,
+                               lastActiveAt: actor.lastActiveAt,
+                               isCurrentUser: isMe,
+                               devicePresence: devicePresence)
+    }
 
     private var avatarInitials: String {
         let parts = actor.displayName
@@ -303,8 +326,16 @@ private struct ActorRow: View {
                        foreground: Color.amux.cinnabar,
                        background: Color.amux.cinnabar.opacity(0.10))
         }
+        // Elevated org roles only (`roles_users`, via CachedActor.isOwner /
+        // isAdmin). The subtitle already carries the full role label, so the
+        // pill answers the narrower "can this person administer the team?".
         if actor.isOwner {
             return Tag(text: String(localized: "OWNER"),
+                       foreground: Color.amux.basalt,
+                       background: Color.amux.pebble)
+        }
+        if actor.isAdmin {
+            return Tag(text: String(localized: "ADMIN"),
                        foreground: Color.amux.basalt,
                        background: Color.amux.pebble)
         }
@@ -357,9 +388,9 @@ private struct ActorRow: View {
     private var activeSessionsChip: some View {
         HStack(spacing: 4) {
             Circle()
-                .fill(actor.isOnline ? Color.amux.sage : Color.amux.slate)
+                .fill(isOnline ? Color.amux.sage : Color.amux.slate)
                 .frame(width: 6, height: 6)
-                .breathingOpacity(active: actor.isOnline, dim: 0.5)
+                .breathingOpacity(active: isOnline, dim: 0.5)
             Text("\(mockActiveSessions)")
                 .font(.caption)
                 .monospacedDigit()
@@ -407,7 +438,7 @@ private struct ActorRow: View {
                 }
             }
 
-            if actor.isOnline {
+            if isOnline {
                 Circle()
                     .fill(Color.amux.sage)
                     .frame(width: 11, height: 11)
@@ -436,10 +467,25 @@ struct ActorDetailView: View {
     var workspacesRepository: (any WorkspaceRepository)?
     var agentAccessRepository: (any AgentAccessRepository)?
     var teamResourceRepository: (any TeamResourceRepository)?
+    /// Signed-in user's actor id, so their own profile's presence dot is not
+    /// at the mercy of when the last heartbeat landed.
+    var currentActorID: String?
+    var agentPresenceStore: AgentPresenceStore?
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppOnboardingCoordinator.self) private var onboarding: AppOnboardingCoordinator?
     /// Nil until the first fetch lands, so the stat row can tell "loading"
-    /// from a genuine zero.
+    /// from a genuine zero. Agents only — a person installs none of these.
     @State private var resourceCounts: TeamResourceCounts?
+    /// The member equivalent, same nil-means-loading rule.
+    @State private var memberStats: MemberActivityStats?
+    /// Drives the push into skills / MCP / env. An optional rather than a
+    /// `NavigationLink(value:)` per block: the three blocks share one List
+    /// row, and a row activates *every* link it contains, so one tap used to
+    /// push all three in the same frame. One optional can only hold one.
+    @State private var resourceRoute: ActorResourceRoute?
+    /// Its own optional for the same reason `resourceRoute` is one: the member
+    /// blocks share a List row, and a row activates every link it contains.
+    @State private var ideasRoute: ActorIdeasRoute?
     @State private var authorizedHumansStore: AgentAuthorizedHumansStore?
     @State private var workspaceStore: WorkspaceStore?
     @State private var newWorkspacePath = ""
@@ -581,8 +627,7 @@ struct ActorDetailView: View {
             }
             if actor.isAgent {
                 myDefaultSection
-                defaultsSection
-                Section("Workspaces") {
+                Section {
                     Group {
                     if let workspaceStore, workspaceStore.isLoading && workspaceStore.workspaces.isEmpty {
                         ProgressView("Loading workspaces…")
@@ -593,14 +638,7 @@ struct ActorDetailView: View {
                                 .foregroundStyle(.secondary)
                         } else {
                             ForEach(workspaceStore.workspaces) { workspace in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(workspace.displayName)
-                                        .font(.body)
-                                    Text(workspace.path)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
+                                workspaceRow(workspace)
                             }
                         }
                     } else {
@@ -656,8 +694,29 @@ struct ActorDetailView: View {
                             .font(.footnote)
                             .foregroundStyle(Color.amux.cinnabarDeep)
                     }
+
+                    if isSavingDefaults {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Saving…")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if let defaultsErrorMessage {
+                        Text(defaultsErrorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(Color.amux.cinnabarDeep)
+                    }
                     }
                     .listRowBackground(Color.amux.paper)
+                } header: {
+                    Text("Workspaces")
+                } footer: {
+                    Text("The starred directory is this agent's default — pre-selected when it joins a new session. Tap another to move the star.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
             }
             Section {
@@ -762,11 +821,19 @@ struct ActorDetailView: View {
             myDefaultAgentID = await store.getMemberDefaultAgent()
         }
         .task(id: actor.actorId) {
-            guard let repo = teamResourceRepository else { return }
+            // Three requests a member's page no longer draws anything from.
+            guard !actor.isMember, let repo = teamResourceRepository else { return }
             resourceCounts = await repo.counts(teamID: actor.teamId, actorID: actor.actorId)
         }
-        .navigationDestination(for: ActorResourceRoute.self) { route in
+        .task(id: actor.actorId) {
+            guard actor.isMember else { return }
+            memberStats = await loadMemberStats()
+        }
+        .navigationDestination(item: $resourceRoute) { route in
             ActorResourceListView(route: route, repository: teamResourceRepository)
+        }
+        .navigationDestination(item: $ideasRoute) { route in
+            ActorIdeasListView(route: route, repositories: memberStatsRepositories())
         }
         .sheet(isPresented: $showInviteSheet) {
             if let createdInvite {
@@ -816,7 +883,12 @@ struct ActorDetailView: View {
                     targetActorID: actor.actorId
                 )
             } else {
-                let role = TeamRole(rawValue: actor.teamRole ?? "member") ?? .member
+                // Same source as everything else on this screen: the org role
+                // assignment, with the legacy derived field only as a cold-cache
+                // fallback. `owner` has no InviteKind — it falls to `.member`,
+                // as it always has.
+                let roleCode = actor.roles.highestPrivilege?.code ?? actor.teamRole ?? "member"
+                let role = TeamRole(rawValue: roleCode) ?? .member
                 input = InviteCreateInput(
                     kind: .member,
                     displayName: actor.displayName,
@@ -955,7 +1027,8 @@ struct ActorDetailView: View {
         ZStack(alignment: .bottomTrailing) {
             AgentAvatar(actor: actor, size: 72, cornerRadius: 18)
                 .shadow(color: heroAvatarShadow.opacity(0.18), radius: 14, y: 4)
-            if actor.isOnline {
+            if actor.isOnline(currentActorID: currentActorID,
+                              devicePresence: heroDevicePresence) {
                 ZStack {
                     Circle()
                         .fill(Color.amux.sage)
@@ -971,6 +1044,11 @@ struct ActorDetailView: View {
                 .offset(x: 2, y: 2)
             }
         }
+    }
+
+    private var heroDevicePresence: AgentDevicePresence {
+        guard actor.isAgent, let agentPresenceStore else { return .unknown }
+        return agentPresenceStore.presence(forAgent: actor.actorId)
     }
 
     private var heroAvatarShadow: Color {
@@ -1003,34 +1081,32 @@ struct ActorDetailView: View {
 
     private struct HeroTag { let text: String; let fg: Color; let bg: Color }
 
+    /// Members: one chip per org role assignment (`roles_users`), which is what
+    /// the role UI is supposed to read — see `ActorRoleRef`. Agents: nothing.
+    /// The three backend names that used to sit here ("Claude code" /
+    /// "Opencode" / "Codex") were a hardcoded placeholder, and they outlived
+    /// what they described — the daemon runs pi and only pi (ADR-0014), so they
+    /// advertised three backends no agent has.
     private var heroTags: [HeroTag] {
-        var out: [HeroTag] = []
-        if actor.isAgent {
-            // Placeholder: surface the supported agent backends until the
-            // real per-agent type/capability metadata lands.
-            for name in ["Claude code", "Opencode", "Codex"] {
-                out.append(HeroTag(text: name,
-                                   fg: Color.amux.basalt,
-                                   bg: Color.amux.pebble))
-            }
+        actor.displayRoles.map { role in
+            HeroTag(text: role.label, fg: Color.amux.basalt, bg: Color.amux.pebble)
         }
-        if actor.isOwner {
-            out.append(HeroTag(text: "Owner",
-                               fg: Color.amux.basalt,
-                               bg: Color.amux.pebble))
-        }
-        return out
     }
 
+    /// Agents count what is installed on them; people count what they did.
+    ///
+    /// Skills and MCP are an agent's installs — a person has neither, and the
+    /// env block showed the team's number, which read identically on
+    /// everybody's page and so said nothing about the person whose page it was.
     @ViewBuilder
     private var statsSection: some View {
         Section {
-            HStack(spacing: 0) {
-                statBlock(.skills)
-                statDivider
-                statBlock(.mcp)
-                statDivider
-                statBlock(.env)
+            Group {
+                if actor.isMember {
+                    memberStatRow
+                } else {
+                    agentStatRow
+                }
             }
             .padding(.vertical, 8)
             .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
@@ -1038,53 +1114,143 @@ struct ActorDetailView: View {
         }
     }
 
+    private var agentStatRow: some View {
+        HStack(spacing: 0) {
+            statBlock(.skills)
+            statDivider
+            statBlock(.mcp)
+            statDivider
+            statBlock(.env)
+        }
+    }
+
+    private var memberStatRow: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(MemberStatKind.allCases.enumerated()), id: \.offset) { index, kind in
+                if index > 0 { statDivider }
+                memberStatBlock(kind)
+            }
+        }
+    }
+
+    /// The same shape as `statBlock`, minus the tap: there is nothing to push
+    /// into. A skills count opens a list; a token count is the whole answer.
+    private func memberStatBlock(_ kind: MemberStatKind) -> some View {
+        VStack(spacing: 2) {
+            Group {
+                if let memberStats {
+                    Text(kind.value(from: memberStats))
+                        .font(.system(size: 22, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                } else {
+                    // Same placeholder rule as the agent row: a real zero and
+                    // "not loaded yet" mean different things.
+                    Text("—")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 3) {
+                Text(kind.title.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.2)
+                    .foregroundStyle(.secondary)
+                if let tag = kind.scopeTag {
+                    Text(tag)
+                        .font(.system(size: 8, weight: .bold))
+                        .tracking(0.3)
+                        .foregroundStyle(Color.amux.basalt)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.amux.pebble)
+                        )
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .modifier(MemberStatTap(kind: kind, onOpen: openIdeas))
+    }
+
+    private func openIdeas() {
+        ideasRoute = ActorIdeasRoute(
+            actorID: actor.actorId,
+            actorName: actor.displayName,
+            teamID: actor.teamId
+        )
+    }
+
     /// Skills and MCP are this actor's installs; env is the team's set and
     /// reads the same on every actor's page. The `TEAM` tag carries that
     /// difference — without it three side-by-side numbers imply one scope.
     private func statBlock(_ kind: TeamResourceKind) -> some View {
-        NavigationLink(value: ActorResourceRoute(
-            actorID: actor.actorId,
-            actorName: actor.displayName,
-            teamID: actor.teamId,
-            kind: kind
-        )) {
-            VStack(spacing: 2) {
-                Group {
-                    if let counts = resourceCounts {
-                        Text("\(counts.value(for: kind))")
-                            .font(.system(size: 22, weight: .bold))
-                            .monospacedDigit()
-                            .foregroundStyle(.primary)
-                    } else {
-                        // Placeholder rather than 0: a real zero and "not
-                        // loaded yet" mean different things here.
-                        Text("—")
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                HStack(spacing: 3) {
-                    Text(kind.title.uppercased())
-                        .font(.caption2.weight(.semibold))
-                        .tracking(0.2)
+        VStack(spacing: 2) {
+            Group {
+                if let counts = resourceCounts {
+                    Text("\(counts.value(for: kind))")
+                        .font(.system(size: 22, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                } else {
+                    // Placeholder rather than 0: a real zero and "not
+                    // loaded yet" mean different things here.
+                    Text("—")
+                        .font(.system(size: 22, weight: .bold))
                         .foregroundStyle(.secondary)
-                    if !kind.isActorScoped {
-                        Text("TEAM")
-                            .font(.system(size: 8, weight: .bold))
-                            .tracking(0.3)
-                            .foregroundStyle(Color.amux.basalt)
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 1)
-                            .background(
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(Color.amux.pebble)
-                            )
-                    }
                 }
             }
-            .frame(maxWidth: .infinity)
+            HStack(spacing: 3) {
+                Text(kind.title.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.2)
+                    .foregroundStyle(.secondary)
+                if !kind.isActorScoped {
+                    Text("TEAM")
+                        .font(.system(size: 8, weight: .bold))
+                        .tracking(0.3)
+                        .foregroundStyle(Color.amux.basalt)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.amux.pebble)
+                        )
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        // A tap gesture rather than a link: a gesture only fires inside this
+        // third's own frame, where a List row hands any tap to every link it
+        // contains. VoiceOver still needs to hear a button, hence the traits.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            resourceRoute = ActorResourceRoute(
+                actorID: actor.actorId,
+                actorName: actor.displayName,
+                teamID: actor.teamId,
+                kind: kind
+            )
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private func memberStatsRepositories() -> MemberStatsRepositories? {
+        MemberStatsRepositories.make(onboarding: onboarding, callerActorID: currentActorID)
+    }
+
+    /// Nil when there is no signed-in Cloud API session, which leaves the row
+    /// showing "—" rather than a fabricated zero.
+    private func loadMemberStats() async -> MemberActivityStats? {
+        guard let repositories = memberStatsRepositories() else { return nil }
+        return await MemberActivityStatsLoader.load(
+            teamID: actor.teamId,
+            actorID: actor.actorId,
+            telemetry: repositories.telemetry,
+            ideas: repositories.ideas
+        )
     }
 
     private var statDivider: some View {
@@ -1222,102 +1388,60 @@ struct ActorDetailView: View {
         }
     }
 
-    // MARK: - Defaults section
+    // MARK: - Default workspace
     //
-    // Per-agent defaults that New Session and Add Agent flows read so the user
-    // doesn't have to repeat workspace + agent-type picks. Backed by
-    // `agents.default_workspace_id` and `agents.default_agent_type`.
-
-    private static let agentKindOptions: [(String, String)] = [
-        ("claude", "Claude"),
-        ("opencode",    "OpenCode"),
-        ("codex",       "Codex"),
-    ]
-
-    private var supportedAgentKindOptions: [(String, String)] {
-        let supported = Set(actor.agentTypes.map {
-            $0 == "claude_code" || $0 == "claude-code" ? "claude" : $0
-        })
-        guard !supported.isEmpty else { return Self.agentKindOptions }
-        return Self.agentKindOptions.filter { supported.contains($0.0) }
-    }
+    // The agent's default workspace (`agents.default_workspace_id`) — what New
+    // Session and Add Agent pre-select. It used to be a separate "Default
+    // workspace" picker listing the same directories the Workspaces section
+    // below already prints; the star marks it in place instead, so there is one
+    // list of directories and one way to read which is the default.
+    //
+    // Only a set is offered, never a clear: `update_agent_defaults` coalesces a
+    // null workspace onto the stored value, so the picker's "None" option was a
+    // silent no-op. The section that held it also carried an "Agent type"
+    // picker offering Claude / OpenCode / Codex; the daemon runs pi and only pi
+    // (ADR-0014), and the RPC rejects a type that isn't in `agents.agent_types`,
+    // so every choice it offered was an error waiting to happen.
 
     @ViewBuilder
-    private var defaultsSection: some View {
-        Section {
-            Group {
-                Picker("Default workspace", selection: defaultWorkspaceBinding) {
-                    Text("None").tag(String?.none)
-                    if let workspaceStore {
-                        ForEach(workspaceStore.workspaces) { ws in
-                            Text(ws.displayName.isEmpty ? ws.path : ws.displayName)
-                                .tag(Optional(ws.id))
-                        }
-                    }
+    private func workspaceRow(_ workspace: WorkspaceRecord) -> some View {
+        let isDefault = actor.defaultWorkspaceId == workspace.id
+        Button {
+            guard !isDefault else { return }
+            setDefaultWorkspace(workspace.id)
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(workspace.displayName.isEmpty ? workspace.path : workspace.displayName)
+                        .font(.body)
+                        .foregroundStyle(Color.amux.onyx)
+                    Text(workspace.path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .disabled(isSavingDefaults || (workspaceStore?.workspaces.isEmpty ?? true))
-
-                Picker("Agent type", selection: agentKindBinding) {
-                    ForEach(supportedAgentKindOptions, id: \.0) { kind, label in
-                        Text(label).tag(kind)
-                    }
-                }
-                .disabled(isSavingDefaults)
-
-                if isSavingDefaults {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("Saving…")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if let defaultsErrorMessage {
-                    Text(defaultsErrorMessage)
-                        .font(.footnote)
-                        .foregroundStyle(Color.amux.cinnabarDeep)
-                }
+                Spacer(minLength: 8)
+                Image(systemName: isDefault ? "star.fill" : "star")
+                    .font(.footnote)
+                    .foregroundStyle(isDefault ? Color.amux.cinnabar : Color.amux.slate.opacity(0.45))
             }
-            .listRowBackground(Color.amux.paper)
-        } header: {
-            Text("Defaults")
-        } footer: {
-            Text("Used when this agent is added to a new session — picks are pre-filled, no extra taps needed.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(isSavingDefaults)
+        .accessibilityLabel(Text(workspace.path))
+        .accessibilityValue(isDefault
+                            ? Text("Default workspace")
+                            : Text("Not the default workspace"))
+        .accessibilityHint(isDefault ? Text("") : Text("Makes this the default workspace"))
     }
 
-    private var defaultWorkspaceBinding: Binding<String?> {
-        Binding(
-            get: { actor.defaultWorkspaceId },
-            set: { newValue in saveDefaults(workspaceID: newValue, defaultAgentType: nil) }
-        )
-    }
-
-    private var agentKindBinding: Binding<String> {
-        Binding(
-            get: {
-                let raw = actor.defaultAgentType ?? actor.agentTypes.first ?? "claude"
-                if raw == "claude_code" { return "claude" }
-                return supportedAgentKindOptions.contains(where: { $0.0 == raw }) ? raw : (supportedAgentKindOptions.first?.0 ?? "claude")
-            },
-            set: { newValue in saveDefaults(workspaceID: nil, defaultAgentType: newValue) }
-        )
-    }
-
-    private func saveDefaults(workspaceID: String?, defaultAgentType: String?) {
+    private func setDefaultWorkspace(_ workspaceID: String) {
         guard !isSavingDefaults else { return }
-        // Apply the local change immediately so the picker reflects the new
-        // value before the round-trip completes. ActorStore.reload() will
-        // overwrite if the RPC succeeds.
-        if let workspaceID {
-            actor.defaultWorkspaceId = workspaceID
-        }
-        if let defaultAgentType {
-            actor.defaultAgentType = defaultAgentType
-        }
+        // Apply the local change immediately so the star moves before the
+        // round-trip completes. ActorStore.reload() will overwrite if the RPC
+        // succeeds.
+        let previous = actor.defaultWorkspaceId
+        actor.defaultWorkspaceId = workspaceID
         isSavingDefaults = true
         defaultsErrorMessage = nil
         let actorID = actor.actorId
@@ -1326,14 +1450,42 @@ struct ActorDetailView: View {
                 actorID: actorID,
                 defaultWorkspaceID: workspaceID,
                 agentKind: nil,
-                defaultAgentType: defaultAgentType
+                defaultAgentType: nil
             )
             await MainActor.run {
                 isSavingDefaults = false
                 if result == nil {
-                    defaultsErrorMessage = store.errorMessage ?? String(localized: "Failed to save defaults.")
+                    // Put the star back where it was — leaving it on the row
+                    // the user tapped would claim a default the server rejected.
+                    actor.defaultWorkspaceId = previous
+                    defaultsErrorMessage = store.errorMessage ?? String(localized: "Failed to set the default workspace.")
                 }
             }
+        }
+    }
+}
+
+/// The tap belongs to the ideas block alone — there is nothing behind a token
+/// count. A modifier rather than an `if` inside the block keeps both blocks one
+/// view type, so the row is not rebuilt with a new identity when the numbers
+/// land.
+private struct MemberStatTap: ViewModifier {
+    let kind: MemberStatKind
+    let onOpen: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if kind.opensList {
+            content
+                // A gesture rather than a link, same as the agent blocks: a
+                // gesture only fires inside this block's own frame, where a
+                // List row hands any tap to every link it contains.
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onOpen)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+        } else {
+            content.accessibilityElement(children: .combine)
         }
     }
 }

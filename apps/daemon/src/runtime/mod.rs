@@ -1,3 +1,4 @@
+pub mod attachment_filename;
 pub mod acp_envelope;
 pub mod acp_event_frame;
 pub mod acp_live_transport;
@@ -30,6 +31,7 @@ pub(crate) use native_skill_fallback_guard::{
 pub mod permission_policy;
 pub mod prompt_attachments;
 pub mod refresh;
+pub mod session_attach;
 pub mod session_prompt;
 pub mod supervisor;
 pub mod team_cloud_config;

@@ -15,6 +15,53 @@ use uuid::Uuid;
 
 const RECENT_EVENT_CACHE_LIMIT: usize = 512;
 
+fn gateway_attachment_json(
+    attachments: Vec<teamclu_gateway::AttachmentRecord>,
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        attachments
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "filename": a.filename,
+                    "mime": a.mime,
+                    "size": a.size,
+                    "bucket_path": a.bucket_path,
+                    "local_path": a.local_path,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Turn-final agent replies carry attachment rows outside `metadata_json` until
+/// emit time. Cloud `insert_message` must see the same metadata the clients read.
+fn metadata_json_with_gateway_attachments(
+    metadata_json: &str,
+    attachments: &[teamclu_gateway::AttachmentRecord],
+) -> String {
+    if attachments.is_empty() {
+        return metadata_json.to_string();
+    }
+    let attachment_value = gateway_attachment_json(attachments.to_vec());
+    match serde_json::from_str::<serde_json::Value>(metadata_json) {
+        Ok(serde_json::Value::Object(mut map)) => {
+            map.insert("attachments".to_string(), attachment_value);
+            serde_json::to_string(&serde_json::Value::Object(map))
+                .unwrap_or_else(|_| metadata_json.to_string())
+        }
+        Ok(serde_json::Value::Null) | Err(_) => serde_json::to_string(&serde_json::json!({
+            "attachments": attachment_value,
+        }))
+        .unwrap_or_else(|_| metadata_json.to_string()),
+        Ok(other) => serde_json::to_string(&serde_json::json!({
+            "value": other,
+            "attachments": attachment_value,
+        }))
+        .unwrap_or_else(|_| metadata_json.to_string()),
+    }
+}
+
 /// The "已经处理过这条" gate, shared by everything that can introduce a message
 /// into a session.
 ///
@@ -1177,6 +1224,8 @@ impl SessionManager {
         sequence: u64,
         persist_backend: bool,
         backend: Option<&std::sync::Arc<dyn Backend>>,
+        attachments: Option<Vec<teamclu_gateway::AttachmentRecord>>,
+        attachment_urls: Vec<String>,
     ) -> CloudPersist {
         // An agent reply addresses no one, and it is written by the same daemon
         // that would answer a mention — so there is nothing to claim either.
@@ -1194,6 +1243,8 @@ impl SessionManager {
                 claim_before_publish: false,
                 persist_local: true,
                 persist_backend,
+                attachments,
+                attachment_urls,
             },
             backend,
         )
@@ -1234,7 +1285,15 @@ impl SessionManager {
             claim_before_publish,
             persist_local,
             persist_backend,
+            attachments,
+            attachment_urls,
         } = write;
+        let metadata_json = match attachments.as_ref() {
+            Some(rows) if !rows.is_empty() => {
+                metadata_json_with_gateway_attachments(metadata_json, rows)
+            }
+            _ => metadata_json.to_string(),
+        };
         let message_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
         if claim_before_publish {
@@ -1249,9 +1308,10 @@ impl SessionManager {
             content: content.to_string(),
             created_at: now.timestamp(),
             model: model.to_string(),
-            metadata_json: metadata_json.to_string(),
+            metadata_json: metadata_json.clone(),
             turn_id: turn_id.to_string(),
             reply_to_message_id: reply_to_message_id.to_string(),
+            attachment_urls,
             ..Default::default()
         };
 
@@ -1272,7 +1332,7 @@ impl SessionManager {
         let envelope = crate::proto::teamclu::SessionMessageEnvelope {
             message: Some(proto_msg.clone()),
             mention_actor_ids: crate::daemon::session_events::parse_mention_actor_ids(
-                metadata_json,
+                &metadata_json,
             ),
         };
         if let Err(e) = self
@@ -1304,7 +1364,7 @@ impl SessionManager {
         let team_id = self.team_id.clone();
         // message_kind_to_string is the pub(crate) fn defined later in this file.
         let kind_str = message_kind_to_string(kind as i32);
-        if let Err(e) = sb
+        let insert_result = sb
             .insert_message(
                 &message_id,
                 &team_id,
@@ -1312,14 +1372,15 @@ impl SessionManager {
                 sender_actor_id,
                 &kind_str,
                 content,
-                metadata_json,
+                &metadata_json,
                 model,
                 turn_id,
                 reply_to_message_id,
                 sequence,
             )
             .await
-        {
+            .map(|_| message_id.clone());
+        if let Err(e) = insert_result {
             warn!(?e, "backend insert_message failed");
             return CloudPersist::Failed;
         }
@@ -1369,6 +1430,8 @@ pub struct SessionMessageWrite<'a> {
     pub persist_local: bool,
     /// Insert into the cloud `messages` table.
     pub persist_backend: bool,
+    pub attachments: Option<Vec<teamclu_gateway::AttachmentRecord>>,
+    pub attachment_urls: Vec<String>,
 }
 
 impl SessionManager {
@@ -1518,6 +1581,11 @@ impl SessionManager {
             self.topics.actor_rpc_req(),
             self.topics.actor_notify(),
             self.topics.actor_rpc_res(),
+            // One topic for every session this actor is in. Subscribed here,
+            // with the other team topics, so it is in place before any
+            // session/live restore — an agent must not be deaf during the
+            // window where per-session subscriptions are still being replayed.
+            self.topics.actor_inbox(),
         ]
     }
 
@@ -2018,6 +2086,8 @@ mod tests {
             7,
             false,
             None,
+            None,
+            Vec::new(),
         )
         .await;
 
@@ -2049,5 +2119,25 @@ mod tests {
         let d = MessageDedup::new();
         assert!(d.claim_message("s1", ""));
         assert!(d.claim_message("s1", ""));
+    }
+
+    #[test]
+    fn metadata_json_with_gateway_attachments_preserves_turn_metadata() {
+        let rows = vec![teamclu_gateway::AttachmentRecord {
+            filename: "r.pdf".to_string(),
+            mime: "application/pdf".to_string(),
+            size: 42,
+            bucket_path: "teams/t/s/r.pdf".to_string(),
+            local_path: None,
+        }];
+        let merged = super::metadata_json_with_gateway_attachments(
+            r#"{"turn_status":"idle","pi_session":"pi:abc"}"#,
+            &rows,
+        );
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["turn_status"], "idle");
+        assert_eq!(v["pi_session"], "pi:abc");
+        assert_eq!(v["attachments"].as_array().unwrap().len(), 1);
+        assert_eq!(v["attachments"][0]["filename"], "r.pdf");
     }
 }
