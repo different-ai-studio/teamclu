@@ -102,3 +102,39 @@ test("resolveLayers: omitted uses defaults; [] uses none", () => {
     layerArn(region, "Java17", 3),
   ]);
 });
+
+// ---------------------------------------------------------------------------
+// Layer references: the region is the platform's to know, not the author's.
+// ---------------------------------------------------------------------------
+
+test("layers: an ARN from another region is refused here, naming the deploy region", () => {
+  assert.throws(
+    () => resolveLayers("cn-shenzhen", "node", [layerArn("cn-hangzhou", "Nodejs20", 3)]),
+    (e: any) => {
+      const m = String(e?.message ?? e);
+      return /cn-hangzhou/.test(m) && /cn-shenzhen/.test(m) && /Nodejs20:3/.test(m);
+    },
+  );
+});
+
+test("layers: shorthand fills in the region so the author never writes one", () => {
+  assert.deepEqual(resolveLayers("cn-shenzhen", "node", ["Nodejs20:3"]), [
+    layerArn("cn-shenzhen", "Nodejs20", 3),
+  ]);
+  // The same file deploys to a different region without being edited.
+  assert.deepEqual(resolveLayers("cn-beijing", "node", ["Nodejs20:3"]), [
+    layerArn("cn-beijing", "Nodejs20", 3),
+  ]);
+});
+
+test("layers: a matching-region ARN passes through untouched", () => {
+  const arn = layerArn("cn-shenzhen", "Python310", 1);
+  assert.deepEqual(resolveLayers("cn-shenzhen", "node", [arn]), [arn]);
+});
+
+test("layers: garbage is refused with a message naming both accepted forms", () => {
+  assert.throws(
+    () => resolveLayers("cn-shenzhen", "node", ["Nodejs20"]),
+    (e: any) => /Name:version/.test(String(e?.message ?? e)),
+  );
+});

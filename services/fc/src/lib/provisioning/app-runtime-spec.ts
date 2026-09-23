@@ -1,4 +1,5 @@
 import { ApiError } from "../http-utils.js";
+import { parseLayerRef, type LayerRef } from "./app-runtime-profiles.js";
 
 export type AppBuildKind =
   | "node"
@@ -66,11 +67,6 @@ const LAYER_VERSIONS: Record<Exclude<AppBuildKind, "container">, { name: string;
   java: { name: "Java17", version: 3 },
 };
 
-const OFFICIAL_LAYER_ARN =
-  /^acs:fc:[a-z0-9-]+:official:layers\/[A-Za-z0-9._-]+\/versions\/\d+$/;
-const ACCOUNT_LAYER_ARN =
-  /^acs:fc:[a-z0-9-]+:\d+:layers\/[A-Za-z0-9._-]+\/versions\/\d+$/;
-
 export function isContainerKind(kind: string): boolean {
   return kind === "container";
 }
@@ -85,6 +81,15 @@ export function defaultLayersForKind(region: string, kind: AppBuildKind): string
   return [layerArn(region, pin.name, pin.version)];
 }
 
+/**
+ * The layer ARNs to send to Function Compute.
+ *
+ * Two things happen here that cannot happen at parse time, because both need
+ * the deploy region and the repo file is written without knowing it: shorthand
+ * is expanded, and a full ARN naming another region is refused. FC would refuse
+ * it too, a build-and-deploy later, as `cross-region access is not allowed` —
+ * which names no region you could have used instead.
+ */
 export function resolveLayers(
   region: string,
   kind: AppBuildKind,
@@ -92,17 +97,35 @@ export function resolveLayers(
 ): string[] {
   if (layers === undefined) return defaultLayersForKind(region, kind);
   if (layers.length === 0) return [];
-  for (const arn of layers) {
-    if (!isValidLayerArn(arn)) {
-      throw new ApiError(400, "validation_failed", `start.layers contains an invalid layer ARN: ${arn}`);
+  return layers.map((raw) => {
+    const ref = requireLayerRef(raw);
+    if (ref.kind === "shorthand") return layerArn(region, ref.name, ref.version);
+    if (ref.region !== region) {
+      const fix =
+        ref.kind === "official"
+          ? `write "${ref.name}:${ref.version}" and the region is filled in for you, or use ${layerArn(region, ref.name, ref.version)}`
+          : `use the ${region} copy of that layer`;
+      throw new ApiError(
+        400,
+        "validation_failed",
+        `start.layers names a layer in ${ref.region}, but this app deploys to ${region} — a layer ARN must match the deploy region. To fix: ${fix}.`,
+      );
     }
-  }
-  return [...layers];
+    return raw.trim();
+  });
 }
 
-function isValidLayerArn(arn: string): boolean {
-  const trimmed = arn.trim();
-  return OFFICIAL_LAYER_ARN.test(trimmed) || ACCOUNT_LAYER_ARN.test(trimmed);
+/** Shape-check a layer reference without needing to know the region yet. */
+function requireLayerRef(raw: string): LayerRef {
+  const ref = parseLayerRef(raw);
+  if (!ref) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      `start.layers contains an invalid layer reference: ${raw} (expected an FC layer ARN, or "Name:version" for an official layer)`,
+    );
+  }
+  return ref;
 }
 
 function isBuildKind(raw: string): raw is AppBuildKind {
@@ -198,7 +221,9 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
   let layers: string[] | undefined;
   if (s.layers !== undefined) {
     layers = parseStringArray(s.layers, "start.layers", { required: true }) ?? [];
-    resolveLayers("", build.kind, layers);
+    // Shape only. The region check needs the deploy region, which this file is
+    // written without, so it waits for `resolveLayers`.
+    for (const raw of layers) requireLayerRef(raw);
   }
 
   const container = isContainerKind(build.kind);
