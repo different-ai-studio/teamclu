@@ -219,9 +219,7 @@ final class AMUXSessionMessageRegressionTests: XCTestCase {
         if app.tabBars.buttons["Sessions"].waitForExistence(timeout: 6) {
             return
         }
-        let getStarted = app.buttons["welcome.getStartedButton"]
-        XCTAssertTrue(getStarted.waitForExistence(timeout: 6))
-        getStarted.tap()
+        XCTAssertTrue(app.openLoginFromOnboarding())
 
         let methodPicker = app.segmentedControls["login.methodPicker"]
         XCTAssertTrue(methodPicker.waitForExistence(timeout: 3))

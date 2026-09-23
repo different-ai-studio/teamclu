@@ -40,12 +40,10 @@ final class AMUXAuthUITests: XCTestCase {
     @MainActor
     func testPasswordSignInFormIsReachable() throws {
         // If already logged in the welcome screen won't appear — that's fine.
-        let getStarted = app.buttons["welcome.getStartedButton"]
-        guard getStarted.waitForExistence(timeout: 6) else {
+        guard app.openLoginFromOnboarding() else {
             // Already authenticated; registration screen is not shown.
             return
         }
-        getStarted.tap()
 
         let emailField = app.textFields["login.emailField"]
         XCTAssertTrue(emailField.waitForExistence(timeout: 5), "Email field should appear on LoginView")
@@ -72,6 +70,31 @@ final class AMUXAuthUITests: XCTestCase {
         XCTAssertTrue(submitButton.isEnabled, "Submit should be enabled once both fields are filled")
     }
 
+    // MARK: - Onboarding: start a new team
+
+    /// Choice → "Start a new team" → desktop-download guide → sign-in.
+    @MainActor
+    func testStartNewTeamPathReachesDesktopGuideThenLogin() throws {
+        let getStarted = app.buttons["welcome.getStartedButton"]
+        let create = app.buttons["onboarding.createButton"]
+        if getStarted.waitForExistence(timeout: 6) {
+            getStarted.tap()
+        }
+        guard create.waitForExistence(timeout: 3) else {
+            // Already authenticated; onboarding is not shown.
+            return
+        }
+        create.tap()
+
+        XCTAssertTrue(app.buttons["desktopGuide.shareButton"].waitForExistence(timeout: 5),
+                      "Desktop guide should offer to share the download link")
+        XCTAssertTrue(app.buttons["desktopGuide.copyButton"].exists)
+
+        app.buttons["desktopGuide.continueButton"].tap()
+        XCTAssertTrue(app.textFields["login.emailField"].waitForExistence(timeout: 5),
+                      "Continuing from the desktop guide should reach LoginView")
+    }
+
     // MARK: - Sign-in + MQTT connection
 
     /// Full E2E test: signs in with the pre-created test account, then verifies the Sessions
@@ -91,9 +114,7 @@ final class AMUXAuthUITests: XCTestCase {
         }
 
         // Not authenticated — go through the login flow.
-        let getStarted = app.buttons["welcome.getStartedButton"]
-        XCTAssertTrue(getStarted.waitForExistence(timeout: 6), "WelcomeView should appear when not authenticated")
-        getStarted.tap()
+        XCTAssertTrue(app.openLoginFromOnboarding(), "Onboarding should appear when not authenticated")
 
         let methodPicker = app.segmentedControls["login.methodPicker"]
         XCTAssertTrue(methodPicker.waitForExistence(timeout: 3))
@@ -133,9 +154,7 @@ final class AMUXAuthUITests: XCTestCase {
 
         // Reach the main UI (sign in if needed).
         if !app.tabBars.buttons["Actors"].waitForExistence(timeout: 6) {
-            let getStarted = app.buttons["welcome.getStartedButton"]
-            XCTAssertTrue(getStarted.waitForExistence(timeout: 6))
-            getStarted.tap()
+            XCTAssertTrue(app.openLoginFromOnboarding())
 
             let methodPicker = app.segmentedControls["login.methodPicker"]
             XCTAssertTrue(methodPicker.waitForExistence(timeout: 3))

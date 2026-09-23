@@ -120,10 +120,8 @@ final class AMUXSessionStreamingUITests: XCTestCase {
         if app.tabBars.buttons["Sessions"].waitForExistence(timeout: 6) {
             return
         }
-        let getStarted = app.buttons["welcome.getStartedButton"]
-        XCTAssertTrue(getStarted.waitForExistence(timeout: 6),
-                      "WelcomeView should appear when not authenticated")
-        getStarted.tap()
+        XCTAssertTrue(app.openLoginFromOnboarding(),
+                      "Onboarding should appear when not authenticated")
 
         let methodPicker = app.segmentedControls["login.methodPicker"]
         XCTAssertTrue(methodPicker.waitForExistence(timeout: 3))

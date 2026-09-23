@@ -187,6 +187,176 @@ struct AppOnboardingCoordinatorTests {
         #expect(defaults.string(forKey: "teamclu.activeTeamID") == nil)
     }
 
+    // MARK: - Onboarding intent (join vs create)
+
+    private static let autoCreated = CreatedTeam(
+        team: TeamSummary(id: "team-auto", name: "Auto Team", slug: "auto-team", role: "owner"),
+        memberActorID: "member-auto",
+        workspaceID: "workspace-auto",
+        workspaceName: "General"
+    )
+
+    @MainActor
+    @Test("a user who chose to join an existing team is not given a fresh team when they have none")
+    func joinIntentWithoutTeamsShowsNoTeam() async throws {
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: nil, teams: []),
+            createdTeam: Self.autoCreated
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+        coordinator.onboardingIntent = .join
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .noTeam)
+        #expect(await store.recordedBootstrapCallCount() == 0)
+        #expect(coordinator.currentContext == nil)
+        // Still waiting on an invite: the choice must survive a relaunch.
+        #expect(coordinator.onboardingIntent == .join)
+    }
+
+    @MainActor
+    @Test("a user who chose to create a team gets one, and the choice is cleared")
+    func createIntentAutoCreatesAndClears() async throws {
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: nil, teams: []),
+            createdTeam: Self.autoCreated
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+        coordinator.onboardingIntent = .create
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .ready)
+        #expect(await store.recordedBootstrapCallCount() == 1)
+        #expect(coordinator.onboardingIntent == nil)
+    }
+
+    @MainActor
+    @Test("a joiner who already belongs to a team lands on it, and the choice is cleared")
+    func joinIntentWithTeamLandsAndClears() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "member")
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: "member-1", teams: [team])
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+        coordinator.onboardingIntent = .join
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .ready)
+        #expect(coordinator.onboardingIntent == nil)
+    }
+
+    @MainActor
+    @Test("the onboarding choice is persisted across launches")
+    func intentPersistsAcrossInstances() async throws {
+        let defaults = ephemeralDefaults()
+        let store = InMemoryOnboardingStore(bootstrap: AppBootstrap(memberActorID: nil, teams: []))
+        AppOnboardingCoordinator(store: store, defaults: defaults).onboardingIntent = .join
+
+        let relaunched = AppOnboardingCoordinator(store: store, defaults: defaults)
+
+        #expect(relaunched.onboardingIntent == .join)
+    }
+
+    @MainActor
+    @Test("from the no-team screen, choosing to create a team creates one")
+    func createFromNoTeamCreates() async throws {
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: nil, teams: []),
+            createdTeam: Self.autoCreated
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+        coordinator.onboardingIntent = .join
+        await coordinator.bootstrap()
+        #expect(coordinator.route == .noTeam)
+
+        await coordinator.createTeamFromNoTeam()
+
+        #expect(coordinator.route == .ready)
+        #expect(coordinator.currentContext?.team.id == "team-auto")
+        #expect(await store.recordedBootstrapCallCount() == 1)
+        #expect(coordinator.onboardingIntent == nil)
+    }
+
+    @MainActor
+    @Test("from the no-team screen, pasting an invite joins as the signed-in user")
+    func joinFromNoTeamClaimsWithoutSigningOut() async throws {
+        let invited = TeamSummary(id: "team-invited", name: "Invited", slug: "invited", role: "member")
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: nil, teams: []),
+            createdTeam: Self.autoCreated,
+            claimResult: ClaimResult(actorID: "member-invited", teamID: "team-invited", actorType: "member",
+                                     displayName: "Me", refreshToken: nil),
+            bootstrapAfterClaim: AppBootstrap(
+                memberActorID: "member-invited",
+                teams: [invited],
+                memberActorIDByTeam: ["team-invited": "member-invited"]
+            )
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+        coordinator.onboardingIntent = .join
+        await coordinator.bootstrap()
+
+        await coordinator.joinWithInvite(token: "tok-1")
+
+        #expect(coordinator.route == .ready)
+        #expect(coordinator.currentContext?.team.id == "team-invited")
+        #expect(await store.recordedSignOutCallCount() == 0)
+        #expect(await store.recordedBootstrapCallCount() == 0)
+    }
+
+    @MainActor
+    @Test("a failed invite from the no-team screen stays there with the error")
+    func failedJoinFromNoTeamStays() async throws {
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: nil, teams: []),
+            createdTeam: Self.autoCreated,
+            claimError: CloudAPIError.requestFailed(status: 410, code: nil, message: "invite already consumed")
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+        coordinator.onboardingIntent = .join
+        await coordinator.bootstrap()
+
+        await coordinator.joinWithInvite(token: "tok-spent")
+
+        #expect(coordinator.route == .noTeam)
+        #expect(coordinator.errorMessage?.isEmpty == false)
+        #expect(await store.recordedBootstrapCallCount() == 0)
+        #expect(await store.recordedSignOutCallCount() == 0)
+    }
+
+    @MainActor
+    @Test("refreshing the no-team screen stays put while there is still no team")
+    func refreshNoTeamWithoutTeamStays() async throws {
+        let store = InMemoryOnboardingStore(bootstrap: AppBootstrap(memberActorID: nil, teams: []))
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+        coordinator.onboardingIntent = .join
+        await coordinator.bootstrap()
+
+        await coordinator.refreshNoTeam()
+
+        #expect(coordinator.route == .noTeam)
+        #expect(await store.recordedEnsureSessionCallCount() == 1)
+    }
+
+    @MainActor
+    @Test("refreshing the no-team screen lands in a team someone added the user to")
+    func refreshNoTeamLandsOnNewTeam() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "member")
+        let store = InMemoryOnboardingStore(bootstrap: AppBootstrap(memberActorID: nil, teams: []))
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+        coordinator.onboardingIntent = .join
+        await coordinator.bootstrap()
+
+        await store.setBootstrap(AppBootstrap(memberActorID: "member-1", teams: [team]))
+        await coordinator.refreshNoTeam()
+
+        #expect(coordinator.route == .ready)
+        #expect(coordinator.currentContext?.team.id == "team-1")
+    }
+
     // MARK: - Home-org narrowing
 
     @MainActor
@@ -469,7 +639,7 @@ struct AppOnboardingCoordinatorTests {
 }
 
 private actor InMemoryOnboardingStore: AppOnboardingStore {
-    let bootstrapResult: AppBootstrap
+    var bootstrapResult: AppBootstrap
     let bootstrapAfterClaimResult: AppBootstrap?
     let createdTeamResult: CreatedTeam?
     let anonymous: Bool
@@ -510,6 +680,8 @@ private actor InMemoryOnboardingStore: AppOnboardingStore {
     }
 
     func recordedSignOutCallCount() -> Int { signOutCallCount }
+
+    func setBootstrap(_ bootstrap: AppBootstrap) { bootstrapResult = bootstrap }
 
     func createTeam(named name: String) async throws -> CreatedTeam {
         createdTeamNames.append(name)

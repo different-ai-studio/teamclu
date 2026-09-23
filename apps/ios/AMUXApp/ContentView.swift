@@ -168,6 +168,8 @@ struct ContentView: View {
                 CreateTeamView(coordinator: onboarding)
             case .selectTeam:
                 OrgTeamPickerView(coordinator: onboarding)
+            case .noTeam:
+                NoTeamView(coordinator: onboarding, onSignOut: { signOut() })
             case .ready:
                 readyView
             case .failed:
@@ -227,6 +229,13 @@ struct ContentView: View {
                 isConnecting = false
                 await mqtt.disconnect()
                 await onboarding.wipeLocalCache(modelContext: modelContext)
+            }
+        }
+        .onChange(of: onboarding.route) { _, route in
+            // Anyone who has made it into the app — including people upgrading
+            // from a build without the intro — never needs the intro cards.
+            if route == .ready {
+                UserDefaults.standard.set(true, forKey: OnboardingFlags.hasSeenIntroKey)
             }
         }
         .onChange(of: onboarding.pendingCreatedTeam) { _, createdTeam in
