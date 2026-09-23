@@ -77,6 +77,7 @@ function contractRepo() {
   ];
   const ideaStore = fixture("ideas-list.json").items.slice();
   const configStore: Record<string, any> = {};
+  const wikiMaintainerStore: Record<string, any> = {};
   const messageStore: any[] = fixture("message-list.json").items.slice();
   const sessionStore: any[] = fixture("session-list.json").items.slice().map((s: any) => ({ ...s, participants: [{ sessionId: s.id, actorId: "actor-1", role: "owner", joinedAt: s.createdAt }] }));
   const gatewayBindings: Record<string, any> = {};
@@ -136,6 +137,32 @@ function contractRepo() {
         models: input.models,
       };
       return { ...llmConfigStore[teamId] };
+    },
+    async getWikiMaintainerStatus(teamId) {
+      const config = wikiMaintainerStore[teamId] ?? null;
+      return {
+        config,
+        generation: 0,
+        stage: "idle",
+        checkpoint: null,
+        publishing: null,
+        syncStatus: null,
+        updatedAt: null,
+      };
+    },
+    async putWikiMaintainerConfig(teamId, input) {
+      const current = wikiMaintainerStore[teamId];
+      const currentVersion = current?.version ?? 0;
+      if (input.expectedVersion !== currentVersion) {
+        throw Object.assign(new Error("wiki config version conflict"), { code: "conflict" });
+      }
+      const saved = {
+        version: currentVersion + 1,
+        config: input.config,
+        updatedAt: "2026-09-22T00:00:00Z",
+      };
+      wikiMaintainerStore[teamId] = saved;
+      return saved;
     },
     async listApps({ teamId, limit }: any) {
       assert.equal(teamId, "team-1");

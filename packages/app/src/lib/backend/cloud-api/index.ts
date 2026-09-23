@@ -26,6 +26,7 @@ import { createKnowledgeAclModule } from "@/lib/backend/cloud-api/knowledge-acl"
 import { createTeamEnvSecretsModule } from "@/lib/backend/cloud-api/team-env-secrets";
 import { createOrgRolesModule } from "@/lib/backend/cloud-api/org-roles";
 import { createAdminModule } from "@/lib/backend/cloud-api/admin";
+import { createWikiMaintainerModule } from "@/lib/backend/cloud-api/wiki-maintainer";
 
 export function hasCloudApiBackendConfig(config: ServerConfig): boolean {
   return Boolean(config.cloudApiUrl);
@@ -67,6 +68,7 @@ export function createCloudApiBackend(
     marketplace: createMarketplaceModule(client),
     teamMcp: createTeamMcpModule(client),
     knowledgeAcl: createKnowledgeAclModule(client),
+    wikiMaintainer: createWikiMaintainerModule(client),
     teamEnvSecrets: createTeamEnvSecretsModule(client),
     orgRoles: createOrgRolesModule(client),
     admin: createAdminModule(client),

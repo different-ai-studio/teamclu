@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { ensureWikiRepo, commitAll, headCommit } = require("./git-store");
 const { loadState, saveState } = require("./ingest");
-const { buildPublishPlan, publishWiki, treeHashFromDir } = require("./publish");
+const { buildPublishPlan, publishWiki } = require("./publish");
 
 function write(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -37,24 +37,20 @@ test("buildPublishPlan lists creates from an unpublished HEAD", () => {
   assert.equal(plan.toCommit, fx.toCommit);
 });
 
-test("publishWiki takes over a vault that already has unpublished pages", async () => {
+test("publishWiki refuses unexplained pages without a published baseline", async () => {
   const fx = makeWiki();
   write(path.join(fx.knowledgeRoot, "wiki", "pages", "请假.md"), "# stale\n");
   write(path.join(fx.knowledgeRoot, "wiki", "index.md"), "# stale index\n");
-  const result = await publishWiki({
-    wikiRoot: fx.wikiRoot,
-    knowledgeRoot: fx.knowledgeRoot,
-    statePath: fx.statePath,
-    workRoot: path.join(fx.root, "work"),
-    syncTeam: () => ({ ok: true }),
-  });
-  assert.equal(result.ok, true);
-  assert.equal(fs.existsSync(path.join(fx.knowledgeRoot, "wiki", "pages", "请假.md")), false);
-  assert.equal(fs.existsSync(path.join(fx.knowledgeRoot, "wiki", "pages", "leave.md")), true);
-  assert.match(fs.readFileSync(path.join(fx.knowledgeRoot, "wiki", "index.md"), "utf8"), /pages\/leave/);
-  assert.equal(
-    treeHashFromDir(path.join(fx.knowledgeRoot, "wiki")),
-    result.plan.targetTreeHash,
+  await assert.rejects(
+    () =>
+      publishWiki({
+        wikiRoot: fx.wikiRoot,
+        knowledgeRoot: fx.knowledgeRoot,
+        statePath: fx.statePath,
+        workRoot: path.join(fx.root, "work"),
+        syncTeam: () => ({ ok: true }),
+      }),
+    /unexplained/,
   );
 });
 
@@ -135,6 +131,62 @@ test("publishWiki stops on unexplained vault edits", async () => {
         syncTeam: () => ({ ok: true }),
       }),
     /external|modified|conflict/i,
+  );
+  await assert.rejects(
+    () =>
+      publishWiki({
+        wikiRoot: fx.wikiRoot,
+        knowledgeRoot: fx.knowledgeRoot,
+        statePath: fx.statePath,
+        workRoot: path.join(fx.root, "work"),
+        syncTeam: () => ({ ok: true }),
+        forceReplay: true,
+      }),
+    /unexplained/,
+  );
+});
+
+test("publishWiki cloud recovery accepts a vault containing only base and target bytes", async () => {
+  const fx = makeWiki();
+  await publishWiki({
+    wikiRoot: fx.wikiRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    statePath: fx.statePath,
+    workRoot: path.join(fx.root, "work"),
+    syncTeam: () => ({ ok: true }),
+  });
+  write(path.join(fx.wikiRoot, "pages", "leave.md"), "# 请假\n\n更新。\n");
+  commitAll(fx.wikiRoot, "ingest(update): documents/handbook/leave.md@def");
+  write(
+    path.join(fx.knowledgeRoot, "wiki", "pages", "leave.md"),
+    "# 请假\n\n更新。\n",
+  );
+  const recovered = await publishWiki({
+    wikiRoot: fx.wikiRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    statePath: fx.statePath,
+    workRoot: path.join(fx.root, "work"),
+    syncTeam: () => ({ ok: true }),
+    forceReplay: true,
+  });
+  assert.equal(recovered.ok, true);
+});
+
+test("publishWiki refuses a local target that differs from the cloud checkpoint", async () => {
+  const fx = makeWiki();
+  await assert.rejects(
+    () =>
+      publishWiki({
+        wikiRoot: fx.wikiRoot,
+        knowledgeRoot: fx.knowledgeRoot,
+        statePath: fx.statePath,
+        workRoot: path.join(fx.root, "work"),
+        syncTeam: () => ({ ok: true }),
+        expectedTargetCommit: "f".repeat(40),
+        expectedTargetTreeHash: "e".repeat(64),
+        expectedBaseTreeHash: null,
+      }),
+    /does not match the cloud checkpoint/,
   );
 });
 

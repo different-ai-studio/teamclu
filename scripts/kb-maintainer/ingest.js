@@ -286,6 +286,12 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
   }
 }
 
+function assertMaintenanceNotCancelled(cancelPath) {
+  if (cancelPath && fs.existsSync(cancelPath)) {
+    throw new Error("maintenance cancelled");
+  }
+}
+
 async function ingestBatch(opts) {
   const planResult = dryRun(opts);
   const config = require("./config").loadConfig(opts.configPath);
@@ -306,6 +312,8 @@ async function ingestBatch(opts) {
   let retracted = 0;
   const onProgress =
     typeof opts.onProgress === "function" ? opts.onProgress : () => {};
+  const onCheckpoint =
+    typeof opts.onCheckpoint === "function" ? opts.onCheckpoint : async () => {};
   const queue = [
     ...planResult.plan.add.map((item) => ({ action: "add", item })),
     ...planResult.plan.update.map((item) => ({ action: "update", item })),
@@ -314,7 +322,9 @@ async function ingestBatch(opts) {
   let current = 0;
 
   for (const { action, item } of queue) {
+    assertMaintenanceNotCancelled(opts.cancelPath);
     current += 1;
+    let succeeded = false;
     onProgress({
       stage: "ingest",
       action,
@@ -330,9 +340,15 @@ async function ingestBatch(opts) {
         await ingestOne({ action, item, opts: ingestOpts, config, state, wikiRoot, rawRoot });
         imported += 1;
       }
+      succeeded = true;
     } catch (error) {
       rolledBack += 1;
       failures.push({ path: item.path, action, error: error.message });
+    }
+    if (succeeded) {
+      // Deliberately outside the compiler-error catch: a cloud checkpoint CAS
+      // conflict must stop the run before another source reaches the model.
+      await onCheckpoint({ action, path: item.path, current, total: queue.length });
     }
   }
 
@@ -349,4 +365,4 @@ async function ingestBatch(opts) {
   };
 }
 
-module.exports = { ingestBatch, loadState, saveState };
+module.exports = { ingestBatch, loadState, saveState, assertMaintenanceNotCancelled };

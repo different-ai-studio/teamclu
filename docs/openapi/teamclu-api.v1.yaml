@@ -3252,6 +3252,174 @@ paths:
       responses:
         "204": { description: Uninstalled. }
         "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer:
+    get:
+      operationId: getWikiMaintainerStatus
+      summary: Get the team's portable Wiki compiler state
+      description: Team members may read the current generation and state; only owner/admin callers may mutate it or download checkpoint contents.
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Current Wiki maintainer state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WikiMaintainerStatus" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/config:
+    put:
+      operationId: putWikiMaintainerConfig
+      summary: Replace the team Wiki compiler configuration using version CAS
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedVersion, config]
+              properties:
+                expectedVersion: { type: integer, minimum: 0 }
+                config: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: Updated configuration. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/prepare:
+    post:
+      operationId: prepareWikiMaintainerCheckpoint
+      summary: Authorize an immutable checkpoint upload
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WikiCheckpointWrite" }
+      responses:
+        "200":
+          description: Content-addressed object key and optional presigned PUT URL.
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/complete:
+    post:
+      operationId: completeWikiMaintainerCheckpoint
+      summary: Verify an uploaded checkpoint and advance generation with CAS
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/WikiCheckpointWrite"
+                - type: object
+                  required: [objectKey, manifest]
+                  properties:
+                    objectKey: { type: string }
+                    manifest: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: New checkpoint generation. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/latest/download:
+    get:
+      operationId: downloadLatestWikiMaintainerCheckpoint
+      summary: Get the latest checkpoint metadata and a short-lived download URL
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200": { description: Latest checkpoint and presigned download URL. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/checkpoints/{generation}/download:
+    get:
+      operationId: downloadWikiMaintainerCheckpoint
+      summary: Download one retained checkpoint generation
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: generation
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200": { description: Checkpoint metadata and presigned download URL. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/publish/begin:
+    post:
+      operationId: beginWikiMaintainerPublish
+      summary: Claim one checkpoint generation for an idempotent publish
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [generation, configVersion, targetCommit, targetTreeHash, nodeId]
+              properties:
+                generation: { type: integer, minimum: 1 }
+                configVersion: { type: integer, minimum: 1 }
+                targetCommit: { type: string, pattern: "^[0-9a-f]{40}$" }
+                targetTreeHash: { type: string, pattern: "^[0-9a-f]{64}$" }
+                baseTreeHash: { type: [string, "null"], pattern: "^[0-9a-f]{64}$" }
+                nodeId: { type: string, minLength: 1 }
+      responses:
+        "200": { description: Publishing state and one-time publish token. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/publish/complete:
+    post:
+      operationId: completeWikiMaintainerPublish
+      summary: Finish the claimed publish
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [publishToken, syncStatus]
+              properties:
+                publishToken: { type: string, minLength: 1 }
+                syncStatus:
+                  type: string
+                  enum: [synced, published_local_sync_pending]
+      responses:
+        "200": { description: Published generation and sync status. }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/wiki-maintainer/publish/recover:
+    post:
+      operationId: recoverWikiMaintainerPublish
+      summary: Obtain a new token for an interrupted idempotent publish
+      tags: [WikiMaintainer]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200": { description: Existing publish target and a replacement token. }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /v1/teams/{teamId}/knowledge-acl:
     get:
       operationId: listKnowledgeAcl
@@ -8898,6 +9066,51 @@ components:
         size: { type: integer }
         ownerActorId: { type: string, format: uuid }
         status: { type: string, enum: [draft, published, deprecated] }
+    WikiMaintainerStatus:
+      type: object
+      required: [generation, stage]
+      properties:
+        config:
+          type: [object, "null"]
+          additionalProperties: true
+        generation: { type: integer, minimum: 0 }
+        stage:
+          type: string
+          enum: [idle, ready_to_publish, publishing, sync_pending, needs_attention]
+        publishedCommit:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{40}$"
+          description: Last Wiki commit successfully published into the team vault.
+        checkpoint:
+          oneOf:
+            - $ref: "#/components/schemas/WikiCheckpoint"
+            - type: "null"
+        publishing:
+          type: [object, "null"]
+          additionalProperties: true
+        syncStatus: { type: [string, "null"] }
+        updatedAt: { type: [string, "null"], format: date-time }
+    WikiCheckpoint:
+      type: object
+      required: [id, generation, parentGeneration, objectKey, sha256, size, manifest]
+      properties:
+        id: { type: string, format: uuid }
+        generation: { type: integer, minimum: 1 }
+        parentGeneration: { type: integer, minimum: 0 }
+        objectKey: { type: string }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        size: { type: integer, minimum: 1, maximum: 67108864 }
+        manifest: { type: object, additionalProperties: true }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    WikiCheckpointWrite:
+      type: object
+      required: [expectedGeneration, configVersion, sha256, size]
+      properties:
+        expectedGeneration: { type: integer, minimum: 0 }
+        configVersion: { type: integer, minimum: 1 }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        size: { type: integer, minimum: 1, maximum: 67108864 }
     KnowledgeAclRule:
       type: object
       description: >

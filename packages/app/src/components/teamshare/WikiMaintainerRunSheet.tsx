@@ -18,6 +18,10 @@ export interface WikiCompilerModel {
 
 export interface WikiPrepareSummary {
   runId: string
+  nodeId?: string
+  baseTreeHash?: string | null
+  targetCommit?: string
+  targetTreeHash?: string
   sourceCount: number
   retractCount?: number
   added: number
@@ -43,7 +47,7 @@ export type WikiCompileProgress = {
   total?: number
 }
 
-type Phase = 'select' | 'preparing' | 'summary' | 'publishing' | 'published'
+type Phase = 'select' | 'waiting_for_model' | 'preparing' | 'summary' | 'publishing' | 'published'
 
 const STAGES = ['plan', 'estimate', 'ingest', 'lint', 'done'] as const
 
@@ -100,6 +104,10 @@ export function WikiMaintainerRunSheet({
   compilerModels = [],
   initialSelected,
   initialCompilerModel = '',
+  initialSummary = null,
+  checkpointModel = '',
+  needsAdopt = false,
+  onAdopt,
   onSaveSelection,
   onSaveCompilerModel,
   onPrepare,
@@ -114,6 +122,10 @@ export function WikiMaintainerRunSheet({
   compilerModels?: WikiCompilerModel[]
   initialSelected: string[]
   initialCompilerModel?: string
+  initialSummary?: WikiPrepareSummary | null
+  checkpointModel?: string
+  needsAdopt?: boolean
+  onAdopt?: (teamId: string) => Promise<void>
   onSaveSelection: (teamId: string, paths: string[]) => void
   onSaveCompilerModel?: (teamId: string, modelId: string) => void
   onPrepare: (
@@ -121,7 +133,11 @@ export function WikiMaintainerRunSheet({
     paths: string[],
     compilerModel: string,
   ) => Promise<WikiPrepareSummary>
-  onPublish: (runId: string, acceptVisionCost: boolean) => Promise<WikiPublishResult>
+  onPublish: (
+    teamId: string,
+    summary: WikiPrepareSummary,
+    acceptVisionCost: boolean,
+  ) => Promise<WikiPublishResult>
   onCancel?: (runId: string) => Promise<void>
   onClose: () => void
   subscribeProgress?: (
@@ -131,8 +147,15 @@ export function WikiMaintainerRunSheet({
   const { t } = useTranslation()
   const [selected, setSelected] = React.useState<string[]>(initialSelected)
   const [compilerModel, setCompilerModel] = React.useState(initialCompilerModel)
-  const [phase, setPhase] = React.useState<Phase>('select')
-  const [summary, setSummary] = React.useState<WikiPrepareSummary | null>(null)
+  const modelMissing =
+    checkpointModel !== '' &&
+    !compilerModels.some((model) => model.id === checkpointModel)
+  const [phase, setPhase] = React.useState<Phase>(
+    initialSummary ? 'summary' : modelMissing ? 'waiting_for_model' : 'select',
+  )
+  const [summary, setSummary] = React.useState<WikiPrepareSummary | null>(
+    initialSummary,
+  )
   const [publishResult, setPublishResult] = React.useState<WikiPublishResult | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [costAccepted, setCostAccepted] = React.useState(false)
@@ -142,8 +165,8 @@ export function WikiMaintainerRunSheet({
     if (!open) return
     setSelected(initialSelected)
     setCompilerModel(initialCompilerModel)
-    setPhase('select')
-    setSummary(null)
+    setPhase(initialSummary ? 'summary' : modelMissing ? 'waiting_for_model' : 'select')
+    setSummary(initialSummary)
     setPublishResult(null)
     setError(null)
     setCostAccepted(false)
@@ -204,7 +227,7 @@ export function WikiMaintainerRunSheet({
     setError(null)
     setPhase('publishing')
     try {
-      const result = await onPublish(summary.runId, costAccepted)
+      const result = await onPublish(teamId, summary, costAccepted)
       setPublishResult(result)
       setPhase('published')
     } catch (reason) {
@@ -228,7 +251,7 @@ export function WikiMaintainerRunSheet({
       }
       setSummary(null)
       setCostAccepted(false)
-      setPhase('select')
+      setPhase(modelMissing ? 'waiting_for_model' : 'select')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
@@ -249,8 +272,18 @@ export function WikiMaintainerRunSheet({
           <Button type="button" variant="ghost" onClick={close} disabled={busy}>
             {phase === 'published' ? t('common.close', 'Close') : t('common.cancel', 'Cancel')}
           </Button>
-          {(phase === 'select' || phase === 'preparing') && (
-            <Button type="button" onClick={() => void prepare()} disabled={busy || selected.length === 0 || !compilerModel}>
+          {(phase === 'select' || phase === 'waiting_for_model' || phase === 'preparing') && (
+            <Button
+              type="button"
+              onClick={() => void prepare()}
+              disabled={
+                busy ||
+                phase === 'waiting_for_model' ||
+                selected.length === 0 ||
+                !compilerModel ||
+                !compilerModels.some((model) => model.id === compilerModel)
+              }
+            >
               {phase === 'preparing' && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t('teamShare.wikiCheckCompile', 'Check and compile')}
             </Button>
@@ -272,7 +305,7 @@ export function WikiMaintainerRunSheet({
         </>
       }
     >
-      {phase === 'select' && (
+      {(phase === 'select' || phase === 'waiting_for_model') && (
         <div>
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-faint">
             {t('teamShare.wikiSourceFolders', 'Source folders')}
@@ -303,15 +336,21 @@ export function WikiMaintainerRunSheet({
               value={compilerModel}
               onChange={(event) => {
                 const next = event.target.value
+                if (!next) return
                 setCompilerModel(next)
                 onSaveCompilerModel?.(teamId, next)
+                if (compilerModels.some((model) => model.id === next)) {
+                  setPhase('select')
+                }
               }}
               aria-label={t('teamShare.wikiCompilerModel', 'Compiler model')}
               disabled={compilerModels.length === 0}
             >
-              {compilerModels.length === 0 && (
+              {(compilerModels.length === 0 || phase === 'waiting_for_model') && (
                 <option value="">
-                  {t('teamShare.wikiCompilerModelEmpty', 'No models available')}
+                  {compilerModels.length === 0
+                    ? t('teamShare.wikiCompilerModelEmpty', 'No models available')
+                    : t('teamShare.wikiChooseCompilerModel', 'Choose a compiler model')}
                 </option>
               )}
               {compilerModelGroups(compilerModels).map((group) =>
@@ -341,10 +380,32 @@ export function WikiMaintainerRunSheet({
               </p>
             )}
           </div>
+          {phase === 'waiting_for_model' && (
+            <p className="mt-3 text-[12px] leading-relaxed text-foreground">
+              {t(
+                'teamShare.wikiWaitingForModel',
+                'This computer does not have the model that compiled the remaining sources. Choose that model, or explicitly pick another model before continuing. A finished result can still be published.',
+              )}
+            </p>
+          )}
+          {needsAdopt && (
+            <Button
+              type="button"
+              variant="ghost"
+              className="mt-3 h-8 px-2 text-[12px]"
+              onClick={() => {
+                void onAdopt?.(teamId).catch((reason: unknown) => {
+                  setError(reason instanceof Error ? reason.message : String(reason))
+                })
+              }}
+            >
+              {t('teamShare.wikiAdoptExisting', 'Adopt the published Wiki')}
+            </Button>
+          )}
           <p className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">
             {t(
               'teamShare.wikiSingleMaintainerWarning',
-              'Do not maintain this Wiki from another computer at the same time.',
+              'This version detects stale checkpoints but does not prevent two computers from starting. Start maintenance on one computer only.',
             )}
           </p>
         </div>

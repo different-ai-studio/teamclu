@@ -66,21 +66,18 @@ test("dryRun fails closed when ACL state is unknown", () => {
   );
 });
 
-test("dryRun fails when node id does not match config", () => {
+test("dryRun is portable across node ids", () => {
   const fx = makeFixture();
-  assert.throws(
-    () =>
-      dryRun({
-        configPath: fx.configPath,
-        statePath: fx.statePath,
-        documentsRoot: fx.documentsRoot,
-        knowledgeRoot: fx.knowledgeRoot,
-        nodeId: "other-node",
-        known: [],
-        aclPrefixes: [],
-      }),
-    /node/i,
-  );
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "other-node",
+    known: [],
+    aclPrefixes: [],
+  });
+  assert.equal(result.ok, true);
 });
 
 test("dryRun fails when _schema.md is missing", () => {
