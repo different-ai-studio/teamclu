@@ -15,6 +15,9 @@ public struct RootTabView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppOnboardingCoordinator.self) private var coordinator: AppOnboardingCoordinator?
     @Environment(NavigationRouter.self) private var navigationRouter: NavigationRouter?
+    /// Deployment feature flags from `/v1/config/bootstrap`. Absent in
+    /// previews and tests, where the defaults (everything on) apply.
+    @Environment(FeatureFlagsStore.self) private var featureFlags: FeatureFlagsStore?
     @State private var viewModel = SessionListViewModel()
     @SceneStorage("rootTab") private var selection: AppTab = .sessions
     @State private var sessionsPath: [String] = []
@@ -79,6 +82,12 @@ public struct RootTabView: View {
 
     private var teamRuntime: TeamRuntimeContext? { coordinator?.teamRuntimeContext }
 
+    /// Whether this deployment ships the team-apps surface. Defaults to on
+    /// when no flags have arrived — the same fail-open the flags themselves
+    /// use, so a slow or unreachable config endpoint does not hide a feature
+    /// the deployment does have.
+    private var appsEnabled: Bool { featureFlags?.flags.apps ?? true }
+
     // Split across three properties rather than one expression. As one, the
     // type-checker took over two seconds on CI to solve it — the same shape
     // that failed the release archive in SessionDetailView, one feature away
@@ -100,6 +109,7 @@ public struct RootTabView: View {
                             actorStore: teamRuntime?.actorStore,
                             agentPresenceStore: teamRuntime?.agentPresenceStore,
                             shortcutsStore: teamRuntime?.shortcutsStore,
+                            teamAppsStore: appsEnabled ? teamRuntime?.teamAppsStore : nil,
                             messagesRepository: teamRuntime?.messagesRepo,
                             workspacesRepository: teamRuntime?.workspacesRepo,
                             sessionsRepository: teamRuntime?.sessionRepo,

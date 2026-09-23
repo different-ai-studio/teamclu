@@ -533,6 +533,17 @@ public final class AppOnboardingCoordinator {
                 try await store.accessToken()
             }
         }
+        let cloudAPITeamAppsRepo: (any TeamAppRepository)? = cloudAPIConfig.map { config in
+            CloudAPIRepositoryFactory.teamAppsRepository(configuration: config) { [store] in
+                try await store.accessToken()
+            }
+        }
+        // Built here so the list is warm when the drawer first draws its
+        // entry, which needs the count. Not eagerly reloaded: the drawer's
+        // own `.task` does that, and most launches never open it.
+        let teamAppsStore = cloudAPITeamAppsRepo.map {
+            TeamAppsStore(teamID: ctx.team.id, repository: $0)
+        }
 
         // Report ios client version + build (telemetry; fire-and-forget)
         if let versionConfig = cloudAPIConfig {
@@ -565,6 +576,8 @@ public final class AppOnboardingCoordinator {
             teamRepo: cloudAPITeamRepo,
             sessionRepo: cloudAPISessionRepo,
             ideasRepo: cloudAPIIdeasRepo,
+            teamAppsRepo: cloudAPITeamAppsRepo,
+            teamAppsStore: teamAppsStore,
             actorRepo: actorRepo
         )
     }

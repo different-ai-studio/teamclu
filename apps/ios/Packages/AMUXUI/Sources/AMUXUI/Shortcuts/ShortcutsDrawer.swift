@@ -9,6 +9,11 @@ public struct ShortcutsDrawer: View {
     let currentActorID: String?
     let activeTeam: TeamSummary?
     let onOpenSettings: () -> Void
+    /// The team apps store, when the deployment has that feature and a
+    /// repository could be built. nil hides the entry entirely — see
+    /// `BootstrapFeatureFlags.apps`.
+    let appsStore: TeamAppsStore?
+    let onOpenApps: () -> Void
 
     @Query private var cachedActors: [CachedActor]
     @State private var expandedIDs: Set<String> = []
@@ -18,12 +23,16 @@ public struct ShortcutsDrawer: View {
                 store: ShortcutsStore,
                 currentActorID: String? = nil,
                 activeTeam: TeamSummary? = nil,
-                onOpenSettings: @escaping () -> Void) {
+                onOpenSettings: @escaping () -> Void,
+                appsStore: TeamAppsStore? = nil,
+                onOpenApps: @escaping () -> Void = {}) {
         self._isPresented = isPresented
         self.store = store
         self.currentActorID = currentActorID
         self.activeTeam = activeTeam
         self.onOpenSettings = onOpenSettings
+        self.appsStore = appsStore
+        self.onOpenApps = onOpenApps
     }
 
     public var body: some View {
@@ -161,6 +170,15 @@ public struct ShortcutsDrawer: View {
                 section(title: "Personal", scope: .personal)
                 section(title: "Team", scope: .team)
 
+                // Inline rather than as an overlay: the drawer now carries a
+                // second kind of content below the shortcuts, and a full-size
+                // overlay for "no shortcuts" would sit on top of it.
+                if allRootNodesAreEmpty && !store.isLoading {
+                    emptyState
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                }
+
                 if let err = store.errorMessage {
                     Text(err)
                         .font(.system(size: 12))
@@ -168,6 +186,8 @@ public struct ShortcutsDrawer: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 4)
                 }
+
+                appsSection
             }
             .padding(.top, 16)
             .padding(.bottom, 16)
@@ -183,10 +203,103 @@ public struct ShortcutsDrawer: View {
         .overlay {
             if store.isLoading && allRootNodesAreEmpty {
                 ProgressView().tint(Color.amux.basalt)
-            } else if allRootNodesAreEmpty {
-                emptyState
-                    .padding(24)
             }
+        }
+    }
+
+    // MARK: - Team apps
+
+    /// Sits at the foot of the drawer, under both shortcut scopes. With no
+    /// apps yet it is a pitch rather than an empty row — the one place in this
+    /// client that asks for an app to exist.
+    @ViewBuilder
+    private var appsSection: some View {
+        if let appsStore {
+            VStack(alignment: .leading, spacing: 4) {
+                Rectangle()
+                    .fill(Color.amux.hairline)
+                    .frame(height: 0.5)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 10)
+
+                if appsStore.hasLoaded && appsStore.isEmpty {
+                    appsPromo
+                } else {
+                    appsEntryRow(count: appsStore.apps.count)
+                }
+            }
+            .task { await appsStore.reload() }
+        }
+    }
+
+    private func appsEntryRow(count: Int) -> some View {
+        Button(action: handleAppsTap) {
+            HStack(spacing: 12) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.amux.basalt)
+                    .frame(width: 22)
+                Text("团队应用")
+                    .font(.system(size: 14.5))
+                    .foregroundStyle(Color.amux.onyx)
+                Spacer(minLength: 8)
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Color.amux.slate)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.amux.slate)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SettingsRowButtonStyle())
+        .accessibilityIdentifier("shortcuts.appsButton")
+    }
+
+    private var appsPromo: some View {
+        Button(action: handleAppsTap) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 14))
+                    Text("团队应用")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(Color.amux.basalt)
+
+                Text("创建你的第一个应用")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.amux.onyx)
+
+                Text("给团队做一个小工具或页面，同事能直接打开，agent 也能帮你维护。")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Color.amux.slate)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.amux.pebble.opacity(0.5))
+            )
+            .padding(.horizontal, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("shortcuts.appsPromo")
+    }
+
+    /// Same dance as the settings entry: close first, present on the next tick
+    /// so the sheet is not torn down with the drawer it was opened from.
+    private func handleAppsTap() {
+        close()
+        DispatchQueue.main.async {
+            onOpenApps()
         }
     }
 

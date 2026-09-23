@@ -19,6 +19,9 @@ public struct SessionsTab: View {
     /// Broker-backed agent presence for the dots drawn further down.
     let agentPresenceStore: AgentPresenceStore?
     let shortcutsStore: ShortcutsStore?
+    /// nil when the deployment has the apps feature off, or no Cloud API
+    /// config was available to build a repository from.
+    let teamAppsStore: TeamAppsStore?
     let messagesRepository: (any MessagesRepository)?
     let workspacesRepository: (any WorkspaceRepository)?
     let sessionsRepository: (any SessionRepository)?
@@ -40,6 +43,7 @@ public struct SessionsTab: View {
 
     @State private var showShortcuts = false
     @State private var showSettings = false
+    @State private var showApps = false
     @State private var showNewSession = false
     @State private var showInvite = false
     @Binding var navigationPath: [String]
@@ -62,6 +66,7 @@ public struct SessionsTab: View {
                 actorStore: ActorStore? = nil,
                 agentPresenceStore: AgentPresenceStore? = nil,
                 shortcutsStore: ShortcutsStore? = nil,
+                teamAppsStore: TeamAppsStore? = nil,
                 messagesRepository: (any MessagesRepository)? = nil,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
                 sessionsRepository: (any SessionRepository)? = nil,
@@ -86,6 +91,7 @@ public struct SessionsTab: View {
         self.actorStore = actorStore
         self.agentPresenceStore = agentPresenceStore
         self.shortcutsStore = shortcutsStore
+        self.teamAppsStore = teamAppsStore
         self.messagesRepository = messagesRepository
         self.workspacesRepository = workspacesRepository
         self.sessionsRepository = sessionsRepository
@@ -175,6 +181,19 @@ public struct SessionsTab: View {
                                  teamRepository: teamRepository,
                                  actorRepository: actorRepository)
                 }
+                .sheet(isPresented: $showApps) {
+                    if let teamAppsStore {
+                        TeamAppsView(store: teamAppsStore) { sessionID in
+                            // Close the sheet first, then push: presenting and
+                            // pushing in the same transaction leaves the stack
+                            // animating behind a sheet that is still up.
+                            showApps = false
+                            DispatchQueue.main.async {
+                                navigationPath.append("session:\(sessionID)")
+                            }
+                        }
+                    }
+                }
                 .sheet(isPresented: $showNewSession) {
                     NewSessionSheet(mqtt: mqtt,
                                    peerId: "ios-\(pairing.authToken.prefix(6))",
@@ -223,7 +242,9 @@ public struct SessionsTab: View {
                                 store: shortcutsStore,
                                 currentActorID: currentActorID,
                                 activeTeam: activeTeam,
-                                onOpenSettings: { showSettings = true })
+                                onOpenSettings: { showSettings = true },
+                                appsStore: teamAppsStore,
+                                onOpenApps: { showApps = true })
             }
         }
         // Hoisted from the destination view: when the modifier lives on

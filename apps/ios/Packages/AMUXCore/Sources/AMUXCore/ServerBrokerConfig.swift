@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// A resolved MQTT broker address: what `MQTTService.connect` needs.
 public struct MQTTEndpoint: Equatable, Sendable, Codable {
@@ -62,7 +63,36 @@ struct BootstrapConfigResponse: Decodable, Sendable {
         let useTls: Bool?
     }
 
+    struct FeaturesBlock: Decodable, Sendable {
+        let apps: Bool?
+    }
+
     let mqtt: MQTTBlock?
+    let features: FeaturesBlock?
+}
+
+/// Post-sign-in feature flags from `GET /v1/config/bootstrap` (`features`).
+///
+/// The sibling of `PublicAuthFlags`, which carries the pre-sign-in ones. Same
+/// rule about absence: FC omits the whole block when the deployment configures
+/// no feature profile, and that means "keep the client's defaults", not "turn
+/// everything off". Within a present block a missing key IS off — that is the
+/// deployment's explicit choice, the way copilot361 ships `apps: false`.
+///
+/// UI gating only. The server authorizes every one of these calls regardless.
+public struct BootstrapFeatureFlags: Equatable, Sendable {
+    /// The team-apps surface: the drawer entry and the pages behind it.
+    public var apps: Bool
+
+    public init(apps: Bool) {
+        self.apps = apps
+    }
+
+    /// What the client assumes before the server answers, and when it never
+    /// does. Apps is on for every deployment that configures a profile except
+    /// copilot361, so failing open matches the common case; a reachable server
+    /// that says otherwise corrects it within one launch.
+    public static let failOpen = BootstrapFeatureFlags(apps: true)
 }
 
 /// Last broker address handed out by the Cloud API, kept on disk so a cold
@@ -118,10 +148,45 @@ public enum ServerBrokerConfig {
     /// `tcpUrl` wins over `url`: CocoaMQTT speaks raw MQTT, while `url` may be
     /// the WebSocket address meant for browser clients.
     public static func fetch(client: CloudAPIClient) async throws -> MQTTEndpoint? {
+        try await fetchBootstrap(client: client).broker
+    }
+
+    /// Both halves of the bootstrap answer in one round trip. The broker
+    /// address and the feature flags arrive together, and the caller already
+    /// makes this request on every launch — asking twice would be a second
+    /// request for a document it already holds.
+    public static func fetchBootstrap(
+        client: CloudAPIClient
+    ) async throws -> (broker: MQTTEndpoint?, features: BootstrapFeatureFlags?) {
         let config: BootstrapConfigResponse = try await client.get("/v1/config/bootstrap")
-        guard let mqtt = config.mqtt else { return nil }
-        let raw = mqtt.tcpUrl ?? mqtt.url
-        guard let raw else { return nil }
-        return MQTTEndpoint.parse(raw, defaultUseTLS: mqtt.useTls ?? false)
+        var broker: MQTTEndpoint?
+        if let mqtt = config.mqtt, let raw = mqtt.tcpUrl ?? mqtt.url {
+            broker = MQTTEndpoint.parse(raw, defaultUseTLS: mqtt.useTls ?? false)
+        }
+        // nil when the block is absent entirely — see BootstrapFeatureFlags.
+        let features = config.features.map { BootstrapFeatureFlags(apps: $0.apps ?? false) }
+        return (broker, features)
+    }
+}
+
+/// Holds the last feature flags the server sent, for views to read.
+///
+/// `@MainActor` and `@Observable` so a SwiftUI surface appears or disappears
+/// when the answer arrives, without every view fetching for itself.
+@MainActor
+@Observable
+public final class FeatureFlagsStore {
+    public private(set) var flags: BootstrapFeatureFlags = .failOpen
+
+    public init(flags: BootstrapFeatureFlags = .failOpen) {
+        self.flags = flags
+    }
+
+    /// A nil answer leaves the current flags alone: it means the server sent
+    /// no block, or could not be reached, and neither is a decision to turn
+    /// anything off.
+    public func apply(_ incoming: BootstrapFeatureFlags?) {
+        guard let incoming else { return }
+        flags = incoming
     }
 }
