@@ -17,6 +17,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { createConfiguredShortcutsApi } from "./api-provider";
+import { createConfiguredTeamAppsApi } from "../apps/team-apps-api";
 import {
   isLeafShortcut,
   type Shortcut,
@@ -34,6 +35,12 @@ export type ShortcutsDrawerProps = {
   teamId: string;
   profileName: string;
   profileSubtitle?: string | null;
+  /**
+   * Whether the team-apps entry is shown (bootstrap `features.apps`). Off
+   * hides the pinned apps section entirely.
+   */
+  appsEnabled?: boolean;
+  onOpenApps?: () => void;
 };
 
 const ANIMATION_DURATION = 240;
@@ -57,6 +64,8 @@ export function ShortcutsDrawer({
   teamId,
   profileName,
   profileSubtitle,
+  appsEnabled = false,
+  onOpenApps,
 }: ShortcutsDrawerProps) {
   const { t } = useTranslation();
   const { width: screenWidth } = useWindowDimensions();
@@ -131,6 +140,27 @@ export function ShortcutsDrawer({
     };
   }, [isPresented, teamId]);
 
+  // Team apps count for the pinned foot. Null until the first answer, so the
+  // "create your first app" pitch does not flash before it.
+  const [appsCount, setAppsCount] = useState<number | null>(null);
+  const showApps = appsEnabled && Boolean(onOpenApps);
+
+  useEffect(() => {
+    if (!isPresented || !teamId || !showApps) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const apps = await createConfiguredTeamAppsApi(supabase).listApps(teamId);
+        if (!cancelled) setAppsCount(apps.length);
+      } catch {
+        // Keep whatever count we had; the row still opens the list.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPresented, teamId, showApps]);
+
   // Folders expand in place, as iOS `ShortcutMenuRow` does. Without this a
   // folder row was visible, tappable and inert — `openShortcutTarget` has no
   // folder branch, so nothing happened at all.
@@ -159,6 +189,11 @@ export function ShortcutsDrawer({
   const handleSettings = () => {
     onClose();
     setTimeout(() => onOpenSettings(), ANIMATION_DURATION + 16);
+  };
+
+  const handleOpenApps = () => {
+    onClose();
+    setTimeout(() => onOpenApps?.(), ANIMATION_DURATION + 16);
   };
 
   const handleOpenShortcut = (shortcut: Shortcut) => {
@@ -269,6 +304,59 @@ export function ShortcutsDrawer({
             </>
           )}
         </ScrollView>
+
+        {/* Pinned, not the last row of the scroll view: it is the drawer's one
+            destination outside shortcuts, and a team with enough of them
+            would scroll it off the bottom. */}
+        {showApps ? (
+          <View style={styles.apps}>
+            <Hairline />
+            {appsCount === 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={handleOpenApps}
+                style={({ pressed }) => [
+                  styles.appsPromo,
+                  pressed ? styles.footerRowPressed : null,
+                ]}
+              >
+                <View style={styles.appsPromoHead}>
+                  <Ionicons color={colors.basalt} name="grid-outline" size={14} />
+                  <Text style={styles.appsPromoEyebrow}>{t("Team apps")}</Text>
+                </View>
+                <Text style={styles.appsPromoTitle}>{t("Create your first app")}</Text>
+                <Text style={styles.appsPromoBody}>
+                  {t(
+                    "Build a small tool or page for your team. Teammates can open it directly, and agents can help maintain it.",
+                  )}
+                </Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                accessibilityLabel={t("Team apps")}
+                accessibilityRole="button"
+                onPress={handleOpenApps}
+                style={({ pressed }) => [
+                  styles.appsRow,
+                  pressed ? styles.footerRowPressed : null,
+                ]}
+              >
+                <Ionicons
+                  color={colors.basalt}
+                  name="grid-outline"
+                  size={16}
+                  style={styles.footerIcon}
+                />
+                <Text style={styles.footerLabel}>{t("Team apps")}</Text>
+                <View style={styles.footerSpacer} />
+                {appsCount ? (
+                  <Text style={styles.footerVersion}>{appsCount}</Text>
+                ) : null}
+                <Ionicons color={colors.slate} name="chevron-forward" size={14} />
+              </Pressable>
+            )}
+          </View>
+        ) : null}
 
         <View style={styles.footer}>
           <Hairline />
@@ -537,6 +625,43 @@ export function isWebUrl(target: string | null | undefined): boolean {
 }
 
 const styles = StyleSheet.create({
+  apps: {
+    backgroundColor: colors.mist,
+  },
+  appsPromo: {
+    backgroundColor: "rgba(226,223,217,0.5)",
+    borderRadius: radii.card,
+    gap: 7,
+    marginHorizontal: 16,
+    marginVertical: 10,
+    padding: 14,
+  },
+  appsPromoBody: {
+    color: colors.slate,
+    ...typography.caption,
+  },
+  appsPromoEyebrow: {
+    color: colors.basalt,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  appsPromoHead: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  appsPromoTitle: {
+    color: colors.onyx,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  appsRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    minHeight: 44,
+    paddingRight: 18,
+    paddingVertical: 8,
+  },
   avatar: {
     alignItems: "center",
     backgroundColor: hai.pebble,

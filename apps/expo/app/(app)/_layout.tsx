@@ -160,6 +160,30 @@ export default function AppLayout() {
           }}
         />
         <Stack.Screen
+          name="team-apps"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
+          name="new-team-app"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
+          name="team-app-detail"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom",
+            contentStyle: { backgroundColor: colors.mist },
+          }}
+        />
+        <Stack.Screen
           name="shortcut-web"
           options={{
             presentation: "fullScreenModal",

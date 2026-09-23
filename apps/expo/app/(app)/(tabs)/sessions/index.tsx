@@ -24,6 +24,7 @@ import {
   ShortcutsDrawer,
   openShortcutTarget,
 } from "../../../../src/features/shortcuts/ShortcutsDrawer";
+import { useAppsFeatureEnabled } from "../../../../src/features/apps/use-apps-feature";
 import { supabase } from "../../../../src/lib/supabase/client";
 import { getKnownMqttUrl } from "../../../../src/lib/mqtt/config";
 import type { ConnectionState } from "../../../../src/lib/mqtt/team-mqtt";
@@ -53,6 +54,7 @@ export default function SessionsIndexRoute() {
   const controllerRef = useRef<ReturnType<typeof createSessionsController> | null>(null);
   const teamIdRef = useRef<string | null>(null);
   const activeTeamId = state.currentTeam?.id ?? "";
+  const appsEnabled = useAppsFeatureEnabled();
 
   if (controllerRef.current === null || teamIdRef.current !== activeTeamId) {
     controllerRef.current = createSessionsController(
@@ -297,6 +299,8 @@ export default function SessionsIndexRoute() {
     <ShortcutsDrawer
       isPresented={shortcutsOpen}
       onClose={() => setShortcutsOpen(false)}
+      appsEnabled={appsEnabled}
+      onOpenApps={() => router.push("/(app)/team-apps")}
       onOpenSettings={() => router.push("/(app)/settings")}
       onOpenShortcut={(shortcut) => {
         void openShortcutTarget(shortcut, { push: router.push });
