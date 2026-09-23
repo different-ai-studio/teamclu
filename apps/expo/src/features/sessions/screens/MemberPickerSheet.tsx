@@ -254,7 +254,6 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingBottom: spacing.xxxl,
-    paddingTop: GLASS_HEADER_HEIGHT,
   },
   groups: {
     gap: spacing.lg,
@@ -299,8 +298,15 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 0.3,
   },
+  // Pinned under the row. As an in-flow child of the horizontal row, the
+  // hairline's `width: "100%"` took the whole row and squeezed the actor
+  // column to nothing — every row but the last in a group showed no name.
   rowDivider: {
-    marginLeft: 70,
+    bottom: 0,
+    left: 70,
+    position: "absolute",
+    right: 0,
+    width: "auto",
   },
   screen: {
     backgroundColor: colors.mist,
@@ -314,8 +320,12 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     gap: spacing.sm,
+    marginBottom: spacing.md,
     marginHorizontal: spacing.lg,
-    marginVertical: spacing.md,
+    // The pinned header floats over the top of the screen; the search field is
+    // not inside the scroll view, so it has to clear the header itself or it
+    // sits hidden underneath it.
+    marginTop: GLASS_HEADER_HEIGHT + spacing.md,
     paddingHorizontal: spacing.sm,
     paddingVertical: 8,
   },

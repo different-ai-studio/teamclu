@@ -208,7 +208,21 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
         const row = await client.get<CloudSessionFull>(
           `/v1/sessions/${encodeURIComponent(sessionId)}?teamId=${encodeURIComponent(teamId)}`,
         );
-        return mapSession(row);
+        const session = mapSession(row);
+        // Only the list endpoint carries `participantCount`; the single-session
+        // read leaves it out, so the detail header said "0 actors" for any
+        // session it loaded this way (a new one always). Count the members.
+        if (row.participantCount == null) {
+          try {
+            const participants = await client.get<{ items?: unknown[] }>(
+              `/v1/sessions/${encodeURIComponent(sessionId)}/participants`,
+            );
+            session.participantCount = participants.items?.length ?? 0;
+          } catch {
+            // The count is decoration; the session itself loaded.
+          }
+        }
+        return session;
       } catch (error) {
         if (error instanceof CloudApiError && error.status === 404) return null;
         throw error;
