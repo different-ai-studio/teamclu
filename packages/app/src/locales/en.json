@@ -600,7 +600,8 @@
       "failedClickToRetry": "Failed — click to retry",
       "rejectedTitle": "Message not sent",
       "rejectedNotParticipant": "You are not in this session, so the message cannot be sent. Add yourself back to its members, or ask whoever created it to add you.",
-      "rejectedForbidden": "The server refused this message: you are not allowed to post in this session."
+      "rejectedForbidden": "The server refused this message: you are not allowed to post in this session.",
+      "rejectedWorkspaceUnavailable": "This agent's workspace folder does not exist on its machine, so it cannot start. Point it at a folder that machine has."
     },
     "newChat": "New Chat",
     "advancedSession": "Advanced session",

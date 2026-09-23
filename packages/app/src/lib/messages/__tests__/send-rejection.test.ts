@@ -27,6 +27,19 @@ describe('permanentSendRejection', () => {
     })
   })
 
+  it('stops retrying when the agent has no such folder', () => {
+    // The daemon's refusal, not the server's: a directory that is not on that
+    // machine does not appear because we asked twelve more times.
+    expect(
+      permanentSendRejection(
+        new Error('workspace path is not available on this machine: /Users/someone/TeamClu'),
+      )?.key,
+    ).toBe('chat.sendStatus.rejectedWorkspaceUnavailable')
+    expect(permanentSendRejection(new Error('runtimeStart failed: WORKSPACE_PATH_UNAVAILABLE'))?.key).toBe(
+      'chat.sendStatus.rejectedWorkspaceUnavailable',
+    )
+  })
+
   it('keeps retrying everything that might succeed later', () => {
     // 5xx, rate limits and a dropped connection are exactly what the backoff is
     // for; 401 is refreshed and retried a layer below.
