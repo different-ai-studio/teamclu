@@ -36,6 +36,8 @@ public struct TeamRuntimeContext {
     public let teamRepo: (any TeamRepository)?
     public let sessionRepo: (any SessionRepository)?
     public let ideasRepo: (any IdeaRepository)?
+    public let teamAppsRepo: (any TeamAppRepository)?
+    public let teamAppsStore: TeamAppsStore?
     public let actorRepo: (any ActorRepository)?
 
     public init(
@@ -55,6 +57,8 @@ public struct TeamRuntimeContext {
         teamRepo: (any TeamRepository)? = nil,
         sessionRepo: (any SessionRepository)? = nil,
         ideasRepo: (any IdeaRepository)? = nil,
+        teamAppsRepo: (any TeamAppRepository)? = nil,
+        teamAppsStore: TeamAppsStore? = nil,
         actorRepo: (any ActorRepository)? = nil
     ) {
         self.team = team
@@ -73,6 +77,8 @@ public struct TeamRuntimeContext {
         self.teamRepo = teamRepo
         self.sessionRepo = sessionRepo
         self.ideasRepo = ideasRepo
+        self.teamAppsRepo = teamAppsRepo
+        self.teamAppsStore = teamAppsStore
         self.actorRepo = actorRepo
     }
 }

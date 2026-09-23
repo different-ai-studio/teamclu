@@ -15,6 +15,9 @@ struct ContentView: View {
     /// Bridges push/deep-link "open session" intents into RootTabView's
     /// session NavigationStack (which owns `sessionsPath`).
     @State private var navigationRouter = NavigationRouter()
+    /// Deployment feature flags, refreshed with the broker config on every
+    /// launch. Starts fail-open so the UI is not gated on a round trip.
+    @State private var featureFlags = FeatureFlagsStore()
     @State private var isConnecting = false
     /// Set by the splash once its lap has played out.
     @State private var splashLapFinished = false
@@ -118,6 +121,7 @@ struct ContentView: View {
         )
         .environment(onboarding)
         .environment(navigationRouter)
+        .environment(featureFlags)
         .task {
             if let team = onboarding.currentContext?.team {
                 OnboardingLocalCacheBootstrapper.ensureWorkspaceExists(team: team, modelContext: modelContext)
@@ -338,7 +342,12 @@ struct ContentView: View {
         }
         let client = CloudAPIClient(configuration: config, accessToken: { token })
         do {
-            guard let endpoint = try await ServerBrokerConfig.fetch(client: client) else {
+            let bootstrap = try await ServerBrokerConfig.fetchBootstrap(client: client)
+            // Flags ride the same answer, so they land even when this
+            // deployment ships no broker block and the early return below
+            // fires.
+            featureFlags.apply(bootstrap.features)
+            guard let endpoint = bootstrap.broker else {
                 logger.warning("Cloud API returned no MQTT broker config")
                 return
             }

@@ -959,6 +959,13 @@ public enum CloudAPIRepositoryFactory {
         CloudAPINotificationsRepository(client: client(configuration: configuration, accessToken: accessToken))
     }
 
+    public static func teamAppsRepository(
+        configuration: CloudAPIConfiguration,
+        accessToken: @escaping @Sendable () async throws -> String
+    ) -> any TeamAppRepository {
+        CloudAPITeamAppRepository(client: client(configuration: configuration, accessToken: accessToken))
+    }
+
     public static func clientVersion(client: CloudAPIClient) -> CloudAPIClientVersionRepository {
         CloudAPIClientVersionRepository(client: client)
     }
