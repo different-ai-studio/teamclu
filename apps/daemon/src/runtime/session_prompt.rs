@@ -155,6 +155,8 @@ fn build_app_workspace_prompt(app: &SessionAppContext, worktree: &str) -> String
     let data = serde_json::json!({
         "controlPlaneSnapshot": app,
         "checkoutDeclaration": declaration,
+        // This machine, not the app. Whoever deploys is whose tools run.
+        "thisMachine": crate::runtime::host_facts::host_facts(),
     });
 
     format!(
@@ -171,9 +173,13 @@ when this session prompt was resolved and may become stale.
 Platform contract:
 - `teamclu.app.json` at the repository root is the source of truth for the desired `build` and `start` configuration. The control-plane `runtime` and `startSpec` are snapshots of the last successful deployment. Never edit a database snapshot to change runtime behavior.
 - Before relying on mutable deployment state, changing control-plane settings, or deploying, call `manage_app` with action `status` for this workspace. It compares the checkout declaration, live deployment and code version.
-- `teamclu.app.json` declares intent: `build.kind` plus `start.entry` (the path to run inside the build output directory) and optional `start.port`, which defaults to 9000. The platform resolves the Function Compute runtime, the interpreter path and any layers from `build.kind`. Do not write `fcRuntime`, `command`, `args` or `layers` unless the app needs a start sequence the platform does not offer, and never write both forms at once.
-- Layers are region-scoped and the repository cannot know the deploy region. In the passthrough form, write an official layer as `"Name:version"` (for example `"Nodejs20:3"`) and the region is filled in; a full ARN naming a different region is refused before deployment.
-- A bare interpreter name never reaches a layer — layers are used through absolute paths. `custom.debian10` already ships Node 20 and Python 3.10; on it `node` is not on PATH at all, and `python3` resolves to the system interpreter rather than 3.10. That is why resolved commands use absolute paths.
+- `controlPlaneSnapshot.runtime` is what the platform knows about where this app runs: the deploy region, the target platform, which interpreters each image ships and at what absolute path, what a bare interpreter name on PATH actually resolves to, and which layers exist. Read it instead of guessing; `manage_app` action `runtime_info` returns the same facts in full. A value marked unverified is not a value to rely on.
+- Apps whose start really is one interpreter and one file may declare `build.kind` plus `start.entry` and let the platform fill in the rest. Everything else — a module target, a custom import path, extra flags — declares `fcRuntime`, `command`, `args` and `layers` itself. That is the normal road, not a fallback. Never write both forms at once.
+- Layers are region-scoped and the repository cannot know the deploy region. Write an official layer as `"Name:version"` (for example `"Nodejs20:3"`) and the region is filled in; a full ARN naming a different region is refused before deployment.
+- A bare interpreter name never reaches a layer — layers are used through absolute paths under `/opt`, while an image's own interpreters live under `/var/fc/lang`.
+- `thisMachine` describes the machine running this session, not the app. Another teammate may deploy the same commit from a different operating system.
+- `build.command` is committed to the repository and will also run on their machines, through `sh -c`. Write commands that do not depend on this machine: flags naming the *target* — for Python, `pip install --platform manylinux2014_x86_64 --implementation cp --python-version 3.10 --only-binary=:all: -t <dir>` — behave identically everywhere, while `rm -rf`, `brew` and backslash paths do not.
+- The build runs on `thisMachine` and the function runs on `controlPlaneSnapshot.runtime.target`. Anything compiled during the build must be built for that target; a native dependency built for this machine will not load in the function.
 - Custom environment variables belong in `manage_app_env`, not source code. Secret values are write-only and must never be requested, printed, committed or copied into messages. Environment changes reach the function on its next deploy.
 - `PORT`, `NODE_ENV`, `DATABASE_URL`, `APP_PUBLIC_URL`, `API_BASE`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and names beginning with `TEAMCLU_` are platform-managed. Code must read them at runtime rather than hardcode their values.
 - Only a deployed data app has `DATABASE_URL`. Its database role is restricted to this app's schema and its `search_path` is already set; do not add a schema prefix or commit a connection string.
