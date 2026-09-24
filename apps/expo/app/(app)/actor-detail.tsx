@@ -70,6 +70,7 @@ export default function ActorDetailRoute() {
 
   const [actor, setActor] = useState<Actor | null>(null);
   const [agentIsOwner, setAgentIsOwner] = useState(false);
+  const [agentAccessRole, setAgentAccessRole] = useState<string | null>(null);
   const [allActors, setAllActors] = useState<Actor[]>([]);
   const [agentWorkspaces, setAgentWorkspaces] = useState<AgentWorkspaceChoice[]>([]);
   const [authorizedHumans, setAuthorizedHumans] = useState<AgentAuthorizedHuman[]>([]);
@@ -93,6 +94,7 @@ export default function ActorDetailRoute() {
     actorId,
     currentMemberActorId: state.currentMemberActorId,
     currentTeamRole: state.currentTeam?.role,
+    agentAccessRole,
   });
   const canManageAccess = canManageAuthorizedHumans({
     actorType: actor?.actorType,
@@ -211,15 +213,17 @@ export default function ActorDetailRoute() {
       if (found?.actorType === "agent") {
         // Directory drops owner; re-hydrate owner-gating from agent-access so it
         // survives a refresh. Daemon routing uses the actor id directly.
-        const owner = state.currentMemberActorId
+        const role = state.currentMemberActorId
           ? await agentAccessApi
-              .canManageAgent(actorId, state.currentMemberActorId)
-              .catch(() => false)
-          : false;
-        setAgentIsOwner(owner);
+              .agentAccessRole(actorId, state.currentMemberActorId)
+              .catch(() => null)
+          : null;
+        setAgentIsOwner(role === "owner");
+        setAgentAccessRole(role);
         setActor(found);
       } else {
         setAgentIsOwner(false);
+        setAgentAccessRole(null);
         setActor(found);
       }
     } finally {
@@ -242,21 +246,23 @@ export default function ActorDetailRoute() {
         setAllActors(rows);
         setActor(nextActor);
         setAgentIsOwner(false);
+        setAgentAccessRole(null);
 
         if (nextActor?.actorType === "agent") {
           setIsLoadingAuthorizedHumans(true);
-          const [authorizedRows, owner, workspaceRows] = await Promise.all([
+          const [authorizedRows, role, workspaceRows] = await Promise.all([
             agentAccessApi.listAuthorizedHumans(actorId),
             state.currentMemberActorId
               ? agentAccessApi
-                  .canManageAgent(actorId, state.currentMemberActorId)
-                  .catch(() => false)
-              : Promise.resolve(false),
+                  .agentAccessRole(actorId, state.currentMemberActorId)
+                  .catch(() => null)
+              : Promise.resolve(null),
             workspacesApi.list(teamId).catch(() => []),
           ]);
           if (cancelled) return;
           setAuthorizedHumans(authorizedRows);
-          setAgentIsOwner(owner);
+          setAgentIsOwner(role === "owner");
+          setAgentAccessRole(role);
           // Daemon routing uses the agent's actor id directly; no device-id merge.
           setAgentWorkspaces(
             workspaceRows

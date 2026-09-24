@@ -23,6 +23,27 @@ describe("actor management", () => {
     ).toBe(true);
   });
 
+  it("lets a plain member remove an agent they manage", () => {
+    // The server allows it (personal agents need their owning member); the
+    // app used to hide the button from anyone below team admin.
+    expect(
+      canRemoveActor({
+        actorId: "agent-1",
+        currentMemberActorId: "actor-1",
+        currentTeamRole: "member",
+        agentAccessRole: "admin",
+      }),
+    ).toBe(true);
+    expect(
+      canRemoveActor({
+        actorId: "agent-1",
+        currentMemberActorId: "actor-1",
+        currentTeamRole: "member",
+        agentAccessRole: "user",
+      }),
+    ).toBe(false);
+  });
+
   it("blocks self-removal and non-admin roles", () => {
     expect(
       canRemoveActor({
