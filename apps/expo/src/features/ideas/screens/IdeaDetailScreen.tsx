@@ -428,7 +428,9 @@ export function IdeaDetailScreen({
 
       {idea && onSubmitProgress ? (
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          // Android as well — edge-to-edge means `adjustResize` no longer
+          // lifts the comment composer above the keyboard.
+          behavior="padding"
           style={styles.composerDock}
         >
           <IdeaProgressComposer

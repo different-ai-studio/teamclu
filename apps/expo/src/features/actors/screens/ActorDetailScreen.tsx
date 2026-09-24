@@ -822,7 +822,7 @@ function AgentWorkspacesSection({
               <View style={styles.workspaceRow}>
                 <View style={styles.authorizedBody}>
                   <Text style={styles.authorizedName}>{workspaceLabel(workspace)}</Text>
-                  <Text numberOfLines={1} style={styles.authorizedMeta}>
+                  <Text ellipsizeMode="middle" numberOfLines={1} style={styles.workspacePath}>
                     {workspace.path ?? workspace.id}
                   </Text>
                 </View>
@@ -1366,6 +1366,12 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 0,
     ...typography.monoMeta,
+  },
+  // Not `authorizedMeta`: that capitalizes role names, and a path is
+  // case-sensitive — "/private/tmp/…" rendered as "/Private/Tmp/…".
+  workspacePath: {
+    color: colors.slate,
+    ...typography.caption,
   },
   workspaceRow: {
     alignItems: "center",

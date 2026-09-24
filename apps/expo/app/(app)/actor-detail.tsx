@@ -98,6 +98,12 @@ export default function ActorDetailRoute() {
     actorType: actor?.actorType,
     isOwner: agentIsOwner,
   });
+  // Workspaces are the daemon's to accept, not an owner privilege: iOS offers
+  // "add workspace" to anyone who can reach the agent over MQTT. Gating it on
+  // `role === "owner"` hid it from everyone, because the permission endpoint
+  // answers "admin" even for the member who invited the agent — so a freshly
+  // invited agent could never get a workspace and no session could start on it.
+  const canManageWorkspaces = actor?.actorType === "agent" && teamMqtt != null;
   const authorizedHumanIds = new Set(authorizedHumans.map((human) => human.id));
   const authorizedMemberCandidates = allActors.filter(
     (row) =>
@@ -592,7 +598,7 @@ export default function ActorDetailRoute() {
       isSavingMyDefaultAgent={isSavingMyDefaultAgent}
       isUpdatingAgentVisibility={isUpdatingAgentVisibility}
       onClose={() => router.back()}
-      onAddAgentWorkspace={canManageAccess ? addAgentWorkspace : undefined}
+      onAddAgentWorkspace={canManageWorkspaces ? addAgentWorkspace : undefined}
       onCreateReinvite={canRemove ? createReinvite : undefined}
       onGrantAuthorizedHuman={canManageAccess ? grantAuthorizedHuman : undefined}
       onMakeAgentPersonal={
@@ -604,7 +610,7 @@ export default function ActorDetailRoute() {
         void Promise.all([refresh(), reloadAuthorizedHumans()]);
       }}
       onRemoveActor={canRemove ? removeActor : undefined}
-      onRemoveAgentWorkspace={canManageAccess ? removeAgentWorkspace : undefined}
+      onRemoveAgentWorkspace={canManageWorkspaces ? removeAgentWorkspace : undefined}
       onRevokeAuthorizedHuman={canManageAccess ? revokeAuthorizedHuman : undefined}
       onSetMyDefaultAgent={
         actor?.actorType === "agent"

@@ -82,7 +82,9 @@ export function createConnectedAgentsStore(deps: Deps): ConnectedAgentsStore {
         });
         diffWatches(state.agents, agents);
         setState({ ...state, agents, isLoading: false, errorMessage: null });
-        void deps.cache?.saveCache(deps.teamId, agents);
+        // The cache is an offline convenience; a failed write must not surface
+        // as an unhandled rejection over whatever screen is open.
+        void deps.cache?.saveCache(deps.teamId, agents).catch(() => {});
       } catch (err) {
         setState({
           ...state,

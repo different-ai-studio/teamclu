@@ -17,6 +17,7 @@ import {
   View,
 } from "react-native";
 import Markdown from "react-native-markdown-display";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { StatusDot } from "../../../ui/atoms/StatusDot";
@@ -594,6 +595,7 @@ function AgentTurnDetailModal({
 
 export function SessionDetailScreen(props: SessionDetailScreenProps) {
   const { t: tHook } = useTranslation();
+  const safeAreaInsets = useSafeAreaInsets();
   const {
     agentChips,
     composerText,
@@ -1131,8 +1133,13 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
       ) : null}
 
       <KeyboardAvoidingView
-        behavior={Platform.select({ ios: "padding", android: undefined })}
-        keyboardVerticalOffset={Platform.select({ ios: 8, default: 0 })}
+        // Android too: under the edge-to-edge window SDK 57 enforces,
+        // `adjustResize` no longer shrinks the window, so leaving Android to
+        // the OS put the keyboard straight over the composer.
+        behavior="padding"
+        // Edge-to-edge Android reports the keyboard without the navigation
+        // bar under it, which left the composer's toolbar row behind the keys.
+        keyboardVerticalOffset={Platform.select({ ios: 8, default: safeAreaInsets.bottom })}
       >
         {/* An unanswered question blocks the turn, so it takes the composer's
             place until it is answered or skipped — same swap iOS does. */}
