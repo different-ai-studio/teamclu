@@ -485,6 +485,11 @@ fn default_output() -> String {
     DEFAULT_OUTPUT.to_string()
 }
 
+/// FC's own default, and what every template listens on.
+fn default_port() -> u16 {
+    9000
+}
+
 fn default_dockerfile() -> String {
     DEFAULT_DOCKERFILE.to_string()
 }
@@ -518,6 +523,12 @@ pub struct AppStartSpec {
     pub command: Option<Vec<String>>,
     #[serde(default)]
     pub args: Option<Vec<String>>,
+    /// Short form: the path to run inside the build output directory. The
+    /// control plane resolves it against the profile for `build.kind`; the
+    /// daemon only carries it through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    #[serde(default = "default_port")]
     pub port: u16,
     #[serde(default)]
     pub layers: Option<Vec<String>>,
@@ -579,11 +590,16 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             ".".to_string()
         };
     }
-    for (name, path) in [
+    let entry_for_check = declaration.start.entry.clone().unwrap_or_default();
+    let mut checked: Vec<(&str, &String)> = vec![
         ("build.output", &declaration.build.output),
         ("build.dockerfile", &declaration.build.dockerfile),
         ("build.context", &declaration.build.context),
-    ] {
+    ];
+    if !entry_for_check.is_empty() {
+        checked.push(("start.entry", &entry_for_check));
+    }
+    for (name, path) in checked {
         if !is_inside_workdir(path) {
             anyhow::bail!("{MANIFEST_FILE} {name} must stay inside the workdir");
         }
@@ -608,10 +624,25 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
                 "{MANIFEST_FILE} start.fcRuntime for container must be {CONTAINER_FC_RUNTIME:?} when set"
             );
         }
+    } else if declaration
+        .start
+        .entry
+        .as_deref()
+        .is_some_and(|entry| !entry.trim().is_empty())
+    {
+        // Short form. The runtime, interpreter and layers are the control
+        // plane's to resolve from `build.kind`, so there is nothing here for
+        // the daemon to check beyond the containment rule above — and demanding
+        // an fcRuntime would defeat the point of not writing one.
+        if declaration.start.fc_runtime.is_some() || declaration.start.command.is_some() {
+            anyhow::bail!(
+                "{MANIFEST_FILE} start declares both forms: use start.entry, or declare fcRuntime and command yourself — not both"
+            );
+        }
     } else {
         let runtime = declaration.start.fc_runtime.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "{MANIFEST_FILE} code apps require non-empty start.fcRuntime and start.command"
+                "{MANIFEST_FILE} code apps require start.entry, or non-empty start.fcRuntime and start.command"
             )
         })?;
         if !VALID_CODE_FC_RUNTIMES.contains(&runtime) {
@@ -1723,5 +1754,41 @@ mod tests {
             "stderr: {}",
             out.stderr.len()
         );
+    }
+
+    #[test]
+    fn short_form_declaration_round_trips_with_a_default_port() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("teamclu.app.json"),
+            r#"{
+              "build": {"kind": "node"},
+              "start": {"entry": "server/index.mjs"}
+            }"#,
+        )
+        .unwrap();
+
+        let declaration = read_app_declaration(tmp.path()).unwrap();
+        assert_eq!(declaration.build.kind, "node");
+        assert_eq!(declaration.build.output, ".output");
+        assert_eq!(declaration.start.entry.as_deref(), Some("server/index.mjs"));
+        assert_eq!(declaration.start.port, 9000);
+        // The daemon carries intent through; the control plane resolves it.
+        assert!(declaration.start.fc_runtime.is_none());
+        assert!(declaration.start.command.is_none());
+    }
+
+    #[test]
+    fn entry_may_not_escape_the_code_package() {
+        for bad in ["../secrets.mjs", "/etc/passwd"] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(
+                tmp.path().join("teamclu.app.json"),
+                format!(r#"{{"build":{{"kind":"node"}},"start":{{"entry":"{bad}"}}}}"#),
+            )
+            .unwrap();
+            let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+            assert!(err.contains("start.entry"), "{bad}: {err}");
+        }
     }
 }
