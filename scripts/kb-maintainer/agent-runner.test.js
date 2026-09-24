@@ -30,27 +30,29 @@ test("agent-runner keeps the fake runner for tests and fixtures", async () => {
   assert.equal(typeof fake.compile, "function");
 });
 
-test("agent-runner sends runner=pi to the Pi compiler", async () => {
+test("agent-runner sends runner=pi to the local Agent", async () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
   const { compile: agentCompile } = require("./agent-runner");
-  await assert.rejects(
-    () =>
-      agentCompile({
-        runner: "pi",
-        workRoot: require("node:fs").mkdtempSync(
-          require("node:path").join(require("node:os").tmpdir(), "kb-agent-pi-"),
-        ),
-        action: "add",
-        sourcePath: "documents/handbook/leave.md",
-        sourceSha256: "ab".repeat(32),
-        rawMarkdown: "# 请假\n",
-        locators: [],
-      }),
-    // Either message is a pass. `compile` reaches `createLivePiSession`,
-    // which checks for the managed runtime before it ever looks for the
-    // gateway, so a machine with pi installed fails on the gateway and one
-    // without it fails on the runtime. Neither test can install a runtime,
-    // and pinning only the gateway message is what made this pass on a
-    // developer's Mac and fail on CI.
-    /Team AI gateway|managed Agent runtime/i,
-  );
+  const previous = process.env.AMUXD_HOME;
+  process.env.AMUXD_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "kb-no-agent-"));
+  try {
+    await assert.rejects(
+      () =>
+        agentCompile({
+          runner: "pi",
+          workRoot: fs.mkdtempSync(path.join(os.tmpdir(), "kb-agent-pi-")),
+          action: "add",
+          sourcePath: "documents/handbook/leave.md",
+          sourceSha256: "ab".repeat(32),
+          rawMarkdown: "# 请假\n",
+          locators: [],
+        }),
+      /local Agent is not running/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.AMUXD_HOME;
+    else process.env.AMUXD_HOME = previous;
+  }
 });

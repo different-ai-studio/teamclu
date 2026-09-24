@@ -8,7 +8,7 @@ const { extractorCacheKey, rawRelativePath } = require("./extract-text");
 const { extractSource } = require("./extract");
 const { compile } = require("./agent-runner");
 const { validateSourceDiff, rebuildIndex, normalizeWikiLinks, dropDeadWikiLinks, listPageFiles } = require("./validator");
-const { normalizeCompiledPage, parseFrontmatter, serializeFrontmatter } = require("./frontmatter");
+const { normalizeCompiledPage, parseFrontmatter } = require("./frontmatter");
 const {
   ensureWikiRepo,
   headCommit,
@@ -52,9 +52,11 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
     bytes: fs.readFileSync(abs),
     sourceSha256: item.sourceSha256,
     visionExtract: opts.visionExtract,
-    visionModel: config.models?.vision,
+    visionModel: opts.visionModel || config.models?.vision,
     promptVersion: config.models?.visionPromptVersion || "v1",
+    maxVisionPages: config.limits?.maxVisionPages,
     cache: opts.extractCache,
+    cacheDir: path.join(opts.workRoot, "state", "vision-cache"),
   });
   if (extracted.quality !== "accepted") {
     throw new Error(`extraction ${extracted.quality}`);
@@ -116,7 +118,11 @@ async function ingestOne({ action, item, opts, config, state, wikiRoot, rawRoot 
       rel.startsWith("pages/"),
     );
     if (pageHits.length === 0) {
-      throw new Error("compiler produced no wiki pages");
+      throw new Error(
+        String(extracted.extractorName || "").includes("vision")
+          ? "vision transcribed but compiler produced no wiki pages"
+          : "compiler produced no wiki pages",
+      );
     }
     const changed = changedRelPaths(wikiRoot, beforeCommit);
     const verdict = validateSourceDiff({
@@ -174,9 +180,7 @@ function normalizeCompiledPages(wikiRoot, beforeCommit, defaults) {
   }
 }
 
-function retractSourceCitations(wikiRoot, sourcePath) {
-  const removed = [];
-  const rewritten = [];
+function dropPagesOnlyCiting(wikiRoot, sourcePath) {
   for (const rel of listPageFiles(wikiRoot)) {
     const abs = path.join(wikiRoot, rel);
     let parsed;
@@ -186,20 +190,11 @@ function retractSourceCitations(wikiRoot, sourcePath) {
       continue;
     }
     const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
-    const kept = cited.filter((source) => source && source.path !== sourcePath);
-    if (kept.length === cited.length) continue;
-    if (kept.length === 0) {
-      fs.rmSync(abs);
-      removed.push(rel);
-      continue;
-    }
-    fs.writeFileSync(
-      abs,
-      serializeFrontmatter({ ...parsed.frontmatter, sources: kept }, parsed.body),
-    );
-    rewritten.push(rel);
+    if (!cited.some((source) => source && source.path === sourcePath)) continue;
+    const others = cited.filter((source) => source && source.path && source.path !== sourcePath);
+    if (others.length > 0) continue;
+    fs.rmSync(abs);
   }
-  return { removed, rewritten };
 }
 
 function pagesStillCiting(wikiRoot, sourcePath) {
@@ -230,24 +225,27 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
   };
   saveState(opts.statePath, state);
   try {
-    await compile({
-      runner: opts.runner || "fake",
-      workRoot: opts.workRoot,
-      rawRoot,
-      action: "delete",
-      sourcePath: item.path,
-      sourceSha256: previous.sourceSha256,
-      affectedPages: previous.affectedPages,
-      schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
-      indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
-      compilerModel: opts.compilerModel,
-      createSession: opts.createSession,
-    });
+    dropPagesOnlyCiting(wikiRoot, item.path);
+    if (pagesStillCiting(wikiRoot, item.path).length > 0) {
+      rebuildIndex(wikiRoot);
+      const rawAbs = path.join(rawRoot, rawRelativePath(item.path));
+      await compile({
+        runner: opts.runner || "fake",
+        workRoot: opts.workRoot,
+        rawRoot,
+        action: "delete",
+        sourcePath: item.path,
+        sourceSha256: previous.sourceSha256,
+        rawMarkdown: fs.existsSync(rawAbs) ? fs.readFileSync(rawAbs, "utf8") : "",
+        affectedPages: previous.affectedPages,
+        schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
+        indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
+        compilerModel: opts.compilerModel,
+        createSession: opts.createSession,
+      });
+    }
     rebuildIndex(wikiRoot);
     normalizeWikiLinks(wikiRoot);
-    if (pagesStillCiting(wikiRoot, item.path).length > 0) {
-      retractSourceCitations(wikiRoot, item.path);
-    }
     dropDeadWikiLinks(wikiRoot);
     rebuildIndex(wikiRoot);
     limitCompileDiff(wikiRoot, beforeCommit, item.path, Number.POSITIVE_INFINITY);

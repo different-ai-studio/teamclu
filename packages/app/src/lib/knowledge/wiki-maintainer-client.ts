@@ -299,6 +299,7 @@ export async function prepareWikiMaintenance(
   teamId: string,
   sourceDirectories: string[],
   compilerModel: string,
+  visionChoice?: 'accept' | 'decline',
 ): Promise<WikiPrepareSummary> {
   const folders = wikiSourceFolders(sourceDirectories)
   if (folders.length === 0) {
@@ -428,6 +429,7 @@ export async function prepareWikiMaintenance(
         configVersion,
         aclPrefixes: acl.map((rule) => rule.pathPrefix),
         known: selectedKnown,
+        visionChoice: visionChoice ?? 'ask',
       },
     })
   } catch (error) {

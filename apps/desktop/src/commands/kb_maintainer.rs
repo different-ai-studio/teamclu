@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
 const ALLOWED_EXTENSIONS: &[&str] = &[
-    "md", "txt", "html", "htm", "csv", "json", "yaml", "yml", "pdf", "docx", "pptx", "xlsx",
+    "md", "txt", "html", "htm", "csv", "json", "yaml", "yml", "pdf", "docx", "pptx", "xlsx", "png",
+    "jpg", "jpeg", "webp",
 ];
 
 #[derive(Debug, Clone)]
@@ -108,6 +109,8 @@ pub struct PrepareRequest {
     compiler_model: Option<String>,
     acl_prefixes: Vec<String>,
     known: Vec<KnownDocument>,
+    #[serde(default)]
+    vision_choice: Option<String>,
 }
 
 fn default_config_version() -> u64 {
@@ -147,6 +150,8 @@ pub struct PrepareSummary {
     currency: String,
     can_publish: bool,
     blockers: Vec<String>,
+    #[serde(default)]
+    needs_vision_acceptance: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -991,7 +996,8 @@ pub async fn kb_maintainer_prepare(
         "aclPrefixes": request.acl_prefixes,
         "known": request.known.into_iter().map(|item| json!({
             "path": item.path, "version": item.version, "size": item.size
-        })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "visionChoice": request.vision_choice.unwrap_or_else(|| "ask".to_string()),
     });
     if let Err(error) = write_json(&input_path, &input) {
         let _ = fs::remove_file(&lock_path);
@@ -1021,10 +1027,7 @@ pub async fn kb_maintainer_prepare(
         let _ = fs::remove_file(input_path);
         state.clear(&run_id);
     } else {
-        state.set_requires_cost_acceptance(
-            &run_id,
-            summary.estimated_cost.unwrap_or_default() > 0.0,
-        )?;
+        state.set_requires_cost_acceptance(&run_id, false)?;
     }
     Ok(summary)
 }
@@ -1078,7 +1081,7 @@ pub async fn kb_maintainer_publish(
                 team_id,
                 input_path,
                 lock_path,
-                requires_cost_acceptance: prepared.estimated_cost.unwrap_or_default() > 0.0,
+                requires_cost_acceptance: false,
             }
         }
     };

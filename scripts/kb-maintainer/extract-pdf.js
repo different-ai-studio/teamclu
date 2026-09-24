@@ -2,6 +2,7 @@
 
 const zlib = require("node:zlib");
 const { extractorCacheKey, withRawFrontmatter } = require("./extract-text");
+const { classifyVisionError, readCachedResult, storeCachedResult } = require("./vision");
 
 const TEXT_EXTRACTOR = { name: "pdf-text-v1", version: "1", mediaType: "application/pdf" };
 const VISION_EXTRACTOR = { name: "pdf-vision-v1", version: "1", mediaType: "application/pdf" };
@@ -206,7 +207,19 @@ async function extractPdf(opts) {
     cache,
   } = opts;
   const pages = parsePages(bytes);
-  const allAccepted = pages.length > 0 && pages.every((page) => page.quality === "accepted");
+  if (pages.length === 0) {
+    return withRawFrontmatter({
+      sourcePath,
+      sourceSha256,
+      bytes,
+      extractor: TEXT_EXTRACTOR,
+      mediaType: TEXT_EXTRACTOR.mediaType,
+      body: "",
+      locators: [],
+      quality: "vision_unreadable",
+    });
+  }
+  const allAccepted = pages.every((page) => page.quality === "accepted");
   if (allAccepted) {
     const converted = wrapPages(pages);
     return withRawFrontmatter({
@@ -221,51 +234,68 @@ async function extractPdf(opts) {
     });
   }
 
-  if (typeof visionExtract === "function") {
-    const cacheKey = extractorCacheKey({
+  const needsVision = pages.filter((page) => page.quality !== "accepted");
+  if (typeof visionExtract !== "function") {
+    return withRawFrontmatter({
+      sourcePath,
       sourceSha256,
-      extractorName: VISION_EXTRACTOR.name,
-      extractorVersion: VISION_EXTRACTOR.version,
-      visionModel,
-      promptVersion,
+      bytes,
+      extractor: TEXT_EXTRACTOR,
+      mediaType: TEXT_EXTRACTOR.mediaType,
+      body: "",
+      locators: pages.map((page) => `page=${page.number}`),
+      quality: "vision_declined",
     });
-    if (cache?.has(cacheKey)) return cache.get(cacheKey);
-    const visionPages = [];
-    for (const page of pages) {
-      const text = await visionExtract({
+  }
+  const maxVisionPages = Number.isFinite(opts.maxVisionPages) ? opts.maxVisionPages : 30;
+  if (needsVision.length > maxVisionPages) {
+    throw new Error("vision_too_many_pages");
+  }
+  const cacheKey = extractorCacheKey({
+    sourceSha256,
+    extractorName: VISION_EXTRACTOR.name,
+    extractorVersion: VISION_EXTRACTOR.version,
+    visionModel,
+    promptVersion,
+  });
+  const cached = readCachedResult({ cache, cacheDir: opts.cacheDir }, cacheKey);
+  if (cached) return cached;
+  const visionPages = [];
+  for (const page of pages) {
+    if (page.quality === "accepted") {
+      visionPages.push({ number: page.number, text: page.text });
+      continue;
+    }
+    let text = "";
+    try {
+      text = await visionExtract({
         pageNumber: page.number,
         sourcePath,
         sourceSha256,
         visionModel,
         promptVersion,
+        bytes,
+        mediaType: "application/pdf",
       });
-      visionPages.push({ number: page.number, text: String(text || "") });
+    } catch (error) {
+      throw classifyVisionError(error);
     }
-    const converted = wrapPages(visionPages);
-    const result = withRawFrontmatter({
-      sourcePath,
-      sourceSha256,
-      bytes,
-      extractor: VISION_EXTRACTOR,
-      mediaType: VISION_EXTRACTOR.mediaType,
-      body: converted.body,
-      locators: converted.locators,
-      quality: converted.body.replace(/<!-- source-locator: .*? -->/g, "").trim() ? "accepted" : "extraction_failed",
-    });
-    cache?.set(cacheKey, result);
-    return result;
+    if (!String(text || "").trim()) throw new Error("vision_empty");
+    visionPages.push({ number: page.number, text: String(text) });
   }
-
-  return withRawFrontmatter({
+  const converted = wrapPages(visionPages);
+  const result = withRawFrontmatter({
     sourcePath,
     sourceSha256,
     bytes,
-    extractor: TEXT_EXTRACTOR,
-    mediaType: TEXT_EXTRACTOR.mediaType,
-    body: "",
-    locators: pages.map((page) => `page=${page.number}`),
-    quality: "extraction_failed",
+    extractor: VISION_EXTRACTOR,
+    mediaType: VISION_EXTRACTOR.mediaType,
+    body: converted.body,
+    locators: converted.locators,
+    quality: "accepted",
   });
+  storeCachedResult({ cache, cacheDir: opts.cacheDir }, cacheKey, result);
+  return result;
 }
 
 module.exports = { extractPdf, buildSimplePdf, parsePages };

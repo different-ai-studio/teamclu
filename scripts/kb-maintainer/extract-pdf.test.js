@@ -48,7 +48,7 @@ test("extractPdf fails closed when quality is low and vision is unavailable", as
     bytes,
     sourceSha256: SHA,
   });
-  assert.equal(result.quality, "extraction_failed");
+  assert.equal(result.quality, "vision_declined");
 });
 
 test("extractPdf caches vision pages by extractor cache key", async () => {

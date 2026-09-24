@@ -166,7 +166,7 @@ test("dryRun does not download, call an agent, or write the vault", () => {
   assert.deepEqual(state.sources, {});
 });
 
-test("dryRun treats an imported-but-missing known path as delete, not would_fetch", () => {
+test("dryRun keeps an imported source that is listed but not downloaded", () => {
   const fx = makeFixture();
   const sha = "ab".repeat(32);
   writeJson(fx.statePath, {
@@ -191,15 +191,62 @@ test("dryRun treats an imported-but-missing known path as delete, not would_fetc
     ],
     aclPrefixes: [],
   });
+  assert.deepEqual(result.plan.delete, []);
+  assert.deepEqual(
+    result.plan.would_fetch.map((item) => item.path),
+    ["documents/handbook/gone.pdf", "documents/training/onboarding.pdf"],
+  );
+});
+
+test("dryRun still retracts an imported source that is gone from the team", () => {
+  const fx = makeFixture();
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    sources: {
+      "documents/handbook/gone.pdf": {
+        sourceSha256: "ab".repeat(32),
+        status: "imported",
+        affectedPages: ["pages/gone.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [{ path: "documents/training/onboarding.pdf", size: 40 }],
+    aclPrefixes: [],
+  });
   assert.deepEqual(
     result.plan.delete.map((item) => item.path),
     ["documents/handbook/gone.pdf"],
   );
-  assert.deepEqual(
-    result.plan.would_fetch.map((item) => item.path),
-    ["documents/training/onboarding.pdf"],
-  );
-  assert.ok(!result.plan.would_fetch.some((item) => item.path === "documents/handbook/gone.pdf"));
+});
+
+test("dryRun does not retract a listed source that is outside the selection and not downloaded", () => {
+  const fx = makeFixture();
+  writeJson(fx.statePath, {
+    schemaVersion: 1,
+    sources: {
+      "documents/features/shell.md": {
+        sourceSha256: "ab".repeat(32),
+        status: "imported",
+        affectedPages: ["pages/3col-shell.md"],
+      },
+    },
+  });
+  const result = dryRun({
+    configPath: fx.configPath,
+    statePath: fx.statePath,
+    documentsRoot: fx.documentsRoot,
+    knowledgeRoot: fx.knowledgeRoot,
+    nodeId: "node-a",
+    known: [{ path: "documents/features/shell.md", size: 20 }],
+    aclPrefixes: [],
+  });
+  assert.deepEqual(result.plan.delete, []);
 });
 
 test("dryRun does not retract an imported source that still exists outside the selection", () => {
