@@ -1,7 +1,7 @@
 import type { Question, QuestionOption } from "@/stores/session-types";
 import { agentStreamKey, isTerminalAgentStatus, isTurnOpeningStatusChange, normalizeToolResultEvent, normalizeToolUseEvent, shouldPatchFlushedToolEvent, streamEntryHasVisibleContent } from "@/lib/stream/live-agent-stream";
 import { bufferStreamDelta, flushStreamDeltasFor} from "@/lib/stream/stream-delta-buffer";
-import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, localizeAgentTurnErrorMessage } from "@/lib/agent/agent-turn-error";
+import { classifyAgentTurnErrorName, formatAgentTurnErrorDisplayMessage, isAgentTurnAbortError, isStalePiExtensionCtxError, localizeAgentTurnErrorMessage } from "@/lib/agent/agent-turn-error";
 import { patchPersistedToolResult, patchPersistedToolUse, syncStreamingToolOutputsFromLocalCache } from "@/lib/stream/streaming-persist";
 import { streamActorIdFromLiveEvent } from "@/lib/daemon/teamclu-events";
 import { getFlushedTurn } from "@/lib/stream/flushed-turn-registry";
@@ -398,48 +398,53 @@ export function handleAcpEvent(
               // tool results land on the live stream instead of spawning a
               // phantom active entry (Unknown tool / stuck running card).
               // Stop UI comes from daemon interrupted AGENT_REPLY, not SessionErrorAlert.
-              if (isAgentTurnAbortError(er.message, er.details)) {
-                // Interrupted AGENT_REPLY (daemon metadata.turn_status) owns
-                // the user-facing stop UI — do not also raise SessionErrorAlert.
-                const streamKey = agentStreamKey(sid, actorId);
-                terminalFlushPendingRef.current[streamKey] = true;
-                logInterruptMsgDiag("mqtt.error.abort.deferToIdle", {
-                  sessionId: sid,
-                  actorId,
-                  ...summarizeStreamEntry(
-                    useV2StreamingStore.getState().byKey[streamKey],
-                    "live",
-                  ),
-                });
-              } else {
-                terminalFlushPendingRef.current[agentStreamKey(sid, actorId)] = true;
-                flushTurnAgentReply(sid, actorId, "mqtt.error");
-                // Localize known daemon-emitted errors (the daemon is
-                // locale-agnostic and emits English for iOS/logs). Keep the raw
-                // message for anything we don't recognize.
-                const localizedMessage = localizeAgentTurnErrorMessage(er.message, t);
-                useV2StreamingStore.getState().setError(
-                  sid,
-                  actorId,
-                  localizedMessage,
-                  er.details ?? "",
-                );
-                // The live dock unmounts as soon as a turn errors
-                // (isStreamInterruptible excludes errored entries), so the dock's
-                // ErrorCard is never seen. Surface every turn error as a durable
-                // SessionErrorAlert bubble in the thread instead.
-                {
-                  const detail = (er.details ?? "").trim();
-                  const errorName = classifyAgentTurnErrorName(er.message, er.details);
-                  useSessionStore.getState().setSessionErrorEvent({
+              // Stale-ctx noise from a shared pi runtime. The turn keeps
+              // running; painting it is the「服务提示」on the session that was
+              // still open when another one was closed.
+              if (!isStalePiExtensionCtxError(er.message, er.details)) {
+                if (isAgentTurnAbortError(er.message, er.details)) {
+                  // Interrupted AGENT_REPLY (daemon metadata.turn_status) owns
+                  // the user-facing stop UI — do not also raise SessionErrorAlert.
+                  const streamKey = agentStreamKey(sid, actorId);
+                  terminalFlushPendingRef.current[streamKey] = true;
+                  logInterruptMsgDiag("mqtt.error.abort.deferToIdle", {
                     sessionId: sid,
-                    error: {
-                      name: errorName,
-                      data: {
-                        message: formatAgentTurnErrorDisplayMessage(localizedMessage, detail),
-                      },
-                    },
+                    actorId,
+                    ...summarizeStreamEntry(
+                      useV2StreamingStore.getState().byKey[streamKey],
+                      "live",
+                    ),
                   });
+                } else {
+                  terminalFlushPendingRef.current[agentStreamKey(sid, actorId)] = true;
+                  flushTurnAgentReply(sid, actorId, "mqtt.error");
+                  // Localize known daemon-emitted errors (the daemon is
+                  // locale-agnostic and emits English for iOS/logs). Keep the raw
+                  // message for anything we don't recognize.
+                  const localizedMessage = localizeAgentTurnErrorMessage(er.message, t);
+                  useV2StreamingStore.getState().setError(
+                    sid,
+                    actorId,
+                    localizedMessage,
+                    er.details ?? "",
+                  );
+                  // The live dock unmounts as soon as a turn errors
+                  // (isStreamInterruptible excludes errored entries), so the dock's
+                  // ErrorCard is never seen. Surface every turn error as a durable
+                  // SessionErrorAlert bubble in the thread instead.
+                  {
+                    const detail = (er.details ?? "").trim();
+                    const errorName = classifyAgentTurnErrorName(er.message, er.details);
+                    useSessionStore.getState().setSessionErrorEvent({
+                      sessionId: sid,
+                      error: {
+                        name: errorName,
+                        data: {
+                          message: formatAgentTurnErrorDisplayMessage(localizedMessage, detail),
+                        },
+                      },
+                    });
+                  }
                 }
               }
             } else if (event?.case === "raw") {

@@ -1,4 +1,5 @@
 import type { AcpEvent } from "@/lib/proto/amux_pb";
+import { isStalePiExtensionCtxError } from "@/lib/agent/agent-turn-error";
 import {
   isAgentActiveStatus,
   isTerminalAgentStatus,
@@ -83,6 +84,7 @@ export function routeSubagentAcpEvent(
   }
   if (event?.case === "error") {
     const err = event.value as { message?: string; details?: string };
+    if (isStalePiExtensionCtxError(err.message, err.details)) return;
     store.subSetError(
       parentToolId,
       sessionId,
