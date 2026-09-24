@@ -102,7 +102,10 @@ function explainFailure(error) {
   ) {
     return "This source could not be read. Replace it with a text file, then try again.";
   }
-  if (/^deny pattern\b/.test(text) || text === "sensitive filename") {
+  if (text === "sensitive filename") {
+    return "This filename looks like a personnel or ID record, so it is excluded from Wiki.";
+  }
+  if (/^deny pattern\b/.test(text)) {
     return "This file is excluded from Wiki. Choose a different folder.";
   }
   if (/^unknown class /.test(text)) {

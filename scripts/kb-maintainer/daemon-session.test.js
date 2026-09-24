@@ -133,6 +133,31 @@ test("createDaemonSession records a daemon model error on the assistant message"
   assert.match(session.messages.at(-1).errorMessage, /does not support image input/);
 });
 
+test("createDaemonSession closes the daemon session once, even when the turn times out", async () => {
+  const deletes = [];
+  const session = await createDaemonSession(
+    { workspacePath: "/tmp/wiki" },
+    {
+      discover: async () => ({ baseUrl: "http://127.0.0.1:9", rootToken: "root" }),
+      timeoutMs: 20,
+      intervalMs: 1,
+      fetch: async (url, init) => {
+        if (url.endsWith("/v1/auth/exchange")) return json({ token: "scoped" });
+        if (url.endsWith("/v1/sessions") && init?.method === "POST") return json({ session_id: "sess-1" });
+        if (init?.method === "DELETE") {
+          deletes.push(url);
+          return json({}, 204);
+        }
+        if (url.endsWith("/prompt")) return json({}, 202);
+        return json({ events: [{ seq: 1, kind: "token_delta", data: { text: "半截" } }] });
+      },
+    },
+  );
+  await assert.rejects(session.prompt("编译"), /timed out waiting for the Agent/);
+  await session.dispose();
+  assert.deepEqual(deletes, ["http://127.0.0.1:9/v1/sessions/sess-1"]);
+});
+
 function json(body, status = 200) {
   return {
     ok: status >= 200 && status < 300,

@@ -281,6 +281,14 @@ test("explainFailure strips local absolute paths from model errors", () => {
   assert.match(text, /<local-path>/);
 });
 
+test("explainFailure blames the filename, not the folder, for a sensitive name", () => {
+  const { explainFailure } = require("./desktop-runner");
+  assert.equal(
+    explainFailure("sensitive filename"),
+    "This filename looks like a personnel or ID record, so it is excluded from Wiki.",
+  );
+});
+
 test("explainFailure names each vision outcome separately", () => {
   const { explainFailure } = require("./desktop-runner");
   assert.equal(explainFailure("extraction vision_declined"), "This run did not look at images.");

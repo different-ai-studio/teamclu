@@ -103,60 +103,74 @@ async function createDaemonSession(ctx, deps = {}) {
       model_id: ctx.compilerModel,
     });
   }
+  let closed = false;
+  async function dispose() {
+    if (closed) return;
+    closed = true;
+    await request("DELETE", `/v1/sessions/${sessionId}`).catch(() => {});
+  }
   const session = {
     sessionId,
     messages: [],
     since: 0,
+    // One prompt per session: the session is closed when the turn ends,
+    // including on timeout or a failed request, so a pi session never
+    // outlives the call.
     async prompt(text, options = {}) {
-      const attachments = (options.images || []).map(
-        (image) => `data:${image.mimeType};base64,${image.data}`,
-      );
-      await request("POST", `/v1/sessions/${sessionId}/prompt`, {
-        text,
-        attachments,
-      });
-      const started = Date.now();
-      let completed = "";
-      let sawCompleted = false;
-      let deltas = "";
-      let errorMessage = "";
-      let finished = false;
-      while (Date.now() - started < timeoutMs) {
-        const page = await request(
-          "GET",
-          `/v1/sessions/${sessionId}/events?since=${session.since}&limit=200`,
-        );
-        for (const event of page.events || []) {
-          session.since = Math.max(session.since, Number(event.seq) || 0);
-          if (event.kind === "message_completed") {
-            sawCompleted = true;
-            completed = String(event.data?.content || "");
-          } else if (event.kind === "token_delta") {
-            deltas += String(event.data?.text || "");
-          } else if (event.kind === "session_error") {
-            errorMessage = String(event.data?.message || "model error");
-          } else if (event.kind === "turn_finished") {
-            finished = true;
-          }
-        }
-        if (finished) break;
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      try {
+        await runTurn(text, options);
+      } finally {
+        await dispose();
       }
-      if (!finished) {
-        throw new Error("Compiler model failed: timed out waiting for the Agent");
-      }
-      session.messages.push({
-        role: "assistant",
-        stopReason: errorMessage ? "error" : "stop",
-        errorMessage,
-        content: [{ type: "text", text: sawCompleted ? completed : deltas }],
-      });
     },
     async waitForIdle() {},
-    async dispose() {
-      await request("DELETE", `/v1/sessions/${sessionId}`).catch(() => {});
-    },
+    dispose,
   };
+  async function runTurn(text, options) {
+    const attachments = (options.images || []).map(
+      (image) => `data:${image.mimeType};base64,${image.data}`,
+    );
+    await request("POST", `/v1/sessions/${sessionId}/prompt`, {
+      text,
+      attachments,
+    });
+    const started = Date.now();
+    let completed = "";
+    let sawCompleted = false;
+    let deltas = "";
+    let errorMessage = "";
+    let finished = false;
+    while (Date.now() - started < timeoutMs) {
+      const page = await request(
+        "GET",
+        `/v1/sessions/${sessionId}/events?since=${session.since}&limit=200`,
+      );
+      for (const event of page.events || []) {
+        session.since = Math.max(session.since, Number(event.seq) || 0);
+        if (event.kind === "message_completed") {
+          sawCompleted = true;
+          completed = String(event.data?.content || "");
+        } else if (event.kind === "token_delta") {
+          deltas += String(event.data?.text || "");
+        } else if (event.kind === "session_error") {
+          errorMessage = String(event.data?.message || "model error");
+        } else if (event.kind === "turn_finished") {
+          finished = true;
+        }
+      }
+      if (finished) break;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    if (!finished) {
+      throw new Error("Compiler model failed: timed out waiting for the Agent");
+    }
+    session.messages.push({
+      role: "assistant",
+      stopReason: errorMessage ? "error" : "stop",
+      errorMessage,
+      content: [{ type: "text", text: sawCompleted ? completed : deltas }],
+    });
+  }
   return session;
 }
 
