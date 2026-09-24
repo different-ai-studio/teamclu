@@ -191,7 +191,16 @@ Alibaba.
 | R1 | official ARN's region ≠ deploy region | refuse, naming the deploy region and the `Name:version` shorthand | FC refuses it a round-trip later without naming a usable region |
 | R2 | command reaches into `/opt/<x>` with no attached layer mounting it | refuse | `/opt` contained nothing but the attached layer (§2) |
 | R3 | bare interpreter the image does not put on PATH (`node` on debian10) | refuse | `PROBE-PATH node MISSING` |
+| R3b | bare interpreter on `custom` (Debian 9) — present but ancient | **warn** | see below |
 | R4 | bare `python3` on `custom.debian10` | **warn** | resolves to `/usr/bin/python3`, not 3.10.9 — a silent downgrade, but possibly deliberate |
+
+**Absent refuses; stale only warns.** An earlier draft refused Debian 9's aged
+interpreters too, and implementing it broke the regression suite: `james-test1`
+is live *right now* on `fcRuntime: "custom"` running Python 3.7.4 through a
+`bash -c` one-liner. Refusing that would block a working deploy to protect it
+from a hazard it has already survived — the same overreach as silently
+re-profiling a live app, which §10 forbids. `node` on debian10 stays a refusal
+because that configuration cannot boot at all.
 
 R1–R3 are `ApiError(400, "validation_failed", …)`, the same shape every other
 declaration error uses. R4 warns to the control plane's own log via
