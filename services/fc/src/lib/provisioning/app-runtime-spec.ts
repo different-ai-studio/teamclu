@@ -1,5 +1,14 @@
 import { ApiError } from "../http-utils.js";
-import { RUNTIME_PROFILES, parseLayerRef, type LayerRef } from "./app-runtime-profiles.js";
+import {
+  LAYER_MOUNTS,
+  RUNTIME_PROFILES,
+  layerRootOf,
+  parseLayerRef,
+  pathLookup,
+  providedMounts,
+  startProgram,
+  type LayerRef,
+} from "./app-runtime-profiles.js";
 
 export type AppBuildKind =
   | "node"
@@ -361,6 +370,106 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
   };
 }
 
+/**
+ * The layers a passthrough declaration ends up with, named without a region.
+ *
+ * Omitting `layers` resolves to the kind's default, so the rules below have to
+ * account for it — otherwise a config that works would look like it attaches
+ * nothing.
+ */
+function effectiveLayerRefs(kind: AppBuildKind, layers: string[] | undefined): LayerRef[] {
+  if (layers === undefined) {
+    if (isContainerKind(kind)) return [];
+    const pin = LAYER_VERSIONS[kind as Exclude<AppBuildKind, "container">];
+    return [{ kind: "shorthand", name: pin.name, version: pin.version }];
+  }
+  return layers.map(requireLayerRef);
+}
+
+/**
+ * Refuse a start command the chosen image and layers cannot run, and name the
+ * one that would work.
+ *
+ * Throws for what the environment table proves impossible; returns advisories
+ * for what merely looks wrong. A layer whose mount path is unverified makes a
+ * rule step aside rather than guess — blocking a working deploy on our own
+ * ignorance is worse than the round-trip it saves.
+ */
+export function checkStartEnvironment(build: AppBuildSpec, start: AppStartSpec): string[] {
+  if (isContainerKind(build.kind)) return [];
+  const program = startProgram(start.command, start.args);
+  if (!program) return [];
+  const fcRuntime = start.fcRuntime ?? "";
+  const refs = effectiveLayerRefs(build.kind, start.layers);
+  const profile = RUNTIME_PROFILES[build.kind as Exclude<AppBuildKind, "container">];
+  const where = program.viaShell ? "the shell script in start.args" : "start.command";
+
+  // The command reaches into a layer's mount point. If every attached layer is
+  // one we know, we can say for certain whether that path will be there.
+  if (program.form === "absolute") {
+    const root = layerRootOf(program.token);
+    if (root) {
+      const { mounts, hasUnknown } = providedMounts(refs);
+      if (!hasUnknown && !mounts.includes(root)) {
+        const attached = refs.length
+          ? refs.map((r) => `${r.name}:${r.version}`).join(", ")
+          : "none";
+        const provider = Object.entries(LAYER_MOUNTS).find(([, m]) => m === root)?.[0];
+        const fix = provider
+          ? `attach it with "layers": ["${provider}:<version>"]`
+          : `attach the layer that provides ${root}`;
+        const instead = profile?.verified
+          ? profile.interpreter
+          : "an interpreter the image already ships";
+        throw new ApiError(
+          400,
+          "validation_failed",
+          `${where} runs ${program.token}, but nothing mounts ${root} — layers attached: ${attached}. To fix: ${fix}, or run ${instead}.`,
+        );
+      }
+    }
+  }
+
+  // A bare name resolves through PATH to the image's own interpreter, never a
+  // layer's. On debian10 `node` is not there at all; on Debian 9 everything is
+  // there but too old to run code written today.
+  const warnings: string[] = [];
+  if (program.form === "bare") {
+    const found = pathLookup(fcRuntime, program.basename);
+    const alternative = profile?.verified
+      ? profile.interpreter
+      : "an absolute path to the interpreter you mean";
+    if (found.kind === "absent") {
+      throw new ApiError(
+        400,
+        "validation_failed",
+        `${where} runs "${program.basename}", which is not on PATH in the ${fcRuntime} image. To fix: run ${alternative}.`,
+      );
+    }
+    // Stale, not absent: Debian 9's interpreters are old enough to be a trap,
+    // but apps are serving traffic on them right now. Refusing would block a
+    // working deploy to protect it from a hazard it has already survived, which
+    // is the same overreach as silently re-profiling a live app. Say so loudly
+    // and let the author decide.
+    if (found.kind === "resolves" && fcRuntime === "custom") {
+      warnings.push(
+        `${where} runs "${program.basename}", which on fcRuntime "custom" (Debian 9) is ${program.basename} ${found.version} — old enough that modern syntax and packages will fail. Consider fcRuntime "custom.debian10" and ${alternative}.`,
+      );
+    } else if (
+      found.kind === "resolves" &&
+      profile?.verified &&
+      found.path !== profile.interpreter
+    ) {
+      // The name resolves, but to a different interpreter than this kind wants,
+      // and nothing anywhere says so.
+      warnings.push(
+        `${where} runs "${program.basename}", which resolves to ${found.path} on ${fcRuntime} — not ${profile.interpreter}. The function will run ${found.version}.`,
+      );
+    }
+  }
+  return warnings;
+}
+
 export function parseAppDeployDeclaration(raw: unknown): AppDeployDeclaration {
   const root = requireObject(raw, "teamclu.app.json");
   rejectLegacyShape(root);
@@ -372,6 +481,9 @@ export function parseAppDeployDeclaration(raw: unknown): AppDeployDeclaration {
   }
   const build = parseBuild(root.build);
   const start = parseStart(build, root.start);
+  for (const warning of checkStartEnvironment(build, start)) {
+    console.warn(`[apps] teamclu.app.json: ${warning}`);
+  }
   return { build, start };
 }
 

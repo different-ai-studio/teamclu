@@ -5,6 +5,7 @@ import {
   resolveLayers,
   defaultLayersForKind,
   layerArn,
+  checkStartEnvironment,
 } from "../../src/lib/provisioning/app-runtime-spec.js";
 
 test("parse: accepts build+start for node", () => {
@@ -275,4 +276,118 @@ test("regression: passthrough omitting layers still gets the pinned Nodejs20", (
   assert.deepEqual(resolveLayers("cn-shenzhen", "node", undefined), [
     layerArn("cn-shenzhen", "Nodejs20", 3),
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Preflight on the passthrough form: refuse what the image cannot run.
+// ---------------------------------------------------------------------------
+
+test("preflight: /opt path with no layer to mount it is refused", () => {
+  // Deployed clean and then failed to boot with "/opt/nodejs20/bin/node is not exist".
+  assert.throws(
+    () =>
+      parseAppDeployDeclaration({
+        build: { kind: "node", output: ".output" },
+        start: {
+          fcRuntime: "custom.debian10",
+          command: ["/opt/nodejs20/bin/node"],
+          args: ["server/index.mjs"],
+          port: 9000,
+          layers: [],
+        },
+      }),
+    (e: any) => {
+      const m = String(e?.message ?? e);
+      return m.includes("/opt/nodejs20") && m.includes("Nodejs20");
+    },
+  );
+});
+
+test("preflight: a bare interpreter absent from the image is refused", () => {
+  assert.throws(
+    () =>
+      parseAppDeployDeclaration({
+        build: { kind: "node" },
+        start: {
+          fcRuntime: "custom.debian10",
+          command: ["node"],
+          args: ["server/index.mjs"],
+          port: 9000,
+          layers: [],
+        },
+      }),
+    (e: any) => {
+      const m = String(e?.message ?? e);
+      return /not on PATH/.test(m) && m.includes("/var/fc/lang/nodejs20/bin/node");
+    },
+  );
+});
+
+test("preflight: Debian 9 interpreters warn by version, inside a shell too", () => {
+  // Stale, not absent. james-test1 serves traffic on 3.7.4 today, so refusing
+  // would block a working app; the trap is named instead of enforced.
+  const warnings = checkStartEnvironment(
+    { kind: "python", output: "." },
+    {
+      fcRuntime: "custom",
+      command: ["/bin/bash"],
+      args: ["-c", "PYTHONPATH=/code/lib python3 -m uvicorn app.main:app"],
+      port: 9000,
+      layers: [],
+    },
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /3\.7\.4/);
+  assert.match(warnings[0], /start\.args/);
+  assert.match(warnings[0], /custom\.debian10/);
+});
+
+test("preflight: an unverified layer makes the /opt rule step aside", () => {
+  // Go1's mount path is unknown, so we cannot prove /opt/go is missing.
+  const d = parseAppDeployDeclaration({
+    build: { kind: "go", output: "." },
+    start: {
+      fcRuntime: "custom.debian10",
+      command: ["/opt/go/bin/app"],
+      port: 9000,
+      layers: ["Go1:1"],
+    },
+  });
+  assert.deepEqual(d.start.layers, ["Go1:1"]);
+});
+
+test("preflight: bare python3 on debian10 warns about the silent downgrade", () => {
+  const warnings = checkStartEnvironment(
+    { kind: "python", output: "." },
+    {
+      fcRuntime: "custom.debian10",
+      command: ["python3"],
+      args: ["app.py"],
+      port: 9000,
+      layers: [],
+    },
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /\/usr\/bin\/python3/);
+  assert.match(warnings[0], /\/var\/fc\/lang\/python3\.10\/bin\/python3/);
+});
+
+test("preflight: container apps are not second-guessed", () => {
+  assert.deepEqual(
+    checkStartEnvironment(
+      { kind: "container", output: ".", dockerfile: "Dockerfile", context: "." },
+      { port: 8080 },
+    ),
+    [],
+  );
+});
+
+test("preflight: the resolved short form passes its own rules", () => {
+  for (const [kind, entry] of [
+    ["node", "server/index.mjs"],
+    ["python", "app.py"],
+  ] as const) {
+    const d = parseAppDeployDeclaration({ build: { kind }, start: { entry, port: 9000 } });
+    assert.deepEqual(checkStartEnvironment({ kind, output: "." }, d.start), []);
+  }
 });
