@@ -195,14 +195,18 @@ mod tests {
                 });
             assert_eq!(declaration.build.kind, "node");
             assert_eq!(declaration.build.output, ".output");
+            // Templates declare intent. Which Debian image, which interpreter
+            // and which layers are the control plane's to resolve — a template
+            // that named them would be teaching every new app to write the
+            // values that cannot be known from inside the repository.
             assert_eq!(
-                declaration.start.command,
-                Some(vec!["/opt/nodejs20/bin/node".to_string()])
+                declaration.start.entry,
+                Some("server/index.mjs".to_string()),
+                "{t:?}: template should use the short form"
             );
-            assert_eq!(
-                declaration.start.args,
-                Some(vec!["server/index.mjs".to_string()])
-            );
+            assert_eq!(declaration.start.fc_runtime, None, "{t:?}");
+            assert_eq!(declaration.start.command, None, "{t:?}");
+            assert_eq!(declaration.start.layers, None, "{t:?}");
             assert_eq!(declaration.start.port, 9000);
         }
     }

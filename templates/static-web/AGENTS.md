@@ -65,7 +65,8 @@ async function storageCredentials() {
 
 仓根 `teamclu.app.json` 声明**怎么构建、怎么启动**，平台按其中的 `build` + `start` 部署到 FC Custom Runtime：
 
-- 改 `build.kind` / `start.command` / `start.port` 以匹配 FC Custom Runtime（本模板默认 Node：`build.kind: "node"`，`start.command: ["/opt/nodejs20/bin/node"]`，`args: ["server/index.mjs"]`，`port: 9000`）。
+- 改 `build.kind` / `start.entry` / `start.port`。`entry` 是构建产物目录里要运行的文件（本模板是 `.output` 下的 `server/index.mjs`）。运行环境、解释器绝对路径和 layer 由平台按 `build.kind` 决定——这些值只有平台知道，仓库里写不对，所以不要写。
+- 只有平台默认的启动方式满足不了时，才改用 FC 直通格式（`fcRuntime` + `command` + `args` + `layers`）。两种格式不能混用，同时出现会被拒绝。直通格式里的官方层写成 `"Nodejs20:3"` 这种「名字:版本」形式，区域由平台补齐；写完整 ARN 时区域必须和部署区域一致。
 - **不要用**旧字段 `runtime` / `entry` —— 缺 `build` + `start` 或仍带 legacy 字段时部署会被拒。
 - 改完 **commit + push**；用户明确要求上线后，再通过控制面或 `manage_app deploy` 部署。
 

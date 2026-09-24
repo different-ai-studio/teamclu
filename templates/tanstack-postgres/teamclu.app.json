@@ -6,9 +6,7 @@
     "output": ".output"
   },
   "start": {
-    "fcRuntime": "custom.debian10",
-    "command": ["/opt/nodejs20/bin/node"],
-    "args": ["server/index.mjs"],
+    "entry": "server/index.mjs",
     "port": 9000
   }
 }
