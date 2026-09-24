@@ -515,6 +515,38 @@ mod tests {
     }
 
     #[test]
+    fn app_workspace_prompt_publishes_runtime_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("teamclu.app.json"),
+            r#"{"build":{"kind":"node"},"start":{"entry":"server/index.mjs"}}"#,
+        )
+        .unwrap();
+        let app: SessionAppContext = serde_json::from_value(serde_json::json!({
+            "snapshotAt": "2026-09-24T10:00:00.000Z",
+            "id": "app-1", "name": "demo", "type": "static_web", "visibility": "personal",
+            "provisionStatus": "ready", "fcStatus": "live",
+            "deployment": {"runtime": "node", "startSpec": null},
+            "runtime": {
+                "region": "cn-shenzhen",
+                "target": {"os": "linux", "arch": "x86_64"},
+                "gotchas": ["`node` is not on PATH in custom.debian10."]
+            },
+            "auth": {"mode": "none", "audience": "org", "scope": "all", "rules": []},
+            "database": {"configured": false, "live": false},
+            "storage": {"controlPlaneAvailable": false, "overQuota": false},
+            "environment": {"keys": []},
+            "customDomain": {"domain": null, "verified": false}
+        }))
+        .unwrap();
+
+        let text = build_app_workspace_prompt(&app, dir.path().to_str().unwrap());
+        assert!(text.contains("cn-shenzhen"), "region must be published");
+        assert!(text.contains("x86_64"), "target arch must be published");
+        assert!(text.contains("not on PATH"), "gotchas must be published");
+    }
+
+    #[test]
     fn display_label_falls_back_to_actor_id_prefix() {
         assert_eq!(display_label("abcdef123456", None), "abcdef12");
         assert_eq!(display_label("short", None), "short");

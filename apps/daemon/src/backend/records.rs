@@ -164,6 +164,14 @@ pub struct SessionAppContext {
     #[serde(default)]
     pub fc_status: Option<String>,
     pub deployment: SessionAppDeploymentContext,
+    /// Runtime facts published by the control plane: deploy region, target
+    /// platform, what each image ships and where its layers mount.
+    ///
+    /// Host facts are deliberately NOT here. They belong to whichever machine
+    /// runs the build, which may not be this one — the same app is checked out
+    /// on two macOS machines and a Windows machine in this deployment.
+    #[serde(default)]
+    pub runtime: Option<serde_json::Value>,
     pub auth: SessionAppAuthContext,
     pub database: SessionAppDatabaseContext,
     pub storage: SessionAppStorageContext,
