@@ -5310,6 +5310,28 @@ export function createSupabaseBusinessRepository(options) {
      * deployed under an older naming scheme still finds its own logs; deriving
      * it is only the fallback for a row that predates the column.
      */
+    /**
+     * The platform's own facts about where this app will run.
+     *
+     * Unlike logs, these carry no application data — they describe the images
+     * and the region, not the app — so `view` is enough. What the app id gates
+     * is whether the caller may see that this app exists at all.
+     */
+    async getAppRuntimeInfo(appId: string) {
+      const { data: app, error } = await supabase
+        .from("apps")
+        .select("id, team_id, type, created_by_actor_id")
+        .eq("id", appId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!app) return null;
+
+      const permission = await this.resolveAppCallerPermissionForApp(app);
+      if (!permission) return null;
+
+      return runtimeFacts(appsRegion());
+    },
+
     async getAppLogs(appId: string, query: any = {}) {
       const { data: app, error } = await supabase
         .from("apps")

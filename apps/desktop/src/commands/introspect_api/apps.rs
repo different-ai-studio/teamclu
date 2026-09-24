@@ -337,6 +337,18 @@ pub(super) fn notify_app_changed(app: &AppHandle, row: &Value) {
 /// `publicUrl` is the address the product hands out; `fcEndpoint` is the raw FC
 /// hostname and is only the app's address on a deployment with no apps domain.
 /// One `url` rather than both, so the agent cannot quote the wrong one.
+/// This machine, for `runtime_info`.
+///
+/// Mirrors the daemon's `host_facts`: whoever deploys is whose tools run, and
+/// the same app is checked out on macOS and Windows machines in one team.
+fn this_machine() -> Value {
+    json!({
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "build_shell": "sh -c",
+    })
+}
+
 pub(super) fn app_brief(row: &Value) -> Value {
     let f = |k: &str| row.get(k).cloned().unwrap_or(Value::Null);
     let url = row
@@ -576,9 +588,10 @@ fn dir_has_files(dir: &str) -> bool {
 
 // ─── manage_app ─────────────────────────────────────────────────────────────
 
-const MANAGE_ACTIONS: [&str; 11] = [
+const MANAGE_ACTIONS: [&str; 12] = [
     "list",
     "status",
+    "runtime_info",
     "sessions",
     "create",
     "update",
@@ -652,6 +665,19 @@ pub(super) async fn handle_app_manage(
     }
     let out = match action.as_str() {
         "status" => json!({ "action": "status", "app": app_status(&api, &row).await }),
+        // What the platform knows about where this app runs, plus what is true
+        // of this machine. The two are separate on purpose: the runtime facts
+        // are the same for every teammate, and the machine facts are not.
+        "runtime_info" => json!({
+            "action": "runtime_info",
+            "runtime": api
+                .get(
+                    &format!("/v1/apps/{}/runtime-info", row_str(&row, "id").unwrap_or_default()),
+                    "read the runtime facts",
+                )
+                .await?,
+            "this_machine": this_machine(),
+        }),
         "sessions" => app_sessions(&api, &row).await?,
         "update" => update_app(app, &api, &row, &v).await?,
         "reseed" => checkout::reseed_app(app, &api, &row).await?,
@@ -1691,5 +1717,12 @@ mod tests {
             behind.contains("3 commit(s)") && behind.contains("b7e2d10"),
             "{behind}"
         );
+    }
+
+    #[test]
+    fn runtime_info_is_a_known_read_only_action() {
+        assert!(MANAGE_ACTIONS.contains(&"runtime_info"));
+        // Read-only: it must never join the set that asks for confirmation.
+        assert!(!["deploy", "delete"].contains(&"runtime_info"));
     }
 }

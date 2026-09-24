@@ -934,3 +934,25 @@ test("deleting a folder requires a prefix and reports the count", async () => {
   assert.deepEqual(seen, ["resumes/", ""]);
 });
 
+
+test("GET /v1/apps/:appId/runtime-info serves the platform's own facts", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/runtime-info")[2];
+  const facts = { region: "cn-shenzhen", target: { os: "linux", arch: "x86_64" }, gotchas: ["x"] };
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { getAppRuntimeInfo: async (id) => (id === "app-1" ? facts : null) },
+  });
+  assert.deepEqual(res.body, facts);
+});
+
+test("GET /v1/apps/:appId/runtime-info hides an app the caller cannot see", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/runtime-info")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "nope" }, repository: { getAppRuntimeInfo: async () => null } }),
+    (e: any) => String(e?.message ?? e).includes("not found"),
+  );
+});

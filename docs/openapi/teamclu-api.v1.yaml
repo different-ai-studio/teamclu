@@ -7115,6 +7115,40 @@ paths:
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/runtime-info:
+    get:
+      operationId: readAppRuntimeInfo
+      summary: What the platform knows about where this app runs
+      description: |
+        The deploy region, the target platform, which interpreters each custom
+        runtime image ships and at what absolute path, what a bare interpreter
+        name resolves to on that image's PATH, and which official layers exist
+        with their mount points.
+
+        None of this is reachable from inside an app repository: the region
+        lives in the control plane's own environment and the image contents are
+        documented nowhere the author can see. Publishing it is what replaces
+        guessing.
+
+        Facts are hand-verified constants, not live introspection. Entries
+        carry their provenance — an unverified layer mount is reported as
+        `verified: false` rather than omitted or guessed.
+
+        The app id gates visibility only; the facts do not differ per app. Any
+        caller who can see the app, including `view`, may read them.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Runtime facts for this deployment.
+          content:
+            application/json:
+              schema: { type: object }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/apps/{appId}/logs:
     get:
       operationId: readAppLogs
