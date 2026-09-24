@@ -77,6 +77,8 @@ export const DEFAULT_ATTACHMENT_BUCKET = "attachments";
 export const TEAM_COLUMNS = "id, name, slug, created_at, visibility";
 export const MESSAGE_COLUMNS =
   "id, team_id, session_id, turn_id, sender_actor_id, reply_to_message_id, kind, content, metadata, model, created_at, updated_at";
+export const MESSAGE_ATTACHMENT_SCAN_COLUMNS =
+  "id, kind, metadata, sender_actor_id, created_at";
 export const WORKSPACE_COLUMNS =
   "id, team_id, name, path, agent_id, created_by_member_id, archived, created_at, updated_at";
 

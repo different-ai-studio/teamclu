@@ -10,7 +10,16 @@ import { aiGateway } from "./ai-gateway.js";
 import { createCheckoutSession, listCreditPackages } from "./stripe.js";
 import { ApiError } from "./http-utils.js";
 import { ADMIN_LIST_CAP, clampPage, IN_FILTER_BATCH, isPlatformOperator, safeSearch } from "./platform-operators.js";
-import { DEFAULT_LIST_LIMIT, DEFAULT_MESSAGE_LIST_LIMIT } from "./routing-utils.js";
+import {
+  DEFAULT_LIST_LIMIT,
+  DEFAULT_MESSAGE_LIST_LIMIT,
+  MAX_MESSAGE_LIST_LIMIT,
+  encodeSessionAttachmentCursor,
+} from "./routing-utils.js";
+import {
+  aggregateSessionAttachmentsFromMessages,
+  paginateSessionAttachments,
+} from "./session-attachments/aggregate-list.js";
 
 import { resolveFeatures } from "./routes/config.js";
 
@@ -166,7 +175,7 @@ import { normalizeAgentTypes } from "./agent-types.js";
 import { isListableAgentStatus, LISTABLE_AGENT_STATUS_OR_FILTER } from "./agent-status.js";
 import {
   REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger,
-  DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
+  DEFAULT_ATTACHMENT_BUCKET, TEAM_COLUMNS, MESSAGE_COLUMNS, MESSAGE_ATTACHMENT_SCAN_COLUMNS, WORKSPACE_COLUMNS, mapDefaultAgentError,
   APP_COLUMNS, slugify, appIso, mapApp, appRelationshipFor, SESSION_FULL_COLUMNS, ACTOR_DIRECTORY_COLUMNS,
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
@@ -2085,6 +2094,49 @@ export function createSupabaseBusinessRepository(options) {
         .limit(limit);
       if (error) throw error;
       return (data ?? []).map(mapMessage).reverse();
+    },
+
+    async listSessionAttachments(sessionId, { limit = DEFAULT_LIST_LIMIT, cursor = null } = {}) {
+      const scanRows = [];
+      let messageCursor = null;
+      for (;;) {
+        let query = supabase
+          .from("messages")
+          .select(MESSAGE_ATTACHMENT_SCAN_COLUMNS)
+          .eq("session_id", sessionId);
+        if (messageCursor?.createdAt) {
+          query = query.or(
+            `created_at.lt.${messageCursor.createdAt},and(created_at.eq.${messageCursor.createdAt},id.lt.${messageCursor.id})`,
+          );
+        }
+        const { data, error } = await query
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .limit(MAX_MESSAGE_LIST_LIMIT);
+        if (error) throw error;
+        const batch = data ?? [];
+        for (const row of batch) {
+          scanRows.push({
+            id: requiredString(row.id, "listSessionAttachments", "id"),
+            kind: requiredString(row.kind, "listSessionAttachments", "kind"),
+            metadata: row.metadata ?? null,
+            senderActorId: row.sender_actor_id ?? null,
+            createdAt: requiredString(row.created_at, "listSessionAttachments", "created_at"),
+          });
+        }
+        if (batch.length < MAX_MESSAGE_LIST_LIMIT) break;
+        const oldest = batch[batch.length - 1];
+        messageCursor = { createdAt: oldest.created_at, id: oldest.id };
+      }
+
+      const sorted = aggregateSessionAttachmentsFromMessages(scanRows);
+      const page = paginateSessionAttachments(sorted, cursor, limit);
+      return {
+        items: page.items,
+        nextCursor: page.nextCursor
+          ? encodeSessionAttachmentCursor(page.nextCursor)
+          : null,
+      };
     },
 
     async insertMessage(sessionId, input) {

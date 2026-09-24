@@ -3,6 +3,7 @@ import { registerTeams } from "./teams.js";
 import { registerSessions } from "./sessions.js";
 import { registerApps } from "./apps.js";
 import { registerMessages } from "./messages.js";
+import { registerSessionAttachments } from "./session-attachments.js";
 import { registerInvites } from "./invites.js";
 import { registerWorkspaces } from "./workspaces.js";
 import { registerSystem } from "./system.js";
@@ -36,6 +37,7 @@ export function registerAllRoutes(router) {
   registerSessions(router);
   registerApps(router);
   registerMessages(router);
+  registerSessionAttachments(router);
   registerInvites(router);
   // team-share routes must be registered BEFORE workspaces so the new merged
   // GET /v1/teams/:teamId/workspace-config wins over

@@ -1530,6 +1530,45 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+  /v1/sessions/{sessionId}/attachments:
+    get:
+      operationId: listSessionAttachments
+      summary: List session attachments for composer # picker
+      description: |
+        Aggregates attachment references from message **metadata** in this session.
+        Human messages contribute `metadata.attachment_urls`; agent replies
+        contribute `metadata.attachments` (and optional `attachment_urls` for
+        public URLs). Duplicate storage paths keep the newest reference.
+        Does not scan message body tokens or the `messages.attachments` column.
+      tags: [Messages]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          description: From a previous response's `nextCursor`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session attachment references, newest first.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionAttachmentListResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/sessions/{sessionId}/turns/{turnId}/trace:
     get:
       operationId: getTurnTrace
@@ -10381,6 +10420,46 @@ components:
             - string
             - "null"
         createdAt:
+          type:
+            - string
+            - "null"
+    SessionAttachmentItem:
+      type: object
+      required: [filename, storagePath, url, messageId, attachedAt]
+      properties:
+        filename:
+          type: string
+        mime:
+          type:
+            - string
+            - "null"
+        size:
+          type:
+            - integer
+            - "null"
+        storagePath:
+          type: string
+          description: Object key when known; otherwise the normalized public URL.
+        url:
+          type: string
+        messageId:
+          type: string
+        senderActorId:
+          type:
+            - string
+            - "null"
+        attachedAt:
+          type: string
+          format: date-time
+    SessionAttachmentListResponse:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionAttachmentItem"
+        nextCursor:
           type:
             - string
             - "null"

@@ -271,6 +271,10 @@ function contractRepo() {
       assert.equal(sessionId, "session-1");
       return messageStore;
     },
+    async listSessionAttachments(sessionId) {
+      assert.equal(sessionId, "session-1");
+      return { items: [], nextCursor: null };
+    },
     async insertMessage(_sessionId, input) {
       if (input.id === "duplicate-message") {
         throw { code: "23505", message: "duplicate key value violates unique constraint" };
