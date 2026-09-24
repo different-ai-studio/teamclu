@@ -212,6 +212,19 @@ mod tests {
     }
 
     #[test]
+    fn agents_md_warns_that_build_command_runs_on_teammates_machines() {
+        for t in [AppType::StaticWeb, AppType::Slides, AppType::DataApp] {
+            let tmp = seed(t);
+            let agents = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
+            assert!(
+                agents.contains("队友"),
+                "{t:?}: portability constraint missing"
+            );
+            assert!(agents.contains("runtime_info"), "{t:?}: facts pointer missing");
+        }
+    }
+
+    #[test]
     fn placeholders_are_substituted_in_agents_md() {
         let tmp = seed(AppType::Slides);
         let agents = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
