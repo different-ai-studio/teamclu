@@ -516,16 +516,20 @@ export default function ActorDetailRoute() {
       if (isRemovingAgentWorkspace) return;
       setIsRemovingAgentWorkspace(true);
       try {
+        // The cloud row is what lists the workspace, and the daemon no longer
+        // owns it: its `remove_workspace` answers success and does nothing
+        // ("WorkspaceStore removed; cloud archive not yet implemented"), so
+        // the row stayed and the trash button looked broken. Archive it here;
+        // the daemon is told afterwards so it can drop anything it caches.
+        await workspacesApi.setArchived(workspaceId, true);
         const rpc = createRuntimeRpcClient({
           mqtt: teamMqtt,
           teamId,
           requesterActorId: state.currentMemberActorId,
         });
-        await rpc.removeWorkspace({
-          targetActorId: actor.actorId,
-          workspaceId,
-          timeoutMs: 25_000,
-        });
+        void rpc
+          .removeWorkspace({ targetActorId: actor.actorId, workspaceId, timeoutMs: 25_000 })
+          .catch(() => {});
         showToast("success", t("Workspace remove requested."));
         await Promise.all([refresh(), reloadAgentWorkspaces()]);
       } catch (err) {
@@ -546,6 +550,7 @@ export default function ActorDetailRoute() {
       state.currentMemberActorId,
       teamId,
       teamMqtt,
+      workspacesApi,
     ],
   );
 
