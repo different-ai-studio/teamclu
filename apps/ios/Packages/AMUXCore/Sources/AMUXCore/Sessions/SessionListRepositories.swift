@@ -22,6 +22,9 @@ public struct SessionRecord: Equatable, Sendable {
     /// rows from servers predating the column. The list hides `cron`
     /// sessions by default, mirroring the desktop.
     public let source: String?
+    /// The app this session belongs to (`sessions.app_id`); nil for ordinary
+    /// sessions and on servers predating the list column.
+    public var appID: String? = nil
 }
 
 public protocol SessionsRepository: Sendable {

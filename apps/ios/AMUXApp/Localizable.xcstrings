@@ -4697,16 +4697,6 @@
         }
       }
     },
-    "Working": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "运行中"
-          }
-        }
-      }
-    },
     "Working…": {
       "localizations": {
         "zh-Hans": {

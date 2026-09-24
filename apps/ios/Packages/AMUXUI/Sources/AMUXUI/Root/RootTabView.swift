@@ -542,10 +542,45 @@ public struct RootTabView: View {
             if let flags = try? await repo.fetchUnreadFlags(teamID: teamID, limit: 100) {
                 viewModel.applyUnreadFlags(flags, modelContext: modelContext)
             }
+            await refreshSessionContextNames(records: records, runtime: runtime, teamID: teamID)
         } else if let repo = sessionIDsRepoLocal,
                   let ids = try? await repo.listSessionIDs(teamID: teamID) {
             viewModel.validSessionIDs = ids
             viewModel.reloadSessions(modelContext: modelContext)
+        }
+    }
+}
+
+extension RootTabView {
+    /// Fills the names on the session list's third line: the app a session
+    /// was created from, or its idea. Both are cached on the session, so this
+    /// only reaches the network for what the cache can't answer — the apps
+    /// list when any session has an app, the ideas list when an idea has no
+    /// title cached yet.
+    @MainActor
+    fileprivate func refreshSessionContextNames(
+        records: [SessionRecord],
+        runtime: TeamRuntimeContext,
+        teamID: String
+    ) async {
+        if appsEnabled, let appsStore = runtime.teamAppsStore,
+           records.contains(where: { !($0.appID ?? "").isEmpty }) {
+            await appsStore.reload()
+            if appsStore.errorMessage == nil {
+                let names = Dictionary(
+                    appsStore.apps.map { ($0.id, $0.name) },
+                    uniquingKeysWith: { a, _ in a }
+                )
+                viewModel.applyAppNames(names, modelContext: modelContext)
+            }
+        }
+
+        if let ideasRepo = runtime.ideasRepo,
+           !viewModel.ideaIDsMissingTitle(modelContext: modelContext).isEmpty,
+           let ideas = try? await ideasRepo.listIdeas(teamID: teamID) {
+            // Upsert only: the Ideas tab owns pruning its cache.
+            IdeaCacheSynchronizer.upsert(ideas, modelContext: modelContext)
+            viewModel.fillIdeaTitlesFromCache(modelContext: modelContext)
         }
     }
 }
