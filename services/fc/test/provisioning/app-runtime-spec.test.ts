@@ -158,15 +158,6 @@ test("intent: node short form expands to the image's own interpreter, no layer",
   });
 });
 
-test("intent: python short form uses 3.10.9, not the system python3", () => {
-  const d = parseAppDeployDeclaration({
-    build: { kind: "python", output: "." },
-    start: { entry: "app.py", port: 9000 },
-  });
-  assert.deepEqual(d.start.command, ["/var/fc/lang/python3.10/bin/python3"]);
-  assert.deepEqual(d.start.layers, []);
-});
-
 test("intent: port defaults to 9000 and healthCheckPath survives", () => {
   const d = parseAppDeployDeclaration({
     build: { kind: "node" },
@@ -209,13 +200,13 @@ test("intent: entry may not escape the code package", () => {
   }
 });
 
-test("intent: php and java are refused until their layer mount is verified", () => {
-  for (const kind of ["php", "java"] as const) {
+test("intent: kinds with no short form are refused, and say where to go", () => {
+  for (const kind of ["python", "php", "java"] as const) {
     assert.throws(
       () => parseAppDeployDeclaration({ build: { kind }, start: { entry: "app", port: 9000 } }),
       (e: any) => {
         const m = String(e?.message ?? e);
-        return m.includes(kind) && /fcRuntime/.test(m);
+        return m.includes(kind) && /fcRuntime/.test(m) && /command/.test(m);
       },
       kind,
     );
@@ -383,10 +374,7 @@ test("preflight: container apps are not second-guessed", () => {
 });
 
 test("preflight: the resolved short form passes its own rules", () => {
-  for (const [kind, entry] of [
-    ["node", "server/index.mjs"],
-    ["python", "app.py"],
-  ] as const) {
+  for (const [kind, entry] of [["node", "server/index.mjs"]] as const) {
     const d = parseAppDeployDeclaration({ build: { kind }, start: { entry, port: 9000 } });
     assert.deepEqual(checkStartEnvironment({ kind, output: "." }, d.start), []);
   }

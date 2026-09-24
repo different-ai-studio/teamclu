@@ -1,45 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  RUNTIME_PROFILES,
+  interpreterFor,
+  shortFormProfile,
   pathLookup,
   parseLayerRef,
   layerRootOf,
   startProgram,
 } from "../../src/lib/provisioning/app-runtime-profiles.js";
 
-test("profiles: node and python run the image's own interpreter with no layer", () => {
-  assert.deepEqual(RUNTIME_PROFILES.node, {
-    fcRuntime: "custom.debian10",
-    interpreter: "/var/fc/lang/nodejs20/bin/node",
-    argsFor: "entry",
-    layers: [],
-    entryRequired: true,
-    verified: true,
+test("facts: the image's interpreters, by family, with absolute paths", () => {
+  assert.deepEqual(interpreterFor("custom.debian10", "node"), {
+    path: "/var/fc/lang/nodejs20/bin/node",
+    version: "20.10.0",
   });
-  assert.deepEqual(RUNTIME_PROFILES.python, {
-    fcRuntime: "custom.debian10",
-    interpreter: "/var/fc/lang/python3.10/bin/python3",
-    argsFor: "entry",
-    layers: [],
-    entryRequired: true,
-    verified: true,
+  assert.deepEqual(interpreterFor("custom.debian10", "python"), {
+    path: "/var/fc/lang/python3.10/bin/python3",
+    version: "3.10.9",
   });
+  // A family the image does not ship is a fact too, and it is "no".
+  assert.equal(interpreterFor("custom.debian10", "java"), null);
 });
 
-test("profiles: go runs its static binary and needs no entry", () => {
-  assert.equal(RUNTIME_PROFILES.go.interpreter, "./main");
-  assert.deepEqual(RUNTIME_PROFILES.go.layers, []);
-  assert.equal(RUNTIME_PROFILES.go.entryRequired, false);
-});
-
-test("profiles: php and java are declared but not verified", () => {
-  for (const kind of ["php", "java"] as const) {
-    assert.equal(RUNTIME_PROFILES[kind].verified, false, kind);
-    assert.ok(RUNTIME_PROFILES[kind].layers.length > 0, kind);
+test("short form: only node and go have one", () => {
+  assert.equal(shortFormProfile("node")?.interpreter, "/var/fc/lang/nodejs20/bin/node");
+  assert.equal(shortFormProfile("go")?.interpreter, "./main");
+  for (const kind of ["python", "php", "java"] as const) {
+    assert.equal(shortFormProfile(kind), null, kind);
   }
-  assert.deepEqual(RUNTIME_PROFILES.php.layers, ["PHP81-Debian10:1"]);
-  assert.deepEqual(RUNTIME_PROFILES.java.layers, ["Java17:3"]);
+});
+
+test("short form: node needs an entry, go does not", () => {
+  assert.equal(shortFormProfile("node")?.entryRequired, true);
+  assert.equal(shortFormProfile("go")?.entryRequired, false);
+  assert.deepEqual(shortFormProfile("node")?.layers, []);
 });
 
 test("pathLookup: node is absent from PATH on debian10, python3 is the wrong one", () => {

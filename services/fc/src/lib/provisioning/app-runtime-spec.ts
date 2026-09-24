@@ -1,11 +1,12 @@
 import { ApiError } from "../http-utils.js";
 import {
   LAYER_MOUNTS,
-  RUNTIME_PROFILES,
+  interpreterFor,
   layerRootOf,
   parseLayerRef,
   pathLookup,
   providedMounts,
+  shortFormProfile,
   startProgram,
   type LayerRef,
 } from "./app-runtime-profiles.js";
@@ -221,12 +222,12 @@ export function resolveIntent(
       "a container app declares its start through its image, not start.entry",
     );
   }
-  const profile = RUNTIME_PROFILES[kind as Exclude<AppBuildKind, "container">];
-  if (!profile.verified) {
+  const profile = shortFormProfile(kind);
+  if (!profile) {
     throw new ApiError(
       400,
       "validation_failed",
-      `start.entry is not supported for build.kind "${kind}" yet: its interpreter comes from a layer whose mount path has not been verified, and the platform will not guess one. Declare fcRuntime, command, args and layers explicitly for now.`,
+      `build.kind "${kind}" has no short form: how it starts depends on the app, not the language. Declare fcRuntime, command, args and layers — call manage_app runtime_info for the interpreter paths and layers available to you.`,
     );
   }
   if (profile.entryRequired && !intent.entry) {
@@ -401,7 +402,9 @@ export function checkStartEnvironment(build: AppBuildSpec, start: AppStartSpec):
   if (!program) return [];
   const fcRuntime = start.fcRuntime ?? "";
   const refs = effectiveLayerRefs(build.kind, start.layers);
-  const profile = RUNTIME_PROFILES[build.kind as Exclude<AppBuildKind, "container">];
+  // The interpreter this image ships for the app's language, which is a fact
+  // even for a kind that has no short form.
+  const shipped = interpreterFor(fcRuntime, build.kind);
   const where = program.viaShell ? "the shell script in start.args" : "start.command";
 
   // The command reaches into a layer's mount point. If every attached layer is
@@ -418,9 +421,7 @@ export function checkStartEnvironment(build: AppBuildSpec, start: AppStartSpec):
         const fix = provider
           ? `attach it with "layers": ["${provider}:<version>"]`
           : `attach the layer that provides ${root}`;
-        const instead = profile?.verified
-          ? profile.interpreter
-          : "an interpreter the image already ships";
+        const instead = shipped ? shipped.path : "an interpreter the image already ships";
         throw new ApiError(
           400,
           "validation_failed",
@@ -436,8 +437,8 @@ export function checkStartEnvironment(build: AppBuildSpec, start: AppStartSpec):
   const warnings: string[] = [];
   if (program.form === "bare") {
     const found = pathLookup(fcRuntime, program.basename);
-    const alternative = profile?.verified
-      ? profile.interpreter
+    const alternative = shipped
+      ? shipped.path
       : "an absolute path to the interpreter you mean";
     if (found.kind === "absent") {
       throw new ApiError(
@@ -455,15 +456,11 @@ export function checkStartEnvironment(build: AppBuildSpec, start: AppStartSpec):
       warnings.push(
         `${where} runs "${program.basename}", which on fcRuntime "custom" (Debian 9) is ${program.basename} ${found.version} — old enough that modern syntax and packages will fail. Consider fcRuntime "custom.debian10" and ${alternative}.`,
       );
-    } else if (
-      found.kind === "resolves" &&
-      profile?.verified &&
-      found.path !== profile.interpreter
-    ) {
+    } else if (found.kind === "resolves" && shipped && found.path !== shipped.path) {
       // The name resolves, but to a different interpreter than this kind wants,
       // and nothing anywhere says so.
       warnings.push(
-        `${where} runs "${program.basename}", which resolves to ${found.path} on ${fcRuntime} — not ${profile.interpreter}. The function will run ${found.version}.`,
+        `${where} runs "${program.basename}", which resolves to ${found.path} on ${fcRuntime} — not ${shipped.path}. The function will run ${found.version}.`,
       );
     }
   }

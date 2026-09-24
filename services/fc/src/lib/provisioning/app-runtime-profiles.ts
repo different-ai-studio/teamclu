@@ -70,6 +70,36 @@ export function pathLookup(fcRuntime: string, name: string): PathLookup {
   return PROBED_PATHS[fcRuntime]?.[name] ?? { kind: "unknown" };
 }
 
+/** One interpreter the base image ships, at a path that does not move. */
+export interface Interpreter {
+  path: string;
+  version: string;
+}
+
+/**
+ * What each image ships, keyed by language family.
+ *
+ * These are facts, published to the agent — not choices. A family absent from
+ * an image is itself a fact, and `interpreterFor` answers `null` for it.
+ */
+export const IMAGE_INTERPRETERS: Record<string, Record<string, Interpreter>> = {
+  "custom.debian10": {
+    node: { path: "/var/fc/lang/nodejs20/bin/node", version: "20.10.0" },
+    node18: { path: "/var/fc/lang/nodejs18/bin/node", version: "18.19.0" },
+    python: { path: "/var/fc/lang/python3.10/bin/python3", version: "3.10.9" },
+  },
+};
+
+export function interpreterFor(fcRuntime: string, family: string): Interpreter | null {
+  return IMAGE_INTERPRETERS[fcRuntime]?.[family] ?? null;
+}
+
+/** Debian version per image, for messages and facts that need to name it. */
+export const IMAGE_DEBIAN: Record<string, string> = {
+  "custom.debian10": "10.13",
+  custom: "9",
+};
+
 /** How a profile turns `start.entry` into `args`. */
 export type ArgsShape = "entry" | "none";
 
@@ -81,15 +111,19 @@ export interface RuntimeProfile {
   /** Region-free layer shorthand. Empty when the image already suffices. */
   layers: string[];
   entryRequired: boolean;
-  /**
-   * False means we have not observed this profile working. The short form is
-   * refused for such a kind rather than emitting a guessed interpreter path
-   * (spec D5); the row stays so that verifying it is a one-line change.
-   */
-  verified: boolean;
 }
 
-export const RUNTIME_PROFILES: Record<Exclude<AppBuildKind, "container">, RuntimeProfile> = {
+/**
+ * Kinds whose start really is `<interpreter> <entry>`.
+ *
+ * Python is deliberately absent: its real shape is
+ * `python3 -m uvicorn app.main:app` with an import path the app's own build
+ * decides, which no table can own — the one live Python app here proves it.
+ * PHP and Java are absent because their interpreter lives in a layer whose
+ * mount path has never been observed. Those kinds use the passthrough form,
+ * which is the normal road and not a penalty.
+ */
+export const SHORT_FORM_PROFILES: Record<string, RuntimeProfile> = {
   // Deployed and served 200 with layers: [].
   node: {
     fcRuntime: "custom.debian10",
@@ -97,16 +131,6 @@ export const RUNTIME_PROFILES: Record<Exclude<AppBuildKind, "container">, Runtim
     argsFor: "entry",
     layers: [],
     entryRequired: true,
-    verified: true,
-  },
-  // Binary present and reported Python 3.10.9. Not yet run as an app.
-  python: {
-    fcRuntime: "custom.debian10",
-    interpreter: "/var/fc/lang/python3.10/bin/python3",
-    argsFor: "entry",
-    layers: [],
-    entryRequired: true,
-    verified: true,
   },
   // `go` is absent from the image, and the build already emits a static
   // linux/amd64 binary (CGO_ENABLED=0), so there is no runtime to supply.
@@ -116,29 +140,12 @@ export const RUNTIME_PROFILES: Record<Exclude<AppBuildKind, "container">, Runtim
     argsFor: "none",
     layers: [],
     entryRequired: false,
-    verified: true,
-  },
-  // `php` and `java` are absent from the image, so a layer is genuinely
-  // required — but where these layers mount has never been observed, so the
-  // interpreter below is a placeholder that must never be emitted. Guarded by
-  // `verified: false`.
-  php: {
-    fcRuntime: "custom.debian10",
-    interpreter: "",
-    argsFor: "entry",
-    layers: ["PHP81-Debian10:1"],
-    entryRequired: true,
-    verified: false,
-  },
-  java: {
-    fcRuntime: "custom.debian10",
-    interpreter: "",
-    argsFor: "entry",
-    layers: ["Java17:3"],
-    entryRequired: true,
-    verified: false,
   },
 };
+
+export function shortFormProfile(kind: string): RuntimeProfile | null {
+  return SHORT_FORM_PROFILES[kind] ?? null;
+}
 
 const OFFICIAL_LAYER_ARN =
   /^acs:fc:([a-z0-9-]+):official:layers\/([A-Za-z0-9._-]+)\/versions\/(\d+)$/;
