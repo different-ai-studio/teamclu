@@ -1039,11 +1039,20 @@ export interface AppBuildSpec {
   context?: string;
 }
 
+/**
+ * Two mutually exclusive shapes. A checkout may declare intent — `entry` plus
+ * an optional `port` — and let the control plane resolve the rest from
+ * `build.kind`; what comes back in `startSpec` after a deploy is always the
+ * resolved form, with `fcRuntime`, `command` and `layers` filled in.
+ */
 export interface AppStartSpec {
+  /** Short form: the path to run inside the build output directory. */
+  entry?: string;
   fcRuntime?: string;
   command?: string[];
   args?: string[];
-  port: number;
+  /** Optional in a declaration; defaults to 9000. Always set once resolved. */
+  port?: number;
   layers?: string[];
   healthCheckPath?: string;
 }
