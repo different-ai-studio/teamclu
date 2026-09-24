@@ -177,6 +177,14 @@ export default function SessionDetailRoute() {
   const recentMessageIdsRef = useRef<Set<string>>(new Set());
 
   const handleBackToList = () => {
+    // A real pop, so the list slides back in from the left. `replace` pushed a
+    // fresh list over the detail and played the forward animation — back looked
+    // like it went the wrong way. Only a detail opened with nothing beneath it
+    // (a notification or deep link) still needs the replace.
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
     router.replace("/(app)/sessions");
   };
 
