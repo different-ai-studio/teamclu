@@ -131,9 +131,8 @@ function mapSession(row: CloudSessionFull): SessionSummary {
     title: row.title ?? "",
     summary: row.summary ?? "",
     participantCount: row.participantCount ?? 0,
-    // The session list does not expose the participant actor id list. The only
-    // consumer (mention resolver) treats it as advisory and falls back to the
-    // full team directory, so an empty list is safe.
+    // Neither session read carries the member list; `getSession` fills it from
+    // `/participants`. List rows stay empty.
     participantActorIds: [],
     lastMessagePreview: row.lastMessagePreview ?? "",
     lastMessageAt: row.lastMessageAt ?? "",
@@ -209,18 +208,25 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
           `/v1/sessions/${encodeURIComponent(sessionId)}?teamId=${encodeURIComponent(teamId)}`,
         );
         const session = mapSession(row);
-        // Only the list endpoint carries `participantCount`; the single-session
-        // read leaves it out, so the detail header said "0 actors" for any
-        // session it loaded this way (a new one always). Count the members.
-        if (row.participantCount == null) {
-          try {
-            const participants = await client.get<{ items?: unknown[] }>(
-              `/v1/sessions/${encodeURIComponent(sessionId)}/participants`,
-            );
-            session.participantCount = participants.items?.length ?? 0;
-          } catch {
-            // The count is decoration; the session itself loaded.
-          }
+        // Neither session read returns who is in the session, and everything
+        // in the detail screen that addresses an agent keys off
+        // `participantActorIds`: the agent chip bar, the `@` popup, and the
+        // mention ids a send carries. Left empty, every follow-up message went
+        // out with `mention_actor_ids: []`, which the daemon silent-queues —
+        // no agent ever answered anything after the first message. iOS builds
+        // its chip bar from this same participants read.
+        try {
+          const participants = await client.get<{ items?: Array<{ actorId?: string | null }> }>(
+            `/v1/sessions/${encodeURIComponent(sessionId)}/participants`,
+          );
+          const ids = (participants.items ?? [])
+            .map((item) => item.actorId)
+            .filter((id): id is string => typeof id === "string" && id.length > 0);
+          session.participantActorIds = ids;
+          // The single-session read also leaves out `participantCount`.
+          if (row.participantCount == null) session.participantCount = ids.length;
+        } catch {
+          // Membership is best-effort here; the session itself loaded.
         }
         return session;
       } catch (error) {

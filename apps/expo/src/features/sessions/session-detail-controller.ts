@@ -682,6 +682,12 @@ export function createSessionDetailController(
     }
 
     try {
+      // `onConnectionState` replays the current state synchronously on
+      // registration. That replay is not a reconnect: `load()` sets
+      // "connecting" before it gets here, so counting the replayed "connected"
+      // as one re-ran `load()`, which set "connecting" and registered again —
+      // a loop that left the screen on "Reconnecting…" after any drop.
+      let replaying = true;
       cleanupConnectionStateListener = deps.mqtt.onConnectionState((connectionState) => {
         if (disposed || currentToken !== loadToken) {
           return;
@@ -698,7 +704,8 @@ export function createSessionDetailController(
         // already fetching.
         const wasDropped =
           state.connectionState === "disconnected" || state.connectionState === "connecting";
-        const reconnected = connectionState === "connected" && wasDropped && hasConnectedOnce;
+        const reconnected =
+          !replaying && connectionState === "connected" && wasDropped && hasConnectedOnce;
         if (connectionState === "connected") hasConnectedOnce = true;
 
         setState({
@@ -710,6 +717,7 @@ export function createSessionDetailController(
           void controller.load({ preserveExisting: true });
         }
       });
+      replaying = false;
 
       const topic = `amux/${deps.teamId}/session/${deps.sessionId}/live`;
       unsubscribeSession = deps.mqtt.subscribe(topic, (payload) => {
@@ -914,6 +922,10 @@ export function createSessionDetailController(
             errorMessage: toErrorMessage(sessionResult.reason, "加载会话失败。"),
             isRefreshing: false,
           });
+          // `load()` dropped the realtime listener on entry; returning without
+          // putting it back left a refresh that failed (flaky network right
+          // after a reconnect) stuck on "connecting" with nothing to recover it.
+          await connectRealtime(state.session, currentToken);
         } else {
           setState({
             ...state,

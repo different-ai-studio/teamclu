@@ -1092,6 +1092,60 @@ describe("reconnect recovery", () => {
   });
 });
 
+describe("reconnect recovery with a replaying client", () => {
+  // The real team MQTT client replays its current state to every new listener
+  // on registration. A reconnect's catch-up load re-registers, and counting
+  // that replay as another reconnect looped load() forever — the screen sat on
+  // "Reconnecting…" after any drop.
+  it("runs one catch-up per reconnect and ends connected", async () => {
+    const { createSessionDetailController } = await import(
+      "../features/sessions/session-detail-controller"
+    );
+    let current: "connecting" | "connected" | "disconnected" = "connected";
+    const listeners = new Set<(state: typeof current) => void>();
+    const mqtt = {
+      publish: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi.fn(() => () => {}),
+      onConnectionState: vi.fn((handler: (state: typeof current) => void) => {
+        listeners.add(handler);
+        handler(current);
+        return () => listeners.delete(handler);
+      }),
+      set(state: typeof current) {
+        current = state;
+        for (const listener of [...listeners]) listener(state);
+      },
+    };
+    const api = {
+      getSession: vi.fn().mockResolvedValue(createSession()),
+      insertOutgoingMessage: vi.fn(),
+      listMessagesPage: vi.fn().mockResolvedValue(page([createRowMessage("message-1")])),
+      resolveMemberActorId: vi.fn().mockResolvedValue("actor-1"),
+      markSessionRead: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = createSessionDetailController({
+      api: api as any,
+      currentMemberActorId: "actor-1",
+      getAuth: vi.fn().mockResolvedValue({ accessToken: "jwt", userId: "user-1" }),
+      mqtt: mqtt as any,
+      mqttUrl: "wss://broker.example.com/mqtt",
+      sessionId: "session-1",
+      teamId: "team-1",
+    });
+    await controller.load();
+    const loadsBefore = api.getSession.mock.calls.length;
+
+    mqtt.set("disconnected");
+    mqtt.set("connecting");
+    mqtt.set("connected");
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+
+    expect(api.getSession.mock.calls.length - loadsBefore).toBe(1);
+    expect(controller.getState().connectionState).toBe("connected");
+    await controller.dispose();
+  });
+});
+
 describe("createSessionDetailController · back-scroll", () => {
   const newest = createRowMessage("message-newest", "actor-1", "2026-05-19T08:20:00.000Z");
   const older = createRowMessage("message-older", "actor-1", "2026-05-19T07:00:00.000Z");
