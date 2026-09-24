@@ -8,6 +8,7 @@ import {
   type SessionMessage,
   type SessionSummary,
 } from "./session-types";
+import type { TurnTraceLocation } from "./turn-trace";
 
 type CreateCloudSessionsApiOptions = {
   getAccessToken: () => Promise<string | null>;
@@ -65,6 +66,16 @@ type CloudMessage = {
 };
 
 /** A row of `session_participants`, joined to the actor directory. */
+
+/** "Helpful" / "Not helpful" on an agent reply (`/v1/feedback`, iOS `setFeedback`). */
+export type FeedbackKind = "positive" | "negative";
+
+export type MessageFeedbackRecord = {
+  messageId: string;
+  actorId: string;
+  kind: FeedbackKind;
+};
+
 export type SessionParticipantRecord = {
   actorId: string;
   actorType: string | null;
@@ -120,9 +131,8 @@ function mapSession(row: CloudSessionFull): SessionSummary {
     title: row.title ?? "",
     summary: row.summary ?? "",
     participantCount: row.participantCount ?? 0,
-    // The session list does not expose the participant actor id list. The only
-    // consumer (mention resolver) treats it as advisory and falls back to the
-    // full team directory, so an empty list is safe.
+    // Neither session read carries the member list; `getSession` fills it from
+    // `/participants`. List rows stay empty.
     participantActorIds: [],
     lastMessagePreview: row.lastMessagePreview ?? "",
     lastMessageAt: row.lastMessageAt ?? "",
@@ -197,7 +207,28 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
         const row = await client.get<CloudSessionFull>(
           `/v1/sessions/${encodeURIComponent(sessionId)}?teamId=${encodeURIComponent(teamId)}`,
         );
-        return mapSession(row);
+        const session = mapSession(row);
+        // Neither session read returns who is in the session, and everything
+        // in the detail screen that addresses an agent keys off
+        // `participantActorIds`: the agent chip bar, the `@` popup, and the
+        // mention ids a send carries. Left empty, every follow-up message went
+        // out with `mention_actor_ids: []`, which the daemon silent-queues —
+        // no agent ever answered anything after the first message. iOS builds
+        // its chip bar from this same participants read.
+        try {
+          const participants = await client.get<{ items?: Array<{ actorId?: string | null }> }>(
+            `/v1/sessions/${encodeURIComponent(sessionId)}/participants`,
+          );
+          const ids = (participants.items ?? [])
+            .map((item) => item.actorId)
+            .filter((id): id is string => typeof id === "string" && id.length > 0);
+          session.participantActorIds = ids;
+          // The single-session read also leaves out `participantCount`.
+          if (row.participantCount == null) session.participantCount = ids.length;
+        } catch {
+          // Membership is best-effort here; the session itself loaded.
+        }
+        return session;
       } catch (error) {
         if (error instanceof CloudApiError && error.status === 404) return null;
         throw error;
@@ -271,6 +302,64 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
       await client.del(`/v1/messages/${encodeURIComponent(messageId)}`);
     },
 
+    /** All feedback on a session's messages; callers keep their own. */
+    async listFeedback(sessionId: string): Promise<MessageFeedbackRecord[]> {
+      const params = new URLSearchParams({ sessionId });
+      const out = await client.get<{ items?: Array<Record<string, unknown>> } | null>(
+        `/v1/feedback?${params.toString()}`,
+      );
+      return (out?.items ?? []).flatMap((row) => {
+        const messageId = typeof row.messageId === "string" ? row.messageId : "";
+        const actorId = typeof row.actorId === "string" ? row.actorId : "";
+        const kind = row.kind === "positive" || row.kind === "negative" ? row.kind : null;
+        return messageId && actorId && kind ? [{ messageId, actorId, kind }] : [];
+      });
+    },
+
+    async submitFeedback(input: {
+      messageId: string;
+      actorId: string;
+      teamId: string;
+      sessionId: string | null;
+      kind: FeedbackKind;
+    }): Promise<void> {
+      await client.post("/v1/feedback", {
+        messageId: input.messageId,
+        actorId: input.actorId,
+        teamId: input.teamId,
+        sessionId: input.sessionId,
+        kind: input.kind,
+      });
+    },
+
+    async deleteFeedback(messageId: string, actorId: string): Promise<void> {
+      const params = new URLSearchParams({ actorId });
+      await client.del(`/v1/feedback/${encodeURIComponent(messageId)}?${params.toString()}`);
+    },
+
+    /** Where a finished turn's trace lives; null when none was uploaded (404). */
+    async turnTraceLocation(
+      teamId: string,
+      sessionId: string,
+      turnId: string,
+    ): Promise<TurnTraceLocation | null> {
+      const params = new URLSearchParams({ teamId });
+      try {
+        const out = await client.get<{ downloadUrl?: string; size?: number; sha256?: string } | null>(
+          `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/trace?${params.toString()}`,
+        );
+        if (!out?.downloadUrl) return null;
+        return { downloadUrl: out.downloadUrl, size: out.size ?? 0, sha256: out.sha256 ?? "" };
+      } catch (err) {
+        if (err instanceof CloudApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
+
+    async renameSession(sessionId: string, title: string): Promise<void> {
+      await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { title });
+    },
+
     async setSessionArchived(sessionId: string, archivedAt: string | null): Promise<void> {
       await client.patch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { archivedAt });
     },
@@ -281,6 +370,13 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
       mode?: SessionMode;
       primaryAgentId?: string | null;
       ideaId?: string | null;
+      /**
+       * Everyone to seed into `session_participants`, agents included. FC seeds
+       * only the creator plus this list — not `primaryAgentId` — so leaving the
+       * agent out produced sessions with no agent member: nothing to @-mention
+       * and nobody to answer. iOS sends the same list.
+       */
+      participantActorIds?: ReadonlyArray<string>;
     }): Promise<string> {
       const response = await client.post<{ sessionId?: string; id?: string }>("/v1/sessions", {
         teamId: input.teamId,
@@ -288,6 +384,7 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
         mode: input.mode ?? "collab",
         primaryAgentId: input.primaryAgentId ?? null,
         ideaId: input.ideaId ?? null,
+        participantActorIds: [...(input.participantActorIds ?? [])],
       });
       const sessionId = response?.sessionId ?? response?.id;
       if (!sessionId || typeof sessionId !== "string") {

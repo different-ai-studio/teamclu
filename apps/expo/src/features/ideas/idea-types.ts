@@ -14,6 +14,21 @@ export type Idea = {
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Pictures posted with the idea itself — distinct from a comment's
+   * attachments, which belong to the activity that carried them.
+   */
+  attachmentUrls: string[];
+  /**
+   * Feed counts. Only the list endpoint aggregates them (a single-idea read
+   * reports none), and they are never written to the SQLite cache: a count
+   * about other people goes stale the moment it is stored, and a stale count
+   * shown offline is worse than none (iOS `IdeaStore.applyLikeState`). A
+   * cache-painted idea reads zeros until the refresh lands.
+   */
+  commentCount: number;
+  likeCount: number;
+  likedByMe: boolean;
 };
 
 /**

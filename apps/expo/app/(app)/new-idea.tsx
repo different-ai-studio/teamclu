@@ -22,10 +22,10 @@ import { createWorkspacesApi } from "../../src/features/workspaces/workspace-api
 import { IdeaImageAttachmentStrip } from "../../src/features/ideas/components/IdeaImageAttachmentStrip";
 import { createIdeasApi } from "../../src/features/ideas/idea-api";
 import {
-  imageOnlyProgressContent,
   useIdeaImageAttachments,
   type IdeaImageSource,
 } from "../../src/features/ideas/idea-image-attachments";
+import { showToast } from "../../src/ui/Toast";
 import { supabaseAccessToken } from "../../src/lib/cloud-api/client";
 import { supabase } from "../../src/lib/supabase/client";
 import { uuidV4 } from "../../src/lib/uuid";
@@ -45,9 +45,8 @@ export default function NewIdeaRoute() {
   const [error, setError] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string }>>([]);
   const [pickedWorkspaceId, setPickedWorkspaceId] = useState<string | null>(null);
-  // The idea doesn't exist yet, so images upload under a draft id and are
-  // attached to the first `progress` activity once the idea is created — the
-  // same two-step iOS `CreateIdeaSheet.save()` performs.
+  // The idea doesn't exist yet, so images upload under a draft id and their
+  // URLs are posted with the idea itself (iOS `CreateIdeaSheet.save()`).
   const [draftContextId] = useState(() => uuidV4());
   const images = useIdeaImageAttachments({
     teamId,
@@ -146,26 +145,23 @@ export default function NewIdeaRoute() {
     setError(null);
     try {
       const ideasApi = createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) });
+      // The pictures go with the post itself (iOS `CreateIdeaSheet.save`).
+      // They used to follow as a "progress" activity with an invented
+      // "Attached N images." body — a comment nobody wrote, on every
+      // illustrated idea, and the feed counts comments.
+      const attachmentUrls = images.uploadedUrls;
       const idea = await ideasApi.createIdea({
         teamId,
         title: title.trim(),
         description: description.trim(),
         workspaceId: pickedWorkspaceId,
+        attachmentUrls,
       });
-      // Images can only be linked once the idea has an id, so they land as the
-      // idea's first progress activity (iOS does the same after createIdea).
-      const attachmentUrls = images.uploadedUrls;
-      if (idea.ideaId && attachmentUrls.length > 0 && memberActorId) {
-        try {
-          await ideasApi.createActivity(idea.ideaId, {
-            activityType: "progress",
-            content: imageOnlyProgressContent(attachmentUrls.length),
-            actorId: memberActorId,
-            attachmentUrls,
-          });
-        } catch {
-          // The idea itself is created; a failed attachment post isn't fatal.
-        }
+      // A backend older than this client drops the field without complaint.
+      // The post is real and keeping it is right; losing the pictures silently
+      // is not.
+      if (attachmentUrls.length > 0 && idea.attachmentUrls.length === 0) {
+        showToast("error", t("Posted, but the pictures couldn't be saved."));
       }
       router.back();
       if (idea.ideaId) {

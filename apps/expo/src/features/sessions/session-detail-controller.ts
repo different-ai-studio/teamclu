@@ -77,7 +77,12 @@ export type SessionDetailControllerState = {
 
 type SessionsApi = ReturnType<typeof createCloudSessionsApi>;
 
+/** iOS `runWatchdog`: a stream silent this long is treated as over. */
+export const STALE_STREAM_TIMEOUT_MS = 90_000;
+
 type SessionDetailControllerDeps = {
+  /** Test seam for the stale-stream watchdog. */
+  staleStreamTimeoutMs?: number;
   api: Pick<
     SessionsApi,
     | "getSession"
@@ -339,6 +344,13 @@ function runtimeMessageFromAcpEvent(
           request_id: event.value.requestId,
           tool_id: event.value.requestId,
           tool_name: event.value.toolName,
+          // The agent's own choices (allow once / always / reject). Dropped
+          // before, so a reply could never name the option it picked.
+          options: event.value.options.map((option) => ({
+            id: option.optionId,
+            kind: option.kind,
+            name: option.name,
+          })),
         },
         teamId,
       });
@@ -426,8 +438,54 @@ export function createSessionDetailController(
     }
   }
 
+  // Stale-run watchdog — iOS `SessionActivityState.expireStaleRun`. An agent
+  // killed mid-turn (daemon crash, machine asleep, the idle status lost while
+  // the phone was backgrounded) sends nothing more, and without this its card
+  // said "replying" for the rest of the screen's life. Any change to a stream
+  // re-arms its timer; silence for the whole window closes it, exactly as an
+  // idle status would.
+  const staleStreamTimers = new Map<string, { buffer: unknown; timer: ReturnType<typeof setTimeout> }>();
+  function armStaleStreamWatchdog(next: TimelineState) {
+    for (const [agentId, entry] of staleStreamTimers) {
+      const buffer = next.streamingByAgent.get(agentId);
+      if (!buffer || buffer.isComplete) {
+        clearTimeout(entry.timer);
+        staleStreamTimers.delete(agentId);
+      }
+    }
+    for (const [agentId, buffer] of next.streamingByAgent) {
+      if (buffer.isComplete) continue;
+      const existing = staleStreamTimers.get(agentId);
+      if (existing?.buffer === buffer) continue;
+      if (existing) clearTimeout(existing.timer);
+      const timer = setTimeout(() => {
+        staleStreamTimers.delete(agentId);
+        if (disposed) return;
+        const current = timeline.streamingByAgent.get(agentId);
+        if (current !== buffer || current.isComplete) return;
+        publishTimelineState(
+          reduceTimeline(timeline, {
+            kind: "streamingDelta",
+            agentId,
+            messageId: current.messageId,
+            messageKind: current.kind,
+            deltaText: "",
+            createdAt: new Date().toISOString(),
+            isComplete: true,
+            model: current.model,
+          }),
+        );
+      }, deps.staleStreamTimeoutMs ?? STALE_STREAM_TIMEOUT_MS);
+      staleStreamTimers.set(agentId, { buffer, timer });
+    }
+  }
+
   function setState(nextState: SessionDetailControllerState) {
     state = nextState;
+    // Every path that shows a stream goes through here — including restored
+    // background snapshots, which never pass `publishTimelineState` — so the
+    // stale-stream watchdog is armed here rather than there.
+    armStaleStreamWatchdog(timeline);
     emit();
   }
 
@@ -624,6 +682,12 @@ export function createSessionDetailController(
     }
 
     try {
+      // `onConnectionState` replays the current state synchronously on
+      // registration. That replay is not a reconnect: `load()` sets
+      // "connecting" before it gets here, so counting the replayed "connected"
+      // as one re-ran `load()`, which set "connecting" and registered again —
+      // a loop that left the screen on "Reconnecting…" after any drop.
+      let replaying = true;
       cleanupConnectionStateListener = deps.mqtt.onConnectionState((connectionState) => {
         if (disposed || currentToken !== loadToken) {
           return;
@@ -640,7 +704,8 @@ export function createSessionDetailController(
         // already fetching.
         const wasDropped =
           state.connectionState === "disconnected" || state.connectionState === "connecting";
-        const reconnected = connectionState === "connected" && wasDropped && hasConnectedOnce;
+        const reconnected =
+          !replaying && connectionState === "connected" && wasDropped && hasConnectedOnce;
         if (connectionState === "connected") hasConnectedOnce = true;
 
         setState({
@@ -652,6 +717,7 @@ export function createSessionDetailController(
           void controller.load({ preserveExisting: true });
         }
       });
+      replaying = false;
 
       const topic = `amux/${deps.teamId}/session/${deps.sessionId}/live`;
       unsubscribeSession = deps.mqtt.subscribe(topic, (payload) => {
@@ -856,6 +922,10 @@ export function createSessionDetailController(
             errorMessage: toErrorMessage(sessionResult.reason, "加载会话失败。"),
             isRefreshing: false,
           });
+          // `load()` dropped the realtime listener on entry; returning without
+          // putting it back left a refresh that failed (flaky network right
+          // after a reconnect) stuck on "connecting" with nothing to recover it.
+          await connectRealtime(state.session, currentToken);
         } else {
           setState({
             ...state,
@@ -1196,6 +1266,8 @@ export function createSessionDetailController(
     },
     async dispose() {
       disposed = true;
+      for (const entry of staleStreamTimers.values()) clearTimeout(entry.timer);
+      staleStreamTimers.clear();
       // Last chance to keep whatever the coalescing window still holds.
       flushTimelinePersist();
       deps.outbox?.sender.stop();

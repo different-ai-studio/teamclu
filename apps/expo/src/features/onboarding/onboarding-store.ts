@@ -12,6 +12,11 @@ import {
   type RememberedTeamStore,
 } from "./remembered-team";
 import {
+  createOnboardingIntentStore,
+  type OnboardingIntent,
+  type OnboardingIntentStore,
+} from "./onboarding-intent";
+import {
   shouldCompleteOAuthResult,
   type OAuthBrowserResult,
   type OAuthProvider,
@@ -42,6 +47,7 @@ function toErrorMessage(error: unknown): string {
 export function createOnboardingController(
   api: OnboardingApi,
   rememberedTeam: RememberedTeamStore = createRememberedTeamStore(),
+  intentStore: OnboardingIntentStore = createOnboardingIntentStore(),
 ) {
   let state: OnboardingState = initialOnboardingState;
   let activeOperationToken = 0;
@@ -100,7 +106,13 @@ export function createOnboardingController(
 
       const remembered = await rememberedTeam.load();
       const payload = await api.loadBootstrap(remembered);
-      dispatchIfCurrent(token, { type: "bootstrapResolved", payload });
+      const intent = await intentStore.load();
+      if (payload.team !== null && intent !== null) {
+        // In a team now: the onboarding choice has done its job (iOS clears it
+        // in `setCurrentContext`).
+        await intentStore.clear();
+      }
+      dispatchIfCurrent(token, { type: "bootstrapResolved", payload, intent });
     } catch (error) {
       dispatchIfCurrent(token, {
         type: "bootstrapFailed",
@@ -327,6 +339,227 @@ export function createOnboardingController(
     }
   };
 
+  /**
+   * Remember `teamId` and re-bootstrap into it. The bootstrap adopts the
+   * remembered team (activating it, which mints a session for its org), so
+   * `currentTeam` / `currentMemberActorId` flip together and everything keyed
+   * on them — MQTT, the connected-agents store, team caches — rebuilds.
+   *
+   * A bootstrap failure is not rethrown: it is already in state as
+   * `route: "failed"`, whose screen offers retry and sign-out.
+   */
+  const landOnTeam = async (token: number, teamId: string) => {
+    await rememberedTeam.save(teamId);
+    try {
+      await bootstrap(token);
+    } catch {
+      // Rendered from controller state.
+    }
+  };
+
+  /**
+   * Settings → Switch Team (iOS `beginTeamSwitch` + `selectTeam`). Unlike the
+   * login-time `selectTeam`, a failed activation leaves the current team in
+   * place — there is a working context to stay in — and rethrows so the
+   * picker can say why.
+   */
+  const switchTeam = async (teamId: string) => {
+    const token = beginOperation();
+    dispatchIfCurrent(token, { type: "beginBusy" });
+    try {
+      await api.activateTeam(teamId);
+    } catch (error) {
+      if (isActiveOperation(token)) setState({ ...state, isBusy: false });
+      throw error;
+    }
+    await landOnTeam(token, teamId);
+  };
+
+  /**
+   * Lands on a team the user just joined (an accepted pending invite). The
+   * server may mint a session for the joined team's org; adopt it first, as
+   * iOS does, then land exactly like a switch.
+   */
+  const joinedTeam = async (teamId: string, refreshToken: string | null) => {
+    const token = beginOperation();
+    dispatchIfCurrent(token, { type: "beginBusy" });
+    try {
+      if (refreshToken) await api.adoptRefreshSession(refreshToken);
+    } catch (error) {
+      if (isActiveOperation(token)) setState({ ...state, isBusy: false });
+      throw error;
+    }
+    await landOnTeam(token, teamId);
+  };
+
+  /**
+   * Runs `work` as one busy operation that ends in a bootstrap. On failure the
+   * route stays where it is with the error shown — the no-team screen and the
+   * login screen both rely on that.
+   */
+  const runThenBootstrap = async (work: () => Promise<void>) => {
+    const token = beginOperation();
+    dispatchIfCurrent(token, { type: "beginBusy" });
+    try {
+      await work();
+      await bootstrap(token);
+    } catch (error) {
+      if (!(error instanceof BootstrapFailureError)) {
+        finishWithError(token, toErrorMessage(error));
+      }
+      throw (error instanceof BootstrapFailureError ? error.cause : error);
+    }
+  };
+
+  // ── Onboarding intent ──────────────────────────────────────────────────
+
+  /** Recorded on the pre-login choice screen; read by every bootstrap. */
+  const setIntent = async (intent: OnboardingIntent) => {
+    await intentStore.save(intent);
+  };
+
+  // ── Phone sign-in ──────────────────────────────────────────────────────
+
+  /**
+   * The SMS code, kept for the account picker: a multi-account answer does
+   * not consume it, and choosing an account posts it again with `userId`.
+   */
+  let pendingPhoneCode: string | null = null;
+
+  const requestPhoneOtp = async (phone: string) => {
+    const token = beginOperation();
+    dispatchIfCurrent(token, { type: "beginBusy" });
+    try {
+      const { pendingPhone } = await api.sendPhoneOTP(phone);
+      pendingPhoneCode = null;
+      dispatchIfCurrent(token, { type: "phoneOtpRequested", phone: pendingPhone });
+    } catch (error) {
+      finishWithError(token, toErrorMessage(error));
+      throw error;
+    }
+  };
+
+  const verifyPhoneOtp = async (code: string) => {
+    const phone = state.pendingPhoneOTPPhone;
+    if (!phone) {
+      throw new Error("No pending phone OTP request");
+    }
+    const token = beginOperation();
+    dispatchIfCurrent(token, { type: "beginBusy" });
+    try {
+      const result = await api.verifyPhoneOTP(phone, code);
+      if (result.type === "multiUser") {
+        pendingPhoneCode = code;
+        dispatchIfCurrent(token, { type: "phoneAccountsOffered", accounts: result.accounts });
+        return;
+      }
+      pendingPhoneCode = null;
+      await bootstrap(token);
+    } catch (error) {
+      if (!(error instanceof BootstrapFailureError)) {
+        finishWithError(token, toErrorMessage(error));
+      }
+      throw (error instanceof BootstrapFailureError ? error.cause : error);
+    }
+  };
+
+  /** The user picked one of the accounts the phone maps to. */
+  const selectPhoneAccount = async (userId: string) => {
+    const phone = state.pendingPhoneOTPPhone;
+    const code = pendingPhoneCode;
+    if (!phone || !code) {
+      throw new Error("No pending phone account choice");
+    }
+    dispatch({ type: "phoneAccountsDismissed" });
+    await runThenBootstrap(async () => {
+      await api.loginWithPhoneAccount(phone, code, userId);
+      pendingPhoneCode = null;
+    });
+  };
+
+  const dismissPhoneAccounts = () => {
+    dispatch({ type: "phoneAccountsDismissed" });
+  };
+
+  const resetPendingPhone = () => {
+    beginOperation();
+    pendingPhoneCode = null;
+    dispatch({ type: "resetPendingPhone" });
+  };
+
+  // ── No-team screen ─────────────────────────────────────────────────────
+
+  /** Quiet: an unreachable backend just shows no invites. */
+  const refreshPendingInvites = async () => {
+    let invites: Awaited<ReturnType<OnboardingApi["listPendingInvites"]>> = [];
+    try {
+      invites = await api.listPendingInvites();
+    } catch {
+      invites = [];
+    }
+    dispatch({ type: "pendingInvitesLoaded", invites });
+  };
+
+  /**
+   * Refresh button / return to foreground. Re-bootstraps only when a team has
+   * appeared, so the screen does not flicker on every check.
+   */
+  const refreshNoTeam = async () => {
+    await refreshPendingInvites();
+    let hasTeam = false;
+    try {
+      hasTeam = await api.hasAnyTeam();
+    } catch {
+      return;
+    }
+    if (hasTeam) {
+      await bootstrap().catch(() => {});
+    }
+  };
+
+  /** Joins an invite's team and lands on it. */
+  const acceptPendingInvite = async (inviteId: string) => {
+    await runThenBootstrap(async () => {
+      const teamId = await api.acceptPendingInvite(inviteId);
+      dispatch({
+        type: "pendingInvitesLoaded",
+        invites: state.pendingInvites.filter((invite) => invite.id !== inviteId),
+      });
+      if (teamId) await rememberedTeam.save(teamId);
+    });
+  };
+
+  const declinePendingInvite = async (inviteId: string) => {
+    try {
+      await api.declinePendingInvite(inviteId);
+      dispatch({
+        type: "pendingInvitesLoaded",
+        invites: state.pendingInvites.filter((invite) => invite.id !== inviteId),
+      });
+    } catch (error) {
+      setState({ ...state, errorMessage: toErrorMessage(error) });
+      throw error;
+    }
+  };
+
+  /** No-team screen → paste an invite: claim as the signed-in account. */
+  const joinWithInvite = async (inviteToken: string) => {
+    await runThenBootstrap(async () => {
+      const teamId = await api.claimInvite(inviteToken);
+      if (teamId) await rememberedTeam.save(teamId);
+    });
+  };
+
+  /**
+   * No-team screen → "start a new team instead": switch the intent and let
+   * bootstrap take the create path, exactly as for a user who chose create up
+   * front.
+   */
+  const createTeamFromNoTeam = async () => {
+    await intentStore.save("create");
+    await bootstrap();
+  };
+
   const signOut = async () => {
     const token = beginOperation();
     await api.signOut();
@@ -357,6 +590,8 @@ export function createOnboardingController(
     },
     bootstrap,
     selectTeam,
+    switchTeam,
+    joinedTeam,
     requestOtp,
     verifyOtp,
     signInWithPassword,
@@ -366,5 +601,17 @@ export function createOnboardingController(
     resetPendingEmail,
     createTeam,
     signOut,
+    setIntent,
+    requestPhoneOtp,
+    verifyPhoneOtp,
+    selectPhoneAccount,
+    dismissPhoneAccounts,
+    resetPendingPhone,
+    refreshPendingInvites,
+    refreshNoTeam,
+    acceptPendingInvite,
+    declinePendingInvite,
+    joinWithInvite,
+    createTeamFromNoTeam,
   };
 }

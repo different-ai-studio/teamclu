@@ -52,6 +52,8 @@ export type IdeasListScreenProps = {
   /** Move `ideaId` to `destinationIndex` in the team's stored idea order. */
   onReorder?: (ideaId: string, destinationIndex: number) => void;
   onSelectIdea?: (ideaId: string) => void;
+  /** Like/unlike from the feed card's heart; `liked` is the desired state. */
+  onToggleLike?: (ideaId: string, liked: boolean) => void;
   state: IdeasListState;
 };
 
@@ -127,6 +129,7 @@ export function IdeasListScreen({
   onRefresh,
   onReorder,
   onSelectIdea,
+  onToggleLike,
   state,
 }: IdeasListScreenProps) {
   const { t } = useTranslation();
@@ -493,7 +496,18 @@ export function IdeasListScreen({
                             ? actorNames?.get(idea.createdByActorId) ?? null
                             : null
                         }
+                        feed
                         idea={idea}
+                        onOpenComments={
+                          !selectionMode && onSelectIdea
+                            ? () => onSelectIdea(idea.ideaId)
+                            : undefined
+                        }
+                        onToggleLike={
+                          !selectionMode && onToggleLike
+                            ? (liked) => onToggleLike(idea.ideaId, liked)
+                            : undefined
+                        }
                       />
                     </View>
                   </Pressable>

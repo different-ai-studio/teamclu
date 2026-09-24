@@ -15,12 +15,15 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { SectionEyebrow } from "../../../ui/atoms/SectionEyebrow";
 import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../../ui/GlassHeader";
 import { colors, hai, radii, spacing, typography } from "../../../ui/theme";
 import { ImageLightbox } from "../../sessions/components/ImageLightbox";
+import { IdeaFeedActions } from "../components/IdeaFeedActions";
+import { IdeaFeedMedia } from "../components/IdeaFeedMedia";
 import {
   IdeaActivityTimeline,
   type IdeaActivityAuthor,
@@ -47,6 +50,8 @@ export type IdeaDetailScreenProps = {
   onSetStatus?: (next: IdeaStatus) => void;
   onStartSession?: () => void;
   onToggleStatus?: () => void;
+  /** Like/unlike the idea; `liked` is the desired state, not a toggle. */
+  onToggleLike?: (liked: boolean) => void;
   relatedSessions?: ReadonlyArray<{
     sessionId: string;
     title: string;
@@ -121,6 +126,7 @@ export function IdeaDetailScreen({
   onSetStatus,
   onStartSession,
   onToggleStatus,
+  onToggleLike,
   relatedSessions,
   activities,
   activityAuthorsById,
@@ -131,6 +137,9 @@ export function IdeaDetailScreen({
   onRemoveProgressAttachment,
   onSubmitProgress,
 }: IdeaDetailScreenProps) {
+  // The progress composer is pinned to the bottom of a screen with no tab bar,
+  // so it owns the home-indicator / nav-bar strip (see SessionDetailScreen).
+  const bottomInset = useSafeAreaInsets().bottom;
   const { t: tHook } = useTranslation();
   const [titleDraft, setTitleDraft] = useState("");
   const [descDraft, setDescDraft] = useState("");
@@ -248,6 +257,16 @@ export function IdeaDetailScreen({
                   value={descDraft}
                 />
               </View>
+            </View>
+
+            {idea.attachmentUrls.length > 0 ? (
+              <View style={styles.section}>
+                <IdeaFeedMedia urls={idea.attachmentUrls} />
+              </View>
+            ) : null}
+
+            <View style={styles.engagement}>
+              <IdeaFeedActions idea={idea} onToggleLike={onToggleLike} />
             </View>
 
             {dirty && onSaveContent ? (
@@ -413,16 +432,31 @@ export function IdeaDetailScreen({
 
       {idea && onSubmitProgress ? (
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.composerDock}
+          // Android as well — edge-to-edge means `adjustResize` no longer
+          // lifts the comment composer above the keyboard.
+          behavior="padding"
+          // Same geometry as the session composer: the keyboard already covers
+          // the bottom inset, and the view is measured below the root's top
+          // safe-area padding.
+          keyboardVerticalOffset={Platform.select({
+            ios: (initialWindowMetrics?.insets.top ?? 0) - bottomInset,
+            default: 0,
+          })}
         >
-          <IdeaProgressComposer
-            attachments={composerAttachments ?? []}
-            isSubmitting={Boolean(isSubmittingProgress)}
-            onAddImage={onAddProgressImage ?? (() => {})}
-            onRemoveAttachment={onRemoveProgressAttachment ?? (() => {})}
-            onSubmit={onSubmitProgress}
-          />
+          {/* The padding lives on an inner view: with behavior="padding" the
+              KeyboardAvoidingView writes its own `paddingBottom` (the
+              keyboard height, 0 when hidden) over whatever its style says, so
+              the dock's bottom padding never applied and the bar sat flush
+              against the home indicator. */}
+          <View style={[styles.composerDock, { paddingBottom: spacing.md + bottomInset }]}>
+            <IdeaProgressComposer
+              attachments={composerAttachments ?? []}
+              isSubmitting={Boolean(isSubmittingProgress)}
+              onAddImage={onAddProgressImage ?? (() => {})}
+              onRemoveAttachment={onRemoveProgressAttachment ?? (() => {})}
+              onSubmit={onSubmitProgress}
+            />
+          </View>
         </KeyboardAvoidingView>
       ) : null}
 
@@ -443,6 +477,9 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
+  engagement: {
+    paddingHorizontal: spacing.xs,
+  },
   actionArchive: {
     backgroundColor: "rgba(184,75,54,0.10)",
   },

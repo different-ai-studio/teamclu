@@ -119,6 +119,24 @@ describe("buildSessionFeedSources", () => {
     });
   });
 
+  it("stops showing a turn as active once its stream has closed", () => {
+    // The daemon's own follow-up turns (retitling the session) stream output
+    // that is never committed as a reply; on idle the stream is closed, and
+    // the card must stop saying "replying".
+    const closed: StreamingBuffer = {
+      isComplete: true,
+      kind: "agent_reply",
+      messageId: "stream-2",
+      model: "m",
+      senderActorId: "agent-1",
+      startedAt: "2026-05-20T10:00:02.000Z",
+      text: "Reply only to the user prompt",
+    };
+    const sources = buildSessionFeedSources([], new Map([["agent-1", closed]]));
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ kind: "agentTurn", turn: { isActive: false } });
+  });
+
   it("merges split final agent replies that share the same turn id", () => {
     const sources = buildSessionFeedSources(
       [

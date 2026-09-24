@@ -29,6 +29,7 @@ import { ToastHost, showToast } from "../src/ui/Toast";
 import { createConfiguredInviteApi, parseInviteToken } from "../src/features/onboarding/invite-api";
 import { isOAuthCallbackUrl } from "../src/features/onboarding/onboarding-oauth";
 import { createOnboardingController } from "../src/features/onboarding/onboarding-store";
+import { createIntroFlagStore } from "../src/features/onboarding/onboarding-intent";
 import type {
   OnboardingRoute,
   OnboardingState,
@@ -66,9 +67,15 @@ import { tearDownCloudAuthForServerSwitch } from "../src/lib/auth/cloud-auth";
 import { createPushTokenApi } from "../src/features/notifications/push-token-api";
 import { registerNativePushToken } from "../src/features/notifications/push-registration";
 import { getDb } from "../src/lib/db/sqlite";
-import { decodeRuntimeInfo } from "../src/lib/teamclu/runtime-info";
+import { decodeActorPresence } from "../src/features/actors/actor-presence";
+import { setActiveUnreadTeam } from "../src/features/sessions/unread-store";
 
 const onboardingApi = createOnboardingApi(supabase);
+const introFlagStore = createIntroFlagStore();
+
+function isSignedInRoute(route: OnboardingRoute): boolean {
+  return route === "ready" || route === "noTeam" || route === "createTeam";
+}
 
 type OnboardingController = ReturnType<typeof createOnboardingController>;
 
@@ -116,6 +123,8 @@ export function routeToHref(route: OnboardingRoute): string | null {
       return "/create-team";
     case "selectTeam":
       return "/select-team";
+    case "noTeam":
+      return "/no-team";
     case "ready":
       return "/(app)/sessions";
     case "loading":
@@ -209,8 +218,19 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     };
   }, [controller]);
 
+  // Anyone who has reached the app skips the first-install intro later (after
+  // a sign-out), including people upgrading from a build without it — iOS
+  // sets the same flag from ContentView.
   useEffect(() => {
     if (state.route !== "ready") return;
+    void introFlagStore.markSeen();
+  }, [state.route]);
+
+  // Redeem a stashed invite once signed in. Not only on `ready`: a joiner
+  // with no team yet sits on `noTeam` (or, without a recorded intent, on
+  // `createTeam`), and the invite is exactly what gets them out of there.
+  useEffect(() => {
+    if (!isSignedInRoute(state.route)) return;
     let cancelled = false;
     void (async () => {
       const token = await loadPendingInviteToken();
@@ -346,6 +366,13 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     };
   }, [state.route]);
 
+  // The Sessions badge belongs to one team. Switching (or signing out) zeroes
+  // it, and a late answer from the previous team's list is dropped.
+  const activeTeamId = state.currentTeam?.id ?? null;
+  useEffect(() => {
+    setActiveUnreadTeam(activeTeamId);
+  }, [activeTeamId]);
+
   // Wire up team-scoped MQTT + ConnectedAgentsStore when the user is ready.
   // Tears down and recreates automatically when the team or actor changes.
   useEffect(() => {
@@ -370,7 +397,14 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
         url: mqttUrl,
         username: state.currentMemberActorId!,
         password: accessToken,
-        clientId: `teamclu-expo-${state.currentMemberActorId!.slice(0, 8)}`,
+        // One id per connection, like the native app. A fixed per-actor id made
+        // the same person's phone and tablet take the broker session from each
+        // other: each connect kicked the other device offline.
+        clientId: `teamclu-expo-${state.currentMemberActorId!.slice(0, 8)}-${Math.random()
+          .toString(16)
+          .slice(2, 10)}`,
+        refreshPassword: async () =>
+          (await supabase.auth.getSession()).data?.session?.access_token ?? null,
       });
       try {
         await mqtt.start();
@@ -389,9 +423,9 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       const subscriber = createRuntimeStateSubscriber({
         mqtt,
         teamId: state.currentTeam!.id,
-        decode: decodeRuntimeInfo,
-        onRuntimeInfo: (actorId, runtimeId, info) =>
-          connectedAgentsStoreRef.current?.handleRuntimeInfo(actorId, runtimeId, info),
+        decode: decodeActorPresence,
+        onPresence: (actorId, presence) =>
+          connectedAgentsStoreRef.current?.handlePresence(actorId, presence),
       });
       const store = createConnectedAgentsStore({
         teamId: state.currentTeam!.id,

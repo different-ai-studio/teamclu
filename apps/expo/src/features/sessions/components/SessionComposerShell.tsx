@@ -70,15 +70,15 @@ export function SessionComposerShell({
     setRecordError(null);
     try {
       if (recorder.isRecording) {
-        const uri = await recorder.stop();
-        if (uri) {
-          onChangeText(`${composerText}${composerText.length > 0 ? " " : ""}🎙️ ${uri}`);
+        const text = await recorder.stop();
+        if (text) {
+          onChangeText(`${composerText}${composerText.length > 0 ? " " : ""}${text}`);
         }
       } else {
         await recorder.start();
       }
     } catch (err) {
-      setRecordError(err instanceof Error ? err.message : t("Couldn't access microphone."));
+      setRecordError(err instanceof Error ? t(err.message) : t("Couldn't access microphone."));
     }
   };
 
@@ -175,7 +175,7 @@ export function SessionComposerShell({
           ) : (
             <Pressable
               accessibilityLabel={
-                rightButton === "stopRecording" ? t("Stop recording") : t("Voice memo")
+                rightButton === "stopRecording" ? t("Stop recording") : t("Voice input")
               }
               accessibilityRole="button"
               onPress={handleMicToggle}
@@ -195,8 +195,10 @@ export function SessionComposerShell({
         </View>
       </View>
 
-      {recordError ? (
-        <Text style={styles.helperTextError}>{recordError}</Text>
+      {recordError ?? (recorder.errorMessage ? t(recorder.errorMessage) : null) ? (
+        <Text style={styles.helperTextError}>
+          {recordError ?? t(recorder.errorMessage ?? "")}
+        </Text>
       ) : presentation.helperText ? (
         <Text style={styles.helperText}>{presentation.helperText}</Text>
       ) : null}
@@ -379,8 +381,11 @@ const styles = StyleSheet.create({
   sendButtonDisabled: {
     opacity: 0.35,
   },
+  // Inset from the screen edges like the chip bar above it, so the card reads
+  // as a floating bar rather than a slab glued to both sides.
   wrapper: {
     gap: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
 });
 

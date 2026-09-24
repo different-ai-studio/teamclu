@@ -1,4 +1,5 @@
 import { createIdeasApi } from "./idea-api";
+import { applyLikeState, createLikeSequencer, likeStateOf } from "./idea-likes";
 import {
   compareIdeas,
   initialIdeasListState,
@@ -20,6 +21,14 @@ export type IdeasController = {
    * `IdeaStore.moveIdeas`; the caller reverts by refreshing on failure.
    */
   applyReorder: (orderedIds: ReadonlyArray<string>) => void;
+  /**
+   * Like or unlike, optimistically (iOS `IdeaStore.setLiked`): the count
+   * moves at once, the server's answer corrects it, a failure restores the
+   * old values and resolves to the error message for the caller to surface
+   * (null on success). Sends the desired state, not a toggle. Never touches
+   * the cache — counts are not persisted.
+   */
+  setLiked: (ideaId: string, liked: boolean) => Promise<string | null>;
 };
 
 /** The slice of `TeamCache<CachedIdea>` this controller needs. */
@@ -29,12 +38,13 @@ export type IdeasCache = {
 };
 
 export function createIdeasController(
-  api: Pick<IdeasApi, "listIdeas">,
+  api: Pick<IdeasApi, "listIdeas" | "setLike">,
   teamId: string,
   cache?: IdeasCache,
 ): IdeasController {
   let state: IdeasListState = initialIdeasListState;
   const listeners = new Set<() => void>();
+  const runLike = createLikeSequencer();
 
   function setState(next: IdeasListState) {
     state = next;
@@ -104,6 +114,24 @@ export function createIdeasController(
         })
         .sort(compareIdeas);
       setState({ ...state, ideas });
+    },
+    async setLiked(ideaId, liked) {
+      const result = await runLike({
+        ideaId,
+        liked,
+        read: () => {
+          const idea = state.ideas.find((row) => row.ideaId === ideaId);
+          return idea ? likeStateOf(idea) : null;
+        },
+        write: (likeState) => {
+          setState({ ...state, ideas: applyLikeState(state.ideas, ideaId, likeState) });
+        },
+        send: (id, value) => api.setLike(id, value),
+      });
+      if (result.ok !== false) return null;
+      return result.error instanceof Error && result.error.message
+        ? result.error.message
+        : "Couldn't update the like.";
     },
   };
 }

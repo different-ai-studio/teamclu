@@ -18,6 +18,13 @@
     "plugins": [
       "./plugins/withTeamCluMqtt",
       "expo-audio",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "TeamClu uses the microphone to turn what you say into a message.",
+          "speechRecognitionPermission": "TeamClu uses speech recognition to turn what you say into a message."
+        }
+      ],
       "expo-localization",
       "expo-web-browser",
       "expo-router",

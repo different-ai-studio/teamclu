@@ -1,8 +1,10 @@
 import { Redirect, Stack, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   Platform,
   Share,
@@ -15,6 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { routeToHref, useConnectedAgentsStore, useOnboarding, useTeamMqtt } from "../../../_layout";
 import { resolveSlashCommands } from "../../../../src/features/sessions/components/runtime-commands";
 import { BUILT_IN_SLASH_COMMANDS } from "../../../../src/features/sessions/components/slash-commands";
+import { runtimeInfoByAgentForSession, type ActorPresenceSnapshot } from "../../../../src/features/actors/actor-presence";
 import type { RuntimeInfo } from "../../../../src/features/actors/connected-agent-types";
 import { createActorsApi } from "../../../../src/features/actors/actor-api";
 import type { Actor } from "../../../../src/features/actors/actor-types";
@@ -31,6 +34,15 @@ import type { OutboxSqliteDb } from "../../../../src/features/sessions/outbox-db
 import { publishOutboxRowViaOptionalMqtt } from "../../../../src/features/sessions/session-outbox-publish";
 import { resetOutbox, syncOutboxFromDao } from "../../../../src/features/sessions/outbox-store";
 import { createConfiguredSessionsApi } from "../../../../src/features/sessions/api-provider";
+import type { FeedbackKind } from "../../../../src/features/sessions/cloud-api";
+import { myFeedbackByMessageId, nextFeedback } from "../../../../src/features/sessions/message-feedback";
+import { noteLocalPrompt } from "../../../../src/features/sessions/live-activity-store";
+import { loadTurnTrace } from "../../../../src/features/sessions/turn-trace";
+import {
+  allowOnceOption,
+  autoApproveStorageKey,
+  permissionOptionsOf,
+} from "../../../../src/features/sessions/permission-options";
 import { createSessionDetailController } from "../../../../src/features/sessions/session-detail-controller";
 import { emptyTimelineState } from "../../../../src/features/sessions/timeline-reducer";
 import { createSessionDetailCache } from "../../../../src/features/sessions/session-detail-cache";
@@ -51,6 +63,7 @@ import { getDb } from "../../../../src/lib/db/sqlite";
 import { getKnownMqttUrl } from "../../../../src/lib/mqtt/config";
 import {
   createRuntimeCommandSender,
+  NotDispatchedError,
   resolvePermissionRuntimeTarget,
 } from "../../../../src/lib/teamclu/runtime-command";
 import { createRuntimeRpcClient } from "../../../../src/lib/teamclu/runtime-rpc";
@@ -104,6 +117,16 @@ function canRenderSessionDetail(
   );
 }
 
+/** A command error for a toast; "no attachment" gets its translated wording. */
+function commandErrorMessage(
+  err: unknown,
+  fallback: string,
+  t: (key: string) => string,
+): string {
+  if (err instanceof NotDispatchedError) return t("The agent isn't running in this session.");
+  return err instanceof Error ? err.message : fallback;
+}
+
 export default function SessionDetailRoute() {
   const { t } = useTranslation();
   const router = useRouter();
@@ -154,6 +177,14 @@ export default function SessionDetailRoute() {
   const recentMessageIdsRef = useRef<Set<string>>(new Set());
 
   const handleBackToList = () => {
+    // A real pop, so the list slides back in from the left. `replace` pushed a
+    // fresh list over the detail and played the forward animation — back looked
+    // like it went the wrong way. Only a detail opened with nothing beneath it
+    // (a notification or deep link) still needs the replace.
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
     router.replace("/(app)/sessions");
   };
 
@@ -260,13 +291,15 @@ export default function SessionDetailRoute() {
     };
   }, []);
 
-  if (state.route !== "ready") {
-    return <Redirect href={href ?? "/"} />;
-  }
-
-  if (!sessionId || currentTeam === null) {
-    return <Redirect href="/(app)/sessions" />;
-  }
+  // Where to send someone who can't be here. Returned just before the JSX
+  // below, not here: every hook in this component has to run on every render,
+  // and returning early skipped the ones after it whenever the route flipped.
+  const redirectHref =
+    state.route !== "ready"
+      ? href ?? "/"
+      : !sessionId || currentTeam === null
+        ? "/(app)/sessions"
+        : null;
 
   const detailState = useSyncExternalStore(
     controller?.subscribe ?? (() => () => {}),
@@ -296,7 +329,7 @@ export default function SessionDetailRoute() {
   const connectedAgentsStore = useConnectedAgentsStore();
   const emptyAgentsState = useMemo(() => ({
     agents: [],
-    runtimeInfoByAgentId: new Map() as ReadonlyMap<string, RuntimeInfo>,
+    presenceByAgentId: new Map() as ReadonlyMap<string, ActorPresenceSnapshot>,
     isLoading: false,
     errorMessage: null,
   }), []);
@@ -305,15 +338,20 @@ export default function SessionDetailRoute() {
     () => connectedAgentsStore?.getState() ?? emptyAgentsState,
     () => connectedAgentsStore?.getState() ?? emptyAgentsState,
   );
+  // Each agent's attachment for THIS session, from its retained ActorPresence.
+  const runtimeInfoByAgentId = useMemo(
+    () => runtimeInfoByAgentForSession(agentsState.presenceByAgentId, sessionId ?? ""),
+    [agentsState.presenceByAgentId, sessionId],
+  );
 
   const dynamicSlashCommands = useMemo(() => {
     const session = detailState.session;
     if (!session) return [...BUILT_IN_SLASH_COMMANDS];
     const runtimeInfos = session.participantActorIds
-      .map((id) => agentsState.runtimeInfoByAgentId.get(id))
+      .map((id) => runtimeInfoByAgentId.get(id))
       .filter((r): r is RuntimeInfo => r != null);
     return resolveSlashCommands(runtimeInfos, BUILT_IN_SLASH_COMMANDS);
-  }, [detailState.session, agentsState.runtimeInfoByAgentId]);
+  }, [detailState.session, runtimeInfoByAgentId]);
 
   const [teamActors, setTeamActors] = useState<Actor[]>([]);
   const [isMuted, setIsMuted] = useState(false);
@@ -367,7 +405,7 @@ export default function SessionDetailRoute() {
     if (!session) return null;
     const live = session.participantActorIds
       .map((id) => {
-        const info = agentsState.runtimeInfoByAgentId.get(id);
+        const info = runtimeInfoByAgentId.get(id);
         return info ? { agentId: id, info } : null;
       })
       .filter((entry): entry is { agentId: string; info: RuntimeInfo } => entry != null);
@@ -380,7 +418,7 @@ export default function SessionDetailRoute() {
       status: runtimeStatusName(info.status) ?? "unknown",
       currentModel: info.currentModel || null,
     };
-  }, [detailState.session, agentsState.runtimeInfoByAgentId]);
+  }, [detailState.session, runtimeInfoByAgentId]);
   useEffect(() => {
     if (!currentTeam?.id) return;
     let cancelled = false;
@@ -542,8 +580,11 @@ export default function SessionDetailRoute() {
   const permissionCommandSender = useMemo(() => {
     if (!teamMqtt || !currentTeam?.id || !state.currentMemberActorId) return null;
     return createRuntimeCommandSender({
-      mqtt: teamMqtt,
-      teamId: currentTeam.id,
+      rpc: createRuntimeRpcClient({
+        mqtt: teamMqtt,
+        teamId: currentTeam.id,
+        requesterActorId: state.currentMemberActorId,
+      }),
       peerId: `teamclu-expo-${state.currentMemberActorId.slice(0, 8)}`,
       senderActorId: state.currentMemberActorId,
     });
@@ -553,6 +594,7 @@ export default function SessionDetailRoute() {
     requestId: string,
     message: SessionMessage,
     granted: boolean,
+    optionId?: string,
   ) => {
     if (!permissionCommandSender) {
       showToast("error", t("Mobile MQTT is not connected — reconnect and try again."));
@@ -567,23 +609,20 @@ export default function SessionDetailRoute() {
       requestingActorId: message.senderActorId,
       agentParticipantIds: fallbackAgentIds,
       connectedAgents: agentsState.agents,
-      runtimeInfoByAgentId: agentsState.runtimeInfoByAgentId,
-      fallbackRuntime: runtimeInfo
-        ? { agentId: runtimeInfo.agentId, runtimeId: runtimeInfo.runtimeId }
-        : null,
     });
 
     if (!target) {
-      showToast("error", t("Couldn't locate that agent's runtime — wait for it to come online and try again."));
+      showToast("error", t("That agent is offline — wait for it to come back and try again."));
       return;
     }
 
     try {
       await permissionCommandSender.sendPermissionResponse({
         targetActorId: target.actorId,
-        runtimeId: target.runtimeId,
+        sessionId: sessionId ?? "",
         requestId,
         granted,
+        optionId,
       });
       setResolvedPermissions((prev) => {
         const next = new Map(prev);
@@ -595,10 +634,148 @@ export default function SessionDetailRoute() {
     } catch (err) {
       showToast(
         "error",
-        err instanceof Error ? err.message : t("Permission response failed"),
+        commandErrorMessage(err, t("Permission response failed"), t),
       );
     }
   };
+
+  // Thumbs on agent replies — iOS `loadFeedback` / `setFeedback`: my own
+  // feedback only, optimistic, rolled back if the server refuses.
+  const [feedbackByMessageId, setFeedbackByMessageId] = useState<ReadonlyMap<string, FeedbackKind>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    const me = state.currentMemberActorId;
+    if (!sessionId || !me) return;
+    let cancelled = false;
+    void createConfiguredSessionsApi(supabase)
+      .listFeedback(sessionId)
+      .then((rows) => {
+        if (!cancelled) setFeedbackByMessageId(myFeedbackByMessageId(rows, me));
+      })
+      .catch(() => {
+        // Thumbs just start empty; nothing else depends on them.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, state.currentMemberActorId]);
+
+  const handleFeedback = async (messageId: string, tapped: FeedbackKind) => {
+    const me = state.currentMemberActorId;
+    if (!me || !currentTeam?.id) return;
+    const previous = feedbackByMessageId.get(messageId);
+    const target = nextFeedback(previous, tapped);
+    const apply = (kind: FeedbackKind | null | undefined) =>
+      setFeedbackByMessageId((prev) => {
+        const next = new Map(prev);
+        if (kind) next.set(messageId, kind);
+        else next.delete(messageId);
+        return next;
+      });
+    apply(target);
+    selectionTick();
+    try {
+      const api = createConfiguredSessionsApi(supabase);
+      if (target) {
+        await api.submitFeedback({
+          messageId,
+          actorId: me,
+          teamId: currentTeam.id,
+          sessionId: sessionId ?? null,
+          kind: target,
+        });
+      } else {
+        await api.deleteFeedback(messageId, me);
+      }
+    } catch (err) {
+      apply(previous);
+      showToast("error", err instanceof Error ? err.message : t("Couldn't save feedback."));
+    }
+  };
+
+  /** Stop the agent's current turn in this session (iOS `interruptAgent`). */
+  const handleAgentInterrupt = async (agentId: string) => {
+    if (!permissionCommandSender || !sessionId) {
+      showToast("error", t("Mobile MQTT is not connected — reconnect and try again."));
+      return;
+    }
+    try {
+      await permissionCommandSender.sendCancel({ targetActorId: agentId, sessionId });
+      selectionTick();
+      showToast("success", t("Stopped"));
+    } catch (err) {
+      showToast("error", commandErrorMessage(err, t("Couldn't stop the agent."), t));
+    }
+  };
+
+  /** The chip's X: take the agent out of this session, after confirming. */
+  const handleAgentRemove = (agentId: string) => {
+    if (!sessionId) return;
+    const name = senderNames.get(agentId) ?? t("this agent");
+    Alert.alert(
+      t("Remove {{value}} from this session?", { value: name }),
+      t("It stops replying here. You can add it back from Members."),
+      [
+        { text: t("Cancel"), style: "cancel" },
+        {
+          text: t("Remove"),
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              try {
+                await createConfiguredSessionsApi(supabase).removeParticipant(sessionId, agentId);
+                await controller?.load({ preserveExisting: true });
+                showToast("success", t("Removed from session"));
+              } catch (err) {
+                showToast(
+                  "error",
+                  err instanceof Error ? err.message : t("Couldn't remove participant"),
+                );
+              }
+            })();
+          },
+        },
+      ],
+    );
+  };
+
+  // Auto-approve (iOS `Session.autoApprovePermissions`): per session, this
+  // device only, and only while the session is open here — the answer comes
+  // from this client, so a backgrounded phone can't give it. Only requests
+  // that arrive live are answered, never ones replayed from history, and only
+  // with a once-scoped allow: permanently widening an agent's permissions is
+  // never the toggle's call.
+  const [autoApprove, setAutoApprove] = useState(false);
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    void AsyncStorage.getItem(autoApproveStorageKey(sessionId)).then((value) => {
+      if (!cancelled) setAutoApprove(value === "1");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+  const openedAt = useRef(Date.now());
+  const autoAnswered = useRef(new Set<string>());
+  useEffect(() => {
+    if (!autoApprove || !permissionCommandSender) return;
+    for (const message of detailState.messages) {
+      if (message.kind !== "permission_request") continue;
+      const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+      const requestId = typeof metadata.request_id === "string" ? metadata.request_id : "";
+      if (!requestId || autoAnswered.current.has(requestId) || resolvedPermissions.has(requestId)) continue;
+      // A few seconds of slack for clock skew; anything older is history.
+      if (Date.parse(message.createdAt) < openedAt.current - 5_000) continue;
+      const option = allowOnceOption(permissionOptionsOf(message));
+      if (!option) continue;
+      autoAnswered.current.add(requestId);
+      void handlePermissionResponse(requestId, message, true, option.id);
+    }
+    // handlePermissionResponse is recreated each render; the ref guards repeats.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoApprove, detailState.messages, permissionCommandSender, resolvedPermissions]);
 
   const pendingQuestion = detailState.pendingQuestions[0] ?? null;
 
@@ -607,7 +784,34 @@ export default function SessionDetailRoute() {
    * turn detail already shows whatever this device streamed, so a missing
    * runtime target or a publish failure is not worth interrupting the user for.
    */
+  // Finished turns: read the uploaded trace first (iOS #1499); only a turn with
+  // no trace falls back to asking the daemon to replay it.
+  const [traceEventsByTurnId, setTraceEventsByTurnId] = useState<
+    ReadonlyMap<string, SessionMessage[]>
+  >(() => new Map());
+  const traceLookups = useRef(new Set<string>());
   const requestTurnHistory = async (turnId: string, agentId: string) => {
+    if (sessionId && currentTeam?.id && !traceLookups.current.has(turnId)) {
+      traceLookups.current.add(turnId);
+      const teamId = currentTeam.id;
+      try {
+        const trace = await loadTurnTrace({
+          locate: () =>
+            createConfiguredSessionsApi(supabase).turnTraceLocation(teamId, sessionId, turnId),
+          ctx: { turnId, agentId, sessionId, teamId },
+        });
+        if (trace && trace.events.length > 0) {
+          setTraceEventsByTurnId((prev) => new Map(prev).set(turnId, trace.events));
+          return;
+        }
+      } catch {
+        // Fall through to the daemon replay.
+      }
+    }
+    await requestTurnHistoryFromDaemon(turnId, agentId);
+  };
+
+  const requestTurnHistoryFromDaemon = async (turnId: string, agentId: string) => {
     if (!permissionCommandSender) return;
     const fallbackAgentIds =
       agentParticipantIds.length > 0
@@ -617,16 +821,12 @@ export default function SessionDetailRoute() {
       requestingActorId: agentId,
       agentParticipantIds: fallbackAgentIds,
       connectedAgents: agentsState.agents,
-      runtimeInfoByAgentId: agentsState.runtimeInfoByAgentId,
-      fallbackRuntime: runtimeInfo
-        ? { agentId: runtimeInfo.agentId, runtimeId: runtimeInfo.runtimeId }
-        : null,
     });
     if (!target) return;
     try {
       await permissionCommandSender.sendRequestTurnHistory({
         targetActorId: target.actorId,
-        runtimeId: target.runtimeId,
+        sessionId: sessionId ?? "",
         turnId,
       });
     } catch {
@@ -656,13 +856,9 @@ export default function SessionDetailRoute() {
       requestingActorId: question.agentActorId,
       agentParticipantIds: fallbackAgentIds,
       connectedAgents: agentsState.agents,
-      runtimeInfoByAgentId: agentsState.runtimeInfoByAgentId,
-      fallbackRuntime: runtimeInfo
-        ? { agentId: runtimeInfo.agentId, runtimeId: runtimeInfo.runtimeId }
-        : null,
     });
     if (!target) {
-      setQuestionError(t("Couldn't locate that agent's runtime — wait for it to come online and try again."));
+      setQuestionError(t("That agent is offline — wait for it to come back and try again."));
       return;
     }
 
@@ -671,7 +867,7 @@ export default function SessionDetailRoute() {
     try {
       await permissionCommandSender.sendAnswerQuestion({
         targetActorId: target.actorId,
-        runtimeId: target.runtimeId,
+        sessionId: sessionId ?? "",
         requestId: question.id,
         answers,
         reject,
@@ -679,11 +875,15 @@ export default function SessionDetailRoute() {
       controller?.resolvePendingQuestion(question.id);
       selectionTick();
     } catch (err) {
-      setQuestionError(err instanceof Error ? err.message : t("Couldn't send the answer."));
+      setQuestionError(commandErrorMessage(err, t("Couldn't send the answer."), t));
     } finally {
       setIsAnsweringQuestion(false);
     }
   };
+
+  if (redirectHref !== null) {
+    return <Redirect href={redirectHref} />;
+  }
 
   return (
     <View style={styles.screen}>
@@ -748,11 +948,20 @@ export default function SessionDetailRoute() {
           onSkipQuestion={(question) => {
             void handleQuestionResponse(question, [], true);
           }}
+          traceEventsByTurnId={traceEventsByTurnId}
           onRequestTurnHistory={(turnId, agentId) => {
             void requestTurnHistory(turnId, agentId);
           }}
           onAttach={() => {
             router.push(`/(app)/attach?sessionId=${sessionId}`);
+          }}
+          onAgentInterrupt={(agentId) => {
+            void handleAgentInterrupt(agentId);
+          }}
+          onAgentRemove={handleAgentRemove}
+          feedbackByMessageId={feedbackByMessageId}
+          onFeedback={(messageId, kind) => {
+            void handleFeedback(messageId, kind);
           }}
           onGrantPermission={(requestId, message) => {
             void handlePermissionResponse(requestId, message, true);
@@ -829,6 +1038,9 @@ export default function SessionDetailRoute() {
             if (sessionId) {
               void saveComposerDraft(sessionId, "");
             }
+            // Our own turn never produces an inbox ping (FC excludes the
+            // sender), so tell the list's activity dot directly.
+            if (sessionId) noteLocalPrompt(sessionId);
             void controller?.sendMessage();
           }}
           onShare={
@@ -842,6 +1054,21 @@ export default function SessionDetailRoute() {
                   } catch {
                     // user cancelled or platform refused
                   }
+                }
+              : undefined
+          }
+          autoApprove={autoApprove}
+          onToggleAutoApprove={
+            sessionId
+              ? () => {
+                  const next = !autoApprove;
+                  setAutoApprove(next);
+                  selectionTick();
+                  void AsyncStorage.setItem(autoApproveStorageKey(sessionId), next ? "1" : "0");
+                  showToast(
+                    "success",
+                    next ? t("Auto-approving permissions in this session") : t("Permissions need your approval again"),
+                  );
                 }
               : undefined
           }
@@ -892,7 +1119,7 @@ export default function SessionDetailRoute() {
             }
             currentModel={runtimeInfo.currentModel}
             models={
-              agentsState.runtimeInfoByAgentId.get(runtimeInfo.agentId ?? "")
+              runtimeInfoByAgentId.get(runtimeInfo.agentId ?? "")
                 ?.availableModels ?? []
             }
             onCancel={() => setIsModelPromptOpen(false)}

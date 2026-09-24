@@ -20,12 +20,14 @@ import { SkeletonRow } from "../../../ui/atoms/SkeletonRow";
 import { PrimaryButton } from "../../../ui/button";
 import { AppCard } from "../../../ui/card";
 import { PageHeader } from "../../../ui/PageHeader";
+import { TextPromptModal } from "../../../ui/TextPromptModal";
 import { impactLight, selectionTick } from "../../../lib/haptics";
 import { t } from "../../../lib/i18n";
 import { colors, spacing, typography } from "../../../ui/theme";
 import { matchesAnyField } from "../../search/search-matcher";
 import { DaemonStatusBanner, type DaemonConnectionState } from "../components/DaemonStatusBanner";
 import { SessionRow, type SessionRowRuntime } from "../components/SessionRow";
+import type { SessionLiveActivity } from "../live-activity";
 import type { SessionGroup, SessionsListState } from "../session-types";
 
 type SessionsListScreenProps = {
@@ -42,12 +44,18 @@ type SessionsListScreenProps = {
   onRefresh: () => void;
   onSelectSession: (sessionId: string) => void;
   onTogglePin?: (sessionId: string) => Promise<void> | void;
+  /** iOS context menu "Rename" — `PATCH /v1/sessions/{id}`. */
+  onRenameSession?: (sessionId: string, title: string) => Promise<void> | void;
+  /** iOS context menu "Mute / Unmute notifications". */
+  onToggleMute?: (sessionId: string, muted: boolean) => Promise<void> | void;
   pinnedSessionIds?: ReadonlySet<string>;
   /** Live runtime attachment per session — drives the badge dot and status label. */
   runtimeBySessionId?: ReadonlyMap<string, SessionRowRuntime>;
   /** Workspace/worktree name per session, shown at the head of the meta strip. */
   workspaceBySessionId?: ReadonlyMap<string, string>;
   mutedSessionIds?: ReadonlySet<string>;
+  /** "Agent working" / "waiting for you" per session (iOS #1567). */
+  activityBySessionId?: ReadonlyMap<string, SessionLiveActivity>;
   /** Daemon reachability, shown as a pill above the search field. */
   daemonConnectionState?: DaemonConnectionState;
   brokerHost?: string;
@@ -60,6 +68,7 @@ export function SessionGroupSection({
   actorGlyphById,
   group,
   mutedSessionIds,
+  activityBySessionId,
   onLongPressSession,
   onSelectSession,
   pinnedSessionIds,
@@ -72,6 +81,7 @@ export function SessionGroupSection({
   actorGlyphById?: ReadonlyMap<string, string>;
   group: SessionGroup;
   mutedSessionIds?: ReadonlySet<string>;
+  activityBySessionId?: ReadonlyMap<string, SessionLiveActivity>;
   onLongPressSession?: (id: string) => void;
   onSelectSession: (sessionId: string) => void;
   pinnedSessionIds?: ReadonlySet<string>;
@@ -108,6 +118,7 @@ export function SessionGroupSection({
                     actorGlyphById={actorGlyphById}
                     isActive={selectedSessionId === session.sessionId}
                     isMuted={mutedSessionIds?.has(session.sessionId) ?? false}
+                    activity={activityBySessionId?.get(session.sessionId) ?? "quiet"}
                     isPinned={pinnedSessionIds?.has(session.sessionId) ?? false}
                     runtime={runtimeBySessionId?.get(session.sessionId) ?? null}
                     workspaceName={workspaceBySessionId?.get(session.sessionId) ?? ""}
@@ -173,7 +184,10 @@ export function SessionsListScreen({
   onSelectSession,
   onShortcuts,
   onTogglePin,
+  onRenameSession,
+  onToggleMute,
   mutedSessionIds,
+  activityBySessionId,
   pinnedSessionIds,
   runtimeBySessionId,
   selectedSessionId = null,
@@ -186,6 +200,7 @@ export function SessionsListScreen({
   const [selection, setSelection] = useState<ReadonlySet<string>>(new Set());
   const [isBatchBusy, setIsBatchBusy] = useState(false);
   const selectionMode = selection.size > 0;
+  const [renameTarget, setRenameTarget] = useState<{ id: string; title: string } | null>(null);
   const toggleSelection = (id: string) => {
     selectionTick();
     setSelection((prev) => {
@@ -197,60 +212,68 @@ export function SessionsListScreen({
   };
   const clearSelection = () => setSelection(new Set());
 
+  const sessionTitle = useCallback(
+    (sessionId: string) =>
+      state.groups
+        .flatMap((group) => group.sessions)
+        .find((session) => session.sessionId === sessionId)?.title ?? "",
+    [state.groups],
+  );
+
   const showRowContextMenu = useCallback(
     (sessionId: string) => {
       impactLight();
       const isPinned = pinnedSessionIds?.has(sessionId) ?? false;
-      const labels = [
-        isPinned ? t("Unpin") : t("Pin"),
-        t("Mark as unread"),
-        t("Mark as read"),
-        t("Archive"),
-        t("More…"),
-        t("Cancel"),
+      const isMuted = mutedSessionIds?.has(sessionId) ?? false;
+      // Built as a list so adding an action can't shift another's index.
+      const actions: Array<{ label: string; destructive?: boolean; run: () => void }> = [
+        { label: isPinned ? t("Unpin") : t("Pin"), run: () => void onTogglePin?.(sessionId) },
+        ...(onRenameSession
+          ? [{ label: t("Rename"), run: () => setRenameTarget({ id: sessionId, title: sessionTitle(sessionId) }) }]
+          : []),
+        ...(onToggleMute
+          ? [{
+              label: isMuted ? t("Unmute notifications") : t("Mute notifications"),
+              run: () => void onToggleMute(sessionId, !isMuted),
+            }]
+          : []),
+        { label: t("Mark as unread"), run: () => void onMarkBatchUnread?.([sessionId]) },
+        { label: t("Mark as read"), run: () => void onMarkBatchRead?.([sessionId]) },
+        { label: t("Archive"), destructive: true, run: () => void onArchiveBatch?.([sessionId]) },
+        { label: t("More…"), run: () => toggleSelection(sessionId) },
       ];
-      const dispatch = (index: number) => {
-        switch (index) {
-          case 0:
-            if (onTogglePin) void onTogglePin(sessionId);
-            break;
-          case 1:
-            if (onMarkBatchUnread) void onMarkBatchUnread([sessionId]);
-            break;
-          case 2:
-            if (onMarkBatchRead) void onMarkBatchRead([sessionId]);
-            break;
-          case 3:
-            if (onArchiveBatch) void onArchiveBatch([sessionId]);
-            break;
-          case 4:
-            toggleSelection(sessionId);
-            break;
-          default:
-            break;
-        }
-      };
+      const cancelLabel = t("Cancel");
       if (Platform.OS === "ios") {
         ActionSheetIOS.showActionSheetWithOptions(
           {
-            options: labels,
-            cancelButtonIndex: 5,
-            destructiveButtonIndex: 3,
+            options: [...actions.map((a) => a.label), cancelLabel],
+            cancelButtonIndex: actions.length,
+            destructiveButtonIndex: actions.findIndex((a) => a.destructive),
           },
-          dispatch,
+          (index) => actions[index]?.run(),
         );
         return;
       }
       Alert.alert(t("Session actions"), undefined, [
-        { text: labels[0], onPress: () => dispatch(0) },
-        { text: labels[1], onPress: () => dispatch(1) },
-        { text: labels[2], onPress: () => dispatch(2) },
-        { text: labels[3], style: "destructive", onPress: () => dispatch(3) },
-        { text: labels[4], onPress: () => dispatch(4) },
-        { text: labels[5], style: "cancel" },
+        ...actions.map((a) => ({
+          text: a.label,
+          style: a.destructive ? ("destructive" as const) : undefined,
+          onPress: a.run,
+        })),
+        { text: cancelLabel, style: "cancel" as const },
       ]);
     },
-    [pinnedSessionIds, onTogglePin, onMarkBatchUnread, onMarkBatchRead, onArchiveBatch],
+    [
+      pinnedSessionIds,
+      mutedSessionIds,
+      onTogglePin,
+      onRenameSession,
+      onToggleMute,
+      onMarkBatchUnread,
+      onMarkBatchRead,
+      onArchiveBatch,
+      sessionTitle,
+    ],
   );
   const handleArchiveSelected = async () => {
     if (!onArchiveBatch || selection.size === 0) return;
@@ -467,6 +490,7 @@ export function SessionsListScreen({
                 }
               }}
               mutedSessionIds={mutedSessionIds}
+              activityBySessionId={activityBySessionId}
               pinnedSessionIds={pinnedSessionIds}
               runtimeBySessionId={runtimeBySessionId}
               selectedSessionId={selectedSessionId}
@@ -568,6 +592,20 @@ export function SessionsListScreen({
         </Pressable>
       </View>
     ) : null}
+    <TextPromptModal
+      initialValue={renameTarget?.title ?? ""}
+      isVisible={renameTarget !== null}
+      key={renameTarget?.id ?? "rename"}
+      onCancel={() => setRenameTarget(null)}
+      onSubmit={(value) => {
+        const target = renameTarget;
+        setRenameTarget(null);
+        const title = value.trim();
+        if (target && title && title !== target.title) void onRenameSession?.(target.id, title);
+      }}
+      placeholder={t("Title")}
+      title={t("Rename Session")}
+    />
     </View>
   );
 }

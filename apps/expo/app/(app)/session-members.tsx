@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useConnectedAgentsStore, useOnboarding, useTeamMqtt } from "../_layout";
 import { createActorsApi } from "../../src/features/actors/actor-api";
 import { isAgentActor, type Actor } from "../../src/features/actors/actor-types";
+import { runtimeInfoByAgentForSession } from "../../src/features/actors/actor-presence";
 import type { RuntimeInfo } from "../../src/features/actors/connected-agent-types";
 import {
   agentBackendDisplayName,
@@ -64,13 +65,15 @@ export default function SessionMembersRoute() {
   // to come from `agent_runtimes`, which was dropped on 2026-08-03.
   useEffect(() => {
     if (!connectedAgentsStore) return;
-    setRuntimeByAgentId(connectedAgentsStore.getState().runtimeInfoByAgentId);
+    const read = () =>
+      runtimeInfoByAgentForSession(connectedAgentsStore.getState().presenceByAgentId, sessionId ?? "");
+    setRuntimeByAgentId(read());
     const unsubscribe = connectedAgentsStore.subscribe(() => {
-      setRuntimeByAgentId(connectedAgentsStore.getState().runtimeInfoByAgentId);
+      setRuntimeByAgentId(read());
     });
     void connectedAgentsStore.reload();
     return unsubscribe;
-  }, [connectedAgentsStore]);
+  }, [connectedAgentsStore, sessionId]);
 
   const loadParticipants = useCallback(async () => {
     if (!teamId || !sessionId) {

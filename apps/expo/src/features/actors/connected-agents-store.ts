@@ -1,13 +1,17 @@
 import type { AgentAccessApi } from "./agent-access-api";
 import type { ConnectedAgentsCache } from "./connected-agents-cache";
-import type {
-  ConnectedAgent,
-  RuntimeInfo,
-} from "./connected-agent-types";
+import type { ActorPresenceSnapshot } from "./actor-presence";
+import type { ConnectedAgent } from "./connected-agent-types";
 
 export type ConnectedAgentsStoreState = {
   agents: ConnectedAgent[];
-  runtimeInfoByAgentId: ReadonlyMap<string, RuntimeInfo>;
+  /**
+   * Each agent's retained `ActorPresence`. Per-session runtime facts come from
+   * `runtimeInfoByAgentForSession(presenceByAgentId, sessionId)`: an agent can
+   * hold attachments for several sessions at once, so there is no single
+   * "the agent's runtime" any more.
+   */
+  presenceByAgentId: ReadonlyMap<string, ActorPresenceSnapshot>;
   isLoading: boolean;
   errorMessage: string | null;
 };
@@ -32,16 +36,16 @@ export type ConnectedAgentsStore = {
   reload: () => Promise<void>;
   shareToTeam: (agentId: string) => Promise<boolean>;
   makePersonal: (agentId: string) => Promise<boolean>;
-  handleRuntimeInfo: (actorId: string, runtimeId: string, info: RuntimeInfo) => void;
+  handlePresence: (actorId: string, presence: ActorPresenceSnapshot) => void;
   dispose: () => Promise<void>;
 };
 
-const EMPTY_MAP: ReadonlyMap<string, RuntimeInfo> = new Map();
+const EMPTY_MAP: ReadonlyMap<string, ActorPresenceSnapshot> = new Map();
 
 export function createConnectedAgentsStore(deps: Deps): ConnectedAgentsStore {
   let state: ConnectedAgentsStoreState = {
     agents: [],
-    runtimeInfoByAgentId: EMPTY_MAP,
+    presenceByAgentId: EMPTY_MAP,
     isLoading: false,
     errorMessage: null,
   };
@@ -69,10 +73,18 @@ export function createConnectedAgentsStore(deps: Deps): ConnectedAgentsStore {
     async reload() {
       setState({ ...state, isLoading: true, errorMessage: null });
       try {
-        const agents = await deps.api.listConnectedAgents(deps.teamId);
+        const fetched = await deps.api.listConnectedAgents(deps.teamId);
+        // Keep what the broker has already said about who is online; the
+        // list endpoint only knows `lastActiveAt`.
+        const agents = fetched.map((a) => {
+          const presence = state.presenceByAgentId.get(a.agentId);
+          return presence ? { ...a, presenceOnline: presence.online } : a;
+        });
         diffWatches(state.agents, agents);
         setState({ ...state, agents, isLoading: false, errorMessage: null });
-        void deps.cache?.saveCache(deps.teamId, agents);
+        // The cache is an offline convenience; a failed write must not surface
+        // as an unhandled rejection over whatever screen is open.
+        void deps.cache?.saveCache(deps.teamId, agents).catch(() => {});
       } catch (err) {
         setState({
           ...state,
@@ -101,14 +113,18 @@ export function createConnectedAgentsStore(deps: Deps): ConnectedAgentsStore {
         return false;
       }
     },
-    handleRuntimeInfo(actorId: string, _runtimeId: string, info: RuntimeInfo) {
+    handlePresence(actorId: string, presence: ActorPresenceSnapshot) {
       const agentIdx = state.agents.findIndex((a) => a.agentId === actorId);
       if (agentIdx < 0) return;
       const next = state.agents.slice();
-      next[agentIdx] = { ...next[agentIdx], lastActiveAt: new Date().toISOString() };
-      const map = new Map(state.runtimeInfoByAgentId);
-      map.set(next[agentIdx].agentId, info);
-      setState({ ...state, agents: next, runtimeInfoByAgentId: map });
+      next[agentIdx] = {
+        ...next[agentIdx],
+        presenceOnline: presence.online,
+        ...(presence.online ? { lastActiveAt: new Date().toISOString() } : {}),
+      };
+      const map = new Map(state.presenceByAgentId);
+      map.set(actorId, presence);
+      setState({ ...state, agents: next, presenceByAgentId: map });
     },
     async dispose() {
       deps.subscriber.dispose();

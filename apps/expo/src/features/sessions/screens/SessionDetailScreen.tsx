@@ -17,6 +17,7 @@ import {
   View,
 } from "react-native";
 import Markdown from "react-native-markdown-display";
+import { initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { StatusDot } from "../../../ui/atoms/StatusDot";
@@ -62,6 +63,7 @@ import {
   type SlashCommand,
 } from "../components/slash-commands";
 import { TodoDock } from "../components/TodoDock";
+import type { FeedbackKind } from "../cloud-api";
 import type {
   SessionDetailConnectionState,
   SessionDetailControllerState,
@@ -103,6 +105,9 @@ type SessionDetailScreenProps = {
   mentionPool?: ReadonlyArray<MentionTarget>;
   onAgentInterrupt?: (agentId: string) => void;
   onAgentRemove?: (agentId: string) => void;
+  /** The member's own feedback on agent replies, by message id. */
+  feedbackByMessageId?: ReadonlyMap<string, FeedbackKind>;
+  onFeedback?: (messageId: string, kind: FeedbackKind) => void;
   onAttach?: () => void;
   onBack: () => void;
   onChangeComposerText: (value: string) => void;
@@ -120,11 +125,19 @@ type SessionDetailScreenProps = {
   onOpenMembers?: () => void;
   /** Backfill a turn's daemon-recorded events when its detail is opened. */
   onRequestTurnHistory?: (turnId: string, agentId: string) => void;
+  /**
+   * A finished turn's recorded trace, by daemon turn id (iOS #1499). When
+   * present it replaces what this device streamed: it is the whole turn.
+   */
+  traceEventsByTurnId?: ReadonlyMap<string, SessionMessage[]>;
   onRetryFailed?: (messageId: string) => void;
   onReplyToMessage?: (messageId: string) => void;
   onSend: () => void;
   onShare?: () => void;
   onToggleMute?: () => void;
+  /** Per-session, this device only — grant allow-once requests automatically. */
+  autoApprove?: boolean;
+  onToggleAutoApprove?: () => void;
   /** Oldest unanswered opencode question; replaces the composer while set. */
   pendingQuestion?: PendingAcpQuestion | null;
   isAnsweringQuestion?: boolean;
@@ -192,6 +205,8 @@ function SessionHeader({
   onTogglePlans,
   plansPanelOpen,
   onToggleMute,
+  autoApprove,
+  onToggleAutoApprove,
   session,
 }: {
   connectionState: SessionDetailConnectionState;
@@ -203,6 +218,8 @@ function SessionHeader({
   onTogglePlans?: () => void;
   plansPanelOpen?: boolean;
   onToggleMute?: () => void;
+  autoApprove?: boolean;
+  onToggleAutoApprove?: () => void;
   session: SessionSummary;
 }) {
   const { t: tHook } = useTranslation();
@@ -286,6 +303,24 @@ function SessionHeader({
             <Ionicons
               color={isMuted ? colors.cinnabar : colors.onyx}
               name={isMuted ? "notifications-off-outline" : "notifications-outline"}
+              size={20}
+            />
+          </Pressable>
+        ) : null}
+        {onToggleAutoApprove ? (
+          <Pressable
+            accessibilityLabel={
+              autoApprove ? tHook("Stop auto-approving permissions") : tHook("Auto-approve permissions")
+            }
+            accessibilityRole="switch"
+            accessibilityState={{ checked: Boolean(autoApprove) }}
+            hitSlop={8}
+            onPress={onToggleAutoApprove}
+            style={styles.headerSlot}
+          >
+            <Ionicons
+              color={autoApprove ? colors.cinnabar : colors.onyx}
+              name={autoApprove ? "shield-checkmark" : "shield-checkmark-outline"}
               size={20}
             />
           </Pressable>
@@ -373,6 +408,8 @@ const turnMarkdown = {
 function AgentTurnCard({
   onOpenDetail,
   onInterrupt,
+  feedbackKind = null,
+  onFeedback,
   senderAvatarGlyph,
   senderAvatarUrl,
   senderName,
@@ -380,6 +417,9 @@ function AgentTurnCard({
 }: {
   onOpenDetail?: (turn: AgentTurnFeedItem) => void;
   onInterrupt?: (agentId: string) => void;
+  /** The member's own 👍/👎 on this turn's final reply. */
+  feedbackKind?: FeedbackKind | null;
+  onFeedback?: (messageId: string, kind: FeedbackKind) => void;
   senderAvatarGlyph?: string | null;
   senderAvatarUrl?: string | null;
   senderName?: string;
@@ -477,6 +517,33 @@ function AgentTurnCard({
             </Text>
           </View>
         ) : null}
+        {/* Completed agent replies are drawn here, not as message rows, so
+            the thumbs (iOS CompletedTurnBubbleView.onFeedback) live here too. */}
+        {turn.finalMessage && !turn.isActive && onFeedback ? (
+          <View style={styles.turnFeedbackRow}>
+            {(["positive", "negative"] as const).map((kind) => {
+              const active = feedbackKind === kind;
+              const icon = kind === "positive" ? "thumbs-up" : "thumbs-down";
+              const messageId = turn.finalMessage!.messageId;
+              return (
+                <Pressable
+                  accessibilityLabel={kind === "positive" ? tHook("Helpful") : tHook("Not Helpful")}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  hitSlop={8}
+                  key={kind}
+                  onPress={() => onFeedback(messageId, kind)}
+                >
+                  <Ionicons
+                    color={active ? hai.cinnabar : colors.slate}
+                    name={active ? icon : `${icon}-outline`}
+                    size={13}
+                  />
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
       </Pressable>
     </View>
   );
@@ -528,6 +595,10 @@ function AgentTurnDetailModal({
 
 export function SessionDetailScreen(props: SessionDetailScreenProps) {
   const { t: tHook } = useTranslation();
+  const safeAreaInsets = useSafeAreaInsets();
+  // The root layout reserves only the top inset; this screen pins the
+  // composer to the bottom, so it owns the home-indicator / nav-bar strip.
+  const bottomInset = safeAreaInsets.bottom;
   const {
     agentChips,
     composerText,
@@ -538,6 +609,8 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     mentionPool,
     onAgentInterrupt,
     onAgentRemove,
+    feedbackByMessageId,
+    onFeedback,
     onAttach,
     onBack,
     onChangeComposerText,
@@ -553,11 +626,14 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     onReconnect,
     onRefresh,
     onRequestTurnHistory,
+    traceEventsByTurnId,
     onRetryFailed,
     onReplyToMessage,
     onSend,
     onShare,
     onToggleMute,
+    autoApprove,
+    onToggleAutoApprove,
     onAnswerQuestion,
     onSkipQuestion,
     pendingQuestion,
@@ -602,8 +678,12 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
   const [selectedTurnKey, setSelectedTurnKey] = useState<string | null>(null);
   const selectedTurn = useMemo(() => {
     const source = feedSources.find((item) => item.key === selectedTurnKey);
-    return source?.kind === "agentTurn" ? source.turn : null;
-  }, [feedSources, selectedTurnKey]);
+    if (source?.kind !== "agentTurn") return null;
+    const trace = source.turn.daemonTurnId
+      ? traceEventsByTurnId?.get(source.turn.daemonTurnId)
+      : undefined;
+    return trace && trace.length > 0 ? { ...source.turn, runtimeEvents: trace } : source.turn;
+  }, [feedSources, selectedTurnKey, traceEventsByTurnId]);
 
   // Ask the daemon to replay this turn's thinking / tool-call events when the
   // detail opens. Live streams already receive deltas over MQTT and the
@@ -753,6 +833,8 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         }
         plansPanelOpen={plansPanelOpen && planSnapshots.length > 0}
         onToggleMute={onToggleMute}
+        autoApprove={autoApprove}
+        onToggleAutoApprove={onToggleAutoApprove}
         session={session}
       />
       <ConnectionBannerOverlay
@@ -874,6 +956,12 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                   <AgentTurnCard
                     onOpenDetail={() => setSelectedTurnKey(item.key)}
                     onInterrupt={onAgentInterrupt}
+                    feedbackKind={
+                      item.turn.finalMessage
+                        ? feedbackByMessageId?.get(item.turn.finalMessage.messageId) ?? null
+                        : null
+                    }
+                    onFeedback={onFeedback}
                     senderAvatarGlyph={
                       senderAvatarGlyphs?.get(item.turn.agentId) ?? null
                     }
@@ -913,6 +1001,8 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                     }
                   }}
                   onRetryOutbox={onRetryFailed}
+                  feedbackKind={feedbackByMessageId?.get(msg.messageId) ?? null}
+                  onFeedback={onFeedback ? (kind) => onFeedback(msg.messageId, kind) : undefined}
                   toolResult={(() => {
                     if (msg.kind.trim().toLowerCase() !== "agent_tool_call") return undefined;
                     const meta =
@@ -1046,37 +1136,57 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
       ) : null}
 
       <KeyboardAvoidingView
-        behavior={Platform.select({ ios: "padding", android: undefined })}
-        keyboardVerticalOffset={Platform.select({ ios: 8, default: 0 })}
+        // Android too: under the edge-to-edge window SDK 57 enforces,
+        // `adjustResize` no longer shrinks the window, so leaving Android to
+        // the OS put the keyboard straight over the composer.
+        behavior="padding"
+        // The composer carries the bottom safe-area inset below (home
+        // indicator / navigation bar). On iOS the keyboard's height already
+        // covers that strip, so take it back out or the composer floats a
+        // home-indicator's height above the keys. Edge-to-edge Android reports
+        // the keyboard without the navigation bar, which the inset padding
+        // makes up for exactly.
+        // iOS: the view's frame is measured from below the root layout's
+        // top safe-area padding, while the keyboard reports screen
+        // coordinates — add that strip back or the composer's action row sits
+        // behind the keys. It has to be the window's inset: the root
+        // `SafeAreaView` consumes the top edge, so this screen's own context
+        // reports 0 there.
+        keyboardVerticalOffset={Platform.select({
+          ios: (initialWindowMetrics?.insets.top ?? 0) + 8 - bottomInset,
+          default: 0,
+        })}
       >
-        {/* An unanswered question blocks the turn, so it takes the composer's
-            place until it is answered or skipped — same swap iOS does. */}
-        {pendingQuestion && onAnswerQuestion && onSkipQuestion ? (
-          <AcpQuestionCard
-            errorMessage={questionErrorMessage}
-            isSubmitting={isAnsweringQuestion}
-            key={pendingQuestion.id}
-            onSkip={() => onSkipQuestion(pendingQuestion)}
-            onSubmit={(answers) => onAnswerQuestion(pendingQuestion, answers)}
-            pending={pendingQuestion}
-          />
-        ) : (
-          <SessionComposerShell
-            composerText={composerText}
-            connectionState={connectionState}
-            isSending={isSending}
-            onAttach={onAttach}
-            onOpenAgents={onOpenMembers}
-            selectedAgentNames={(agentChips ?? []).map((chip) => chip.displayName)}
-            onChangeText={onChangeComposerText}
-            onRemovePendingAttachment={(path) => {
-              removePendingAttachment(state.session.teamId, state.session.sessionId, path);
-            }}
-            onSend={onSend}
-            pendingAttachments={pendingAttachments}
-            sendErrorMessage={sendErrorMessage}
-          />
-        )}
+        <View style={{ paddingBottom: bottomInset }}>
+          {/* An unanswered question blocks the turn, so it takes the composer's
+              place until it is answered or skipped — same swap iOS does. */}
+          {pendingQuestion && onAnswerQuestion && onSkipQuestion ? (
+            <AcpQuestionCard
+              errorMessage={questionErrorMessage}
+              isSubmitting={isAnsweringQuestion}
+              key={pendingQuestion.id}
+              onSkip={() => onSkipQuestion(pendingQuestion)}
+              onSubmit={(answers) => onAnswerQuestion(pendingQuestion, answers)}
+              pending={pendingQuestion}
+            />
+          ) : (
+            <SessionComposerShell
+              composerText={composerText}
+              connectionState={connectionState}
+              isSending={isSending}
+              onAttach={onAttach}
+              onOpenAgents={onOpenMembers}
+              selectedAgentNames={(agentChips ?? []).map((chip) => chip.displayName)}
+              onChangeText={onChangeComposerText}
+              onRemovePendingAttachment={(path) => {
+                removePendingAttachment(state.session.teamId, state.session.sessionId, path);
+              }}
+              onSend={onSend}
+              pendingAttachments={pendingAttachments}
+              sendErrorMessage={sendErrorMessage}
+            />
+          )}
+        </View>
       </KeyboardAvoidingView>
     </View>
   );
@@ -1189,6 +1299,11 @@ const styles = StyleSheet.create({
   },
   turnCardPressed: {
     opacity: 0.88,
+  },
+  turnFeedbackRow: {
+    flexDirection: "row",
+    gap: 14,
+    marginTop: 6,
   },
   turnDetailRow: {
     alignItems: "center",

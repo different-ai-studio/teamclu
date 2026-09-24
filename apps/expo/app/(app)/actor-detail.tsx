@@ -13,6 +13,12 @@ import {
 } from "../../src/features/actors/actor-management";
 import type { Actor } from "../../src/features/actors/actor-types";
 import type { AgentAuthorizedHuman } from "../../src/features/actors/connected-agent-types";
+import { createLeaderboardApi } from "../../src/features/actors/leaderboard-api";
+import {
+  loadMemberActivityStats,
+  MEMBER_TOKEN_PERIOD,
+  type MemberActivityStats,
+} from "../../src/features/actors/member-activity-stats";
 import {
   ActorDetailScreen,
   type AgentWorkspaceChoice,
@@ -64,6 +70,7 @@ export default function ActorDetailRoute() {
 
   const [actor, setActor] = useState<Actor | null>(null);
   const [agentIsOwner, setAgentIsOwner] = useState(false);
+  const [agentAccessRole, setAgentAccessRole] = useState<string | null>(null);
   const [allActors, setAllActors] = useState<Actor[]>([]);
   const [agentWorkspaces, setAgentWorkspaces] = useState<AgentWorkspaceChoice[]>([]);
   const [authorizedHumans, setAuthorizedHumans] = useState<AgentAuthorizedHuman[]>([]);
@@ -79,7 +86,7 @@ export default function ActorDetailRoute() {
   const [isSavingAgentDefaults, setIsSavingAgentDefaults] = useState(false);
   const [isUpdatingAgentVisibility, setIsUpdatingAgentVisibility] = useState(false);
   const [recentSessions, setRecentSessions] = useState<RecentSession[]>([]);
-  const [stats, setStats] = useState<{ sessions: number; ideas: number } | null>(null);
+  const [memberStats, setMemberStats] = useState<MemberActivityStats | null>(null);
   const [resourceCounts, setResourceCounts] = useState<TeamResourceCounts | null>(null);
   const [myDefaultAgentId, setMyDefaultAgentId] = useState<string | null>(null);
   const [isSavingMyDefaultAgent, setIsSavingMyDefaultAgent] = useState(false);
@@ -87,11 +94,18 @@ export default function ActorDetailRoute() {
     actorId,
     currentMemberActorId: state.currentMemberActorId,
     currentTeamRole: state.currentTeam?.role,
+    agentAccessRole,
   });
   const canManageAccess = canManageAuthorizedHumans({
     actorType: actor?.actorType,
     isOwner: agentIsOwner,
   });
+  // Workspaces are the daemon's to accept, not an owner privilege: iOS offers
+  // "add workspace" to anyone who can reach the agent over MQTT. Gating it on
+  // `role === "owner"` hid it from everyone, because the permission endpoint
+  // answers "admin" even for the member who invited the agent — so a freshly
+  // invited agent could never get a workspace and no session could start on it.
+  const canManageWorkspaces = actor?.actorType === "agent" && teamMqtt != null;
   const authorizedHumanIds = new Set(authorizedHumans.map((human) => human.id));
   const authorizedMemberCandidates = allActors.filter(
     (row) =>
@@ -100,10 +114,11 @@ export default function ActorDetailRoute() {
       !authorizedHumanIds.has(row.actorId),
   );
 
-  // Three concurrent reads that decorate the header; a failing leg reports 0
-  // rather than blanking the screen (iOS `TeamResourceRepository.counts`).
+  // Three concurrent reads that decorate an agent's header; a failing leg
+  // reports 0 rather than blanking the screen (iOS
+  // `TeamResourceRepository.counts`). A person's page draws none of them.
   useEffect(() => {
-    if (!teamId || !actorId) return;
+    if (!teamId || !actorId || actor?.actorType !== "agent") return;
     let cancelled = false;
     void teamResourcesApi.counts(teamId, actorId).then((counts) => {
       if (!cancelled) setResourceCounts(counts);
@@ -111,7 +126,27 @@ export default function ActorDetailRoute() {
     return () => {
       cancelled = true;
     };
-  }, [actorId, teamId, teamResourcesApi]);
+  }, [actor?.actorType, actorId, teamId, teamResourcesApi]);
+
+  // A person's equivalent: tokens this month and ideas still on the board
+  // (iOS #1568). Null until loaded, so the row shows "—", not a fake zero.
+  useEffect(() => {
+    if (!teamId || !actorId || actor?.actorType !== "member") return;
+    let cancelled = false;
+    setMemberStats(null);
+    const getAccessToken = supabaseAccessToken(supabase);
+    void loadMemberActivityStats({
+      actorId,
+      loadLeaderboard: () =>
+        createLeaderboardApi({ getAccessToken }).getLeaderboard(teamId, MEMBER_TOKEN_PERIOD),
+      loadIdeas: () => createIdeasApi({ getAccessToken }).listIdeas(teamId),
+    }).then((next) => {
+      if (!cancelled) setMemberStats(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [actor?.actorType, actorId, teamId]);
 
   // `members.default_agent_id` — the viewer's own default, distinct from the
   // agent-owned defaults below and from the team-wide default in Settings.
@@ -178,15 +213,17 @@ export default function ActorDetailRoute() {
       if (found?.actorType === "agent") {
         // Directory drops owner; re-hydrate owner-gating from agent-access so it
         // survives a refresh. Daemon routing uses the actor id directly.
-        const owner = state.currentMemberActorId
+        const role = state.currentMemberActorId
           ? await agentAccessApi
-              .canManageAgent(actorId, state.currentMemberActorId)
-              .catch(() => false)
-          : false;
-        setAgentIsOwner(owner);
+              .agentAccessRole(actorId, state.currentMemberActorId)
+              .catch(() => null)
+          : null;
+        setAgentIsOwner(role === "owner");
+        setAgentAccessRole(role);
         setActor(found);
       } else {
         setAgentIsOwner(false);
+        setAgentAccessRole(null);
         setActor(found);
       }
     } finally {
@@ -209,21 +246,23 @@ export default function ActorDetailRoute() {
         setAllActors(rows);
         setActor(nextActor);
         setAgentIsOwner(false);
+        setAgentAccessRole(null);
 
         if (nextActor?.actorType === "agent") {
           setIsLoadingAuthorizedHumans(true);
-          const [authorizedRows, owner, workspaceRows] = await Promise.all([
+          const [authorizedRows, role, workspaceRows] = await Promise.all([
             agentAccessApi.listAuthorizedHumans(actorId),
             state.currentMemberActorId
               ? agentAccessApi
-                  .canManageAgent(actorId, state.currentMemberActorId)
-                  .catch(() => false)
-              : Promise.resolve(false),
+                  .agentAccessRole(actorId, state.currentMemberActorId)
+                  .catch(() => null)
+              : Promise.resolve(null),
             workspacesApi.list(teamId).catch(() => []),
           ]);
           if (cancelled) return;
           setAuthorizedHumans(authorizedRows);
-          setAgentIsOwner(owner);
+          setAgentIsOwner(role === "owner");
+          setAgentAccessRole(role);
           // Daemon routing uses the agent's actor id directly; no device-id merge.
           setAgentWorkspaces(
             workspaceRows
@@ -258,15 +297,6 @@ export default function ActorDetailRoute() {
           })
           .slice(0, 5);
         setRecentSessions(sessions);
-
-        const ideas = teamId
-          ? await createIdeasApi({ getAccessToken: supabaseAccessToken(supabase) }).listIdeas(teamId)
-          : [];
-        if (cancelled) return;
-        setStats({
-          sessions: sessionIds.length,
-          ideas: ideas.filter((idea) => idea.createdByActorId === actorId).length,
-        });
       } catch {
         if (!cancelled) {
           setActor(null);
@@ -274,7 +304,6 @@ export default function ActorDetailRoute() {
           setAgentWorkspaces([]);
           setAuthorizedHumans([]);
           setRecentSessions([]);
-          setStats(null);
         }
       } finally {
         if (!cancelled) setIsLoadingAuthorizedHumans(false);
@@ -493,16 +522,20 @@ export default function ActorDetailRoute() {
       if (isRemovingAgentWorkspace) return;
       setIsRemovingAgentWorkspace(true);
       try {
+        // The cloud row is what lists the workspace, and the daemon no longer
+        // owns it: its `remove_workspace` answers success and does nothing
+        // ("WorkspaceStore removed; cloud archive not yet implemented"), so
+        // the row stayed and the trash button looked broken. Archive it here;
+        // the daemon is told afterwards so it can drop anything it caches.
+        await workspacesApi.setArchived(workspaceId, true);
         const rpc = createRuntimeRpcClient({
           mqtt: teamMqtt,
           teamId,
           requesterActorId: state.currentMemberActorId,
         });
-        await rpc.removeWorkspace({
-          targetActorId: actor.actorId,
-          workspaceId,
-          timeoutMs: 25_000,
-        });
+        void rpc
+          .removeWorkspace({ targetActorId: actor.actorId, workspaceId, timeoutMs: 25_000 })
+          .catch(() => {});
         showToast("success", t("Workspace remove requested."));
         await Promise.all([refresh(), reloadAgentWorkspaces()]);
       } catch (err) {
@@ -523,6 +556,7 @@ export default function ActorDetailRoute() {
       state.currentMemberActorId,
       teamId,
       teamMqtt,
+      workspacesApi,
     ],
   );
 
@@ -575,7 +609,7 @@ export default function ActorDetailRoute() {
       isSavingMyDefaultAgent={isSavingMyDefaultAgent}
       isUpdatingAgentVisibility={isUpdatingAgentVisibility}
       onClose={() => router.back()}
-      onAddAgentWorkspace={canManageAccess ? addAgentWorkspace : undefined}
+      onAddAgentWorkspace={canManageWorkspaces ? addAgentWorkspace : undefined}
       onCreateReinvite={canRemove ? createReinvite : undefined}
       onGrantAuthorizedHuman={canManageAccess ? grantAuthorizedHuman : undefined}
       onMakeAgentPersonal={
@@ -587,7 +621,7 @@ export default function ActorDetailRoute() {
         void Promise.all([refresh(), reloadAuthorizedHumans()]);
       }}
       onRemoveActor={canRemove ? removeActor : undefined}
-      onRemoveAgentWorkspace={canManageAccess ? removeAgentWorkspace : undefined}
+      onRemoveAgentWorkspace={canManageWorkspaces ? removeAgentWorkspace : undefined}
       onRevokeAuthorizedHuman={canManageAccess ? revokeAuthorizedHuman : undefined}
       onSetMyDefaultAgent={
         actor?.actorType === "agent"
@@ -615,7 +649,17 @@ export default function ActorDetailRoute() {
       onUpdateAgentDefaults={actor?.actorType === "agent" ? updateAgentDefaults : undefined}
       recentSessions={recentSessions}
       resourceCounts={resourceCounts}
-      stats={stats ?? undefined}
+      memberStats={memberStats}
+      onOpenMemberIdeas={
+        actorId
+          ? () => {
+              const name = encodeURIComponent(actor?.displayName ?? t("This actor"));
+              router.push(
+                `/(app)/actor-ideas?actorId=${encodeURIComponent(actorId)}&actorName=${name}`,
+              );
+            }
+          : undefined
+      }
     />
   );
 }

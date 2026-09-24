@@ -4,6 +4,7 @@ import {
   RpcRequestSchema,
   RpcResponseSchema,
   RemoveWorkspaceRequestSchema,
+  RuntimeCommandRequestSchema,
   RuntimeStartRequestSchema,
   RuntimeStopRequestSchema,
   SetModelRequestSchema,
@@ -13,6 +14,8 @@ import {
   type RuntimeStartResult,
   type RuntimeStopResult,
 } from "@teamclu/app/proto/teamclu_pb";
+
+import type { RuntimeCommandEnvelope } from "@teamclu/app/proto/amux_pb";
 
 import type { TeamMqttClient } from "../mqtt/team-mqtt";
 import { uuidV4 } from "../uuid";
@@ -81,6 +84,23 @@ export type RuntimeRpcClient = {
    * retained runtime state topic, so there is no value to return here.
    */
   setModel: (args: SetModelArgs) => Promise<void>;
+  /**
+   * An ACP command (cancel, permission reply, question answer, turn-history
+   * request) addressed by (actor, session). Replaces publishing to
+   * `{actor}/runtime/{runtime_id}/commands`: runtime ids are no longer
+   * published anywhere, and that topic had no reply path (ADR-0003).
+   *
+   * Resolves `dispatched: false` when the agent holds no attachment for the
+   * session — the command went nowhere and must not be reported as sent.
+   */
+  runtimeCommand: (args: RuntimeCommandArgs) => Promise<{ dispatched: boolean }>;
+};
+
+export type RuntimeCommandArgs = {
+  targetActorId: string;
+  sessionId: string;
+  envelope: RuntimeCommandEnvelope;
+  timeoutMs?: number;
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -564,6 +584,68 @@ export function createRuntimeRpcClient(deps: RuntimeRpcClientDeps): RuntimeRpcCl
           );
         }, args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
+        deps.mqtt
+          .publish(requestTopic, toBinary(RpcRequestSchema, request), false)
+          .catch((err) => {
+            finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+          });
+      });
+    },
+
+    runtimeCommand(args) {
+      const teamId = deps.teamId.trim();
+      const targetActorId = args.targetActorId.trim();
+      const sessionId = args.sessionId.trim();
+      if (!teamId) return Promise.reject(new Error("team id is required"));
+      if (!targetActorId) return Promise.reject(new Error("target actor id is required"));
+      if (!sessionId) return Promise.reject(new Error("session id is required"));
+
+      const requestId = deps.requestId?.() ?? uuidV4();
+      const request = create(RpcRequestSchema, {
+        requestId,
+        requesterClientId:
+          deps.requesterClientId?.(requestId) ??
+          defaultRequesterClientId(deps.requesterActorId, requestId),
+        requesterActorId: deps.requesterActorId,
+        method: {
+          case: "runtimeCommand",
+          value: create(RuntimeCommandRequestSchema, { sessionId, envelope: args.envelope }),
+        },
+      });
+      const requestTopic = `amux/${teamId}/${targetActorId}/rpc/req`;
+      const responseTopic = `amux/${teamId}/${deps.requesterActorId.trim() || targetActorId}/rpc/res`;
+      const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+      return new Promise<{ dispatched: boolean }>((resolve, reject) => {
+        let settled = false;
+        let unsubscribe = () => {};
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          unsubscribe();
+          fn();
+        };
+        unsubscribe = deps.mqtt.subscribe(responseTopic, (payload) => {
+          let response: RpcResponse;
+          try {
+            response = fromBinary(RpcResponseSchema, payload);
+          } catch {
+            return;
+          }
+          if (response.requestId !== requestId) return;
+          if (!response.success) {
+            finish(() => reject(new Error(response.error || "runtime_command rejected")));
+            return;
+          }
+          const dispatched =
+            response.result.case === "runtimeCommandResult" && response.result.value.dispatched;
+          finish(() => resolve({ dispatched }));
+        });
+        timer = setTimeout(() => {
+          finish(() => reject(new Error(`runtime_command timeout after ${timeoutMs}ms`)));
+        }, timeoutMs);
         deps.mqtt
           .publish(requestTopic, toBinary(RpcRequestSchema, request), false)
           .catch((err) => {

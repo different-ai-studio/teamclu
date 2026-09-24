@@ -29,6 +29,7 @@ import { MemberPickerSheet } from "./MemberPickerSheet";
 import { SheetModal } from "../../../ui/SheetModal";
 
 const AGENT_TYPE_LABELS: Record<AgentType, string> = {
+  pi: "Pi",
   claude: "Claude",
   opencode: "OpenCode",
   codex: "Codex",
@@ -371,7 +372,7 @@ export function NewSessionScreen({
           defaultType={
             agentConfig?.agentType ??
             normalizeStoredAgentType(configuredAgent?.defaultAgentType) ??
-            "claude"
+            "pi"
           }
           onCancel={() => setAgentConfigOpen(false)}
           onConfirm={(selection) => {

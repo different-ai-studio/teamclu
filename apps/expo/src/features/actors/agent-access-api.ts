@@ -63,6 +63,8 @@ export type AgentAccessApi = {
   revokeAuthorizedHuman: (agentId: string, memberId: string) => Promise<void>;
   /** Owner-gating: true when the caller owns the agent (permission endpoint). */
   canManageAgent: (agentId: string, memberActorId: string) => Promise<boolean>;
+  /** The member's access role on the agent (`owner` / `admin` / …), or null. */
+  agentAccessRole: (agentId: string, memberActorId: string) => Promise<string | null>;
 };
 
 export function createAgentAccessApi(args: {
@@ -128,6 +130,13 @@ export function createAgentAccessApi(args: {
         `/v1/agents/${encodeURIComponent(agentId)}/permission?actorId=${encodeURIComponent(memberActorId)}`,
       );
       return result?.role === "owner";
+    },
+    async agentAccessRole(agentId, memberActorId) {
+      if (!memberActorId) return null;
+      const result = await client.get<{ allowed: boolean; role: string | null }>(
+        `/v1/agents/${encodeURIComponent(agentId)}/permission?actorId=${encodeURIComponent(memberActorId)}`,
+      );
+      return result?.allowed ? result.role ?? null : null;
     },
   };
 }

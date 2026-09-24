@@ -10,8 +10,18 @@ import {
 } from "../../../../src/features/sessions/pinned-sessions";
 import { successTone, selectionTick } from "../../../../src/lib/haptics";
 import { createConfiguredSessionsApi } from "../../../../src/features/sessions/api-provider";
+import { createSessionMutesApi } from "../../../../src/features/sessions/session-mutes";
+import { t } from "../../../../src/lib/i18n";
+import { showToast } from "../../../../src/ui/Toast";
 import { createSessionsCache } from "../../../../src/features/sessions/session-cache";
 import { createSessionsController } from "../../../../src/features/sessions/session-controller";
+import { inboxTopic, parseInboxPing } from "../../../../src/features/sessions/inbox";
+import type { SessionLiveActivity } from "../../../../src/features/sessions/live-activity";
+import {
+  createLiveActivityStore,
+  setActiveLiveActivityStore,
+  type LiveActivityStore,
+} from "../../../../src/features/sessions/live-activity-store";
 import { buildSessionRuntimeMaps } from "../../../../src/features/sessions/session-row-runtime";
 import type { ConnectedAgentsStoreState } from "../../../../src/features/actors/connected-agents-store";
 import { SessionsListScreen } from "../../../../src/features/sessions/screens/SessionsListScreen";
@@ -24,6 +34,7 @@ import {
   ShortcutsDrawer,
   openShortcutTarget,
 } from "../../../../src/features/shortcuts/ShortcutsDrawer";
+import { useAppsFeatureEnabled } from "../../../../src/features/apps/use-apps-feature";
 import { supabase } from "../../../../src/lib/supabase/client";
 import { getKnownMqttUrl } from "../../../../src/lib/mqtt/config";
 import type { ConnectionState } from "../../../../src/lib/mqtt/team-mqtt";
@@ -38,9 +49,11 @@ function brokerHostLabel(url: string | null): string {
 
 /** Stable no-op store so `useSyncExternalStore` can run before MQTT connects. */
 const noopSubscribe = () => () => {};
+const EMPTY_ACTIVITY: ReadonlyMap<string, SessionLiveActivity> = new Map();
+const emptyActivity = () => EMPTY_ACTIVITY;
 const EMPTY_AGENTS_STATE: ConnectedAgentsStoreState = {
   agents: [],
-  runtimeInfoByAgentId: new Map(),
+  presenceByAgentId: new Map(),
   isLoading: false,
   errorMessage: null,
 };
@@ -53,6 +66,7 @@ export default function SessionsIndexRoute() {
   const controllerRef = useRef<ReturnType<typeof createSessionsController> | null>(null);
   const teamIdRef = useRef<string | null>(null);
   const activeTeamId = state.currentTeam?.id ?? "";
+  const appsEnabled = useAppsFeatureEnabled();
 
   if (controllerRef.current === null || teamIdRef.current !== activeTeamId) {
     controllerRef.current = createSessionsController(
@@ -94,6 +108,23 @@ export default function SessionsIndexRoute() {
     new Map(),
   );
   const [zeroAgentSheetOpen, setZeroAgentSheetOpen] = useState(false);
+  // The muted bell on each row — iOS reads the same list for its row icon.
+  const [mutedSessionIds, setMutedSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  useFocusEffect(
+    useCallback(() => {
+      if (!activeTeamId) return;
+      let cancelled = false;
+      void createSessionMutesApi({ getAccessToken: supabaseAccessToken(supabase) })
+        .listMuted()
+        .then((ids) => {
+          if (!cancelled) setMutedSessionIds(ids);
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }, [activeTeamId]),
+  );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const zeroAgentCheckedRef = useRef<string | null>(null);
 
@@ -177,14 +208,8 @@ export default function SessionsIndexRoute() {
     }
   }, [activeTeamId]);
 
-  if (state.route !== "ready") {
-    return <Redirect href={href ?? "/"} />;
-  }
-
-  if (state.currentTeam === null) {
-    return <Redirect href="/" />;
-  }
-
+  // Every hook sits above the redirects below: they used to follow them,
+  // so the hook count changed between renders whenever the route flipped.
   // Daemon reachability for the pill above the list. `useTeamMqtt` hands out the
   // shared client, so this tracks the same connection the sessions stream uses.
   const teamMqtt = useTeamMqtt();
@@ -197,6 +222,70 @@ export default function SessionsIndexRoute() {
     return teamMqtt.onConnectionState(setDaemonState);
   }, [teamMqtt]);
 
+  // "Agent working / waiting for you" dots (iOS #1567), from each hot session's
+  // live stream. One store per team; the detail screen reports local prompts.
+  const [liveActivity, setLiveActivity] = useState<LiveActivityStore | null>(null);
+  useEffect(() => {
+    if (!teamMqtt || !activeTeamId) return;
+    const store = createLiveActivityStore({ mqtt: teamMqtt, teamId: activeTeamId });
+    setActiveLiveActivityStore(store);
+    setLiveActivity(store);
+    const sweep = setInterval(() => store.sweep(), 20_000);
+    return () => {
+      clearInterval(sweep);
+      setActiveLiveActivityStore(null);
+      store.dispose();
+      setLiveActivity(null);
+    };
+  }, [teamMqtt, activeTeamId]);
+  const activityBySessionId = useSyncExternalStore(
+    liveActivity?.subscribe ?? noopSubscribe,
+    liveActivity?.litSessions ?? emptyActivity,
+    liveActivity?.litSessions ?? emptyActivity,
+  );
+  // Cold start: listen to the most recently active sessions (iOS seeds the same way).
+  const seededRef = useRef<LiveActivityStore | null>(null);
+  useEffect(() => {
+    if (!liveActivity || seededRef.current === liveActivity || listState.sessions.length === 0) return;
+    seededRef.current = liveActivity;
+    const recent = [...listState.sessions]
+      .sort((a, b) => (b.lastMessageAt || b.createdAt).localeCompare(a.lastMessageAt || a.createdAt))
+      .slice(0, 8)
+      .map((session) => session.sessionId);
+    liveActivity.seed(recent);
+  }, [liveActivity, listState.sessions]);
+
+  // Unread dots: FC pings `inbox/<auth user id>` when a session gets a message
+  // (iOS #1555). Without this the list only learned about new messages when
+  // it was refreshed by hand or regained focus.
+  useEffect(() => {
+    if (!teamMqtt || !activeTeamId) return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      const topic = inboxTopic(data.session?.user?.id ?? "");
+      if (!topic) return;
+      unsubscribe = teamMqtt.subscribe(topic, (payload) => {
+        const pingedSessionId = parseInboxPing(payload, activeTeamId);
+        if (!pingedSessionId) return;
+        liveActivity?.noteActivity(pingedSessionId);
+        // A burst of messages is one refresh, not one per message.
+        if (refreshTimer) return;
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          void controllerRef.current?.refresh();
+        }, 400);
+      });
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [teamMqtt, activeTeamId, liveActivity]);
+
   // Badge dot, status label and workspace name come off the live runtime, the
   // same three facts iOS reads from its per-session AgentAttachment.
   const agentsStore = useConnectedAgentsStore();
@@ -205,9 +294,18 @@ export default function SessionsIndexRoute() {
     agentsStore?.getState ?? emptyAgentsState,
     agentsStore?.getState ?? emptyAgentsState,
   );
+
+  if (state.route !== "ready") {
+    return <Redirect href={href ?? "/"} />;
+  }
+
+  if (state.currentTeam === null) {
+    return <Redirect href="/" />;
+  }
+
   const { runtimeBySessionId, workspaceBySessionId } = buildSessionRuntimeMaps({
     sessions: listState.sessions,
-    runtimeInfoByAgentId: agentsState.runtimeInfoByAgentId,
+    presenceByAgentId: agentsState.presenceByAgentId,
     agentActorIds: new Set(agentsState.agents.map((agent) => agent.agentId)),
   });
 
@@ -271,6 +369,38 @@ export default function SessionsIndexRoute() {
         await togglePinnedSession(sessionId);
       }}
       pinnedSessionIds={pinnedSessionIds}
+      mutedSessionIds={mutedSessionIds}
+      activityBySessionId={activityBySessionId}
+      onRenameSession={async (sessionId, title) => {
+        try {
+          await createConfiguredSessionsApi(supabase).renameSession(sessionId, title);
+          await controller.refresh();
+        } catch (err) {
+          showToast("error", err instanceof Error ? err.message : t("Couldn't rename session."));
+        }
+      }}
+      onToggleMute={async (sessionId, muted) => {
+        // Optimistic: flip the bell now, put it back if the server refuses.
+        setMutedSessionIds((prev) => {
+          const next = new Set(prev);
+          if (muted) next.add(sessionId);
+          else next.delete(sessionId);
+          return next;
+        });
+        try {
+          await createSessionMutesApi({
+            getAccessToken: supabaseAccessToken(supabase),
+          }).setMuted(sessionId, muted);
+        } catch (err) {
+          setMutedSessionIds((prev) => {
+            const next = new Set(prev);
+            if (muted) next.delete(sessionId);
+            else next.add(sessionId);
+            return next;
+          });
+          showToast("error", err instanceof Error ? err.message : t("Couldn't update notifications."));
+        }
+      }}
       onRefresh={() => {
         void controller.refresh();
       }}
@@ -297,6 +427,8 @@ export default function SessionsIndexRoute() {
     <ShortcutsDrawer
       isPresented={shortcutsOpen}
       onClose={() => setShortcutsOpen(false)}
+      appsEnabled={appsEnabled}
+      onOpenApps={() => router.push("/(app)/team-apps")}
       onOpenSettings={() => router.push("/(app)/settings")}
       onOpenShortcut={(shortcut) => {
         void openShortcutTarget(shortcut, { push: router.push });

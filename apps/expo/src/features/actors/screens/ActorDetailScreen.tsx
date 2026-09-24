@@ -21,6 +21,8 @@ import { GlassHeader, GLASS_HEADER_HEIGHT } from "../../../ui/GlassHeader";
 import { colors, hai, radii, spacing, typography } from "../../../ui/theme";
 import { isActorOnline, type Actor } from "../actor-types";
 import type { AgentAuthorizedHuman } from "../connected-agent-types";
+import type { MemberActivityStats } from "../member-activity-stats";
+import { formatTokens } from "../team-stats";
 import {
   isActorScopedResource,
   resourceCount,
@@ -74,10 +76,14 @@ export type ActorDetailScreenProps = {
     title: string;
     lastMessageAt: string;
   }>;
-  stats?: {
-    sessions: number;
-    ideas: number;
-  };
+  /**
+   * A person's activity row (tokens this month, ideas on the board). Null
+   * until it loads — "—" rather than a fabricated zero. Members only; agents
+   * show their installed resources instead.
+   */
+  memberStats?: MemberActivityStats | null;
+  /** Opens the ideas behind the member's IDEAS number. */
+  onOpenMemberIdeas?: () => void;
   /** Null until the first fetch lands, so the row can tell "loading" from a real zero. */
   resourceCounts?: TeamResourceCounts | null;
   /** True when this agent is the signed-in member's personal default agent. */
@@ -164,7 +170,8 @@ export function ActorDetailScreen({
   onUpdateAgentDefaults,
   recentSessions,
   resourceCounts,
-  stats,
+  memberStats,
+  onOpenMemberIdeas,
 }: ActorDetailScreenProps) {
   const { t: tHook } = useTranslation();
   return (
@@ -205,20 +212,31 @@ export function ActorDetailScreen({
           <>
             <HeroCard actor={actor} isMe={isMe} />
 
-            {stats ? (
-              <View style={styles.statsRow}>
-                <View style={styles.statTile}>
-                  <Text style={styles.statValue}>{stats.sessions}</Text>
-                  <Text style={styles.statLabel}>{tHook("Sessions")}</Text>
+            {/* Agents count what is installed on them; people count what they
+                did. Skills / MCP are an agent's installs — a person has
+                neither, and env is the team's number, identical on everybody's
+                page (iOS #1568). */}
+            {actor.actorType === "member" ? (
+              <View style={styles.resourceRow}>
+                <View style={styles.resourceCell}>
+                  <MemberStatBlock
+                    label={tHook("Tokens")}
+                    scopeTag={tHook("MONTH")}
+                    value={memberStats ? formatTokens(memberStats.tokens) : null}
+                  />
                 </View>
-                <View style={styles.statTile}>
-                  <Text style={styles.statValue}>{stats.ideas}</Text>
-                  <Text style={styles.statLabel}>{tHook("Ideas")}</Text>
+                <View style={styles.resourceCell}>
+                  <View style={styles.resourceDivider} />
+                  <MemberStatBlock
+                    label={tHook("Ideas")}
+                    onPress={onOpenMemberIdeas}
+                    value={memberStats ? `${memberStats.ideaCount}` : null}
+                  />
                 </View>
               </View>
             ) : null}
 
-            {onSelectResource ? (
+            {actor.actorType === "agent" && onSelectResource ? (
               <View style={styles.resourceRow}>
                 {(["skills", "mcp", "env"] as const).map((kind, index) => (
                   <View key={kind} style={styles.resourceCell}>
@@ -555,6 +573,50 @@ function ResourceBlock({
   );
 }
 
+/**
+ * One block of a person's stat row — the same shape as `ResourceBlock`. Only
+ * blocks with a list behind them are tappable: ideas open a list, a token
+ * count is the whole answer. `scopeTag` marks a block whose scope is not "this
+ * person, all time" (the MONTH tag on tokens), as TEAM marks env.
+ */
+function MemberStatBlock({
+  label,
+  onPress,
+  scopeTag,
+  value,
+}: {
+  label: string;
+  onPress?: () => void;
+  scopeTag?: string;
+  value: string | null;
+}) {
+  return (
+    <Pressable
+      accessibilityRole={onPress ? "button" : undefined}
+      disabled={!onPress}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.resourceBlock,
+        pressed && onPress ? { opacity: 0.7 } : null,
+      ]}
+    >
+      {value !== null ? (
+        <Text style={styles.statValue}>{value}</Text>
+      ) : (
+        <Text style={[styles.statValue, styles.resourcePlaceholder]}>—</Text>
+      )}
+      <View style={styles.resourceLabelRow}>
+        <Text style={styles.statLabel}>{label.toUpperCase()}</Text>
+        {scopeTag ? (
+          <View style={styles.teamTag}>
+            <Text style={styles.teamTagText}>{scopeTag}</Text>
+          </View>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+
 function DetailRow({
   label,
   selectable,
@@ -760,7 +822,7 @@ function AgentWorkspacesSection({
               <View style={styles.workspaceRow}>
                 <View style={styles.authorizedBody}>
                   <Text style={styles.authorizedName}>{workspaceLabel(workspace)}</Text>
-                  <Text numberOfLines={1} style={styles.authorizedMeta}>
+                  <Text ellipsizeMode="middle" numberOfLines={1} style={styles.workspacePath}>
                     {workspace.path ?? workspace.id}
                   </Text>
                 </View>
@@ -1274,24 +1336,10 @@ const styles = StyleSheet.create({
     color: colors.slate,
     ...typography.monoMeta,
   },
-  statTile: {
-    alignItems: "center",
-    backgroundColor: colors.paper,
-    borderColor: colors.hairline,
-    borderRadius: radii.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    flex: 1,
-    gap: 4,
-    paddingVertical: spacing.md,
-  },
   statValue: {
     color: colors.onyx,
     fontSize: 22,
     fontWeight: "700",
-  },
-  statsRow: {
-    flexDirection: "row",
-    gap: spacing.md,
   },
   workspaceAddButton: {
     backgroundColor: hai.basalt,
@@ -1318,6 +1366,12 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 0,
     ...typography.monoMeta,
+  },
+  // Not `authorizedMeta`: that capitalizes role names, and a path is
+  // case-sensitive — "/private/tmp/…" rendered as "/Private/Tmp/…".
+  workspacePath: {
+    color: colors.slate,
+    ...typography.caption,
   },
   workspaceRow: {
     alignItems: "center",
