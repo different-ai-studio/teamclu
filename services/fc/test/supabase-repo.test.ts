@@ -2126,6 +2126,111 @@ test("session roster does not expose app workspace context to a human participan
   assert.equal(serviceRoleCalls, 1);
 });
 
+// session_participants has no DELETE policy, so a delete on the caller's token
+// matched nothing and still answered 204 — the swiped-away agent came straight
+// back. These pin the delete to the service role, behind the checks.
+function removeParticipantFixture({
+  callerId = "member-1",
+  createdBy = "member-creator",
+  agentOwner = "member-owner",
+  grants = [] as any[],
+  seats = [
+    { session_id: "session-1", actor_id: "agent-1" },
+    { session_id: "session-1", actor_id: "member-2" },
+  ],
+  sessionVisible = true,
+} = {}) {
+  const callerCalls: any[] = [];
+  const adminCalls: any[] = [];
+  const caller = appsSupabase({
+    actorRow: { id: callerId, actor_type: "member" },
+    calls: callerCalls,
+    seed: {
+      sessions: sessionVisible
+        ? [{ id: "session-1", team_id: "team-1", created_by_actor_id: createdBy }]
+        : [],
+    },
+  });
+  const admin = appsSupabase({
+    calls: adminCalls,
+    seed: {
+      agents: [{ id: "agent-1", owner_member_id: agentOwner }],
+      agent_member_access: grants,
+      session_participants: seats,
+    },
+  });
+  const repo = createRepo(caller, { createServiceRoleClient: () => admin });
+  const deletes = (calls: any[]) =>
+    calls.filter((c) => c.table === "session_participants" && c.op === "delete");
+  return { repo, callerCalls, adminCalls, deletes };
+}
+
+test("removeSessionParticipant deletes through the service role when the session's creator removes an agent", async () => {
+  const f = removeParticipantFixture({ callerId: "member-creator" });
+
+  await f.repo.removeSessionParticipant("session-1", "agent-1");
+
+  assert.equal(f.deletes(f.callerCalls).length, 0, "the caller's token cannot delete: no DELETE policy");
+  assert.equal(f.deletes(f.adminCalls).length, 1);
+  const filters = f.adminCalls
+    .filter((c) => c.table === "session_participants" && c.op === "delete.eq")
+    .map((c) => [c.column, c.value]);
+  assert.deepEqual(filters, [["session_id", "session-1"], ["actor_id", "agent-1"]]);
+});
+
+test("removeSessionParticipant lets the agent's owner or an admin remove it", async () => {
+  const owner = removeParticipantFixture({ callerId: "member-owner" });
+  await owner.repo.removeSessionParticipant("session-1", "agent-1");
+  assert.equal(owner.deletes(owner.adminCalls).length, 1);
+
+  const admin = removeParticipantFixture({
+    callerId: "member-9",
+    grants: [{ agent_id: "agent-1", member_id: "member-9", permission_level: "admin" }],
+  });
+  await admin.repo.removeSessionParticipant("session-1", "agent-1");
+  assert.equal(admin.deletes(admin.adminCalls).length, 1);
+});
+
+test("removeSessionParticipant refuses a member who neither created the session nor speaks for the agent", async () => {
+  const f = removeParticipantFixture({
+    callerId: "member-1",
+    grants: [{ agent_id: "agent-1", member_id: "member-1", permission_level: "use" }],
+  });
+
+  await assert.rejects(
+    () => f.repo.removeSessionParticipant("session-1", "agent-1"),
+    (err: any) => err.statusCode === 403,
+  );
+  assert.equal(f.deletes(f.adminCalls).length, 0);
+});
+
+test("removeSessionParticipant lets any member who sees the session remove a human", async () => {
+  const f = removeParticipantFixture({ callerId: "member-1" });
+
+  await f.repo.removeSessionParticipant("session-1", "member-2");
+
+  assert.equal(f.deletes(f.adminCalls).length, 1);
+});
+
+test("removeSessionParticipant answers 404 for a session the caller cannot see", async () => {
+  const f = removeParticipantFixture({ callerId: "member-creator", sessionVisible: false });
+
+  await assert.rejects(
+    () => f.repo.removeSessionParticipant("session-1", "agent-1"),
+    (err: any) => err.statusCode === 404,
+  );
+  assert.equal(f.deletes(f.adminCalls).length, 0);
+});
+
+test("removeSessionParticipant answers 404 when nothing was deleted", async () => {
+  const f = removeParticipantFixture({ callerId: "member-creator", seats: [] });
+
+  await assert.rejects(
+    () => f.repo.removeSessionParticipant("session-1", "agent-1"),
+    (err: any) => err.statusCode === 404,
+  );
+});
+
 test("apps: mapApp exposes exactly the canonical keys", async () => {
   const repo = appsRepo(appsSupabase({ seed: { apps: [APP_ROW] } }));
   const items = await repo.listApps({ teamId: "team-1", limit: 100 });

@@ -670,6 +670,10 @@ public final class SessionDetailViewModel {
 
     public private(set) var memberSheetHumans: [MemberSheetHuman] = []
     public private(set) var memberSheetAgents: [MemberSheetAgent] = []
+    /// Why the last removal from the member sheet did not happen. The sheet
+    /// shows it as an alert and clears it on dismiss; without it a refused or
+    /// failed removal just put the row back with no explanation.
+    public var memberSheetErrorMessage: String?
 
     /// Per-agent latest plan_update parsed into a snapshot, filtered to
     /// agents that still have unfinished items. Empty when no agent in the
@@ -1066,17 +1070,7 @@ public final class SessionDetailViewModel {
                   let sessionID = self.session?.sessionId,
                   !sessionID.isEmpty else { return }
 
-            let sessionsRepo = self.sessionsRepository
-            if let sessionsRepo {
-                do {
-                    try await sessionsRepo.removeParticipant(sessionID: sessionID, actorID: actorID)
-                } catch {
-                    print("[SessionDetailVM] removeHuman: removeParticipant failed: \(error)")
-                }
-            } else {
-                print("[SessionDetailVM] removeHuman: no sessions repo available")
-            }
-
+            _ = await self.removeParticipantFromCloud(sessionID: sessionID, actorID: actorID)
             await self.refreshMemberSheet()
         }
     }
@@ -1284,18 +1278,21 @@ public final class SessionDetailViewModel {
     /// Removes an agent participant from this session.
     ///
     /// Three-step ordering:
-    ///   1. Stop the agent's runtime (best-effort) so the Claude Code
+    ///   1. Delete the participant row in the cloud (source of truth). This
+    ///      goes first because it is also the permission check: the cloud
+    ///      refuses a caller who neither created the session nor speaks for
+    ///      the agent, and a refused removal must not have already stopped
+    ///      the agent's runtime.
+    ///   2. Stop the agent's runtime (best-effort) so the Claude Code
     ///      subprocess actually exits — otherwise it keeps the worktree
     ///      busy and the attachment stays "active"
     ///      until next daemon restart.
-    ///   2. RPC the daemon to drop the agent from its in-memory session
+    ///   3. RPC the daemon to drop the agent from its in-memory session
     ///      participant cache + sessions.toml, and fan a notify event so
-    ///      other connected clients re-pull. Best-effort; the Supabase
-    ///      delete below is authoritative.
-    ///   3. Delete the participant row from Supabase (source of truth).
+    ///      other connected clients re-pull. Best-effort.
     ///
     /// When the agent has no resolvable runtime id (e.g. the daemon is
-    /// offline or the attachment hasn't been published yet), step 1
+    /// offline or the attachment hasn't been published yet), step 2
     /// is skipped with a logged warning. The subprocess then keeps running
     /// until the daemon notices the participant is gone on next reload —
     /// suboptimal but recoverable.
@@ -1314,7 +1311,13 @@ public final class SessionDetailViewModel {
                 ?? self.memberSheetAgents.first(where: { $0.id == actorID })?.workspacePath
                 ?? ""
 
-            // 1. Stop the agent's runtime (best-effort).
+            // 1. Cloud delete (source of truth + permission gate).
+            guard await self.removeParticipantFromCloud(sessionID: sessionID, actorID: actorID) else {
+                await self.refreshMemberSheet()
+                return
+            }
+
+            // 2. Stop the agent's runtime (best-effort).
             if let routeActor, !routeActor.isEmpty,
                let runtimeID, !runtimeID.isEmpty,
                let teamcluService = self.teamcluService {
@@ -1331,7 +1334,7 @@ public final class SessionDetailViewModel {
                 print("[SessionDetailVM] removeAgent: skipping runtimeStop — routeActor=\(routeActor ?? "nil") runtimeID=\(runtimeID ?? "nil")")
             }
 
-            // 2. Best-effort daemon-side participant removal for cache
+            // 3. Best-effort daemon-side participant removal for cache
             //    invalidation + peer notify fanout.
             if let routeActor, !routeActor.isEmpty,
                let teamcluService = self.teamcluService {
@@ -1344,19 +1347,25 @@ public final class SessionDetailViewModel {
                 }
             }
 
-            // 3. Supabase delete (source of truth).
-            let sessionsRepo = self.sessionsRepository
-            if let sessionsRepo {
-                do {
-                    try await sessionsRepo.removeParticipant(sessionID: sessionID, actorID: actorID)
-                } catch {
-                    print("[SessionDetailVM] removeAgent: removeParticipant failed: \(error)")
-                }
-            } else {
-                print("[SessionDetailVM] removeAgent: no sessions repo available")
-            }
-
             await self.refreshMemberSheet()
+        }
+    }
+
+    /// Deletes the participant row in the cloud. On failure sets
+    /// `memberSheetErrorMessage` and returns false.
+    private func removeParticipantFromCloud(sessionID: String, actorID: String) async -> Bool {
+        guard let sessionsRepo = sessionsRepository else {
+            print("[SessionDetailVM] removeParticipant: no sessions repo available")
+            memberSheetErrorMessage = "Can't reach the server to remove this member."
+            return false
+        }
+        do {
+            try await sessionsRepo.removeParticipant(sessionID: sessionID, actorID: actorID)
+            return true
+        } catch {
+            print("[SessionDetailVM] removeParticipant failed: \(error)")
+            memberSheetErrorMessage = error.localizedDescription
+            return false
         }
     }
 
