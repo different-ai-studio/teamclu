@@ -282,7 +282,6 @@ struct SessionListContent: View {
             AgentRowView(
                 session: session,
                 runtime: runtime,
-                workspaceName: workspaceName(runtime: runtime),
                 participants: participantPreviews(for: session),
                 isMuted: notificationPrefsStore?.isMuted(session.sessionId) ?? false,
                 activity: liveActivityStore?.activity(for: session.sessionId) ?? .quiet
@@ -382,14 +381,6 @@ struct SessionListContent: View {
             .max(by: { ($0.lastEventTime ?? .distantPast) < ($1.lastEventTime ?? .distantPast) })
     }
 
-    /// Prefers the live runtime's workspace: it comes from the attachment the
-    /// daemon currently holds, where the cached row may describe a spawn that
-    /// has since been replaced.
-    private func workspaceName(runtime: AgentAttachment?) -> String {
-        guard let id = runtime?.workspaceID, !id.isEmpty else { return "" }
-        return viewModel.workspaces.first(where: { $0.workspaceId == id })?.displayName ?? ""
-    }
-
     private func toggleSelection(_ id: String) {
         if selectedIDs.contains(id) { selectedIDs.remove(id) }
         else { selectedIDs.insert(id) }
@@ -421,7 +412,6 @@ struct SessionListContent: View {
 struct AgentRowView: View {
     let session: Session
     let runtime: AgentAttachment?
-    let workspaceName: String
     let participants: [ParticipantPreview]
     let isMuted: Bool
     /// What the leading dot says, reduced from `session/{id}/live` by
@@ -433,14 +423,12 @@ struct AgentRowView: View {
     init(
         session: Session,
         runtime: AgentAttachment? = nil,
-        workspaceName: String = "",
         participants: [ParticipantPreview] = [],
         isMuted: Bool = false,
         activity: SessionLiveActivity = .quiet
     ) {
         self.session = session
         self.runtime = runtime
-        self.workspaceName = workspaceName
         self.participants = participants
         self.isMuted = isMuted
         self.activity = activity
@@ -465,21 +453,25 @@ struct AgentRowView: View {
     /// is republished on attach/detach only, so it cannot see a turn.
     private var isStopped: Bool { runtime?.status == 5 }
 
-    /// The word beside the workspace name. Driven by the dot's signal, not by
-    /// `runtime.statusLabel`: the actor retain is only republished on
-    /// attach/detach, so its Active/Idle would contradict the dot for most of
-    /// a turn. Quiet sessions say nothing rather than "Idle" — the row's
-    /// timestamp already covers "nothing is happening".
-    private var statusLabel: String {
-        switch activity {
-        case .needsAttention: String(localized: "Waiting for you")
-        case .running:        String(localized: "Working")
-        case .quiet:          ""
+    /// What the session belongs to: its app, else its idea. Workspace and
+    /// status used to sit here; the leading dot already says the status, and
+    /// the workspace is a path detail nobody reads on a list.
+    private var context: (icon: String, name: String)? {
+        if !session.appName.isEmpty {
+            return ("square.grid.2x2", session.appName)
         }
+        if !session.ideaTitle.isEmpty {
+            return (IdeaUIPresentation.systemImage, session.ideaTitle)
+        }
+        return nil
     }
 
-    private var statusForeground: Color {
-        activity == .needsAttention ? Color.amux.cinnabar : Color.amux.sage
+    /// Long enough for a name, short enough to leave the participant cluster
+    /// its room; `lineLimit` alone would let one long name take the line.
+    private static let contextMaxLength = 16
+
+    private static func clipped(_ name: String) -> String {
+        name.count > contextMaxLength ? String(name.prefix(contextMaxLength)) + "…" : name
     }
 
     private var rowTimestamp: Date {
@@ -579,25 +571,15 @@ struct AgentRowView: View {
     @ViewBuilder
     private var metaStrip: some View {
         HStack(spacing: 8) {
-            if !workspaceName.isEmpty {
-                Text(workspaceName)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(Color.amux.slate)
-                    .lineLimit(1)
-            }
-
-            if !workspaceName.isEmpty && !statusLabel.isEmpty {
-                Circle()
-                    .fill(Color.amux.slate.opacity(0.5))
-                    .frame(width: 3, height: 3)
-            }
-
-            if !statusLabel.isEmpty {
-                Text(statusLabel)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(statusForeground)
-                    .lineLimit(1)
+            if let context {
+                HStack(spacing: 4) {
+                    Image(systemName: context.icon)
+                        .font(.system(size: 10))
+                    Text(Self.clipped(context.name))
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Color.amux.slate)
             }
 
             Spacer(minLength: 0)

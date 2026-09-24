@@ -83,11 +83,7 @@ public struct SearchTab: View {
                                     rootSelection = .sessions
                                     sessionsPath.append("session:\(session.sessionId)")
                                 } label: {
-                                    AgentRowView(
-                                        session: session,
-                                        runtime: runtime,
-                                        workspaceName: workspaceName(for: runtime)
-                                    )
+                                    AgentRowView(session: session, runtime: runtime)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -137,8 +133,4 @@ public struct SearchTab: View {
             .max(by: { ($0.lastEventTime ?? .distantPast) < ($1.lastEventTime ?? .distantPast) })
     }
 
-    private func workspaceName(for attachment: AgentAttachment?) -> String {
-        guard let attachment else { return "" }
-        return viewModel.workspaces.first(where: { $0.workspaceId == attachment.workspaceID })?.displayName ?? ""
-    }
 }

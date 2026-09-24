@@ -725,17 +725,74 @@ public final class SessionListViewModel {
             session.participantCount = record.participantCount
             session.lastMessagePreview = record.lastMessagePreview
             session.lastMessageAt = record.lastMessageAt
-            session.ideaId = record.ideaID ?? ""
+            let ideaID = record.ideaID ?? ""
+            if session.ideaId != ideaID {
+                session.ideaId = ideaID
+                session.ideaTitle = ""
+            }
             session.primaryAgentId = record.primaryAgentID
             if let source = record.source { session.source = source }
+            let appID = record.appID ?? ""
+            if session.appId != appID {
+                session.appId = appID
+                session.appName = ""
+            }
         }
 
         for stale in byID.values {
             modelContext.delete(stale)
         }
 
+        fillIdeaTitlesFromCache(modelContext: modelContext)
         try? modelContext.save()
         reloadSessions(modelContext: modelContext)
+    }
+
+    /// Idea ids some session points at with no title cached yet — the caller fetches
+    /// the ideas only when this is non-empty.
+    public func ideaIDsMissingTitle(modelContext: ModelContext) -> Set<String> {
+        let sessions = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
+        return Set(sessions.filter { !$0.ideaId.isEmpty && $0.ideaTitle.isEmpty }.map(\.ideaId))
+    }
+
+    /// Copies idea titles from the `SessionIdea` cache (kept by the Ideas
+    /// tab) onto the sessions that belong to them.
+    public func fillIdeaTitlesFromCache(modelContext: ModelContext) {
+        let ideas = (try? modelContext.fetch(FetchDescriptor<SessionIdea>())) ?? []
+        let titles = Dictionary(
+            ideas.map { ($0.ideaId, $0.displayTitle) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        applyIdeaTitles(titles, modelContext: modelContext)
+    }
+
+    /// Writes idea titles onto the sessions that belong to them. Ids absent
+    /// from `titles` keep what they had cached.
+    public func applyIdeaTitles(_ titles: [String: String], modelContext: ModelContext) {
+        let sessions = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
+        var changed = false
+        for session in sessions where !session.ideaId.isEmpty {
+            guard let title = titles[session.ideaId], !title.isEmpty,
+                  title != session.ideaTitle else { continue }
+            session.ideaTitle = title
+            changed = true
+        }
+        if changed { try? modelContext.save() }
+    }
+
+    /// Writes app names onto the sessions created from those apps. Ids absent
+    /// from `names` (an app the caller can no longer see) keep their cached
+    /// name rather than going blank.
+    public func applyAppNames(_ names: [String: String], modelContext: ModelContext) {
+        let sessions = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
+        var changed = false
+        for session in sessions where !session.appId.isEmpty {
+            guard let name = names[session.appId], !name.isEmpty,
+                  name != session.appName else { continue }
+            session.appName = name
+            changed = true
+        }
+        if changed { try? modelContext.save() }
     }
 
     // MARK: - Time Grouping
