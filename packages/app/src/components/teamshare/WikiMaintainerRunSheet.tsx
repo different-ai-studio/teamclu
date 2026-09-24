@@ -33,6 +33,7 @@ export interface WikiPrepareSummary {
   currency: string
   canPublish: boolean
   blockers: string[]
+  needsVisionAcceptance?: boolean
 }
 
 export interface WikiPublishResult {
@@ -47,7 +48,14 @@ export type WikiCompileProgress = {
   total?: number
 }
 
-type Phase = 'select' | 'waiting_for_model' | 'preparing' | 'summary' | 'publishing' | 'published'
+type Phase =
+  | 'select'
+  | 'waiting_for_model'
+  | 'vision'
+  | 'preparing'
+  | 'summary'
+  | 'publishing'
+  | 'published'
 
 const NO_PAGES_SENTENCE = 'The compiler did not write a Wiki page for this source.'
 const SKIPPED_SENTENCE =
@@ -165,6 +173,7 @@ export function WikiMaintainerRunSheet({
     teamId: string,
     paths: string[],
     compilerModel: string,
+    visionChoice?: 'accept' | 'decline',
   ) => Promise<WikiPrepareSummary>
   onPublish: (
     teamId: string,
@@ -191,7 +200,6 @@ export function WikiMaintainerRunSheet({
   )
   const [publishResult, setPublishResult] = React.useState<WikiPublishResult | null>(null)
   const [error, setError] = React.useState<string | null>(null)
-  const [costAccepted, setCostAccepted] = React.useState(false)
   const [progress, setProgress] = React.useState<WikiCompileProgress | null>(null)
 
   React.useEffect(() => {
@@ -202,7 +210,6 @@ export function WikiMaintainerRunSheet({
     setSummary(initialSummary)
     setPublishResult(null)
     setError(null)
-    setCostAccepted(false)
     setProgress(null)
     // Persist a new selection while the sheet is open; do not reset on that
     // array identity change or the user would lose in-progress folder picks.
@@ -235,17 +242,19 @@ export function WikiMaintainerRunSheet({
       current.includes(path) ? current.filter((item) => item !== path) : [...current, path],
     )
   }
-  const prepare = async () => {
+  const prepare = async (visionChoice?: 'accept' | 'decline') => {
     setError(null)
     setProgress({ stage: 'plan' })
     setPhase('preparing')
     try {
       onSaveSelection(teamId, selected)
       onSaveCompilerModel?.(teamId, compilerModel)
-      const next = await onPrepare(teamId, selected, compilerModel)
+      const next = visionChoice
+        ? await onPrepare(teamId, selected, compilerModel, visionChoice)
+        : await onPrepare(teamId, selected, compilerModel)
       setSummary(next)
       setProgress(null)
-      setPhase('summary')
+      setPhase(next.needsVisionAcceptance ? 'vision' : 'summary')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       setProgress(null)
@@ -260,7 +269,7 @@ export function WikiMaintainerRunSheet({
     setError(null)
     setPhase('publishing')
     try {
-      const result = await onPublish(teamId, summary, costAccepted)
+      const result = await onPublish(teamId, summary, true)
       setPublishResult(result)
       setPhase('published')
     } catch (reason) {
@@ -283,7 +292,6 @@ export function WikiMaintainerRunSheet({
         await onCancel?.(summary.runId)
       }
       setSummary(null)
-      setCostAccepted(false)
       setPhase(modelMissing ? 'waiting_for_model' : 'select')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -296,7 +304,12 @@ export function WikiMaintainerRunSheet({
     <ModalShell
       title={t('teamShare.wikiMaintainTitle', 'Maintain Wiki')}
       hint={
-        phase === 'summary' || phase === 'publishing' || phase === 'published'
+        phase === 'vision'
+          ? t(
+              'teamShare.wikiVisionBeforeCompileHint',
+              'Confirm the visual recognition cost, then compile. Nothing is compiled until you agree.',
+            )
+          : phase === 'summary' || phase === 'publishing' || phase === 'published'
           ? t(
               'teamShare.wikiMaintainSummaryHint',
               'Review the result, then confirm publish. Nothing is written to the knowledge base until you confirm.',
@@ -328,15 +341,21 @@ export function WikiMaintainerRunSheet({
               {t('teamShare.wikiCheckCompile', 'Check and compile')}
             </Button>
           )}
+          {phase === 'vision' && (
+            <>
+              <Button type="button" variant="ghost" onClick={() => void prepare('decline')} disabled={busy}>
+                {t('teamShare.wikiCompileWithoutVision', 'Compile text only')}
+              </Button>
+              <Button type="button" onClick={() => void prepare('accept')} disabled={busy}>
+                {t('teamShare.wikiCompileWithVision', 'Agree and compile')}
+              </Button>
+            </>
+          )}
           {(phase === 'summary' || phase === 'publishing') && (
             <Button
               type="button"
               onClick={() => void publish()}
-              disabled={
-                busy ||
-                !summary?.canPublish ||
-                (!!summary.estimatedCost && !costAccepted)
-              }
+              disabled={busy || !summary?.canPublish}
             >
               {phase === 'publishing' && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t('teamShare.wikiConfirmPublish', 'Confirm publish')}
@@ -451,6 +470,23 @@ export function WikiMaintainerRunSheet({
         </div>
       )}
 
+      {phase === 'vision' && summary && (
+        <div className="space-y-3">
+          <p className="text-[13px] leading-relaxed text-ink-2">
+            {t(
+              'teamShare.wikiVisionBeforeCompile',
+              '{{pages}} pages need visual recognition, estimated {{cost}} {{currency}}. Agree to send them to the current model. If it cannot read images, those files fail and the rest still compile.',
+              {
+                pages: summary.visionPages,
+                cost: summary.estimatedCost ?? '?',
+                currency: summary.currency,
+              },
+            )}
+          </p>
+          {summary.blockers.length > 0 && <BlockerList blockers={summary.blockers} />}
+        </div>
+      )}
+
       {phase === 'preparing' && (
         <div className="space-y-3">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-faint">
@@ -554,23 +590,6 @@ export function WikiMaintainerRunSheet({
               />
             )}
           </div>
-          {!!summary.estimatedCost && (
-            <label className="flex items-center gap-2 rounded-[8px] border border-border px-3 py-2 text-[12px]">
-              <input
-                type="checkbox"
-                checked={costAccepted}
-                onChange={(event) => setCostAccepted(event.target.checked)}
-                aria-label={t(
-                  'teamShare.wikiAcceptVisionCost',
-                  'Accept estimated vision cost',
-                )}
-              />
-              {t(
-                'teamShare.wikiAcceptVisionCostDetail',
-                'Accept the estimated visual recognition cost before publishing.',
-              )}
-            </label>
-          )}
           {summary.blockers.length > 0 && (
             <BlockerList blockers={summary.blockers} />
           )}
@@ -603,6 +622,45 @@ export function WikiMaintainerRunSheet({
       )}
     </ModalShell>
   )
+}
+
+function displayBlocker(
+  blocker: string,
+  t: (key: string, fallback: string, vars?: Record<string, unknown>) => string,
+) {
+  const retractBlocked = 'A deleted source is still cited. Compile again before publishing.'
+  if (blocker.includes(retractBlocked)) {
+    return t('teamShare.wikiRetractBlocked', retractBlocked)
+  }
+  const visionSentences: Array<[string, string]> = [
+    ['This run did not look at images.', 'teamShare.wikiVisionDeclined'],
+    ['This model cannot read images.', 'teamShare.wikiVisionUnsupported'],
+    ['The model refused to read this file.', 'teamShare.wikiVisionRefused'],
+    ['No text was recognized in this file.', 'teamShare.wikiVisionEmpty'],
+    ['This file could not be opened.', 'teamShare.wikiVisionUnreadable'],
+    [
+      'This file has too many visual pages. Split it, then compile again.',
+      'teamShare.wikiVisionTooManyPages',
+    ],
+    [
+      'The file was read, but the compiler did not write a Wiki page.',
+      'teamShare.wikiVisionNoPage',
+    ],
+  ]
+  for (const [sentence, key] of visionSentences) {
+    if (!blocker.includes(sentence)) continue
+    const translated = t(key, sentence)
+    return blocker.split(sentence).join(translated)
+  }
+  const marker = 'Compiler model failed:'
+  const at = blocker.indexOf(marker)
+  if (at < 0) return blocker
+  const detail = blocker.slice(at + marker.length).trim()
+  const head = blocker.slice(0, at).replace(/:\s*$/, '')
+  const message = t('teamShare.wikiCompilerModelFailed', 'Compiler model failed: {{detail}}', {
+    detail,
+  })
+  return head ? `${head}: ${message}` : message
 }
 
 function SummaryItem({ text }: { text: string }) {
@@ -639,7 +697,7 @@ function BlockerList({ blockers }: { blockers: string[] }) {
           {grouped.rest.map((blocker) => (
             <div key={blocker} className="flex gap-2 text-[12px] text-destructive">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>{blocker}</span>
+              <span>{displayBlocker(blocker, t)}</span>
             </div>
           ))}
         </div>

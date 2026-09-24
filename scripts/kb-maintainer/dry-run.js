@@ -89,13 +89,13 @@ function dryRun(opts) {
   }
 
   const known = Array.isArray(opts.known) ? opts.known : [];
+  const knownPaths = [];
   const union = new Map(localByPath);
   for (const item of known) {
     const documentsPath = normalizeDocumentsPath(item.path);
+    knownPaths.push(documentsPath);
     if (union.has(documentsPath)) continue;
-    // Already-imported sources missing on disk are deletions, not lazy fetches.
-    // Keeping them in the union as would_fetch would block retract.
-    if (importedSources[documentsPath]?.status === "imported") continue;
+    // Listed by the team but not downloaded. Missing from disk is not a delete.
     union.set(documentsPath, {
       path: documentsPath,
       size: Number(item.size) || 0,
@@ -124,7 +124,11 @@ function dryRun(opts) {
       blocked.push(verdict);
     }
   }
-  const queues = reconcile({ current: allowed, state, retain: retained });
+  const queues = reconcile({
+    current: allowed,
+    state,
+    retain: [...retained, ...knownPaths],
+  });
   const plan = {
     add: queues.add,
     update: queues.update,

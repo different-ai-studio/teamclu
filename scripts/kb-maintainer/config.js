@@ -12,6 +12,7 @@ const DEFAULT_LIMITS = {
   maxIndexChars: 8000,
   maxSourceSummaryChars: 4000,
   maxSourceSummaryPagesPerSource: 1,
+  maxVisionPages: 30,
 };
 
 const UUID_RE =

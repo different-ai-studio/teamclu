@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 "use strict";
 
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const { dryRun } = require("./dry-run");
@@ -14,18 +16,82 @@ const { commitAll, headCommit } = require("./git-store");
 const { gcOrphanPages } = require("./orphan-gc");
 const { repairWiki } = require("./repair");
 const { createCheckpoint, restoreCheckpoint } = require("./checkpoint");
+const { createDaemonSession } = require("./daemon-session");
+const { createVisionExtract, findPdftoppm, transcribeWithSession } = require("./vision");
+
+function renderPdfPage(bytes, pageNumber) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-pdf-page-"));
+  try {
+    const pdfPath = path.join(dir, "page.pdf");
+    const prefix = path.join(dir, "out");
+    fs.writeFileSync(pdfPath, bytes);
+    execFileSync(
+      findPdftoppm(),
+      ["-f", String(pageNumber), "-l", String(pageNumber), "-png", "-singlefile", pdfPath, prefix],
+      { stdio: "pipe" },
+    );
+    const pngPath = `${prefix}.png`;
+    if (!fs.existsSync(pngPath)) throw new Error("vision_unreadable");
+    return { bytes: fs.readFileSync(pngPath), mediaType: "image/png" };
+  } catch (error) {
+    if (error && error.message === "vision_unreadable") throw error;
+    throw new Error("vision_unreadable");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function desktopVisionExtract(input) {
+  if (typeof input.visionExtract === "function") return input.visionExtract;
+  return createVisionExtract({
+    renderPdfPage,
+    transcribe: async (payload) => {
+      const session = await createDaemonSession({
+        workRoot: input.workRoot,
+        compilerModel: input.compilerModel,
+      });
+      try {
+        return await transcribeWithSession(session, payload);
+      } finally {
+        if (session && typeof session.dispose === "function") await session.dispose();
+      }
+    },
+  });
+}
 
 const SKIPPED =
   "This source was skipped this run and will be compiled again next time.";
 const NO_PAGES = "The compiler did not write a Wiki page for this source.";
 
+function redactLocalPaths(text) {
+  return String(text)
+    .replace(/\/Users\/\S+/g, "<local-path>")
+    .replace(/\/home\/\S+/g, "<local-path>")
+    .replace(/[A-Za-z]:\\Users\\\S+/g, "<local-path>");
+}
+
 function explainFailure(error) {
   const text = String(error || "");
+  const modelFailed = /Compiler model failed:\s*([\s\S]*)/.exec(text);
+  if (modelFailed) {
+    return redactLocalPaths(`Compiler model failed: ${modelFailed[1].trim()}`);
+  }
+  if (/vision transcribed but compiler produced no wiki pages/.test(text)) {
+    return "The file was read, but the compiler did not write a Wiki page.";
+  }
   if (/compiler produced no wiki pages/.test(text)) {
     return NO_PAGES;
   }
   if (text === "too_large" || /\btoo_large\b/.test(text) || /^size \d+/.test(text)) {
     return "This source is too long. Split it into shorter files, then compile again.";
+  }
+  if (/vision_declined/.test(text)) return "This run did not look at images.";
+  if (/vision_unsupported/.test(text)) return "This model cannot read images.";
+  if (/vision_refused/.test(text)) return "The model refused to read this file.";
+  if (/vision_empty/.test(text)) return "No text was recognized in this file.";
+  if (/vision_unreadable/.test(text)) return "This file could not be opened.";
+  if (/vision_too_many_pages/.test(text)) {
+    return "This file has too many visual pages. Split it, then compile again.";
   }
   if (
     /^extension /.test(text) ||
@@ -36,7 +102,10 @@ function explainFailure(error) {
   ) {
     return "This source could not be read. Replace it with a text file, then try again.";
   }
-  if (/^deny pattern\b/.test(text) || text === "sensitive filename") {
+  if (text === "sensitive filename") {
+    return "This filename looks like a personnel or ID record, so it is excluded from Wiki.";
+  }
+  if (/^deny pattern\b/.test(text)) {
     return "This file is excluded from Wiki. Choose a different folder.";
   }
   if (/^unknown class /.test(text)) {
@@ -78,16 +147,21 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
   // the UI does not look like "3 files" when the vault only has 1 left.
   const sourceCount =
     plan.add.length + plan.update.length + plan.unchanged.length + policyBlocks.length;
-  const retractCount = plan.delete.length;
+  const retractCount = Number(ingest.counts?.retracted) || 0;
+  const failedRetracts = (ingest.failures || []).filter((failure) => failure.action === "delete");
   const added = pageChanges(publishPlan.create);
   const updated = pageChanges(publishPlan.update);
   const deleted = pageChanges(publishPlan.delete);
-  const emptySelection = sourceCount === 0 && retractCount === 0;
+  const emptySelection = sourceCount === 0 && plan.delete.length === 0;
   const lintErrors = lint.errors || [];
-  // A source that fails is rolled back on its own. Sources that passed stay
-  // committed, so they can be published while the failures wait for a later run.
+  // A failed add or update rolls back on its own, and the pages that passed can
+  // still be published. A failed retract leaves the old page in place, so the
+  // run cannot be published until that retract succeeds.
   const blockers = [
     ...(emptySelection ? ["No source files were found in the selected folders."] : []),
+    ...(failedRetracts.length > 0
+      ? ["A deleted source is still cited. Compile again before publishing."]
+      : []),
     ...policyBlocks,
     ...failures,
     ...lintBlockers,
@@ -106,7 +180,11 @@ function summarizePreparedRun({ runId, plan, ingest, lint, estimate, publishPlan
     visionPages: estimate.visionPages,
     estimatedCost: estimate.estimatedCost,
     currency: estimate.currency,
-    canPublish: !emptySelection && lintErrors.length === 0 && added + updated + deleted > 0,
+    canPublish:
+      !emptySelection &&
+      lintErrors.length === 0 &&
+      failedRetracts.length === 0 &&
+      added + updated + deleted > 0,
     blockers,
   };
 }
@@ -168,7 +246,9 @@ async function prepare(input, hooks = {}) {
     runner: input.runner || "pi",
     compilerModel: input.compilerModel || "default",
     cancelPath: path.join(input.workRoot, "state", "cancel-requested"),
-    acceptVisionEstimate: false,
+    acceptVisionEstimate: input.visionChoice === "accept",
+    visionModel: input.visionChoice === "accept" ? input.compilerModel || "" : "",
+    visionExtract: input.visionChoice === "accept" ? desktopVisionExtract(input) : undefined,
     createSession: input.createSession,
     onProgress,
     onCheckpoint: async (source) =>
@@ -185,6 +265,45 @@ async function prepare(input, hooks = {}) {
   const dry = dryRun(common);
   onProgress({ stage: "estimate" });
   const estimate = await estimateVision(common);
+  const visionChoice = input.visionChoice || "ask";
+  if (
+    estimate.requiresAccept &&
+    visionChoice !== "accept" &&
+    visionChoice !== "decline"
+  ) {
+    onProgress({ stage: "done" });
+    return {
+      runId: input.runId,
+      nodeId: input.nodeId,
+      baseTreeHash: null,
+      targetCommit: "",
+      targetTreeHash: "",
+      sourceCount:
+        dry.plan.add.length +
+        dry.plan.update.length +
+        dry.plan.unchanged.length +
+        (dry.plan.denied || []).length +
+        (dry.plan.blocked || []).length,
+      retractCount: dry.plan.delete.length,
+      added: 0,
+      updated: 0,
+      deleted: 0,
+      failed: 0,
+      visionPages: estimate.visionPages,
+      estimatedCost: estimate.estimatedCost,
+      currency: estimate.currency,
+      canPublish: false,
+      blockers: [
+        ...(estimate.unreadable || []).map(
+          (item) => `${item.path}: ${explainFailure("vision_unreadable")}`,
+        ),
+        ...(estimate.overLimit || []).map(
+          (item) => `${item.path}: ${explainFailure("vision_too_many_pages")}`,
+        ),
+      ],
+      needsVisionAcceptance: true,
+    };
+  }
   const ingest = await ingestBatch(common);
   onProgress({ stage: "lint" });
   const config = loadConfig(input.configPath);
@@ -244,6 +363,7 @@ async function publish(input) {
     wikiRoot,
     knowledgeRoot: input.knowledgeRoot,
     documentsRoot: input.documentsRoot,
+    known: input.known || [],
     statePath: input.statePath,
     workRoot: input.workRoot,
     forceReplay: input.cloudPublishingRecovery === true,

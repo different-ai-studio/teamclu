@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { git, gitShow, headCommit, commitAll } = require("./git-store");
 const { parseFrontmatter } = require("./frontmatter");
+const { normalizeDocumentsPath } = require("./paths");
 const { isAllowedWikiPath, rebuildIndex } = require("./validator");
 const { loadState, saveState } = require("./ingest");
 
@@ -190,7 +191,25 @@ function sourceStillOnDisk(documentsRoot, sourcePath) {
   return fs.existsSync(path.join(documentsRoot, rel));
 }
 
-function pageStillHasSource(bytes, documentsRoot) {
+function knownPathSet(known) {
+  const set = new Set();
+  for (const item of known || []) {
+    if (!item || typeof item.path !== "string") continue;
+    try {
+      set.add(normalizeDocumentsPath(item.path));
+    } catch {
+      continue;
+    }
+  }
+  return set;
+}
+
+function sourceStillExists(documentsRoot, sourcePath, knownPaths) {
+  if (sourceStillOnDisk(documentsRoot, sourcePath)) return true;
+  return knownPaths.has(sourcePath);
+}
+
+function pageStillHasSource(bytes, documentsRoot, knownPaths) {
   let parsed;
   try {
     parsed = parseFrontmatter(bytes.toString("utf8"));
@@ -199,7 +218,9 @@ function pageStillHasSource(bytes, documentsRoot) {
   }
   const sources = parsed.frontmatter?.sources;
   if (!Array.isArray(sources)) return false;
-  return sources.some((source) => sourceStillOnDisk(documentsRoot, source && source.path));
+  return sources.some((source) =>
+    sourceStillExists(documentsRoot, source && source.path, knownPaths),
+  );
 }
 
 function writeTreeFromDirectory(wikiRoot, dir, rels) {
@@ -281,6 +302,7 @@ function absorbPublishedVault(opts) {
   if (state.publishedCommit) return null;
   const vault = vaultWikiRoot(knowledgeRoot);
   const documentsRoot = documentsRootFor(opts);
+  const knownPaths = knownPathSet(opts.known);
   const head = headCommit(wikiRoot);
   const inHead = new Set(listWikiFilesAtCommit(wikiRoot, head));
   const vaultRels = listWikiRelFromDir(vault);
@@ -288,7 +310,7 @@ function absorbPublishedVault(opts) {
   for (const rel of vaultRels) {
     if (rel === "index.md" || inHead.has(rel)) continue;
     const bytes = fs.readFileSync(path.join(vault, rel));
-    if (!pageStillHasSource(bytes, documentsRoot)) continue;
+    if (!pageStillHasSource(bytes, documentsRoot, knownPaths)) continue;
     missing.push(rel);
   }
   if (missing.length === 0) return null;
@@ -337,9 +359,11 @@ function assertVaultBaseline({
   }
   const expected = treeHashFromCommit(wikiRoot, publishedCommit);
   const actual = treeHashFromDir(vault);
-  if (actual !== expected) {
-    throw new Error("knowledge/wiki was modified externally; refuse to overwrite");
-  }
+  if (actual === expected) return;
+  // A previous publish already wrote this target, or this compile absorbed the
+  // vault, while the recorded baseline still points at an older commit.
+  if (targetCommit && actual === treeHashFromCommit(wikiRoot, targetCommit)) return;
+  throw new Error("knowledge/wiki was modified externally; refuse to overwrite");
 }
 
 function assertReplayableVault({ knowledgeRoot, wikiRoot, plan }) {
