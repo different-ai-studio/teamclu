@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   interpreterFor,
   shortFormProfile,
+  runtimeFacts,
   pathLookup,
   parseLayerRef,
   layerRootOf,
@@ -101,4 +102,34 @@ test("startProgram: plain argv, and nothing at all", () => {
   assert.equal(abs?.viaShell, false);
   assert.equal(startProgram([], []), null);
   assert.equal(startProgram(undefined, undefined), null);
+});
+
+test("facts payload: names the region, the target, and its own gaps", () => {
+  const f = runtimeFacts("cn-shenzhen");
+  assert.equal(f.region, "cn-shenzhen");
+  assert.equal(f.target.os, "linux");
+  assert.equal(f.target.arch, "x86_64");
+
+  const d10 = f.images["custom.debian10"];
+  assert.equal(d10.debian, "10.13");
+  assert.equal(d10.interpreters.node.path, "/var/fc/lang/nodejs20/bin/node");
+  // The trap, published rather than discovered.
+  assert.deepEqual(d10.onPath.node, { resolves: null });
+  assert.equal(d10.onPath.python3.resolves, "/usr/bin/python3");
+
+  // Provenance, including the gaps.
+  assert.equal(f.layers.Nodejs20.mount, "/opt/nodejs20");
+  assert.equal(f.layers.Nodejs20.verified, true);
+  assert.equal(f.layers.Java17.mount, null);
+  assert.equal(f.layers.Java17.verified, false);
+
+  assert.ok(f.gotchas.some((g: string) => /not on PATH/.test(g)));
+  assert.ok(f.gotchas.some((g: string) => /\/usr\/bin\/python3/.test(g)));
+});
+
+test("facts payload: region is the only thing that varies", () => {
+  const a = runtimeFacts("cn-shenzhen");
+  const b = runtimeFacts("cn-beijing");
+  assert.notEqual(a.region, b.region);
+  assert.deepEqual(a.images, b.images);
 });

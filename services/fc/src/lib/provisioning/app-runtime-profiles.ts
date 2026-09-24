@@ -265,3 +265,69 @@ export function startProgram(
   }
   return head;
 }
+
+export interface RuntimeFacts {
+  region: string;
+  target: { os: "linux"; arch: "x86_64" };
+  codePath: string;
+  images: Record<
+    string,
+    {
+      debian: string;
+      interpreters: Record<string, Interpreter>;
+      onPath: Record<string, { resolves: string | null; version?: string }>;
+    }
+  >;
+  layers: Record<string, { mount: string | null; verified: boolean }>;
+  gotchas: string[];
+}
+
+/**
+ * Everything the platform knows about where an app will run, in the shape the
+ * agent reads it.
+ *
+ * This exists because none of it was reachable from inside a repository. The
+ * region lived in the server's environment, the image contents were undocumented
+ * anywhere the agent could see, and the result was twelve fix commits guessing
+ * at both.
+ *
+ * Hand-verified constants, not live introspection — so a preflight failing on
+ * something stated here is the signal to re-probe the image, not to work around
+ * the message.
+ */
+export function runtimeFacts(region: string): RuntimeFacts {
+  const images: RuntimeFacts["images"] = {};
+  for (const fcRuntime of Object.keys(IMAGE_DEBIAN)) {
+    const onPath: RuntimeFacts["images"][string]["onPath"] = {};
+    for (const [name, lookup] of Object.entries(PROBED_PATHS[fcRuntime] ?? {})) {
+      onPath[name] =
+        lookup.kind === "resolves"
+          ? { resolves: lookup.path, version: lookup.version }
+          : { resolves: null };
+    }
+    images[fcRuntime] = {
+      debian: IMAGE_DEBIAN[fcRuntime],
+      interpreters: IMAGE_INTERPRETERS[fcRuntime] ?? {},
+      onPath,
+    };
+  }
+  const layers: RuntimeFacts["layers"] = {};
+  for (const [name, mount] of Object.entries(LAYER_MOUNTS)) {
+    layers[name] = { mount: mount ?? null, verified: mount !== null };
+  }
+  return {
+    region,
+    target: { os: "linux", arch: "x86_64" },
+    codePath: "/code",
+    images,
+    layers,
+    gotchas: [
+      "custom.debian10 already ships Node 20 and Python 3.10 — the Nodejs20 and Python310 layers are redundant on it.",
+      "`node` is not on PATH in custom.debian10. Reach an interpreter by its absolute path.",
+      "`python3` on PATH in custom.debian10 is /usr/bin/python3, NOT the 3.10.9 in /var/fc/lang — using the bare name downgrades silently.",
+      'fcRuntime "custom" is Debian 9: Node 10.16.2 and Python 3.7.4, too old for most current packages.',
+      "Layers mount under /opt; the image's own interpreters live under /var/fc/lang.",
+      'A layer ARN is region-scoped. Write "Name:version" and the platform fills in the region.',
+    ],
+  };
+}
