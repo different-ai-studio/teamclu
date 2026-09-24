@@ -15,6 +15,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { SectionEyebrow } from "../../../ui/atoms/SectionEyebrow";
@@ -136,6 +137,9 @@ export function IdeaDetailScreen({
   onRemoveProgressAttachment,
   onSubmitProgress,
 }: IdeaDetailScreenProps) {
+  // The progress composer is pinned to the bottom of a screen with no tab bar,
+  // so it owns the home-indicator / nav-bar strip (see SessionDetailScreen).
+  const bottomInset = useSafeAreaInsets().bottom;
   const { t: tHook } = useTranslation();
   const [titleDraft, setTitleDraft] = useState("");
   const [descDraft, setDescDraft] = useState("");
@@ -431,15 +435,28 @@ export function IdeaDetailScreen({
           // Android as well — edge-to-edge means `adjustResize` no longer
           // lifts the comment composer above the keyboard.
           behavior="padding"
-          style={styles.composerDock}
+          // Same geometry as the session composer: the keyboard already covers
+          // the bottom inset, and the view is measured below the root's top
+          // safe-area padding.
+          keyboardVerticalOffset={Platform.select({
+            ios: (initialWindowMetrics?.insets.top ?? 0) - bottomInset,
+            default: 0,
+          })}
         >
-          <IdeaProgressComposer
-            attachments={composerAttachments ?? []}
-            isSubmitting={Boolean(isSubmittingProgress)}
-            onAddImage={onAddProgressImage ?? (() => {})}
-            onRemoveAttachment={onRemoveProgressAttachment ?? (() => {})}
-            onSubmit={onSubmitProgress}
-          />
+          {/* The padding lives on an inner view: with behavior="padding" the
+              KeyboardAvoidingView writes its own `paddingBottom` (the
+              keyboard height, 0 when hidden) over whatever its style says, so
+              the dock's bottom padding never applied and the bar sat flush
+              against the home indicator. */}
+          <View style={[styles.composerDock, { paddingBottom: spacing.md + bottomInset }]}>
+            <IdeaProgressComposer
+              attachments={composerAttachments ?? []}
+              isSubmitting={Boolean(isSubmittingProgress)}
+              onAddImage={onAddProgressImage ?? (() => {})}
+              onRemoveAttachment={onRemoveProgressAttachment ?? (() => {})}
+              onSubmit={onSubmitProgress}
+            />
+          </View>
         </KeyboardAvoidingView>
       ) : null}
 

@@ -381,8 +381,11 @@ const styles = StyleSheet.create({
   sendButtonDisabled: {
     opacity: 0.35,
   },
+  // Inset from the screen edges like the chip bar above it, so the card reads
+  // as a floating bar rather than a slab glued to both sides.
   wrapper: {
     gap: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
 });
 
