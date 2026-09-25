@@ -550,6 +550,14 @@ public struct SessionDetailView: View {
                 onAddMember: { isAddMemberSheetPresented = true }
             )
             .task { await viewModel.refreshMemberSheet() }
+            .alert("Couldn't remove", isPresented: Binding(
+                get: { viewModel.memberSheetErrorMessage != nil },
+                set: { if !$0 { viewModel.memberSheetErrorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(viewModel.memberSheetErrorMessage ?? "")
+            }
             .sheet(isPresented: $isAddAgentSheetPresented) {
                 AddAgentSheet(
                     candidates: viewModel.candidatesForAddAgent(),

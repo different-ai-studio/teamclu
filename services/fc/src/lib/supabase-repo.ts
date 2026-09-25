@@ -797,6 +797,33 @@ export function createSupabaseBusinessRepository(options) {
     return createServiceRoleClient();
   }
 
+  async function findAgent(admin, agentId) {
+    const { data, error } = await admin
+      .from("agents")
+      .select("id, owner_member_id")
+      .eq("id", agentId)
+      .maybeSingle();
+    if (error) throw error;
+    return data ?? null;
+  }
+
+  // Whether the caller may act on the agent's behalf: it is the agent, owns
+  // it, or holds admin on it. `agent` is the `findAgent` row (null when the
+  // id names no agent, which only the first case can then satisfy).
+  async function callerSpeaksForAgent(admin, callerActorId, agentId, agent) {
+    if (callerActorId === agentId) return true;
+    if (agent && agent.owner_member_id === callerActorId) return true;
+    const { data: grant, error } = await admin
+      .from("agent_member_access")
+      .select("agent_id")
+      .eq("agent_id", agentId)
+      .eq("member_id", callerActorId)
+      .eq("permission_level", "admin")
+      .maybeSingle();
+    if (error) throw error;
+    return Boolean(grant);
+  }
+
   /**
    * The bytes to judge a quota against, re-measuring when the stored number is
    * too old to trust.
@@ -4165,30 +4192,13 @@ export function createSupabaseBusinessRepository(options) {
       const callerActorId = await requireCallerTeamMemberActor(teamId);
       const admin = await serviceRoleClient("move a session participant's workspace");
 
-      if (callerActorId !== actorId) {
-        const { data: agent, error: agentErr } = await admin
-          .from("agents")
-          .select("id, owner_member_id")
-          .eq("id", actorId)
-          .maybeSingle();
-        if (agentErr) throw agentErr;
-        if (agent?.owner_member_id !== callerActorId) {
-          const { data: grant, error: grantErr } = await admin
-            .from("agent_member_access")
-            .select("agent_id")
-            .eq("agent_id", actorId)
-            .eq("member_id", callerActorId)
-            .eq("permission_level", "admin")
-            .maybeSingle();
-          if (grantErr) throw grantErr;
-          if (!grant) {
-            throw new ApiError(
-              403,
-              "forbidden",
-              "only the agent, its owner or one of its admins can move its workspace",
-            );
-          }
-        }
+      const agent = await findAgent(admin, actorId);
+      if (!(await callerSpeaksForAgent(admin, callerActorId, actorId, agent))) {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "only the agent, its owner or one of its admins can move its workspace",
+        );
       }
 
       await assertExplicitWorkspaceBindings(supabase, teamId, { [actorId]: workspaceId });
@@ -4211,13 +4221,56 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
     },
 
+    /**
+     * Take someone out of a session.
+     *
+     * The table has no DELETE policy, so this used to run on the caller's token
+     * and match nothing: PostgREST reports zero rows as success, the route
+     * answered 204, and the participant was back on the next roster read — an
+     * agent swiped away in the member sheet reappeared at once. As with
+     * `setParticipantWorkspace`, the delete goes through the service role after
+     * the checks a policy would have made.
+     *
+     * The caller must see the session. Removing an agent additionally takes the
+     * session's creator or someone who speaks for the agent (it, its owner, one
+     * of its admins): being in a session is not licence to drop someone else's
+     * agent from it. A human seat only needs the first check, matching the
+     * clients, which let any member remove any other member.
+     */
     async removeSessionParticipant(sessionId, actorId) {
-      const { error } = await supabase
+      const { data: session, error: sessionErr } = await supabase
+        .from("sessions")
+        .select("id, team_id, created_by_actor_id")
+        .eq("id", sessionId)
+        .maybeSingle();
+      if (sessionErr) throw sessionErr;
+      if (!session) throw new ApiError(404, "not_found", "session not found");
+      const callerActorId = await requireCallerTeamMemberActor(String(session.team_id));
+      const admin = await serviceRoleClient("remove a session participant");
+
+      const agent = await findAgent(admin, actorId);
+      if (
+        agent
+        && session.created_by_actor_id !== callerActorId
+        && !(await callerSpeaksForAgent(admin, callerActorId, actorId, agent))
+      ) {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "only the session's creator, the agent, its owner or one of its admins can remove it",
+        );
+      }
+
+      // Asking for the deleted rows back is what tells a removal apart from a
+      // miss; without it a wrong id is as silent as the RLS denial was.
+      const { data: removed, error } = await admin
         .from("session_participants")
         .delete()
         .eq("session_id", sessionId)
-        .eq("actor_id", actorId);
+        .eq("actor_id", actorId)
+        .select("actor_id");
       if (error) throw error;
+      if (!removed?.length) throw new ApiError(404, "not_found", "participant not found");
     },
 
     // --- Actor reads + external + access (member-access table) ---
