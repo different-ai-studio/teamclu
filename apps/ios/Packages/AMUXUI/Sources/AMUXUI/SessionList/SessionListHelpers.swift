@@ -45,6 +45,13 @@ struct SessionListContent: View {
     @State private var renameTarget: Session?
     @State private var renameText = ""
 
+    /// Search field focus, hoisted so the list can drop the keyboard on
+    /// scroll and on any tap outside the field.
+    @FocusState private var searchFocused: Bool
+    /// The field's global frame; taps inside it (typing, the clear button)
+    /// must not resign focus.
+    @State private var searchFieldFrame: CGRect = .zero
+
     /// Locally-cached team directory keyed by actor id. Drives initials,
     /// display name, and agent-vs-human shaping for the participant cluster.
     @Query private var allActors: [CachedActor]
@@ -151,6 +158,22 @@ struct SessionListContent: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color.amux.mist)
+        // Same keyboard rules as the chat transcript (SessionDetailView):
+        // scrolling the list or tapping anywhere but the search field drops
+        // the keyboard. Simultaneous so row taps, swipe actions and context
+        // menus still fire.
+        .scrollDismissesKeyboard(.immediately)
+        .onScrollPhaseChange { _, phase in
+            guard searchFocused, phase == .tracking || phase == .interacting else { return }
+            searchFocused = false
+        }
+        .simultaneousGesture(
+            SpatialTapGesture(coordinateSpace: .global).onEnded { tap in
+                guard searchFocused, !searchFieldFrame.contains(tap.location) else { return }
+                searchFocused = false
+            }
+        )
+        .onDisappear { searchFocused = false }
         .refreshable {
             await refreshSessionsFromBackend()
         }
@@ -185,7 +208,10 @@ struct SessionListContent: View {
         VStack(spacing: 8) {
             DaemonStatusBanner(pairing: pairing, mqtt: mqtt)
             HStack(spacing: 8) {
-                SessionListSearchField(text: $viewModel.searchText)
+                SessionListSearchField(text: $viewModel.searchText, isFocused: $searchFocused)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                        searchFieldFrame = $0
+                    }
                 // Clock view: show ONLY scheduled (cron) sessions — they are
                 // hidden from the default list, mirroring the desktop.
                 Button {

@@ -69,6 +69,8 @@ struct DaemonStatusBanner: View {
 /// gesture, which conflicted with the daemon banner pinned above.
 struct SessionListSearchField: View {
     @Binding var text: String
+    /// Owned by the list so it can dismiss the keyboard on scroll / outside tap.
+    @FocusState.Binding var isFocused: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -76,6 +78,7 @@ struct SessionListSearchField: View {
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(Color.amux.basalt.opacity(0.6))
             TextField("Search sessions", text: $text)
+                .focused($isFocused)
                 .font(.system(size: 17))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
