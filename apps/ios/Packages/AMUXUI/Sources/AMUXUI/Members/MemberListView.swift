@@ -16,6 +16,18 @@ public struct MemberListView: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \CachedActor.displayName)
     private var actors: [CachedActor]
+    /// Recent cached messages, for the recent-contact order. Capped like the
+    /// session list's participant query — only the newest senders matter.
+    @Query(MemberListView.recentMessagesDescriptor)
+    private var recentMessages: [SessionMessage]
+
+    private static var recentMessagesDescriptor: FetchDescriptor<SessionMessage> {
+        var descriptor = FetchDescriptor<SessionMessage>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 500
+        return descriptor
+    }
 
     private let selectionMode: Bool
     /// Refreshed when the picker opens. Without it the rows render off
@@ -50,6 +62,11 @@ public struct MemberListView: View {
     /// behind this sheet in the presenting view.
     private let onAgentTap: ((CachedActor) -> String?)?
     @State private var toastMessage: String?
+    /// Order rows default agent first, then by recent contact
+    /// (`ActorPickerOrdering`) instead of by name. The default agent is
+    /// resolved from `actorStore` when the picker opens.
+    private let ordersByRecentContact: Bool
+    @State private var defaultAgentID: String?
 
     /// Browse-only mode: tap rows to see detail.
     public init(actorStore: ActorStore? = nil,
@@ -67,6 +84,7 @@ public struct MemberListView: View {
         self.onConfirm = nil
         self.externallySelectedIDs = []
         self.onAgentTap = nil
+        self.ordersByRecentContact = false
     }
 
     /// Selection mode: multi-select with a confirm callback.
@@ -80,6 +98,7 @@ public struct MemberListView: View {
                 excludeActorIDs: Set<String> = [],
                 externallySelectedIDs: Set<String> = [],
                 onAgentTap: ((CachedActor) -> String?)? = nil,
+                ordersByRecentContact: Bool = false,
                 onConfirm: @escaping (_ actors: [CachedActor]) -> Void) {
         self.selectionMode = true
         self.actorStore = actorStore
@@ -93,6 +112,7 @@ public struct MemberListView: View {
         self.onConfirm = onConfirm
         self.externallySelectedIDs = externallySelectedIDs
         self.onAgentTap = onAgentTap
+        self.ordersByRecentContact = ordersByRecentContact
     }
 
     private var visibleActors: [CachedActor] {
@@ -110,8 +130,19 @@ public struct MemberListView: View {
         if !excludeActorIDs.isEmpty {
             rows = rows.filter { !excludeActorIDs.contains($0.actorId) }
         }
-        guard selectionMode, !accessibleAgentIDs.isEmpty else { return rows }
-        return rows.filter { !$0.isAgent || accessibleAgentIDs.contains($0.actorId) }
+        if selectionMode, !accessibleAgentIDs.isEmpty {
+            rows = rows.filter { !$0.isAgent || accessibleAgentIDs.contains($0.actorId) }
+        }
+        guard ordersByRecentContact else { return rows }
+        return ActorPickerOrdering.order(
+            rows,
+            id: \.actorId,
+            name: \.displayName,
+            pinnedID: defaultAgentID,
+            lastContact: ActorPickerOrdering.lastContact(
+                senders: recentMessages.map { ($0.senderActorId, $0.createdAt) }
+            )
+        )
     }
 
     private var filtered: [CachedActor] {
@@ -153,6 +184,10 @@ public struct MemberListView: View {
             .background(Color.amux.mist)
             .searchable(text: $searchText, prompt: "Search actors")
             .task { await actorStore?.reload(); await actorStore?.heartbeat() }
+            .task {
+                guard ordersByRecentContact else { return }
+                defaultAgentID = await actorStore?.getEffectiveDefaultAgent()
+            }
             .refreshable { await actorStore?.reload() }
             .navigationTitle("Actors").navigationBarTitleDisplayMode(.large)
             .toolbar {
