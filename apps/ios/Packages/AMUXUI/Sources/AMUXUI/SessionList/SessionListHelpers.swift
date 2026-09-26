@@ -14,8 +14,6 @@ struct SessionListContent: View {
     @Binding var isEditing: Bool
     @Binding var selectedIDs: Set<String>
     let teamcluService: TeamcluService?
-    let pairing: PairingManager
-    let mqtt: MQTTService
     let actorId: String
     /// Signed-in user's actor id (Supabase `actors.id`). Drives the "you = Cinnabar"
     /// chip in the participant cluster. Distinct from `actorId` above, which
@@ -133,7 +131,7 @@ struct SessionListContent: View {
     }
 
     var body: some View {
-        // Single List for everything so the daemon banner + search field
+        // Single List for everything so the search field
         // scroll out of view alongside the session rows, freeing vertical
         // real estate on long lists. The header lives as a normal, non-
         // sticky row at the top; loading / empty states sit in their own
@@ -206,7 +204,6 @@ struct SessionListContent: View {
     @ViewBuilder
     private var headerRow: some View {
         VStack(spacing: 8) {
-            DaemonStatusBanner(pairing: pairing, mqtt: mqtt)
             HStack(spacing: 8) {
                 SessionListSearchField(text: $viewModel.searchText, isFocused: $searchFocused)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
