@@ -115,8 +115,6 @@ public struct SessionsTab: View {
                     isEditing: $isEditing,
                     selectedIDs: $selectedIDs,
                     teamcluService: teamcluService,
-                    pairing: pairing,
-                    mqtt: mqtt,
                     actorId: "ios-\(pairing.authToken.prefix(6))",
                     currentActorID: currentActorID,
                     noAccessibleAgent: connectedAgentsStore?.agents.isEmpty == true,

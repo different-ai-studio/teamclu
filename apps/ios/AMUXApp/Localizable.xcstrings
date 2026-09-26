@@ -4837,36 +4837,6 @@
         }
       }
     },
-    "daemon connecting": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "daemon 连接中"
-          }
-        }
-      }
-    },
-    "daemon offline": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "daemon 离线"
-          }
-        }
-      }
-    },
-    "daemon online": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "daemon 在线"
-          }
-        }
-      }
-    },
     "default": {
       "localizations": {
         "zh-Hans": {
