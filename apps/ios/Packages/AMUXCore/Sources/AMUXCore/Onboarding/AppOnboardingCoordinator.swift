@@ -85,7 +85,7 @@ public struct TeamSwitchResult: Equatable, Sendable {
     }
 }
 
-public struct AppContext: Equatable, Sendable {
+public struct AppContext: Codable, Equatable, Sendable {
     public let team: TeamSummary
     public let memberActorID: String
 
@@ -261,6 +261,11 @@ public final class AppOnboardingCoordinator {
     /// True iff the current session is an anonymous Supabase user. UI uses
     /// this to surface the "upgrade your account" affordance.
     public var isAnonymous: Bool = false
+    /// True when bootstrap could not reach the server and entered the app on
+    /// the last team this device was in (`lastContextKey`). Memberships were
+    /// not checked; `revalidateAfterOfflineLaunch` does that once the network
+    /// is back.
+    public private(set) var isOfflineLaunch = false
     /// Invite token captured pre-auth (e.g. user pasted a link on the
     /// onboarding screen). Stashed here so it can replay through the
     /// existing `amuxInviteTokenReceived` pipeline after sign-in.
@@ -336,7 +341,26 @@ public final class AppOnboardingCoordinator {
             defaults.set(teamID, forKey: Self.activeTeamIDKey)
         } else {
             defaults.removeObject(forKey: Self.activeTeamIDKey)
+            // Every path that forgets the team (sign-out, dead session) must
+            // also forget the offline fallback built on it.
+            defaults.removeObject(forKey: Self.lastContextKey)
         }
+    }
+
+    /// The whole context of the last team this device entered, so a launch
+    /// without network can still open the app on it. Unlike `activeTeamIDKey`
+    /// this is not a hint for picking among memberships: it is used only when
+    /// memberships cannot be loaded at all.
+    private static let lastContextKey = "teamclu.lastAppContext"
+
+    private var lastContext: AppContext? {
+        guard let data = defaults.data(forKey: Self.lastContextKey) else { return nil }
+        return try? JSONDecoder().decode(AppContext.self, from: data)
+    }
+
+    private func persistLastContext(_ context: AppContext) {
+        guard let data = try? JSONEncoder().encode(context) else { return }
+        defaults.set(data, forKey: Self.lastContextKey)
     }
 
     /// Set the active context and remember the team for next launch. A nil
@@ -344,6 +368,9 @@ public final class AppOnboardingCoordinator {
     /// transient bootstrap failure (cleared explicitly on sign-out).
     private func setCurrentContext(_ context: AppContext?) {
         currentContext = context
+        if let context {
+            persistLastContext(context)
+        }
         if let teamID = context?.team.id {
             persistActiveTeam(teamID)
             // In a team now: the onboarding choice has done its job.
@@ -686,6 +713,7 @@ public final class AppOnboardingCoordinator {
         isBusy = true
         route = .loading
         errorMessage = nil
+        isOfflineLaunch = false
         defer { isBusy = false }
 
         let bootStart = Date()
@@ -873,10 +901,44 @@ public final class AppOnboardingCoordinator {
                 route = .needsAuth
                 return
             }
+            // No network: open the app on the last team this device was in
+            // rather than dead-ending on Setup Failed. The local session got
+            // us past ensureSession, and the cache holds what the screens
+            // show; memberships are rechecked when the network returns.
+            if NetworkErrorClassifier.isUnreachable(error), let cached = lastContext {
+                onboardingLogger.info("bootstrap offline; entering last team from cache")
+                isAnonymous = await store.isAnonymous()
+                setCurrentContext(cached)
+                isOfflineLaunch = true
+                route = .ready
+                return
+            }
             currentContext = nil
             isAnonymous = false
             route = .failed
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// After an offline launch, check the team is still one of the user's
+    /// memberships. Quiet: no splash, no route change while it still is. Gone
+    /// (removed while offline) → a full bootstrap picks the right place.
+    /// Still offline → stays flagged for the next attempt.
+    public func revalidateAfterOfflineLaunch() async {
+        guard isOfflineLaunch, !isBusy, let context = currentContext else { return }
+        do {
+            let bootstrap = try await store.loadBootstrap()
+            isOfflineLaunch = false
+            if !bootstrap.teams.contains(where: { $0.id == context.team.id }) {
+                await self.bootstrap()
+            }
+        } catch is AuthRequired {
+            isOfflineLaunch = false
+            await self.bootstrap()
+        } catch {
+            if !NetworkErrorClassifier.isUnreachable(error) {
+                onboardingLogger.error("offline revalidation failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -1153,6 +1215,8 @@ public final class AppOnboardingCoordinator {
     public func handleSessionRevoked() -> Bool {
         guard route != .needsAuth else { return false }
         currentContext = nil
+        isOfflineLaunch = false
+        defaults.removeObject(forKey: Self.lastContextKey)
         teamRuntimeContext = nil
         pendingCreatedTeam = nil
         pendingEmailOTPEmail = nil
