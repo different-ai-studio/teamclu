@@ -1936,6 +1936,21 @@ public final class SessionDetailViewModel {
     /// Streaming deltas (the hot path, dozens per second) return `false`
     /// after the first delta of a stream, skipping the SQLite commit and
     /// the O(n) regroup that would otherwise fire on every token.
+    /// Whether an ACP event means the agent is processing a prompt, and so
+    /// may raise the "Agent loading…" card. Lifecycle and ambient events do
+    /// not: a runtimeStart spawn with no prompt still emits a status change
+    /// and pi's `available_commands` list, and treating those as work put a
+    /// loading card over a session whose message mentioned no agent — the
+    /// daemon silent-queued it, so the card only ever timed out.
+    static func acpEventIndicatesWork(_ acp: Amux_AcpEvent) -> Bool {
+        switch acp.event {
+        case .thinking, .output, .toolUse, .toolResult, .permissionRequest, .planUpdate:
+            return true
+        case .statusChange, .availableCommands, .error, .raw, .none:
+            return false
+        }
+    }
+
     @discardableResult
     private func handleAcpEvent(_ acp: Amux_AcpEvent,
                                 sequence: Int,
@@ -1948,12 +1963,8 @@ public final class SessionDetailViewModel {
         // Skip for history-replay batches (requestTurnHistory responses) —
         // those events belong to an already-completed turn and must not
         // flip the agent chip to "running".
-        // Also skip for statusChange: a runtime transitioning to "active"
-        // (daemon spawn ready) does not mean the agent is processing a user
-        // prompt. Only thinking / tool_use / output events indicate real work.
-        if !isHistoryReplay, case .statusChange(_) = acp.event {
-            // lifecycle event — don't mark working
-        } else if !isHistoryReplay {
+        // Also skip lifecycle / ambient events — see `acpEventIndicatesWork`.
+        if !isHistoryReplay, Self.acpEventIndicatesWork(acp) {
             markAgentWorking()
         }
 

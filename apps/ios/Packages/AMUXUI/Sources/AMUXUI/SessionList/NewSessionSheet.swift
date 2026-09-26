@@ -456,7 +456,10 @@ public struct NewSessionSheet: View {
             )
         }
 
-        let mentionIDs: [String] = []
+        let mentionIDs = SessionCreationInput.autoMentionAgentIDs(
+            agentSpawns: agentSpawns,
+            accessibleAgentIDs: Set(connectedAgentsStore?.agents.map(\.id) ?? [])
+        )
 
         let input = SessionCreationInput(
             sessionID: sessionID,

@@ -125,6 +125,13 @@ enum VoiceSessionStarter {
             participant(actorID: agent.id, type: .personalAgent,
                         displayName: agent.displayName, joinedAt: createdAt),
         ]
+        let agentSpawns: [SessionCreationInput.AgentSpawn] = [.init(
+            actorID: agent.id,
+            routeActorID: agent.id,
+            workspaceID: workspace.id,
+            workspacePath: workspace.path,
+            agentType: agentType.asAmuxAgentType
+        )]
         let input = SessionCreationInput(
             sessionID: sessionID,
             teamID: MQTTTopics.normalizedTeamID(teamID),
@@ -135,14 +142,11 @@ enum VoiceSessionStarter {
             createdAt: createdAt,
             participants: participants,
             participantInfos: participantInfos,
-            agentSpawns: [.init(
-                actorID: agent.id,
-                routeActorID: agent.id,
-                workspaceID: workspace.id,
-                workspacePath: workspace.path,
-                agentType: agentType.asAmuxAgentType
-            )],
-            mentionAgentActorIDs: [agent.id]
+            agentSpawns: agentSpawns,
+            mentionAgentActorIDs: SessionCreationInput.autoMentionAgentIDs(
+                agentSpawns: agentSpawns,
+                accessibleAgentIDs: Set(context.connectedAgentsStore.agents.map(\.id))
+            )
         )
 
         let outcome = await SessionCreationUseCase(

@@ -25,8 +25,10 @@ public struct SessionCreationInput: Sendable {
     /// only sessions (which take the simpler local-only path elsewhere
     /// and don't reach this use case).
     public let agentSpawns: [AgentSpawn]
-    /// Mention list stamped onto the first message. Today: auto-mention
-    /// when there's exactly one agent, empty otherwise.
+    /// Mention list stamped onto the first message. Build it with
+    /// `autoMentionAgentIDs(agentSpawns:accessibleAgentIDs:)` so every
+    /// entry point applies the same rule. Also seeds the session's lit
+    /// agent chips, so follow-up sends keep engaging the same agents.
     public let mentionAgentActorIDs: [String]
 
     public struct AgentSpawn: Sendable {
@@ -63,6 +65,39 @@ public struct SessionCreationInput: Sendable {
         self.participantInfos = participantInfos
         self.agentSpawns = agentSpawns
         self.mentionAgentActorIDs = mentionAgentActorIDs
+    }
+
+    /// Who the first message mentions. Exactly one agent that the viewer can
+    /// reach (`accessibleAgentIDs` — the ConnectedAgentsStore roster) is
+    /// mentioned automatically; several agents, or one the viewer has no
+    /// grant on, mention nobody and the user picks with @ in the session.
+    ///
+    /// Without a mention the daemon silent-queues the message, so a spawned
+    /// runtime would show "starting" and then never reply.
+    public static func autoMentionAgentIDs(agentSpawns: [AgentSpawn],
+                                           accessibleAgentIDs: Set<String>) -> [String] {
+        guard agentSpawns.count == 1, let only = agentSpawns.first,
+              accessibleAgentIDs.contains(only.actorID)
+        else { return [] }
+        return [only.actorID]
+    }
+
+    /// First-message body: `@<displayName> ` prepended for each mentioned
+    /// agent not already named inline — the same shape the in-session
+    /// composer sends (`SessionDetailViewModel.composeBodyWithMentions`), so
+    /// the chat history shows who the message was addressed to.
+    public var firstMessageContent: String {
+        var body = summary
+        for agentID in mentionAgentActorIDs {
+            guard let name = participantInfos.first(where: { $0.actorID == agentID })?.displayName,
+                  !name.isEmpty
+            else { continue }
+            let token = "@\(name)"
+            if !body.localizedCaseInsensitiveContains(token) {
+                body = body.isEmpty ? token : "\(token) \(body)"
+            }
+        }
+        return body
     }
 }
 
@@ -200,7 +235,7 @@ public final class SessionCreationUseCase {
         do {
             _ = try await teamcluService.sendMessage(
                 sessionId: input.sessionID,
-                content: input.summary,
+                content: input.firstMessageContent,
                 mentionActorIDs: input.mentionAgentActorIDs,
                 persistFirst: true
             )
@@ -253,6 +288,7 @@ public final class SessionCreationUseCase {
         session.lastMessageAt = nil
         session.ideaId = input.ideaID ?? ""
         session.primaryAgentId = nil
+        session.selectedAgentIds = input.mentionAgentActorIDs.sorted()
         try modelContext.save()
     }
 
