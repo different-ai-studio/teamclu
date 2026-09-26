@@ -252,6 +252,11 @@ struct ContentView: View {
             if route == .ready {
                 UserDefaults.standard.set(true, forKey: OnboardingFlags.hasSeenIntroKey)
             }
+            // Signed out, by hand or by a dead session: nothing of that
+            // account's is unread on this device any more.
+            if route == .needsAuth {
+                Task { await AppIconBadge.apply(count: 0) }
+            }
         }
         .onChange(of: onboarding.pendingCreatedTeam) { _, createdTeam in
             guard let createdTeam else { return }

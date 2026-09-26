@@ -631,6 +631,10 @@ public struct SessionDetailView: View {
             }
             await viewModel.outboxSender?.start()
             viewModel.start(modelContext: modelContext)
+            if let sessionID = viewModel.session?.sessionId {
+                // start() just marked the session read; its pushes are stale.
+                Task { await AppIconBadge.clearDeliveredNotifications(forSession: sessionID) }
+            }
             await viewModel.refreshMemberSheet()
             await viewModel.loadFeedback()
         }
