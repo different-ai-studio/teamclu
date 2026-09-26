@@ -122,6 +122,15 @@ struct ContentView: View {
         .environment(onboarding)
         .environment(navigationRouter)
         .environment(featureFlags)
+        .task(id: onboarding.isOfflineLaunch) {
+            // Entered on the cached team without network: recheck memberships
+            // as soon as a path comes back, without leaving the app.
+            guard onboarding.isOfflineLaunch else { return }
+            for await _ in NetworkPathUpdates.becameReachable() {
+                await onboarding.revalidateAfterOfflineLaunch()
+                if !onboarding.isOfflineLaunch { break }
+            }
+        }
         .task {
             // Asked here, once signed in and in a team, rather than at launch:
             // at launch the system prompt lands on top of the intro cards,

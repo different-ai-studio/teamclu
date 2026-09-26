@@ -636,6 +636,126 @@ struct AppOnboardingCoordinatorTests {
         #expect(coordinator.route == .needsAuth)
         #expect(await store.recordedSignOutCallCount() == 1)
     }
+
+    // MARK: - Offline launch
+
+    private static let offline = URLError(.notConnectedToInternet)
+
+    /// Bootstraps once online so the device has a last context, then fails the
+    /// network for the next launch.
+    @MainActor
+    private func coordinatorWithCachedTeam(
+        _ team: TeamSummary,
+        defaults: UserDefaults
+    ) async -> (AppOnboardingCoordinator, InMemoryOnboardingStore) {
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: "member-1", teams: [team])
+        )
+        let online = AppOnboardingCoordinator(store: store, defaults: defaults)
+        await online.bootstrap()
+        #expect(online.route == .ready)
+        await store.setLoadBootstrapError(Self.offline)
+        return (AppOnboardingCoordinator(store: store, defaults: defaults), store)
+    }
+
+    @MainActor
+    @Test("offline launch enters the last team instead of Setup Failed")
+    func offlineLaunchUsesCachedTeam() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let (coordinator, _) = await coordinatorWithCachedTeam(team, defaults: ephemeralDefaults())
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .ready)
+        #expect(coordinator.isOfflineLaunch)
+        #expect(coordinator.currentContext == AppContext(team: team, memberActorID: "member-1"))
+    }
+
+    @MainActor
+    @Test("offline launch with no cached team still fails")
+    func offlineLaunchWithoutCacheFails() async throws {
+        let store = InMemoryOnboardingStore(
+            bootstrap: AppBootstrap(memberActorID: nil, teams: []),
+            loadBootstrapError: Self.offline
+        )
+        let coordinator = AppOnboardingCoordinator(store: store, defaults: ephemeralDefaults())
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .failed)
+        #expect(!coordinator.isOfflineLaunch)
+    }
+
+    @MainActor
+    @Test("a server error is not treated as offline")
+    func serverErrorStillFails() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let (coordinator, store) = await coordinatorWithCachedTeam(team, defaults: ephemeralDefaults())
+        await store.setLoadBootstrapError(
+            CloudAPIError.requestFailed(status: 500, code: nil, message: "boom"))
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .failed)
+        #expect(coordinator.currentContext == nil)
+    }
+
+    @MainActor
+    @Test("signing out forgets the offline fallback")
+    func signOutClearsCachedTeam() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let defaults = ephemeralDefaults()
+        let (coordinator, _) = await coordinatorWithCachedTeam(team, defaults: defaults)
+        await coordinator.signOut()
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .failed)
+    }
+
+    @MainActor
+    @Test("back online with the team still there: stays put, flag clears")
+    func revalidateKeepsTeam() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let (coordinator, store) = await coordinatorWithCachedTeam(team, defaults: ephemeralDefaults())
+        await coordinator.bootstrap()
+        await store.setLoadBootstrapError(nil)
+
+        await coordinator.revalidateAfterOfflineLaunch()
+
+        #expect(!coordinator.isOfflineLaunch)
+        #expect(coordinator.route == .ready)
+        #expect(coordinator.currentContext?.team.id == "team-1")
+    }
+
+    @MainActor
+    @Test("back online but still unreachable: stays flagged")
+    func revalidateStillOffline() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let (coordinator, _) = await coordinatorWithCachedTeam(team, defaults: ephemeralDefaults())
+        await coordinator.bootstrap()
+
+        await coordinator.revalidateAfterOfflineLaunch()
+
+        #expect(coordinator.isOfflineLaunch)
+        #expect(coordinator.currentContext?.team.id == "team-1")
+    }
+
+    @MainActor
+    @Test("back online and removed from the team: full bootstrap moves on")
+    func revalidateRemovedFromTeam() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let other = TeamSummary(id: "team-2", name: "Beta", slug: "beta", role: "member")
+        let (coordinator, store) = await coordinatorWithCachedTeam(team, defaults: ephemeralDefaults())
+        await coordinator.bootstrap()
+        await store.setBootstrap(AppBootstrap(memberActorID: "member-2", teams: [other]))
+        await store.setLoadBootstrapError(nil)
+
+        await coordinator.revalidateAfterOfflineLaunch()
+
+        #expect(!coordinator.isOfflineLaunch)
+        #expect(coordinator.currentContext?.team.id == "team-2")
+    }
 }
 
 private actor InMemoryOnboardingStore: AppOnboardingStore {
@@ -645,7 +765,7 @@ private actor InMemoryOnboardingStore: AppOnboardingStore {
     let anonymous: Bool
     let claimResult: ClaimResult?
     let claimError: Error?
-    let loadBootstrapError: Error?
+    var loadBootstrapError: Error?
     var ensureSessionCallCount = 0
     var createdTeamNames: [String] = []
     var bootstrapCallCount = 0
@@ -682,6 +802,8 @@ private actor InMemoryOnboardingStore: AppOnboardingStore {
     func recordedSignOutCallCount() -> Int { signOutCallCount }
 
     func setBootstrap(_ bootstrap: AppBootstrap) { bootstrapResult = bootstrap }
+
+    func setLoadBootstrapError(_ error: Error?) { loadBootstrapError = error }
 
     func createTeam(named name: String) async throws -> CreatedTeam {
         createdTeamNames.append(name)
