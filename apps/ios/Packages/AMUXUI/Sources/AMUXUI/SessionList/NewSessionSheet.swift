@@ -24,6 +24,9 @@ public struct NewSessionSheet: View {
     let agentPresenceStore: AgentPresenceStore?
     let workspacesRepository: (any WorkspaceRepository)?
     let sessionsRepository: (any SessionRepository)?
+    /// Source of the app picker. Nil (apps disabled for the team, or a caller
+    /// without apps) hides the picker.
+    let teamAppsStore: TeamAppsStore?
 
     let viewModel: SessionListViewModel
     let preselectedIdeaId: String?
@@ -37,6 +40,12 @@ public struct NewSessionSheet: View {
 
     @State private var collaborators: [CachedActor] = []
     @State private var selectedIdeaId: String?
+    @State private var selectedAppID: String?
+    /// The selected agents' own workspaces, fetched per agent once an app is
+    /// picked. The team-wide `workspaces` list is one capped page, so the
+    /// app's row can be missing from it in a large team.
+    @State private var agentWorkspacesForApp: [WorkspaceRecord] = []
+    @State private var isCheckingAppCheckout = false
     @State private var messageText: String = ""
     @State private var showMemberPicker = false
     @State private var isSending = false
@@ -50,7 +59,6 @@ public struct NewSessionSheet: View {
     private var ideas: [SessionIdea]
 
     private var workspaces: [WorkspaceRecord] { workspaceStore?.workspaces ?? [] }
-    private var availableIdeas: [SessionIdea] { ideas }
 
     /// Set by parent — called with agentId when session is created
     var onSessionCreated: ((String) -> Void)?
@@ -62,6 +70,7 @@ public struct NewSessionSheet: View {
                 agentPresenceStore: AgentPresenceStore? = nil,
                 workspacesRepository: (any WorkspaceRepository)? = nil,
                 sessionsRepository: (any SessionRepository)? = nil,
+                teamAppsStore: TeamAppsStore? = nil,
                 viewModel: SessionListViewModel,
                 preselectedIdeaId: String? = nil,
                 preselectedCollaborators: [CachedActor] = [],
@@ -77,6 +86,7 @@ public struct NewSessionSheet: View {
         self.agentPresenceStore = agentPresenceStore
         self.workspacesRepository = workspacesRepository
         self.sessionsRepository = sessionsRepository
+        self.teamAppsStore = teamAppsStore
         self.viewModel = viewModel
         self.preselectedIdeaId = preselectedIdeaId
         self.preselectedCollaborators = preselectedCollaborators
@@ -91,7 +101,7 @@ public struct NewSessionSheet: View {
         let agentsConfigured = collaborators
             .filter { $0.isAgent }
             .allSatisfy { agentConfigs[$0.actorId] != nil }
-        return textOK && hasOtherActor && agentsConfigured
+        return textOK && hasOtherActor && agentsConfigured && appBlocker == nil
     }
 
     public var body: some View {
@@ -102,7 +112,9 @@ public struct NewSessionSheet: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 18) {
                             collaboratorsSection
-                            ideaSection
+                            if teamAppsStore != nil {
+                                appSection
+                            }
                         }
                         .padding(.top, 12)
                         .padding(.bottom, 16)
@@ -182,7 +194,8 @@ public struct NewSessionSheet: View {
                         return String(localized: "This agent has no workspace. Add one in Agent settings.")
                     }
                     return nil
-                }
+                },
+                ordersByRecentContact: true
             ) { selected in
                 // `selected` includes humans (from internal selectedIDs) +
                 // agents already added via auto-config (passed in via
@@ -192,6 +205,10 @@ public struct NewSessionSheet: View {
             .task { await connectedAgentsStore?.reload() }
         }
         .task { await connectedAgentsStore?.reload() }
+        .task {
+            if let teamAppsStore, !teamAppsStore.hasLoaded { await teamAppsStore.reload() }
+        }
+        .task(id: appCheckoutQueryKey) { await loadAgentWorkspacesForApp() }
         .onAppear {
             isInputFocused = true
             if selectedIdeaId == nil, let preselectedIdeaId {
@@ -253,48 +270,109 @@ public struct NewSessionSheet: View {
         }
     }
 
-    // MARK: - Idea section
+    // MARK: - App section
 
-    private var ideaSection: some View {
+    /// The session's app. Replaces the old idea picker; an idea still rides
+    /// along when the sheet is opened from an idea (`preselectedIdeaId`).
+    private var appSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HaiSectionLabel(IdeaUIPresentation.singularTitle)
+            HaiSectionLabel("应用")
             HaiPaperCard {
                 Menu {
                     Button {
-                        selectedIdeaId = nil
+                        selectedAppID = nil
                     } label: {
-                        Label("None", systemImage: selectedIdeaId == nil ? "checkmark" : "circle")
+                        Label(String(localized: "None"), systemImage: selectedAppID == nil ? "checkmark" : "circle")
                     }
-                    if !availableIdeas.isEmpty {
+                    if let apps = teamAppsStore?.apps, !apps.isEmpty {
                         Divider()
-                        ForEach(availableIdeas, id: \.ideaId) { item in
+                        ForEach(apps) { app in
                             Button {
-                                selectedIdeaId = item.ideaId
+                                selectedAppID = app.id
                             } label: {
-                                Label(item.displayTitle,
-                                      systemImage: selectedIdeaId == item.ideaId ? "checkmark" : "circle")
+                                Label(app.needsDesktopSetup ? "\(app.name)（还没初始化）" : app.name,
+                                      systemImage: selectedAppID == app.id ? "checkmark" : "circle")
                             }
+                            // No code yet, so no agent can have a checkout of it.
+                            .disabled(app.needsDesktopSetup)
                         }
                     }
                 } label: {
                     HaiSheetRow(
-                        label: IdeaUIPresentation.singularTitle,
-                        value: selectedIdeaLabel,
-                        valueIsMuted: selectedIdeaId == nil,
+                        label: "应用",
+                        value: selectedApp?.name ?? String(localized: "None"),
+                        valueIsMuted: selectedApp == nil,
                         showsChevron: true
                     )
                 }
                 .buttonStyle(.plain)
             }
+            if let appBlocker {
+                Text(appBlocker)
+                    .font(.footnote)
+                    .foregroundStyle(Color.amux.cinnabarDeep)
+                    .padding(.horizontal, 4)
+                    .accessibilityIdentifier("newSession.appBlocker")
+            }
         }
     }
 
-    private var selectedIdeaLabel: String {
-        if let id = selectedIdeaId,
-           let item = ideas.first(where: { $0.ideaId == id }) {
-            return item.displayTitle
+    private var selectedApp: TeamAppRecord? {
+        guard let selectedAppID else { return nil }
+        return teamAppsStore?.apps.first { $0.id == selectedAppID }
+    }
+
+    private var selectedAgentIDs: [String] {
+        collaborators.filter(\.isAgent).map(\.actorId).sorted()
+    }
+
+    private var appCheckoutQueryKey: String {
+        ([selectedAppID ?? ""] + selectedAgentIDs).joined(separator: ",")
+    }
+
+    private func loadAgentWorkspacesForApp() async {
+        guard selectedAppID != nil, let workspacesRepository, !teamID.isEmpty else {
+            agentWorkspacesForApp = []
+            return
         }
-        return String(localized: "None")
+        isCheckingAppCheckout = true
+        defer { isCheckingAppCheckout = false }
+        var rows: [WorkspaceRecord] = []
+        for agentID in selectedAgentIDs {
+            if let found = try? await workspacesRepository.listWorkspaces(teamID: teamID, agentID: agentID) {
+                rows.append(contentsOf: found)
+            }
+        }
+        guard !Task.isCancelled else { return }
+        agentWorkspacesForApp = rows
+    }
+
+    private func appCheckout(for agentID: String) -> WorkspaceRecord? {
+        guard let app = selectedApp else { return nil }
+        return SessionCreationInput.appCheckoutWorkspace(
+            app: app, agentID: agentID, workspaces: agentWorkspacesForApp + workspaces
+        )
+    }
+
+    /// Selected agents with no checkout of the selected app that iOS can see.
+    private var agentsMissingAppCheckout: [CachedActor] {
+        collaborators.filter { $0.isAgent && appCheckout(for: $0.actorId) == nil }
+    }
+
+    /// Why the selected app blocks sending, if it does. An app session's agent
+    /// must work in the app's code, and only a desktop can put that code on
+    /// the agent's machine — so rather than quietly seating the agent in its
+    /// default folder, the sheet refuses.
+    private var appBlocker: String? {
+        guard let app = selectedApp else { return nil }
+        if !collaborators.contains(where: \.isAgent) {
+            return "应用会话需要一个 agent，请先添加协作的 agent。"
+        }
+        let missing = agentsMissingAppCheckout
+        guard !missing.isEmpty else { return nil }
+        if isCheckingAppCheckout { return "正在确认 agent 的电脑上有没有这个应用的代码…" }
+        let names = missing.map(\.displayName).joined(separator: "、")
+        return "\(names) 所在的电脑上还没有「\(app.name)」的代码，请先在那台电脑的桌面端打开这个应用。"
     }
 
     // MARK: - Input bar
@@ -446,11 +524,16 @@ public struct NewSessionSheet: View {
         let agentSpawns: [SessionCreationInput.AgentSpawn] = agentConfigs.compactMap { agentActorID, cfg in
             let routeActor = routeActorID(forAgentActorID: agentActorID)
             guard !routeActor.isEmpty else { return nil }
-            let wsPath = workspaces.first(where: { $0.id == cfg.workspaceID })?.path ?? ""
+            // An app session runs in the agent's checkout of the app; the
+            // appBlocker gate has already made sure there is one.
+            let checkout = appCheckout(for: agentActorID)
+            let workspaceID = checkout?.id ?? cfg.workspaceID
+            let wsPath = checkout?.path
+                ?? workspaces.first(where: { $0.id == cfg.workspaceID })?.path ?? ""
             return SessionCreationInput.AgentSpawn(
                 actorID: agentActorID,
                 routeActorID: routeActor,
-                workspaceID: cfg.workspaceID,
+                workspaceID: workspaceID,
                 workspacePath: wsPath,
                 agentType: cfg.agentType.asAmuxAgentType
             )
@@ -466,6 +549,7 @@ public struct NewSessionSheet: View {
             teamID: effectiveTeamID,
             currentActorID: currentActorID,
             ideaID: selectedIdeaId,
+            appID: selectedApp?.id,
             title: trimmedTitle,
             summary: text,
             createdAt: createdAt,

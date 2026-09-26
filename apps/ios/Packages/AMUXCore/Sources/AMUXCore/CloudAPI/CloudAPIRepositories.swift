@@ -189,8 +189,10 @@ public actor CloudAPISessionRepository: SessionRepository {
             title: title,
             mode: input.mode,
             ideaId: Self.normalized(input.ideaID),
+            appId: Self.normalized(input.appID),
             primaryAgentActorId: Self.normalized(input.primaryAgentID),
-            participantActorIds: input.participants.map(\.actorID)
+            participantActorIds: input.participants.map(\.actorID),
+            workspaceByActorId: input.workspaceByActorID.isEmpty ? nil : input.workspaceByActorID
         )
         // FC derives created_by from the bearer actor; per-participant roles
         // are not expressed by SessionCreate (participantActorIds is a flat
@@ -1066,8 +1068,10 @@ private struct CloudSessionCreateRequest: Encodable, Sendable {
     let title: String
     let mode: String
     let ideaId: String?
+    let appId: String?
     let primaryAgentActorId: String?
     let participantActorIds: [String]
+    let workspaceByActorId: [String: String]?
 }
 
 private struct CloudUpsertParticipantRequest: Encodable, Sendable {

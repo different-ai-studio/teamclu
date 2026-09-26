@@ -14,27 +14,37 @@ public struct SessionCreateInput: Equatable, Sendable {
     public let id: String
     public let teamID: String
     public let ideaID: String?
+    /// The app the session belongs to (`sessions.app_id`); settable only here.
+    public let appID: String?
     public let createdByActorID: String
     public let primaryAgentID: String?
     public let mode: String
     public let title: String
     public let summary: String
     public let participants: [SessionParticipantInput]
+    /// Seat workspace per agent actor (`workspaceByActorId`). Empty leaves
+    /// each seat on the agent's default workspace. Every entry must be a
+    /// workspace with a path, or the create is refused.
+    public let workspaceByActorID: [String: String]
 
     public init(
         id: String,
         teamID: String,
         ideaID: String? = nil,
+        appID: String? = nil,
         createdByActorID: String,
         primaryAgentID: String? = nil,
         mode: String = "collab",
         title: String,
         summary: String,
-        participants: [SessionParticipantInput]
+        participants: [SessionParticipantInput],
+        workspaceByActorID: [String: String] = [:]
     ) {
         self.id = id
         self.teamID = teamID
         self.ideaID = ideaID
+        self.appID = appID
+        self.workspaceByActorID = workspaceByActorID
         self.createdByActorID = createdByActorID
         self.primaryAgentID = primaryAgentID
         self.mode = mode
