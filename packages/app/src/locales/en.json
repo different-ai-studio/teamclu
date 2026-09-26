@@ -67,8 +67,6 @@
     "wikiRetractBlocked": "A deleted source is still cited. Compile again before publishing.",
     "wikiSourcesSkipped": "{{count}} sources were skipped this run and can be compiled again next time.",
     "wikiVisionEstimate": "{{pages}} vision pages · {{cost}} {{currency}}",
-    "wikiAcceptVisionCost": "Accept estimated vision cost",
-    "wikiAcceptVisionCostDetail": "Accept the estimated visual recognition cost before publishing.",
     "wikiVisionBeforeCompileHint": "Confirm the visual recognition cost first. Images are sent to the current model only after you agree. The estimate is not refunded when recognition fails.",
     "wikiVisionBeforeCompile": "{{pages}} pages need visual recognition, estimated {{cost}} {{currency}}. Agree to send them to the current model. If it cannot read images, those files fail and the rest still compile.",
     "wikiVisionDeclined": "This run did not look at images.",
