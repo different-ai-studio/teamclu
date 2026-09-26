@@ -11,6 +11,11 @@ public struct SessionCreationInput: Sendable {
     public let teamID: String
     public let currentActorID: String
     public let ideaID: String?
+    /// The app the session belongs to. When set, every agent's spawn must
+    /// already point at that agent's checkout of the app (see
+    /// `appCheckoutWorkspace`) — the seats are bound to those workspaces at
+    /// create, since `app_id` alone never moves an agent into the app's code.
+    public let appID: String?
     public let title: String
     public let summary: String
     public let createdAt: Date
@@ -49,7 +54,8 @@ public struct SessionCreationInput: Sendable {
     }
 
     public init(sessionID: String, teamID: String, currentActorID: String,
-                ideaID: String?, title: String, summary: String, createdAt: Date,
+                ideaID: String?, appID: String? = nil,
+                title: String, summary: String, createdAt: Date,
                 participants: [SessionParticipantInput],
                 participantInfos: [Teamclu_Participant],
                 agentSpawns: [AgentSpawn],
@@ -58,6 +64,7 @@ public struct SessionCreationInput: Sendable {
         self.teamID = teamID
         self.currentActorID = currentActorID
         self.ideaID = ideaID
+        self.appID = appID
         self.title = title
         self.summary = summary
         self.createdAt = createdAt
@@ -98,6 +105,33 @@ public struct SessionCreationInput: Sendable {
             }
         }
         return body
+    }
+
+    /// Seat bindings sent with the create. Only app sessions bind seats
+    /// explicitly; plain sessions keep each agent on its default workspace,
+    /// which the server fills in itself (and which may have no path, which an
+    /// explicit binding would be refused for).
+    public var seatWorkspaceByActorID: [String: String] {
+        guard appID != nil else { return [:] }
+        return Dictionary(agentSpawns.map { ($0.actorID, $0.workspaceID) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The workspace that is `agentID`'s checkout of `app`, or nil when that
+    /// agent's machine has none iOS can see.
+    ///
+    /// Only the app's own row (`apps.workspace_id`) is trusted, and only when
+    /// it belongs to this agent and has a path. A second machine's checkout is
+    /// a separate row with nothing linking it to the app (the daemon's workdir
+    /// is user-movable, so its path proves nothing either); guessing would seat
+    /// the agent on a directory that is not on its machine.
+    public static func appCheckoutWorkspace(app: TeamAppRecord, agentID: String,
+                                            workspaces: [WorkspaceRecord]) -> WorkspaceRecord? {
+        guard let workspaceID = app.workspaceID, !workspaceID.isEmpty else { return nil }
+        return workspaces.first {
+            $0.id == workspaceID && $0.agentID == agentID
+                && !$0.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 }
 
@@ -197,11 +231,13 @@ public final class SessionCreationUseCase {
                     id: input.sessionID,
                     teamID: input.teamID,
                     ideaID: input.ideaID,
+                    appID: input.appID,
                     createdByActorID: input.currentActorID,
                     primaryAgentID: nil,
                     title: input.title,
                     summary: input.summary,
-                    participants: input.participants
+                    participants: input.participants,
+                    workspaceByActorID: input.seatWorkspaceByActorID
                 )
             )
         } catch {
@@ -287,6 +323,7 @@ public final class SessionCreationUseCase {
         session.lastMessagePreview = input.summary
         session.lastMessageAt = nil
         session.ideaId = input.ideaID ?? ""
+        session.appId = input.appID ?? ""
         session.primaryAgentId = nil
         session.selectedAgentIds = input.mentionAgentActorIDs.sorted()
         try modelContext.save()

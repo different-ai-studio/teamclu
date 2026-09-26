@@ -206,6 +206,7 @@ public struct SessionsTab: View {
                                    agentPresenceStore: agentPresenceStore,
                                    workspacesRepository: workspacesRepository,
                                    sessionsRepository: sessionsRepository,
+                                   teamAppsStore: teamAppsStore,
                                    viewModel: viewModel) { agentId in
                         navigationPath = [agentId]
                         // Pull the freshly-created Supabase rows (sessions +

@@ -30,6 +30,10 @@ public struct TeamAppRecord: Codable, Equatable, Hashable, Identifiable, Sendabl
     /// How the caller comes to see this app: they created it, they were
     /// granted access, or it is visible to the whole team.
     public var relationship: TeamAppRelationship
+    /// The app's own workspace (`apps.workspace_id`). Its path is filled in by
+    /// the first desktop that opens the app, and names that machine's
+    /// checkout; nil or path-less means no machine has claimed it yet.
+    public var workspaceID: String?
     public let createdAt: Date
     public var updatedAt: Date
 
@@ -48,6 +52,7 @@ public struct TeamAppRecord: Codable, Equatable, Hashable, Identifiable, Sendabl
         gitRemoteURL: String? = nil,
         gitAuthKind: String? = nil,
         relationship: TeamAppRelationship = .team,
+        workspaceID: String? = nil,
         createdAt: Date,
         updatedAt: Date
     ) {
@@ -65,6 +70,7 @@ public struct TeamAppRecord: Codable, Equatable, Hashable, Identifiable, Sendabl
         self.gitRemoteURL = gitRemoteURL
         self.gitAuthKind = gitAuthKind
         self.relationship = relationship
+        self.workspaceID = workspaceID
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

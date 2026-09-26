@@ -10909,6 +10909,16 @@ components:
             - string
             - "null"
           format: uuid
+        appId:
+          type:
+            - string
+            - "null"
+          format: uuid
+          description: >-
+            The app this session belongs to (`sessions.app_id`). Only settable
+            at create. It links the session to the app and does not seat any
+            agent on the app's checkout: pass that workspace in
+            `workspaceByActorId`.
         primaryAgentActorId:
           type:
             - string

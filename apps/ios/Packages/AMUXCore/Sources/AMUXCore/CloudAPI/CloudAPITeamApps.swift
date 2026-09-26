@@ -95,6 +95,7 @@ private struct CloudTeamApp: Decodable, Sendable {
     let gitRemoteUrl: String?
     let gitAuthKind: String?
     let relationship: String?
+    let workspaceId: String?
     let createdAt: String?
     let updatedAt: String?
 
@@ -123,6 +124,7 @@ private struct CloudTeamApp: Decodable, Sendable {
             gitRemoteURL: gitRemoteUrl,
             gitAuthKind: gitAuthKind,
             relationship: TeamAppRelationship(rawValue: relationship ?? "") ?? .team,
+            workspaceID: workspaceId,
             createdAt: parseCloudDate(createdAt) ?? .distantPast,
             updatedAt: parseCloudDate(updatedAt) ?? .distantPast
         )
