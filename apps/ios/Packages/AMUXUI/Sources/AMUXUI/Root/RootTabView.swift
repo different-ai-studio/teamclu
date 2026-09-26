@@ -329,6 +329,7 @@ public struct RootTabView: View {
 
     public var body: some View {
         observedTabs
+        .modifier(AppIconBadgeSync(teamID: activeTeam?.id ?? ""))
         .sheet(item: $voiceAgentChoice) {
             // Swipe-dismiss and the picker's own Cancel both land here. A
             // pick has already flipped `isStartingVoiceSession`, so this only
