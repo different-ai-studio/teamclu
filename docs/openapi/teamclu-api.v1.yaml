@@ -10924,6 +10924,9 @@ components:
             - string
             - "null"
           format: uuid
+          description: >-
+            The session's primary agent (`sessions.primary_agent_id`). The
+            older name `primaryAgentId` is still accepted.
         participantActorIds:
           type: array
           items:

@@ -3886,6 +3886,37 @@ test("apps: createSession forwards app_id when input has appId", async () => {
   assert.equal(insert?.row.app_id, "app-1");
 });
 
+for (const [label, field] of [
+  ["contract primaryAgentActorId", "primaryAgentActorId"],
+  ["legacy primaryAgentId", "primaryAgentId"],
+] as const) {
+  test(`createSession sets primary_agent_id from ${label}`, async () => {
+    const calls: any[] = [];
+    const supabase = appsSupabase({
+      seed: {
+        sessions: [{
+          id: "sess-primary", team_id: "team-1", title: "Primary", mode: "collab",
+          idea_id: null, primary_agent_id: "agent-1", created_by_actor_id: "actor-app-1",
+          summary: null, last_message_preview: null, last_message_at: null,
+          acp_session_id: null, binding: null,
+          created_at: "2026-06-13T00:00:00Z", updated_at: "2026-06-13T00:00:00Z",
+        }],
+      },
+      calls,
+    });
+    const repo = appsRepo(supabase);
+    await repo.createSession({
+      id: "sess-primary",
+      teamId: "team-1",
+      title: "Primary",
+      createdByActorId: "actor-app-1",
+      [field]: "agent-1",
+    });
+    const insert = calls.find((c) => c.table === "sessions" && c.op === "insert");
+    assert.equal(insert?.row.primary_agent_id, "agent-1");
+  });
+}
+
 test("apps: createSession omits app_id when no appId given", async () => {
   const calls: any[] = [];
   const supabase = appsSupabase({
