@@ -67,8 +67,6 @@
     "wikiRetractBlocked": "已删除的资料还在 Wiki 里。先再编译一次，撤回成功后才能发布。",
     "wikiSourcesSkipped": "{{count}} 个资料这次跳过了，下次维护时再编译。",
     "wikiVisionEstimate": "{{pages}} 个视觉识别页面 · 预计 {{cost}} {{currency}}",
-    "wikiAcceptVisionCost": "接受预计的视觉识别费用",
-    "wikiAcceptVisionCostDetail": "发布前确认接受预计的视觉识别费用。",
     "wikiVisionBeforeCompileHint": "先确认看图费用。同意后才把图片和抽不出文字的页面发给当前模型。费用是预估，认失败的请求不退。",
     "wikiVisionBeforeCompile": "有 {{pages}} 页需要视觉识别，预计 {{cost}} {{currency}}。同意后才会把这些页发给当前模型。如果这个模型不能看图，这些文件会单独失败，其余资料继续编译。",
     "wikiVisionDeclined": "这次没有看图。",
