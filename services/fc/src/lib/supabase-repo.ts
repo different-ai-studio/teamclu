@@ -3601,7 +3601,10 @@ export function createSupabaseBusinessRepository(options) {
       // can resolve them. Omitted for plain
       // sessions so the column stays NULL.
       if (input.appId) insertRow.app_id = input.appId;
-      if (input.primaryAgentId) insertRow.primary_agent_id = input.primaryAgentId;
+      // The contract names this `primaryAgentActorId` (iOS sends that); Expo
+      // still sends the older `primaryAgentId`. Accept both, contract first.
+      const primaryAgentId = input.primaryAgentActorId ?? input.primaryAgentId;
+      if (primaryAgentId) insertRow.primary_agent_id = primaryAgentId;
       const { data, error } = await supabase
         .from("sessions")
         .insert(insertRow)
