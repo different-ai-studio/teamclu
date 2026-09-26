@@ -5183,6 +5183,149 @@ pub(crate) mod tests {
         );
     }
 
+    // ── agent inbox ↔ live ↔ catchup share one dedup gate ─────────────────
+    //
+    // FC fans every persisted message out to the agent's inbox. A new
+    // session's first message is persisted before it is published, so its
+    // inbox copy is the first — and, before the runtime subscribes to the
+    // session's live topic, the only — copy the daemon sees. The inbox path
+    // must not claim the message id ahead of routing: routing checks the same
+    // gate and would then refuse the very message it was handed.
+
+    fn agent_inbox_payload(row: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({ "type": "message.created", "message": row }))
+            .unwrap()
+    }
+
+    fn session_live_payload(
+        session_id: &str,
+        message_id: &str,
+        sender_actor_id: &str,
+        mentions: &[&str],
+        content: &str,
+    ) -> Vec<u8> {
+        use prost::Message as _;
+        let envelope = crate::proto::teamclu::SessionMessageEnvelope {
+            message: Some(crate::proto::teamclu::Message {
+                message_id: message_id.to_string(),
+                session_id: session_id.to_string(),
+                sender_actor_id: sender_actor_id.to_string(),
+                content: content.to_string(),
+                ..Default::default()
+            }),
+            mention_actor_ids: mentions.iter().map(|m| m.to_string()).collect(),
+            ..Default::default()
+        };
+        crate::proto::teamclu::LiveEventEnvelope {
+            event_type: "message.created".to_string(),
+            session_id: session_id.to_string(),
+            body: envelope.encode_to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    #[tokio::test]
+    pub(crate) async fn agent_inbox_mention_prompts_the_runtime() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+
+        fixture
+            .server
+            .ingest_agent_inbox(&agent_inbox_payload(make_message_row(
+                "msg-1",
+                "session-1",
+                "human-1",
+                &["agent-actor"],
+                "route to Huailai?",
+                "2025-05-22T01:00:01Z",
+            )))
+            .await
+            .unwrap();
+
+        let agents = fixture.server.agents.lock().await;
+        assert_eq!(agents.sent_count_to("session-1"), 1);
+        assert_eq!(
+            agents.last_sent_to("session-1").as_deref(),
+            Some("route to Huailai?")
+        );
+    }
+
+    #[tokio::test]
+    pub(crate) async fn agent_inbox_and_live_copies_prompt_once_in_either_order() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        let server = &mut fixture.server;
+        let inbox = |id: &str| {
+            agent_inbox_payload(make_message_row(
+                id,
+                "session-1",
+                "human-1",
+                &["agent-actor"],
+                "hi",
+                "2025-05-22T01:00:01Z",
+            ))
+        };
+        let live =
+            |id: &str| session_live_payload("session-1", id, "human-1", &["agent-actor"], "hi");
+
+        // Inbox first (new session: persisted before published).
+        server.ingest_agent_inbox(&inbox("msg-a")).await.unwrap();
+        server
+            .ingest_session_live("session-1", &live("msg-a"))
+            .await
+            .unwrap();
+        // Live first (established session: published before persisted).
+        server
+            .ingest_session_live("session-1", &live("msg-b"))
+            .await
+            .unwrap();
+        server.ingest_agent_inbox(&inbox("msg-b")).await.unwrap();
+
+        assert_eq!(
+            server.agents.lock().await.sent_count_to("session-1"),
+            2,
+            "each message must start exactly one turn"
+        );
+    }
+
+    #[tokio::test]
+    pub(crate) async fn agent_inbox_before_the_runtime_exists_is_replayed_by_catchup() {
+        let srv = MockServer::start().await;
+        auth_token_mock(&srv).await;
+        let row = make_message_row(
+            "msg-first",
+            "session-2",
+            "human-1",
+            &["agent-actor"],
+            "first question",
+            "2025-05-22T01:00:01Z",
+        );
+        mock_messages_response(&srv, "session-2", serde_json::json!([row.clone()])).await;
+        let mut fixture = test_server_with_cloud_api(test_cloud_api_with_url(srv.uri()));
+        let server = &mut fixture.server;
+
+        // Arrives while runtimeStart is still on its way: nothing to route to.
+        server
+            .ingest_agent_inbox(&agent_inbox_payload(row))
+            .await
+            .unwrap();
+        assert_eq!(server.agents.lock().await.sent_count_to("session-2"), 0);
+
+        // runtimeStart spawns the runtime and replays what it missed.
+        server.agents.lock().await.add_test_runtime("session-2");
+        server.catchup_runtime("session-2").await;
+
+        let agents = server.agents.lock().await;
+        assert_eq!(agents.sent_count_to("session-2"), 1);
+        assert_eq!(
+            agents.last_sent_to("session-2").as_deref(),
+            Some("first question")
+        );
+    }
+
     #[tokio::test]
     pub(crate) async fn plan_skips_when_last_mention_already_answered() {
         let srv = MockServer::start().await;

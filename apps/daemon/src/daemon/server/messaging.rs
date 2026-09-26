@@ -957,17 +957,13 @@ impl DaemonServer {
             return Err("agent inbox row without session_id or id".into());
         }
 
-        // The same gate the live path uses. An inbox copy and a live copy of
-        // one message must not both start a turn while both paths are wired.
-        if !self
-            .teamclu
-            .as_ref()
-            .map(|tc| tc.message_dedup().claim_message(&row.session_id, &row.id))
-            .unwrap_or(true)
-        {
-            return Ok(());
-        }
-
+        // No dedup claim here. An inbox copy and a live copy of one message
+        // must not both start a turn, but `route_session_message_to_runtimes`
+        // already gates on this id — claiming it first made that gate refuse
+        // the inbox copy itself. Worse, a copy that arrives before its runtime
+        // exists (a new session's first message: persisted, so fanned out,
+        // before runtimeStart) is dropped unrouted, and a claim would also
+        // make the post-spawn catchup skip it.
         let session_id = row.session_id.clone();
         let message = agent_inbox_row_to_message(row);
         let mentions = resolve_mention_actor_ids(&[], &message.metadata_json);

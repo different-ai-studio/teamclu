@@ -168,6 +168,10 @@ pub struct RuntimeManager {
     /// Test-only: records the last body sent per agent_id via send_prompt_raw.
     #[cfg(test)]
     last_sent: HashMap<String, String>,
+    /// Test-only: how many prompts each agent_id was sent, so a test can tell
+    /// "prompted once" from "prompted twice with the same body".
+    #[cfg(test)]
+    sent_counts: HashMap<String, usize>,
     #[cfg(test)]
     send_failures: HashMap<String, String>,
     #[cfg(test)]
@@ -254,6 +258,8 @@ impl RuntimeManager {
             http_owned: std::collections::HashSet::new(),
             #[cfg(test)]
             last_sent: HashMap::new(),
+            #[cfg(test)]
+            sent_counts: HashMap::new(),
             #[cfg(test)]
             send_failures: HashMap::new(),
             #[cfg(test)]
@@ -1343,6 +1349,7 @@ impl RuntimeManager {
             };
             self.last_sent
                 .insert(agent_id.to_string(), text.to_string());
+            *self.sent_counts.entry(agent_id.to_string()).or_default() += 1;
             if let Some(event_tx) = event_tx {
                 let text = text.to_string();
                 let reply_to = reply_to_message_id.clone();
@@ -1985,6 +1992,11 @@ impl RuntimeManager {
     /// Return the last body sent to the given runtime via send_prompt_raw.
     pub fn last_sent_to(&self, runtime_id: &str) -> Option<String> {
         self.last_sent.get(runtime_id).cloned()
+    }
+
+    /// Number of prompts sent to the given runtime.
+    pub fn sent_count_to(&self, runtime_id: &str) -> usize {
+        self.sent_counts.get(runtime_id).copied().unwrap_or(0)
     }
 
     pub fn fail_next_send_for(&mut self, runtime_id: &str, message: &str) {
