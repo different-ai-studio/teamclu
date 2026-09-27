@@ -398,7 +398,7 @@ fn app_settings(row: &Value) -> Value {
 async fn list_team_apps(api: &AppApi, team_id: &str) -> Result<Vec<Value>, String> {
     let listing = api
         .get(
-            &format!("/v1/apps?teamId={}&limit=200", urlencoding::encode(team_id)),
+            &format!("/v1/apps?teamId={}&limit=100", urlencoding::encode(team_id)),
             "Listing this team's apps",
         )
         .await?;
@@ -1431,6 +1431,34 @@ async fn read_app_logs(api: &AppApi, row: &Value, v: &Value) -> Result<Value, St
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn app_listing_respects_cloud_api_limit() {
+        use axum::{extract::Query, http::StatusCode, routing::get, Json, Router};
+        use std::collections::HashMap;
+
+        let router = Router::new().route("/v1/apps", get(|Query(query): Query<HashMap<String, String>>| async move {
+            assert_eq!(query.get("teamId").map(String::as_str), Some("team/one"));
+            let limit = query.get("limit").and_then(|v| v.parse::<u32>().ok()).unwrap_or(50);
+            if !(1..=100).contains(&limit) {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": {"code": "validation_failed", "message": "limit must be an integer from 1 to 100"}})));
+            }
+            (StatusCode::OK, Json(serde_json::json!({"items": [{"id": "app-1"}]})))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let api = super::AppApi {
+            fc: crate::commands::oss_sync::fc_client::FcClient {
+                client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                base_url: format!("http://{addr}"),
+                jwt: "test-token".into(),
+            },
+        };
+        let result = super::list_team_apps(&api, "team/one").await;
+        server.abort();
+        assert_eq!(result.unwrap(), vec![serde_json::json!({"id": "app-1"})]);
+    }
+
     use super::*;
 
     #[test]
@@ -1717,12 +1745,5 @@ mod tests {
             behind.contains("3 commit(s)") && behind.contains("b7e2d10"),
             "{behind}"
         );
-    }
-
-    #[test]
-    fn runtime_info_is_a_known_read_only_action() {
-        assert!(MANAGE_ACTIONS.contains(&"runtime_info"));
-        // Read-only: it must never join the set that asks for confirmation.
-        assert!(!["deploy", "delete"].contains(&"runtime_info"));
     }
 }

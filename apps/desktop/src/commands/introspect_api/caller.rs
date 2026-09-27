@@ -40,7 +40,7 @@ pub(crate) enum RouteAccess {
 pub(crate) fn route_access(path: &str) -> RouteAccess {
     use RouteAccess::*;
     match path {
-        "/app-manage" => ReadActions(&["list", "status", "sessions", "logs"]),
+        "/app-manage" => ReadActions(&["list", "status", "runtime_info", "sessions", "logs"]),
         "/app-access" => ReadActions(&["list"]),
         "/app-data" => ReadActions(&["tables", "rows"]),
         "/app-files" => ReadActions(&["usage", "list", "download_url"]),
@@ -375,6 +375,16 @@ mod tests {
             echoed, body,
             "the buffered body must reach the handler intact"
         );
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn runtime_info_needs_no_agent_caller() {
+        let (verifier, asked) = stub_verifier(|| Err(CallerRejection::UnknownAgent));
+        let body = r#"{"action":"runtime_info","app_id":"app-1"}"#;
+        let (status, echoed) = call(guarded_router(verifier), "/app-manage", body, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(echoed, body);
         assert_eq!(asked.load(Ordering::SeqCst), 0);
     }
 
