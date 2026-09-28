@@ -608,7 +608,7 @@ const MANAGE_ACTIONS: [&str; 12] = [
 /// delete it.
 pub(super) async fn handle_app_manage(
     app: &AppHandle,
-    caller: Option<&super::caller::AgentCaller>,
+    _caller: Option<&super::caller::AgentCaller>,
     body: &[u8],
 ) -> Result<String, String> {
     let v = parse_body(body)?;
@@ -638,30 +638,16 @@ pub(super) async fn handle_app_manage(
     let row = resolve_app_row(app, &api, &v).await?;
     let zh = crate::commands::prefers_zh_locale();
 
-    // A publish the user already approved and that has not gone through yet is
-    // not asked about again — a deploy that fails, is fixed and retried is one
-    // publish, and asking per attempt only teaches people to click through. The
-    // key is everything the dialog says, so anything it would word differently
-    // still asks. Every other action here asks every time.
-    let deploy_key = (action == "deploy")
-        .then(|| caller.map(|c| super::confirm::DeployKey::new(&c.host_generation_id, &row)))
-        .flatten();
-    let approved = deploy_key
-        .as_ref()
-        .is_some_and(super::confirm::deploy_already_approved);
-
+    // Deploy approval follows the server preflight in run_app_deploy, so the
+    // dialog names the exact revision's runtime changes before any upload.
     let confirmation = match action.as_str() {
-        "deploy" if approved => None,
-        "deploy" => Some(super::confirm::app_deploy(zh, &row)),
+        "deploy" => None,
         "delete" => Some(super::confirm::app_delete(zh, &row)),
         "update" => super::confirm::app_exposure_change(zh, &row, &update_patch(&v)?),
         _ => None,
     };
     if let Some(confirmation) = confirmation {
         super::confirm::confirm_with_user(app, confirmation).await?;
-        if let Some(key) = deploy_key.clone() {
-            super::confirm::remember_deploy_approval(key);
-        }
     }
     let out = match action.as_str() {
         "status" => json!({ "action": "status", "app": app_status(&api, &row).await }),
@@ -681,16 +667,16 @@ pub(super) async fn handle_app_manage(
         "download" => checkout::download_app(app, &api, &row).await?,
         "move_workdir" => checkout::move_app_workdir(app, &api, &row, &v).await?,
         "deploy" => {
-            let deployed = run_app_deploy(&api, &row).await;
-            // Either way the row moved — to live, or to deploy_error.
+            let deployed = run_app_deploy(
+                app,
+                &api,
+                &row,
+                zh,
+                v["migrationIntent"].as_bool() == Some(true),
+            )
+            .await;
+            // Refresh the panel after success or a rejected attempt.
             notify_app_changed(app, &row);
-            if deployed.is_ok() {
-                // Spent. The publish the user approved has happened; a further
-                // one is a fresh intent and asks again.
-                if let Some(key) = deploy_key.as_ref() {
-                    super::confirm::spend_deploy_approval(key);
-                }
-            }
             json!({ "ok": true, "action": "deploy", "app": app_brief(&deployed?) })
         }
         "logs" => read_app_logs(&api, &row, &v).await?,
@@ -812,7 +798,8 @@ async fn app_status(api: &AppApi, row: &Value) -> Value {
         out["workdir"] = json!(workdir);
         out["device_name"] = json!(device);
     }
-    if let Ok(declaration) = daemon_app_declaration(&app_id, &team_id).await {
+    if let Ok(manifest) = daemon_app_manifest(&app_id, &team_id).await {
+        let declaration = &manifest["declaration"];
         out["checkout_declaration"] = json!({
             "build": declaration.get("build").cloned().unwrap_or(Value::Null),
             "start": declaration.get("start").cloned().unwrap_or(Value::Null),
@@ -1099,7 +1086,7 @@ fn redact_deploy_secrets(reason: &str) -> String {
 }
 
 /// The checkout's required build-and-start declaration.
-async fn daemon_app_declaration(app_id: &str, team_id: &str) -> Result<Value, String> {
+async fn daemon_app_manifest(app_id: &str, team_id: &str) -> Result<Value, String> {
     use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
     let path = format!("/v1/apps/{}/manifest", urlencoding::encode(app_id));
     let query = format!("?teamId={}", urlencoding::encode(team_id));
@@ -1111,9 +1098,10 @@ async fn daemon_app_declaration(app_id: &str, team_id: &str) -> Result<Value, St
     )
     .await
     .map_err(|e| format!("Could not read the app's build + start declaration: {e}"))?;
-    out.get("declaration")
-        .cloned()
-        .ok_or_else(|| "The daemon returned no build + start declaration.".to_string())
+    if out.get("declaration").is_none() {
+        return Err("The daemon returned no build + start declaration.".to_string());
+    }
+    Ok(out)
 }
 
 /// Kick the local daemon's build-and-upload leg.
@@ -1200,6 +1188,7 @@ async fn finish_app_deploy(
     team_id: &str,
     via_gitea: bool,
     git_commit_sha: Option<String>,
+    revision: &str,
     deploy_token: &str,
     handle: &DeployHandle,
 ) -> Result<Value, String> {
@@ -1212,6 +1201,7 @@ async fn finish_app_deploy(
     let mut build_body = json!({
         "appId": app_id,
         "teamId": team_id,
+        "revision": revision,
     });
     match handle {
         DeployHandle::Upload(url) => build_body["presignedPut"] = json!(url),
@@ -1247,6 +1237,13 @@ async fn finish_app_deploy(
     let declaration = build
         .get("declaration")
         .ok_or("The daemon build response did not include the build + start declaration.")?;
+    if row_str(&build, "revision") != Some(revision)
+        || (via_gitea && row_str(&build, "gitCommitSha") != Some(revision))
+    {
+        return Err(
+            "daemon built a different revision than preflight; publish stopped".to_string(),
+        );
+    }
 
     // What the daemon built, not what we asked for: a deploy publishes work the
     // agent left uncommitted, so HEAD can sit past the sha read off Gitea before
@@ -1255,7 +1252,7 @@ async fn finish_app_deploy(
         .map(str::to_string)
         .or(git_commit_sha);
 
-    let mut finalize_body = json!({ "deployToken": deploy_token });
+    let mut finalize_body = json!({ "deployToken": deploy_token, "revision": revision });
     if let Some(sha) = built_sha {
         finalize_body["gitCommitSha"] = json!(sha);
     }
@@ -1289,7 +1286,13 @@ async fn finish_app_deploy(
 /// holding both. A failure after `/deploy` must report `deploy_error` back:
 /// nothing server-side can observe that the local build never finished, and a
 /// row left at `awaiting_build` blocks every later deploy for 30 minutes.
-async fn run_app_deploy(api: &AppApi, row: &Value) -> Result<Value, String> {
+async fn run_app_deploy(
+    app: &AppHandle,
+    api: &AppApi,
+    row: &Value,
+    zh: bool,
+    migration_intent: bool,
+) -> Result<Value, String> {
     let app_id = row_id(row)?;
     let team_id = row_str(row, "teamId").unwrap_or_default().to_string();
     let provision = row_str(row, "provisionStatus").unwrap_or_default();
@@ -1319,13 +1322,46 @@ async fn run_app_deploy(api: &AppApi, row: &Value) -> Result<Value, String> {
     // Read before the deploy is minted, not after: a container app is handed a
     // registry to push to and every other app a presigned URL to upload to, and
     // only the machine holding the checkout can say which this is.
-    let declaration = daemon_app_declaration(&app_id, &team_id).await?;
-    let build_kind = row_str(&declaration["build"], "kind")
+    let manifest = daemon_app_manifest(&app_id, &team_id).await?;
+    let declaration = &manifest["declaration"];
+    let _build_kind = row_str(&declaration["build"], "kind")
         .ok_or("The daemon's app declaration has no build.kind.")?;
-    let mut start_body = json!({ "runtime": build_kind });
+    if via_gitea
+        && (manifest["clean"] != true
+            || row_str(&manifest, "gitCommitSha") != git_commit_sha.as_deref())
+    {
+        return Err(
+            "commit and push all changes; checkout HEAD must equal Gitea HEAD before deploy"
+                .to_string(),
+        );
+    }
+    let revision = if via_gitea {
+        git_commit_sha.as_deref()
+    } else {
+        row_str(&manifest, "contentDigest")
+    }
+    .ok_or("The daemon manifest did not include a source revision.")?
+    .to_string();
+    let mut start_body = json!({ "revision": revision, "declaration": declaration, "migrationIntent": migration_intent });
     if let Some(sha) = &git_commit_sha {
         start_body["gitCommitSha"] = json!(sha);
     }
+    let preflight = api
+        .call(
+            Method::POST,
+            &app_path(&app_id, "/deploy/preflight"),
+            Some(&start_body),
+            Some(Duration::from_secs(60)),
+            "Checking deployment configuration",
+        )
+        .await?;
+    let preflight_token = row_str(&preflight, "token").ok_or("preflight returned no token")?;
+    super::confirm::confirm_with_user(
+        app,
+        super::confirm::app_deploy_with_preview(zh, row, &preflight["preview"]),
+    )
+    .await?;
+    start_body["preflightToken"] = json!(preflight_token);
     let started = api
         .call(
             Method::POST,
@@ -1359,6 +1395,7 @@ async fn run_app_deploy(api: &AppApi, row: &Value) -> Result<Value, String> {
         &team_id,
         via_gitea,
         git_commit_sha,
+        &revision,
         &deploy_token,
         &handle,
     )

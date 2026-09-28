@@ -1302,6 +1302,12 @@ export interface DeployAppResult extends AppRow {
   deployToken: string;
   /** Null for an imported app: there is no forge commit to pin the deploy to. */
   gitCommitSha: string | null;
+  revision: string;
+}
+
+export interface AppDeployPreflightResult {
+  token: string;
+  preview: { firstDeploy: boolean; requiresMigrationApproval: boolean; changes: Array<{ field: string; from: unknown; to: unknown }> };
 }
 
 /** A JIT deploy key for a Gitea-managed app's repo. */
@@ -1510,14 +1516,16 @@ export interface AppsBackend {
    *  `gitCommitSha` is omitted for an imported app (no Gitea repo to pin to). */
   deployApp(
     appId: string,
-    input: { gitCommitSha?: string; runtime?: string },
+    input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; preflightToken: string },
   ): Promise<DeployAppResult>;
+  preflightAppDeploy(appId: string, input: { gitCommitSha?: string; revision: string; declaration: AppDeployDeclaration; migrationIntent?: boolean }): Promise<AppDeployPreflightResult>;
   /** Finalize FC deploy after the artifact is uploaded: points the function at
    *  the new code and returns the row with `fcEndpoint` + `fcStatus: live`. */
   finalizeDeploy(
     appId: string,
     input: {
       gitCommitSha?: string;
+      revision: string;
       deployToken: string;
       /** The daemon-validated build and start contract from `teamclu.app.json`. */
       declaration: AppDeployDeclaration;

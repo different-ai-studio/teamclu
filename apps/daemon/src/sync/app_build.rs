@@ -417,19 +417,15 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
     Ok(())
 }
 
-/// Message on the commit a deploy makes for work the agent left uncommitted.
-const DEPLOY_COMMIT_MESSAGE: &str = "chore(app): publish workdir for deploy";
-
-/// Prepare the workdir for a deploy build: fetch, publish pending work,
-/// checkout what is to be built.
+/// Prepare the workdir for a deploy build: fetch and verify the exact clean
+/// remote HEAD selected at preflight, then check it out.
 ///
 /// The fetch runs **before** anything reads ahead/behind state on purpose. That
 /// state compares HEAD against remote-tracking refs, and refs left over from
 /// the previous deploy report a commit that was pushed minutes ago as unpushed
 /// local work — every deploy after the first one was refused as dirty.
 ///
-/// Returns the sha to build when publishing moved HEAD past the one the caller
-/// asked for, and `None` when the caller's sha is what got checked out.
+/// Returns the full SHA actually built for the response's revision check.
 pub fn prepare_git_build(
     workdir: &Path,
     git: &BuildGitContext<'_>,
@@ -452,17 +448,11 @@ pub fn prepare_git_build(
         tracing::warn!(app_id = git.app_id, error = %e, "could not write .git/info/exclude");
     }
 
-    // Whatever the agent left behind gets committed and pushed rather than
-    // refused. When that happens HEAD is already the commit to build, and
-    // checking out the caller's older sha would ship without it.
-    if let Some(published) =
-        app_git::publish_pending_work(workdir, Some(&ssh), DEPLOY_COMMIT_MESSAGE)?
-    {
-        return Ok(Some(published));
-    }
-
+    // Preflight was bound to a clean checkout at the exact remote HEAD.
+    // Publishing pending edits here would change the revision after approval.
+    app_git::ensure_exact_remote_head(workdir, git.commit_sha, Some(&ssh))?;
     app_git::checkout_fetched_sha(workdir, git.commit_sha)?;
-    Ok(None)
+    Ok(Some(git.commit_sha.to_string()))
 }
 
 const DEFAULT_OUTPUT: &str = ".output";

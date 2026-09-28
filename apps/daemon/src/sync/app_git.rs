@@ -5,6 +5,7 @@
 //! permissions and passed via `GIT_SSH_COMMAND`.
 
 use crate::process_util::CommandNoWindow;
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -746,6 +747,79 @@ pub fn has_uncommitted_changes(dir: &Path) -> anyhow::Result<bool> {
     let out = run_git(dir, None, &["status", "--porcelain"])?;
     ensure_success(&out, "git status")?;
     Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
+/// The exact commit currently selected by origin's default HEAD.
+pub fn remote_head_sha(dir: &Path, ssh: Option<&SshEnv>) -> anyhow::Result<String> {
+    let out = run_git(dir, ssh, &["ls-remote", "origin", "HEAD"])?;
+    ensure_success(&out, "git ls-remote origin HEAD")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let sha = text
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("origin has no HEAD"))?;
+    validate_commit_sha(sha)
+}
+
+/// A Gitea deploy never commits or pushes the agent's pending edits. The
+/// preflight described one clean remote revision; this gate holds that promise.
+pub fn ensure_exact_remote_head(
+    dir: &Path,
+    expected: &str,
+    ssh: Option<&SshEnv>,
+) -> anyhow::Result<()> {
+    let expected = validate_commit_sha(expected)?;
+    if has_uncommitted_changes(dir)? {
+        anyhow::bail!("{ERR_DIRTY}");
+    }
+    if head_sha(dir)? != expected {
+        anyhow::bail!("checkout HEAD differs from preflight revision");
+    }
+    if remote_head_sha(dir, ssh)? != expected {
+        anyhow::bail!("origin HEAD changed after preflight");
+    }
+    Ok(())
+}
+
+/// Digest the source files git would stage, including untracked files. Git's
+/// ignore/exclude rules keep generated output and machine-local state out.
+pub fn checkout_content_digest(dir: &Path) -> anyhow::Result<String> {
+    let out = run_git(
+        dir,
+        None,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+    )?;
+    ensure_success(&out, "git ls-files")?;
+    let mut paths: Vec<&[u8]> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .collect();
+    paths.sort();
+    let mut hash = Sha256::new();
+    for raw in paths {
+        let path = std::str::from_utf8(raw)?;
+        let full = dir.join(path);
+        let bytes = if full.is_symlink() {
+            std::fs::read_link(&full)?
+                .to_string_lossy()
+                .as_bytes()
+                .to_vec()
+        } else {
+            std::fs::read(&full)?
+        };
+        hash.update((raw.len() as u64).to_be_bytes());
+        hash.update(raw);
+        hash.update((bytes.len() as u64).to_be_bytes());
+        hash.update(bytes);
+    }
+    Ok(format!("sha256:{:x}", hash.finalize()))
 }
 
 /// Local branch is ahead of its upstream (unpushed commits).
@@ -1727,6 +1801,41 @@ mod tests {
         assert_ne!(published, seeded, "HEAD must have moved");
         assert_eq!(published, head_sha(&work).unwrap());
         ensure_clean_and_pushed(&work).expect("published work is clean and pushed");
+    }
+
+    #[test]
+    fn deploy_revision_rejects_dirty_checkout_and_remote_head_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(bare) = local_origin(tmp.path()) else {
+            return;
+        };
+        let work = tmp.path().join("app");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("README.md"), b"seed").unwrap();
+        init_if_needed(&work).unwrap();
+        ensure_test_identity(&work);
+        set_remote_test(&work, &bare.to_string_lossy()).unwrap();
+        add_all(&work).unwrap();
+        commit_if_needed(&work, "seed").unwrap();
+        push_origin_head(&work, None).unwrap();
+        let sha = head_sha(&work).unwrap();
+        assert!(ensure_exact_remote_head(&work, &sha, None).is_ok());
+        std::fs::write(work.join("README.md"), b"dirty").unwrap();
+        assert!(ensure_exact_remote_head(&work, &sha, None).is_err());
+        std::fs::write(work.join("README.md"), b"seed").unwrap();
+        assert!(ensure_exact_remote_head(&work, &"b".repeat(40), None).is_err());
+    }
+
+    #[test]
+    fn imported_content_digest_covers_untracked_source_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("a.txt"), b"one").unwrap();
+        let first = checkout_content_digest(work).unwrap();
+        assert!(first.starts_with("sha256:"));
+        std::fs::write(work.join("a.txt"), b"two").unwrap();
+        assert_ne!(checkout_content_digest(work).unwrap(), first);
     }
 
     #[test]

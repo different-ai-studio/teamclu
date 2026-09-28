@@ -7,6 +7,7 @@ import {
   publishableKeyFromEnv,
 } from "../src/lib/supabase-repo.js";
 import { DEFAULT_MESSAGE_LIST_LIMIT } from "../src/lib/routing-utils.js";
+import { preflightAppDeploy } from "../src/lib/provisioning/app-deploy-preflight.js";
 
 test("createSupabaseBusinessRepository creates caller-scoped Supabase client", async () => {
   const calls = [];
@@ -2866,7 +2867,7 @@ function appAccessRepo(permissionLevel: string, actorId = "member-other", extra:
     created_at: "2026-08-27T00:00:00.000Z",
   }];
   return appsRepo(
-    appsSupabase({ seed: { apps: [GITEA_MANAGED_APP], app_member_access: accessRows }, actorRow: { id: actorId } }),
+    appsSupabase({ seed: { apps: [{ ...GITEA_MANAGED_APP, start_spec: null, deploy_token: APP_GIT_TOKEN }], app_member_access: accessRows }, actorRow: { id: actorId } }),
     extra,
   );
 }
@@ -3315,7 +3316,6 @@ test("apps: a type-only PATCH tolerates a stale provisionStatus riding along", a
 });
 
 const APP_SHA = "abc1234";
-const APP_DEPLOY = { gitCommitSha: APP_SHA };
 const APP_DECLARATION = {
   build: { kind: "node", output: ".output" },
   start: {
@@ -3326,8 +3326,56 @@ const APP_DECLARATION = {
     layers: ["Nodejs20:3"],
   },
 };
+const APP_REVISION = `sha256:${"a".repeat(64)}`;
+const APP_PREFLIGHT_TOKEN = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION, null,
+  { region: "cn-hangzhou", capabilities: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3" } as any], catalogComplete: true }).token;
+const APP_DEPLOY = { gitCommitSha: APP_SHA, revision: APP_REVISION, declaration: APP_DECLARATION, preflightToken: APP_PREFLIGHT_TOKEN };
+const APP_GIT_SHA = "b".repeat(40);
+const APP_GIT_TOKEN = preflightAppDeploy("app-1", APP_GIT_SHA, APP_DECLARATION, null,
+  { region: "cn-hangzhou", capabilities: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3" } as any], catalogComplete: true }).token;
+const APP_GIT_DEPLOY = { gitCommitSha: APP_GIT_SHA, revision: APP_GIT_SHA, declaration: APP_DECLARATION, preflightToken: APP_GIT_TOKEN };
+Object.assign(APP_ROW, { start_spec: null, deploy_token: APP_PREFLIGHT_TOKEN });
+test("preflight cannot overwrite an active deploy token", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "awaiting_build", deploy_started_at: new Date().toISOString(), deploy_token: "active-token" }] } }));
+  await assert.rejects(() => repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }), (e: any) => e.code === "deploy_in_progress");
+  assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+});
+
+test("a tampered preflight token cannot mint an upload handle", async () => {
+  let minted = 0;
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    startDeploy: async () => { minted++; throw new Error("must not mint"); },
+  });
+  await assert.rejects(() => repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: APP_PREFLIGHT_TOKEN + "x" }),
+    (e: any) => e.code === "preflight_mismatch");
+  assert.equal(minted, 0);
+});
+
+test("rejected preflight preserves the live app and never mints a handle", async () => {
+  for (const [name, declaration, migrationIntent, providerArgs, expected] of [
+    ["migration", { ...APP_DECLARATION, start: { ...APP_DECLARATION.start, fcRuntime: "custom.debian11" } }, false, APP_DECLARATION.start.args, "runtime_migration_required"],
+    ["unsupported layer", { ...APP_DECLARATION, start: { ...APP_DECLARATION.start, layers: ["Unknown99:1"] } }, true, APP_DECLARATION.start.args, "unsupported_layer"],
+    ["provider drift", APP_DECLARATION, false, ["different.js"], "live_state_drift"],
+  ] as const) {
+    let minted = 0;
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "live",
+      fc_endpoint: "https://still-live.example", fc_function_name: "live-fn", start_spec: APP_DECLARATION.start }] } }), {
+      startDeploy: async () => { minted++; throw new Error("must not mint"); },
+      readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+      readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+        command: APP_DECLARATION.start.command, args: providerArgs, port: APP_DECLARATION.start.port },
+        layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"] }),
+    });
+    await assert.rejects(() => repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration, migrationIntent }),
+      (e: any) => e.code === expected, name);
+    assert.equal((await repo.getApp("app-1"))?.fcStatus, "live", name);
+    assert.equal(minted, 0, name);
+  }
+});
 const appFinalize = (deployToken: string) => ({
   gitCommitSha: APP_SHA,
+  revision: APP_REVISION,
   deployToken,
   declaration: APP_DECLARATION,
 });
@@ -3389,6 +3437,7 @@ test("apps: deployApp returns null for prompt member", async () => {
 
 test("apps: deployApp succeeds for admin member who is not creator", async () => {
   const repo = appAccessRepo("admin", "admin-member", {
+    gitea: fakeGitea({ getRepoHead: async () => ({ sha: APP_GIT_SHA, branch: "main" }) }),
     startDeploy: async ({ appId }: any) => {
       assert.equal(appId, "app-1");
       return {
@@ -3399,7 +3448,7 @@ test("apps: deployApp succeeds for admin member who is not creator", async () =>
       };
     },
   });
-  const result = await repo.deployApp("app-1", APP_DEPLOY);
+  const result = await repo.deployApp("app-1", APP_GIT_DEPLOY);
   assert.equal(result?.fcStatus, "awaiting_build");
   assert.equal(result?.ossObjectName, "apps/app-1/build.zip");
 });
@@ -3428,7 +3477,7 @@ test("apps: deployApp on ready app returns awaiting_build + ossObjectName", asyn
   assert.equal(result.ossObjectName, "apps/app-1/build.zip");
   assert.equal(result.presignedPut, "https://oss/put?sig=x");
   assert.equal(result.gitCommitSha, APP_SHA);
-  assert.match(result.deployToken, /^[0-9a-f-]{36}$/i);
+  assert.equal(result.deployToken, APP_PREFLIGHT_TOKEN);
 });
 
 test("apps: deployApp wraps startDeploy failure as 502", async () => {
@@ -3627,16 +3676,27 @@ test("apps: finalizeDeploy leaves org_id null for a static app", async () => {
 test("apps: finalizeDeploy stamps deployed_type with the type it deployed", async () => {
   const calls: any[] = [];
   const seen: any[] = [];
+  const provider = { runtime: "custom.debian10", command: APP_DECLARATION.start.command,
+    args: APP_DECLARATION.start.args, port: APP_DECLARATION.start.port,
+    healthCheckPath: null, layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"], status: null };
+  const token = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION,
+    { runtime: "node", startSpec: APP_DECLARATION.start, provider, drift: false },
+    { region: "cn-hangzhou", capabilities: [] }).token;
   const repo = appsRepo(
     appsSupabase({
       // Live as data_app, since switched to slides: pending until this deploy
       // takes the database away.
       seed: {
-        apps: [{ ...APP_ROW, type: "slides", provision_status: "ready", fc_status: "live", deployed_type: "data_app" }],
+        apps: [{ ...APP_ROW, type: "slides", provision_status: "ready", fc_status: "live", deployed_type: "data_app",
+          fc_function_name: "tc-app-1", start_spec: APP_DECLARATION.start, deploy_token: token }],
       },
       calls,
     }),
     {
+      readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+      readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+        command: APP_DECLARATION.start.command, args: APP_DECLARATION.start.args,
+        port: APP_DECLARATION.start.port }, layers: provider.layers }),
       startDeploy: async () => ({
         fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou",
         ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put?sig=x",
@@ -3649,7 +3709,7 @@ test("apps: finalizeDeploy stamps deployed_type with the type it deployed", asyn
   );
   assert.equal((await repo.getApp("app-1"))?.typePendingRedeploy, true);
 
-  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const started = await repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: token });
   const result = await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
 
   assert.equal(seen[0].appType, "slides");
@@ -4431,14 +4491,22 @@ test("runtime info authorizes before provider discovery and has no deployment fo
 
 test("deploy start does not replace the last successful runtime or commit", async () => {
   const previous = { ...LIVE_APP, runtime: "node", git_commit_sha: "deadbee", fc_function_name: "live-fn",
-    start_spec: { fcRuntime: "custom.debian10", command: ["node"], args: ["old.js"], port: 3000, layers: [] } };
+    start_spec: APP_DECLARATION.start };
+  const provider = { runtime: "custom.debian10", command: APP_DECLARATION.start.command,
+    args: APP_DECLARATION.start.args, port: APP_DECLARATION.start.port,
+    healthCheckPath: null, layers: ["acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3"], status: null };
+  const token = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION,
+    { runtime: "node", startSpec: APP_DECLARATION.start, provider, drift: false },
+    { region: "cn-hangzhou", capabilities: [] }).token;
+  Object.assign(previous, { deploy_token: token });
   const repo = appsRepo(appsSupabase({ seed: { apps: [previous] } }), {
     startDeploy: async () => ({ fcFunctionName: "live-fn", fcRegion: "cn-shenzhen", image: { repository: "example" } }),
     readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
     readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
-      command: ["node"], args: ["old.js"], port: 3000 }, layers: [] }),
+      command: APP_DECLARATION.start.command, args: APP_DECLARATION.start.args,
+      port: APP_DECLARATION.start.port }, layers: provider.layers }),
   });
-  await repo.deployApp("app-1", { runtime: "container", gitCommitSha: "abc1234" });
+  await repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: token });
   await repo.updateApp("app-1", { fcStatus: "deploy_error", deployError: "build failed" });
   const info = await repo.getAppRuntimeInfo("app-1");
   assert.equal(info.currentDeployment.runtime, "node");
@@ -4452,7 +4520,7 @@ test("a failed first deploy has no successful deployment snapshot", async () => 
     readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
     readAppFunction: async () => { throw new Error("should not read an unverified function"); },
   });
-  await repo.deployApp("app-1", { runtime: "container", gitCommitSha: "abc1234" });
+  await repo.deployApp("app-1", APP_DEPLOY);
   await repo.updateApp("app-1", { fcStatus: "deploy_error", deployError: "build failed" });
   const info = await repo.getAppRuntimeInfo("app-1");
   assert.equal(info.currentDeployment, null);

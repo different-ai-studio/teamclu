@@ -6751,6 +6751,66 @@ paths:
                   ok: { type: boolean, enum: [true] }
         "404":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/deploy/preflight:
+    post:
+      operationId: preflightAppDeploy
+      summary: Validate a pinned app declaration before approval, upload, or build
+      description: >-
+        Admin only. Compares the proposed declaration with the last successful
+        deployment and current provider function. For a Gitea app the revision
+        must be the exact remote HEAD; for an import it is a sha256 content
+        digest. The returned token is stored on this app and must be passed to
+        deploy and finalize. A new preflight cannot replace an active deploy.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, declaration]
+              properties:
+                revision: { type: string }
+                gitCommitSha: { type: string, pattern: "^[0-9a-f]{40}$" }
+                declaration:
+                  type: object
+                  required: [build, start]
+                  properties:
+                    build: { $ref: "#/components/schemas/AppBuildSpec" }
+                    start: { $ref: "#/components/schemas/AppStartSpec" }
+                migrationIntent:
+                  type: boolean
+                  description: Explicit intent to migrate the exact changed runtime fields shown in the preview; native approval remains required.
+      responses:
+        "200":
+          description: The revision-bound preview and opaque token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, preview]
+                properties:
+                  token: { type: string }
+                  preview:
+                    type: object
+                    required: [firstDeploy, changes, requiresMigrationApproval]
+                    properties:
+                      firstDeploy: { type: boolean }
+                      requiresMigrationApproval: { type: boolean }
+                      changes:
+                        type: array
+                        items:
+                          type: object
+                          required: [field, from, to]
+                          properties:
+                            field: { type: string }
+                            from: {}
+                            to: {}
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/apps/{appId}/deploy:
     post:
       operationId: deployApp
@@ -6771,10 +6831,19 @@ paths:
           application/json:
             schema:
               type: object
+              required: [revision, declaration, preflightToken]
               properties:
+                revision: { type: string }
+                preflightToken: { type: string }
+                declaration:
+                  type: object
+                  required: [build, start]
+                  properties:
+                    build: { $ref: "#/components/schemas/AppBuildSpec" }
+                    start: { $ref: "#/components/schemas/AppStartSpec" }
                 gitCommitSha:
                   type: string
-                  pattern: "^[0-9a-f]{7,40}$"
+                  pattern: "^[0-9a-f]{40}$"
                   description: >-
                     Git commit SHA (7–40 hex) being deployed. Required for an
                     app whose `gitAuthKind` is `gitea_deploy_key`; omitted for
@@ -6798,8 +6867,8 @@ paths:
                         description: Short-lived presigned PUT URL for the build artifact. Secret — never log it.
                       deployToken:
                         type: string
-                        format: uuid
                         description: Short-lived bearer required by `/deploy/finalize`. Secret — never log it.
+                      revision: { type: string }
                       gitCommitSha:
                         type: [string, "null"]
                         description: >-
@@ -6834,17 +6903,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [deployToken, declaration]
+              required: [deployToken, revision, declaration]
               properties:
+                revision: { type: string }
                 gitCommitSha:
                   type: string
-                  pattern: "^[0-9a-f]{7,40}$"
+                  pattern: "^[0-9a-f]{40}$"
                   description: >-
                     Git commit SHA of the uploaded artifact. Omitted for an app
                     with no forge repo — see the same field on `/deploy`.
                 deployToken:
                   type: string
-                  format: uuid
                   description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
                 declaration:
                   type: object

@@ -244,6 +244,14 @@ fn manage_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
                 body["language"] = json!(language);
             }
         }
+        "deploy" => {
+            if let Some(intent) = arguments.get("migration_intent") {
+                if !intent.is_boolean() {
+                    return Err("migration_intent must be a boolean".to_string());
+                }
+                body["migrationIntent"] = intent.clone();
+            }
+        }
         "update" => {
             copy_args(arguments, &mut body, &UPDATE_FIELDS);
             if !UPDATE_FIELDS.iter().any(|k| body.get(*k).is_some()) {
@@ -497,6 +505,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     },
                     "since_minutes": { "type": "integer", "description": "logs: how far back to read. Default 30, max 10080 (7 days)." },
                     "language": { "type": "string", "enum": ["node", "python", "go", "php", "java"], "description": "runtime_info: optionally filter capabilities and observations by language." },
+                    "migration_intent": { "type": "boolean", "description": "deploy: explicitly request migration of runtime, interpreter version, or layers after reviewing the live configuration; native approval still applies." },
                     "limit": { "type": "integer", "description": "logs: how many entries. Default 100, max 200." },
                     "kind": {
                         "type": "string",
@@ -716,6 +725,18 @@ mod tests {
         assert_eq!(body["workspace_path"], json!(WS));
         assert!(body.get("app_id").is_none());
         assert!(body.get("app_name").is_none());
+    }
+
+    #[test]
+    fn deploy_forwards_explicit_migration_intent() {
+        let body =
+            manage_body(WS, &json!({ "action": "deploy", "migration_intent": true })).unwrap();
+        assert_eq!(body["migrationIntent"], true);
+        assert!(manage_body(
+            WS,
+            &json!({ "action": "deploy", "migration_intent": "yes" })
+        )
+        .is_err());
     }
 
     #[test]

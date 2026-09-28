@@ -35,6 +35,19 @@ function findRoute(routes, method, path) {
   return hit;
 }
 
+test("POST deploy/preflight forwards declaration and revision without minting a handle", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const body = { revision: "a".repeat(40), declaration: { build: { kind: "node" } }, migrationIntent: true };
+  let seen: unknown;
+  const result = await findRoute(routes, "POST", "/v1/apps/:appId/deploy/preflight")[2]({
+    params: { appId: "app-1" }, json: body,
+    repository: { preflightAppDeploy: async (_id: string, input: unknown) => { seen = input; return { token: "opaque", preview: {} }; } },
+  });
+  assert.deepEqual(seen, body);
+  assert.equal(result.body.token, "opaque");
+});
+
 test("POST /v1/apps creates and returns 201", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);

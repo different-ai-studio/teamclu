@@ -73,6 +73,7 @@ import { runtimeFacts } from "./provisioning/app-runtime-profiles.js";
 import { readRuntimeCatalog as defaultReadRuntimeCatalog, type AppLanguage } from "./provisioning/app-runtime-catalog.js";
 import { readRuntimeObservations } from "./provisioning/app-runtime-observations.js";
 import { readAppFunction as defaultReadAppFunction, projectFunction, providerErrorCode, driftFields } from "./provisioning/app-runtime-info.js";
+import { preflightAppDeploy as checkAppDeployPreflight, verifyAppDeployPreflight } from "./provisioning/app-deploy-preflight.js";
 import { appsRegion } from "./provisioning/apps-oss.js";
 import {
   appFunctionName,
@@ -4963,25 +4964,72 @@ export function createSupabaseBusinessRepository(options) {
       return customDomainView(data);
     },
 
-    async deployApp(appId: string, input: { gitCommitSha?: string; runtime?: string }) {
+    async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
+      const { data: existing, error } = await supabase.from("apps")
+        .select("id, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token")
+        .eq("id", appId).maybeSingle();
+      if (error) throw error;
+      if (!existing) return null;
+      const permission = await this.resolveAppCallerPermissionForApp(existing);
+      if (!permission || permission.level !== "admin") return null;
+      if (existing.provision_status !== "ready") throw new ApiError(409, "app_not_ready", "app must be seeded before deploy");
+      const progress = checkDeployInProgress({ fc_status: existing.fc_status, deploy_started_at: existing.deploy_started_at });
+      if (progress === "blocked") throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
+      const revision = String(input?.revision ?? "");
+      if (existing.git_auth_kind === GITEA_AUTH_KIND) {
+        const head = await this.getAppGitHead(appId);
+        if (!head || head.sha !== revision || input.gitCommitSha !== revision) {
+          throw new ApiError(409, "revision_mismatch", "Gitea deploy requires the clean checkout at exact remote HEAD");
+        }
+      } else if (!revision.startsWith("sha256:")) {
+        throw new ApiError(400, "validation_failed", "imported deploy requires a content digest");
+      }
+      const info = await this.getAppRuntimeInfo(appId);
+      if (!info) return null;
+      const result = checkAppDeployPreflight(appId, revision, input.declaration, info.currentDeployment,
+        { region: info.deploymentContract.region, capabilities: info.capabilities,
+          catalogComplete: info.sourceStatus.officialLayers.complete, migrationIntent: input.migrationIntent === true });
+      let update = supabase.from("apps").update({ deploy_token: result.token }).eq("id", appId);
+      update = existing.deploy_token === null || existing.deploy_token === undefined
+        ? update.is("deploy_token", null) : update.eq("deploy_token", existing.deploy_token);
+      update = existing.fc_status === null || existing.fc_status === undefined
+        ? update.is("fc_status", null) : update.eq("fc_status", existing.fc_status);
+      const { data: updated, error: updateError } = await update.select("id").maybeSingle();
+      if (updateError) throw updateError;
+      if (!updated) throw new ApiError(409, "deploy_in_progress", "app deploy state changed during preflight");
+      return result;
+    },
+
+    async deployApp(appId: string, input: { gitCommitSha?: string; revision?: string; declaration?: unknown; preflightToken?: string }) {
       // Optional: only a Gitea-managed app pins its deploy to a forge commit.
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       // What the checkout declares, read by the daemon before it asked for a
       // deploy. It decides which handle this deploy carries — an OSS upload or
       // a registry to push an image to — so it has to arrive here, not at
       // finalize where the rest of the declaration does.
-      const declaredBuildKind = parseDeclaredBuildKind(input?.runtime);
+      const declaration = parseAppDeployDeclaration(input?.declaration);
+      const declaredBuildKind = declaration.build.kind;
       // Visibility + readiness gate. RLS on amux.apps returns nothing when the
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, deploy_started_at")
+        .select("id, slug, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, deploy_started_at, deploy_token, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
       if (!existing) return null;
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
+      if (!input?.preflightToken || existing.deploy_token !== input.preflightToken) {
+        throw new ApiError(409, "preflight_mismatch", "preflight token does not match this app");
+      }
+      const revision = String(input.revision ?? "");
+      if (existing.git_auth_kind === GITEA_AUTH_KIND) {
+        const head = await this.getAppGitHead(appId);
+        if (!head || head.sha !== revision || gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "Gitea HEAD changed after preflight");
+      } else if (!revision.startsWith("sha256:")) {
+        throw new ApiError(400, "validation_failed", "imported deploy requires its content digest");
+      }
       if (existing.provision_status !== "ready") {
         throw new ApiError(409, "app_not_ready", "app must be seeded (provision_status=ready) before deploy");
       }
@@ -4993,17 +5041,20 @@ export function createSupabaseBusinessRepository(options) {
       if (progress === "blocked") {
         throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
       }
+      const info = await this.getAppRuntimeInfo(appId);
+      if (!info) return null;
+      verifyAppDeployPreflight(input.preflightToken, appId, revision, declaration, info.currentDeployment);
       if (progress === "stale") {
         await supabase.from("apps").update({
           fc_status: "deploy_error",
           provision_error: "previous deploy timed out",
-          deploy_token: null,
           deploy_started_at: null,
           updated_at: new Date().toISOString(),
         }).eq("id", appId);
+        existing.fc_status = "deploy_error";
       }
       if (!startDeploy) throw deployUnavailable(deployUnavailableReason);
-      const deployToken = randomUUID();
+      const deployToken = input.preflightToken;
       const deployStartedAt = new Date().toISOString();
       try {
         const r = await startDeploy({
@@ -5015,7 +5066,7 @@ export function createSupabaseBusinessRepository(options) {
           // already deployed keeps the name stored on its row.
           slug: existing.slug,
         });
-        const { data: row, error: updErr } = await supabase
+        let update = supabase
           .from("apps")
           .update({
             fc_function_name: r.fcFunctionName,
@@ -5028,11 +5079,12 @@ export function createSupabaseBusinessRepository(options) {
             // The proposal travels in this response and is committed at finalize.
             updated_at: deployStartedAt,
           })
-          .eq("id", appId)
-          .select(APP_COLUMNS)
-          .maybeSingle();
+          .eq("id", appId).eq("deploy_token", input.preflightToken);
+        update = existing.fc_status === null || existing.fc_status === undefined
+          ? update.is("fc_status", null) : update.eq("fc_status", existing.fc_status);
+        const { data: row, error: updErr } = await update.select(APP_COLUMNS).maybeSingle();
         if (updErr) throw updErr;
-        if (!row) return null;
+        if (!row) throw new ApiError(409, "deploy_in_progress", "app deploy state changed before upload handle was issued");
         return {
           ...mapApp(row),
           // Exactly one of these is set — see startDeploy. The daemon branches
@@ -5042,6 +5094,7 @@ export function createSupabaseBusinessRepository(options) {
           image: r.image,
           deployToken,
           gitCommitSha,
+          revision,
         };
       } catch (e: any) {
         if (e instanceof ApiError) throw e;
@@ -5061,7 +5114,7 @@ export function createSupabaseBusinessRepository(options) {
 
     async finalizeDeploy(
       appId: string,
-      input: { gitCommitSha?: string; deployToken: string; declaration?: unknown; image?: unknown },
+      input: { gitCommitSha?: string; revision?: string; deployToken: string; declaration?: unknown; image?: unknown },
     ) {
       const gitCommitSha = parseOptionalGitCommitSha(input?.gitCommitSha);
       const declaration = parseAppDeployDeclaration(input?.declaration);
@@ -5070,7 +5123,7 @@ export function createSupabaseBusinessRepository(options) {
       // visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain")
+        .select("id, slug, team_id, org_id, created_by_actor_id, type, fc_function_name, fc_status, runtime, auth_mode, oauth_client_id, deploy_token, oss_bucket, custom_domain, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5086,6 +5139,11 @@ export function createSupabaseBusinessRepository(options) {
         throw new ApiError(409, "invalid_deploy_state", `cannot finalize from fc_status ${existing.fc_status}`);
       }
       if (!finalizeDeploy) throw deployUnavailable(deployUnavailableReason);
+      const revision = String(input?.revision ?? "");
+      const info = await this.getAppRuntimeInfo(appId);
+      if (!info) return null;
+      verifyAppDeployPreflight(deployToken, appId, revision, declaration, info.currentDeployment);
+      if (existing.git_auth_kind === GITEA_AUTH_KIND && gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
       // Mark deploying (RLS-gated UPDATE).
       await supabase.from("apps").update({ fc_status: "deploying", updated_at: new Date().toISOString() }).eq("id", appId);
       try {

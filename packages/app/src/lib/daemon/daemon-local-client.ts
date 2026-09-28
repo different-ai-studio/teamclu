@@ -1049,15 +1049,9 @@ export interface BuildAppResult {
   outcome: BuildAppOutcome
   /** Why it failed, for the toast. Null unless the outcome is `failed`. */
   error: string | null
-  /**
-   * The commit the daemon actually built, when it differs from the one we
-   * asked for.
-   *
-   * A deploy publishes whatever the agent left uncommitted, which moves HEAD
-   * past the sha we read off Gitea before starting. Finalizing with the old
-   * one would record a commit that is not what is now running.
-   */
+  /** The exact Gitea commit the daemon built; null for imported checkouts. */
   gitCommitSha: string | null
+  revision: string | null
   /**
    * The validated build and start declaration from `teamclu.app.json`. Handed
    * to finalize so the function is built and started the way the app expects.
@@ -1079,6 +1073,7 @@ export interface BuildAppResult {
  * do for an app imported from a remote this deployment has no credential for.
  */
 interface BuildDaemonAppInput {
+  revision: string
   gitCommitSha?: string | null
   gitRemoteUrl?: string | null
   deployKeyPem?: string | null
@@ -1138,17 +1133,19 @@ interface DaemonAppWorkdirInfo {
 export async function daemonAppManifest(
   appId: string,
   teamId?: string | null,
-): Promise<AppDeployDeclaration | null> {
+): Promise<{ declaration: AppDeployDeclaration; gitCommitSha: string | null; clean: boolean; contentDigest: string } | null> {
   try {
     const query = teamId?.trim() ? `?teamId=${encodeURIComponent(teamId.trim())}` : ''
-    const result = await daemonFetch<{ declaration?: AppDeployDeclaration }>(
+    const result = await daemonFetch<{ declaration?: AppDeployDeclaration; gitCommitSha?: string; clean?: boolean; contentDigest?: string }>(
       `/v1/apps/${encodeURIComponent(appId)}/manifest${query}`,
     )
     if (!result.ok) {
       console.warn('[daemon-local-client] app manifest unavailable (non-fatal):', result.error)
       return null
     }
-    return result.data?.declaration ?? null
+    return result.data?.declaration && result.data?.contentDigest
+      ? { declaration: result.data.declaration, gitCommitSha: result.data.gitCommitSha ?? null, clean: result.data.clean === true, contentDigest: result.data.contentDigest }
+      : null
   } catch (err) {
     console.warn('[daemon-local-client] app manifest unavailable:', err)
     return null
@@ -1311,6 +1308,7 @@ export async function buildDaemonApp(
     const result = await daemonFetch<{
       status: string
       gitCommitSha?: string
+      revision?: string
       image?: string
       declaration?: AppDeployDeclaration
     }>('/v1/apps/build', {
@@ -1318,6 +1316,7 @@ export async function buildDaemonApp(
       body: JSON.stringify({
         appId,
         teamId,
+        revision: input.revision,
         ...(input.gitCommitSha?.trim() ? { gitCommitSha: input.gitCommitSha.trim() } : {}),
         ...(input.gitRemoteUrl?.trim() ? { gitRemoteUrl: input.gitRemoteUrl.trim() } : {}),
         ...(input.deployKeyPem?.trim() ? { deployKeyPem: input.deployKeyPem.trim() } : {}),
@@ -1330,25 +1329,27 @@ export async function buildDaemonApp(
         outcome: "built",
         error: null,
         gitCommitSha: result.data?.gitCommitSha?.trim() || null,
+        revision: result.data?.revision?.trim() || null,
         declaration: result.data?.declaration ?? null,
         image: result.data?.image?.trim() || null,
       }
     }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null, gitCommitSha: null, declaration: null, image: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, image: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
     return {
       outcome: "failed",
       error: problemDetailFromErrorBody(result.error).detail || null,
       gitCommitSha: null,
+      revision: null,
       declaration: null,
       image: null,
     }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null, gitCommitSha: null, declaration: null, image: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, image: null }
   }
 }
 
