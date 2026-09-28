@@ -1,6 +1,6 @@
 # Product Hunt 发布材料 — TeamClu
 
-> 基线：`main` · `package.json` v0.4.1-beta.62 · 整理于 2026-09-16
+> 基线：`main` · `package.json` v0.4.1-beta.71 · 整理于 2026-09-16，定稿于 2026-09-28
 > 用途：按字段复制粘贴到 [Product Hunt 发帖页](https://www.producthunt.com/posts/new)。
 > 说明：PH 表单里的内容（Name / Tagline / Description / Maker comment）都是**英文**，
 > 每段旁边的中文是给你看的填写提示，不要粘进表单。
@@ -17,6 +17,8 @@
 |------|------|
 | `README.md` | 本文档：PH 表单文案、Maker 评论、FAQ、清单、时间线 |
 | `social-launch.md` | 发布日社媒/社群文案（X、LinkedIn、HN、Reddit、即刻、V2EX、知乎） |
+| `ph-draft.json` | 同一套文案的机读版本，字段与本文一一对应 |
+| `landing/` | 落地页（teamclu.ai），PH 的 Link 字段指向它 |
 | `src/README.md` | 截图来源与「如何重拍」说明 |
 | `src/team-skills.png` | ② 的原始截图：团队技能详情（版本历史 / owner / 恢复） |
 | `src/group-session.png` | ④ 的原始截图：会话里的 @提及与 agent 参与者 |
@@ -70,18 +72,22 @@ Shared skills and group chat for your team's AI agents.
 > 如果更想突出「不用把上下文交给云」，可退回上一版的
 > `Local AI agents your whole team can share.`（42）——但团队向的两个功能就没在 tagline 里了。
 
-### Link ⚠️ 有个缺口
+### Link ✅ 已补上
 
-PH 要求一个可点击的落地链接。**这个仓库里没有官网/落地页**。可选：
+PH 要求一个可点击的落地链接。**现在有了：`https://teamclu.ai/`**
+
+落地页在 `landing/`，纯静态 HTML+CSS（英文主页 + `/zh/` 中文页），无 JS、无构建，
+Cloudflare Pages 直接以该目录为文档根。文案与本材料同一套事实基线，FAQ 同样收录了
+「还没做」的三点。
 
 | 选项 | URL | 说明 |
 |------|-----|------|
-| A（推荐） | `https://github.com/different-ai-studio/teamclu` | 需确认仓库为 public |
-| B | `https://github.com/different-ai-studio/teamclu/releases` | 直接指向安装包 |
-| C | `https://teamclaw.ucar.cc/beta/` | 国内 Beta CDN（旧 TeamClaw 域名，前缀 `beta`） |
+| **A（填这个）** | `https://teamclu.ai/` | 落地页。陌生人 10 秒内知道这是什么、怎么装 |
+| B | `https://github.com/different-ai-studio/teamclu` | 兜底：源码树，团队向产品不理想 |
+| C | `https://github.com/different-ai-studio/teamclu/releases` | 直接指向安装包 |
 
-> 团队向的产品尤其吃亏：PH 来的人第一眼应该看到「团队共享 skill 长什么样」，
-> 而不是源码树。建议至少做一个单页落地页，把 `ph-2` / `ph-4` 两张图放上去。
+> 部署步骤见 `landing/README.md`。**发布前先确认 `https://teamclu.ai/` 能打开** ——
+> PH 的 Link 字段是访客的第一次点击，打不开等于把第一印象交给 404。
 
 ### Description（PH 上限实测 **500 字符**）
 
@@ -113,7 +119,7 @@ TeamClu is a shared workspace where your team and its AI agents work in the same
 | Name of the launch | 40 | `TeamClu`（7） |
 | Tagline | 60 | 55 |
 | **Description** | **500** | 415 |
-| Links to the launch | — | GitHub 仓库 URL |
+| Links to the launch | — | `https://teamclu.ai/` |
 | Is this an open source project? | 勾选 | ✅ 已勾（MIT） |
 | X account of the launch | — | **留空**（没有账号，不要编） |
 | 「What inspired you to build this?」 | 未见计数器 | 1137 字符（Maker 故事，见 `ph-draft.json` 的 `story`） |
@@ -252,26 +258,46 @@ WeCom group: wrOOCIYgAAze..          （企业微信群 ID）
 | 项目 | 说明 |
 |------|------|
 | ☑ **§4 的两张团队截图已拍** | 原图在 `src/`；④ 已裁掉含业务数据的列表列 |
-| ☐ **确认 ④ 的裁剪可接受** | 否则用演示团队重拍完整三栏版，见 §4 |
-| ☐ 落地页就绪 | 当前缺口。至少让陌生人 10 秒内知道这是什么、怎么装 |
-| ☐ 确认 GitHub 仓库 public | Link 字段与 Maker 评论都指向它 |
+| ☐ **确认 ④ 的裁剪可接受** | 否则用演示团队重拍完整三栏版，见 §4。**这是当前最该补的一项**——「群聊」主张最有说服力的部分（参与者头像簇、在线状态）恰恰不在图里 |
+| ☐ 决定 ②④ 是否重拍英文版 | PH 主流量在英文区，而 ②④ 是**中文界面**。`src/README.md` 写了重拍方法（应用切语言 + 演示数据）。不重拍也能发，只是转化率打折——自己权衡 |
+| ☐ 落地页已部署 | `landing/` 已就绪并本地验证；**待部署到 teamclu.ai，并确认 `https://teamclu.ai/` 能打开**。步骤见 `landing/README.md` |
+| ☑ **确认 GitHub 仓库 public** | 已核实：`different-ai-studio/teamclu` 为 PUBLIC（2026-09-28） |
+| ☐ **切一个新 release** | 线上最新是 `v0.4.1-beta.43`（2026-09-05），代码已到 `beta.71`——**落后 28 个版本**。访客按下 install 拿到的是三周前的构建。见 §6 |
 | ☐ 安装包可下载 | GitHub Releases 的 `.dmg` / `.exe` 可用；macOS 未签名会被 Gatekeeper 拦，README 已有 `xattr -cr` 说明 |
 | ☑ 截图里没有真实团队数据 | 已对 5 张成品 OCR 复扫敏感串，命中 0（见 §4） |
-| ☐ Gallery 5 张 + Logo 上传 | 见 §1 表格 |
+| ☑ **Gallery 5 张 + Logo 就绪** | 见 §1 表格。7 张文件已入库，且删掉后重跑 `node scripts/build-producthunt-gallery.mjs` 可逐像素复现 |
 | ☐ Maker 评论定稿 | 见 §2，换掉 `[Your name]` |
+| ☐ PH 账号确认可用 | 用真人个人号，比品牌号更容易被社区接受；先确认能正常发帖 |
 | ☐ 3–5 位朋友愿意在发布日留言 | 只约「来聊聊/提问题」，不要组织刷票 |
-| ☐ 账号用真人个人号 | 比品牌号更容易被社区接受 |
 | ☐ 发布时间 | PT 00:01（北京时间夏令时 15:01 / 冬令时 16:01），周二至周四较好 |
+
+> **仍然只能由你本人提供**：Maker 真名、联系邮箱、是否公开 X 账号。见 §7。
+> X 账号留空是对的——表单要求这一项，但没有就是没有，编一个更糟。
 
 ---
 
 ## 6. Launch Day 时间线（北京时间）
 
+### 先决条件：切一个 release
+
+线上最新是 `v0.4.1-beta.43`（2026-09-05），代码已到 `v0.4.1-beta.71`——**中间差 28 个
+版本**。PH 访客看到 Download 按钮、按下去、拿到三周前的构建，这是最容易毁掉第一印象
+的地方，且发生在落地页已经说服他之后。具体命令见 `docs/release/desktop.md`；要点：
+
+1. 在 `main` 上打 tag（不是 beta 分支），走完整签名流程产出 `.dmg` / `.exe` + `latest.json`
+2. 确认 `build.config.production.json` 的 updater `endpoints` 指向
+   `github.com/different-ai-studio/teamclu/releases/latest/download/latest.json`（已正确）
+3. 发完打开 `https://github.com/different-ai-studio/teamclu/releases/latest`，
+   **用无痕窗口点一遍下载链接**——`latest` 是重定向，最容易在这里断
+4. 落地页的下载按钮指的就是这个 `latest` 地址，所以第 3 步通过，落地页就自动跟着对
+
+### 时间表
+
 | 时间 | 动作 |
 |------|------|
-| D-7 | 补拍两张团队图；Gallery/落地页定稿；约好 3–5 位朋友 |
+| D-7 | 切 release；补拍团队图；Gallery/落地页定稿；约好 3–5 位朋友 |
 | D-3 | 社媒预热（`social-launch.md`）；可选 PH Coming Soon |
-| D-1 | 复查 Link 可访问、安装包可下、截图无敏感信息 |
+| D-1 | 复查 `https://teamclu.ai/` 可访问、`releases/latest` 能下、截图无敏感信息 |
 | **D-Day 15:01** | 发布 → 立刻发 Maker 评论 |
 | D-Day +30min | 开始逐条回复评论（早点回，别堆到晚上） |
 | D-Day 当天 | 中文社群二次传播（`social-launch.md` 中文段） |
@@ -284,15 +310,18 @@ WeCom group: wrOOCIYgAAze..          （企业微信群 ID）
 ## 7. 待你填写的占位符
 
 ```
-Maker 姓名：________________
+Maker 姓名：________________            ← 替换 README.md §2 与 social-launch.md 里的 [Your name]
 PH 帖子 URL：________________
-落地页 URL：________________          ← 当前不存在，见 §1「Link 有个缺口」
-GitHub 仓库：https://github.com/different-ai-studio/teamclu   （确认 public）
-下载链接：________________
-X / Twitter：@________________
+落地页 URL：https://teamclu.ai/          ← 已就绪，待部署
+GitHub 仓库：https://github.com/different-ai-studio/teamclu   （已确认 public）
+下载链接：https://github.com/different-ai-studio/teamclu/releases/latest   （待切新版）
+X / Twitter：@________________          ← 没有就留空，不要编
 联系邮箱：________________
 Demo 视频：________________
 ```
+
+> 全仓搜 `[Your name]` 与 `[PH link]` 就能定位所有待替换处。`[PH link]` 在
+> `social-launch.md` 里出现多次，发布后统一换成当天的帖子 URL。
 
 ---
 
@@ -323,7 +352,7 @@ Demo 视频：________________
 | 事实 | 来源 |
 |------|------|
 | 产品名 **TeamClu** | `apps/desktop/tauri.conf.json` → `productName`；`README.md` |
-| 版本 v0.4.1-beta.62 | `package.json`、`apps/desktop/Cargo.toml`、`apps/daemon/Cargo.toml` |
+| 版本 v0.4.1-beta.71 | `package.json`、`apps/desktop/Cargo.toml`、`apps/daemon/Cargo.toml` |
 | MIT 许可 | `LICENSE`、`README.md` |
 | 客户端：Desktop / iOS / Expo / Chrome MV3 | `README.md` → Clients |
 | 六个通道：WeCom、Feishu、Discord、KOOK、WeChat、Email | `README.md`、`build.config.json` → `features.channels` |
@@ -336,8 +365,16 @@ Demo 视频：________________
 1. **skill 没有成员间可见性隔离。** 现有加密是一个团队一把密钥、全体共用，
    防的是云厂商不是同事（`06` §1.3）。FAQ 里已经如实写了，被追问别含糊。
 2. **@提及不是权限。** 通道里 @bot 的语义是「这条消息给 agent」，不是「把人拉进会话」（`03` §7.3）。
-3. **品牌名与过时 README。** 代码已完成 `teamclaw → teamclu` 改名（commit `a7d65c3b`），
-   PH 统一用 **TeamClu**；但 `build.config.json` 的 `app.name` 仍是 `TeamClaw`，
-   CDN 也还有旧域名 `teamclaw.ucar.cc`。另外 `README.md` 架构图仍写
-   `local agents … opencode (default)`，而 pi 自 2026-09-04 起是唯一本地运行时（ADR-0014）——
-   文案不点名任何运行时，所以不受影响，但别照 README 答。
+3. **品牌名。** 规范名是 **TeamClu**，唯一真相源是 Rust 的
+   `crates/teamclu-runtime-env/src/storage_namespace.rs` 里的
+   `OFFICIAL_STORAGE_DIR = "teamclu"`；`build-config.ts` 默认值、
+   `resolve-brand-profiles.mjs` 官方档案、`build.config.production.json`、
+   扩展两个 locale 的 `appName` 全都是 `teamclu`。
+   `brand-parity.test.ts` 断言 `isOfficialBrand("teamclaw")` **必须为 false**——
+   `teamclaw` 是被定义为白牌名的，不是官方名。
+   仍然残留 `TeamClaw` 字样的只有 `build.config.json`（gitignored 的本地开发配置，
+   **不是发布路径**；改成 `teamclu` 前先确认本机没有 `~/.teamclaw/` 下的旧数据）
+   和 CDN 上的旧域名 `teamclaw.ucar.cc`。
+   另外 `README.md` 架构图仍写 `local agents … opencode (default)`，
+   而 pi 自 2026-09-04 起是唯一本地运行时（ADR-0014）——文案不点名任何运行时，
+   所以不受影响，但别照 README 答。

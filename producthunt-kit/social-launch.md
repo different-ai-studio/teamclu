@@ -1,7 +1,8 @@
 # TeamClu 发布日社媒 / 社群文案
 
 > 配合 [`README.md`](./README.md) 使用。所有 `[PH link]` 换成当天的 Product Hunt 帖子 URL，
-> `[repo]` 换成 `https://github.com/different-ai-studio/teamclu`。
+> `[repo]` 换成 `https://github.com/different-ai-studio/teamclu`，
+> `[site]` 换成 `https://teamclu.ai/`（落地页）。
 > 主线是**团队协作**：共享 Skills + 会话即群聊。本地优先作为支撑点出现，不当主角。
 > 英文段落按平台语调写过，不是同一段复制四遍——每个社区反感的东西不一样。
 
@@ -71,8 +72,12 @@ Your team reaches the agents where it already talks: WeCom, Feishu, Discord, KOO
 
 MIT, local-first, in beta. Feedback very welcome 🙏
 
-[repo]
+[site]
 ```
+
+> Tweet 5 用 `[site]` 而不是 `[repo]`：这是整条 X 线程里唯一不是指向 PH 帖子的链接，
+> 读者点进来时还没有上下文，落地页比源码树强。长度与 `[repo]` 相同（6 字符），
+> 不影响上面按 23 字符核算过的链接预算。
 
 ---
 

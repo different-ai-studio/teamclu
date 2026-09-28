@@ -2,7 +2,8 @@
   "_comment": "Single source of truth for the Product Hunt draft fill. Values are copied verbatim from producthunt-kit/README.md. Nothing here is published automatically — the driver only fills the composer and SAVES AS DRAFT.",
   "name": "TeamClu",
   "tagline": "Shared skills and group chat for your team's AI agents.",
-  "link": "https://github.com/different-ai-studio/teamclu",
+  "link": "https://teamclu.ai/",
+  "_linkNote": "Landing page lives in landing/ and is served with that directory as the Cloudflare Pages document root. Source-of-truth for the copy is landing/index.html; keep the two in sync. Repo (https://github.com/different-ai-studio/teamclu) is the fallback if the domain is not live on launch day.",
   "_descriptionLimit": "PH's composer caps Description at 500 characters (the kit's 779-char 'mid' text does NOT fit). This is the team-story version, 415 chars.",
   "description": "TeamClu is a shared workspace where your team and its AI agents work in the same group chats.\n\nSessions are group chats, not 1:1 bot chats: add teammates, @mention people, branch an agent reply into a thread, and see who's online.\n\nSkills are team assets: publish one with a changelog and every teammate's agent follows it automatically. Edit locally and you get a conflict, never a silent overwrite.\n\nMIT, in beta.",
   "topics": ["Productivity", "AI Agents", "Team collaboration software"],
@@ -18,8 +19,10 @@
     "producthunt-kit/screenshots/ph-5-extension-1270x760.png"
   ],
   "_pendingDecision": {
-    "link": "No landing page exists. GitHub repo is the stand-in — replace with a real landing page before launching.",
-    "pricing": "Free / MIT — enter manually if the form requires it."
+    "downloadLink": "Point at https://github.com/different-ai-studio/teamclu/releases/latest rather than a pinned version, so it keeps tracking. The landing page already does this. NOTE: the newest published build is v0.4.1-beta.43 (2026-09-05) while the tree is at v0.4.1-beta.71 — cut a release before launch or visitors install a 3-week-old build.",
+    "pricing": "Free / MIT — enter manually if the form requires it.",
+    "version": "v0.4.1-beta.71 in the repo as of 2026-09-28."
   },
+  "_makerInfoStillNeeded": "Maker real name, contact email, and whether to publish an X account. PH's X field is required, but a fabricated handle is worse than an empty one — leave it blank if there isn't one.",
   "_makerCommentNotFilled": "PH's new-post composer normally has no maker-comment field; the first comment is posted after launch. Use the maker comment in README.md §2 at that point."
 }
