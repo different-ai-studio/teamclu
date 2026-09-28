@@ -173,12 +173,12 @@ Free
 
 ## 2. Maker 首发评论（发布后 5 分钟内发）
 
-`[Your name]` 换成你的真名。PH 不喜欢「求 upvote」的措辞，这条里没有，别加。
+已换成 Bertrand（见 §7 的确认依据）。PH 不喜欢「求 upvote」的措辞，这条里没有，别加。
 
 ```
 Hey Product Hunt 👋
 
-I'm [Your name], and I build TeamClu.
+I'm Bertrand, and I build TeamClu.
 
 Every team I know has the same problem with AI agents, and it isn't the model. It's that the agent is personal. I teach mine how we run a release; a teammate teaches theirs the same thing a month later, slightly differently. And the work itself happens in a chat window nobody else can see.
 
@@ -270,7 +270,7 @@ WeCom group: wrOOCIYgAAze..          （企业微信群 ID）
 | ☐ 安装包可下载 | GitHub Releases 的 `.dmg` / `.exe` 可用；macOS 未签名会被 Gatekeeper 拦，README 已有 `xattr -cr` 说明 |
 | ☑ 截图里没有真实团队数据 | 已对 5 张成品 OCR 复扫敏感串，命中 0（见 §4） |
 | ☑ **Gallery 5 张 + Logo 就绪** | 见 §1 表格。7 张文件已入库，且删掉后重跑 `node scripts/build-producthunt-gallery.mjs` 可逐像素复现 |
-| ☐ Maker 评论定稿 | 见 §2，换掉 `[Your name]` |
+| ☑ Maker 评论定稿 | 见 §2，姓名已填 Bertrand |
 | ☐ PH 账号确认可用 | 用真人个人号，比品牌号更容易被社区接受；先确认能正常发帖 |
 | ☐ 3–5 位朋友愿意在发布日留言 | 只约「来聊聊/提问题」，不要组织刷票 |
 | ☐ 发布时间 | PT 00:01（北京时间夏令时 15:01 / 冬令时 16:01），周二至周四较好 |
@@ -314,18 +314,50 @@ WeCom group: wrOOCIYgAAze..          （企业微信群 ID）
 ## 7. 待你填写的占位符
 
 ```
-Maker 姓名：________________            ← 替换 README.md §2 与 social-launch.md 里的 [Your name]
+Maker 姓名：Bertrand                   ← 已确认（2026-09-28，见下）
+PH 账号：@b319                          ← 已确认
 PH 帖子 URL：________________
 落地页 URL：https://teamclu.ai/          ← 现有官网（勿用 teamclaw.ai，会跳到 workclaw.com）
 GitHub 仓库：https://github.com/different-ai-studio/teamclu   （已确认 public）
 下载链接：https://github.com/different-ai-studio/teamclu/releases/latest   （待切新版）
 X / Twitter：@________________          ← 没有就留空，不要编
-联系邮箱：support@teamclu.ai          ← 取自官网 Footer，已确认
+联系邮箱：support@teamclu.ai           ← 已确认，取自官网 Footer
 Demo 视频：________________
 ```
 
-> 全仓搜 `[Your name]` 与 `[PH link]` 就能定位所有待替换处。`[PH link]` 在
-> `social-launch.md` 里出现多次，发布后统一换成当天的帖子 URL。
+> `[PH link]` 在 `social-launch.md` 里出现 10 处，发布后统一换成当天的帖子 URL。Maker 姓名已全部填好。
+> `social-launch.md` 里出现 10 处，发布后统一换成当天的帖子 URL。
+
+**Maker 姓名怎么确认的**（不是猜的）：已登录的 PH 账号是 `@b319`，其 profile 页
+显示名为 **Bertrand**（加入于 2026-08-08，已发布过 TradingPlan）；git 提交身份为
+`b319 <weigan.huang@gmail.com>`；截图里的「负责人 · Bertrand」是同一人。
+
+---
+
+## 7.5 PH 当前的实际提交流程（2026-09-28 实测，与 §1 的描述不同）
+
+§1 的字段表是 2026-09-16 对着 composer 记的。**今天从 `producthunt.com/posts/new`
+进去，第一屏不是 Name/Tagline/Description 那一套**，而是「选产品或填链接」：
+
+| 元素 | 内容 |
+|------|------|
+| 标题 | Submit a product |
+| `Choose a product...` | 从已有产品里选（用于「Launching again?」，让新 launch 关联到原产品） |
+| `www.producthunt.com` | Link to the product，填链接则是**新建产品** |
+| `Get started` | 主 CTA |
+| 提示 | **Your existing in progress posts: TeamClu** |
+
+该账号下 `TeamClu` 已存在一个 in-progress 产品条目（`/products/teamclu` 返回 404，
+因为未发布；Maker History 里只有 TradingPlan）。
+
+> ⚠️ **所以要选 `Choose a product...` 里已有的 TeamClu，不要走「填链接新建」那条路**，
+> 否则会变成两个产品条目。
+>
+> 这个下拉是自定义组件，只响应**可信用户事件**（trusted event），脚本设 `.value`
+> 或派发 `KeyboardEvent` 都不会弹出选项，必须真人点击或真实按键。这一步需要人工。
+>
+> 选完之后才会进入 §1 描述的 Name / Tagline / Description / Topics / Pricing。
+> **所以 §1 的字段名与上限需要在选完产品之后重新核对一遍**，别直接照抄。
 
 ---
 
