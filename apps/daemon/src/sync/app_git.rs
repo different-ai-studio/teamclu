@@ -790,9 +790,11 @@ pub fn checkout_content_digest(dir: &Path) -> anyhow::Result<String> {
         declaration
             .build
             .output
-            .trim_start_matches("./")
-            .trim_end_matches('/')
             .replace('\\', "/")
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect::<Vec<_>>()
+            .join("/")
     });
     let kind = declaration
         .as_ref()
@@ -827,10 +829,10 @@ pub fn checkout_content_digest(dir: &Path) -> anyhow::Result<String> {
                 && output != "."
                 && (path == output || path.starts_with(&format!("{output}/")))
         });
-        let dependency_output = path.split('/').any(|part| match kind {
-            Some("node") => part == "node_modules",
-            Some("python") => [".venv", "venv", "__pycache__", ".pytest_cache"].contains(&part),
-            Some("java") => [".gradle", "target", "build"].contains(&part),
+        let dependency_output = path.split('/').next().is_some_and(|root| match kind {
+            Some("node") => root == "node_modules",
+            Some("python") => [".venv", "venv", "__pycache__", ".pytest_cache"].contains(&root),
+            Some("java") => [".gradle", "target", "build"].contains(&root),
             _ => false,
         });
         if !tracked && (generated_output || dependency_output) {
@@ -1915,6 +1917,36 @@ mod tests {
         let first = checkout_content_digest(work).unwrap();
         std::fs::write(work.join("dist/tracked.txt"), "changed").unwrap();
         assert_ne!(checkout_content_digest(work).unwrap(), first);
+    }
+
+    #[test]
+    fn imported_digest_normalizes_declared_output_components() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("teamclu.app.json"), r#"{"build":{"kind":"node","output":"foo/./dist"},"start":{"fcRuntime":"custom.debian12","command":["node"],"args":["server.mjs"],"layers":[],"port":9000}}"#).unwrap();
+        std::fs::write(work.join("server.mjs"), "source").unwrap();
+        let revision = checkout_content_digest(work).unwrap();
+        std::fs::create_dir_all(work.join("foo/dist")).unwrap();
+        std::fs::write(work.join("foo/dist/server.mjs"), "built").unwrap();
+        assert_eq!(checkout_content_digest(work).unwrap(), revision);
+    }
+
+    #[test]
+    fn imported_digest_includes_untracked_source_under_nested_build_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("teamclu.app.json"), r#"{"build":{"kind":"java","output":"target"},"start":{"fcRuntime":"custom.debian12","command":["java"],"args":["Feature"],"layers":[],"port":9000}}"#).unwrap();
+        std::fs::create_dir_all(work.join("src/build")).unwrap();
+        std::fs::write(work.join("src/build/Feature.java"), "class Feature {}").unwrap();
+        let revision = checkout_content_digest(work).unwrap();
+        std::fs::write(
+            work.join("src/build/Feature.java"),
+            "class Feature { int changed; }",
+        )
+        .unwrap();
+        assert_ne!(checkout_content_digest(work).unwrap(), revision);
     }
 
     #[test]

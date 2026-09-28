@@ -336,11 +336,15 @@ pub(super) fn notify_app_changed(app: &AppHandle, row: &Value) {
 /// desktop process's OS or the Cloud API's target runtime.
 fn selected_host_facts(response: &Value) -> Result<Value, String> {
     let facts = response.get("hostFacts").filter(|facts| {
-        facts["os"].is_string()
-            && facts["arch"].is_string()
-            && facts["docker"].is_boolean()
-            && facts["buildShell"].is_string()
-            && facts["buildTools"].is_object()
+        ["os", "arch", "buildShell"].iter().all(|key| {
+            facts[*key]
+                .as_str()
+                .is_some_and(|value| !value.trim().is_empty())
+        }) && facts["docker"].is_boolean()
+            && ["pnpm", "python3", "go", "java", "docker"]
+                .iter()
+                .all(|key| facts["buildTools"][*key].is_boolean())
+            && facts["buildTools"]["docker"] == facts["docker"]
     });
     facts
         .cloned()
@@ -1563,13 +1567,33 @@ mod tests {
     fn runtime_info_uses_selected_daemon_host_shape() {
         let response = serde_json::json!({"hostFacts": {
             "os":"windows", "arch":"x86_64", "docker":true, "buildShell":"sh -c",
-            "buildTools":{"pnpm":true,"python3":false,"docker":true}
+            "buildTools":{"pnpm":true,"python3":false,"go":false,"java":true,"docker":true}
         }});
         assert_eq!(
             super::selected_host_facts(&response).unwrap(),
             response["hostFacts"]
         );
         assert!(super::selected_host_facts(&serde_json::json!({})).is_err());
+    }
+    #[test]
+    fn runtime_info_rejects_malformed_selected_daemon_host_facts() {
+        let valid = serde_json::json!({"hostFacts": {
+            "os":"windows", "arch":"x86_64", "docker":true, "buildShell":"sh -c",
+            "buildTools":{"pnpm":true,"python3":false,"go":false,"java":true,"docker":true}
+        }});
+        for (pointer, replacement) in [
+            ("/hostFacts/os", serde_json::json!("")),
+            ("/hostFacts/arch", serde_json::json!(" ")),
+            ("/hostFacts/buildShell", serde_json::json!("")),
+            ("/hostFacts/buildTools", serde_json::json!({})),
+            ("/hostFacts/buildTools/pnpm", serde_json::json!("yes")),
+            ("/hostFacts/buildTools/docker", serde_json::json!(false)),
+            ("/hostFacts/docker", serde_json::json!("yes")),
+        ] {
+            let mut invalid = valid.clone();
+            *invalid.pointer_mut(pointer).unwrap() = replacement;
+            assert!(super::selected_host_facts(&invalid).is_err(), "{pointer}");
+        }
     }
     #[test]
     fn unknown_or_missing_artifact_verification_cannot_finalize() {

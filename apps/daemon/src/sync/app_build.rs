@@ -2186,14 +2186,14 @@ mod tests {
         std::fs::write(work.join("source.txt"), "original").unwrap();
         let declaration = |command: &str| {
             serde_json::json!({
-                "build": {"kind": "node", "output": "dist", "command": command},
+                "build": {"kind": "node", "output": "foo/./dist", "command": command},
                 "start": {"fcRuntime": "custom.debian12", "command": ["node"],
                     "args": ["result.txt"], "layers": [], "port": 9000}
             })
         };
         std::fs::write(
             work.join(MANIFEST_FILE),
-            declaration("mkdir -p dist && printf built > dist/result.txt").to_string(),
+            declaration("mkdir -p foo/dist && printf built > foo/dist/result.txt").to_string(),
         )
         .unwrap();
         let revision = app_git::checkout_content_digest(work).unwrap();
@@ -2203,7 +2203,7 @@ mod tests {
         std::fs::write(
             work.join(MANIFEST_FILE),
             declaration(
-                "mkdir -p dist && printf built > dist/result.txt && printf changed > source.txt",
+                "mkdir -p foo/dist && printf built > foo/dist/result.txt && printf changed > source.txt",
             )
             .to_string(),
         )
