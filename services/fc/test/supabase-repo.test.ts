@@ -4399,7 +4399,7 @@ test("app data: a non-member gets nothing", async () => {
 
 // --- App logs ---------------------------------------------------------------
 
-function logsRepo(appRow: any, { level, actorId = "actor-app-1", appLogs, appLogsUnavailableReason }: any = {}) {
+function logsRepo(appRow: any, { level, actorId = "actor-app-1", appLogs, appLogsUnavailableReason, ...extra }: any = {}) {
   const access = level && actorId !== "actor-app-1"
     ? [{ app_id: "app-1", member_id: actorId, permission_level: level, granted_by_member_id: "actor-app-1" }]
     : [];
@@ -4408,11 +4408,101 @@ function logsRepo(appRow: any, { level, actorId = "actor-app-1", appLogs, appLog
       seed: { apps: [appRow], app_member_access: access, teams: [{ id: "team-1", oid: "org-derived" }] },
       actorRow: { id: actorId },
     }),
-    { appLogs, appLogsUnavailableReason },
+    { appLogs, appLogsUnavailableReason, ...extra },
   );
 }
 
 const LIVE_APP = { ...APP_ROW, provision_status: "ready", fc_status: "live", fc_endpoint: "https://x.fcapp.run" };
+
+test("runtime info authorizes before provider discovery and has no deployment for a new app", async () => {
+  let calls = 0;
+  const deps = { readRuntimeCatalog: async () => { calls++; return { candidates: [], sourceStatus: {} }; },
+    readAppFunction: async () => { calls++; return {}; } };
+  const stranger = logsRepo({ ...APP_ROW, created_by_actor_id: "other", visibility: "personal" },
+    { actorId: "uninvited", ...deps });
+  assert.equal(await stranger.getAppRuntimeInfo("app-1"), null);
+  assert.equal(calls, 0);
+  const owner = logsRepo(APP_ROW, deps);
+  const result = await owner.getAppRuntimeInfo("app-1", "java");
+  assert.equal(result.currentDeployment, null);
+  assert.equal(calls, 1, "catalog only; no GetFunction for a new app");
+  assert.equal(result.deploymentContract.region.length > 0, true);
+});
+
+test("runtime info projects safe provider fields and reports TeamClu drift", async () => {
+  let seen: any;
+  const row = { ...LIVE_APP, fc_function_name: "legacy-function", fc_region: "cn-shenzhen", git_commit_sha: "abc",
+    env_deployed_at: "2026-09-28T00:00:00Z", runtime: "node", start_spec: {
+      fcRuntime: "custom.debian10", command: ["/opt/node/bin/node"], args: ["server.js"], port: 3000,
+      layers: ["Nodejs20:3"],
+    } };
+  const repo = logsRepo(row, {
+    readRuntimeCatalog: async (_region: string, language?: string) => {
+      seen = { ...seen, language };
+      return { candidates: [{ name: "java11", language: "java" }], sourceStatus: { documentation: {}, officialLayers: {} } };
+    },
+    readAppFunction: async (name: string, region: string) => {
+      seen = { ...seen, name, region };
+      return { runtime: "custom.debian11", customRuntimeConfig: { command: ["/opt/node/bin/node"], args: ["server.js"], port: 3000 },
+        layers: ["acs:fc:cn-shenzhen:official:layers/Nodejs20/versions/3"], status: "Active",
+        environmentVariables: { API_KEY: "secret" }, customContainerConfig: { registryAuthConfig: { password: "secret" } } };
+    },
+  });
+  const result = await repo.getAppRuntimeInfo("app-1", "java");
+  assert.deepEqual(seen, { name: "legacy-function", region: "cn-shenzhen", language: "java" });
+  assert.equal(result.currentDeployment.drift, true);
+  assert.deepEqual(result.currentDeployment.driftFields, ["fcRuntime"]);
+  assert.equal(result.currentDeployment.provider.runtime, "custom.debian11");
+  assert.equal(JSON.stringify(result).includes("secret"), false);
+  assert.equal(result.capabilities.length, 1);
+  assert.ok(result.observations.every((o: any) => o.language === "java"));
+});
+
+test("runtime info retains a recorded deployment when FC function is missing", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "old", runtime: "node", start_spec: { fcRuntime: "custom", command: ["node"], args: [], port: 3000, layers: [] } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
+    readAppFunction: async () => { throw Object.assign(new Error("contains secret"), { code: "FunctionNotFound" }); },
+  });
+  const result = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(result.currentDeployment.drift, true);
+  assert.equal(result.currentDeployment.provider, null);
+  assert.equal(JSON.stringify(result).includes("secret"), false);
+  assert.equal(result.sourceStatus.provider.error, "function_missing");
+});
+
+test("runtime info reports provider read failure without leaking its message", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "old" }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
+    readAppFunction: async () => { throw new Error("access key leaked by SDK"); },
+  });
+  const result = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(result.currentDeployment.provider, null);
+  assert.equal(result.sourceStatus.provider.error, "provider_unavailable");
+  assert.equal(result.sourceStatus.provider.observedAt, null);
+  assert.deepEqual(result.sourceStatus.provider.errors, ["provider_unavailable"]);
+  assert.equal(result.sourceStatus.provider.stale, false);
+  assert.equal(JSON.stringify(result).includes("access key"), false);
+});
+
+test("runtime info recognizes an SDK HTTP 404 as a missing function", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "gone" }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
+    readAppFunction: async () => { throw Object.assign(new Error("not found"), { statusCode: 404 }); },
+  });
+  const result = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(result.sourceStatus.provider.error, "function_missing");
+  assert.equal(result.currentDeployment.drift, true);
+});
+
+test("runtime info compares a matching container deployment without drift", async () => {
+  const repo = logsRepo({ ...LIVE_APP, runtime: "container", fc_function_name: "container-fn",
+    start_spec: { port: 8080 } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
+    readAppFunction: async () => ({ body: { runtime: "custom-container", customContainerConfig: { port: 8080 }, layers: [] } }),
+  });
+  const result = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(result.currentDeployment.drift, false);
+});
 
 test("app logs: the function name comes off the row, and the query is clamped", async () => {
   // Clamped here rather than trusted: `limit` decides how much text lands in

@@ -956,3 +956,17 @@ test("GET /v1/apps/:appId/runtime-info hides an app the caller cannot see", asyn
     (e: any) => String(e?.message ?? e).includes("not found"),
   );
 });
+
+test("GET runtime-info forwards a validated language filter", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/runtime-info")[2];
+  let seen: unknown;
+  await handler({ params: { appId: "a1" }, query: new URLSearchParams("language=java"), repository: {
+    getAppRuntimeInfo: async (_id: string, language: string) => { seen = language; return {}; },
+  } });
+  assert.equal(seen, "java");
+  await assert.rejects(() => handler({ params: { appId: "a1" }, query: new URLSearchParams("language=ruby"), repository: {
+    getAppRuntimeInfo: async () => { throw new Error("must not call repository"); },
+  } }), (e: any) => e?.statusCode === 400);
+});

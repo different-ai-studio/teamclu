@@ -70,6 +70,9 @@ import {
 } from "./validation/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
 import { runtimeFacts } from "./provisioning/app-runtime-profiles.js";
+import { readRuntimeCatalog as defaultReadRuntimeCatalog, type AppLanguage } from "./provisioning/app-runtime-catalog.js";
+import { readRuntimeObservations } from "./provisioning/app-runtime-observations.js";
+import { readAppFunction as defaultReadAppFunction, projectFunction, providerErrorCode, driftFields } from "./provisioning/app-runtime-info.js";
 import { appsRegion } from "./provisioning/apps-oss.js";
 import {
   appFunctionName,
@@ -625,6 +628,8 @@ export function createSupabaseBusinessRepository(options) {
     // the reason names what is missing, as with the two above.
     appLogs,
     appLogsUnavailableReason,
+    readRuntimeCatalog = defaultReadRuntimeCatalog,
+    readAppFunction = defaultReadAppFunction,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
     // Optional fan-out hook — called after every successful message INSERT.
     // Best-effort: errors are logged and swallowed so the insert outcome is
@@ -5310,17 +5315,10 @@ export function createSupabaseBusinessRepository(options) {
      * deployed under an older naming scheme still finds its own logs; deriving
      * it is only the fallback for a row that predates the column.
      */
-    /**
-     * The platform's own facts about where this app will run.
-     *
-     * Unlike logs, these carry no application data — they describe the images
-     * and the region, not the app — so `view` is enough. What the app id gates
-     * is whether the caller may see that this app exists at all.
-     */
-    async getAppRuntimeInfo(appId: string) {
+    async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, team_id, type, created_by_actor_id")
+        .select("id, team_id, type, created_by_actor_id, fc_status, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -5329,7 +5327,62 @@ export function createSupabaseBusinessRepository(options) {
       const permission = await this.resolveAppCallerPermissionForApp(app);
       if (!permission) return null;
 
-      return runtimeFacts(appsRegion());
+      const region = app.fc_region || appsRegion();
+      // A failed later deploy may leave the last successful snapshot intact.
+      const deployed = app.fc_status === "live" || !!app.env_deployed_at;
+      const catalog = await readRuntimeCatalog(region, language);
+      const sourceStatus: any = { ...catalog.sourceStatus,
+        provider: { checkedAt: null, observedAt: null, complete: !deployed, stale: false,
+          errors: [], error: null, provenance: "Alibaba FC 2023-03-30 GetFunction" } };
+      let currentDeployment: any = null;
+      if (deployed) {
+        currentDeployment = {
+          runtime: app.runtime ?? null,
+          startSpec: app.start_spec ?? null,
+          commit: app.git_commit_sha ?? null,
+          deployedAt: app.env_deployed_at ?? null,
+          functionName: app.fc_function_name ?? null,
+          provider: null,
+          drift: false,
+          driftFields: [],
+        };
+        sourceStatus.provider.checkedAt = new Date().toISOString();
+        if (app.fc_function_name) {
+          try {
+            const provider = projectFunction(await readAppFunction(app.fc_function_name, region));
+            currentDeployment.provider = provider;
+            currentDeployment.driftFields = driftFields(app.start_spec, provider, region, app.runtime);
+            currentDeployment.drift = currentDeployment.driftFields.length > 0;
+            sourceStatus.provider.complete = true;
+            sourceStatus.provider.observedAt = sourceStatus.provider.checkedAt;
+          } catch (e) {
+            sourceStatus.provider.error = providerErrorCode(e);
+            sourceStatus.provider.errors = [sourceStatus.provider.error];
+            currentDeployment.drift = sourceStatus.provider.error === "function_missing";
+            if (currentDeployment.drift) currentDeployment.driftFields = ["providerFunction"];
+          }
+        } else {
+          sourceStatus.provider.error = "function_name_missing";
+          sourceStatus.provider.errors = [sourceStatus.provider.error];
+          currentDeployment.drift = true;
+          currentDeployment.driftFields = ["providerFunction"];
+        }
+      }
+      return {
+        deploymentContract: {
+          method: app.runtime === "container" ? "container" : "agent_build_to_fc_custom_runtime",
+          target: { os: "linux", arch: "x86_64" },
+          region,
+          artifact: app.runtime === "container" ? "container_image" : "linux_x86_64_artifact",
+          requiredDeclarationFields: app.runtime === "container"
+            ? ["build.kind", "build.dockerfile", "start.port"]
+            : ["build.kind", "build.output", "start.fcRuntime", "start.command", "start.args", "start.port", "start.layers"],
+        },
+        currentDeployment,
+        capabilities: catalog.candidates,
+        observations: readRuntimeObservations(language),
+        sourceStatus,
+      };
     },
 
     async getAppLogs(appId: string, query: any = {}) {

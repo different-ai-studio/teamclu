@@ -236,6 +236,14 @@ fn manage_body(workspace: &str, arguments: &Value) -> Result<Value, String> {
             &mut body,
             &["since_minutes", "limit", "kind", "contains", "request_id"],
         ),
+        "runtime_info" => {
+            if let Some(language) = str_arg(arguments, "language") {
+                if !matches!(language.as_str(), "node" | "python" | "go" | "php" | "java") {
+                    return Err("language must be node, python, go, php, or java".to_string());
+                }
+                body["language"] = json!(language);
+            }
+        }
         "update" => {
             copy_args(arguments, &mut body, &UPDATE_FIELDS);
             if !UPDATE_FIELDS.iter().any(|k| body.get(*k).is_some()) {
@@ -434,7 +442,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "manage_app",
-            "description": "Work with a TeamClu app — what its control panel does. Omit app_id and app_name to act on the app whose checkout is the workspace you are in; you do not need to ask the user which app this is, and `list` reports each app's local `workdir`. list: this team's apps. status: every setting, where the checkout is on this machine, what the checkout declares about how it is built and run, and how far its branch is ahead of what is live. runtime_info: target runtime facts, interpreter paths, and available layers for writing deployment declarations. sessions: conversations linked to the app. create: a new app with its code on this machine — from a starter template (type), an existing repo (git_remote_url) or a folder already here (local_dir). update: change name, type, visibility and the deployed site's login wall (auth_*) — only the fields you pass change. reseed: write the code again for an app whose code was never written or failed to be. download: clone a team app onto this machine. move_workdir: move this machine's checkout elsewhere (not the one you are running in). deploy: build the checkout on this machine and PUBLISH TO THE PUBLIC INTERNET; an app whose auth_mode is \"none\" is readable by anyone with the URL. deploy, delete, and an update that changes visibility or auth_* wait for the user to approve in the TeamClu desktop app; if they decline or nobody answers within two minutes nothing happens — tell the user, and do not retry on your own. logs: what the deployed app printed, which is how you find out why it 500s. delete: take the app offline for good; needs an explicit app_id or app_name. Related tools: manage_app_access (who on the team may work on it), manage_app_env, manage_app_cron, manage_app_files, manage_app_data, manage_app_domain. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (most changes need admin on the app).",
+            "description": "Work with a TeamClu app — what its control panel does. Omit app_id and app_name to act on the app whose checkout is the workspace you are in; you do not need to ask the user which app this is, and `list` reports each app's local `workdir`. list: this team's apps. status: every setting, where the checkout is on this machine, what the checkout declares about how it is built and run, and how far its branch is ahead of what is live. runtime_info: app deployment contract, recorded and provider runtime state, regional capabilities, historical observations, and this machine's build facts; language filters discovery. sessions: conversations linked to the app. create: a new app with its code on this machine — from a starter template (type), an existing repo (git_remote_url) or a folder already here (local_dir). update: change name, type, visibility and the deployed site's login wall (auth_*) — only the fields you pass change. reseed: write the code again for an app whose code was never written or failed to be. download: clone a team app onto this machine. move_workdir: move this machine's checkout elsewhere (not the one you are running in). deploy: build the checkout on this machine and PUBLISH TO THE PUBLIC INTERNET; an app whose auth_mode is \"none\" is readable by anyone with the URL. deploy, delete, and an update that changes visibility or auth_* wait for the user to approve in the TeamClu desktop app; if they decline or nobody answers within two minutes nothing happens — tell the user, and do not retry on your own. logs: what the deployed app printed, which is how you find out why it 500s. delete: take the app offline for good; needs an explicit app_id or app_name. Related tools: manage_app_access (who on the team may work on it), manage_app_env, manage_app_cron, manage_app_files, manage_app_data, manage_app_domain. Requires the TeamClu desktop app to be running and signed in; the user's own permissions apply (most changes need admin on the app).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -488,6 +496,7 @@ pub fn tool_definitions() -> Vec<Value> {
                         }
                     },
                     "since_minutes": { "type": "integer", "description": "logs: how far back to read. Default 30, max 10080 (7 days)." },
+                    "language": { "type": "string", "enum": ["node", "python", "go", "php", "java"], "description": "runtime_info: optionally filter capabilities and observations by language." },
                     "limit": { "type": "integer", "description": "logs: how many entries. Default 100, max 200." },
                     "kind": {
                         "type": "string",
@@ -674,6 +683,21 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("runtime_info")));
+    }
+
+    #[test]
+    fn runtime_info_forwards_language() {
+        let body = manage_body(WS, &json!({"action":"runtime_info", "language":"java"})).unwrap();
+        assert_eq!(body["language"], "java");
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|t| t["name"] == "manage_app")
+            .unwrap();
+        assert!(tool["inputSchema"]["properties"]["language"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("java")));
+        assert!(manage_body(WS, &json!({"action":"runtime_info", "language":"ruby"})).is_err());
     }
 
     #[test]

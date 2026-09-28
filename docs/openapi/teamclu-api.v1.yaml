@@ -7118,33 +7118,69 @@ paths:
   /v1/apps/{appId}/runtime-info:
     get:
       operationId: readAppRuntimeInfo
-      summary: What the platform knows about where this app runs
+      summary: Read deployment contract, last successful state, and regional runtime evidence
       description: |
-        The deploy region, the target platform, which interpreters each custom
-        runtime image ships and at what absolute path, what a bare interpreter
-        name resolves to on that image's PATH, and which official layers exist
-        with their mount points.
-
-        None of this is reachable from inside an app repository: the region
-        lives in the control plane's own environment and the image contents are
-        documented nowhere the author can see. Publishing it is what replaces
-        guessing.
-
-        Facts are hand-verified constants, not live introspection. Entries
-        carry their provenance — an unverified layer mount is reported as
-        `verified: false` rather than omitted or guessed.
-
-        The app id gates visibility only; the facts do not differ per app. Any
-        caller who can see the app, including `view`, may read them.
+        Authorizes app visibility before provider discovery. `currentDeployment`
+        is null only when no successful TeamClu deployment is recorded. Provider
+        configuration is projected to runtime, command, args, port, layers, and
+        status; environment variables and registry credentials are excluded.
+        `sourceStatus` reports unavailable or stale provider evidence. Runtime
+        candidates distinguish documentation from paginated regional official
+        layers; observations are historical probes, not live image inspection.
       tags: [Apps]
       parameters:
         - $ref: "#/components/parameters/AppId"
+        - name: language
+          in: query
+          required: false
+          description: Filter capabilities and observations; does not change app authorization.
+          schema: { type: string, enum: [node, python, go, php, java] }
       responses:
         "200":
-          description: Runtime facts for this deployment.
+          description: App-scoped runtime information and source provenance.
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                type: object
+                required: [deploymentContract, currentDeployment, capabilities, observations, sourceStatus]
+                properties:
+                  deploymentContract:
+                    type: object
+                    required: [method, target, region, artifact, requiredDeclarationFields]
+                    properties:
+                      method: { type: string, enum: [agent_build_to_fc_custom_runtime, container] }
+                      target:
+                        type: object
+                        properties:
+                          os: { type: string, enum: [linux] }
+                          arch: { type: string, enum: [x86_64] }
+                      region: { type: string }
+                      artifact: { type: string }
+                      requiredDeclarationFields: { type: array, items: { type: string } }
+                  currentDeployment:
+                    type: [object, "null"]
+                    properties:
+                      runtime: { type: [string, "null"] }
+                      startSpec: { type: [object, "null"], additionalProperties: true }
+                      commit: { type: [string, "null"] }
+                      deployedAt: { type: [string, "null"], format: date-time }
+                      functionName: { type: [string, "null"] }
+                      provider:
+                        type: [object, "null"]
+                        properties:
+                          runtime: { type: [string, "null"] }
+                          command: { type: [array, "null"], items: { type: string } }
+                          args: { type: [array, "null"], items: { type: string } }
+                          port: { type: [integer, "null"] }
+                          layers: { type: array, items: { type: string } }
+                          status: { type: [string, "null"] }
+                      drift: { type: boolean }
+                      driftFields: { type: array, items: { type: string } }
+                  capabilities: { type: array, items: { type: object, additionalProperties: true } }
+                  observations: { type: array, items: { type: object, additionalProperties: true } }
+                  sourceStatus: { type: object, additionalProperties: true }
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
         "404":

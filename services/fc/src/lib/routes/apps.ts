@@ -197,15 +197,13 @@ export function registerApps(router) {
     return { body: out };
   });
 
-  // What the platform knows about where this app runs: deploy region, target
-  // platform, what each image ships and at what absolute path, which layers
-  // exist. None of it is reachable from inside a repository, which is why
-  // configs were written by guessing at it.
-  //
-  // The app id is here for authorization, not because the facts differ per app.
   router.get("/v1/apps/:appId/runtime-info", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
-    const out = await ctx.repository.getAppRuntimeInfo(appId);
+    const language = ctx.query?.get("language") ?? undefined;
+    if (language && !["node", "python", "go", "php", "java"].includes(language)) {
+      throw new ApiError(400, "validation_failed", "language must be node, python, go, php, or java");
+    }
+    const out = await ctx.repository.getAppRuntimeInfo(appId, language);
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });

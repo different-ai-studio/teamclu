@@ -665,14 +665,11 @@ pub(super) async fn handle_app_manage(
     }
     let out = match action.as_str() {
         "status" => json!({ "action": "status", "app": app_status(&api, &row).await }),
-        // What the platform knows about where this app runs, plus what is true
-        // of this machine. The two are separate on purpose: the runtime facts
-        // are the same for every teammate, and the machine facts are not.
         "runtime_info" => json!({
             "action": "runtime_info",
             "runtime": api
                 .get(
-                    &format!("/v1/apps/{}/runtime-info", row_str(&row, "id").unwrap_or_default()),
+                    &runtime_info_path(&row, &v)?,
                     "read the runtime facts",
                 )
                 .await?,
@@ -701,6 +698,17 @@ pub(super) async fn handle_app_manage(
         other => return Err(format!("Unknown action: {other}")),
     };
     Ok(out.to_string())
+}
+
+fn runtime_info_path(row: &Value, request: &Value) -> Result<String, String> {
+    let mut path = app_path(row_str(row, "id").unwrap_or_default(), "/runtime-info");
+    if let Some(language) = str_body_field(request, "language", "language") {
+        if !matches!(language.as_str(), "node" | "python" | "go" | "php" | "java") {
+            return Err("language must be node, python, go, php, or java".to_string());
+        }
+        path.push_str(&format!("?language={language}"));
+    }
+    Ok(path)
 }
 
 async fn list_apps(app: &AppHandle, api: &AppApi) -> Result<Value, String> {
@@ -1431,6 +1439,19 @@ async fn read_app_logs(api: &AppApi, row: &Value, v: &Value) -> Result<Value, St
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runtime_info_path_forwards_language_and_rejects_unknown() {
+        let row = serde_json::json!({"id": "app-1"});
+        assert_eq!(
+            super::runtime_info_path(&row, &serde_json::json!({"language": "java"})).unwrap(),
+            "/v1/apps/app-1/runtime-info?language=java"
+        );
+        assert_eq!(
+            super::runtime_info_path(&row, &serde_json::json!({})).unwrap(),
+            "/v1/apps/app-1/runtime-info"
+        );
+        assert!(super::runtime_info_path(&row, &serde_json::json!({"language": "ruby"})).is_err());
+    }
     #[tokio::test]
     async fn app_listing_respects_cloud_api_limit() {
         use axum::{extract::Query, http::StatusCode, routing::get, Json, Router};
