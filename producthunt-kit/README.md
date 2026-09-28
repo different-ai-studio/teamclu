@@ -320,7 +320,7 @@ PH 帖子 URL：________________
 GitHub 仓库：https://github.com/different-ai-studio/teamclu   （已确认 public）
 下载链接：https://github.com/different-ai-studio/teamclu/releases/latest   （待切新版）
 X / Twitter：@________________          ← 没有就留空，不要编
-联系邮箱：________________
+联系邮箱：support@teamclu.ai          ← 取自官网 Footer，已确认
 Demo 视频：________________
 ```
 
