@@ -34,28 +34,9 @@ reveal 自带的全部主题（black、white、league、solarized 等）。
 
 ## 部署声明（`teamclu.app.json`）
 
-仓根 `teamclu.app.json` 声明**怎么构建、怎么启动**，平台按其中的 `build` + `start` 部署到 FC Custom Runtime：
+仓根 `teamclu.app.json` 声明本模板的 `build` 和 `start`。构建必须产出 `.output/server/index.mjs`，服务器监听平台提供的 `$PORT`。修改启动声明或上线时，读取内置 `deploy-app` skill；运行环境、版本、迁移与发布步骤以该 skill 和实时控制面信息为准。
 
-- 非容器应用在 `start` 中明确声明 `fcRuntime`、`command`、`args`、`port` 和 `layers`。本模板的启动文件是构建产物目录 `.output` 下的 `server/index.mjs`；迁移运行环境或解释器版本前，调用 `manage_app runtime_info` 核对当前可部署选项。官方层使用 `"Name:version"` 形式，由平台填入部署区域。
-- **不要用**旧字段 `runtime` / `entry` —— 缺 `build` + `start` 或仍带 legacy 字段时部署会被拒。
-- 不确定运行环境里有什么，就调用 `manage_app` 的 `runtime_info`：它会告诉你部署区域、目标平台、镜像自带哪些解释器（绝对路径和版本）、PATH 上的裸名字实际指向谁、以及有哪些层可用。这些值在仓库里无从得知，不要猜——十二个修复 commit 就是猜出来的。标着未验证的条目就是没验证过，别当成事实用。
-- `build.command` 会随仓库提交，**在队友的机器上也会跑**（这个团队里就有 Windows），而且是用 `sh -c` 跑的。所以要写「指定目标」而不是「依赖本机」的命令：Python 装依赖用 `pip install --platform manylinux2014_x86_64 --implementation cp --python-version 3.10 --only-binary=:all: -t lib/`，这在哪台机器上跑结果都一样；`rm -rf`、`brew`、反斜杠路径则不行。
-- 构建在你这台机器上跑，函数在 linux/x86_64 上跑。构建期编译出来的东西必须是给那个目标编的——为本机编的原生依赖到了函数里加载不了。
-- 改完 **commit + push**；用户明确要求上线后，再通过控制面或 `manage_app deploy` 部署。
-
-## 怎么上线
-
-部署按 **Gitea 远端 commit** 构建。改完幻灯片后：
-
-1. **commit** 到本地 git
-2. **push** 到 Gitea（有未 push 的 commit 时部署会被拒绝）
-3. 用户明确要求上线时，可以让用户在 TeamClu 应用列表里点「部署」，或调用
-   `manage_app` 的 `deploy` action；它会按当前登录用户的应用权限执行
-
-部署会发布到公网。除非用户明确要求上线，否则不要自行触发部署。
-
-本地预览：`pnpm dev`，打开 `http://localhost:9000`。左右键翻页，`S` 演讲者视图，
-`Esc` 总览。
+本地预览：`pnpm dev`，打开 `http://localhost:9000`。左右键翻页，`S` 演讲者视图，`Esc` 总览。
 
 ## 登录（`auth_mode`）
 

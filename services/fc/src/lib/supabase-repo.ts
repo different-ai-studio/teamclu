@@ -69,7 +69,6 @@ import {
   readEnvelope as readTeamEnvEnvelope,
 } from "./validation/team-env-secrets.js";
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
-import { runtimeFacts } from "./provisioning/app-runtime-profiles.js";
 import { readRuntimeCatalog as defaultReadRuntimeCatalog, type AppLanguage } from "./provisioning/app-runtime-catalog.js";
 import { readRuntimeObservations } from "./provisioning/app-runtime-observations.js";
 import { readAppFunction as defaultReadAppFunction, projectFunction, providerErrorCode, driftFields } from "./provisioning/app-runtime-info.js";
@@ -3920,11 +3919,6 @@ export function createSupabaseBusinessRepository(options) {
                 envPendingRedeploy: app.envPendingRedeploy,
                 authModePendingRedeploy: app.authModePendingRedeploy,
               },
-              // Host-independent and true wherever the build ran. Host facts
-              // (OS, arch, docker) are the daemon's to add: the same app is
-              // built on macOS and Windows by different teammates, so they
-              // cannot live on an app-scoped snapshot.
-              runtime: runtimeFacts(appsRegion()),
               auth: {
                 mode: app.authMode,
                 audience: app.authAudience,

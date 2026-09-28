@@ -1,0 +1,17 @@
+---
+name: deploy-app
+description: Use when working in a TeamClu app checkout, changing its build or start declaration, or preparing to publish an app.
+---
+
+# Deploy a TeamClu app
+
+The checkout declares the desired build and start behavior. The live deployment and regional capabilities are separate facts. Resolve both before making a deployment decision.
+
+1. Call `manage_app status` for the selected app workspace. Read the current checkout declaration, live deployment, code revision, and source status. Treat the session snapshot as a hint only.
+2. Call `manage_app runtime_info` filtered to the app's language. Use the returned regional versions, image observations, layer availability, verification status, and source errors. For a new app, select a TeamClu-deployable candidate from current facts and write every required startup field explicitly. Provider availability alone does not establish TeamClu compatibility. Do not guess a version, path, layer, or compatibility from a template or another region. If discovery times out or is incomplete, keep that uncertainty visible; it does not authorize silently switching to a familiar runtime. A routine redeploy may retain a verified, pinned live configuration when catalog discovery is unavailable and there is no provider drift.
+3. Preserve the successful deployment's FC runtime, interpreter command and version, args, layers, and port for an ordinary redeploy. A runtime, interpreter, or layer change is a migration: explain the exact fields and reason, obtain explicit migration intent, and use the preflight preview and native approval. Entry and port changes must also be visible in that preview. Never rewrite the checkout to a known-good version merely because discovery failed.
+4. Check the **selected build machine** and its tools. The build command runs there, possibly on Windows, while the function runs on `linux/x86_64`. Verify the declared output and entry exist, and that native dependencies target Linux/x86_64. An unclassifiable binary is unknown; require a target-runtime test before treating it as compatible. Keep build commands portable across selected machines.
+5. For a Gitea checkout, commit and push the exact app revision to its remote, then verify the **selected checkout is clean and at the exact remote HEAD**. A clean remote commit does not excuse a dirty selected checkout, even if the build would read remote content. Gitea deployment cannot use uncommitted or unpushed changes. For an imported checkout, use the platform's pinned content digest and its source checks.
+6. Only when the user explicitly requested publishing, call `manage_app deploy`; review its preflight's exact changes through the existing native approval. Do not bypass a rejected preview, drift, or approval. Deploy the pinned revision, then check `manage_app status`, the runtime configuration, live URL, health path, and changed behavior, including data/auth behavior when applicable. Report the revision and any verification limit.
+
+Custom environment, access, domain, data, files, and cron changes use their matching `manage_app_*` tools and the signed-in user's permissions. Never request or print secret values.

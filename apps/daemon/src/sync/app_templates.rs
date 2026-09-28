@@ -214,17 +214,21 @@ mod tests {
     }
 
     #[test]
-    fn agents_md_warns_that_build_command_runs_on_teammates_machines() {
+    fn agents_md_keeps_artifact_contract_and_points_to_deploy_skill() {
         for t in [AppType::StaticWeb, AppType::Slides, AppType::DataApp] {
             let tmp = seed(t);
             let agents = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
             assert!(
-                agents.contains("队友"),
-                "{t:?}: portability constraint missing"
+                agents.contains(".output/server/index.mjs"),
+                "{t:?}: artifact contract missing"
             );
             assert!(
-                agents.contains("runtime_info"),
-                "{t:?}: facts pointer missing"
+                agents.contains("deploy-app"),
+                "{t:?}: skill pointer missing"
+            );
+            assert!(
+                !agents.contains("runtime_info"),
+                "{t:?}: duplicated runtime checklist"
             );
         }
     }

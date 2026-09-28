@@ -2093,6 +2093,7 @@ test("session roster gives a seated agent a secret-free app workspace snapshot",
   assert.deepEqual(roster.appContext.cronJobs[0].headerNames, ["X-Job-Secret"]);
   const serialized = JSON.stringify(roster.appContext);
   assert.ok(!serialized.includes("must-not-leak"));
+  assert.equal(roster.appContext.runtime, undefined, "detailed runtime facts belong behind runtime_info");
 });
 
 test("session roster does not expose app workspace context to a human participant", async () => {

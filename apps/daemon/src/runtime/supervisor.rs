@@ -67,10 +67,16 @@ fn inherent_desktop_control_skill() -> Option<InherentSkill> {
 }
 
 fn inherent_skills() -> Vec<InherentSkill> {
-    let mut out = vec![InherentSkill {
-        dirname: "create-role",
-        content: include_str!("../../../../packages/app/src/lib/skills/create-role/SKILL.md"),
-    }];
+    let mut out = vec![
+        InherentSkill {
+            dirname: "create-role",
+            content: include_str!("../../../../packages/app/src/lib/skills/create-role/SKILL.md"),
+        },
+        InherentSkill {
+            dirname: "deploy-app",
+            content: include_str!("../../../../packages/app/src/lib/skills/deploy-app/SKILL.md"),
+        },
+    ];
     if let Some(skill) = inherent_desktop_control_skill() {
         out.push(skill);
     }
@@ -2042,6 +2048,21 @@ mod tests {
     use super::*;
     use crate::config::global_team_store::TEST_HOME_LOCK;
     use crate::runtime::refresh::{self, refresh_watch};
+
+    #[test]
+    fn deploy_app_skill_is_installed_in_shared_skill_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let workspace = tempfile::tempdir().unwrap();
+        prepare_workspace(workspace.path()).unwrap();
+        let installed = home.path().join(".agents/skills/deploy-app/SKILL.md");
+        assert!(installed.is_file());
+        let body = std::fs::read_to_string(installed).unwrap();
+        assert!(body.contains("name: deploy-app"));
+        assert!(inherent_skills()
+            .iter()
+            .any(|skill| skill.dirname == "deploy-app"));
+    }
 
     fn isolated_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let lock = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
