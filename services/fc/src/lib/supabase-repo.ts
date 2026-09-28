@@ -5315,7 +5315,7 @@ export function createSupabaseBusinessRepository(options) {
     async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, team_id, type, created_by_actor_id, fc_status, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at")
+        .select("id, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -5326,7 +5326,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const region = app.fc_region || appsRegion();
       // A failed later deploy may leave the last successful snapshot intact.
-      const deployed = app.fc_status === "live" || !!app.env_deployed_at || !!app.start_spec;
+      const deployed = app.fc_status === "live" || !!app.env_deployed_at || !!app.start_spec || !!app.fc_endpoint;
       const catalog = await readRuntimeCatalog(region, language);
       const sourceStatus: any = { ...catalog.sourceStatus,
         provider: { checkedAt: null, observedAt: null, complete: !deployed, stale: false,

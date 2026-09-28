@@ -4472,6 +4472,18 @@ test("legacy success snapshot survives a failed retry without env_deployed_at", 
   assert.equal(info.currentDeployment.drift, false);
 });
 
+test("legacy success with only fc_endpoint survives a failed retry", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_status: "deploy_error", env_deployed_at: null, start_spec: null,
+    fc_endpoint: "https://live.fcapp.run", fc_function_name: "old-fn", git_commit_sha: "deadbee" }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: { port: 3000 }, layers: [] }),
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.ok(info.currentDeployment);
+  assert.equal(info.currentDeployment.commit, "deadbee");
+  assert.equal(info.currentDeployment.functionName, "old-fn");
+});
+
 test("runtime info projects safe provider fields and reports TeamClu drift", async () => {
   let seen: any;
   const row = { ...LIVE_APP, fc_function_name: "legacy-function", fc_region: "cn-shenzhen", git_commit_sha: "abc",
