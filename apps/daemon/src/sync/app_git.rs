@@ -1824,6 +1824,22 @@ mod tests {
         assert!(ensure_exact_remote_head(&work, &sha, None).is_err());
         std::fs::write(work.join("README.md"), b"seed").unwrap();
         assert!(ensure_exact_remote_head(&work, &"b".repeat(40), None).is_err());
+
+        // A second checkout can advance origin while the first builds.
+        let other = tmp.path().join("other");
+        let cloned = run_git(
+            tmp.path(),
+            None,
+            &["clone", &bare.to_string_lossy(), &other.to_string_lossy()],
+        )
+        .unwrap();
+        ensure_success(&cloned, "git clone").unwrap();
+        ensure_test_identity(&other);
+        std::fs::write(other.join("README.md"), b"new remote commit").unwrap();
+        add_all(&other).unwrap();
+        commit_if_needed(&other, "advance").unwrap();
+        push_origin_head(&other, None).unwrap();
+        assert!(ensure_exact_remote_head(&work, &sha, None).is_err());
     }
 
     #[test]

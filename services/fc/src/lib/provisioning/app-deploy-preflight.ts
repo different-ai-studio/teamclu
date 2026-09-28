@@ -51,16 +51,28 @@ export function preflightAppDeploy(appId: string, revision: string, rawDeclarati
   const pinnedLayers = live?.startSpec ? resolveLayers(options.region, declaration.build.kind, (live.startSpec as { layers?: string[] }).layers ?? []) : [];
   for (const layer of layers) {
     if (pinnedLayers.includes(layer) && live?.provider) continue;
-    if (!layer.includes(":official:layers/")) continue;
     if (!options.catalogComplete) throw new ApiError(503, "discovery_unavailable", `cannot verify new layer ${layer} while regional discovery is incomplete`);
     const candidate = options.capabilities.find(item => item.arn === layer);
-    if (!candidate) throw new ApiError(409, "unsupported_layer", `layer ${layer} is not available in ${options.region}`);
+    const runtime = declaration.build.kind === "container" ? "custom-container" : declaration.start.fcRuntime;
+    if (!candidate || candidate.region !== options.region ||
+        candidate.teamcluDeployable !== "teamcluDeployable" ||
+        !candidate.compatibleRuntime.includes(runtime)) {
+      throw new ApiError(409, "unsupported_layer", `layer ${layer} is not deployable with ${runtime} in ${options.region}`);
+    }
   }
-  const payload = { appId, revision: revision.toLowerCase(), declarationDigest: digest(declaration), baselineDigest: baseline(live), migrationIntent: !!options.migrationIntent, nonce: randomUUID() };
+  const payload = { appId, revision: revision.toLowerCase(), declarationDigest: digest(declaration), baselineDigest: baseline(live), migrationIntent: !!options.migrationIntent, issuedAt: Date.now(), nonce: randomUUID() };
   return {
     token: Buffer.from(JSON.stringify(payload)).toString("base64url"),
     preview: { firstDeploy: !live, changes, requiresMigrationApproval: migration },
   };
+}
+
+/** Preflight is a short-lived reservation; an abandoned dialog can be retried after ten minutes. */
+export function isAppDeployPreflightExpired(token: string, now = Date.now()): boolean {
+  try {
+    const payload = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+    return typeof payload.issuedAt !== "number" || payload.issuedAt > now || now - payload.issuedAt >= 10 * 60_000;
+  } catch { return true; }
 }
 
 export function verifyAppDeployPreflight(token: string, appId: string, revision: string, rawDeclaration: unknown, live: Live): void {

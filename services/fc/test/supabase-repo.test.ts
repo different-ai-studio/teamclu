@@ -3328,17 +3328,29 @@ const APP_DECLARATION = {
 };
 const APP_REVISION = `sha256:${"a".repeat(64)}`;
 const APP_PREFLIGHT_TOKEN = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION, null,
-  { region: "cn-hangzhou", capabilities: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3" } as any], catalogComplete: true }).token;
+  { region: "cn-hangzhou", capabilities: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" } as any], catalogComplete: true }).token;
 const APP_DEPLOY = { gitCommitSha: APP_SHA, revision: APP_REVISION, declaration: APP_DECLARATION, preflightToken: APP_PREFLIGHT_TOKEN };
 const APP_GIT_SHA = "b".repeat(40);
 const APP_GIT_TOKEN = preflightAppDeploy("app-1", APP_GIT_SHA, APP_DECLARATION, null,
-  { region: "cn-hangzhou", capabilities: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3" } as any], catalogComplete: true }).token;
+  { region: "cn-hangzhou", capabilities: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" } as any], catalogComplete: true }).token;
 const APP_GIT_DEPLOY = { gitCommitSha: APP_GIT_SHA, revision: APP_GIT_SHA, declaration: APP_DECLARATION, preflightToken: APP_GIT_TOKEN };
 Object.assign(APP_ROW, { start_spec: null, deploy_token: APP_PREFLIGHT_TOKEN });
 test("preflight cannot overwrite an active deploy token", async () => {
   const calls: any[] = [];
   const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "awaiting_build", deploy_started_at: new Date().toISOString(), deploy_token: "active-token" }] } }));
   await assert.rejects(() => repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }), (e: any) => e.code === "deploy_in_progress");
+  assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+});
+
+test("repeated preflight preserves an approved token and rejects a different proposal", async () => {
+  const calls: any[] = [];
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", deploy_token: APP_PREFLIGHT_TOKEN }] } }), {
+    readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+  });
+  const same = await repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION });
+  assert.equal(same?.token, APP_PREFLIGHT_TOKEN);
+  await assert.rejects(() => repo.preflightAppDeploy("app-1", { revision: `sha256:${"b".repeat(64)}`, declaration: APP_DECLARATION }),
+    (e: any) => e.code === "preflight_in_progress");
   assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
 });
 
@@ -3585,6 +3597,23 @@ test("apps: finalizeDeploy on awaiting_build app returns live + fcEndpoint", asy
   const liveUpdate = calls.find((c) => c.table === "apps" && c.op === "update" && c.row?.fc_status === "live");
   assert.equal(liveUpdate?.row.runtime, APP_DECLARATION.build.kind);
   assert.deepEqual(liveUpdate?.row.start_spec, APP_DECLARATION.start);
+});
+
+test("duplicate finalize claims the token and awaiting_build state only once", async () => {
+  const calls: any[] = [];
+  let fcWrites = 0;
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] }, calls }), {
+    startDeploy: async () => ({ fcFunctionName: "tc-app-1", fcRegion: "cn-hangzhou", ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put" }),
+    finalizeDeploy: async () => { fcWrites++; return { fcEndpoint: "https://x.fcapp.run" }; },
+  });
+  const started = await repo.deployApp("app-1", APP_DEPLOY);
+  const results = await Promise.allSettled([
+    repo.finalizeDeploy("app-1", appFinalize(started.deployToken)),
+    repo.finalizeDeploy("app-1", appFinalize(started.deployToken)),
+  ]);
+  assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
+  assert.equal(fcWrites, 1);
+  assert.ok(calls.some(c => c.table === "apps" && c.op === "update.eq" && c.column === "deploy_token" && c.value === started.deployToken));
 });
 
 test("apps: finalizeDeploy pins apps.org_id on the first success", async () => {

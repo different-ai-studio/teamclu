@@ -765,6 +765,9 @@ pub async fn build_app(
             });
         let built =
             crate::sync::app_build::build_artifact(&workdir_path, git_ctx.as_ref(), push.as_ref())?;
+        if let Some(git) = git_ctx.as_ref() {
+            crate::sync::app_build::verify_git_build_revision(&workdir_path, git)?;
+        }
         if !use_git
             && crate::sync::app_git::checkout_content_digest(&workdir_path)? != expected_revision
         {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { preflightAppDeploy, verifyAppDeployPreflight } from "../../src/lib/provisioning/app-deploy-preflight.js";
+import { preflightAppDeploy, verifyAppDeployPreflight, isAppDeployPreflightExpired } from "../../src/lib/provisioning/app-deploy-preflight.js";
 
 const declaration = { build: { kind: "node", output: ".output" }, start: { fcRuntime: "custom.debian12", command: ["node"], args: ["server.js"], port: 9000, layers: [] } };
 const live = { runtime: "node", startSpec: declaration.start, provider: { runtime: "custom.debian12", command: ["node"], args: ["server.js"], port: 9000, layers: [] }, drift: false };
@@ -12,6 +12,14 @@ test("first deployment produces a revision-bound preview", () => {
   assert.equal(result.preview.firstDeploy, true);
   assert.doesNotThrow(() => verifyAppDeployPreflight(result.token, "app-1", revision, declaration, null));
   assert.throws(() => verifyAppDeployPreflight(result.token, "app-1", "b".repeat(40), declaration, null), /revision/i);
+});
+
+test("an abandoned preflight token expires so another proposal can replace it", () => {
+  const result = preflightAppDeploy("app-1", revision, declaration, null, { region: "cn-hangzhou", capabilities: [], catalogComplete: true });
+  assert.equal(isAppDeployPreflightExpired(result.token), false);
+  const old = JSON.parse(Buffer.from(result.token, "base64url").toString("utf8"));
+  old.issuedAt = Date.now() - 11 * 60_000;
+  assert.equal(isAppDeployPreflightExpired(Buffer.from(JSON.stringify(old)).toString("base64url")), true);
 });
 
 test("unchanged live runtime can redeploy", () => {
@@ -63,6 +71,22 @@ test("provider activity status does not invalidate identical runtime configurati
 test("new layer choice fails closed when discovery is incomplete", () => {
   const changed = { ...declaration, start: { ...declaration.start, layers: ["Nodejs22:1"] } };
   assert.throws(() => preflightAppDeploy("app-1", revision, changed, live, { region: "cn-hangzhou", capabilities: [], catalogComplete: false, migrationIntent: true }), (e: any) => e.code === "discovery_unavailable");
+});
+
+test("new layers require a regionally deployable candidate compatible with the FC runtime", () => {
+  const layer = "acs:fc:cn-hangzhou:123456:layers/private/versions/1";
+  const changed = { ...declaration, start: { ...declaration.start, layers: [layer] } };
+  for (const candidate of [
+    undefined,
+    { arn: layer, region: "cn-hangzhou", compatibleRuntime: ["custom.debian12"], teamcluDeployable: "unknown" },
+    { arn: layer, region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" },
+  ]) {
+    assert.throws(() => preflightAppDeploy("app-1", revision, changed, null,
+      { region: "cn-hangzhou", capabilities: candidate ? [candidate as any] : [], catalogComplete: true }),
+    (e: any) => e.code === "unsupported_layer");
+  }
+  assert.doesNotThrow(() => preflightAppDeploy("app-1", revision, changed, null,
+    { region: "cn-hangzhou", capabilities: [{ arn: layer, region: "cn-hangzhou", compatibleRuntime: ["custom.debian12"], teamcluDeployable: "teamcluDeployable" } as any], catalogComplete: true }));
 });
 
 test("new runtime choice fails closed when discovery is incomplete", () => {

@@ -73,7 +73,7 @@ import { runtimeFacts } from "./provisioning/app-runtime-profiles.js";
 import { readRuntimeCatalog as defaultReadRuntimeCatalog, type AppLanguage } from "./provisioning/app-runtime-catalog.js";
 import { readRuntimeObservations } from "./provisioning/app-runtime-observations.js";
 import { readAppFunction as defaultReadAppFunction, projectFunction, providerErrorCode, driftFields } from "./provisioning/app-runtime-info.js";
-import { preflightAppDeploy as checkAppDeployPreflight, verifyAppDeployPreflight } from "./provisioning/app-deploy-preflight.js";
+import { preflightAppDeploy as checkAppDeployPreflight, verifyAppDeployPreflight, isAppDeployPreflightExpired } from "./provisioning/app-deploy-preflight.js";
 import { appsRegion } from "./provisioning/apps-oss.js";
 import {
   appFunctionName,
@@ -4989,6 +4989,14 @@ export function createSupabaseBusinessRepository(options) {
       const result = checkAppDeployPreflight(appId, revision, input.declaration, info.currentDeployment,
         { region: info.deploymentContract.region, capabilities: info.capabilities,
           catalogComplete: info.sourceStatus.officialLayers.complete, migrationIntent: input.migrationIntent === true });
+      if (existing.deploy_token && !isAppDeployPreflightExpired(existing.deploy_token)) {
+        try {
+          verifyAppDeployPreflight(existing.deploy_token, appId, revision, input.declaration, info.currentDeployment);
+          return { ...result, token: existing.deploy_token };
+        } catch {
+          throw new ApiError(409, "preflight_in_progress", "another approved preflight is still valid; retry after ten minutes");
+        }
+      }
       let update = supabase.from("apps").update({ deploy_token: result.token }).eq("id", appId);
       update = existing.deploy_token === null || existing.deploy_token === undefined
         ? update.is("deploy_token", null) : update.eq("deploy_token", existing.deploy_token);
@@ -5023,6 +5031,7 @@ export function createSupabaseBusinessRepository(options) {
       if (!input?.preflightToken || existing.deploy_token !== input.preflightToken) {
         throw new ApiError(409, "preflight_mismatch", "preflight token does not match this app");
       }
+      if (isAppDeployPreflightExpired(input.preflightToken)) throw new ApiError(409, "preflight_expired", "preflight expired; retry");
       const revision = String(input.revision ?? "");
       if (existing.git_auth_kind === GITEA_AUTH_KIND) {
         const head = await this.getAppGitHead(appId);
@@ -5144,8 +5153,13 @@ export function createSupabaseBusinessRepository(options) {
       if (!info) return null;
       verifyAppDeployPreflight(deployToken, appId, revision, declaration, info.currentDeployment);
       if (existing.git_auth_kind === GITEA_AUTH_KIND && gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
-      // Mark deploying (RLS-gated UPDATE).
-      await supabase.from("apps").update({ fc_status: "deploying", updated_at: new Date().toISOString() }).eq("id", appId);
+      // Claim this specific token and state atomically before FC or storage mutation.
+      const { data: claimed, error: claimError } = await supabase.from("apps")
+        .update({ fc_status: "deploying", updated_at: new Date().toISOString() })
+        .eq("id", appId).eq("deploy_token", deployToken).eq("fc_status", existing.fc_status)
+        .select("id").maybeSingle();
+      if (claimError) throw claimError;
+      if (!claimed) throw new ApiError(409, "deploy_in_progress", "this deploy is already finalizing or its token changed");
       try {
         // Convenience env for the app's own code. The login wall does not
         // depend on it: the proxy gateway enforces the wall before a request

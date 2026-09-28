@@ -455,6 +455,12 @@ pub fn prepare_git_build(
     Ok(Some(git.commit_sha.to_string()))
 }
 
+/// Recheck after build commands: they may edit source or the remote may advance.
+pub fn verify_git_build_revision(workdir: &Path, git: &BuildGitContext<'_>) -> anyhow::Result<()> {
+    let ssh = SshEnv::from_deploy_key_pem(git.deploy_key_pem)?;
+    app_git::ensure_exact_remote_head(workdir, git.commit_sha, Some(&ssh))
+}
+
 const DEFAULT_OUTPUT: &str = ".output";
 const DEFAULT_DOCKERFILE: &str = "Dockerfile";
 const DEFAULT_CONTEXT: &str = ".";
