@@ -171,9 +171,14 @@ apps/desktop/icons/ios/
 # Brand owners supply branding/<brand>/{logo.png,theme.json} + build.config.<brand>.json
 # locally; the white-label build reads them from disk at build time.
 /branding/
-# Chrome Web Store listing kit, assembled from branding/extension/ at release
-# time and attached to the Release — a build output, not a source.
-/listing-kit/
+# The Chrome Web Store listing kit used to be ignored here on the theory that it
+# is "assembled at release time and attached to the Release". That never
+# happened: no release carries listing-kit.zip, and its assembly source
+# (/branding/) is ignored too — so the kit had exactly one copy, in one
+# working tree, unversioned. It is ~255 KB of hand-written store copy
+# (description, permission justifications, FAQ) plus four screenshots, so it is
+# source and is tracked now. Only the zips below stay ignored: they are the
+# per-release packaging of the same content.
 /listing-kit.zip
 /extension.zip
 # Ignore all root build.config.<brand>.json except the in-repo flavors.
@@ -193,3 +198,12 @@ playwright-report/
 screenshots/
 tmp/
 log/
+
+# ...but the two launch kits ship real product screenshots from directories
+# that happen to be named `screenshots/`. PH points at these exact files, and
+# neither kit is reproducible from a fresh clone (the gallery needs `magick`
+# plus two captures that exist nowhere else; the store kit's assembly source is
+# itself ignored). Un-ignore them here so `git add -A` cannot sweep a launch
+# asset away the way it once swept a CV out of .playwright-mcp/.
+!producthunt-kit/screenshots/
+!listing-kit/screenshots/

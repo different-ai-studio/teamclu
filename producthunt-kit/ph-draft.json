@@ -1,0 +1,25 @@
+{
+  "_comment": "Single source of truth for the Product Hunt draft fill. Values are copied verbatim from producthunt-kit/README.md. Nothing here is published automatically — the driver only fills the composer and SAVES AS DRAFT.",
+  "name": "TeamClu",
+  "tagline": "Shared skills and group chat for your team's AI agents.",
+  "link": "https://github.com/different-ai-studio/teamclu",
+  "_descriptionLimit": "PH's composer caps Description at 500 characters (the kit's 779-char 'mid' text does NOT fit). This is the team-story version, 415 chars.",
+  "description": "TeamClu is a shared workspace where your team and its AI agents work in the same group chats.\n\nSessions are group chats, not 1:1 bot chats: add teammates, @mention people, branch an agent reply into a thread, and see who's online.\n\nSkills are team assets: publish one with a changelog and every teammate's agent follows it automatically. Edit locally and you get a conflict, never a silent overwrite.\n\nMIT, in beta.",
+  "topics": ["Productivity", "AI Agents", "Team collaboration software"],
+  "openSource": true,
+  "xAccount": "",
+  "story": "I kept running into the same thing on every team I worked with: the AI agent is personal, and that's the wrong shape for a team.\n\nI'd teach my agent how we run a release. A teammate would teach theirs the same thing a month later, slightly differently. And the work itself happened in a chat window nobody else could see.\n\nSo TeamClu makes two things shared instead of private.\n\nSkills are team assets. You publish one to your team's registry with structured metadata and a changelog, and every teammate's agent follows it automatically — when you fix a broken step, the fix actually reaches people instead of dying in your dotfiles.\n\nSessions are group chats. Not 1:1 chats with a bot: add teammates, @mention people, see who's online, and branch any agent reply into its own thread. The agent is a participant, not a service.\n\nKnowledge, roles and MCP config are shared the same way, and each member still keeps a private context. Agents run on your own machines, reachable from WeCom, Feishu, Discord, KOOK, WeChat or Email.\n\nIt's MIT licensed and in beta — built in the open, and I'd rather hear where it breaks than where it's nice.",
+  "thumbnail": "producthunt-kit/screenshots/thumbnail-512.png",
+  "gallery": [
+    "producthunt-kit/screenshots/ph-1-workspace-1270x760.png",
+    "producthunt-kit/screenshots/ph-2-team-skills-1270x760.png",
+    "producthunt-kit/screenshots/ph-3-channels-1270x760.png",
+    "producthunt-kit/screenshots/ph-4-group-session-1270x760.png",
+    "producthunt-kit/screenshots/ph-5-extension-1270x760.png"
+  ],
+  "_pendingDecision": {
+    "link": "No landing page exists. GitHub repo is the stand-in — replace with a real landing page before launching.",
+    "pricing": "Free / MIT — enter manually if the form requires it."
+  },
+  "_makerCommentNotFilled": "PH's new-post composer normally has no maker-comment field; the first comment is posted after launch. Use the maker comment in README.md §2 at that point."
+}
