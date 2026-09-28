@@ -5015,7 +5015,7 @@ export function createSupabaseBusinessRepository(options) {
       // app is not visible to the caller → surface null so the route 404s.
       const { data: existing, error: selErr } = await supabase
         .from("apps")
-        .select("id, slug, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, deploy_started_at, deploy_token, git_auth_kind")
+        .select("id, slug, team_id, created_by_actor_id, provision_status, runtime, auth_mode, fc_status, fc_function_name, fc_region, deploy_started_at, deploy_token, git_auth_kind")
         .eq("id", appId)
         .maybeSingle();
       if (selErr) throw selErr;
@@ -5062,7 +5062,8 @@ export function createSupabaseBusinessRepository(options) {
       try {
         const r = await startDeploy({
           appId,
-          region: process.env.REGION || "cn-hangzhou",
+          region: existing.fc_region || appsRegion(),
+          fcFunctionName: existing.fc_function_name,
           buildKind: declaredBuildKind,
           gitCommitSha,
           // Only consulted when a function is first minted, so an app that has
@@ -5072,8 +5073,8 @@ export function createSupabaseBusinessRepository(options) {
         let update = supabase
           .from("apps")
           .update({
-            fc_function_name: r.fcFunctionName,
-            fc_region: r.fcRegion,
+            fc_function_name: existing.fc_function_name || r.fcFunctionName,
+            fc_region: existing.fc_region || r.fcRegion,
             fc_status: "awaiting_build",
             provision_error: null,
             deploy_token: deployToken,

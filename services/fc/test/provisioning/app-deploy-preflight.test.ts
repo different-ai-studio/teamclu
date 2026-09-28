@@ -41,11 +41,22 @@ test("migration intent yields an exact preview and binds approval context", () =
   assert.throws(() => verifyAppDeployPreflight(result.token, "app-1", revision, declaration, live), /declaration/i);
 });
 
-test("entry and port changes are shown but are not runtime migrations", () => {
-  const changed = { ...declaration, start: { ...declaration.start, args: ["other.js"], port: 8080 } };
+test("port changes are previewed without migration intent", () => {
+  const changed = { ...declaration, start: { ...declaration.start, port: 8080 } };
   const result = preflightAppDeploy("app-1", revision, changed, live, { region: "cn-hangzhou", capabilities: [] });
-  assert.deepEqual(result.preview.changes.map((c: any) => c.field), ["args", "port"]);
+  assert.deepEqual(result.preview.changes.map((c: any) => c.field), ["port"]);
   assert.equal(result.preview.requiresMigrationApproval, false);
+});
+
+test("changed launch args require migration intent because a shell arg can select the interpreter", () => {
+  const changed = { ...declaration, start: { ...declaration.start, command: ["sh", "-c"], args: ["exec node22 server.js"] } };
+  const baseline = { ...live, startSpec: { ...live.startSpec, command: ["sh", "-c"], args: ["exec node20 server.js"] }, provider: { ...live.provider, command: ["sh", "-c"], args: ["exec node20 server.js"] } };
+  assert.throws(() => preflightAppDeploy("app-1", revision, changed, baseline, { region: "cn-hangzhou", capabilities: [] }),
+    (e: any) => e.code === "runtime_migration_required" && e.message.includes("args"));
+  const result = preflightAppDeploy("app-1", revision, changed, baseline,
+    { region: "cn-hangzhou", capabilities: [], migrationIntent: true });
+  assert.deepEqual(result.preview.changes.map((c: any) => c.field), ["args"]);
+  assert.equal(result.preview.requiresMigrationApproval, true);
 });
 
 test("provider drift and unsupported layers reject without changing a live function", () => {

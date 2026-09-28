@@ -3493,6 +3493,52 @@ test("apps: deployApp on ready app returns awaiting_build + ossObjectName", asyn
   assert.equal(result.deployToken, APP_PREFLIGHT_TOKEN);
 });
 
+test("deploy handle and runtime discovery use APPS_REGION instead of generic REGION", async () => {
+  const previous = { apps: process.env.APPS_REGION, generic: process.env.REGION };
+  process.env.APPS_REGION = "cn-shenzhen";
+  process.env.REGION = "cn-hangzhou";
+  try {
+    const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+      startDeploy: async (input: any) => ({
+        fcFunctionName: "app-my-app", fcRegion: input.region,
+        ossObjectName: "apps/app-1/build.zip", presignedPut: "https://oss/put",
+      }),
+    });
+    const started = await repo.deployApp("app-1", APP_DEPLOY);
+    assert.equal(started.fcRegion, "cn-shenzhen");
+    assert.equal((await repo.getAppRuntimeInfo("app-1"))?.deploymentContract.region, "cn-shenzhen");
+  } finally {
+    if (previous.apps === undefined) delete process.env.APPS_REGION; else process.env.APPS_REGION = previous.apps;
+    if (previous.generic === undefined) delete process.env.REGION; else process.env.REGION = previous.generic;
+  }
+});
+
+test("redeploy retains the legacy function name from preflight through finalize", async () => {
+  const provider = { runtime: "custom.debian10", command: APP_DECLARATION.start.command,
+    args: APP_DECLARATION.start.args, port: APP_DECLARATION.start.port,
+    healthCheckPath: null, layers: ["acs:fc:cn-shenzhen:official:layers/Nodejs20/versions/3"], status: null };
+  const token = preflightAppDeploy("app-1", APP_REVISION, APP_DECLARATION,
+    { runtime: "node", startSpec: APP_DECLARATION.start, provider, drift: false },
+    { region: "cn-shenzhen", capabilities: [] }).token;
+  let preflightName: string | null = null;
+  let finalizedName: string | null = null;
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "live",
+    fc_endpoint: "https://old.fcapp.run", fc_region: "cn-shenzhen", fc_function_name: "legacy-fn",
+    start_spec: APP_DECLARATION.start, deploy_token: token }] } }), {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { officialLayers: { complete: true } } }),
+    readAppFunction: async (name: string) => { preflightName = name; return { runtime: provider.runtime,
+      customRuntimeConfig: { command: provider.command, args: provider.args, port: provider.port }, layers: provider.layers }; },
+    startDeploy: async (input: any) => ({ fcFunctionName: input.fcFunctionName ?? "new-slug-name", fcRegion: input.region,
+      ossObjectName: "apps/app-1/code.zip", presignedPut: "https://oss/put" }),
+    finalizeDeploy: async (input: any) => { finalizedName = input.fcFunctionName; return { fcEndpoint: "https://new.fcapp.run" }; },
+  });
+  const started = await repo.deployApp("app-1", { ...APP_DEPLOY, preflightToken: token });
+  assert.equal(preflightName, "legacy-fn");
+  assert.equal(started.fcFunctionName, "legacy-fn");
+  await repo.finalizeDeploy("app-1", appFinalize(started.deployToken));
+  assert.equal(finalizedName, "legacy-fn");
+});
+
 test("apps: deployApp wraps startDeploy failure as 502", async () => {
   const repo = appsRepo(
     appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }),

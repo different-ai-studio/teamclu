@@ -40,9 +40,10 @@ export function preflightAppDeploy(appId: string, revision: string, rawDeclarati
     }
     if (live.runtime !== declaration.build.kind) changes.unshift({ field: "build.kind", from: live.runtime, to: declaration.build.kind });
   }
-  const migration = changes.some(change => ["build.kind", "fcRuntime", "command", "layers"].includes(change.field));
+  const migrationFields = ["build.kind", "fcRuntime", "command", "args", "layers"];
+  const migration = changes.some(change => migrationFields.includes(change.field));
   if (migration && !options.migrationIntent) {
-    throw new ApiError(409, "runtime_migration_required", `explicit migration intent required for: ${changes.filter(c => ["build.kind", "fcRuntime", "command", "layers"].includes(c.field)).map(c => c.field).join(", ")}`);
+    throw new ApiError(409, "runtime_migration_required", `explicit migration intent required for: ${changes.filter(c => migrationFields.includes(c.field)).map(c => c.field).join(", ")}`);
   }
   const runtimeChanged = !live || changes.some(change => change.field === "fcRuntime" || change.field === "build.kind");
   if (runtimeChanged && declaration.build.kind !== "container" && !options.catalogComplete) {

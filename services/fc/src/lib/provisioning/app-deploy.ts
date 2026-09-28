@@ -266,6 +266,8 @@ export interface ImagePushHandle {
 export interface StartDeployInput {
   appId: string;
   region: string;
+  /** Reuse the function already serving a successful deployment. */
+  fcFunctionName?: string | null;
   /** Names the function after the app's own hostname label. Absent on a client
    *  that predates this, which then gets the `tc-app-<uuid>` shape. */
   slug?: string | null;
@@ -299,7 +301,7 @@ export async function startDeploy(deps: StartDeployDeps, input: StartDeployInput
   // only consulted here, where a function is first minted; everything later
   // reads `apps.fc_function_name` off the row.
   const base = {
-    fcFunctionName: appFunctionName(input.appId, input.slug),
+    fcFunctionName: input.fcFunctionName || appFunctionName(input.appId, input.slug),
     fcRegion: input.region,
   };
   if (isContainerKind(input.buildKind ?? "")) {

@@ -24,6 +24,15 @@ test("startDeploy mints the upload handle and names the function + object", asyn
   assert.match(out.presignedPut, /code\.zip\?sig=x/);
 });
 
+test("startDeploy keeps the stored legacy function name on redeploy", async () => {
+  const out = await startDeploy(
+    { mintUploadUrl: async () => "https://oss.example/put" },
+    { appId: "app-1", slug: "new-slug", region: "cn-shenzhen", fcFunctionName: "legacy-fn" },
+  );
+  assert.equal(out.fcFunctionName, "legacy-fn");
+  assert.equal(out.fcRegion, "cn-shenzhen");
+});
+
 test("startDeploy does NOT touch FC — the code object does not exist yet", async () => {
   // Regression: creating the function here made CreateFunction reference an OSS
   // object the daemon had not uploaded. Function creation belongs in finalize.
