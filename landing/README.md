@@ -37,11 +37,28 @@ site get the new image. Never hand-edit `assets/` — the next run overwrites it
 `landing/` is the whole site. With wrangler:
 
 ```bash
-wrangler pages deploy landing --project-name teamclu-site
+wrangler login                                     # interactive; can't run from an agent session
+wrangler pages project create teamclu-site         # first run only
+wrangler pages deploy landing --project-name teamclu-site --branch main
 ```
 
-Then attach the domain once, in the Cloudflare dashboard:
+Flags verified against `wrangler pages deploy --help` on wrangler 4.125. After
+the first deploy, only the last line is needed.
+
+Attach the domain once, in the Cloudflare dashboard:
 Pages → teamclu-site → Custom domains → `teamclu.ai` (and `www.teamclu.ai`).
+
+Then check it:
+
+```bash
+curl -sI https://teamclu.ai/    | head -1   # want 200
+curl -sI https://teamclu.ai/zh/ | head -1
+curl -s  https://teamclu.ai/robots.txt
+```
+
+`_headers` is honoured by Pages only. If this ever moves to a Worker's static
+assets, the cache and security headers have to be reconfigured by hand — one of
+the reasons it is on Pages.
 
 ## Changing the copy
 
