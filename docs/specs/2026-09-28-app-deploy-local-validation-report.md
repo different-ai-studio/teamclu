@@ -1,25 +1,25 @@
 # App deployment discovery — local validation (2026-09-28)
 
-Scope: Task 6 selected-daemon artifact checks on branch `design/app-deploy-discovery-impl`. This is local automated validation only. No cloud app, self-host service, or live database was changed.
+Scope: the final app-deployment-discovery branch through `47b04bbf`, including the integration-review fixes. This is local automated validation only. No cloud app, self-host service, or live database was changed.
 
 ## Automated results
 
 | Command | Result |
 | --- | --- |
-| `pnpm --dir services/fc test` | 1,576 tests: 1,563 passed, 0 failed, 13 skipped because local Supabase was unreachable (`TypeError: fetch failed`). |
-| `pnpm --dir services/fc typecheck` | Passed. |
-| `pnpm --dir services/fc openapi:lint` | Passed with 10 existing warnings. |
-| `pnpm typecheck` | Passed before the final web gate edit. Afterward, the worktree's pnpm dependency links were removed by a failed dependency status check; an offline reinstall lacked `@tauri-apps/cli`. The equivalent app command, `tsc --noEmit -p tsconfig.json`, passed using the original checkout's compatible binaries linked into this worktree. |
-| `node scripts/daemon-cargo.js test --bin amuxd` | Final sequential elevated run: 1,881 passed, 0 failed. The first sandbox run had 1,765 passed and 112 failed when local test sockets were denied (`Operation not permitted`). An earlier elevated parallel run passed 1,879/1,879 before the final push-order and opaque-entry tests; a later parallel run had one unrelated temporary-home race. |
-| `node scripts/rust-cli.js test -p teamclu-introspect` | 105 passed, 0 failed with `CI=1 RUSTC_WRAPPER=/usr/bin/env`. The initial wrapper run stopped while trying to download the FunASR sidecar through an unavailable proxy. |
-| `node scripts/rust-cli.js test -p teamclu --lib` | 429 passed, 0 failed with `CI=1`, a shell-only `TAURI_CONFIG` omitting unavailable bundled resources, and approved loopback access. The ordinary wrapper was blocked on a FunASR download; the sandbox run had 404 passed and 25 socket-permission failures. The new desktop gate passed its focused linked test. |
-| App artifact gate unit tests | 2 passed, 0 failed, invoked using the original checkout's compatible Vitest binary after the worktree dependency links disappeared. |
+| FC `node --import tsx --test "test/**/*.test.ts"` | 1,567 passed, 0 failed, 13 skipped because local Supabase was unreachable (`TypeError: fetch failed`). |
+| FC `tsc -p tsconfig.test.json` | Passed. |
+| `redocly lint docs/openapi/teamclu-api.v1.yaml` | Valid with 10 existing warnings. |
+| App `vitest run` | 4,100 passed, 0 failed, 10 skipped across 603 files. |
+| App `tsc --noEmit` | Passed. |
+| `node scripts/daemon-cargo.js test --bin amuxd -- --test-threads=1` | 1,894 passed, 0 failed with local loopback access. |
+| `node scripts/rust-cli.js test -p teamclu --lib -- --test-threads=1` | 432 passed, 0 failed on full rerun with local loopback access and shell-only Tauri resource override. |
+| `node scripts/rust-cli.js test -p teamclu-introspect` | 105 passed, 0 failed. |
+
+The worktree's pnpm dependency links were damaged by a blocked reinstall, so FC and app checks used their already-installed local binaries; the app tests temporarily linked the original checkout's compatible `node_modules` and restored the prior worktree cache afterward. The first desktop full-suite run had one failure in an unchanged test that calls `https://example.com`; that test passed alone and the full suite passed on rerun. Desktop commands used `CI=1`, `RUSTC_WRAPPER=/usr/bin/env`, and a shell-only `TAURI_CONFIG` to omit unavailable bundled resources. Local mock-server tests needed loopback access. No workaround was committed.
 
 The focused daemon build tests cover macOS and Windows hosts with mismatched native entry binaries, a missing declared entry/output, Linux ARM64 `.so` and `.so.1`, a cross-built Linux x86_64 native library, unclassifiable native bytes, and a container image metadata mismatch that stops before push. The verifier runs before archive upload or registry push. `unknown` stops desktop and web finalization; the previous live app stays serving.
 
-Review follow-up: the missing-output build path already had an output guard; a direct regression now covers its pre-upload error. The archive verifier now inspects ZIP/JAR members within a 4,096-member and 200 MiB declared-uncompressed budget. A known wrong-architecture native member fails; nested or unreadable content remains `unknown`. Focused daemon build tests after this change: 54 passed, 0 failed. The full 1,881-test daemon result above predates this review follow-up; the focused run compiled and exercised the changed module.
-
-Second review follow-up: ZIP/JAR members now read through EOF within the same 200 MiB cap so trailing corruption and CRC failures cannot yield `checked`. The verifier reads a bounded 512-byte prefix to detect native headers and opaque archive magic, including tar's `ustar` marker; tar/gzip and other recognizable opaque compressed formats report `unknown` at the top level or within ZIP/JAR content. The focused daemon build suite added regressions for a corrupt member CRC, nested/top-level `.tar.gz`/`.tgz`, and tar magic under opaque names: 57 passed, 0 failed. The full 1,881-test result predates these review fixes.
+The missing-output build path has a direct regression for its pre-upload error. The archive verifier inspects ZIP/JAR members within a 4,096-member and 200 MiB budget, reading members through EOF so trailing corruption and CRC failures cannot yield `checked`. A known wrong-architecture native member fails. Nested archives and recognizable tar/gzip, bzip2, xz, zstd, and 7z content report `unknown` rather than claiming compatibility.
 
 ## Manual rollout cases
 
