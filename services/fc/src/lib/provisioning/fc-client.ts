@@ -36,16 +36,16 @@ export function accountIdFromRoleArn(arn: string | undefined): string | null {
  * Function Compute, which rejects the whole deploy with
  * `InvalidArgument: The environment variable name 'FC_ENDPOINT' is reserved`.
  */
-export function resolveFcEndpoint(): string | null {
+export function resolveFcEndpoint(region = REGION()): string | null {
   const explicit = process.env.APPS_FC_ENDPOINT?.trim();
   if (explicit) return explicit;
   const accountId =
     process.env.ALIYUN_ACCOUNT_ID?.trim() || accountIdFromRoleArn(process.env.ROLE_ARN);
-  return accountId ? `${accountId}.${REGION()}.fc.aliyuncs.com` : null;
+  return accountId ? `${accountId}.${region}.fc.aliyuncs.com` : null;
 }
 
-export function fcEndpoint(): string {
-  const endpoint = resolveFcEndpoint();
+export function fcEndpoint(region = REGION()): string {
+  const endpoint = resolveFcEndpoint(region);
   // Without any of them the composed host used to come out as the literal
   // "undefined.<region>.fc.aliyuncs.com" and every call failed with a DNS
   // error that named no variable at all. Fail with the config problem instead.
@@ -64,7 +64,7 @@ export function fcEndpoint(): string {
  * is MinIO's, those credentials do not authenticate against the FC API at all.
  */
 export function getFcClient(profile?: AppsOssProfile): FcClientInstance {
-  const endpoint = fcEndpoint();
+  const endpoint = fcEndpoint(profile?.region);
   return new FcClient.default(new Config({
     accessKeyId: profile?.accessKeyId ?? process.env.ACCESS_KEY_ID,
     accessKeySecret: profile?.accessKeySecret ?? process.env.ACCESS_KEY_SECRET,

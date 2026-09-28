@@ -1,104 +1,7 @@
-/**
- * What the Function Compute runtime images actually contain, and which of it
- * each `build.kind` should use.
- *
- * Every value here was read out of a running function: a probe deployed to
- * `custom.debian10` listed `/var/fc/lang`, `/opt`, and what each interpreter
- * name resolves to on PATH, then reported its own versions. See §2 of
- * docs/specs/2026-09-23-app-deploy-intent-contract-design.md.
- *
- * The table is deliberately shy. A row we have not observed says so, and the
- * rules built on it step aside rather than guess — blocking a working deploy on
- * our own ignorance is worse than the round-trip it would save.
- */
-
-import type { AppBuildKind } from "./app-runtime-spec.js";
-
-/** Mount path of an official layer, or `null` when we have not verified it. */
-export const LAYER_MOUNTS: Record<string, string | null> = {
-  // Verified: three live apps boot from this path, on layer versions 1, 2 and 3.
-  Nodejs20: "/opt/nodejs20",
-  // Documented to exist; where they mount has never been observed.
-  Python310: null,
-  "Python310-OSS2": null,
-  Go1: null,
-  "PHP81-Debian10": null,
-  Java17: null,
-};
-
-/** What you get when a start command names an interpreter without a path. */
-export type PathLookup =
-  | { kind: "absent" }
-  | { kind: "resolves"; path: string; version: string }
-  | { kind: "unknown" };
-
-/**
- * Probed PATH behaviour, per image.
- *
- * `custom.debian10` holds the trap this table exists for: `python3` resolves to
- * Debian's own interpreter, NOT the 3.10.9 sitting in /var/fc/lang, so a Python
- * app written the obvious way is silently downgraded with no error anywhere.
- */
-const PROBED_PATHS: Record<string, Record<string, PathLookup>> = {
-  "custom.debian10": {
-    node: { kind: "absent" },
-    java: { kind: "absent" },
-    php: { kind: "absent" },
-    go: { kind: "absent" },
-    ruby: { kind: "absent" },
-    python3: { kind: "resolves", path: "/usr/bin/python3", version: "Debian 10 system Python" },
-    python: { kind: "resolves", path: "/usr/local/bin/python", version: "Debian 10 system Python" },
-  },
-  // Debian 9. Not probed directly; versions are Alibaba's published contents for
-  // this image, and they match the failures this design was written from — an
-  // ESM SyntaxError on Node 10, and Python 3.7.
-  custom: {
-    node: { kind: "resolves", path: "node", version: "10.16.2" },
-    nodejs: { kind: "resolves", path: "nodejs", version: "10.16.2" },
-    python3: { kind: "resolves", path: "python3", version: "3.7.4" },
-    python: { kind: "resolves", path: "python", version: "3.7.4" },
-    php: { kind: "resolves", path: "php", version: "7.4.12" },
-    java: { kind: "resolves", path: "java", version: "1.8.0" },
-    ruby: { kind: "resolves", path: "ruby", version: "2.7" },
-  },
-};
-
-export const PATH_INTERPRETERS = PROBED_PATHS;
-
-/** What `name` resolves to on `fcRuntime`'s PATH. Unknown unless probed. */
-export function pathLookup(fcRuntime: string, name: string): PathLookup {
-  return PROBED_PATHS[fcRuntime]?.[name] ?? { kind: "unknown" };
-}
-
-/** One interpreter the base image ships, at a path that does not move. */
-export interface Interpreter {
-  path: string;
-  version: string;
-}
-
-/**
- * What each image ships, keyed by language family.
- *
- * These are facts, published to the agent — not choices. A family absent from
- * an image is itself a fact, and `interpreterFor` answers `null` for it.
- */
-export const IMAGE_INTERPRETERS: Record<string, Record<string, Interpreter>> = {
-  "custom.debian10": {
-    node: { path: "/var/fc/lang/nodejs20/bin/node", version: "20.10.0" },
-    node18: { path: "/var/fc/lang/nodejs18/bin/node", version: "18.19.0" },
-    python: { path: "/var/fc/lang/python3.10/bin/python3", version: "3.10.9" },
-  },
-};
-
-export function interpreterFor(fcRuntime: string, family: string): Interpreter | null {
-  return IMAGE_INTERPRETERS[fcRuntime]?.[family] ?? null;
-}
-
-/** Debian version per image, for messages and facts that need to name it. */
-export const IMAGE_DEBIAN: Record<string, string> = {
-  "custom.debian10": "10.13",
-  custom: "9",
-};
+/** Legacy preflight helpers. Probed evidence lives in app-runtime-observations. */
+import { LAYER_MOUNTS, readRuntimeObservations, PROBED_PATHS, IMAGE_INTERPRETERS, IMAGE_DEBIAN, type Interpreter } from "./app-runtime-observations.js";
+export { pathLookup, interpreterFor, PATH_INTERPRETERS, IMAGE_INTERPRETERS, IMAGE_DEBIAN, LAYER_MOUNTS } from "./app-runtime-observations.js";
+export type { Interpreter, PathLookup } from "./app-runtime-observations.js";
 
 const OFFICIAL_LAYER_ARN =
   /^acs:fc:([a-z0-9-]+):official:layers\/([A-Za-z0-9._-]+)\/versions\/(\d+)$/;
@@ -161,7 +64,7 @@ export function providedMounts(refs: readonly LayerRef[]): {
       hasUnknown = true;
       continue;
     }
-    const mount = LAYER_MOUNTS[ref.name];
+    const mount = readRuntimeObservations().find(o => o.kind === "layerMount" && o.name === ref.name && o.layerVersions?.includes(ref.version))?.path;
     if (mount === undefined || mount === null) hasUnknown = true;
     else mounts.push(mount);
   }

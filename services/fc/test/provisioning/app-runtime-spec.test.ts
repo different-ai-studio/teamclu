@@ -281,9 +281,8 @@ test("preflight: a bare interpreter absent from the image is refused", () => {
   );
 });
 
-test("preflight: Debian 9 interpreters warn by version, inside a shell too", () => {
-  // Stale, not absent. james-test1 serves traffic on 3.7.4 today, so refusing
-  // would block a working app; the trap is named instead of enforced.
+test("preflight: unprobed Debian 9 versions remain unknown", () => {
+  // Historical documentation does not establish the contents of a current image.
   const warnings = checkStartEnvironment(
     { kind: "python", output: "." },
     {
@@ -294,10 +293,7 @@ test("preflight: Debian 9 interpreters warn by version, inside a shell too", () 
       layers: [],
     },
   );
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /3\.7\.4/);
-  assert.match(warnings[0], /start\.args/);
-  assert.match(warnings[0], /custom\.debian10/);
+  assert.deepEqual(warnings, []);
 });
 
 test("preflight: an unverified layer makes the /opt rule step aside", () => {
