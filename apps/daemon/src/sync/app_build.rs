@@ -2179,6 +2179,48 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn imported_build_allows_unignored_generated_output_but_rejects_source_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        app_git::init_if_needed(work).unwrap();
+        std::fs::write(work.join("source.txt"), "original").unwrap();
+        let declaration = |command: &str| {
+            serde_json::json!({
+                "build": {"kind": "node", "output": "dist", "command": command},
+                "start": {"fcRuntime": "custom.debian12", "command": ["node"],
+                    "args": ["result.txt"], "layers": [], "port": 9000}
+            })
+        };
+        std::fs::write(
+            work.join(MANIFEST_FILE),
+            declaration("mkdir -p dist && printf built > dist/result.txt").to_string(),
+        )
+        .unwrap();
+        let revision = app_git::checkout_content_digest(work).unwrap();
+        build_artifact_for_deploy(work, None, None, Some(&revision)).unwrap();
+        assert_eq!(app_git::checkout_content_digest(work).unwrap(), revision);
+
+        std::fs::write(
+            work.join(MANIFEST_FILE),
+            declaration(
+                "mkdir -p dist && printf built > dist/result.txt && printf changed > source.txt",
+            )
+            .to_string(),
+        )
+        .unwrap();
+        let revision = app_git::checkout_content_digest(work).unwrap();
+        let error = match build_artifact_for_deploy(work, None, None, Some(&revision)) {
+            Ok(_) => panic!("source mutation must reject the imported build"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("imported checkout changed during build"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn container_override_replaces_dockerfile_precondition_through_build_artifact() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(

@@ -781,30 +781,61 @@ pub fn ensure_exact_remote_head(
     Ok(())
 }
 
-/// Digest the source files git would stage, including untracked files. Git's
-/// ignore/exclude rules keep generated output and machine-local state out.
+/// Digest the source files git would stage, including untracked files. A build
+/// can create its declared output and local dependency trees even when the app
+/// has not added them to .gitignore; those are not source revisions.
 pub fn checkout_content_digest(dir: &Path) -> anyhow::Result<String> {
-    let out = run_git(
+    let declaration = crate::sync::app_build::read_app_declaration(dir).ok();
+    let output = declaration.as_ref().map(|declaration| {
+        declaration
+            .build
+            .output
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .replace('\\', "/")
+    });
+    let kind = declaration
+        .as_ref()
+        .map(|declaration| declaration.build.kind.as_str());
+    let tracked = run_git(dir, None, &["ls-files", "--cached", "-z"])?;
+    ensure_success(&tracked, "git ls-files")?;
+    let others = run_git(
         dir,
         None,
-        &[
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ],
+        &["ls-files", "--others", "--exclude-standard", "-z"],
     )?;
-    ensure_success(&out, "git ls-files")?;
-    let mut paths: Vec<&[u8]> = out
+    ensure_success(&others, "git ls-files")?;
+    let mut paths: Vec<(&[u8], bool)> = tracked
         .stdout
         .split(|b| *b == 0)
         .filter(|p| !p.is_empty())
+        .map(|path| (path, true))
+        .chain(
+            others
+                .stdout
+                .split(|b| *b == 0)
+                .filter(|p| !p.is_empty())
+                .map(|path| (path, false)),
+        )
         .collect();
-    paths.sort();
+    paths.sort_by(|left, right| left.0.cmp(right.0));
     let mut hash = Sha256::new();
-    for raw in paths {
+    for (raw, tracked) in paths {
         let path = std::str::from_utf8(raw)?;
+        let generated_output = output.as_deref().is_some_and(|output| {
+            !output.is_empty()
+                && output != "."
+                && (path == output || path.starts_with(&format!("{output}/")))
+        });
+        let dependency_output = path.split('/').any(|part| match kind {
+            Some("node") => part == "node_modules",
+            Some("python") => [".venv", "venv", "__pycache__", ".pytest_cache"].contains(&part),
+            Some("java") => [".gradle", "target", "build"].contains(&part),
+            _ => false,
+        });
+        if !tracked && (generated_output || dependency_output) {
+            continue;
+        }
         let full = dir.join(path);
         let bytes = if full.is_symlink() {
             std::fs::read_link(&full)?
@@ -1851,6 +1882,38 @@ mod tests {
         let first = checkout_content_digest(work).unwrap();
         assert!(first.starts_with("sha256:"));
         std::fs::write(work.join("a.txt"), b"two").unwrap();
+        assert_ne!(checkout_content_digest(work).unwrap(), first);
+    }
+
+    #[test]
+    fn imported_digest_excludes_declared_output_but_detects_source_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("teamclu.app.json"), r#"{"build":{"kind":"node","output":"dist"},"start":{"fcRuntime":"custom.debian12","command":["node"],"args":["server.mjs"],"layers":[],"port":9000}}"#).unwrap();
+        std::fs::write(work.join("server.mjs"), "source").unwrap();
+        let first = checkout_content_digest(work).unwrap();
+        std::fs::create_dir(work.join("dist")).unwrap();
+        std::fs::write(work.join("dist/server.mjs"), "built").unwrap();
+        std::fs::create_dir(work.join("node_modules")).unwrap();
+        std::fs::write(work.join("node_modules/dependency.js"), "installed").unwrap();
+        assert_eq!(checkout_content_digest(work).unwrap(), first);
+        std::fs::write(work.join("server.mjs"), "changed while building").unwrap();
+        assert_ne!(checkout_content_digest(work).unwrap(), first);
+    }
+
+    #[test]
+    fn imported_digest_keeps_tracked_files_even_under_declared_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        init_if_needed(work).unwrap();
+        std::fs::write(work.join("teamclu.app.json"), r#"{"build":{"kind":"node","output":"dist"},"start":{"fcRuntime":"custom.debian12","command":["node"],"args":["server.mjs"],"layers":[],"port":9000}}"#).unwrap();
+        std::fs::create_dir(work.join("dist")).unwrap();
+        std::fs::write(work.join("dist/tracked.txt"), "source").unwrap();
+        let staged = run_git(work, None, &["add", "dist/tracked.txt"]).unwrap();
+        ensure_success(&staged, "git add").unwrap();
+        let first = checkout_content_digest(work).unwrap();
+        std::fs::write(work.join("dist/tracked.txt"), "changed").unwrap();
         assert_ne!(checkout_content_digest(work).unwrap(), first);
     }
 

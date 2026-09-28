@@ -25,7 +25,18 @@ pub fn host_facts() -> Value {
         "arch": std::env::consts::ARCH,
         "docker": docker_available(),
         "buildShell": BUILD_SHELL,
+        "buildTools": {
+            "pnpm": tool_available("pnpm"),
+            "python3": tool_available("python3"),
+            "go": tool_available("go"),
+            "java": tool_available("java"),
+            "docker": docker_available(),
+        },
     })
+}
+
+fn tool_available(name: &str) -> bool {
+    crate::runtime::well_known_bin::find_in_path(name, None).is_some()
 }
 
 /// Whether `docker` can be found, without paying to start it.
@@ -33,7 +44,7 @@ pub fn host_facts() -> Value {
 /// Four of the twelve fix commits on one app were Docker attempts on a machine
 /// that had none; the failure only arrived after a build.
 fn docker_available() -> bool {
-    crate::runtime::well_known_bin::find_in_path("docker", None).is_some()
+    tool_available("docker")
 }
 
 #[cfg(test)]
@@ -48,6 +59,7 @@ mod tests {
         assert!(f["os"].as_str().is_some_and(|s| !s.is_empty()));
         assert!(f["arch"].as_str().is_some_and(|s| !s.is_empty()));
         assert!(f["docker"].is_boolean());
+        assert!(f["buildTools"]["pnpm"].is_boolean());
         assert_eq!(f["buildShell"], "sh -c");
     }
 

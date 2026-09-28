@@ -332,23 +332,26 @@ pub(super) fn notify_app_changed(app: &AppHandle, row: &Value) {
     );
 }
 
+/// Keep the selected daemon's facts intact, rather than substituting the
+/// desktop process's OS or the Cloud API's target runtime.
+fn selected_host_facts(response: &Value) -> Result<Value, String> {
+    let facts = response.get("hostFacts").filter(|facts| {
+        facts["os"].is_string()
+            && facts["arch"].is_string()
+            && facts["docker"].is_boolean()
+            && facts["buildShell"].is_string()
+            && facts["buildTools"].is_object()
+    });
+    facts
+        .cloned()
+        .ok_or_else(|| "The selected daemon returned no usable host facts.".to_string())
+}
+
 /// The app-row fields worth an agent's context window.
 ///
 /// `publicUrl` is the address the product hands out; `fcEndpoint` is the raw FC
 /// hostname and is only the app's address on a deployment with no apps domain.
 /// One `url` rather than both, so the agent cannot quote the wrong one.
-/// This machine, for `runtime_info`.
-///
-/// Mirrors the daemon's `host_facts`: whoever deploys is whose tools run, and
-/// the same app is checked out on macOS and Windows machines in one team.
-fn this_machine() -> Value {
-    json!({
-        "os": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-        "build_shell": "sh -c",
-    })
-}
-
 pub(super) fn app_brief(row: &Value) -> Value {
     let f = |k: &str| row.get(k).cloned().unwrap_or(Value::Null);
     let url = row
@@ -578,6 +581,23 @@ async fn app_workdir_on_this_machine(row: &Value) -> Option<(String, Option<Stri
     Some((workdir, row_str(&out, "deviceName").map(str::to_string)))
 }
 
+async fn daemon_selected_host_facts(row: &Value) -> Result<Value, String> {
+    use crate::daemon_client::{self as daemon, RequestSpec, NO_BODY};
+    let app_id = row_str(row, "id").ok_or("App ID is missing.")?;
+    let team_id = row_str(row, "teamId").unwrap_or("");
+    let path = format!("/v1/apps/{}/workdir", urlencoding::encode(app_id));
+    let query = format!("?teamId={}", urlencoding::encode(team_id));
+    let response: Value = daemon::call_discovered(
+        RequestSpec::get(&path, &["workspace:read"])
+            .query(&query)
+            .timeout(Duration::from_secs(10)),
+        NO_BODY,
+    )
+    .await
+    .map_err(|e| format!("Could not read the selected daemon's host facts: {e}"))?;
+    selected_host_facts(&response)
+}
+
 /// Whether a directory exists and has anything in it — the web app's test for
 /// "this machine already holds a checkout" (`localWorkdirHasCheckout`).
 fn dir_has_files(dir: &str) -> bool {
@@ -659,7 +679,7 @@ pub(super) async fn handle_app_manage(
                     "read the runtime facts",
                 )
                 .await?,
-            "this_machine": this_machine(),
+            "this_machine": daemon_selected_host_facts(&row).await?,
         }),
         "sessions" => app_sessions(&api, &row).await?,
         "update" => update_app(app, &api, &row, &v).await?,
@@ -774,6 +794,25 @@ fn describe_code_version(row: &Value, head: Option<&Value>) -> String {
     }
 }
 
+/// Only revision facts from the selected daemon's manifest enter status.
+fn add_checkout_snapshot(out: &mut Value, manifest: &Value) {
+    out["checkout_git_commit_sha"] = manifest
+        .get("gitCommitSha")
+        .filter(|value| value.is_string())
+        .cloned()
+        .unwrap_or(Value::Null);
+    out["checkout_clean"] = manifest
+        .get("clean")
+        .filter(|value| value.is_boolean())
+        .cloned()
+        .unwrap_or(Value::Null);
+    out["checkout_content_digest"] = manifest
+        .get("contentDigest")
+        .filter(|value| value.is_string())
+        .cloned()
+        .unwrap_or(Value::Null);
+}
+
 /// `status` — every setting on the row, plus what the control panel's 应用
 /// group shows that the row does not carry: where the checkout is, what it
 /// declares about how it runs, and how far the branch is ahead of what is live.
@@ -799,6 +838,7 @@ async fn app_status(api: &AppApi, row: &Value) -> Value {
         out["device_name"] = json!(device);
     }
     if let Ok(manifest) = daemon_app_manifest(&app_id, &team_id).await {
+        add_checkout_snapshot(&mut out, &manifest);
         let declaration = &manifest["declaration"];
         out["checkout_declaration"] = json!({
             "build": declaration.get("build").cloned().unwrap_or(Value::Null),
@@ -1505,6 +1545,32 @@ async fn read_app_logs(api: &AppApi, row: &Value, v: &Value) -> Result<Value, St
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_exposes_selected_checkout_revision_and_cleanliness() {
+        let mut status = serde_json::json!({});
+        super::add_checkout_snapshot(
+            &mut status,
+            &serde_json::json!({
+                "gitCommitSha": "abc123", "clean": false, "contentDigest": "sha256:source"
+            }),
+        );
+        assert_eq!(status["checkout_git_commit_sha"], "abc123");
+        assert_eq!(status["checkout_clean"], false);
+        assert_eq!(status["checkout_content_digest"], "sha256:source");
+    }
+
+    #[test]
+    fn runtime_info_uses_selected_daemon_host_shape() {
+        let response = serde_json::json!({"hostFacts": {
+            "os":"windows", "arch":"x86_64", "docker":true, "buildShell":"sh -c",
+            "buildTools":{"pnpm":true,"python3":false,"docker":true}
+        }});
+        assert_eq!(
+            super::selected_host_facts(&response).unwrap(),
+            response["hostFacts"]
+        );
+        assert!(super::selected_host_facts(&serde_json::json!({})).is_err());
+    }
     #[test]
     fn unknown_or_missing_artifact_verification_cannot_finalize() {
         for build in [

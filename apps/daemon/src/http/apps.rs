@@ -313,6 +313,7 @@ pub struct AppWorkdirResponse {
     pub workdir: String,
     /// Human-friendly label for this machine (from daemon.toml `[actor].name`).
     pub device_name: String,
+    pub host_facts: serde_json::Value,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -342,6 +343,7 @@ pub async fn app_workdir(
     Ok(Json(AppWorkdirResponse {
         workdir: path.to_string_lossy().into_owned(),
         device_name: daemon_device_name(),
+        host_facts: crate::runtime::host_facts::host_facts(),
     }))
 }
 
@@ -1244,6 +1246,19 @@ fn map_build_error(err: anyhow::Error) -> HttpError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workdir_response_carries_selected_daemon_host_facts() {
+        let response = super::AppWorkdirResponse {
+            workdir: "/tmp/app".into(),
+            device_name: "selected".into(),
+            host_facts: crate::runtime::host_facts::host_facts(),
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["hostFacts"]["os"], std::env::consts::OS);
+        assert!(value["hostFacts"]["docker"].is_boolean());
+        assert!(value["hostFacts"]["buildTools"]["pnpm"].is_boolean());
+        assert_eq!(value["hostFacts"]["buildShell"], "sh -c");
+    }
     use super::*;
     // `super` here is this module, not `http` — `errors` only resolves from the
     // crate root.
