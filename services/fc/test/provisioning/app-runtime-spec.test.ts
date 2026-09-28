@@ -189,6 +189,16 @@ test("parse: non-container startup requires explicit layers without choosing a v
   );
 });
 
+test("parse: non-container startup requires an explicit port", () => {
+  assert.throws(
+    () => parseAppDeployDeclaration({
+      build: { kind: "go" },
+      start: { fcRuntime: "custom.debian10", command: ["./main"], args: [], layers: [] },
+    }),
+    (e: any) => /start\.port/.test(String(e?.message ?? e)) && /required/.test(String(e?.message ?? e)),
+  );
+});
+
 test("regression: every live app's passthrough spec still parses to itself", () => {
   // Read off the live apps in cn-shenzhen on 2026-09-23. These must keep
   // deploying byte-identically; the profile table applies only to the short form.

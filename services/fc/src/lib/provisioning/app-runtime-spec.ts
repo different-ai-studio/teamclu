@@ -207,6 +207,9 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
   if (Object.prototype.hasOwnProperty.call(s, "entry")) {
     throw new ApiError(400, "validation_failed", "start.entry is no longer supported. Declare start.fcRuntime, start.command, start.args and start.layers explicitly; call manage_app runtime_info for available choices.");
   }
+  if (!isContainerKind(build.kind) && s.port === undefined) {
+    throw new ApiError(400, "validation_failed", "start.port is required for non-container apps");
+  }
   const port = parsePort(s.port);
   const healthCheckPath =
     typeof s.healthCheckPath === "string" ? s.healthCheckPath.trim() : "";

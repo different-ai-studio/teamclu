@@ -574,6 +574,10 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
         .get("build")
         .and_then(|build| build.get("output"))
         .is_none();
+    let port_was_omitted = value
+        .get("start")
+        .and_then(|start| start.get("port"))
+        .is_none();
     let mut declaration: AppDeclaration = serde_json::from_value(value)
         .map_err(|e| anyhow::anyhow!("invalid {MANIFEST_FILE} build+start declaration: {e}"))?;
     declaration.build.kind = declaration.build.kind.trim().to_string();
@@ -583,6 +587,9 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             declaration.build.kind,
             VALID_BUILD_KINDS.join(", ")
         );
+    }
+    if declaration.build.kind != "container" && port_was_omitted {
+        anyhow::bail!("{MANIFEST_FILE} start.port is required for code apps");
     }
     if output_was_omitted {
         declaration.build.output = if declaration.build.kind == "node" {
@@ -1763,7 +1770,7 @@ mod tests {
             tmp.path().join("teamclu.app.json"),
             r#"{
               "build": {"kind": "node"},
-              "start": {"fcRuntime": "custom.debian10", "command": ["/var/fc/lang/nodejs20/bin/node"], "args": ["server/index.mjs"], "layers": []}
+              "start": {"fcRuntime": "custom.debian10", "command": ["/var/fc/lang/nodejs20/bin/node"], "args": ["server/index.mjs"], "port": 9000, "layers": []}
             }"#,
         )
         .unwrap();
@@ -1808,6 +1815,21 @@ mod tests {
         let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
         assert!(
             err.contains("start.entry") && err.contains("runtime_info"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn code_app_requires_an_explicit_port() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            r#"{"build":{"kind":"go"},"start":{"fcRuntime":"custom.debian10","command":["./main"],"args":[],"layers":[]}}"#,
+        )
+        .unwrap();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("start.port") && err.contains("required"),
             "{err}"
         );
     }
