@@ -2,7 +2,8 @@
 
 > 配合 [`README.md`](./README.md) 使用。所有 `[PH link]` 换成当天的 Product Hunt 帖子 URL，
 > `[repo]` 换成 `https://github.com/different-ai-studio/teamclu`，
-> `[site]` 换成 `https://teamclu.ai/`（落地页）。
+> `[site]` 换成 `https://teamclu.ai/`（官网）。**不要用 `teamclaw.ai`——它 302 到
+> `workclaw.com`，是另一个产品。**
 > 主线是**团队协作**：共享 Skills + 会话即群聊。本地优先作为支撑点出现，不当主角。
 > 英文段落按平台语调写过，不是同一段复制四遍——每个社区反感的东西不一样。
 

@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://teamclu.ai/sitemap.xml

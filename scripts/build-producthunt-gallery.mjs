@@ -22,13 +22,7 @@
  *   PH_FONT_REGULAR   subtitle font (default: Arial.ttf)
  */
 import { execFileSync } from 'node:child_process';
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  rmSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -293,20 +287,6 @@ function main() {
 
   rmSync(TMP_DIR, { recursive: true, force: true });
   console.log(`\n${built} asset(s) in ${path.relative(ROOT, OUT_DIR)}/`);
-
-  // Mirror into the landing site. teamclu.ai is served with `landing/` as the
-  // document root, so the site cannot reach up into producthunt-kit/ — it
-  // needs its own copy. Syncing here rather than by hand is the point: a
-  // re-captured gallery that nobody re-copies leaves the live homepage showing
-  // screenshots of a build that no longer exists.
-  const landingAssets = path.join(ROOT, 'landing', 'assets');
-  if (existsSync(path.join(ROOT, 'landing'))) {
-    mkdirSync(landingAssets, { recursive: true });
-    for (const file of readdirSync(OUT_DIR).filter((f) => f.endsWith('.png'))) {
-      copyFileSync(path.join(OUT_DIR, file), path.join(landingAssets, file));
-    }
-    console.log(`→ synced to ${path.relative(ROOT, landingAssets)}/`);
-  }
   if (missingOptional.length > 0) {
     console.log(
       `\n${missingOptional.length} team-story slot(s) still empty — see producthunt-kit/src/README.md`,

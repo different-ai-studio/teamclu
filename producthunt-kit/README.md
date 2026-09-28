@@ -18,7 +18,6 @@
 | `README.md` | 本文档：PH 表单文案、Maker 评论、FAQ、清单、时间线 |
 | `social-launch.md` | 发布日社媒/社群文案（X、LinkedIn、HN、Reddit、即刻、V2EX、知乎） |
 | `ph-draft.json` | 同一套文案的机读版本，字段与本文一一对应 |
-| `landing/` | 落地页（teamclu.ai），PH 的 Link 字段指向它 |
 | `src/README.md` | 截图来源与「如何重拍」说明 |
 | `src/team-skills.png` | ② 的原始截图：团队技能详情（版本历史 / owner / 恢复） |
 | `src/group-session.png` | ④ 的原始截图：会话里的 @提及与 agent 参与者 |
@@ -72,22 +71,27 @@ Shared skills and group chat for your team's AI agents.
 > 如果更想突出「不用把上下文交给云」，可退回上一版的
 > `Local AI agents your whole team can share.`（42）——但团队向的两个功能就没在 tagline 里了。
 
-### Link ✅ 已补上
+### Link
 
-PH 要求一个可点击的落地链接。**现在有了：`https://teamclu.ai/`**
+PH 要求一个可点击的落地链接。**填 `https://teamclu.ai/`** —— 这是现有官网。
 
-落地页在 `landing/`，纯静态 HTML+CSS（英文主页 + `/zh/` 中文页），无 JS、无构建，
-Cloudflare Pages 直接以该目录为文档根。文案与本材料同一套事实基线，FAQ 同样收录了
-「还没做」的三点。
+站点在私有仓 `different-ai-studio/teamclaw-website`（仓库名里的 `teamclaw` 是
+`teamclaw → teamclu` 改名时留下的旧名，**不是域名**），经 GitHub Actions 部署到
+Cloudflare Pages。
+
+> ⚠️ **别用 `teamclaw.ai`。** 该域名已不在本项目名下，`https://teamclaw.ai`
+> 会 **302 跳到 `workclaw.com`** —— 那是另一个产品。历史域名 `teamclaw.tech`
+> 已经 301 到 `teamclu.ai`，`teamklo.com` 当年买了没绑（404）。
+> 唯一正确的域名是 **`teamclu.ai`**。
 
 | 选项 | URL | 说明 |
 |------|-----|------|
-| **A（填这个）** | `https://teamclu.ai/` | 落地页。陌生人 10 秒内知道这是什么、怎么装 |
+| **A（填这个）** | `https://teamclu.ai/` | 现有官网，英文 + 中文 |
 | B | `https://github.com/different-ai-studio/teamclu` | 兜底：源码树，团队向产品不理想 |
-| C | `https://github.com/different-ai-studio/teamclu/releases` | 直接指向安装包 |
 
-> 部署步骤见 `landing/README.md`。**发布前先确认 `https://teamclu.ai/` 能打开** ——
-> PH 的 Link 字段是访客的第一次点击，打不开等于把第一印象交给 404。
+> 发布前确认三件事（详见 §5）：域名能打开、**页面 og 标签能出预览卡片**、
+> 站上叙事与本材料一致。前两项是纯技术项，第三项已按「群聊 + 版本化团队技能」
+> 重排过首页。
 
 ### Description（PH 上限实测 **500 字符**）
 
@@ -260,7 +264,7 @@ WeCom group: wrOOCIYgAAze..          （企业微信群 ID）
 | ☑ **§4 的两张团队截图已拍** | 原图在 `src/`；④ 已裁掉含业务数据的列表列 |
 | ☐ **确认 ④ 的裁剪可接受** | 否则用演示团队重拍完整三栏版，见 §4。**这是当前最该补的一项**——「群聊」主张最有说服力的部分（参与者头像簇、在线状态）恰恰不在图里 |
 | ☐ 决定 ②④ 是否重拍英文版 | PH 主流量在英文区，而 ②④ 是**中文界面**。`src/README.md` 写了重拍方法（应用切语言 + 演示数据）。不重拍也能发，只是转化率打折——自己权衡 |
-| ☐ 落地页已部署 | `landing/` 已就绪并本地验证；**待部署到 teamclu.ai，并确认 `https://teamclu.ai/` 能打开**。步骤见 `landing/README.md` |
+| ☐ 官网已同步并确认 | `teamclu.ai` 是现有官网（私有仓 `teamclaw-website`）。发布前确认：域名能打开、**分享链接能出预览卡片**（og 标签）、首页叙事与本材料一致、站上无模拟图冒充产品截图 |
 | ☑ **确认 GitHub 仓库 public** | 已核实：`different-ai-studio/teamclu` 为 PUBLIC（2026-09-28） |
 | ☐ **切一个新 release** | 线上最新是 `v0.4.1-beta.43`（2026-09-05），代码已到 `beta.71`——**落后 28 个版本**。访客按下 install 拿到的是三周前的构建。见 §6 |
 | ☐ 安装包可下载 | GitHub Releases 的 `.dmg` / `.exe` 可用；macOS 未签名会被 Gatekeeper 拦，README 已有 `xattr -cr` 说明 |
@@ -312,7 +316,7 @@ WeCom group: wrOOCIYgAAze..          （企业微信群 ID）
 ```
 Maker 姓名：________________            ← 替换 README.md §2 与 social-launch.md 里的 [Your name]
 PH 帖子 URL：________________
-落地页 URL：https://teamclu.ai/          ← 已就绪，待部署
+落地页 URL：https://teamclu.ai/          ← 现有官网（勿用 teamclaw.ai，会跳到 workclaw.com）
 GitHub 仓库：https://github.com/different-ai-studio/teamclu   （已确认 public）
 下载链接：https://github.com/different-ai-studio/teamclu/releases/latest   （待切新版）
 X / Twitter：@________________          ← 没有就留空，不要编
