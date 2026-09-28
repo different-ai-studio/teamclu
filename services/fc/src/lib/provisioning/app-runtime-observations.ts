@@ -10,7 +10,9 @@ export interface RuntimeObservation {
   layerVersions?: number[];
   lookup?: PathLookup;
   region: string | null;
-  probeDate: string;
+  /** Date of the historical record, not necessarily the probe execution. */
+  recordedAt: string;
+  probeDate: string | null;
   verificationStatus: "historicalProbe";
   provenance: string;
 }
@@ -91,7 +93,7 @@ export const IMAGE_DEBIAN: Record<string, string> = {
 
 
 export function readRuntimeObservations(language?: AppLanguage): RuntimeObservation[] {
-  const common = { runtime: "custom.debian10", region: null, probeDate: "2026-09-23", verificationStatus: "historicalProbe" as const,
+  const common = { runtime: "custom.debian10", region: null, recordedAt: "2026-09-23", probeDate: null, verificationStatus: "historicalProbe" as const,
     provenance: "docs/specs/2026-09-23-app-deploy-intent-contract-design.md#21-what-the-runtime-image-contains (probe log; exact timestamp and region not retained)" };
   const observations: RuntimeObservation[] = Object.entries(IMAGE_INTERPRETERS["custom.debian10"]).map(([name, value]) =>
     ({ ...common, kind: "interpreter", language: name.startsWith("node") ? "node" : "python", name, ...value }));

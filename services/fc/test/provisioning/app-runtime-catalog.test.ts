@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRuntimeCatalogReader, type CatalogClient } from "../../src/lib/provisioning/app-runtime-catalog.js";
+import { resolveFcEndpoint } from "../../src/lib/provisioning/fc-client.js";
 import { readRuntimeObservations } from "../../src/lib/provisioning/app-runtime-observations.js";
 const layer = (name: string, version: number) => ({ layerName: name, version,
   layerVersionArn: `acs:fc:cn-shenzhen:official:layers/${name}/versions/${version}`,
@@ -42,9 +43,31 @@ test("cache expires, is bounded by region, and marks stale results on refresh fa
   assert.equal(stale.sourceStatus.officialLayers.complete, false);
   failed = false; await read("cn-beijing"); await read("cn-shenzhen"); assert.equal(calls, 4);
 });
-test("observations are dated probes, filter by language, and do not invent Java paths", () => {
+test("observations distinguish record date from unknown probe date and do not invent Java paths", () => {
   const python = readRuntimeObservations("python");
   assert.ok(python.some(o => o.path === "/var/fc/lang/python3.10/bin/python3"));
-  assert.ok(python.every(o => o.probeDate === "2026-09-23" && o.provenance && o.verificationStatus === "historicalProbe"));
+  assert.ok(python.every(o => o.recordedAt === "2026-09-23" && o.probeDate === null && o.provenance && o.verificationStatus === "historicalProbe"));
   assert.ok(!readRuntimeObservations("java").some(o => o.path));
+});
+
+test("endpoint region mismatch returns incomplete catalog without mislabeled layers", async () => {
+  const previous = { endpoint: process.env.APPS_FC_ENDPOINT, region: process.env.APPS_REGION };
+  process.env.APPS_FC_ENDPOINT = "https://123.cn-shenzhen.fc.aliyuncs.com";
+  process.env.APPS_REGION = "cn-beijing";
+  try {
+    assert.equal(resolveFcEndpoint("cn-shenzhen"), process.env.APPS_FC_ENDPOINT);
+    assert.throws(() => resolveFcEndpoint("cn-beijing"), { code: "FcEndpointRegionMismatch" });
+    const read = createRuntimeCatalogReader(region => { resolveFcEndpoint(region); return fixture(); });
+    const result = await read("cn-beijing", "java");
+    assert.equal(result.sourceStatus.officialLayers.complete, false);
+    assert.deepEqual(result.sourceStatus.officialLayers.errors, ["ListLayers: FcEndpointRegionMismatch"]);
+    assert.equal(result.candidates.filter(c => c.source === "officialLayers").length, 0);
+    process.env.APPS_FC_ENDPOINT = "https://fc-proxy.example";
+    assert.equal(resolveFcEndpoint("cn-beijing"), process.env.APPS_FC_ENDPOINT);
+    assert.throws(() => resolveFcEndpoint("cn-shenzhen"), { code: "FcEndpointRegionMismatch" });
+  } finally {
+    for (const [key, value] of [["APPS_FC_ENDPOINT", previous.endpoint], ["APPS_REGION", previous.region]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });

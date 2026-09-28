@@ -38,7 +38,19 @@ export function accountIdFromRoleArn(arn: string | undefined): string | null {
  */
 export function resolveFcEndpoint(region = REGION()): string | null {
   const explicit = process.env.APPS_FC_ENDPOINT?.trim();
-  if (explicit) return explicit;
+  if (explicit) {
+    const hostname = new URL(explicit.includes("://") ? explicit : `https://${explicit}`).hostname;
+    // Alibaba endpoints carry their region. A private proxy has no discoverable
+    // region, so it belongs only to the configured apps region, never any region
+    // a catalog caller happens to request.
+    const endpointRegion = /(?:^|\.)([a-z0-9-]+)\.fc(?:-internal)?\.aliyuncs\.com$/.exec(hostname)?.[1] ?? REGION();
+    if (endpointRegion !== region) {
+      throw Object.assign(new Error("FC endpoint does not match the requested region"), {
+        code: "FcEndpointRegionMismatch",
+      });
+    }
+    return explicit;
+  }
   const accountId =
     process.env.ALIYUN_ACCOUNT_ID?.trim() || accountIdFromRoleArn(process.env.ROLE_ARN);
   return accountId ? `${accountId}.${region}.fc.aliyuncs.com` : null;
