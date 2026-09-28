@@ -200,6 +200,38 @@ fn zip_magic(bytes: &[u8]) -> bool {
         || bytes.starts_with(b"PK\x07\x08")
 }
 
+fn opaque_archive_candidate(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [
+        ".tar", ".tar.gz", ".tgz", ".gz", ".tar.bz2", ".tbz2", ".bz2", ".tar.xz", ".txz", ".xz",
+        ".tar.zst", ".tzst", ".zst", ".7z",
+    ]
+    .iter()
+    .any(|suffix| lower.ends_with(suffix))
+}
+
+fn opaque_archive_magic(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x1f\x8b") // gzip
+        || bytes.starts_with(b"BZh") // bzip2
+        || bytes.starts_with(b"\xfd7zXZ\0") // xz
+        || bytes.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) // zstd
+        || bytes.starts_with(&[0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]) // 7z
+        || bytes.get(257..262) == Some(&b"ustar"[..]) // tar
+}
+
+fn read_prefix(reader: &mut impl Read) -> std::io::Result<([u8; 512], usize)> {
+    let mut bytes = [0; 512];
+    let mut count = 0;
+    while count < bytes.len() {
+        let read = reader.read(&mut bytes[count..])?;
+        if read == 0 {
+            break;
+        }
+        count += read;
+    }
+    Ok((bytes, count))
+}
+
 /// Bound ZIP/JAR inspection so malformed or nested content is unknown, never
 /// silently accepted as native-compatible. No member is extracted to disk.
 fn inspect_archive(path: &Path, label: &str, unknown: &mut Vec<String>) -> anyhow::Result<()> {
@@ -218,6 +250,7 @@ fn inspect_archive(path: &Path, label: &str, unknown: &mut Vec<String>) -> anyho
         return Ok(());
     }
     let mut total_uncompressed = 0u64;
+    let mut total_read = 0u64;
     for index in 0..archive.len() {
         let mut member = match archive.by_index(index) {
             Ok(member) => member,
@@ -235,29 +268,46 @@ fn inspect_archive(path: &Path, label: &str, unknown: &mut Vec<String>) -> anyho
             continue;
         }
         let member_label = format!("{label}!{}", member.name());
-        if archive_candidate(member.name()) {
+        if archive_candidate(member.name()) || opaque_archive_candidate(member.name()) {
             unknown.push(member_label);
             continue;
         }
-        let mut bytes = [0; 20];
-        let count = match member.read(&mut bytes) {
-            Ok(count) => count,
+        let (bytes, count) = match read_prefix(&mut member) {
+            Ok(result) => result,
             Err(_) => {
                 unknown.push(member_label);
                 continue;
             }
         };
-        if zip_magic(&bytes[..count]) {
+        if zip_magic(&bytes[..count]) || opaque_archive_magic(&bytes[..count]) {
             unknown.push(member_label);
             continue;
         }
-        match binary_target(&bytes[..count]) {
-            Some("Linux/x86_64") => {}
-            Some(target) => anyhow::bail!(
+        let target = binary_target(&bytes[..count]);
+        if let Some(target) = target.filter(|target| *target != "Linux/x86_64") {
+            anyhow::bail!(
                 "native artifact {member_label} targets {target}; Function Compute requires Linux/x86_64"
-            ),
+            );
+        }
+        total_read = total_read.saturating_add(count as u64);
+        let remaining = MAX_UNCOMPRESSED
+            .saturating_sub(total_read)
+            .saturating_add(1);
+        let drained = std::io::copy(&mut (&mut member).take(remaining), &mut std::io::sink());
+        let Ok(drained) = drained else {
+            unknown.push(member_label);
+            continue;
+        };
+        if drained >= remaining {
+            unknown.push(member_label);
+            continue;
+        }
+        total_read = total_read.saturating_add(drained);
+        match target {
+            Some("Linux/x86_64") => {}
+            Some(_) => unreachable!(),
             None if native_candidate(member.name()) => unknown.push(member_label),
-            None => {},
+            None => {}
         }
     }
     Ok(())
@@ -315,6 +365,10 @@ pub fn verify_artifact(
             .strip_prefix(output_dir)?
             .to_string_lossy()
             .replace('\\', "/");
+        if opaque_archive_candidate(&rel) {
+            unknown_files.push(rel);
+            continue;
+        }
         if archive_candidate(&rel) {
             inspect_archive(item.path(), &rel, &mut unknown_files)?;
             continue;
@@ -324,9 +378,12 @@ pub fn verify_artifact(
                 value.trim_start_matches("./") == rel
                     && command.first().is_some_and(|part| part.starts_with("./"))
             });
-        let mut bytes = [0; 20];
-        let count = std::fs::File::open(item.path())?.read(&mut bytes)?;
+        let (bytes, count) = read_prefix(&mut std::fs::File::open(item.path())?)?;
         let bytes = &bytes[..count];
+        if opaque_archive_magic(bytes) {
+            unknown_files.push(rel);
+            continue;
+        }
         if zip_magic(bytes) {
             inspect_archive(item.path(), &rel, &mut unknown_files)?;
             continue;
@@ -1486,6 +1543,97 @@ mod tests {
         .unwrap();
         assert_eq!(result.status, "unknown");
         assert_eq!(result.unknown_files, vec!["app.jar!payload.blob"]);
+    }
+
+    #[test]
+    fn corrupt_jar_member_crc_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let path = tmp.path().join("app.jar");
+        let jar = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file(
+            "assets/data.txt",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        let payload = b"first twenty bytes are fine; corrupt the remainder of this member";
+        zip.write_all(payload).unwrap();
+        zip.finish().unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        let start = bytes
+            .windows(payload.len())
+            .position(|window| window == payload)
+            .unwrap();
+        bytes[start + 30] ^= 0x01;
+        std::fs::write(&path, bytes).unwrap();
+
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.unknown_files, vec!["app.jar!assets/data.txt"]);
+    }
+
+    #[test]
+    fn nested_and_top_level_gzip_archives_are_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        std::fs::write(tmp.path().join("outer.tgz"), b"\x1f\x8bnot inspected").unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("nested.tar.gz", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\x1f\x8bnot inspected").unwrap();
+        zip.finish().unwrap();
+
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert!(result.unknown_files.contains(&"outer.tgz".to_string()));
+        assert!(result
+            .unknown_files
+            .contains(&"app.jar!nested.tar.gz".to_string()));
+    }
+
+    #[test]
+    fn opaque_tar_magic_is_unknown_inside_and_outside_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let mut tar = vec![0; 512];
+        tar[257..262].copy_from_slice(b"ustar");
+        std::fs::write(tmp.path().join("outer.blob"), &tar).unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("nested.blob", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&tar).unwrap();
+        zip.finish().unwrap();
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert!(result.unknown_files.contains(&"outer.blob".to_string()));
+        assert!(result
+            .unknown_files
+            .contains(&"app.jar!nested.blob".to_string()));
     }
 
     #[cfg(unix)]

@@ -19,6 +19,8 @@ The focused daemon build tests cover macOS and Windows hosts with mismatched nat
 
 Review follow-up: the missing-output build path already had an output guard; a direct regression now covers its pre-upload error. The archive verifier now inspects ZIP/JAR members within a 4,096-member and 200 MiB declared-uncompressed budget. A known wrong-architecture native member fails; nested or unreadable content remains `unknown`. Focused daemon build tests after this change: 54 passed, 0 failed. The full 1,881-test daemon result above predates this review follow-up; the focused run compiled and exercised the changed module.
 
+Second review follow-up: ZIP/JAR members now read through EOF within the same 200 MiB cap so trailing corruption and CRC failures cannot yield `checked`. The verifier reads a bounded 512-byte prefix to detect native headers and opaque archive magic, including tar's `ustar` marker; tar/gzip and other recognizable opaque compressed formats report `unknown` at the top level or within ZIP/JAR content. The focused daemon build suite added regressions for a corrupt member CRC, nested/top-level `.tar.gz`/`.tgz`, and tar magic under opaque names: 57 passed, 0 failed. The full 1,881-test result predates these review fixes.
+
 ## Manual rollout cases
 
 | Case | Status | Reason |
