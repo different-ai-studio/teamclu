@@ -122,6 +122,11 @@ const buildResult = (
   image: string | null = null,
 ) => ({ outcome, error, gitCommitSha: gitCommitSha ?? revision, declaration, image, revision });
 
+const withCheckedVerification = <T extends ReturnType<typeof buildResult>>(build: T) => ({
+  ...build,
+  artifactVerification: { status: "checked" as const, revision: build.revision, unknownFiles: [] },
+});
+
 const gitCred = {
   remoteUrl: "git@gitea:team/app-1.git",
   authKind: "deploy_key" as const,
@@ -902,7 +907,7 @@ describe("apps-store deploy", () => {
       gitCommitSha: "abc1234567890",
     });
     mocks.buildDaemonApp.mockResolvedValueOnce(
-      buildResult("built", null, null, declaration, image.reference),
+      withCheckedVerification(buildResult("built", null, null, declaration, image.reference)),
     );
     mocks.finalizeDeploy.mockResolvedValueOnce({
       ...readyApp(),
@@ -942,7 +947,7 @@ describe("apps-store deploy", () => {
       deployToken: "tok-1",
       gitCommitSha: "abc1234567890",
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
     mocks.finalizeDeploy.mockResolvedValueOnce({
       ...readyApp(),
       fcStatus: "live",
@@ -1023,7 +1028,7 @@ describe("apps-store deploy", () => {
       start: { fcRuntime: "custom.debian12", command: ["node"], args: ["index.js"], port: 8080 },
     };
     mocks.daemonAppManifest.mockResolvedValue(manifest(declaration));
-    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built", null, null, declaration));
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built", null, null, declaration)));
     mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp(), fcStatus: "live" });
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
@@ -1043,7 +1048,7 @@ describe("apps-store deploy", () => {
       presignedPut: "https://oss/put?sig=x",
       deployToken: "tok-1",
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
     mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "none" }), fcStatus: "live" });
 
     await useAppsStore.getState().deploy("app-1");
@@ -1069,7 +1074,7 @@ describe("apps-store deploy", () => {
       presignedPut: "https://oss/put?sig=x",
       deployToken: "tok-1",
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
     mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "platform" }), fcStatus: "live" });
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
@@ -1086,7 +1091,7 @@ describe("apps-store deploy", () => {
       presignedPut: "https://oss/put?sig=x",
       deployToken: "tok-1",
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
     mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "platform" }), fcStatus: "live" });
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
@@ -1120,7 +1125,7 @@ describe("apps-store deploy", () => {
       presignedPut: "https://oss/put?sig=x",
       deployToken: "tok-1",
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
     mocks.finalizeDeploy.mockResolvedValueOnce({ ...readyApp({ authMode: "platform" }), fcStatus: "live" });
     const { useAppsStore } = await import("./apps-store");
     await useAppsStore.getState().deploy("app-1");
@@ -1177,7 +1182,7 @@ describe("apps-store deploy", () => {
       presignedPut: "https://oss/put?sig=x",
       deployToken: "tok-1",
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce(buildResult("built"));
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification(buildResult("built")));
     mocks.finalizeDeploy.mockRejectedValueOnce(new Error("fc exploded"));
     mocks.updateAppDeployStatus.mockResolvedValueOnce(null);
     const { useAppsStore } = await import("./apps-store");
@@ -1204,7 +1209,7 @@ describe("apps-store deploy", () => {
       deployToken: "tok-1",
       gitCommitSha: null,
     });
-    mocks.buildDaemonApp.mockResolvedValueOnce({ ...buildResult("built"), revision: contentDigest, gitCommitSha: null });
+    mocks.buildDaemonApp.mockResolvedValueOnce(withCheckedVerification({ ...buildResult("built"), revision: contentDigest, gitCommitSha: null }));
     mocks.finalizeDeploy.mockResolvedValueOnce({ ...imported, fcStatus: "live" });
 
     await useAppsStore.getState().deploy("app-1");
