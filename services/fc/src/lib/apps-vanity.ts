@@ -197,7 +197,7 @@ export function makeVanityLookup(deps: {
 
 /** A successful endpoint remains servable while a replacement builds or fails. */
 export function isServable(app: VanityApp | null): app is VanityApp & { fcEndpoint: string } {
-  return !!app && !!app.fcEndpoint && ["live", "awaiting_build", "deploying", "deploy_error"].includes(app.fcStatus ?? "");
+  return !!app && !!app.fcEndpoint && ["live", "awaiting_build", "building", "deploying", "deploy_error"].includes(app.fcStatus ?? "");
 }
 
 // Hop-by-hop headers are connection-scoped: forwarding them corrupts the next

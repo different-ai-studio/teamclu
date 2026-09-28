@@ -798,6 +798,36 @@ pub fn build_artifact(
     git: Option<&BuildGitContext<'_>>,
     push: Option<&ImagePushTarget<'_>>,
 ) -> anyhow::Result<BuildOutput> {
+    build_artifact_for_deploy(workdir, git, push, None)
+}
+
+/// Deploy builds also bind imported workdirs to their preflight content digest.
+pub fn build_artifact_for_deploy(
+    workdir: &Path,
+    git: Option<&BuildGitContext<'_>>,
+    push: Option<&ImagePushTarget<'_>>,
+    imported_revision: Option<&str>,
+) -> anyhow::Result<BuildOutput> {
+    build_artifact_with_push(workdir, git, push, &push_image, &|path| {
+        if let Some(ctx) = git {
+            verify_git_build_revision(path, ctx)?;
+        }
+        if let Some(revision) = imported_revision {
+            if app_git::checkout_content_digest(path)? != revision {
+                anyhow::bail!("imported checkout changed during build");
+            }
+        }
+        Ok(())
+    })
+}
+
+fn build_artifact_with_push(
+    workdir: &Path,
+    git: Option<&BuildGitContext<'_>>,
+    push: Option<&ImagePushTarget<'_>>,
+    publish: &dyn Fn(&Path, &ImagePushTarget<'_>) -> anyhow::Result<()>,
+    verify_source: &dyn Fn(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<BuildOutput> {
     let mut git_commit_sha = None;
     if let Some(ctx) = git {
         git_commit_sha = prepare_git_build(workdir, ctx)?;
@@ -829,10 +859,11 @@ pub fn build_artifact(
             // credentials stay out of the app command and the user's Docker
             // config.
             run_shell_override(command, workdir, Some(target.image))?;
-            push_image(workdir, &target)?;
         } else {
             build_image(workdir, &declaration.build, &target)?;
         }
+        verify_source(workdir)?;
+        publish(workdir, &target)?;
         return Ok(BuildOutput {
             product: BuildProduct::Image(target.image.to_string()),
             git_commit_sha,
@@ -924,7 +955,7 @@ fn build_image(
         IMAGE_BUILD_TIMEOUT,
         ERR_IMAGE_BUILD_TIMEOUT,
     )?;
-    push_image(workdir, target)
+    Ok(())
 }
 
 /// Push the built image with credentials that touch nothing of the user's.
@@ -1460,6 +1491,49 @@ mod tests {
             "reached"
         );
         assert!(!err.contains(ERR_NO_DOCKERFILE), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dirty_source_from_container_build_never_reaches_registry_push() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("tracked.txt"), b"original").unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": { "kind": "container", "command": "printf changed > tracked.txt" },
+                "start": { "port": 9000 }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let target = ImagePushTarget {
+            image: "registry.example.com/app:sha",
+            registry: "registry.example.com",
+            username: "u",
+            password: "p",
+        };
+        let pushes = std::cell::Cell::new(0);
+        let err = match build_artifact_with_push(
+            tmp.path(),
+            None,
+            Some(&target),
+            &|_, _| {
+                pushes.set(pushes.get() + 1);
+                Ok(())
+            },
+            &|path| {
+                if std::fs::read(path.join("tracked.txt"))? != b"original" {
+                    anyhow::bail!("source changed during build");
+                }
+                Ok(())
+            },
+        ) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("dirty source must stop before registry push"),
+        };
+        assert!(err.contains("source changed during build"), "{err}");
+        assert_eq!(pushes.get(), 0);
     }
 
     #[cfg(unix)]

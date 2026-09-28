@@ -3,6 +3,7 @@ import test from "node:test";
 import { createRuntimeCatalogReader, type CatalogClient } from "../../src/lib/provisioning/app-runtime-catalog.js";
 import { resolveFcEndpoint } from "../../src/lib/provisioning/fc-client.js";
 import { readRuntimeObservations } from "../../src/lib/provisioning/app-runtime-observations.js";
+import { preflightAppDeploy } from "../../src/lib/provisioning/app-deploy-preflight.js";
 const layer = (name: string, version: number) => ({ layerName: name, version,
   layerVersionArn: `acs:fc:cn-shenzhen:official:layers/${name}/versions/${version}`,
   compatibleRuntime: ["custom.debian10"] });
@@ -26,6 +27,29 @@ test("Java catalog includes all paginated versions and separates documented buil
   assert.ok(result.candidates.filter(c => c.source === "officialLayers").every(c => c.teamcluDeployable === "unknown" && !('path' in c)));
   assert.equal(result.sourceStatus.officialLayers.complete, true);
   assert.equal(result.sourceStatus.documentation.observedAt, "2026-09-28");
+});
+
+test("production catalog only verifies historically deployed Nodejs20 layers on the observed runtime", async () => {
+  const client: CatalogClient = {
+    async listLayers() { return { body: { layers: [{ layerName: "Nodejs20" }, { layerName: "Java17" }] } }; },
+    async listLayerVersions(name) { return { body: { layers: [
+      { ...layer(name, 3), compatibleRuntime: ["custom.debian10", "custom.debian12"] },
+      layer(name, 4),
+    ] } }; },
+  };
+  const catalog = await createRuntimeCatalogReader(() => client)("cn-shenzhen");
+  const known = catalog.candidates.find(c => c.name === "Nodejs20" && c.version === 3)!;
+  assert.equal(known.teamcluDeployable, "teamcluDeployable");
+  assert.deepEqual(known.teamcluVerifiedRuntime, ["custom.debian10"]);
+  assert.ok(catalog.candidates.filter(c => c.source === "officialLayers" && c !== known).every(c => c.teamcluDeployable === "unknown"));
+  const base = { build: { kind: "node", output: ".output" }, start: { fcRuntime: "custom.debian10", command: ["/opt/nodejs20/bin/node"], args: ["server.js"], port: 9000, layers: ["Nodejs20:3"] } };
+  const options = { region: "cn-shenzhen", capabilities: catalog.candidates, catalogComplete: true };
+  assert.doesNotThrow(() => preflightAppDeploy("app-1", "a".repeat(40), base, null, options));
+  assert.throws(() => preflightAppDeploy("app-1", "a".repeat(40), { ...base, start: { ...base.start, layers: ["Nodejs20:4"] } }, null, options),
+    (e: any) => e.code === "unsupported_layer");
+  assert.throws(() => preflightAppDeploy("app-1", "a".repeat(40), { ...base, start: { ...base.start, fcRuntime: "custom.debian12" } }, null, options),
+    (e: any) => e.code === "unsupported_layer");
+  assert.doesNotThrow(() => preflightAppDeploy("app-1", "a".repeat(40), { ...base, start: { ...base.start, command: ["/var/fc/lang/nodejs20/bin/node"], layers: [] } }, null, options));
 });
 test("failed later version pages preserve partial candidates and visible source errors", async () => {
   const result = await createRuntimeCatalogReader(() => fixture(true))("cn-shenzhen", "java");

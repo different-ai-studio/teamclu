@@ -12,6 +12,8 @@ export interface RuntimeCandidate {
   arn?: string;
   compatibleRuntime: string[];
   teamcluDeployable: "teamcluDeployable" | "providerAvailableButUnsupported" | "unknown";
+  /** Runtime/image pairs actually verified by TeamClu, narrower than provider compatibility. */
+  teamcluVerifiedRuntime?: string[];
   reason: string;
 }
 export interface SourceState {
@@ -31,6 +33,13 @@ export interface CatalogClient {
 const DOC_URL = "https://api.alibabacloud.com/api/FC/2023-03-30/CreateFunction";
 // Documentation snapshot, not a ListRuntimes result or regional availability guarantee.
 const DOCUMENTED = ["nodejs12", "nodejs14", "nodejs16", "nodejs18", "nodejs20", "go1", "python3", "python3.9", "python3.10", "python3.12", "java8", "java11", "php7.2", "dotnetcore3.1", "custom", "custom.debian10", "custom.debian11", "custom.debian12", "custom-container"];
+/** Historical serving evidence covers only these versions on custom.debian10. The provider must also list the exact regional ARN and runtime. */
+const VERIFIED_NODE20_VERSIONS = new Set([1, 2, 3]);
+function verifiedLayer(name: string, version: LayerMetadata, region: string): boolean {
+  return name === "Nodejs20" && VERIFIED_NODE20_VERSIONS.has(version.version ?? -1) &&
+    version.layerVersionArn === `acs:fc:${region}:official:layers/Nodejs20/versions/${version.version}` &&
+    (version.compatibleRuntime ?? []).includes("custom.debian10");
+}
 function languageOf(name: string): AppLanguage | undefined {
   return /^(node|python|go|php|java)/i.exec(name)?.[1].toLowerCase() as AppLanguage | undefined;
 }
@@ -65,9 +74,14 @@ export function createRuntimeCatalogReader(clientForRegion: (region: string) => 
                 const page = (await client.listLayerVersions(name, new $fc.ListLayerVersionsRequest({ limit: 100, startVersion }))).body;
                 if (!page || !Array.isArray(page.layers)) throw new Error("Invalid ListLayerVersions response");
                 for (const version of page.layers) {
+                  const verified = verifiedLayer(name, version, region);
                   candidates.push({ name, source: "officialLayers", region, language: languageOf(name), version: version.version,
-                    arn: version.layerVersionArn, compatibleRuntime: version.compatibleRuntime ?? [], teamcluDeployable: "unknown",
-                    reason: "Provider metadata does not verify interpreter paths, mount points, or HTTP startup compatibility." });
+                    arn: version.layerVersionArn, compatibleRuntime: version.compatibleRuntime ?? [],
+                    teamcluDeployable: verified ? "teamcluDeployable" : "unknown",
+                    ...(verified ? { teamcluVerifiedRuntime: ["custom.debian10"] } : {}),
+                    reason: verified
+                      ? "Nodejs20 versions 1–3 served from /opt/nodejs20 on custom.debian10 in historical TeamClu deployments; provider confirms this regional ARN and runtime."
+                      : "Provider metadata does not verify interpreter paths, mount points, or HTTP startup compatibility." });
                 }
                 startVersion = page.nextVersion && page.nextVersion > 0 ? String(page.nextVersion) : undefined;
                 if (startVersion && versions.has(startVersion)) throw new Error("Repeated layer version cursor");

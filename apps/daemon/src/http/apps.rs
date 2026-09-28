@@ -763,8 +763,12 @@ pub async fn build_app(
                 username: i.username.trim(),
                 password: &i.password,
             });
-        let built =
-            crate::sync::app_build::build_artifact(&workdir_path, git_ctx.as_ref(), push.as_ref())?;
+        let built = crate::sync::app_build::build_artifact_for_deploy(
+            &workdir_path,
+            git_ctx.as_ref(),
+            push.as_ref(),
+            (!use_git).then_some(expected_revision.as_str()),
+        )?;
         if let Some(git) = git_ctx.as_ref() {
             crate::sync::app_build::verify_git_build_revision(&workdir_path, git)?;
         }

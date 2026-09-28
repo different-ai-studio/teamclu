@@ -56,7 +56,8 @@ export function preflightAppDeploy(appId: string, revision: string, rawDeclarati
     const runtime = declaration.build.kind === "container" ? "custom-container" : declaration.start.fcRuntime;
     if (!candidate || candidate.region !== options.region ||
         candidate.teamcluDeployable !== "teamcluDeployable" ||
-        !candidate.compatibleRuntime.includes(runtime)) {
+        !candidate.compatibleRuntime.includes(runtime) ||
+        (candidate.teamcluVerifiedRuntime && !candidate.teamcluVerifiedRuntime.includes(runtime))) {
       throw new ApiError(409, "unsupported_layer", `layer ${layer} is not deployable with ${runtime} in ${options.region}`);
     }
   }
