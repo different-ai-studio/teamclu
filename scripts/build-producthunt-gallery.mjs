@@ -220,6 +220,11 @@ function composeFrame(scene, cardX, card, dest) {
     '-geometry',
     `+${cardX}+${CARD_TOP}`,
     '-composite',
+    // Strip before writing. ImageMagick stamps date:create / date:modify into
+    // every output, so two identical runs produce different bytes — which makes
+    // `git status` dirty on every rebuild with a diff that shows nothing, and
+    // trains people to stop reading this script's output.
+    '-strip',
     dest,
   ]);
 }
@@ -280,7 +285,7 @@ function main() {
   if (existsSync(logo)) {
     for (const size of [512, 240]) {
       const out = path.join(OUT_DIR, `thumbnail-${size}.png`);
-      run([logo, '-resize', `${size}x${size}!`, out]);
+      run([logo, '-resize', `${size}x${size}!`, '-strip', out]);
       console.log(`✓ ${path.relative(ROOT, out)}`);
       built += 1;
     }
