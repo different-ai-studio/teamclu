@@ -178,6 +178,91 @@ fn binary_target(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn native_candidate(path: &str) -> bool {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|part| part.to_str())
+        .unwrap_or_default();
+    ["so", "dylib", "dll", "node", "pyd", "exe", "a"].contains(&extension) || path.contains(".so.")
+}
+
+fn archive_candidate(path: &str) -> bool {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|part| part.to_str())
+        .unwrap_or_default();
+    ["jar", "zip", "war", "ear", "whl", "egg"].contains(&extension)
+}
+
+fn zip_magic(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"PK\x05\x06")
+        || bytes.starts_with(b"PK\x07\x08")
+}
+
+/// Bound ZIP/JAR inspection so malformed or nested content is unknown, never
+/// silently accepted as native-compatible. No member is extracted to disk.
+fn inspect_archive(path: &Path, label: &str, unknown: &mut Vec<String>) -> anyhow::Result<()> {
+    const MAX_MEMBERS: usize = 4096;
+    const MAX_UNCOMPRESSED: u64 = 200 * 1024 * 1024;
+    let file = std::fs::File::open(path)?;
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(_) => {
+            unknown.push(label.to_string());
+            return Ok(());
+        }
+    };
+    if archive.len() > MAX_MEMBERS {
+        unknown.push(label.to_string());
+        return Ok(());
+    }
+    let mut total_uncompressed = 0u64;
+    for index in 0..archive.len() {
+        let mut member = match archive.by_index(index) {
+            Ok(member) => member,
+            Err(_) => {
+                unknown.push(label.to_string());
+                return Ok(());
+            }
+        };
+        total_uncompressed = total_uncompressed.saturating_add(member.size());
+        if total_uncompressed > MAX_UNCOMPRESSED {
+            unknown.push(label.to_string());
+            return Ok(());
+        }
+        if member.is_dir() {
+            continue;
+        }
+        let member_label = format!("{label}!{}", member.name());
+        if archive_candidate(member.name()) {
+            unknown.push(member_label);
+            continue;
+        }
+        let mut bytes = [0; 20];
+        let count = match member.read(&mut bytes) {
+            Ok(count) => count,
+            Err(_) => {
+                unknown.push(member_label);
+                continue;
+            }
+        };
+        if zip_magic(&bytes[..count]) {
+            unknown.push(member_label);
+            continue;
+        }
+        match binary_target(&bytes[..count]) {
+            Some("Linux/x86_64") => {}
+            Some(target) => anyhow::bail!(
+                "native artifact {member_label} targets {target}; Function Compute requires Linux/x86_64"
+            ),
+            None if native_candidate(member.name()) => unknown.push(member_label),
+            None => {},
+        }
+    }
+    Ok(())
+}
+
 /// Inspect the declared output and entry plus native artifacts using file
 /// headers, independent of the machine on which the build happened.
 pub fn verify_artifact(
@@ -230,14 +315,11 @@ pub fn verify_artifact(
             .strip_prefix(output_dir)?
             .to_string_lossy()
             .replace('\\', "/");
-        let extension = item
-            .path()
-            .extension()
-            .and_then(|part| part.to_str())
-            .unwrap_or_default();
-        let is_native = ["so", "dylib", "dll", "node", "pyd", "exe", "whl", "a"]
-            .contains(&extension)
-            || rel.contains(".so.")
+        if archive_candidate(&rel) {
+            inspect_archive(item.path(), &rel, &mut unknown_files)?;
+            continue;
+        }
+        let is_native = native_candidate(&rel)
             || entry.is_some_and(|value| {
                 value.trim_start_matches("./") == rel
                     && command.first().is_some_and(|part| part.starts_with("./"))
@@ -245,6 +327,10 @@ pub fn verify_artifact(
         let mut bytes = [0; 20];
         let count = std::fs::File::open(item.path())?.read(&mut bytes)?;
         let bytes = &bytes[..count];
+        if zip_magic(bytes) {
+            inspect_archive(item.path(), &rel, &mut unknown_files)?;
+            continue;
+        }
         match binary_target(&bytes) {
             Some("Linux/x86_64") => {}
             Some(target) => anyhow::bail!(
@@ -1322,6 +1408,100 @@ mod tests {
         .to_string();
         assert!(
             error.contains("native.so") && error.contains("Linux/x86_64"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn jar_cannot_hide_wrong_architecture_native_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("lib/native.so", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        elf.resize(20, 0);
+        elf[18] = 183;
+        zip.write_all(&elf).unwrap();
+        zip.finish().unwrap();
+
+        let error = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("app.jar")
+                && error.contains("native.so")
+                && error.contains("Linux/x86_64"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn uninspectable_nested_archive_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("nested.jar", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"nested archive bytes").unwrap();
+        zip.finish().unwrap();
+
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.unknown_files, vec!["app.jar!nested.jar"]);
+    }
+
+    #[test]
+    fn nested_zip_magic_is_unknown_even_without_archive_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("payload.blob", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"PK\x03\x04nested bytes").unwrap();
+        zip.finish().unwrap();
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.unknown_files, vec!["app.jar!payload.blob"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_declared_output_stops_before_archive_is_returned() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILE), serde_json::json!({
+            "build": {"kind":"node", "output":"missing-output", "command":"true"},
+            "start": {"fcRuntime":"custom.debian12", "command":["node"], "args":["server/index.mjs"], "layers":[], "port":9000}
+        }).to_string()).unwrap();
+        let error = match build_artifact(tmp.path(), None, None) {
+            Ok(_) => panic!("declared output must exist before archive is returned"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(ERR_OUTPUT_MISSING) && error.contains("missing-output"),
             "{error}"
         );
     }

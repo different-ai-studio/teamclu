@@ -17,6 +17,8 @@ Scope: Task 6 selected-daemon artifact checks on branch `design/app-deploy-disco
 
 The focused daemon build tests cover macOS and Windows hosts with mismatched native entry binaries, a missing declared entry/output, Linux ARM64 `.so` and `.so.1`, a cross-built Linux x86_64 native library, unclassifiable native bytes, and a container image metadata mismatch that stops before push. The verifier runs before archive upload or registry push. `unknown` stops desktop and web finalization; the previous live app stays serving.
 
+Review follow-up: the missing-output build path already had an output guard; a direct regression now covers its pre-upload error. The archive verifier now inspects ZIP/JAR members within a 4,096-member and 200 MiB declared-uncompressed budget. A known wrong-architecture native member fails; nested or unreadable content remains `unknown`. Focused daemon build tests after this change: 54 passed, 0 failed. The full 1,881-test daemon result above predates this review follow-up; the focused run compiled and exercised the changed module.
+
 ## Manual rollout cases
 
 | Case | Status | Reason |
