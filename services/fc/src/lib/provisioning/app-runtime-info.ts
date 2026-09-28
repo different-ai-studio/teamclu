@@ -5,11 +5,13 @@ import { resolveAppsOss } from "./apps-oss.js";
 /** Only the fields required to compare a deployment may cross the API boundary. */
 export function projectFunction(raw: any) {
   const body = raw?.body ?? raw;
+  const config = body?.runtime === "custom-container" ? body?.customContainerConfig : body?.customRuntimeConfig;
   return {
     runtime: body?.runtime ?? null,
-    command: body?.customRuntimeConfig?.command ?? null,
-    args: body?.customRuntimeConfig?.args ?? null,
-    port: body?.customRuntimeConfig?.port ?? body?.customContainerConfig?.port ?? null,
+    command: config?.command ?? null,
+    args: config?.args ?? null,
+    port: config?.port ?? null,
+    healthCheckPath: config?.healthCheckConfig?.httpGetUrl ?? null,
     layers: Array.isArray(body?.layers) ? body.layers.filter((x: unknown): x is string => typeof x === "string") : [],
     status: body?.status ?? null,
   };
@@ -39,6 +41,7 @@ export function driftFields(start: any, provider: ReturnType<typeof projectFunct
   if (JSON.stringify(start?.command ?? null) !== JSON.stringify(provider.command)) fields.push("command");
   if (JSON.stringify(start?.args ?? []) !== JSON.stringify(provider.args ?? [])) fields.push("args");
   if ((start?.port ?? null) !== provider.port) fields.push("port");
+  if ((start?.healthCheckPath?.trim() || null) !== provider.healthCheckPath) fields.push("healthCheckPath");
   if (JSON.stringify(expectedLayers) !== JSON.stringify(provider.layers)) fields.push("layers");
   return fields;
 }

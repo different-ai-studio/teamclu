@@ -7172,6 +7172,7 @@ paths:
                           command: { type: [array, "null"], items: { type: string } }
                           args: { type: [array, "null"], items: { type: string } }
                           port: { type: [integer, "null"] }
+                          healthCheckPath: { type: [string, "null"] }
                           layers: { type: array, items: { type: string } }
                           status: { type: [string, "null"] }
                       drift: { type: boolean }

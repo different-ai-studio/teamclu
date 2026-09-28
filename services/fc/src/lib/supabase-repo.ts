@@ -5024,11 +5024,8 @@ export function createSupabaseBusinessRepository(options) {
             provision_error: null,
             deploy_token: deployToken,
             deploy_started_at: deployStartedAt,
-            ...(gitCommitSha ? { git_commit_sha: gitCommitSha } : {}),
-            // The column records what this deployment is building, which until
-            // now nothing ever wrote — it sat at its default while the guard
-            // beside it refused every value but that default.
-            ...(declaredBuildKind ? { runtime: declaredBuildKind } : {}),
+            // runtime and git_commit_sha are the last successful deployment.
+            // The proposal travels in this response and is committed at finalize.
             updated_at: deployStartedAt,
           })
           .eq("id", appId)
@@ -5329,7 +5326,7 @@ export function createSupabaseBusinessRepository(options) {
 
       const region = app.fc_region || appsRegion();
       // A failed later deploy may leave the last successful snapshot intact.
-      const deployed = app.fc_status === "live" || !!app.env_deployed_at;
+      const deployed = app.fc_status === "live" || !!app.env_deployed_at || !!app.start_spec;
       const catalog = await readRuntimeCatalog(region, language);
       const sourceStatus: any = { ...catalog.sourceStatus,
         provider: { checkedAt: null, observedAt: null, complete: !deployed, stale: false,

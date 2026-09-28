@@ -4422,11 +4422,54 @@ test("runtime info authorizes before provider discovery and has no deployment fo
     { actorId: "uninvited", ...deps });
   assert.equal(await stranger.getAppRuntimeInfo("app-1"), null);
   assert.equal(calls, 0);
-  const owner = logsRepo(APP_ROW, deps);
+  const owner = logsRepo({ ...APP_ROW, start_spec: null }, deps);
   const result = await owner.getAppRuntimeInfo("app-1", "java");
   assert.equal(result.currentDeployment, null);
   assert.equal(calls, 1, "catalog only; no GetFunction for a new app");
   assert.equal(result.deploymentContract.region.length > 0, true);
+});
+
+test("deploy start does not replace the last successful runtime or commit", async () => {
+  const previous = { ...LIVE_APP, runtime: "node", git_commit_sha: "deadbee", fc_function_name: "live-fn",
+    start_spec: { fcRuntime: "custom.debian10", command: ["node"], args: ["old.js"], port: 3000, layers: [] } };
+  const repo = appsRepo(appsSupabase({ seed: { apps: [previous] } }), {
+    startDeploy: async () => ({ fcFunctionName: "live-fn", fcRegion: "cn-shenzhen", image: { repository: "example" } }),
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+      command: ["node"], args: ["old.js"], port: 3000 }, layers: [] }),
+  });
+  await repo.deployApp("app-1", { runtime: "container", gitCommitSha: "abc1234" });
+  await repo.updateApp("app-1", { fcStatus: "deploy_error", deployError: "build failed" });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment.runtime, "node");
+  assert.equal(info.currentDeployment.commit, "deadbee");
+  assert.equal(info.deploymentContract.method, "agent_build_to_fc_custom_runtime");
+});
+
+test("a failed first deploy has no successful deployment snapshot", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, start_spec: null, provision_status: "ready" }] } }), {
+    startDeploy: async () => ({ fcFunctionName: "new-fn", fcRegion: "cn-shenzhen", image: { repository: "example" } }),
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => { throw new Error("should not read an unverified function"); },
+  });
+  await repo.deployApp("app-1", { runtime: "container", gitCommitSha: "abc1234" });
+  await repo.updateApp("app-1", { fcStatus: "deploy_error", deployError: "build failed" });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment, null);
+  assert.equal(info.deploymentContract.method, "agent_build_to_fc_custom_runtime");
+});
+
+test("legacy success snapshot survives a failed retry without env_deployed_at", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_status: "deploy_error", env_deployed_at: null,
+    fc_function_name: "old-fn", git_commit_sha: "deadbee", start_spec: {
+      fcRuntime: "custom.debian10", command: ["node"], args: [], port: 3000, layers: [] } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+      command: ["node"], args: [], port: 3000 }, layers: [] }),
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment.commit, "deadbee");
+  assert.equal(info.currentDeployment.drift, false);
 });
 
 test("runtime info projects safe provider fields and reports TeamClu drift", async () => {
@@ -4496,12 +4539,28 @@ test("runtime info recognizes an SDK HTTP 404 as a missing function", async () =
 
 test("runtime info compares a matching container deployment without drift", async () => {
   const repo = logsRepo({ ...LIVE_APP, runtime: "container", fc_function_name: "container-fn",
-    start_spec: { port: 8080 } }, {
+    start_spec: { command: ["/entrypoint"], args: ["--serve"], port: 8080, healthCheckPath: "/health" } }, {
     readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: { documentation: {}, officialLayers: {} } }),
-    readAppFunction: async () => ({ body: { runtime: "custom-container", customContainerConfig: { port: 8080 }, layers: [] } }),
+    readAppFunction: async () => ({ body: { runtime: "custom-container", customContainerConfig: {
+      command: ["/entrypoint"], args: ["--serve"], port: 8080, healthCheckConfig: { httpGetUrl: "/health" },
+      registryConfig: { authConfig: { password: "hidden" } } }, layers: [] } }),
   });
   const result = await repo.getAppRuntimeInfo("app-1");
   assert.equal(result.currentDeployment.drift, false);
+  assert.equal(result.currentDeployment.provider.healthCheckPath, "/health");
+  assert.equal(JSON.stringify(result).includes("hidden"), false);
+});
+
+test("runtime info reports changed provider health check", async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "fn", start_spec: {
+    fcRuntime: "custom.debian10", command: ["node"], args: [], port: 3000,
+    layers: [], healthCheckPath: "/health" } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => ({ runtime: "custom.debian10", customRuntimeConfig: {
+      command: ["node"], args: [], port: 3000, healthCheckConfig: { httpGetUrl: "/other" } }, layers: [] }),
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.deepEqual(info.currentDeployment.driftFields, ["healthCheckPath"]);
 });
 
 test("app logs: the function name comes off the row, and the query is clamped", async () => {
