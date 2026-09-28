@@ -347,12 +347,11 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
                 .env("CGO_ENABLED", "0")
                 .env("GOOS", "linux")
                 .env("GOARCH", "amd64");
-            let out =
-                crate::sync::bounded_proc::run_bounded(
-                    command,
-                    BUILD_TIMEOUT,
-                    ERR_BUILD_COMMAND_TIMEOUT,
-                )?;
+            let out = crate::sync::bounded_proc::run_bounded(
+                command,
+                BUILD_TIMEOUT,
+                ERR_BUILD_COMMAND_TIMEOUT,
+            )?;
             if !out.status.success() {
                 let combined = [
                     String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -517,20 +516,15 @@ pub struct AppBuildSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStartSpec {
-    #[serde(default)]
-    pub fc_runtime: Option<String>,
-    #[serde(default)]
-    pub command: Option<Vec<String>>,
-    #[serde(default)]
-    pub args: Option<Vec<String>>,
-    /// Short form: the path to run inside the build output directory. The
-    /// control plane resolves it against the profile for `build.kind`; the
-    /// daemon only carries it through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entry: Option<String>,
+    pub fc_runtime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layers: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_path: Option<String>,
@@ -568,6 +562,13 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
     if object.contains_key("runtime") || object.contains_key("entry") {
         anyhow::bail!("{ERR_LEGACY_MANIFEST}");
     }
+    if value
+        .get("start")
+        .and_then(|start| start.get("entry"))
+        .is_some()
+    {
+        anyhow::bail!("{MANIFEST_FILE} start.entry is no longer supported; declare start.fcRuntime, start.command, start.args and start.layers explicitly. Call manage_app runtime_info for available choices");
+    }
 
     let output_was_omitted = value
         .get("build")
@@ -590,15 +591,11 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             ".".to_string()
         };
     }
-    let entry_for_check = declaration.start.entry.clone().unwrap_or_default();
-    let mut checked: Vec<(&str, &String)> = vec![
+    let checked: Vec<(&str, &String)> = vec![
         ("build.output", &declaration.build.output),
         ("build.dockerfile", &declaration.build.dockerfile),
         ("build.context", &declaration.build.context),
     ];
-    if !entry_for_check.is_empty() {
-        checked.push(("start.entry", &entry_for_check));
-    }
     for (name, path) in checked {
         if !is_inside_workdir(path) {
             anyhow::bail!("{MANIFEST_FILE} {name} must stay inside the workdir");
@@ -624,25 +621,10 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
                 "{MANIFEST_FILE} start.fcRuntime for container must be {CONTAINER_FC_RUNTIME:?} when set"
             );
         }
-    } else if declaration
-        .start
-        .entry
-        .as_deref()
-        .is_some_and(|entry| !entry.trim().is_empty())
-    {
-        // Short form. The runtime, interpreter and layers are the control
-        // plane's to resolve from `build.kind`, so there is nothing here for
-        // the daemon to check beyond the containment rule above — and demanding
-        // an fcRuntime would defeat the point of not writing one.
-        if declaration.start.fc_runtime.is_some() || declaration.start.command.is_some() {
-            anyhow::bail!(
-                "{MANIFEST_FILE} start declares both forms: use start.entry, or declare fcRuntime and command yourself — not both"
-            );
-        }
     } else {
         let runtime = declaration.start.fc_runtime.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "{MANIFEST_FILE} code apps require start.entry, or non-empty start.fcRuntime and start.command"
+                "{MANIFEST_FILE} code apps require non-empty start.fcRuntime and start.command"
             )
         })?;
         if !VALID_CODE_FC_RUNTIMES.contains(&runtime) {
@@ -658,6 +640,9 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             anyhow::bail!(
                 "{MANIFEST_FILE} code apps require non-empty start.fcRuntime and start.command"
             );
+        }
+        if declaration.start.args.is_none() || declaration.start.layers.is_none() {
+            anyhow::bail!("{MANIFEST_FILE} code apps require explicit start.args and start.layers; use [] for none and call manage_app runtime_info for available choices");
         }
     }
     if declaration
@@ -1104,8 +1089,9 @@ mod tests {
         std::fs::write(tmp.path().join("app.py"), b"print('ok')").unwrap();
         std::fs::create_dir_all(tmp.path().join(".git/objects")).unwrap();
         std::fs::write(tmp.path().join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
-        let runtime_dir =
-            teamclu_runtime_env::workspace_meta_dir_name(&teamclu_runtime_env::brand_short_name_from_env());
+        let runtime_dir = teamclu_runtime_env::workspace_meta_dir_name(
+            &teamclu_runtime_env::brand_short_name_from_env(),
+        );
         std::fs::create_dir_all(tmp.path().join(&runtime_dir)).unwrap();
         std::fs::write(tmp.path().join(&runtime_dir).join("state.json"), b"{}").unwrap();
 
@@ -1115,7 +1101,10 @@ mod tests {
             .map(|i| archive.by_index(i).unwrap().name().to_string())
             .collect();
         assert!(names.iter().any(|name| name == "app.py"), "{names:?}");
-        assert!(!names.iter().any(|name| name.starts_with(".git/")), "{names:?}");
+        assert!(
+            !names.iter().any(|name| name.starts_with(".git/")),
+            "{names:?}"
+        );
         assert!(
             !names.iter().any(|name| name.starts_with(&runtime_dir)),
             "{names:?}"
@@ -1185,6 +1174,8 @@ mod tests {
                 "start": {
                     "fcRuntime": "custom.debian12",
                     "command": ["run"],
+                    "args": [],
+                    "layers": [],
                     "port": 9000
                 }
             })
@@ -1198,7 +1189,10 @@ mod tests {
         let tmp = node_checkout();
         let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
         assert_eq!(err, ERR_MISSING_MANIFEST);
-        assert!(err.contains(r#""build""#) && err.contains(r#""start""#), "{err}");
+        assert!(
+            err.contains(r#""build""#) && err.contains(r#""start""#),
+            "{err}"
+        );
         assert!(err.contains("fc-runtime-passthrough-design.md"), "{err}");
     }
 
@@ -1305,6 +1299,8 @@ mod tests {
                     "start": {
                         "fcRuntime": "custom.debian10",
                         "command": ["run"],
+                        "args": [],
+                        "layers": [],
                         "port": 9000
                     }
                 })
@@ -1339,7 +1335,9 @@ mod tests {
         .unwrap();
         raw["start"]["fcRuntime"] = serde_json::json!("custom.debian12");
         std::fs::write(container.path().join(MANIFEST_FILE), raw.to_string()).unwrap();
-        let err = read_app_declaration(container.path()).unwrap_err().to_string();
+        let err = read_app_declaration(container.path())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("custom-container"), "{err}");
     }
 
@@ -1406,6 +1404,8 @@ mod tests {
                 "start": {
                     "fcRuntime": "custom.debian12",
                     "command": ["node"],
+                    "args": [],
+                    "layers": [],
                     "port": 9000
                 }
             })
@@ -1757,13 +1757,13 @@ mod tests {
     }
 
     #[test]
-    fn short_form_declaration_round_trips_with_a_default_port() {
+    fn explicit_declaration_round_trips_without_null_optional_start_fields() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("teamclu.app.json"),
             r#"{
               "build": {"kind": "node"},
-              "start": {"entry": "server/index.mjs"}
+              "start": {"fcRuntime": "custom.debian10", "command": ["/var/fc/lang/nodejs20/bin/node"], "args": ["server/index.mjs"], "layers": []}
             }"#,
         )
         .unwrap();
@@ -1771,24 +1771,44 @@ mod tests {
         let declaration = read_app_declaration(tmp.path()).unwrap();
         assert_eq!(declaration.build.kind, "node");
         assert_eq!(declaration.build.output, ".output");
-        assert_eq!(declaration.start.entry.as_deref(), Some("server/index.mjs"));
+        assert_eq!(
+            declaration.start.fc_runtime.as_deref(),
+            Some("custom.debian10")
+        );
         assert_eq!(declaration.start.port, 9000);
-        // The daemon carries intent through; the control plane resolves it.
-        assert!(declaration.start.fc_runtime.is_none());
-        assert!(declaration.start.command.is_none());
+        // This is the JSON forwarded from the build response to FC finalize.
+        assert_eq!(
+            serde_json::to_value(&declaration).unwrap(),
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../../services/fc/test/fixtures/daemon-explicit-declaration.json"
+            ))
+            .unwrap()
+        );
+        let container = tempfile::tempdir().unwrap();
+        write_container_declaration(container.path(), "Dockerfile", None);
+        let container_wire =
+            serde_json::to_value(read_app_declaration(container.path()).unwrap()).unwrap();
+        assert_eq!(container_wire["start"]["port"], 5000);
+        for absent in ["fcRuntime", "command", "args", "layers"] {
+            assert!(
+                container_wire["start"].get(absent).is_none(),
+                "{absent} must be omitted"
+            );
+        }
     }
 
     #[test]
-    fn entry_may_not_escape_the_code_package() {
-        for bad in ["../secrets.mjs", "/etc/passwd"] {
-            let tmp = tempfile::tempdir().unwrap();
-            std::fs::write(
-                tmp.path().join("teamclu.app.json"),
-                format!(r#"{{"build":{{"kind":"node"}},"start":{{"entry":"{bad}"}}}}"#),
-            )
-            .unwrap();
-            let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
-            assert!(err.contains("start.entry"), "{bad}: {err}");
-        }
+    fn start_entry_is_rejected_with_explicit_declaration_guidance() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("teamclu.app.json"),
+            r#"{"build":{"kind":"node"},"start":{"entry":"server/index.mjs","fcRuntime":"custom.debian10","command":["/bin/bash"]}}"#,
+        )
+        .unwrap();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("start.entry") && err.contains("runtime_info"),
+            "{err}"
+        );
     }
 }

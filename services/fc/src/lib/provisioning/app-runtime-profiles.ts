@@ -100,53 +100,6 @@ export const IMAGE_DEBIAN: Record<string, string> = {
   custom: "9",
 };
 
-/** How a profile turns `start.entry` into `args`. */
-export type ArgsShape = "entry" | "none";
-
-export interface RuntimeProfile {
-  fcRuntime: string;
-  /** argv[0]. Absolute, except `go`, whose build emits a binary in the package. */
-  interpreter: string;
-  argsFor: ArgsShape;
-  /** Region-free layer shorthand. Empty when the image already suffices. */
-  layers: string[];
-  entryRequired: boolean;
-}
-
-/**
- * Kinds whose start really is `<interpreter> <entry>`.
- *
- * Python is deliberately absent: its real shape is
- * `python3 -m uvicorn app.main:app` with an import path the app's own build
- * decides, which no table can own — the one live Python app here proves it.
- * PHP and Java are absent because their interpreter lives in a layer whose
- * mount path has never been observed. Those kinds use the passthrough form,
- * which is the normal road and not a penalty.
- */
-export const SHORT_FORM_PROFILES: Record<string, RuntimeProfile> = {
-  // Deployed and served 200 with layers: [].
-  node: {
-    fcRuntime: "custom.debian10",
-    interpreter: "/var/fc/lang/nodejs20/bin/node",
-    argsFor: "entry",
-    layers: [],
-    entryRequired: true,
-  },
-  // `go` is absent from the image, and the build already emits a static
-  // linux/amd64 binary (CGO_ENABLED=0), so there is no runtime to supply.
-  go: {
-    fcRuntime: "custom.debian10",
-    interpreter: "./main",
-    argsFor: "none",
-    layers: [],
-    entryRequired: false,
-  },
-};
-
-export function shortFormProfile(kind: string): RuntimeProfile | null {
-  return SHORT_FORM_PROFILES[kind] ?? null;
-}
-
 const OFFICIAL_LAYER_ARN =
   /^acs:fc:([a-z0-9-]+):official:layers\/([A-Za-z0-9._-]+)\/versions\/(\d+)$/;
 const ACCOUNT_LAYER_ARN =

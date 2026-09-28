@@ -3323,6 +3323,7 @@ const APP_DECLARATION = {
     command: ["/opt/nodejs20/bin/node"],
     args: ["server/index.mjs"],
     port: 9000,
+    layers: ["Nodejs20:3"],
   },
 };
 const appFinalize = (deployToken: string) => ({

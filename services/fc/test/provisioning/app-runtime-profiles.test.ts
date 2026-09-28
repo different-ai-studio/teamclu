@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   interpreterFor,
-  shortFormProfile,
   runtimeFacts,
   pathLookup,
   parseLayerRef,
@@ -21,20 +20,6 @@ test("facts: the image's interpreters, by family, with absolute paths", () => {
   });
   // A family the image does not ship is a fact too, and it is "no".
   assert.equal(interpreterFor("custom.debian10", "java"), null);
-});
-
-test("short form: only node and go have one", () => {
-  assert.equal(shortFormProfile("node")?.interpreter, "/var/fc/lang/nodejs20/bin/node");
-  assert.equal(shortFormProfile("go")?.interpreter, "./main");
-  for (const kind of ["python", "php", "java"] as const) {
-    assert.equal(shortFormProfile(kind), null, kind);
-  }
-});
-
-test("short form: node needs an entry, go does not", () => {
-  assert.equal(shortFormProfile("node")?.entryRequired, true);
-  assert.equal(shortFormProfile("go")?.entryRequired, false);
-  assert.deepEqual(shortFormProfile("node")?.layers, []);
 });
 
 test("pathLookup: node is absent from PATH on debian10, python3 is the wrong one", () => {

@@ -40,10 +40,10 @@ test("parseAppDeployDeclaration: a declaration is required", () => {
 test("parseAppDeployDeclaration: build and start are taken as declared", () => {
   assert.deepEqual(parseAppDeployDeclaration({
     build: { kind: "python", output: "." },
-    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080 },
+    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080, layers: [] },
   }), {
     build: { kind: "python", output: ".", command: undefined },
-    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080 },
+    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080, layers: [] },
   });
 });
 

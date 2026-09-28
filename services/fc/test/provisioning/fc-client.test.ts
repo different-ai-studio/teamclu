@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeFcOps, fcEndpoint, accountIdFromRoleArn, readAppsFcVpcConfig } from "../../src/lib/provisioning/fc-client.js";
-import { defaultLayersForKind } from "../../src/lib/provisioning/app-runtime-spec.js";
 
 const NODE_DECL = {
   build: { kind: "node" as const, output: ".output" },
@@ -10,6 +9,7 @@ const NODE_DECL = {
     command: ["/opt/nodejs20/bin/node"],
     args: ["server/index.mjs"],
     port: 9000,
+    layers: ["Nodejs20:3"],
   },
 };
 
@@ -53,10 +53,10 @@ test("ensureFunction passes the declared FC runtime and start config through on 
   assert.deepEqual(create.customRuntimeConfig.command, NODE_DECL.start.command);
   assert.deepEqual(create.customRuntimeConfig.args, NODE_DECL.start.args);
   assert.equal(create.customRuntimeConfig.port, NODE_DECL.start.port);
-  assert.deepEqual(create.layers, defaultLayersForKind("cn-shenzhen", "node"));
+  assert.deepEqual(create.layers, ["acs:fc:cn-shenzhen:official:layers/Nodejs20/versions/3"]);
 });
 
-test("an explicit empty layers list suppresses the kind's default layer", async () => {
+test("an explicit empty layers list attaches no layer", async () => {
   const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
   const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
@@ -69,20 +69,20 @@ test("an explicit empty layers list suppresses the kind's default layer", async 
   assert.deepEqual(create.layers, []);
 });
 
-test("a python declaration gets the Python layer and its declared command", async () => {
+test("a python declaration gets its declared Python layer and command", async () => {
   const notFound = Object.assign(new Error("not found"), { statusCode: 404, code: "FunctionNotFound" });
   const { client, calls } = fakeClient({ getFunction: async () => { throw notFound; } });
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
   const declaration = {
     build: { kind: "python" as const, output: "." },
-    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080 },
+    start: { fcRuntime: "custom.debian12", command: ["python3"], args: ["app.py"], port: 8080, layers: ["Python310:3"] },
   };
   await ops.ensureFunction("tc-app-1", { declaration, ossObjectName: "apps/1/code.zip", env: {} });
   const create = calls.find((c) => c[0] === "createFunction")[1].body;
   assert.equal(create.runtime, "custom.debian12");
   assert.deepEqual(create.customRuntimeConfig.command, ["python3"]);
   assert.deepEqual(create.customRuntimeConfig.args, ["app.py"]);
-  assert.deepEqual(create.layers, defaultLayersForKind("cn-shenzhen", "python"));
+  assert.deepEqual(create.layers, ["acs:fc:cn-shenzhen:official:layers/Python310/versions/3"]);
 });
 
 test("ensureFunction re-sends the layer and start command on the update path", async () => {

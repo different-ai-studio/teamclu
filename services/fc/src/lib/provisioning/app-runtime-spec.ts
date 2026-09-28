@@ -6,7 +6,6 @@ import {
   parseLayerRef,
   pathLookup,
   providedMounts,
-  shortFormProfile,
   startProgram,
   type LayerRef,
 } from "./app-runtime-profiles.js";
@@ -42,19 +41,9 @@ export interface AppStartSpec {
   command?: string[];
   args?: string[];
   port: number;
-  /**
-   * `undefined` = apply kind defaults.
-   * `[]` = attach no layers.
-   * non-empty = exactly these ARNs.
-   */
+  /** [] attaches no layers; non-empty lists exactly the requested layer refs. */
   layers?: string[];
   healthCheckPath?: string;
-  /**
-   * Short form only, and only before resolution: the script inside the code
-   * package. `resolveIntent` replaces it with the profile's command/args, so a
-   * resolved spec never carries it.
-   */
-  entry?: string;
 }
 
 export interface AppDeployDeclaration {
@@ -71,18 +60,6 @@ export const FC_CODE_RUNTIMES: readonly string[] = [
 
 export const CONTAINER_RUNTIME_FC = "custom-container";
 
-const LAYER_VERSIONS: Record<Exclude<AppBuildKind, "container">, { name: string; version: number }> = {
-  node: { name: "Nodejs20", version: 3 },
-  python: { name: "Python310", version: 3 },
-  // Alibaba's official catalog marks Go1 and PHP81-Debian10 compatible with
-  // custom.debian10, not the newer Debian custom runtimes.
-  go: { name: "Go1", version: 1 },
-  php: { name: "PHP81-Debian10", version: 1 },
-  // Alibaba FC official public-layer catalog (ListLayers --official), Java17
-  // version 3. Catalog/docs: https://help.aliyun.com/en/functioncompute/fc/user-guide/configure-common-layers-for-a-function-1
-  java: { name: "Java17", version: 3 },
-};
-
 export function isContainerKind(kind: string): boolean {
   return kind === "container";
 }
@@ -91,18 +68,11 @@ export function layerArn(region: string, name: string, version: number): string 
   return `acs:fc:${region}:official:layers/${name}/versions/${version}`;
 }
 
-export function defaultLayersForKind(region: string, kind: AppBuildKind): string[] {
-  if (isContainerKind(kind)) return [];
-  const pin = LAYER_VERSIONS[kind];
-  return [layerArn(region, pin.name, pin.version)];
-}
-
 /**
  * The layer ARNs to send to Function Compute.
  *
- * Two things happen here that cannot happen at parse time, because both need
- * the deploy region and the repo file is written without knowing it: shorthand
- * is expanded, and a full ARN naming another region is refused. FC would refuse
+ * The deploy region is unavailable at parse time, so official layer shorthand
+ * is expanded here and a full ARN naming another region is refused. FC would refuse
  * it too, a build-and-deploy later, as `cross-region access is not allowed` —
  * which names no region you could have used instead.
  */
@@ -111,7 +81,10 @@ export function resolveLayers(
   kind: AppBuildKind,
   layers: string[] | undefined,
 ): string[] {
-  if (layers === undefined) return defaultLayersForKind(region, kind);
+  if (layers === undefined) {
+    if (isContainerKind(kind)) return [];
+    throw new ApiError(400, "validation_failed", "start.layers is required for non-container apps — choose explicit layer versions from manage_app runtime_info, or use [] for none");
+  }
   if (layers.length === 0) return [];
   return layers.map((raw) => {
     const ref = requireLayerRef(raw);
@@ -190,64 +163,6 @@ function parseStringArray(raw: unknown, label: string, { required }: { required:
 /** Default listen port. FC's own default, and what every template uses. */
 const DEFAULT_PORT = 9000;
 
-/** A path that stays inside the code package. */
-function requirePackageRelative(value: string, label: string): string {
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.startsWith("/") || trimmed.split("/").includes("..")) {
-    throw new ApiError(
-      400,
-      "validation_failed",
-      `${label} must be a path inside the build output directory (no leading "/", no "..")`,
-    );
-  }
-  return trimmed;
-}
-
-/**
- * Expand a declaration of intent into the FC start fields.
- *
- * The author names a language and an entry point; which Debian image, which
- * interpreter, and which layers are the platform's problem — they are values
- * only the platform can know, and asking the repository to guess them is what
- * produced twelve fix commits and four wrong regions.
- */
-export function resolveIntent(
-  kind: AppBuildKind,
-  intent: { entry?: string; port: number; healthCheckPath?: string },
-): AppStartSpec {
-  if (isContainerKind(kind)) {
-    throw new ApiError(
-      400,
-      "validation_failed",
-      "a container app declares its start through its image, not start.entry",
-    );
-  }
-  const profile = shortFormProfile(kind);
-  if (!profile) {
-    throw new ApiError(
-      400,
-      "validation_failed",
-      `build.kind "${kind}" has no short form: how it starts depends on the app, not the language. Declare fcRuntime, command, args and layers — call manage_app runtime_info for the interpreter paths and layers available to you.`,
-    );
-  }
-  if (profile.entryRequired && !intent.entry) {
-    throw new ApiError(
-      400,
-      "validation_failed",
-      `start.entry is required for build.kind "${kind}" — the path to run inside the build output directory`,
-    );
-  }
-  const entry = intent.entry ? requirePackageRelative(intent.entry, "start.entry") : undefined;
-  return {
-    fcRuntime: profile.fcRuntime,
-    command: [profile.interpreter],
-    args: profile.argsFor === "entry" && entry ? [entry] : [],
-    port: intent.port,
-    layers: [...profile.layers],
-    ...(intent.healthCheckPath ? { healthCheckPath: intent.healthCheckPath } : {}),
-  };
-}
-
 function parsePort(raw: unknown): number {
   if (raw === undefined) return DEFAULT_PORT;
   const port = typeof raw === "number" ? raw : Number.NaN;
@@ -289,6 +204,9 @@ function parseBuild(raw: unknown): AppBuildSpec {
 
 function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
   const s = requireObject(raw, "start");
+  if (Object.prototype.hasOwnProperty.call(s, "entry")) {
+    throw new ApiError(400, "validation_failed", "start.entry is no longer supported. Declare start.fcRuntime, start.command, start.args and start.layers explicitly; call manage_app runtime_info for available choices.");
+  }
   const port = parsePort(s.port);
   const healthCheckPath =
     typeof s.healthCheckPath === "string" ? s.healthCheckPath.trim() : "";
@@ -327,25 +245,6 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
     };
   }
 
-  const entryRaw = typeof s.entry === "string" ? s.entry.trim() : "";
-  const passthroughFields = ["fcRuntime", "command", "args", "layers"].filter((k) =>
-    Object.prototype.hasOwnProperty.call(s, k),
-  );
-  if (entryRaw && passthroughFields.length > 0) {
-    throw new ApiError(
-      400,
-      "validation_failed",
-      `start declares both forms: "entry" together with ${passthroughFields.join(", ")}. Use start.entry and let the platform choose, or declare the Function Compute fields yourself — not both.`,
-    );
-  }
-  if (entryRaw || (!fcRuntimeRaw && passthroughFields.length === 0)) {
-    return resolveIntent(build.kind, {
-      entry: entryRaw || undefined,
-      port,
-      ...(healthCheckPath ? { healthCheckPath } : {}),
-    });
-  }
-
   if (!fcRuntimeRaw) {
     throw new ApiError(400, "validation_failed", "start.fcRuntime is required for non-container apps");
   }
@@ -360,13 +259,16 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
   if (command.length === 0) {
     throw new ApiError(400, "validation_failed", "start.command must be a non-empty array for non-container apps");
   }
-  const args = parseStringArray(s.args, "start.args", { required: false }) ?? [];
+  const args = parseStringArray(s.args, "start.args", { required: true }) ?? [];
+  if (layers === undefined) {
+    throw new ApiError(400, "validation_failed", "start.layers is required for non-container apps — choose explicit layer versions from manage_app runtime_info, or use [] for none");
+  }
   return {
     fcRuntime: fcRuntimeRaw,
     command,
     args,
     port,
-    ...(layers !== undefined ? { layers } : {}),
+    layers,
     ...(healthCheckPath ? { healthCheckPath } : {}),
   };
 }
@@ -374,16 +276,11 @@ function parseStart(build: AppBuildSpec, raw: unknown): AppStartSpec {
 /**
  * The layers a passthrough declaration ends up with, named without a region.
  *
- * Omitting `layers` resolves to the kind's default, so the rules below have to
- * account for it — otherwise a config that works would look like it attaches
- * nothing.
+ * An omitted list is invalid for code apps, but callers may still check an
+ * incomplete spec before parsing.
  */
-function effectiveLayerRefs(kind: AppBuildKind, layers: string[] | undefined): LayerRef[] {
-  if (layers === undefined) {
-    if (isContainerKind(kind)) return [];
-    const pin = LAYER_VERSIONS[kind as Exclude<AppBuildKind, "container">];
-    return [{ kind: "shorthand", name: pin.name, version: pin.version }];
-  }
+function effectiveLayerRefs(layers: string[] | undefined): LayerRef[] {
+  if (layers === undefined) return [];
   return layers.map(requireLayerRef);
 }
 
@@ -401,7 +298,7 @@ export function checkStartEnvironment(build: AppBuildSpec, start: AppStartSpec):
   const program = startProgram(start.command, start.args);
   if (!program) return [];
   const fcRuntime = start.fcRuntime ?? "";
-  const refs = effectiveLayerRefs(build.kind, start.layers);
+  const refs = effectiveLayerRefs(start.layers);
   // The interpreter this image ships for the app's language, which is a fact
   // even for a kind that has no short form.
   const shipped = interpreterFor(fcRuntime, build.kind);

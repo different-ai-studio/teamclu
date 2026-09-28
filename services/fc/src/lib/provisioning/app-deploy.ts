@@ -414,7 +414,6 @@ export {
   CONTAINER_RUNTIME_FC,
   FC_CODE_RUNTIMES,
   checkStartEnvironment,
-  defaultLayersForKind,
   isContainerKind,
   layerArn,
   parseAppDeployDeclaration,

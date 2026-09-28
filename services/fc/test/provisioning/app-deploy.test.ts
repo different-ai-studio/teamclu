@@ -537,7 +537,7 @@ test("an app that declares nothing still gets the upload handle", async () => {
   assert.equal(out.image, undefined);
 });
 
-test("a container declaration has no entry, and a code app may not send an image", () => {
+test("a container declaration needs no startup fields, and a code app may not send an image", () => {
   const spec = parseAppDeployDeclaration({
     build: { kind: "container" },
     start: { port: 5000, healthCheckPath: "/api/health" },
@@ -556,6 +556,7 @@ test("a container declaration has no entry, and a code app may not send an image
       command: ["/opt/nodejs20/bin/node"],
       args: ["server/index.mjs"],
       port: 9000,
+      layers: ["Nodejs20:3"],
     },
   });
   assert.equal(parseDeployedImage(undefined, node), undefined);

@@ -174,7 +174,7 @@ Platform contract:
 - `teamclu.app.json` at the repository root is the source of truth for the desired `build` and `start` configuration. The control-plane `runtime` and `startSpec` are snapshots of the last successful deployment. Never edit a database snapshot to change runtime behavior.
 - Before relying on mutable deployment state, changing control-plane settings, or deploying, call `manage_app` with action `status` for this workspace. It compares the checkout declaration, live deployment and code version.
 - `controlPlaneSnapshot.runtime` is what the platform knows about where this app runs: the deploy region, the target platform, which interpreters each image ships and at what absolute path, what a bare interpreter name on PATH actually resolves to, and which layers exist. Read it instead of guessing; `manage_app` action `runtime_info` returns the same facts in full. A value marked unverified is not a value to rely on.
-- Apps whose start really is one interpreter and one file may declare `build.kind` plus `start.entry` and let the platform fill in the rest. Everything else — a module target, a custom import path, extra flags — declares `fcRuntime`, `command`, `args` and `layers` itself. That is the normal road, not a fallback. Never write both forms at once.
+- Non-container apps declare `fcRuntime`, `command`, `args`, `port` and `layers` explicitly. Check current choices with `manage_app runtime_info`; the platform does not choose an interpreter version for the app.
 - Layers are region-scoped and the repository cannot know the deploy region. Write an official layer as `"Name:version"` (for example `"Nodejs20:3"`) and the region is filled in; a full ARN naming a different region is refused before deployment.
 - A bare interpreter name never reaches a layer — layers are used through absolute paths under `/opt`, while an image's own interpreters live under `/var/fc/lang`.
 - `thisMachine` describes the machine running this session, not the app. Another teammate may deploy the same commit from a different operating system.
@@ -466,6 +466,7 @@ mod tests {
                 "command": ["/opt/nodejs20/bin/node"],
                 "args": ["server/index.mjs"],
                 "port": 9000,
+                "layers": ["Nodejs20:3"],
                 "healthCheckPath": "/health"
               }
             }"#,
@@ -525,7 +526,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("teamclu.app.json"),
-            r#"{"build":{"kind":"node"},"start":{"entry":"server/index.mjs"}}"#,
+            r#"{"build":{"kind":"node"},"start":{"fcRuntime":"custom.debian10","command":["/var/fc/lang/nodejs20/bin/node"],"args":["server/index.mjs"],"port":9000,"layers":[]}}"#,
         )
         .unwrap();
         let app: SessionAppContext = serde_json::from_value(serde_json::json!({

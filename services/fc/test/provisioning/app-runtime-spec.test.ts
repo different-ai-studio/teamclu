@@ -1,9 +1,9 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
   parseAppDeployDeclaration,
   resolveLayers,
-  defaultLayersForKind,
   layerArn,
   checkStartEnvironment,
 } from "../../src/lib/provisioning/app-runtime-spec.js";
@@ -13,14 +13,15 @@ test("parse: accepts build+start for node", () => {
     build: { kind: "node", output: ".output" },
     start: {
       fcRuntime: "custom.debian10",
-      command: ["/opt/nodejs20/bin/node"],
+      command: ["/var/fc/lang/nodejs20/bin/node"],
       args: ["server/index.mjs"],
       port: 9000,
+      layers: [],
     },
   });
   assert.equal(d.build.kind, "node");
-  assert.deepEqual(d.start.command, ["/opt/nodejs20/bin/node"]);
-  assert.equal(d.start.layers, undefined);
+  assert.deepEqual(d.start.command, ["/var/fc/lang/nodejs20/bin/node"]);
+  assert.deepEqual(d.start.layers, []);
 });
 
 test("parse: build output defaults match the daemon build table", () => {
@@ -35,8 +36,10 @@ test("parse: build output defaults match the daemon build table", () => {
       build: { kind },
       start: {
         fcRuntime: "custom.debian10",
-        command: ["run"],
+        command: ["./run"],
+        args: [],
         port: 9000,
+        layers: [],
       },
     });
     assert.equal(d.build.output, output, kind);
@@ -76,7 +79,7 @@ test("parse: non-container requires non-empty command array", () => {
   assert.throws(() =>
     parseAppDeployDeclaration({
       build: { kind: "python", output: "." },
-      start: { fcRuntime: "custom.debian10", command: [], args: ["app.py"], port: 9000 },
+      start: { fcRuntime: "custom.debian10", command: [], args: ["app.py"], port: 9000, layers: [] },
     }),
   );
 });
@@ -90,18 +93,13 @@ test("parse: healthCheckPath must start with /", () => {
   );
 });
 
-test("resolveLayers: omitted uses defaults; [] uses none", () => {
+test("resolveLayers: [] attaches no layer", () => {
   const region = "cn-shenzhen";
-  assert.ok(defaultLayersForKind(region, "node").length >= 1);
-  assert.deepEqual(resolveLayers(region, "node", undefined), defaultLayersForKind(region, "node"));
   assert.deepEqual(resolveLayers(region, "node", []), []);
   assert.deepEqual(
     resolveLayers(region, "node", [layerArn(region, "Python310", 1)]),
     [layerArn(region, "Python310", 1)],
   );
-  assert.deepEqual(defaultLayersForKind(region, "java"), [
-    layerArn(region, "Java17", 3),
-  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -141,86 +139,53 @@ test("layers: garbage is refused with a message naming both accepted forms", () 
 });
 
 // ---------------------------------------------------------------------------
-// The short form: the author declares intent, the platform resolves it.
+// Explicit starts: the platform must not choose a runtime or version.
 // ---------------------------------------------------------------------------
 
-test("intent: node short form expands to the image's own interpreter, no layer", () => {
-  const d = parseAppDeployDeclaration({
-    build: { kind: "node", output: ".output" },
-    start: { entry: "server/index.mjs", port: 9000 },
-  });
-  assert.deepEqual(d.start, {
-    fcRuntime: "custom.debian10",
-    command: ["/var/fc/lang/nodejs20/bin/node"],
-    args: ["server/index.mjs"],
-    port: 9000,
-    layers: [],
-  });
-});
-
-test("intent: port defaults to 9000 and healthCheckPath survives", () => {
-  const d = parseAppDeployDeclaration({
-    build: { kind: "node" },
-    start: { entry: "server/index.mjs", healthCheckPath: "/health" },
-  });
-  assert.equal(d.start.port, 9000);
-  assert.equal(d.start.healthCheckPath, "/health");
-});
-
-test("intent: go needs no entry and runs its built binary", () => {
-  const d = parseAppDeployDeclaration({
-    build: { kind: "go", output: "." },
-    start: { port: 9000 },
-  });
-  assert.deepEqual(d.start.command, ["./main"]);
-  assert.deepEqual(d.start.args, []);
-});
-
-test("intent: a missing entry is an error, never an inferred default", () => {
-  assert.throws(
-    () => parseAppDeployDeclaration({ build: { kind: "node" }, start: { port: 9000 } }),
-    (e: any) => {
-      const m = String(e?.message ?? e);
-      return /start\.entry/.test(m) && /node/.test(m);
-    },
-  );
-});
-
-test("intent: entry may not escape the code package", () => {
-  for (const bad of ["../secrets.mjs", "/etc/passwd"]) {
+test("parse: start.entry is rejected even alongside explicit fields", () => {
+  for (const start of [
+    { entry: "server/index.mjs", port: 9000 },
+    { entry: "", fcRuntime: "custom.debian10", command: ["/bin/bash"], port: 9000 },
+    { entry: "server/index.mjs", fcRuntime: "custom.debian10", command: ["/bin/bash"], port: 9000 },
+  ]) {
     assert.throws(
-      () =>
-        parseAppDeployDeclaration({
-          build: { kind: "node" },
-          start: { entry: bad, port: 9000 },
-        }),
-      (e: any) => /start\.entry/.test(String(e?.message ?? e)),
-      bad,
+      () => parseAppDeployDeclaration({ build: { kind: "node" }, start }),
+      (e: any) => /start\.entry/.test(String(e?.message ?? e)) && /fcRuntime/.test(String(e?.message ?? e)) && /runtime_info/.test(String(e?.message ?? e)),
     );
   }
 });
 
-test("intent: kinds with no short form are refused, and say where to go", () => {
-  for (const kind of ["python", "php", "java"] as const) {
+test("parse: explicit starts survive for Node, Go, Python and Java", () => {
+  for (const [kind, command, args] of [
+    ["node", ["/var/fc/lang/nodejs20/bin/node"], ["server/index.mjs"]],
+    ["go", ["./main"], []],
+    ["python", ["/bin/bash"], ["-c", "python3 -m uvicorn app.main:app"]],
+    ["java", ["./run-java"], []],
+  ] as const) {
+    const declaration = parseAppDeployDeclaration({
+      build: { kind },
+      start: { fcRuntime: "custom.debian10", command, args, port: 9000, layers: [] },
+    });
+    assert.deepEqual(declaration.start, { fcRuntime: "custom.debian10", command, args, port: 9000, layers: [] }, kind);
+  }
+});
+
+test("parse: non-container startup requires an explicit runtime and command", () => {
+  for (const start of [{ port: 9000 }, { command: ["./main"], port: 9000 }]) {
     assert.throws(
-      () => parseAppDeployDeclaration({ build: { kind }, start: { entry: "app", port: 9000 } }),
-      (e: any) => {
-        const m = String(e?.message ?? e);
-        return m.includes(kind) && /fcRuntime/.test(m) && /command/.test(m);
-      },
-      kind,
+      () => parseAppDeployDeclaration({ build: { kind: "go" }, start }),
+      (e: any) => /start\.fcRuntime/.test(String(e?.message ?? e)),
     );
   }
 });
 
-test("intent: mixing the two forms is an error, not a precedence rule", () => {
+test("parse: non-container startup requires explicit layers without choosing a version", () => {
   assert.throws(
-    () =>
-      parseAppDeployDeclaration({
-        build: { kind: "node" },
-        start: { entry: "server/index.mjs", fcRuntime: "custom.debian10", port: 9000 },
-      }),
-    (e: any) => /both/i.test(String(e?.message ?? e)),
+    () => parseAppDeployDeclaration({
+      build: { kind: "node" },
+      start: { fcRuntime: "custom.debian10", command: ["/var/fc/lang/nodejs20/bin/node"], args: ["server/index.mjs"], port: 9000 },
+    }),
+    (e: any) => /start\.layers/.test(String(e?.message ?? e)) && /runtime_info/.test(String(e?.message ?? e)),
   );
 });
 
@@ -259,14 +224,6 @@ test("regression: every live app's passthrough spec still parses to itself", () 
     assert.deepEqual(d.start.args, decl.start.args);
     assert.deepEqual(d.start.layers, decl.start.layers);
   }
-});
-
-test("regression: passthrough omitting layers still gets the pinned Nodejs20", () => {
-  // LAYER_VERSIONS must not be repointed at the profile table: doing so would
-  // strip the layer from existing repos that omit the field.
-  assert.deepEqual(resolveLayers("cn-shenzhen", "node", undefined), [
-    layerArn("cn-shenzhen", "Nodejs20", 3),
-  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -340,6 +297,7 @@ test("preflight: an unverified layer makes the /opt rule step aside", () => {
     start: {
       fcRuntime: "custom.debian10",
       command: ["/opt/go/bin/app"],
+      args: [],
       port: 9000,
       layers: ["Go1:1"],
     },
@@ -373,9 +331,14 @@ test("preflight: container apps are not second-guessed", () => {
   );
 });
 
-test("preflight: the resolved short form passes its own rules", () => {
-  for (const [kind, entry] of [["node", "server/index.mjs"]] as const) {
-    const d = parseAppDeployDeclaration({ build: { kind }, start: { entry, port: 9000 } });
-    assert.deepEqual(checkStartEnvironment({ kind, output: "." }, d.start), []);
-  }
+// The daemon serialization test asserts this same wire payload, so null fields
+// cannot quietly reappear between checkout parsing and deploy finalization.
+test("parse: accepts the daemon's serialized explicit declaration", () => {
+  const wire = JSON.parse(readFileSync(new URL("../fixtures/daemon-explicit-declaration.json", import.meta.url), "utf8"));
+  const declaration = parseAppDeployDeclaration(wire);
+  assert.equal(declaration.start.fcRuntime, "custom.debian10");
+  assert.deepEqual(declaration.start.command, ["/var/fc/lang/nodejs20/bin/node"]);
+  assert.deepEqual(declaration.start.args, ["server/index.mjs"]);
+  assert.equal(declaration.start.port, 9000);
+  assert.deepEqual(declaration.start.layers, []);
 });

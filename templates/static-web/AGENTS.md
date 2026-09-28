@@ -65,8 +65,7 @@ async function storageCredentials() {
 
 仓根 `teamclu.app.json` 声明**怎么构建、怎么启动**，平台按其中的 `build` + `start` 部署到 FC Custom Runtime：
 
-- 启动方式就是「一个解释器加一个文件」时（`node` 和 `go`），只写 `build.kind` / `start.entry` / `start.port` 就够了，运行环境、解释器绝对路径和 layer 由平台补齐——这几个值只有平台知道。本模板是 node：`entry` 指构建产物目录里的文件，即 `.output` 下的 `server/index.mjs`。
-- 其余情况——要跑模块（`python3 -m uvicorn ...`）、要设 `PYTHONPATH`、要加参数，以及 `python` / `php` / `java` 这几种 kind——都写 FC 直通格式（`fcRuntime` + `command` + `args` + `layers`）。这是常态，不是降级。两种格式不能混用，同时出现会被拒绝。官方层写成 `"Nodejs20:3"` 这种「名字:版本」形式，区域由平台补齐；写完整 ARN 时区域必须和部署区域一致。
+- 非容器应用在 `start` 中明确声明 `fcRuntime`、`command`、`args`、`port` 和 `layers`。本模板的启动文件是构建产物目录 `.output` 下的 `server/index.mjs`；迁移运行环境或解释器版本前，调用 `manage_app runtime_info` 核对当前可部署选项。官方层使用 `"Name:version"` 形式，由平台填入部署区域。
 - **不要用**旧字段 `runtime` / `entry` —— 缺 `build` + `start` 或仍带 legacy 字段时部署会被拒。
 - 不确定运行环境里有什么，就调用 `manage_app` 的 `runtime_info`：它会告诉你部署区域、目标平台、镜像自带哪些解释器（绝对路径和版本）、PATH 上的裸名字实际指向谁、以及有哪些层可用。这些值在仓库里无从得知，不要猜——十二个修复 commit 就是猜出来的。标着未验证的条目就是没验证过，别当成事实用。
 - `build.command` 会随仓库提交，**在队友的机器上也会跑**（这个团队里就有 Windows），而且是用 `sh -c` 跑的。所以要写「指定目标」而不是「依赖本机」的命令：Python 装依赖用 `pip install --platform manylinux2014_x86_64 --implementation cp --python-version 3.10 --only-binary=:all: -t lib/`，这在哪台机器上跑结果都一样；`rm -rf`、`brew`、反斜杠路径则不行。
