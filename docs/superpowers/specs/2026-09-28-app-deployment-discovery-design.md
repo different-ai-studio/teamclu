@@ -1,7 +1,7 @@
 # App deployment discovery and redeploy safety
 
 **Date:** 2026-09-28
-**Status:** proposed for review
+**Status:** approved for implementation planning
 **Target:** redesign draft PR #1610 before merge
 **Supersedes:** the runtime-profile, shorthand-expansion, and long app-prompt decisions in `docs/specs/2026-09-23-app-deploy-intent-contract-design.md`. The existing app build, approval, authentication, database, and storage contracts remain in force.
 
