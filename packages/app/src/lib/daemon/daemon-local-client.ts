@@ -15,6 +15,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { isTauri, openExternalUrl } from '@/lib/utils'
 import { textToBase64Url } from '@/lib/base64'
 import type { AppDeployDeclaration } from '@/lib/backend/types'
+import type { ArtifactVerification } from '@/lib/apps/artifact-verification'
 
 // ─── Workspace ID encoding ────────────────────────────────────────────────────
 
@@ -1052,6 +1053,7 @@ export interface BuildAppResult {
   /** The exact Gitea commit the daemon built; null for imported checkouts. */
   gitCommitSha: string | null
   revision: string | null
+  artifactVerification: ArtifactVerification | null
   /**
    * The validated build and start declaration from `teamclu.app.json`. Handed
    * to finalize so the function is built and started the way the app expects.
@@ -1311,6 +1313,7 @@ export async function buildDaemonApp(
       revision?: string
       image?: string
       declaration?: AppDeployDeclaration
+      artifactVerification?: ArtifactVerification
     }>('/v1/apps/build', {
       method: 'POST',
       body: JSON.stringify({
@@ -1331,12 +1334,13 @@ export async function buildDaemonApp(
         gitCommitSha: result.data?.gitCommitSha?.trim() || null,
         revision: result.data?.revision?.trim() || null,
         declaration: result.data?.declaration ?? null,
+        artifactVerification: result.data?.artifactVerification ?? null,
         image: result.data?.image?.trim() || null,
       }
     }
     if (result.status === 0) {
       console.warn('[daemon-local-client] app build unreachable (non-fatal):', result.error)
-      return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, image: null }
+      return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, artifactVerification: null, image: null }
     }
     console.warn('[daemon-local-client] app build failed:', result.error)
     return {
@@ -1345,11 +1349,12 @@ export async function buildDaemonApp(
       gitCommitSha: null,
       revision: null,
       declaration: null,
+      artifactVerification: null,
       image: null,
     }
   } catch (err) {
     console.warn('[daemon-local-client] app build unavailable:', err)
-    return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, image: null }
+    return { outcome: "unreachable", error: null, gitCommitSha: null, revision: null, declaration: null, artifactVerification: null, image: null }
   }
 }
 

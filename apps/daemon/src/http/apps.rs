@@ -637,6 +637,10 @@ pub struct BuildAppResponse {
     /// What the app declared about how it is built and run.
     pub declaration: crate::sync::app_build::AppDeclaration,
     pub revision: String,
+    /// The selected daemon's archive checks, bound to this pinned revision.
+    /// `unknown` requires an explicit test in the target runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_verification: Option<crate::sync::app_build::ArtifactVerification>,
     /// The commit actually built for a Gitea-managed app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_commit_sha: Option<String>,
@@ -786,6 +790,10 @@ pub async fn build_app(
     let pushed = built.product.image().map(str::to_string);
     let git_commit_sha = built.git_commit_sha;
     let declaration = built.declaration;
+    let artifact_verification = built.artifact_verification.map(|mut verification| {
+        verification.revision = Some(response_revision.clone());
+        verification
+    });
 
     // A container build has already put its result where the deployment reads
     // it from; only an archive still has to travel.
@@ -814,6 +822,7 @@ pub async fn build_app(
         git_commit_sha,
         declaration,
         revision: response_revision,
+        artifact_verification,
         image: pushed,
     }))
 }

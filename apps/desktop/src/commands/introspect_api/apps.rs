@@ -1121,6 +1121,34 @@ async fn daemon_build_app(body: &Value, timeout: Duration) -> Result<Value, Stri
     })
 }
 
+fn require_artifact_verification(build: &Value, revision: &str) -> Result<(), String> {
+    let verification = build.get("artifactVerification");
+    if verification.and_then(|value| row_str(value, "status")) == Some("checked")
+        && verification.and_then(|value| row_str(value, "revision")) == Some(revision)
+        && verification
+            .and_then(|value| value.get("unknownFiles"))
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        return Ok(());
+    }
+    let unknown = verification
+        .and_then(|value| value.get("unknownFiles"))
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|files| !files.is_empty());
+    Err(format!(
+        "artifact_verification_unknown: selected daemon could not verify the Linux/x86_64 artifact{}; run an explicit target-runtime test before publishing",
+        unknown.map(|files| format!(" ({files})")).unwrap_or_default()
+    ))
+}
+
 /// A short-lived Gitea deploy key for the app's repo, as the daemon needs it.
 struct GitCredential {
     remote_url: String,
@@ -1244,6 +1272,7 @@ async fn finish_app_deploy(
             "daemon built a different revision than preflight; publish stopped".to_string(),
         );
     }
+    require_artifact_verification(&build, revision)?;
 
     // What the daemon built, not what we asked for: a deploy publishes work the
     // agent left uncommitted, so HEAD can sit past the sha read off Gitea before
@@ -1476,6 +1505,21 @@ async fn read_app_logs(api: &AppApi, row: &Value, v: &Value) -> Result<Value, St
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unknown_or_missing_artifact_verification_cannot_finalize() {
+        for build in [
+            serde_json::json!({"artifactVerification":{"status":"unknown","unknownFiles":["native.so"]}}),
+            serde_json::json!({}),
+        ] {
+            let error = super::require_artifact_verification(&build, "abc").unwrap_err();
+            assert!(
+                error.contains("artifact_verification_unknown") && error.contains("Linux/x86_64"),
+                "{error}"
+            );
+        }
+        assert!(super::require_artifact_verification(&serde_json::json!({"artifactVerification":{"status":"checked", "revision":"abc", "unknownFiles":[]}}), "abc").is_ok());
+        assert!(super::require_artifact_verification(&serde_json::json!({"artifactVerification":{"status":"checked", "revision":"other", "unknownFiles":[]}}), "abc").is_err());
+    }
     #[test]
     fn runtime_info_path_forwards_language_and_rejects_unknown() {
         let row = serde_json::json!({"id": "app-1"});

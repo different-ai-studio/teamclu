@@ -24,6 +24,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
 import { usesStoredHttpsCredential } from "@/lib/apps/app-list-helpers";
 import { keepRelationship } from "@/lib/apps/app-relationship";
+import { artifactVerificationError } from "@/lib/apps/artifact-verification";
 import type { AppTypeId } from "@/lib/apps/app-types";
 import type {
   AppRow,
@@ -1000,6 +1001,8 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       if (build.revision !== revision || (viaGitea && build.gitCommitSha !== revision)) {
         throw new Error("构建版本与预检版本不一致，已停止发布");
       }
+      const verificationError = artifactVerificationError(build.artifactVerification, revision);
+      if (verificationError) throw new Error(verificationError);
 
       // No success toast. It showed `fcEndpoint` — the raw FC function URL —
       // which is not the address the product hands out (that is the app's

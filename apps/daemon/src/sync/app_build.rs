@@ -6,7 +6,7 @@
 use crate::process_util::CommandNoWindow;
 use crate::sync::app_git::{self, SshEnv};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -139,6 +139,133 @@ fn output_dir_has_files(dir: &Path) -> bool {
         .into_iter()
         .filter_map(Result::ok)
         .any(|e| e.path().is_file())
+}
+
+/// Metadata the selected daemon checked before an archive can be uploaded.
+/// `unknown` is deliberately distinct from compatibility with FC.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactVerification {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub status: &'static str,
+    pub target: &'static str,
+    pub host_os: String,
+    pub host_arch: String,
+    pub unknown_files: Vec<String>,
+}
+
+fn binary_target(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x7fELF") && bytes.len() >= 20 {
+        if bytes[4] != 2 || ![0, 3].contains(&bytes[7]) {
+            return None;
+        }
+        return match (bytes[5], &bytes[18..20]) {
+            (1, [62, 0]) | (2, [0, 62]) => Some("Linux/x86_64"),
+            (1, [183, 0]) | (2, [0, 183]) => Some("Linux/aarch64"),
+            _ => None,
+        };
+    }
+    if bytes.starts_with(b"MZ") {
+        return Some("Windows");
+    }
+    if bytes.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+        || bytes.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
+        || bytes.starts_with(&[0xca, 0xfe, 0xba, 0xbe])
+    {
+        return Some("macOS");
+    }
+    None
+}
+
+/// Inspect the declared output and entry plus native artifacts using file
+/// headers, independent of the machine on which the build happened.
+pub fn verify_artifact(
+    output_dir: &Path,
+    declaration: &AppDeclaration,
+    host_os: &str,
+    host_arch: &str,
+) -> anyhow::Result<ArtifactVerification> {
+    if !output_dir.is_dir() || !output_dir_has_files(output_dir) {
+        anyhow::bail!("{ERR_OUTPUT_MISSING}: {}", declaration.build.output);
+    }
+    let command = declaration.start.command.as_deref().unwrap_or_default();
+    let entry = command
+        .first()
+        .filter(|part| part.starts_with("./"))
+        .or_else(|| {
+            declaration
+                .start
+                .args
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|part| {
+                    !part.starts_with('-')
+                        && (part.starts_with("./")
+                            || part.ends_with(".js")
+                            || part.ends_with(".mjs")
+                            || part.ends_with(".py")
+                            || part.ends_with(".jar"))
+                })
+        });
+    if let Some(entry) = entry {
+        let rel = entry.trim_start_matches("./");
+        if !is_inside_workdir(rel) || !output_dir.join(rel).is_file() {
+            anyhow::bail!("declared startup entry missing from build output: {entry}");
+        }
+    }
+    let mut unknown_files = if entry.is_some() {
+        Vec::new()
+    } else {
+        vec!["startup entry".to_string()]
+    };
+    for item in walkdir::WalkDir::new(output_dir) {
+        let item = item?;
+        if !item.path().is_file() {
+            continue;
+        }
+        let rel = item
+            .path()
+            .strip_prefix(output_dir)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let extension = item
+            .path()
+            .extension()
+            .and_then(|part| part.to_str())
+            .unwrap_or_default();
+        let is_native = ["so", "dylib", "dll", "node", "pyd", "exe", "whl", "a"]
+            .contains(&extension)
+            || rel.contains(".so.")
+            || entry.is_some_and(|value| {
+                value.trim_start_matches("./") == rel
+                    && command.first().is_some_and(|part| part.starts_with("./"))
+            });
+        let mut bytes = [0; 20];
+        let count = std::fs::File::open(item.path())?.read(&mut bytes)?;
+        let bytes = &bytes[..count];
+        match binary_target(&bytes) {
+            Some("Linux/x86_64") => {}
+            Some(target) => anyhow::bail!(
+                "native artifact {rel} targets {target}; Function Compute requires Linux/x86_64"
+            ),
+            None if is_native => unknown_files.push(rel),
+            None => {}
+        }
+    }
+    Ok(ArtifactVerification {
+        revision: None,
+        status: if unknown_files.is_empty() {
+            "checked"
+        } else {
+            "unknown"
+        },
+        target: "Linux/x86_64",
+        host_os: host_os.to_string(),
+        host_arch: host_arch.to_string(),
+        unknown_files,
+    })
 }
 
 /// Last `max` bytes of `text`, cut on a char boundary and marked when cut.
@@ -770,6 +897,7 @@ impl BuildProduct {
 /// A finished build: the artifact, and the commit it was made from.
 pub struct BuildOutput {
     pub product: BuildProduct,
+    pub artifact_verification: Option<ArtifactVerification>,
     /// What the app declared about how it is run. Reported so the control plane
     /// can start the function the way the app expects instead of the one way it
     /// used to assume.
@@ -808,17 +936,24 @@ pub fn build_artifact_for_deploy(
     push: Option<&ImagePushTarget<'_>>,
     imported_revision: Option<&str>,
 ) -> anyhow::Result<BuildOutput> {
-    build_artifact_with_push(workdir, git, push, &push_image, &|path| {
-        if let Some(ctx) = git {
-            verify_git_build_revision(path, ctx)?;
-        }
-        if let Some(revision) = imported_revision {
-            if app_git::checkout_content_digest(path)? != revision {
-                anyhow::bail!("imported checkout changed during build");
+    build_artifact_with_push(
+        workdir,
+        git,
+        push,
+        &push_image,
+        &|path| {
+            if let Some(ctx) = git {
+                verify_git_build_revision(path, ctx)?;
             }
-        }
-        Ok(())
-    })
+            if let Some(revision) = imported_revision {
+                if app_git::checkout_content_digest(path)? != revision {
+                    anyhow::bail!("imported checkout changed during build");
+                }
+            }
+            Ok(())
+        },
+        &verify_image_platform,
+    )
 }
 
 fn build_artifact_with_push(
@@ -827,6 +962,7 @@ fn build_artifact_with_push(
     push: Option<&ImagePushTarget<'_>>,
     publish: &dyn Fn(&Path, &ImagePushTarget<'_>) -> anyhow::Result<()>,
     verify_source: &dyn Fn(&Path) -> anyhow::Result<()>,
+    verify_image: &dyn Fn(&Path, &str) -> anyhow::Result<ArtifactVerification>,
 ) -> anyhow::Result<BuildOutput> {
     let mut git_commit_sha = None;
     if let Some(ctx) = git {
@@ -863,9 +999,11 @@ fn build_artifact_with_push(
             build_image(workdir, &declaration.build, &target)?;
         }
         verify_source(workdir)?;
+        let artifact_verification = verify_image(workdir, target.image)?;
         publish(workdir, &target)?;
         return Ok(BuildOutput {
             product: BuildProduct::Image(target.image.to_string()),
+            artifact_verification: Some(artifact_verification),
             git_commit_sha,
             declaration,
         });
@@ -907,6 +1045,14 @@ fn build_artifact_with_push(
         anyhow::bail!("{ERR_OUTPUT_MISSING}: {}", declaration.build.output);
     }
 
+    verify_source(workdir)?;
+    let artifact_verification = verify_artifact(
+        &output_dir,
+        &declaration,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )?;
+
     let bytes = zip_dir(&output_dir)?;
     if bytes.is_empty() {
         anyhow::bail!("{ERR_OUTPUT_MISSING}");
@@ -916,9 +1062,55 @@ fn build_artifact_with_push(
     }
     Ok(BuildOutput {
         product: BuildProduct::Archive(bytes),
+        artifact_verification: Some(artifact_verification),
         git_commit_sha,
         declaration,
     })
+}
+
+fn image_platform_result(platform: Option<&str>) -> anyhow::Result<ArtifactVerification> {
+    let platform = platform.map(str::trim);
+    if let Some(platform) = platform.filter(|p| !p.is_empty() && *p != FC_PLATFORM) {
+        anyhow::bail!("container image targets {platform}; Function Compute requires Linux/x86_64 (linux/amd64)");
+    }
+    Ok(ArtifactVerification {
+        revision: None,
+        status: if platform == Some(FC_PLATFORM) {
+            "checked"
+        } else {
+            "unknown"
+        },
+        target: "Linux/x86_64",
+        host_os: std::env::consts::OS.to_string(),
+        host_arch: std::env::consts::ARCH.to_string(),
+        unknown_files: if platform == Some(FC_PLATFORM) {
+            vec![]
+        } else {
+            vec!["container image platform".into()]
+        },
+    })
+}
+
+/// Inspect the local image after build and before the registry push. An
+/// unavailable inspection cannot establish compatibility and stays unknown.
+fn verify_image_platform(workdir: &Path, image: &str) -> anyhow::Result<ArtifactVerification> {
+    let inspected = run_docker(
+        &[
+            "image",
+            "inspect",
+            "--format",
+            "{{.Os}}/{{.Architecture}}",
+            image,
+        ],
+        workdir,
+        None,
+        BUILD_TIMEOUT,
+        ERR_BUILD_TIMEOUT,
+    );
+    match inspected {
+        Ok(output) => image_platform_result(Some(&String::from_utf8_lossy(&output.stdout))),
+        Err(_) => image_platform_result(None),
+    }
 }
 
 /// Cross-build the app's image for Function Compute and push it.
@@ -1083,6 +1275,204 @@ fn map_docker_failure(args: &[&str], combined: &str) -> String {
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn mac_and_windows_native_outputs_cannot_be_published_to_linux() {
+        for (os, bytes) in [
+            ("macos", &[0xcf, 0xfa, 0xed, 0xfe][..]),
+            ("windows", &[b'M', b'Z'][..]),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("server"), bytes).unwrap();
+            let mut declaration = read_test_declaration(tmp.path());
+            declaration.start.command = Some(vec!["./server".into()]);
+            let error = verify_artifact(tmp.path(), &declaration, os, "x86_64")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("Linux/x86_64"), "{error}");
+        }
+    }
+
+    #[test]
+    fn missing_declared_entry_fails_artifact_verification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let declaration = read_test_declaration(tmp.path());
+        let error = verify_artifact(tmp.path(), &declaration, "macos", "aarch64")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("server/index.mjs"), "{error}");
+    }
+
+    #[test]
+    fn wrong_architecture_native_library_fails_artifact_verification() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        elf.resize(20, 0);
+        elf[18] = 183; // EM_AARCH64
+        std::fs::write(tmp.path().join("native.so"), elf).unwrap();
+        let error = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "windows",
+            "x86_64",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("native.so") && error.contains("Linux/x86_64"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn versioned_native_library_is_inspected() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        elf.resize(20, 0);
+        elf[18] = 183;
+        std::fs::write(tmp.path().join("libfoo.so.1"), elf).unwrap();
+        let error = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("libfoo.so.1"), "{error}");
+    }
+
+    #[test]
+    fn cross_built_linux_x86_64_library_is_checked_on_mac_and_windows() {
+        for os in ["macos", "windows"] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tmp.path().join("server")).unwrap();
+            std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+            let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+            elf.resize(20, 0);
+            elf[18] = 62;
+            std::fs::write(tmp.path().join("native.so"), elf).unwrap();
+            let result = verify_artifact(
+                tmp.path(),
+                &read_test_declaration(tmp.path()),
+                os,
+                "aarch64",
+            )
+            .unwrap();
+            assert_eq!(result.status, "checked", "{os}");
+        }
+    }
+
+    #[test]
+    fn unclassifiable_native_library_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        std::fs::write(tmp.path().join("native.so"), b"unrecognized").unwrap();
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.unknown_files, vec!["native.so"]);
+    }
+
+    #[test]
+    fn opaque_startup_entry_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("index.php"), "<?php echo 'ok';").unwrap();
+        write_code_declaration(tmp.path(), "php", ".");
+        let result = verify_artifact(
+            tmp.path(),
+            &read_app_declaration(tmp.path()).unwrap(),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert!(result.unknown_files.contains(&"startup entry".to_string()));
+    }
+
+    #[test]
+    fn container_image_platform_mismatch_stops_before_push() {
+        let error = image_platform_result(Some("linux/arm64"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Linux/x86_64"), "{error}");
+        assert_eq!(image_platform_result(None).unwrap().status, "unknown");
+        assert_eq!(
+            image_platform_result(Some("linux/amd64")).unwrap().status,
+            "checked"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_build_does_not_push_when_image_metadata_has_wrong_platform() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {"kind":"container", "command":"true"},
+                "start": {"port":9000}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let target = ImagePushTarget {
+            image: "example.test/app:sha",
+            registry: "example.test",
+            username: "u",
+            password: "p",
+        };
+        let pushes = std::cell::Cell::new(0);
+        let error = match build_artifact_with_push(
+            tmp.path(),
+            None,
+            Some(&target),
+            &|_, _| {
+                pushes.set(pushes.get() + 1);
+                Ok(())
+            },
+            &|_| Ok(()),
+            &|_, _| image_platform_result(Some("linux/arm64")),
+        ) {
+            Ok(_) => panic!("wrong-platform image must not be pushed"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Linux/x86_64"), "{error}");
+        assert_eq!(pushes.get(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_rejects_wrong_platform_before_creating_upload_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILE), serde_json::json!({
+            "build": {"kind":"node", "output":".output", "command":"mkdir -p .output && printf 'MZ' > .output/server"},
+            "start": {"fcRuntime":"custom.debian12", "command":["./server"], "args":[], "layers":[], "port":9000}
+        }).to_string()).unwrap();
+        let error = match build_artifact(tmp.path(), None, None) {
+            Ok(_) => panic!("wrong-platform artifact must not be returned for upload"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Linux/x86_64"), "{error}");
+    }
+
+    fn read_test_declaration(dir: &Path) -> AppDeclaration {
+        write_code_declaration(dir, "node", ".");
+        let mut declaration = read_app_declaration(dir).unwrap();
+        declaration.start.command = Some(vec!["node".into()]);
+        declaration.start.args = Some(vec!["server/index.mjs".into()]);
+        declaration
+    }
 
     #[test]
     fn oss_object_key_is_apps_appid_codezip() {
@@ -1528,6 +1918,7 @@ mod tests {
                 }
                 Ok(())
             },
+            &|_, _| image_platform_result(Some(FC_PLATFORM)),
         ) {
             Err(err) => err.to_string(),
             Ok(_) => panic!("dirty source must stop before registry push"),
