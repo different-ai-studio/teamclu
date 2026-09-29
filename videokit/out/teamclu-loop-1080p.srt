@@ -24,7 +24,7 @@ The result becomes a team asset, not a dotfile. Publish once with a changelog an
 
 7
 00:01:04,000 --> 00:01:13,000
-The result is a team asset, not a dotfile — so the next round starts faster. That is the whole loop.
+And the next round starts faster. That is the whole loop.
 
 8
 00:01:13,000 --> 00:01:21,000

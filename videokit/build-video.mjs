@@ -188,6 +188,121 @@ function textCentered(font, pointsize, fill, str, cx, baseline) {
   ];
 }
 
+// ── Fitting and overflow audit ──────────────────────────────────────────────
+// Container sizes used to be guessed from character count (`t.length * 6.6`),
+// which is wrong for anything but monospace Latin: the follow-up pills in the
+// REVIEW frame were sized too narrow, so "draft the rollback note" ran out of
+// its pill and collided with the next one. Sizes now come from measured ink,
+// and anything that still has to shrink is reported instead of silently
+// overflowing.
+
+const SAFE_RIGHT = 40; // keep ink this far from the right edge
+const notes = [];
+const trunc = (s) => (s.length > 34 ? `${s.slice(0, 33)}\u2026` : s);
+
+/** Largest size <= `size` whose ink fits `maxW`. */
+function fitSize(str, font, size, maxW, min = 9) {
+  if (!str || !Number.isFinite(maxW)) return size;
+  let ps = size;
+  while (ps > min && ink(str, font, ps).w > maxW) ps -= 1;
+  return ps;
+}
+
+/** Left-aligned text that shrinks to fit `maxW`, and audits the right margin. */
+function textFit(font, size, fill, str, x, y, maxW, min = 9) {
+  if (!str) return [];
+  const ps = fitSize(str, font, size, maxW, min);
+  const w = ink(str, font, ps).w;
+  if (ps < size) notes.push(`shrank "${trunc(str)}" ${size}\u2192${ps}pt to fit ${Math.round(maxW)}px`);
+  if (x + w > WIDTH - SAFE_RIGHT) {
+    notes.push(`RIGHT OVERFLOW "${trunc(str)}" ends at ${Math.round(x + w)}, limit ${WIDTH - SAFE_RIGHT}`);
+  }
+  return text(font, ps, fill, str, x, y);
+}
+
+/**
+ * A pill / chip whose WIDTH IS the measured ink plus padding. Returns the draw
+ * args; use `.width` on the result to lay out the next pill.
+ */
+function pill(str, font, size, x, y, opts = {}) {
+  const {
+    padX = 14, padY = 11, stroke = BORDER, fill = PAPER,
+    color = INK2, radius = 8, maxW = Infinity,
+  } = opts;
+  const ps = fitSize(str, font, size, maxW - padX * 2);
+  const cap = capOffset(font, ps);
+  const w = ink(str, font, ps).w + padX * 2;
+  const h = cap + padY * 2;
+  if (x + w > WIDTH - SAFE_RIGHT) {
+    notes.push(`PILL OVERFLOW "${trunc(str)}" ends at ${Math.round(x + w)}`);
+  }
+  return {
+    width: w,
+    height: h,
+    args: [
+      ...roundRect(x, y, w, h, radius, stroke, 1.5, fill),
+      ...text(font, ps, color, str, x + padX, y + padY + cap),
+    ],
+  };
+}
+
+/** Draw `str` with its ink right-aligned to `right`, baseline at `baseline`. */
+function textRight(font, pointsize, fill, str, right, baseline) {
+  if (!str) return [];
+  const { w, sb } = ink(str, font, pointsize);
+  return [
+    '-font', font, '-pointsize', P(pointsize), '-fill', fill,
+    '-annotate', `+${P(right - w - sb)}+${P(baseline)}`, str,
+  ];
+}
+
+// Actor discs, per AGENTS.md §4.5 / §5: humans are circles with a green online
+// dot, agents are rounded squares with a coral ring. Saturated-but-muted so the
+// strip does not read as dead grey.
+const ACTORS = [
+  { letter: 'D', kind: 'human', color: '#4a7fb5' },
+  { letter: 'I', kind: 'human', color: '#7a5ea8' },
+  { letter: 'M', kind: 'human', color: '#3f8f6a' },
+  { letter: 'R', kind: 'agent', color: '#c2703f' },
+  { letter: 'Q', kind: 'agent', color: '#a8853a' },
+];
+
+/** One actor disc. Shape + colour carry human/agent; the letter is a fallback. */
+function disc(a, x, y, d) {
+  const r = d / 2;
+  const out = [];
+  if (a.kind === 'agent') {
+    out.push(...roundRect(x, y, d, d, Math.round(d * 0.26), CORAL, 2, a.color));
+  } else {
+    out.push(['-fill', a.color, '-stroke', 'none', '-draw', `circle ${P(x + r)},${P(y + r)} ${P(x + d)},${P(y + r)}`]);
+  }
+  out.push(...textCentered(FONT_BOLD, Math.round(d * 0.44), '#ffffff', a.letter, x + r, y + r + d * 0.16));
+  if (a.kind === 'human') {
+    // green online dot, bottom-right (AGENTS.md §5)
+    out.push(['-fill', '#2eb872', '-stroke', '#ffffff', '-strokewidth', '2',
+      '-draw', `circle ${P(x + d - d * 0.17)},${P(y + d - d * 0.17)} ${P(x + d - d * 0.04)},${P(y + d - d * 0.17)}`,
+      '-stroke', 'none']);
+  }
+  return out;
+}
+
+/**
+ * Overlapping actor cluster ending at `right`.
+ * Discs are 40px with a 12px overlap (≈ -30%), so each still shows 28px — enough
+ * for the letter to stay clear of its neighbour. The first pass used 34px discs
+ * with a 9px overlap and the letters turned into noise.
+ */
+function cluster(actors, right, y, d = 40, overlap = 12) {
+  const total = actors.length * d - (actors.length - 1) * overlap;
+  const left = right - total;
+  const out = [];
+  // actor 0 is leftmost, and is drawn LAST so it sits on top of its neighbour
+  for (let i = actors.length - 1; i >= 0; i -= 1) {
+    out.push(...disc(actors[i], left + i * (d - overlap), y, d));
+  }
+  return { args: out, left, width: total };
+}
+
 /**
  * The coral accent bar. Its BOTTOM edge lands on the headline's cap-top line —
  * the same rule scripts/build-producthunt-gallery.mjs uses (bar 62→98 against a
@@ -296,8 +411,8 @@ const SCENES = [
     onScreen: 'Most AI tooling starts at build and stops there. TeamClu is the claim that the loop closes.',
   },
   {
-    kind: 'shot', slug: '02-assign', dur: 13, step: 1, label: 'ASSIGN',
-    src: 'ph-4-group-session-1270x760.png',
+    kind: 'session', slug: '02-assign', dur: 13, step: 1, label: 'ASSIGN',
+    prefer: 'assign-en.png',
     onScreen: 'One session. Teammates and agents in the same context \u2014 @mention an agent and it answers as a participant.',
   },
   {
@@ -312,16 +427,16 @@ const SCENES = [
     onScreen: 'An agent does not talk in bubbles. It answers in notes \u2014 and the diff reviewer is built the same way.',
   },
   {
-    kind: 'shot', slug: '05-compound', dur: 15, step: 4, label: 'COMPOUND',
-    src: 'ph-2-team-skills-1270x760.png',
+    kind: 'skill', slug: '05-compound', dur: 15, step: 4, label: 'COMPOUND',
+    prefer: 'compound-en.png',
     onScreen: 'The result becomes a team asset, not a dotfile. Publish once with a changelog and every teammate\u2019s agent follows it.',
   },
   {
     kind: 'chain', slug: '06-close', dur: 9, active: 3,
-    title: 'The result is a team asset.',
-    sub: 'Not a dotfile nobody else can use.',
-    loopLabel: 'the next round starts faster',
-    onScreen: 'The result is a team asset, not a dotfile \u2014 so the next round starts faster. That is the whole loop.',
+    title: 'And the next round starts faster.',
+    sub: 'That is the whole loop.',
+    loopLabel: 'and round again',
+    onScreen: 'And the next round starts faster. That is the whole loop.',
   },
   {
     kind: 'card', slug: '07-channels', dur: 8,
@@ -333,7 +448,139 @@ const SCENES = [
   },
 ];
 
-// ── Renderers ──────────────────────────────────────────────────────────────
+// ── The two beats that used to be Chinese screenshots ───────────────────────
+// Every real capture in the repo has Chinese in it: the app was running in zh
+// when they were taken. `images/home.png` is English chrome but its session
+// previews still read "## `.opencode/skills/` 技能清单" and "TeamClu 是一个多智能体
+// 协作平台". There is no clean English capture to swap in, so both beats are
+// drawn as spec diagrams — labelled illustrations of the documented model
+// (03 §2, §7.1–7.3 for the session; 06 §3.1, §4, §6 for the skill), NOT captures.
+//
+// If an English capture lands, drop it at videokit/src/<name>.png and re-run:
+// SCENES.prefer names the file and the shot renderer takes over automatically.
+
+/** ASSIGN — a session is a group, not a 1:1 bot chat. */
+function renderSession(s, dest) {
+  const px = 258;
+  const pw = WIDTH - px * 2;
+  const py = 400;
+  const ph = 480;
+  const ix = px + 32;          // inner left
+  const ir = px + pw - 32;     // inner right
+  const inner = pw - 64;
+
+  const parts = [
+    ...frame(),
+    ...badge(s.step, 96, 128),
+    ...text(FONT_REGULAR, 26, MUTED, s.label, 186, 168),
+    ...textFit(FONT_BOLD, 54, INK, 'One session. Teammates and agents, same context.', TEXT_X, 300, inner + 8),
+    ...textFit(FONT_REGULAR, 32, MUTED, '@mention an agent and it answers as a participant.', TEXT_X, 358, inner + 8),
+    ...roundRect(px, py, pw, ph, 16, BORDER, 1.5, PAPER),
+  ];
+
+  // header: session title + participant cluster + presence line
+  parts.push(...textFit(FONT_BOLD, 27, INK, 'Release 3.4 \u2014 go / no-go', ix, py + 56, inner - 220));
+  const cl = cluster(ACTORS, ir, py + 30, 34, 9);
+  parts.push(...cl.args);
+  parts.push(...textRight(FONT_REGULAR, 22, MUTED, '3 people \u00b7 2 agents \u00b7 all online', ir, py + 98));
+  parts.push(...line(ix, py + 122, ir, py + 122, BORDER, 1));
+
+  // a teammate's message: paper bubble, left, with the speaker above it
+  parts.push(...text(FONT_REGULAR, 20, MUTED, 'Dana \u00b7 19:46', ix, py + 156));
+  const say = 'Rollback window is still open \u2014 @release-agent, pin an owner?';
+  const bcap = capOffset(FONT_REGULAR, 24);
+  const bw = Math.min(inner * 0.86, ink(say, FONT_REGULAR, 24).w + 60);
+  parts.push(...roundRect(ix, py + 170, bw, bcap + 38, 16, BORDER, 1.5, PAPER));
+  parts.push(...text(FONT_REGULAR, 24, INK, say, ix + 30, py + 170 + 28 + bcap));
+
+  // the agent answers as a participant — a note, not a bubble
+  parts.push(...roundRect(ix + 33, py + 258, 26, 26, 6, BORDER, 0, BORDER));
+  parts.push(...text(FONT_BOLD, 22, INK, 'release-agent', ix + 69, py + 280));
+  parts.push(...text(FONT_REGULAR, 20, FAINT, 'pi \u00b7 19:47', ix + 69, py + 308));
+  parts.push(...textFit(FONT_REGULAR, 24, INK2, 'One decision is still open. Everything else is locked.', ix + 33, py + 350, inner - 33));
+  parts.push(...line(ix + 33, py + 372, ir, py + 372, BORDER, 1));
+  [['ROLLBACK', 'not decided'], ['WINDOW', 'Thursday 02:00 UTC']].forEach(([k, v], i) => {
+    const y = py + 406 + i * 40;
+    parts.push(...text(FONT_REGULAR, 22, MUTED, k, ix + 33, y));
+    parts.push(...textFit(FONT_REGULAR, 22, INK, v, ix + 33 + 180, y, inner - 213));
+  });
+
+  parts.push(...textFit(FONT_REGULAR, 24, MUTED,
+    'It can be offline, permission-limited, or switched to another model mid-conversation.',
+    TEXT_X, py + ph + 56, WIDTH - TEXT_X - SAFE_RIGHT));
+
+  run(MAGICK, [...parts, '-depth', '8', dest]);
+}
+
+/** COMPOUND — a skill is a versioned team object, not a personal dotfile. */
+function renderSkill(s, dest) {
+  const px = 258;
+  const pw = WIDTH - px * 2;
+  const py = 400;
+  const ph = 480;
+  const ix = px + 32;
+  const ir = px + pw - 32;
+  const inner = pw - 64;
+  const colW = Math.round(inner / 2) - 24;
+
+  const parts = [
+    ...frame(),
+    ...badge(s.step, 96, 128),
+    ...text(FONT_REGULAR, 26, MUTED, s.label, 186, 168),
+    ...textFit(FONT_BOLD, 54, INK, 'The result is a team asset, not a dotfile.', TEXT_X, 300, inner + 8),
+    ...textFit(FONT_REGULAR, 32, MUTED, 'Publish once with a changelog; every teammate\u2019s agent follows.', TEXT_X, 358, inner + 8),
+    ...roundRect(px, py, pw, ph, 16, BORDER, 1.5, PAPER),
+  ];
+
+  // header
+  parts.push(...textFit(FONT_BOLD, 30, INK, 'website-editor', ix, py + 58, inner - 300));
+  parts.push(...textRight(FONT_REGULAR, 22, MUTED, 'general \u00b7 owned by Bertrand', ir, py + 58));
+  parts.push(...line(ix, py + 82, ir, py + 82, BORDER, 1));
+
+  // when to use / when not to use — the second one is the required field
+  const cols = [
+    ['WHEN TO USE', ['Modify teamclaw-web content', 'through chat, then open a PR.']],
+    ['WHEN NOT TO USE', ['Editing files directly.', 'No \u2014 nothing is a hard no.']],
+  ];
+  cols.forEach(([head, lines], c) => {
+    const x = ix + c * (colW + 48);
+    parts.push(...text(FONT_BOLD, 20, c === 1 ? INK2 : MUTED, head, x, py + 122));
+    lines.forEach((t, i) => {
+      parts.push(...textFit(FONT_REGULAR, 22, INK2, t, x, py + 156 + i * 30, colW));
+    });
+  });
+  parts.push(...line(ix, py + 214, ir, py + 214, BORDER, 1));
+
+  // version history
+  parts.push(...text(FONT_BOLD, 20, MUTED, 'VERSIONS', ix, py + 252));
+  const rows = [
+    ['v2', 'installed', 'support windows', 'Sep 5, 2026', true],
+    ['v1', '', 'shared from a personal skill', 'restore this version', false],
+  ];
+  rows.forEach(([v, tag, note, right, isLatest], i) => {
+    const y = py + 300 + i * 78;
+    parts.push(...text(FONT_BOLD, 24, INK, v, ix, y));
+    // the tag pill pushes the changelog right; hardcoding the note at ix+96 put
+    // "installed" on top of "support windows"
+    let nx2 = ix + ink(v, FONT_BOLD, 24).w + 16;
+    if (tag) {
+      const tp = pill(tag, FONT_REGULAR, 18, nx2, y - 21, { padX: 10, padY: 5, radius: 4 });
+      parts.push(...tp.args);
+      nx2 += tp.width + 14;
+    }
+    parts.push(...textFit(FONT_REGULAR, 22, MUTED, note, nx2, y, ir - 260 - nx2));
+    parts.push(...textRight(FONT_REGULAR, 22, FAINT, right, ir, y));
+    if (isLatest) parts.push(...line(ix, y + 22, ir, y + 22, BORDER, 1));
+  });
+
+  parts.push(...textFit(FONT_REGULAR, 24, MUTED,
+    'Installed skills follow the newest version on a 10-minute reconcile. Edit one locally and you get a conflict \u2014 never a silent overwrite.',
+    TEXT_X, py + ph + 56, WIDTH - TEXT_X - SAFE_RIGHT));
+
+  run(MAGICK, [...parts, '-depth', '8', dest]);
+}
+
+// ── Card renderers ─────────────────────────────────────────────────────────
 
 function renderTitle(s, dest) {
   run(MAGICK, [
@@ -458,12 +705,13 @@ function renderAnatomy(s, dest) {
     parts.push(...text(FONT_REGULAR, 22, MUTED, k, nx + 28, y));
     parts.push(...text(FONT_REGULAR, 22, INK, v, nx + 190, y));
   });
-  // follow-up pills
-  ['draft the rollback note', 'who is on call?'].forEach((t, i) => {
-    const x = nx + 28 + i * (t.length * 6.6 + 34);
-    parts.push(...roundRect(x, top + 342, t.length * 6.6 + 26, 40, 8, BORDER, 1.5, PAPER));
-    parts.push(...text(FONT_REGULAR, 20, INK2, t, x + 13, top + 368));
-  });
+  // follow-up pills, laid out from measured widths (see pill())
+  let px = nx + 28;
+  for (const t of ['draft the rollback note', 'who is on call?']) {
+    const p = pill(t, FONT_REGULAR, 20, px, top + 342, { maxW: nw - 28 });
+    parts.push(...p.args);
+    px += p.width + 10;
+  }
   // Callout sits BELOW the note card, not above it: at top-92 it landed on the
   // same baseline as the intro sub-line and overprinted it.
   parts.push(...text(FONT_REGULAR, 23, MUTED, 'full width \u2014 it is a document, not a turn', nx + 28, top + colH + 52));
@@ -493,6 +741,18 @@ mkdirSync(OUT, { recursive: true });
 const frames = SCENES.map((s) => Math.max(1, Math.round(s.dur * FPS)));
 SCENES.forEach((s, i) => { s.frames = frames[i]; });
 
+const SRC = path.join(KIT, 'src');
+
+/** Prefer a real English capture at src/<prefer> when one has been dropped in. */
+function resolve(s) {
+  if (s.prefer) {
+    const p = path.join(SRC, s.prefer);
+    if (existsSync(p)) return { kind: 'shot', src: p };
+    notes.push(`${s.slug}: using the ${s.kind} spec diagram (no src/${s.prefer})`);
+  }
+  return s;
+}
+
 const RENDERERS = {
   title: renderTitle,
   end: renderEnd,
@@ -500,17 +760,20 @@ const RENDERERS = {
   shot: renderShot,
   anatomy: renderAnatomy,
   card: renderCard,
+  session: renderSession,
+  skill: renderSkill,
 };
 
 const stills = SCENES.map((s, i) => {
   const dest = path.join(STILLS, `${String(i).padStart(2, '0')}-${s.slug}.png`);
-  const fn = RENDERERS[s.kind];
-  if (!fn) throw new Error(`unknown scene kind "${s.kind}" at index ${i} (${s.slug})`);
+  const r = resolve(s);
+  const fn = RENDERERS[r.kind];
+  if (!fn) throw new Error(`unknown scene kind "${r.kind}" at index ${i} (${s.slug})`);
   try {
-    fn(s, dest);
+    fn(r, dest);
   } catch (err) {
     const why = (err.stderr || Buffer.alloc(0)).toString().trim() || err.message;
-    throw new Error(`failed rendering scene ${i} (${s.slug}, kind=${s.kind}):\n${why}`);
+    throw new Error(`failed rendering scene ${i} (${s.slug}, kind=${r.kind}):\n${why}`);
   }
   return dest;
 });
@@ -581,3 +844,8 @@ const probe = run(FFPROBE, [
 process.stdout.write(`built ${path.relative(ROOT, mp4)}\n${probe}\n`);
 process.stdout.write(`built ${path.relative(ROOT, srtPath)} (${SCENES.length} cues, ${t.toFixed(1)}s)\n`);
 process.stdout.write(`stills -> ${path.relative(ROOT, stillOut)}\n`);
+if (notes.length) {
+  process.stdout.write(`\n${notes.length} layout note(s):\n${notes.map((n) => `  - ${n}`).join('\n')}\n`);
+} else {
+  process.stdout.write('\nlayout audit: no overflow, nothing shrunk to fit\n');
+}

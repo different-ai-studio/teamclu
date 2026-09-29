@@ -22,7 +22,7 @@
 | `src/team-skills.png` | ② 的原始截图：团队技能详情（版本历史 / owner / 恢复） |
 | `src/group-session.png` | ④ 的原始截图：会话里的 @提及与 agent 参与者 |
 | `../videokit/README.md` | **宣传视频**：87 秒英文片（YouTube + PH 用），主线 ASSIGN→BUILD→REVIEW→COMPOUND |
-| `../videokit/out/teamclu-loop-1080p.mp4` | 成片 1920×1080 / 87.0s / 925 KB（**无声**） |
+| `../videokit/out/teamclu-loop-1080p.mp4` | 成片 1920×1080 / 87.0s / 793 KB（**无声**） |
 | `../videokit/youtube.md` · `voiceover.md` | YouTube 标题/描述/标签/章节；配音稿与混音命令 |
 | `screenshots/ph-1-workspace-1270x760.png` | Gallery ①（主图）：团队工作台 |
 | `screenshots/ph-2-team-skills-1270x760.png` | Gallery ②：**团队共享 Skills** |
@@ -459,7 +459,7 @@ TeamClu，**已否决**，原因是三条具体的：
 ## 9. Demo 视频
 
 **成片**：`videokit/out/teamclu-loop-1080p.mp4` · 1920×1080 · 30fps · **87.0 秒** ·
-925 KB · H.264 High / yuv420p / faststart / bt709 · **无音轨**
+793 KB · H.264 High / yuv420p / faststart / bt709 · **无音轨**
 **字幕**：`videokit/out/teamclu-loop-1080p.srt`（9 条）
 **重建**：`node videokit/build-video.mjs`（约 1 分钟，需 ImageMagick + ffmpeg）
 
@@ -484,13 +484,17 @@ ASSIGN ──▶ BUILD ──▶ REVIEW ──▶ COMPOUND ↺
 **全片静止、硬切，没有任何运镜**（无缩放、无推拉、无交叉溶解）。上一版用 Ken
 Burns，读起来是「幻灯片配了个紧张的摄影机」，已整条拿掉。
 
-**只有两张真实产品截图**，用在截图本身就是证据的地方：ASSIGN 用 ② 群聊
-（@提及 + agent 作为参与者），COMPOUND 用 ② 技能版本历史（changelog + 冲突）。
+**全片没有任何一张产品截图**——四站全是**标注式规格图**。原因和 §5 那个问题
+是同一个：**仓库里每一张真实截图都有中文**（拍的时候应用跑在中文界面）。
+`images/home.png` 虽是英文界面，但会话预览里仍然是 `## .opencode/skills/ 技能
+清单`。没有可替换的干净英文截图，与其 P 掉中文或造假界面，不如画规格图——
+规格图是明写「这是示意图」的。内容全部来自 `docs/features/`。
 
-**BUILD 和 REVIEW 两站画的是标注式规格图，不是产品截图** —— 仓库里**根本没有**
-diff 审阅器 / 编辑器 / 终端 / Apps 的截图（全库搜过）。按 §5「站上无模拟图冒充
-产品截图」，这里宁可用规格图也不造假界面。REVIEW 站那张「气泡 vs 笔记」对照图
-反而是全片信息密度最高的一帧（03 §3.2）。
+在英文界面下重拍两张，放到 `videokit/src/assign-en.png` 与
+`videokit/src/compound-en.png`，重跑构建即自动改用真实截图。拍摄要点见
+`videokit/README.md` §2。
+
+REVIEW 站那张「气泡 vs 笔记」对照图是全片信息密度最高的一帧（03 §3.2）。
 
 ### 砍掉了什么
 
@@ -510,10 +514,8 @@ diff 审阅器 / 编辑器 / 终端 / Apps 的截图（全库搜过）。按 §5
 ### 已知短板
 
 1. **无声。** PH 能接受；YouTube 建议照 `videokit/voiceover.md` 配音 + 垫音乐。
-2. **ASSIGN / COMPOUND 两站是中文界面**（和 gallery 同一个问题，见 §5）。重拍
-   英文版后重跑构建。
-3. **BUILD 站只有一句话，没有界面。** 真跑起来的过程只有录屏才是诚实的证据；
-   想要实拍版本照 `docs/demo-video-script.md` 录，这条留作备用。
+2. **没有真实界面像素。** 见上。这是这一版最大的代价——观众看到设计与数据结构，
+   看不到真在跑的界面。补上那两张英文截图能解决一大半。
+3. **BUILD 站只有一句话。** 真跑起来的过程只有录屏才是诚实的证据；想要实拍版本
+   照 `docs/demo-video-script.md` 录，这条留作备用。
 4. **87 秒对 PH 略长。** 砍掉通道那站并压缩 REVIEW 可到 ~60 秒。
-5. **字略软**，因为源是 1270px 宽的 gallery 图放大到 1080 高（1.42×）。已验证
-   **无 banding**（平坦区 24 色 / 标准差 310，是 x264 的抖动不是色阶断裂）。
