@@ -13,13 +13,14 @@
   "thumbnail": "producthunt-kit/screenshots/thumbnail-512.png",
   "video": {
     "_note": "PH 的 media 步骤要的是一个**可访问的视频链接**，不是文件上传（§7.5 实测：自动化给 file input 赋值做不到）。先把 MP4 传 YouTube，粘链接。",
-    "asset": "videokit/out/teamclu-tour-1080p.mp4",
-    "captions": "videokit/out/teamclu-tour-1080p.srt",
-    "spec": "1920x1080, 30fps, 52.0s, 9.2 MB, H.264 High, yuv420p, faststart, **no audio track**",
+    "asset": "videokit/out/teamclu-loop-1080p.mp4",
+    "captions": "videokit/out/teamclu-loop-1080p.srt",
+    "spec": "1920x1080, 30fps, 87.0s, 925 KB, H.264 High, yuv420p, faststart, **no audio track**",
     "rebuild": "node videokit/build-video.mjs",
+    "narrative": "ASSIGN -> BUILD -> REVIEW -> COMPOUND，和 PH 主打的「群聊 + 团队共享技能」同一条线（后者是 COMPOUND 那一站）。不是功能巡览。",
     "youtubeUrl": "",
-    "_silentWarning": "成片无声。PH 能接受；YouTube 建议照 videokit/voiceover.md 配音 + 垫音乐，见那里的 ffmpeg 混音命令。",
-    "_contentNote": "画面就是那五张 gallery 真实截图 + 运镜，没有模拟界面。若之后改成真录屏，这条视频留作备用。"
+    "_silentWarning": "成片无声。PH 能接受；YouTube 建议照 videokit/voiceover.md 配音 + 垫音乐（237 词，已配平到 87 秒）。",
+    "_contentNote": "全片只有两张真实截图（ASSIGN 群聊、COMPOUND 技能版本历史）。BUILD / REVIEW 两站画的是标注式规格图，**因为仓库里根本没有 diff 审阅器/编辑器/Apps 的截图**——不造界面冒充产品截图。若之后补拍，重跑构建即可。"
   },
   "gallery": [
     "producthunt-kit/screenshots/ph-1-workspace-1270x760.png",

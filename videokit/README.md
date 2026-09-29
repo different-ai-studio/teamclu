@@ -1,7 +1,7 @@
 # TeamClu 宣传视频 — 英文 · YouTube + Product Hunt
 
 > 基线：`feat/product-hunt-launch` · v0.4.1-beta.71 · 2026-09-29
-> 用途：Product Hunt 的 `Demo 视频` 字段（producthunt-kit/README.md §7 里唯一还空着的占位符）
+> 用途：Product Hunt 的 `Demo 视频` 字段（producthunt-kit/README.md §7 最后一个占位符）
 > 与 YouTube 首发。
 
 ---
@@ -10,143 +10,137 @@
 
 | 文件 | 内容 |
 |------|------|
-| `build-video.mjs` | 构建脚本（ImageMagick 出静帧 → ffmpeg Ken Burns + 交叉溶解） |
-| `out/teamclu-tour-1080p.mp4` | **成片** 1920×1080 / 30fps / 52.0s / 9.2 MB / H.264 High |
-| `out/teamclu-tour-1080p.srt` | 字幕轨（时间轴与交叉溶解点对齐） |
+| `build-video.mjs` | 构建脚本（ImageMagick 出静帧 → ffmpeg 硬切拼接） |
+| `out/teamclu-loop-1080p.mp4` | **成片** 1920×1080 / 30fps / **87.0 秒** / 925 KB / H.264 High |
+| `out/teamclu-loop-1080p.srt` | 字幕轨，9 条，时间轴与硬切点对齐 |
+| `out/stills/*.png` | 9 张 1920×1080 静帧，**就是可再编辑的源** |
 | `youtube.md` | YouTube 标题 / 描述 / 标签 / 章节 / 缩略图 |
-| `voiceover.md` | 可选配音稿 + 加音轨的命令（**当前成片是无声的**） |
+| `voiceover.md` | 可选配音稿 + 加音轨的命令（**成片无声**） |
 
 重建：
 
 ```bash
 node videokit/build-video.mjs
-VIDEO_SCALE=720 node videokit/build-video.mjs    # 小一号的 PH 上传版本
+VIDEO_SCALE=720 node videokit/build-video.mjs
 ```
 
-需要 `magick`（`brew install imagemagick`）和带 `libx264` 的 `ffmpeg`。整条链约 30 秒。
+需要 `magick`（`brew install imagemagick`）和带 `libx264` 的 `ffmpeg`。约 1 分钟。
 
 ---
 
-## 1. 这条片子是什么形态，以及为什么
+## 1. 主线：一个环，不是六个功能
 
-**它是静帧 + 运镜，不是录屏。** 五张画面就是 PH gallery 的那五张**真实截图**
-（`producthunt-kit/screenshots/`，由 `scripts/build-producthunt-gallery.mjs` 从实拍
-PNG 合成），视频只加了推拉镜头和交叉溶解，**没有凭空造任何一个界面**。
-
-这样做的两个理由：
-
-1. PH kit 自己定的规矩（`producthunt-kit/README.md` §5）是「站上无模拟图冒充产品截图」。
-   录屏拿不到之前，宁可用真实截图做运镜，也不做假界面。
-2. 今天就能交付。录屏要 2–3 个账号跨机器对台词，脚本里已经写了不能实时演。
-
-**但要诚实说明它的上限：这条片子展示的是界面，不是 agent 真的在流式回你一句话。**
-后者才是最有说服力的部分。所以：
-
-- PH 用它 → 完全够，52 秒，零成本，填上 §7 的空位。
-- YouTube 想要更好 → 照 `docs/demo-video-script.md` 录一版真的，成片留作备用。
-
----
-
-## 2. 结构（52 秒）
-
-| 时间 | 画面 | 压屏标题（已烧进静帧） |
-|------|------|------------------------|
-| 0:00 | 片头卡 | TeamClu / Shared skills and group chat… |
-| 0:04 | 三栏工作台 | Your team and its agents, one workspace |
-| 0:12 | 群聊 | **Sessions are group chats** |
-| 0:22 | 团队技能 | **Skills your whole team shares** |
-| 0:31 | 通道网关 | Meet your agents where you already talk |
-| 0:39 | 浏览器侧边栏 | Agents in your browser side panel |
-| 0:46 | 尾卡 | TeamClu / teamclu.ai / MIT · open source · in beta |
-
-顺序是**叙事顺序，不是 gallery 顺序**：工作台先立"这是什么"，然后把 PH 的两个
-主主张（群聊、团队共享技能）放在最长的两个停留（各 10 秒），通道和浏览器收尾。
-
----
-
-## 3. 改画面 / 改顺序
-
-`build-video.mjs` 顶部的 `SCENES` 数组就是全部配置，每项：
-
-```js
-{ kind: 'shot', slug: '03-team-skills', src: 'ph-2-team-skills-1270x760.png',
-  dur: 10, z0: 1.0, z1: 1.12, fx: 0.5, fy: 0.52, caption: '…' }
+```
+ASSIGN ──▶ BUILD ──▶ REVIEW ──▶ COMPOUND
+  ▲                                │
+  └────────────────────────────────┘
 ```
 
-- `src` — gallery 里的文件名。换新截图只需先重跑
-  `node scripts/build-producthunt-gallery.mjs`，视频会自动用上。
-- `dur` — 停留秒数。
-- `z0 → z1` — 运镜。`1.0 → 1.12` 是推近，`1.12 → 1.0` 是拉远。
-- `fx/fy` — 焦点（画面比例）。
-- `caption` — 会写进 `.srt`，保持和画面上的字一致。
+**大部分 AI 工具从 BUILD 开始就停住了。** TeamClu 的主张是这个环会闭上：一轮的
+产物变成团队资产，所以下一轮起手更快。
 
-### ⚠️ 焦点不要乱调，会切掉标题
+这个框架不是编的，是十篇 `docs/features/` 的同一个判断：
 
-五张静帧的**标题和副标题是烧进去的**，位置大约 y 0.12–0.21、x 0.10–0.56。
-zoompan 永远取以焦点为中心、`1/z` 宽的窗口，所以可见上边界是 `fy − 1/(2z)`。
+| 环上的一站 | 依据 |
+|---|---|
+| ASSIGN | 03 §0：聊天 App 的原子是**消息**（私有的），TeamClu 的原子是**会话**（一个群） |
+| BUILD | 02 §0：agent 不属于客户端，属于 daemon |
+| REVIEW | 03 §3.2「agent 回复不是气泡，是笔记」；10 §1–2：diff 审阅器是 agent-first |
+| COMPOUND | 06 §0/§4/§6：skill 是团队可拥有、版本化、审计的资产 |
 
-第一版就踩了这个坑：`03-team-skills` 用了 `fy 0.62 / z 1.16`，上边界落在 0.19，
-标题被裁掉，片子开场是 **"kills your whole team shares"**。
-
-**约束：`z ≤ 1.12` 时 `fy ≤ 0.52`**（可见上边界 ≥ 0.12），`fx ≤ 0.51`。
-
-想强调某个区域，**先把标题重拍成没有烧屏字的一版**，再推镜头；不要靠加大 zoom。
-
-改完请抽查每个场景**运镜的极值帧**（推近看最后一帧，拉远看第一帧）：
-
-```bash
-ffmpeg -v error -ss 31 -i out/teamclu-tour-1080p.mp4 -frames:v 1 /tmp/peak.png
-```
+**上一版（已废弃）**是功能巡览——工作台 / 群聊 / 技能 / 通道 / 浏览器扩展。那是
+README 的内容，免费的，而且学不到任何能拿去用的东西。参考 git 历史。
 
 ---
 
-## 4. 编码参数
+## 2. 两条硬规则
 
-`-c:v libx264 -preset slow -crf 19 -profile:v high -level 4.0 -pix_fmt yuv420p
+### 规则一：没有任何运镜
+
+**无缩放、无推拉、无位移、无交叉溶解。** 画面静止，硬切。上一版用 Ken Burns，
+读起来就是「幻灯片配了个紧张的摄影机」，所以整条拿掉了。
+
+拼接用 ffmpeg 的 **concat filter**，不用 concat demuxer——后者会把末尾那张图
+多按一个完整时长（实测 87 秒的片被渲成 93 秒），而且没法精确指定帧数。
+
+### 规则二：不造界面
+
+**全片只有两张真实产品截图**，只在截图本身就是证据的那两站用：
+
+| 站 | 素材 | 为什么它是证据 |
+|---|---|---|
+| 1 ASSIGN | `ph-4-group-session-1270x760.png` | @提及 + agent 作为参与者发言，看得见 |
+| 4 COMPOUND | `ph-2-team-skills-1270x760.png` | 版本历史 + changelog + 冲突，看得见 |
+
+**BUILD 和 REVIEW 两站没有截图，因为仓库里根本没有。** 没有任何一张 diff
+审阅器、编辑器、终端或 Apps 的图（全库搜过）。所以这两站画成**标注式规格图**，
+不是伪装成产品截图的假界面——producthunt-kit/README.md §5 那条规矩在这里同样
+有效。
+
+REVIEW 站那张「气泡 vs 笔记」的对照图其实是全片信息密度最高的一帧：它是
+03 §3.2 那个视觉决定的直接可视化，而那个决定是整个聊天 UI 里最吃重的取舍。
+
+---
+
+## 3. 结构（87 秒）
+
+| # | 入点 | 时长 | 画面 | 类型 |
+|---|------|------|------|------|
+| 0 | 0:00 | 5s | TeamClu / Assign·Build·Review·Compound | 文字 |
+| 1 | 0:05 | 7s | 环全览 +「Most AI tooling starts at build」 | 示意图 |
+| 2 | 0:12 | 13s | **1 ASSIGN** — 群聊真实截图 | **真实截图** |
+| 3 | 0:25 | 9s | **2 BUILD** — 环高亮 +「runs on your machine」 | 示意图 |
+| 4 | 0:34 | 15s | **3 REVIEW** — 气泡 vs 笔记 解剖图 | 示意图 |
+| 5 | 0:49 | 15s | **4 COMPOUND** — 技能版本历史真实截图 | **真实截图** |
+| 6 | 1:04 | 9s | 环收尾 +「next round starts faster」 | 示意图 |
+| 7 | 1:13 | 8s | 六个通道 | 文字 |
+| 8 | 1:21 | 6s | 尾卡 | 文字 |
+
+改动 `SCENES` 数组即可增删站，每项是 `kind / dur / onScreen` 加各 kind 自己的
+字段。`onScreen` 会原样进 `.srt`。
+
+**砍掉的**（上一版有，这版没有）：工作台全景、通道设置页、浏览器扩展。
+理由分别是——工作台不证明任何东西；通道设置页是一排灰开关，是同一个主张最弱的
+表达（更好的表达是「能力在内核里」这句话，07 §2，已放进第 7 站）；扩展不在
+这个环上。
+
+---
+
+## 4. 编码
+
+`-c:v libx264 -preset slow -crf 18 -profile:v high -level 4.0 -pix_fmt yuv420p
 -movflags +faststart -color_primaries bt709 -color_trc bt709 -colorspace bt709`
 
-`pix_fmt yuv420p` 和 `+faststart` 是硬要求：前者是 YouTube 兼容底线，后者让
-浏览器不下载完整个文件就能起播。色域按 bt709 标，否则播放器会把 `#fbfaf7`
-的暖白底色偏冷。
+成片只有 **85 kbps**，看着吓人但正常：9 张静止画面，x264 几乎不用花码率。已验证
+**无 banding**——平坦 `#fbfaf7` 区域取 400×300 采样，24 色、标准差 310，是
+x264 加的轻微抖动（这反而是缓解 banding 的），不是色阶断裂。YouTube 也会重编。
 
-静帧从 1270×760 放到 1080 高（1.42×）用的是 Lanczos，之后补了一道很轻的
-`unsharp=5:5:0.5`。字是**略微偏软**的——这是 1270px 源的天花板，不是 bug。
-真要锐，得重拍更高分辨率的原图。
+静帧从 1270×760 放到 1080 高（1.42×）用 Lanczos。字略软，这是 1270px 源的天花板。
 
 ---
 
-## 5. 还是没有声音
+## 5. 已知短板
 
-成片**无音轨**。PH 能接受，YouTube 也能接受，但配一段音乐或配音会明显更好。
-拿到音频后一行接上：
-
-```bash
-ffmpeg -i out/teamclu-tour-1080p.mp4 -i vo.wav \
-  -c:v copy -c:a aac -b:a 192k -shortest \
-  out/teamclu-tour-final.mp4
-```
-
-配音稿和时间轴在 `voiceover.md`。
+1. **无声。** PH 能接受；YouTube 建议照 `voiceover.md` 配音 + 垫音乐。
+2. **①②是中文界面**（②ASSIGN 用的是群聊那张）。和 gallery 同一个问题，见
+   producthunt-kit §5。应用切英文后重拍、重跑即可。
+3. **BUILD 站只有一句话，没有界面。** 因为真跑起来的过程录屏才是诚实的证据。
+   想要实拍版本，照 `docs/demo-video-script.md` 录，这条留作备用。
+4. **87 秒对 PH 略长。** 要更短就砍第 7 站（通道）并压缩第 4 站，能到 ~60 秒。
 
 ---
 
 ## 6. 上传
 
-**两条路都得你本人点** —— producthunt-kit/README.md §7.5 已经实测过：浏览器自动化
-能读页面、能填文本，但**给 file input 赋值做不到**。所以下面每一行都要手动。
+**两条路都得你本人点** —— producthunt-kit/README.md §7.5 已实测：浏览器自动化
+能读页面、能填文本，但**给 file input 赋值做不到**。
 
 ### Product Hunt
 
-1. 先把 MP4 传到 YouTube（设成「公开」或「不公开」，PH 需要能访问）。
-2. 复制视频链接，填进 PH 发帖流程的 media / video 字段。
-3. 回填本文件对应信息到 `producthunt-kit/ph-draft.json`（加 `video` 字段），
-   并把 §7 的 `Demo 视频：` 那一行填上。
+1. 把 MP4 传 YouTube（Unlisted 即可，PH 只要能访问）
+2. 链接填进 PH 发帖流程的 media / video 字段
+3. 回填 `ph-draft.json` 的 `video` 与 producthunt-kit §7 的 `Demo 视频链接`
 
 ### YouTube
 
-标题 / 描述 / 标签 / 章节见 `youtube.md`。上传时：
-
-- **Visibility**：首发当天先 `Unlisted`，等 PH 流量过来再转 `Public`
-  （PH 访客点开你的视频 404 的代价，比晚公开一小时大）。
-- 勾 **「这不含敏感内容」**（无 Sentry、无弹窗、无真实邮箱/内网域名）。
-- 缩略图见 `youtube.md` 最后一节。
+见 `youtube.md`。上传时先设 **Unlisted**，PH 流量进来再转 Public。
