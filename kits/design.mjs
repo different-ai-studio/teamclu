@@ -220,10 +220,22 @@ export function createDesign({ width, height, magick, fonts, tokens } = {}) {
   }
 
   // ── brand marks ───────────────────────────────────────────────────────────
-  // Accent-bar cards: the bar hangs LEFT of the text, its BOTTOM edge on the cap
-  // line — the same rule scripts/build-producthunt-gallery.mjs uses.
-  function accentBar(baseline, size, { x, height = 56, font = F.bold } = {}) {
-    return roundRect(x, capTop(baseline, size, font) - height, 12, height, 3, T.coral, 0, T.coral);
+  /**
+   * The coral accent bar. Two alignments:
+   *   align 'cap'    bottom edge on the text's cap line — hangs above the text,
+   *                  the rule scripts/build-producthunt-gallery.mjs uses
+   *                  (bar 62→98 against a measured cap top of 97)
+   *   align 'center' vertically centred on the text's cap span — sits BESIDE
+   *                  the text, which is what a marker next to an eyebrow wants
+   *
+   * Keeps coral to one spot per frame, per AGENTS.md §1.
+   */
+  function accentBar(baseline, size, { x, height = 56, font = F.bold, align = 'cap' } = {}) {
+    const cap = capOffset(font, size);
+    const top = align === 'center'
+      ? baseline - cap / 2 - height / 2
+      : baseline - cap - height;
+    return roundRect(x, top, 12, height, 3, T.coral, 0, T.coral);
   }
 
   const BADGE = 62;

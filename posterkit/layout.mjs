@@ -24,6 +24,7 @@ export const H = 1080;
 // ── Layout constants (authored against a 1080-tall canvas) ─────────────────
 export const M = 200;              // side margin
 export const CONTENT = W - M * 2;  // 1520
+export const EYEBROW_Y = 118;      // top-left label line, and the bar aligns to it
 export const CLAIM_SIZE = 62;
 export const CLAIM_1_Y = 236;
 export const CLAIM_2_Y = 306;
@@ -64,14 +65,18 @@ export function renderPoster(d, topic) {
     ...frame(),
 
     // eyebrow + brand
-    ...text(FR, 22, MUTED, topic.eyebrow, M, 118),
-    ...textRight(FB, 24, INK, 'TeamClu', W - M, 118),
+    ...text(FR, 22, MUTED, topic.eyebrow, M, EYEBROW_Y),
+    ...textRight(FB, 24, INK, 'TeamClu', W - M, EYEBROW_Y),
 
-    // The claim. The accent bar's LEFT edge is the margin, flush with the text
-    // below it, and its bottom edge sits on the cap line. It used to hang
-    // 40px to the left of the text (x = M - 40), which broke the left margin:
-    // the bar, the eyebrow and the claim were on three different left edges.
-    ...accentBar(CLAIM_1_Y, CLAIM_SIZE, { x: M }),
+    // The coral mark sits BESIDE the eyebrow, vertically centred on it — it is
+    // the marker for the whole poster, so it belongs to the top-left line, not
+    // floating above the claim. Two earlier attempts were wrong: hanging 40px
+    // left of the text broke the left margin (bar, eyebrow and claim sat on
+    // three different left edges), and putting it on the margin above the claim
+    // put it under the eyebrow instead of beside anything.
+    ...accentBar(EYEBROW_Y, 22, { x: M - 36, height: 32, font: FR, align: 'center' }),
+
+    // the claim
     ...textFit(FB, CLAIM_SIZE, INK, topic.claim1, M, CLAIM_1_Y, CONTENT),
     ...textFit(FB, CLAIM_SIZE, INK, topic.claim2, M, CLAIM_2_Y, CONTENT),
     ...textFit(FR, 30, MUTED, topic.sub, M, SUB_Y, CONTENT),

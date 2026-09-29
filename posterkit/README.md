@@ -98,16 +98,24 @@ export default {
 
 ## 5. 排版为什么是"实测"而不是"估算"
 
-`kits/design.mjs` 里所有几何都量，不猜。三个具体原因：
+`kits/design.mjs` 里所有几何都量，不猜。四个具体原因：
 
 - `-annotate +X+Y` 未设 gravity 时 **Y 是基线**，`-draw rectangle` 是绝对坐标。
-  混用会让 coral 色条浮在标题上方并压住字（videokit 那边修过三轮）。
+  混用会让 coral 色条位置完全错位（videokit 那边修过三轮）。
 - **固定 cap 比例不成立**：Arial Bold 实测 0.705–0.75 em 随字号跳
   （92/128、39/54、22/30、15/20），抗锯齿和像素取整造成的。`capOffset()` 按
   font+pointsize 实测。
 - **按字数估宽度不成立**：`t.length * 6.6` 这种每字系数在 videokit 里把
   "draft the rollback note" 挤出了自己的 pill。现在 `pill()` 宽度 = 墨迹 +
   padding，`wrap()` 按实测宽度断行。
+- **色条位置要明确定义，不能凭感觉**。`accentBar()` 有两个模式：
+  `align: 'cap'`（下沿落在文字 cap 线上，gallery 的做法）、
+  `align: 'center'`（垂直居中于文字的 cap 高度，贴在文字**旁边**）。
+  海报用的是 `'center'` + `x: M - 36`，即**贴在 eyebrow 左边**。
+
+  这里错过两次：第一次挂在文字左边 40px（`x: M - 40`），左边距被打断成三套
+  左边界；第二次把色条压到左边距上、落在主张 cap 线上方，结果跑到 eyebrow
+  **下面**去了。正确位置是 eyebrow 的**左边**。
 
 （`scripts/build-producthunt-gallery.mjs` 保留了自己的 token 副本——那脚本已稳定
 并被 producthunt-kit 引用，刻意不顺手重构。）
