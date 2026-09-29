@@ -28,7 +28,6 @@ export interface SourceStatus { documentation: SourceState; officialLayers: Sour
 type LayerMetadata = Pick<$fc.Layer, "layerName" | "version" | "layerVersionArn" | "compatibleRuntime">;
 export interface CatalogClient {
   listLayers(request: $fc.ListLayersRequest): Promise<{ body?: { layers?: LayerMetadata[]; nextToken?: string } }>;
-  listLayerVersions(name: string, request: $fc.ListLayerVersionsRequest): Promise<{ body?: { layers?: LayerMetadata[]; nextVersion?: number } }>;
 }
 const DOC_URL = "https://api.alibabacloud.com/api/FC/2023-03-30/CreateFunction";
 // Documentation snapshot, not a ListRuntimes result or regional availability guarantee.
@@ -66,28 +65,19 @@ export function createRuntimeCatalogReader(clientForRegion: (region: string) => 
           const page = (await client.listLayers(new $fc.ListLayersRequest({ official: "true", limit: 100, nextToken }))).body;
           if (!page || !Array.isArray(page.layers)) throw new Error("Invalid ListLayers response");
           for (const layer of page.layers) {
-            const name = layer.layerName;
-            if (!name) { errors.push("ListLayers: missing layer name"); continue; }
-            try {
-              let startVersion: string | undefined; const versions = new Set<string>();
-              do {
-                const page = (await client.listLayerVersions(name, new $fc.ListLayerVersionsRequest({ limit: 100, startVersion }))).body;
-                if (!page || !Array.isArray(page.layers)) throw new Error("Invalid ListLayerVersions response");
-                for (const version of page.layers) {
-                  const verified = verifiedLayer(name, version, region);
-                  candidates.push({ name, source: "officialLayers", region, language: languageOf(name), version: version.version,
-                    arn: version.layerVersionArn, compatibleRuntime: version.compatibleRuntime ?? [],
-                    teamcluDeployable: verified ? "teamcluDeployable" : "unknown",
-                    ...(verified ? { teamcluVerifiedRuntime: ["custom.debian10"] } : {}),
-                    reason: verified
-                      ? "Nodejs20 versions 1–3 served from /opt/nodejs20 on custom.debian10 in historical TeamClu deployments; provider confirms this regional ARN and runtime."
-                      : "Provider metadata does not verify interpreter paths, mount points, or HTTP startup compatibility." });
-                }
-                startVersion = page.nextVersion && page.nextVersion > 0 ? String(page.nextVersion) : undefined;
-                if (startVersion && versions.has(startVersion)) throw new Error("Repeated layer version cursor");
-                if (startVersion) versions.add(startVersion);
-              } while (startVersion);
-            } catch (error) { errors.push(`${name}: ${errorCode(error)}`); }
+            const name = layer.layerName; const version = layer.version; const arn = layer.layerVersionArn;
+            if (!name || !Number.isInteger(version) || !version || !arn || !Array.isArray(layer.compatibleRuntime) ||
+                !arn.startsWith(`acs:fc:${region}:`) || !arn.endsWith(`:layers/${name}/versions/${version}`)) {
+              errors.push(`${name || "ListLayers"}: incomplete current layer metadata`); continue;
+            }
+            const verified = verifiedLayer(name, layer, region);
+            candidates.push({ name, source: "officialLayers", region, language: languageOf(name), version,
+              arn, compatibleRuntime: layer.compatibleRuntime,
+              teamcluDeployable: verified ? "teamcluDeployable" : "unknown",
+              ...(verified ? { teamcluVerifiedRuntime: ["custom.debian10"] } : {}),
+              reason: verified
+                ? "Nodejs20 versions 1–3 served from /opt/nodejs20 on custom.debian10 in historical TeamClu deployments; provider confirms this regional ARN and runtime."
+                : "Provider metadata does not verify interpreter paths, mount points, or HTTP startup compatibility." });
           }
           nextToken = page.nextToken || undefined;
           if (nextToken && tokens.has(nextToken)) throw new Error("Repeated layer list cursor");
@@ -97,7 +87,7 @@ export function createRuntimeCatalogReader(clientForRegion: (region: string) => 
       const stale = errors.length > 0 && !!entry;
       entry = { at: time, candidates: stale ? [...entry!.candidates, ...candidates.filter(c => !entry!.candidates.some(old => old.arn === c.arn))] : candidates,
         state: { checkedAt, observedAt: stale ? entry!.state.observedAt : checkedAt, complete: errors.length === 0,
-          stale, errors, provenance: "Alibaba FC 2023-03-30 ListLayers / ListLayerVersions" } };
+          stale, errors, provenance: "Alibaba FC 2023-03-30 ListLayers (current published official versions only)" } };
       cache.delete(region); cache.set(region, entry);
       while (cache.size > maxRegions) cache.delete(cache.keys().next().value!);
     }
