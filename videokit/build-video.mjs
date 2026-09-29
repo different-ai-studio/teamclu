@@ -119,20 +119,98 @@ function poly(points, color, fill) {
   return out;
 }
 
-/** Coral step badge: the one hard use of coral per frame, with the active node. */
-function badge(n, x = 96, y = 128) {
+/**
+ * Distance from the baseline up to the cap line, MEASURED per font+pointsize
+ * and cached.
+ *
+ * Why measured and not a ratio: `-annotate +X+Y` with unset gravity treats Y as
+ * the baseline, so anything aligned to a letterform must measure up from there.
+ * And a constant ratio does not work — Arial Bold's cap height measures
+ * 0.705–0.75 em across the sizes used here (92/128, 39/54, 22/30, 15/20), because
+ * of antialiasing and pixel rounding. A fixed 0.742 put the coral bars 2–3px off
+ * the cap line and the bars 10px off to the right of the word they decorate.
+ *
+ * Reference glyph is "H": flat cap, so no round overshoot like "C" or "O".
+ */
+const _cap = new Map();
+function capOffset(font, pointsize) {
+  const key = `${font}|${pointsize}`;
+  const hit = _cap.get(key);
+  if (hit !== undefined) return hit;
+  const baseline = Math.round(pointsize * 1.5);
+  const out = run(MAGICK, [
+    '-size', '2000x400', 'xc:white',
+    '-font', font, '-pointsize', P(pointsize), '-fill', 'black',
+    '-annotate', `+0+${P(baseline)}`, 'H',
+    '-trim', '-format', '%Y', 'info:',
+  ]).trim();
+  const off = baseline - Number(out);
+  _cap.set(key, off);
+  return off;
+}
+
+const capTop = (baseline, pointsize, font = FONT_BOLD) =>
+  baseline - capOffset(font, pointsize);
+
+/** Left margin for the accent-bar cards: the bar hangs left of the text. */
+const ACCENT_X = 224;
+const TEXT_X = 254;
+
+const _ink = new Map();
+/**
+ * Ink width and left side bearing for a string, measured with ImageMagick and
+ * cached. `-annotate +X+Y` places INK at X + sideBearing, so centring has to
+ * subtract the bearing — guessing from character count put every centred label
+ * a few pixels off.
+ */
+function ink(str, font, pointsize) {
+  const key = `${font}|${pointsize}|${str}`;
+  const hit = _ink.get(key);
+  if (hit) return hit;
+  const out = run(MAGICK, [
+    '-size', '6000x400', 'xc:white',
+    '-font', font, '-pointsize', P(pointsize), '-fill', 'black',
+    '-annotate', `+0+${P(Math.round(pointsize * 1.5))}`, str,
+    '-trim', '-format', '%w %X', 'info:',
+  ]).trim().split(/\s+/);
+  const val = { w: Number(out[0]), sb: Number(out[1]) };
+  _ink.set(key, val);
+  return val;
+}
+
+/** Draw `str` with its ink horizontally centred on `cx`, baseline at `baseline`. */
+function textCentered(font, pointsize, fill, str, cx, baseline) {
+  if (!str) return [];
+  const { w, sb } = ink(str, font, pointsize);
   return [
-    ...roundRect(x, y, 62, 62, 14, CORAL, 0, CORAL),
-    ...text(FONT_BOLD, 30, PAPER, String(n), x + 31, y + 43),
+    '-font', font, '-pointsize', P(pointsize), '-fill', fill,
+    '-annotate', `+${P(cx - w / 2 - sb)}+${P(baseline)}`, str,
   ];
 }
 
-/** Section eyebrow, e.g. "1 / ASSIGN". */
-function eyebrow(n, label) {
+/**
+ * The coral accent bar. Its BOTTOM edge lands on the headline's cap-top line —
+ * the same rule scripts/build-producthunt-gallery.mjs uses (bar 62→98 against a
+ * measured cap top of 97). Keeps coral to one spot per frame, per AGENTS.md §1.
+ */
+function accentBar(baseline, pointsize, { x = ACCENT_X, height = 56 } = {}) {
+  return roundRect(x, capTop(baseline, pointsize) - height, 12, height, 3, CORAL, 0, CORAL);
+}
+
+/**
+ * Coral step badge. The digit's INK BOX is centred in the square, not its
+ * layout box — the digit used to sit ~10px right of centre because the
+ * side bearing was ignored and the ink is only 10px wide at 30pt.
+ */
+const BADGE = 62;
+const BADGE_FONT = 30;
+function badge(n, x = 96, y = 128) {
+  const capH = capOffset(FONT_BOLD, BADGE_FONT);
+  // centre the digit's ink span (capTop..baseline) on the square's centre
+  const baseline = y + (BADGE + capH) / 2;
   return [
-    ...badge(n),
-    ...text(FONT_REGULAR, 26, MUTED, label, 186, 168),
-    ...line(186, 190, 186 + label.length * 15, 190, BORDER, 1),
+    ...roundRect(x, y, BADGE, BADGE, 14, CORAL, 0, CORAL),
+    ...textCentered(FONT_BOLD, BADGE_FONT, PAPER, String(n), x + BADGE / 2, baseline),
   ];
 }
 
@@ -168,10 +246,8 @@ function drawChain(activeIndex, opts = {}) {
     const labelFill = active ? INK : reached ? INK2 : FAINT;
     parts.push(...roundRect(n.x, CHAIN_Y, NODE_W, NODE_H, 16, stroke, sw, PAPER));
     const cx = n.x + NODE_W / 2;
-    parts.push(
-      ...text(FONT_BOLD, 30, labelFill, n.label, cx - n.label.length * 9.5, CHAIN_Y + 66)
-    );
-    parts.push(...text(FONT_REGULAR, 20, active ? MUTED : FAINT, opts.captions?.[i] || '', cx - (opts.captions?.[i] || '').length * 5.6, CHAIN_Y + 108));
+    parts.push(...textCentered(FONT_BOLD, 30, labelFill, n.label, cx, CHAIN_Y + 66));
+    parts.push(...textCentered(FONT_REGULAR, 20, active ? MUTED : FAINT, opts.captions?.[i] || '', cx, CHAIN_Y + 108));
     if (active) {
       // coral dot: the second and last use of coral in the frame
       parts.push(...['-fill', CORAL, '-draw', `circle ${P(cx)},${P(CHAIN_Y + NODE_H - 26)} ${P(cx + 5)},${P(CHAIN_Y + NODE_H - 26)}`]);
@@ -196,8 +272,7 @@ function drawChain(activeIndex, opts = {}) {
     parts.push(...line(x0, yBot, x0, yTop + 12, BORDER, 2));
     parts.push(...poly([[x0, yTop], [x0 - 7, yTop + 12], [x0 + 7, yTop + 12]], null, BORDER));
     if (opts.loopLabel) {
-      const t = opts.loopLabel;
-      parts.push(...text(FONT_REGULAR, 24, MUTED, t, (WIDTH - t.length * 11) / 2, yBot - 18));
+      parts.push(...textCentered(FONT_REGULAR, 24, MUTED, opts.loopLabel, WIDTH / 2, yBot - 18));
     }
   }
   return parts;
@@ -263,20 +338,20 @@ const SCENES = [
 function renderTitle(s, dest) {
   run(MAGICK, [
     ...frame(),
-    ...roundRect(258, 436, 12, 56, 3, CORAL, 0, CORAL),
-    ...text(FONT_BOLD, 128, INK, BRAND, 254, 566),
-    ...text(FONT_REGULAR, 46, MUTED, 'Assign \u00b7 Build \u00b7 Review \u00b7 Compound', 258, 654),
+    ...accentBar(566, 128),
+    ...text(FONT_BOLD, 128, INK, BRAND, TEXT_X, 566),
+    ...text(FONT_REGULAR, 46, MUTED, 'Assign \u00b7 Build \u00b7 Review \u00b7 Compound', TEXT_X + 4, 654),
   ].concat(['-depth', '8', dest]));
 }
 
 function renderEnd(s, dest) {
   run(MAGICK, [
     ...frame(),
-    ...roundRect(258, 400, 12, 56, 3, CORAL, 0, CORAL),
-    ...text(FONT_BOLD, 128, INK, BRAND, 254, 530),
-    ...text(FONT_REGULAR, 44, MUTED, 'The loop your team\u2019s AI work runs on.', 258, 606),
-    ...text(FONT_BOLD, 56, INK, SITE, 258, 712),
-    ...text(FONT_REGULAR, 30, FAINT, 'MIT licensed \u00b7 open source \u00b7 in beta', 258, 772),
+    ...accentBar(530, 128),
+    ...text(FONT_BOLD, 128, INK, BRAND, TEXT_X, 530),
+    ...text(FONT_REGULAR, 44, MUTED, 'The loop your team\u2019s AI work runs on.', TEXT_X + 4, 606),
+    ...text(FONT_BOLD, 56, INK, SITE, TEXT_X + 4, 712),
+    ...text(FONT_REGULAR, 30, FAINT, 'MIT licensed \u00b7 open source \u00b7 in beta', TEXT_X + 4, 772),
   ].concat(['-depth', '8', dest]));
 }
 
@@ -322,8 +397,7 @@ function renderShot(s, dest) {
     // empty chips.
     '-gravity', 'northwest',
     // Step badge over the image, bottom-left, on a paper chip so it stays legible.
-    ...roundRect(96, HEIGHT - 178, 62, 62, 14, CORAL, 0, CORAL),
-    ...text(FONT_BOLD, 30, PAPER, String(s.step), 112, HEIGHT - 178 + 43),
+    ...badge(s.step, 96, HEIGHT - 178),
     ...roundRect(176, HEIGHT - 186, s.label.length * 16 + 44, 78, 14, BORDER, 1.5, PAPER),
     ...text(FONT_REGULAR, 28, INK2, s.label, 200, HEIGHT - 186 + 49),
     '-depth', '8', dest,
@@ -398,16 +472,14 @@ function renderAnatomy(s, dest) {
 }
 
 function renderCard(s, dest) {
-  const lines = s.onScreen.split(' \u2014 ');
   run(MAGICK, [
     ...frame(),
-    ...roundRect(258, 372, 12, 56, 3, CORAL, 0, CORAL),
-    ...text(FONT_BOLD, 54, INK, 'And it runs when you are not at the desk.', 254, 470),
-    ...text(FONT_REGULAR, 34, MUTED, 'Same session. Same capabilities.', 260, 548),
-    ...text(FONT_BOLD, 38, INK, 'WeCom \u00b7 Feishu \u00b7 Discord \u00b7 KOOK \u00b7 WeChat \u00b7 Email', 260, 640),
-    ...text(FONT_REGULAR, 26, FAINT, 'capability lives in the kernel, not in the channel', 262, 700),
+    ...accentBar(470, 54),
+    ...text(FONT_BOLD, 54, INK, 'And it runs when you are not at the desk.', TEXT_X, 470),
+    ...text(FONT_REGULAR, 34, MUTED, 'Same session. Same capabilities.', TEXT_X + 4, 548),
+    ...text(FONT_BOLD, 38, INK, 'WeCom \u00b7 Feishu \u00b7 Discord \u00b7 KOOK \u00b7 WeChat \u00b7 Email', TEXT_X + 4, 640),
+    ...text(FONT_REGULAR, 26, FAINT, 'capability lives in the kernel, not in the channel', TEXT_X + 4, 700),
   ].concat(['-depth', '8', dest]));
-  void lines;
 }
 
 // ── Build ──────────────────────────────────────────────────────────────────
