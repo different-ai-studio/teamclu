@@ -153,6 +153,31 @@ describe('UserMessageWithMentions', () => {
     expect(screen.getByText('Please review')).toBeTruthy()
   })
 
+  it('turns bare http(s) urls into links and leaves trailing punctuation', () => {
+    render(<UserMessageWithMentions content="see https://example.com/docs. thanks" />)
+
+    const link = screen.getByRole('link', { name: 'https://example.com/docs' })
+    expect(link).toHaveAttribute('href', 'https://example.com/docs')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+    expect(screen.getByText(/thanks/)).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /docs\./ })).toBeNull()
+  })
+
+  it('does not turn javascript or file urls into links', () => {
+    render(<UserMessageWithMentions content="javascript:alert(1) file:///tmp/x" />)
+
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByText('javascript:alert(1) file:///tmp/x')).toBeTruthy()
+  })
+
+  it('linkifies only the text around a role chip', () => {
+    render(<UserMessageWithMentions content="[Role: accounting] see https://example.com/a" />)
+
+    expect(screen.getByText('accounting')).toBeTruthy()
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://example.com/a')
+  })
+
   it('renders sent Page chips without exposing hidden instruction', async () => {
     const { buildPageLinkChip } = await import('@/lib/embed/expand-page-link-tokens')
     const chip = buildPageLinkChip({
