@@ -272,6 +272,76 @@ test("ensureHttpTrigger swallows 'trigger already exists' then reads the URL", a
   assert.equal(url, "https://fn.example.fcapp.run");
 });
 
+test("ensureHttpTrigger recovers when FC cannot read a newly created trigger yet", async () => {
+  const missing = Object.assign(new Error("trigger not found"), { statusCode: 404, code: "TriggerNotFound" });
+  const exists = Object.assign(new Error("trigger exists"), { statusCode: 409, code: "TriggerAlreadyExists" });
+  let created = false;
+  let reads = 0;
+  const { client } = fakeClient({
+    createTrigger: async () => {
+      if (created) throw exists;
+      created = true;
+      return { body: {} };
+    },
+    getTrigger: async () => {
+      reads++;
+      if (reads === 1) throw missing;
+      return { body: { httpTrigger: { urlInternet: "https://fn.example.fcapp.run" } } };
+    },
+  });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  assert.equal(await ops.ensureHttpTrigger("tc-app-1"), "https://fn.example.fcapp.run");
+  assert.equal(reads, 2);
+});
+
+test("ensureHttpTrigger recovers when FC initially rejects trigger creation after function creation", async () => {
+  const missing = Object.assign(new Error("trigger not found"), { statusCode: 404, code: "TriggerNotFound" });
+  let attempts = 0;
+  const { client } = fakeClient({
+    createTrigger: async () => {
+      attempts++;
+      if (attempts === 1) throw missing;
+      return { body: {} };
+    },
+  });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  assert.equal(await ops.ensureHttpTrigger("tc-app-1"), "https://fn.example.fcapp.run");
+  assert.equal(attempts, 2);
+});
+
+test("ensureHttpTrigger fails after bounded retries when the trigger stays missing", async () => {
+  const missing = Object.assign(new Error("trigger not found"), { statusCode: 404, code: "TriggerNotFound" });
+  let attempts = 0;
+  const { client } = fakeClient({ createTrigger: async () => { attempts++; throw missing; } });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  await assert.rejects(ops.ensureHttpTrigger("tc-app-1"), /trigger not found/);
+  assert.ok(attempts > 1 && attempts <= 5, `expected bounded retry, got ${attempts} attempts`);
+});
+
+test("ensureCustomDomain recovers when FC has not recognized the verified HTTP trigger yet", async () => {
+  const missing = Object.assign(new Error("trigger not found"), { statusCode: 404, code: "TriggerNotFound" });
+  let attempts = 0;
+  const { client } = fakeClient({
+    createCustomDomain: async () => {
+      attempts++;
+      if (attempts === 1) throw missing;
+      return { body: {} };
+    },
+  });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  assert.equal(await ops.ensureCustomDomain("tc-app-1", "app.example.com"), "http://app.example.com");
+  assert.equal(attempts, 2);
+});
+
+test("ensureCustomDomain fails after bounded retries when FC never recognizes the trigger", async () => {
+  const missing = Object.assign(new Error("trigger not found"), { statusCode: 404, code: "TriggerNotFound" });
+  let attempts = 0;
+  const { client } = fakeClient({ createCustomDomain: async () => { attempts++; throw missing; } });
+  const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen" });
+  await assert.rejects(ops.ensureCustomDomain("tc-app-1", "app.example.com"), /trigger not found/);
+  assert.ok(attempts > 1 && attempts <= 5, `expected bounded retry, got ${attempts} attempts`);
+});
+
 // --- log delivery -----------------------------------------------------------
 
 const LOGS = { project: "teamclu-apps-1", logstore: "app-logs" };
