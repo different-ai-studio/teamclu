@@ -67,8 +67,11 @@ export function renderPoster(d, topic) {
     ...text(FR, 22, MUTED, topic.eyebrow, M, 118),
     ...textRight(FB, 24, INK, 'TeamClu', W - M, 118),
 
-    // The claim. The accent bar hangs left, its bottom edge on the cap line.
-    ...accentBar(CLAIM_1_Y, CLAIM_SIZE, { x: M - 40 }),
+    // The claim. The accent bar's LEFT edge is the margin, flush with the text
+    // below it, and its bottom edge sits on the cap line. It used to hang
+    // 40px to the left of the text (x = M - 40), which broke the left margin:
+    // the bar, the eyebrow and the claim were on three different left edges.
+    ...accentBar(CLAIM_1_Y, CLAIM_SIZE, { x: M }),
     ...textFit(FB, CLAIM_SIZE, INK, topic.claim1, M, CLAIM_1_Y, CONTENT),
     ...textFit(FB, CLAIM_SIZE, INK, topic.claim2, M, CLAIM_2_Y, CONTENT),
     ...textFit(FR, 30, MUTED, topic.sub, M, SUB_Y, CONTENT),
