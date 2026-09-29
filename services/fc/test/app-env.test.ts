@@ -7,6 +7,7 @@ import {
   parseEnvKey,
   parseEnvValue,
 } from "../src/lib/app-env.js";
+import { parseAppDeployDeclaration } from "../src/lib/provisioning/app-runtime-spec.js";
 import { finalizeDeploy } from "../src/lib/provisioning/app-deploy.js";
 import { open as openSecret, seal as sealSecret } from "../src/lib/provisioning/app-secrets.js";
 
@@ -103,6 +104,11 @@ const staticInput = {
   appType: "static_web", // no database, so no APPS_DB_ADMIN_URL needed
   fcFunctionName: "tc-app-1",
   ossObjectName: "apps/app-1/code.zip",
+  // Finalization receives a parsed declaration; PORT comes from its start spec.
+  declaration: parseAppDeployDeclaration({
+    build: { kind: "node", output: ".output" },
+    start: { fcRuntime: "custom.debian10", command: ["/var/fc/lang/nodejs20/bin/node"], args: ["server/index.mjs"], layers: [], port: 9000 },
+  }),
 };
 
 test("user env reaches the deployed function", async () => {

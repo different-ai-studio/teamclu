@@ -203,10 +203,13 @@ test("an ambiguous id prefix serves neither app", () => {
   assert.equal(selectByIdPrefix(rows, "deadbeef"), null);
 });
 
-test("isServable requires a live status AND an endpoint", () => {
+test("a successful endpoint remains servable through active and failed redeploys", () => {
   assert.equal(isServable(null), false);
   assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: null, ...unauthed }), false);
-  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "deploy_error", fcEndpoint: "https://x", ...unauthed }), false);
+  for (const status of ["awaiting_build", "building", "deploying", "deploy_error"]) {
+    assert.equal(isServable({ id: "1", slug: "s", fcStatus: status, fcEndpoint: "https://x", ...unauthed }), true);
+  }
+  assert.equal(isServable({ id: "1", slug: "s", fcStatus: "not_deployed", fcEndpoint: "https://x", ...unauthed }), false);
   assert.equal(isServable({ id: "1", slug: "s", fcStatus: "live", fcEndpoint: "https://x", ...unauthed }), true);
 });
 

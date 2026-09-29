@@ -6970,6 +6970,66 @@ paths:
                   ok: { type: boolean, enum: [true] }
         "404":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/deploy/preflight:
+    post:
+      operationId: preflightAppDeploy
+      summary: Validate a pinned app declaration before approval, upload, or build
+      description: >-
+        Admin only. Compares the proposed declaration with the last successful
+        deployment and current provider function. For a Gitea app the revision
+        must be the exact remote HEAD; for an import it is a sha256 content
+        digest. The returned token is stored on this app and must be passed to
+        deploy and finalize. A new preflight cannot replace an active deploy.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, declaration]
+              properties:
+                revision: { type: string }
+                gitCommitSha: { type: string, pattern: "^[0-9a-f]{40}$" }
+                declaration:
+                  type: object
+                  required: [build, start]
+                  properties:
+                    build: { $ref: "#/components/schemas/AppBuildSpec" }
+                    start: { $ref: "#/components/schemas/AppStartSpec" }
+                migrationIntent:
+                  type: boolean
+                  description: Explicit intent to migrate the exact changed runtime fields shown in the preview; native approval remains required.
+      responses:
+        "200":
+          description: The revision-bound preview and opaque token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, preview]
+                properties:
+                  token: { type: string }
+                  preview:
+                    type: object
+                    required: [firstDeploy, changes, requiresMigrationApproval]
+                    properties:
+                      firstDeploy: { type: boolean }
+                      requiresMigrationApproval: { type: boolean }
+                      changes:
+                        type: array
+                        items:
+                          type: object
+                          required: [field, from, to]
+                          properties:
+                            field: { type: string }
+                            from: {}
+                            to: {}
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/apps/{appId}/deploy:
     post:
       operationId: deployApp
@@ -6990,10 +7050,19 @@ paths:
           application/json:
             schema:
               type: object
+              required: [revision, declaration, preflightToken]
               properties:
+                revision: { type: string }
+                preflightToken: { type: string }
+                declaration:
+                  type: object
+                  required: [build, start]
+                  properties:
+                    build: { $ref: "#/components/schemas/AppBuildSpec" }
+                    start: { $ref: "#/components/schemas/AppStartSpec" }
                 gitCommitSha:
                   type: string
-                  pattern: "^[0-9a-f]{7,40}$"
+                  pattern: "^[0-9a-f]{40}$"
                   description: >-
                     Git commit SHA (7–40 hex) being deployed. Required for an
                     app whose `gitAuthKind` is `gitea_deploy_key`; omitted for
@@ -7017,8 +7086,8 @@ paths:
                         description: Short-lived presigned PUT URL for the build artifact. Secret — never log it.
                       deployToken:
                         type: string
-                        format: uuid
                         description: Short-lived bearer required by `/deploy/finalize`. Secret — never log it.
+                      revision: { type: string }
                       gitCommitSha:
                         type: [string, "null"]
                         description: >-
@@ -7053,17 +7122,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [deployToken, declaration]
+              required: [deployToken, revision, declaration]
               properties:
+                revision: { type: string }
                 gitCommitSha:
                   type: string
-                  pattern: "^[0-9a-f]{7,40}$"
+                  pattern: "^[0-9a-f]{40}$"
                   description: >-
                     Git commit SHA of the uploaded artifact. Omitted for an app
                     with no forge repo — see the same field on `/deploy`.
                 deployToken:
                   type: string
-                  format: uuid
                   description: Bearer returned by `/deploy` for this attempt. Secret — never log it.
                 declaration:
                   type: object
@@ -7333,6 +7402,77 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
         "503":
+          $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/runtime-info:
+    get:
+      operationId: readAppRuntimeInfo
+      summary: Read deployment contract, last successful state, and regional runtime evidence
+      description: |
+        Authorizes app visibility before provider discovery. `currentDeployment`
+        is null only when no successful TeamClu deployment is recorded. Provider
+        configuration is projected to runtime, command, args, port, layers, and
+        status; environment variables and registry credentials are excluded.
+        `sourceStatus` reports unavailable or stale provider evidence. Runtime
+        candidates distinguish documentation from paginated regional official
+        layers; observations are historical probes, not live image inspection.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+        - name: language
+          in: query
+          required: false
+          description: Filter capabilities and observations; does not change app authorization.
+          schema: { type: string, enum: [node, python, go, php, java] }
+      responses:
+        "200":
+          description: App-scoped runtime information and source provenance.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deploymentContract, currentDeployment, capabilities, observations, sourceStatus]
+                properties:
+                  deploymentContract:
+                    type: object
+                    required: [method, target, region, artifact, requiredDeclarationFields]
+                    properties:
+                      method: { type: string, enum: [agent_build_to_fc_custom_runtime, container] }
+                      target:
+                        type: object
+                        properties:
+                          os: { type: string, enum: [linux] }
+                          arch: { type: string, enum: [x86_64] }
+                      region: { type: string }
+                      artifact: { type: string }
+                      requiredDeclarationFields: { type: array, items: { type: string } }
+                  currentDeployment:
+                    type: [object, "null"]
+                    properties:
+                      runtime: { type: [string, "null"] }
+                      startSpec: { type: [object, "null"], additionalProperties: true }
+                      commit: { type: [string, "null"] }
+                      deployedAt: { type: [string, "null"], format: date-time }
+                      functionName: { type: [string, "null"] }
+                      provider:
+                        type: [object, "null"]
+                        properties:
+                          runtime: { type: [string, "null"] }
+                          command: { type: [array, "null"], items: { type: string } }
+                          args: { type: [array, "null"], items: { type: string } }
+                          port: { type: [integer, "null"] }
+                          healthCheckPath: { type: [string, "null"] }
+                          layers: { type: array, items: { type: string } }
+                          status: { type: [string, "null"] }
+                      drift: { type: boolean }
+                      driftFields: { type: array, items: { type: string } }
+                  capabilities: { type: array, items: { type: object, additionalProperties: true } }
+                  observations: { type: array, items: { type: object, additionalProperties: true } }
+                  sourceStatus: { type: object, additionalProperties: true }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/logs:
     get:
@@ -9346,8 +9486,18 @@ components:
           description: Relative Docker build context.
     AppStartSpec:
       type: object
-      required: [port]
+      description: |
+        How the built artifact starts. Two mutually exclusive forms: declare
+        `entry` and let the platform resolve the runtime from `build.kind`, or
+        declare the Function Compute fields yourself. Both at once is rejected.
       properties:
+        entry:
+          type: string
+          description: |
+            Short form. The path to run, relative to the build output
+            directory. The platform supplies `fcRuntime`, `command` and
+            `layers` from the profile for `build.kind`. Mutually exclusive
+            with `fcRuntime` / `command` / `args` / `layers`.
         fcRuntime:
           type: string
           description: Function Compute runtime for non-container builds.
@@ -9361,10 +9511,17 @@ components:
           type: integer
           minimum: 1
           maximum: 65535
+          default: 9000
+          description: Listen port. Defaults to 9000.
         layers:
           type: array
           items: { type: string }
-          description: Function Compute layer ARNs; an empty list disables defaults.
+          description: |
+            Function Compute layers. An official layer may be named
+            region-free as `Name:version` (e.g. `Nodejs20:3`), expanded
+            against the app's deploy region; a full ARN is accepted but must
+            already name that region. An empty list disables the defaults for
+            `build.kind`; omitting the field applies them.
         healthCheckPath:
           type: string
           pattern: "^/"

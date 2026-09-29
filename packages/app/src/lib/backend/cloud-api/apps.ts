@@ -24,6 +24,7 @@ import type {
   AppCronRun,
   AppCronRunOutcome,
   DeployAppResult,
+  AppDeployPreflightResult,
 } from "@/lib/backend/types";
 import { CloudApiError, type CloudApiClient } from "@/lib/backend/cloud-api/http";
 
@@ -97,6 +98,9 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
     },
     async deployApp(appId, input) {
       return client.post<DeployAppResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy`, input);
+    },
+    async preflightAppDeploy(appId, input) {
+      return client.post<AppDeployPreflightResult>(`/v1/apps/${encodeURIComponent(appId)}/deploy/preflight`, input);
     },
     async finalizeDeploy(appId, input) {
       return client.post<AppRow>(`/v1/apps/${encodeURIComponent(appId)}/deploy/finalize`, input);

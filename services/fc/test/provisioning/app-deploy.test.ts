@@ -24,6 +24,15 @@ test("startDeploy mints the upload handle and names the function + object", asyn
   assert.match(out.presignedPut, /code\.zip\?sig=x/);
 });
 
+test("startDeploy keeps the stored legacy function name on redeploy", async () => {
+  const out = await startDeploy(
+    { mintUploadUrl: async () => "https://oss.example/put" },
+    { appId: "app-1", slug: "new-slug", region: "cn-shenzhen", fcFunctionName: "legacy-fn" },
+  );
+  assert.equal(out.fcFunctionName, "legacy-fn");
+  assert.equal(out.fcRegion, "cn-shenzhen");
+});
+
 test("startDeploy does NOT touch FC — the code object does not exist yet", async () => {
   // Regression: creating the function here made CreateFunction reference an OSS
   // object the daemon had not uploaded. Function creation belongs in finalize.
@@ -537,7 +546,7 @@ test("an app that declares nothing still gets the upload handle", async () => {
   assert.equal(out.image, undefined);
 });
 
-test("a container declaration has no entry, and a code app may not send an image", () => {
+test("a container declaration needs no startup fields, and a code app may not send an image", () => {
   const spec = parseAppDeployDeclaration({
     build: { kind: "container" },
     start: { port: 5000, healthCheckPath: "/api/health" },
@@ -556,6 +565,7 @@ test("a container declaration has no entry, and a code app may not send an image
       command: ["/opt/nodejs20/bin/node"],
       args: ["server/index.mjs"],
       port: 9000,
+      layers: ["Nodejs20:3"],
     },
   });
   assert.equal(parseDeployedImage(undefined, node), undefined);

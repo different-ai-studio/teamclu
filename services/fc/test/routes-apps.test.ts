@@ -35,6 +35,19 @@ function findRoute(routes, method, path) {
   return hit;
 }
 
+test("POST deploy/preflight forwards declaration and revision without minting a handle", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const body = { revision: "a".repeat(40), declaration: { build: { kind: "node" } }, migrationIntent: true };
+  let seen: unknown;
+  const result = await findRoute(routes, "POST", "/v1/apps/:appId/deploy/preflight")[2]({
+    params: { appId: "app-1" }, json: body,
+    repository: { preflightAppDeploy: async (_id: string, input: unknown) => { seen = input; return { token: "opaque", preview: {} }; } },
+  });
+  assert.deepEqual(seen, body);
+  assert.equal(result.body.token, "opaque");
+});
+
 test("POST /v1/apps creates and returns 201", async () => {
   const { router, routes } = makeRouter();
   registerApps(router);
@@ -934,3 +947,39 @@ test("deleting a folder requires a prefix and reports the count", async () => {
   assert.deepEqual(seen, ["resumes/", ""]);
 });
 
+
+test("GET /v1/apps/:appId/runtime-info serves the platform's own facts", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/runtime-info")[2];
+  const facts = { region: "cn-shenzhen", target: { os: "linux", arch: "x86_64" }, gotchas: ["x"] };
+  const res = await handler({
+    params: { appId: "app-1" },
+    repository: { getAppRuntimeInfo: async (id) => (id === "app-1" ? facts : null) },
+  });
+  assert.deepEqual(res.body, facts);
+});
+
+test("GET /v1/apps/:appId/runtime-info hides an app the caller cannot see", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/runtime-info")[2];
+  await assert.rejects(
+    () => handler({ params: { appId: "nope" }, repository: { getAppRuntimeInfo: async () => null } }),
+    (e: any) => String(e?.message ?? e).includes("not found"),
+  );
+});
+
+test("GET runtime-info forwards a validated language filter", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/runtime-info")[2];
+  let seen: unknown;
+  await handler({ params: { appId: "a1" }, query: new URLSearchParams("language=java"), repository: {
+    getAppRuntimeInfo: async (_id: string, language: string) => { seen = language; return {}; },
+  } });
+  assert.equal(seen, "java");
+  await assert.rejects(() => handler({ params: { appId: "a1" }, query: new URLSearchParams("language=ruby"), repository: {
+    getAppRuntimeInfo: async () => { throw new Error("must not call repository"); },
+  } }), (e: any) => e?.statusCode === 400);
+});

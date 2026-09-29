@@ -135,6 +135,13 @@ export function registerApps(router) {
     return { body: { ok: true } };
   });
 
+  router.post("/v1/apps/:appId/deploy/preflight", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const out = await ctx.repository.preflightAppDeploy(appId, ctx.json ?? {});
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
   router.post("/v1/apps/:appId/deploy", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const body = ctx.json ?? {};
@@ -193,6 +200,17 @@ export function registerApps(router) {
   router.delete("/v1/apps/:appId/git-credential", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const out = await ctx.repository.clearAppGitHttpsCredential(appId);
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { body: out };
+  });
+
+  router.get("/v1/apps/:appId/runtime-info", async (ctx) => {
+    const appId = decodeURIComponent(ctx.params.appId);
+    const language = ctx.query?.get("language") ?? undefined;
+    if (language && !["node", "python", "go", "php", "java"].includes(language)) {
+      throw new ApiError(400, "validation_failed", "language must be node, python, go, php, or java");
+    }
+    const out = await ctx.repository.getAppRuntimeInfo(appId, language);
     if (!out) throw new ApiError(404, "not_found", "app not found");
     return { body: out };
   });

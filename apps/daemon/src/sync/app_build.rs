@@ -6,7 +6,7 @@
 use crate::process_util::CommandNoWindow;
 use crate::sync::app_git::{self, SshEnv};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -139,6 +139,276 @@ fn output_dir_has_files(dir: &Path) -> bool {
         .into_iter()
         .filter_map(Result::ok)
         .any(|e| e.path().is_file())
+}
+
+/// Metadata the selected daemon checked before an archive can be uploaded.
+/// `unknown` is deliberately distinct from compatibility with FC.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactVerification {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub status: &'static str,
+    pub target: &'static str,
+    pub host_os: String,
+    pub host_arch: String,
+    pub unknown_files: Vec<String>,
+}
+
+fn binary_target(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x7fELF") && bytes.len() >= 20 {
+        if bytes[4] != 2 || ![0, 3].contains(&bytes[7]) {
+            return None;
+        }
+        return match (bytes[5], &bytes[18..20]) {
+            (1, [62, 0]) | (2, [0, 62]) => Some("Linux/x86_64"),
+            (1, [183, 0]) | (2, [0, 183]) => Some("Linux/aarch64"),
+            _ => None,
+        };
+    }
+    if bytes.starts_with(b"MZ") {
+        return Some("Windows");
+    }
+    if bytes.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+        || bytes.starts_with(&[0xfe, 0xed, 0xfa, 0xcf])
+        || bytes.starts_with(&[0xca, 0xfe, 0xba, 0xbe])
+    {
+        return Some("macOS");
+    }
+    None
+}
+
+fn native_candidate(path: &str) -> bool {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|part| part.to_str())
+        .unwrap_or_default();
+    ["so", "dylib", "dll", "node", "pyd", "exe", "a"].contains(&extension) || path.contains(".so.")
+}
+
+fn archive_candidate(path: &str) -> bool {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|part| part.to_str())
+        .unwrap_or_default();
+    ["jar", "zip", "war", "ear", "whl", "egg"].contains(&extension)
+}
+
+fn zip_magic(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"PK\x05\x06")
+        || bytes.starts_with(b"PK\x07\x08")
+}
+
+fn opaque_archive_candidate(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [
+        ".tar", ".tar.gz", ".tgz", ".gz", ".tar.bz2", ".tbz2", ".bz2", ".tar.xz", ".txz", ".xz",
+        ".tar.zst", ".tzst", ".zst", ".7z",
+    ]
+    .iter()
+    .any(|suffix| lower.ends_with(suffix))
+}
+
+fn opaque_archive_magic(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x1f\x8b") // gzip
+        || bytes.starts_with(b"BZh") // bzip2
+        || bytes.starts_with(b"\xfd7zXZ\0") // xz
+        || bytes.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) // zstd
+        || bytes.starts_with(&[0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]) // 7z
+        || bytes.get(257..262) == Some(&b"ustar"[..]) // tar
+}
+
+fn read_prefix(reader: &mut impl Read) -> std::io::Result<([u8; 512], usize)> {
+    let mut bytes = [0; 512];
+    let mut count = 0;
+    while count < bytes.len() {
+        let read = reader.read(&mut bytes[count..])?;
+        if read == 0 {
+            break;
+        }
+        count += read;
+    }
+    Ok((bytes, count))
+}
+
+/// Bound ZIP/JAR inspection so malformed or nested content is unknown, never
+/// silently accepted as native-compatible. No member is extracted to disk.
+fn inspect_archive(path: &Path, label: &str, unknown: &mut Vec<String>) -> anyhow::Result<()> {
+    const MAX_MEMBERS: usize = 4096;
+    const MAX_UNCOMPRESSED: u64 = 200 * 1024 * 1024;
+    let file = std::fs::File::open(path)?;
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(_) => {
+            unknown.push(label.to_string());
+            return Ok(());
+        }
+    };
+    if archive.len() > MAX_MEMBERS {
+        unknown.push(label.to_string());
+        return Ok(());
+    }
+    let mut total_uncompressed = 0u64;
+    let mut total_read = 0u64;
+    for index in 0..archive.len() {
+        let mut member = match archive.by_index(index) {
+            Ok(member) => member,
+            Err(_) => {
+                unknown.push(label.to_string());
+                return Ok(());
+            }
+        };
+        total_uncompressed = total_uncompressed.saturating_add(member.size());
+        if total_uncompressed > MAX_UNCOMPRESSED {
+            unknown.push(label.to_string());
+            return Ok(());
+        }
+        if member.is_dir() {
+            continue;
+        }
+        let member_label = format!("{label}!{}", member.name());
+        if archive_candidate(member.name()) || opaque_archive_candidate(member.name()) {
+            unknown.push(member_label);
+            continue;
+        }
+        let (bytes, count) = match read_prefix(&mut member) {
+            Ok(result) => result,
+            Err(_) => {
+                unknown.push(member_label);
+                continue;
+            }
+        };
+        if zip_magic(&bytes[..count]) || opaque_archive_magic(&bytes[..count]) {
+            unknown.push(member_label);
+            continue;
+        }
+        let target = binary_target(&bytes[..count]);
+        if let Some(target) = target.filter(|target| *target != "Linux/x86_64") {
+            anyhow::bail!(
+                "native artifact {member_label} targets {target}; Function Compute requires Linux/x86_64"
+            );
+        }
+        total_read = total_read.saturating_add(count as u64);
+        let remaining = MAX_UNCOMPRESSED
+            .saturating_sub(total_read)
+            .saturating_add(1);
+        let drained = std::io::copy(&mut (&mut member).take(remaining), &mut std::io::sink());
+        let Ok(drained) = drained else {
+            unknown.push(member_label);
+            continue;
+        };
+        if drained >= remaining {
+            unknown.push(member_label);
+            continue;
+        }
+        total_read = total_read.saturating_add(drained);
+        match target {
+            Some("Linux/x86_64") => {}
+            Some(_) => unreachable!(),
+            None if native_candidate(member.name()) => unknown.push(member_label),
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+/// Inspect the declared output and entry plus native artifacts using file
+/// headers, independent of the machine on which the build happened.
+pub fn verify_artifact(
+    output_dir: &Path,
+    declaration: &AppDeclaration,
+    host_os: &str,
+    host_arch: &str,
+) -> anyhow::Result<ArtifactVerification> {
+    if !output_dir.is_dir() || !output_dir_has_files(output_dir) {
+        anyhow::bail!("{ERR_OUTPUT_MISSING}: {}", declaration.build.output);
+    }
+    let command = declaration.start.command.as_deref().unwrap_or_default();
+    let entry = command
+        .first()
+        .filter(|part| part.starts_with("./"))
+        .or_else(|| {
+            declaration
+                .start
+                .args
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|part| {
+                    !part.starts_with('-')
+                        && (part.starts_with("./")
+                            || part.ends_with(".js")
+                            || part.ends_with(".mjs")
+                            || part.ends_with(".py")
+                            || part.ends_with(".jar"))
+                })
+        });
+    if let Some(entry) = entry {
+        let rel = entry.trim_start_matches("./");
+        if !is_inside_workdir(rel) || !output_dir.join(rel).is_file() {
+            anyhow::bail!("declared startup entry missing from build output: {entry}");
+        }
+    }
+    let mut unknown_files = if entry.is_some() {
+        Vec::new()
+    } else {
+        vec!["startup entry".to_string()]
+    };
+    for item in walkdir::WalkDir::new(output_dir) {
+        let item = item?;
+        if !item.path().is_file() {
+            continue;
+        }
+        let rel = item
+            .path()
+            .strip_prefix(output_dir)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if opaque_archive_candidate(&rel) {
+            unknown_files.push(rel);
+            continue;
+        }
+        if archive_candidate(&rel) {
+            inspect_archive(item.path(), &rel, &mut unknown_files)?;
+            continue;
+        }
+        let is_native = native_candidate(&rel)
+            || entry.is_some_and(|value| {
+                value.trim_start_matches("./") == rel
+                    && command.first().is_some_and(|part| part.starts_with("./"))
+            });
+        let (bytes, count) = read_prefix(&mut std::fs::File::open(item.path())?)?;
+        let bytes = &bytes[..count];
+        if opaque_archive_magic(bytes) {
+            unknown_files.push(rel);
+            continue;
+        }
+        if zip_magic(bytes) {
+            inspect_archive(item.path(), &rel, &mut unknown_files)?;
+            continue;
+        }
+        match binary_target(&bytes) {
+            Some("Linux/x86_64") => {}
+            Some(target) => anyhow::bail!(
+                "native artifact {rel} targets {target}; Function Compute requires Linux/x86_64"
+            ),
+            None if is_native => unknown_files.push(rel),
+            None => {}
+        }
+    }
+    Ok(ArtifactVerification {
+        revision: None,
+        status: if unknown_files.is_empty() {
+            "checked"
+        } else {
+            "unknown"
+        },
+        target: "Linux/x86_64",
+        host_os: host_os.to_string(),
+        host_arch: host_arch.to_string(),
+        unknown_files,
+    })
 }
 
 /// Last `max` bytes of `text`, cut on a char boundary and marked when cut.
@@ -347,12 +617,11 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
                 .env("CGO_ENABLED", "0")
                 .env("GOOS", "linux")
                 .env("GOARCH", "amd64");
-            let out =
-                crate::sync::bounded_proc::run_bounded(
-                    command,
-                    BUILD_TIMEOUT,
-                    ERR_BUILD_COMMAND_TIMEOUT,
-                )?;
+            let out = crate::sync::bounded_proc::run_bounded(
+                command,
+                BUILD_TIMEOUT,
+                ERR_BUILD_COMMAND_TIMEOUT,
+            )?;
             if !out.status.success() {
                 let combined = [
                     String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -418,19 +687,15 @@ fn run_default_build(kind: &str, output: &str, workdir: &Path) -> anyhow::Result
     Ok(())
 }
 
-/// Message on the commit a deploy makes for work the agent left uncommitted.
-const DEPLOY_COMMIT_MESSAGE: &str = "chore(app): publish workdir for deploy";
-
-/// Prepare the workdir for a deploy build: fetch, publish pending work,
-/// checkout what is to be built.
+/// Prepare the workdir for a deploy build: fetch and verify the exact clean
+/// remote HEAD selected at preflight, then check it out.
 ///
 /// The fetch runs **before** anything reads ahead/behind state on purpose. That
 /// state compares HEAD against remote-tracking refs, and refs left over from
 /// the previous deploy report a commit that was pushed minutes ago as unpushed
 /// local work — every deploy after the first one was refused as dirty.
 ///
-/// Returns the sha to build when publishing moved HEAD past the one the caller
-/// asked for, and `None` when the caller's sha is what got checked out.
+/// Returns the full SHA actually built for the response's revision check.
 pub fn prepare_git_build(
     workdir: &Path,
     git: &BuildGitContext<'_>,
@@ -453,17 +718,17 @@ pub fn prepare_git_build(
         tracing::warn!(app_id = git.app_id, error = %e, "could not write .git/info/exclude");
     }
 
-    // Whatever the agent left behind gets committed and pushed rather than
-    // refused. When that happens HEAD is already the commit to build, and
-    // checking out the caller's older sha would ship without it.
-    if let Some(published) =
-        app_git::publish_pending_work(workdir, Some(&ssh), DEPLOY_COMMIT_MESSAGE)?
-    {
-        return Ok(Some(published));
-    }
-
+    // Preflight was bound to a clean checkout at the exact remote HEAD.
+    // Publishing pending edits here would change the revision after approval.
+    app_git::ensure_exact_remote_head(workdir, git.commit_sha, Some(&ssh))?;
     app_git::checkout_fetched_sha(workdir, git.commit_sha)?;
-    Ok(None)
+    Ok(Some(git.commit_sha.to_string()))
+}
+
+/// Recheck after build commands: they may edit source or the remote may advance.
+pub fn verify_git_build_revision(workdir: &Path, git: &BuildGitContext<'_>) -> anyhow::Result<()> {
+    let ssh = SshEnv::from_deploy_key_pem(git.deploy_key_pem)?;
+    app_git::ensure_exact_remote_head(workdir, git.commit_sha, Some(&ssh))
 }
 
 const DEFAULT_OUTPUT: &str = ".output";
@@ -483,6 +748,11 @@ pub const ERR_MISSING_MANIFEST: &str = r#"teamclu.app.json is required; add e.g.
 
 fn default_output() -> String {
     DEFAULT_OUTPUT.to_string()
+}
+
+/// FC's own default, and what every template listens on.
+fn default_port() -> u16 {
+    9000
 }
 
 fn default_dockerfile() -> String {
@@ -512,14 +782,15 @@ pub struct AppBuildSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStartSpec {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fc_runtime: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<String>>,
+    #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layers: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_path: Option<String>,
@@ -557,10 +828,21 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
     if object.contains_key("runtime") || object.contains_key("entry") {
         anyhow::bail!("{ERR_LEGACY_MANIFEST}");
     }
+    if value
+        .get("start")
+        .and_then(|start| start.get("entry"))
+        .is_some()
+    {
+        anyhow::bail!("{MANIFEST_FILE} start.entry is no longer supported; declare start.fcRuntime, start.command, start.args and start.layers explicitly. Call manage_app runtime_info for available choices");
+    }
 
     let output_was_omitted = value
         .get("build")
         .and_then(|build| build.get("output"))
+        .is_none();
+    let port_was_omitted = value
+        .get("start")
+        .and_then(|start| start.get("port"))
         .is_none();
     let mut declaration: AppDeclaration = serde_json::from_value(value)
         .map_err(|e| anyhow::anyhow!("invalid {MANIFEST_FILE} build+start declaration: {e}"))?;
@@ -572,6 +854,9 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             VALID_BUILD_KINDS.join(", ")
         );
     }
+    if declaration.build.kind != "container" && port_was_omitted {
+        anyhow::bail!("{MANIFEST_FILE} start.port is required for code apps");
+    }
     if output_was_omitted {
         declaration.build.output = if declaration.build.kind == "node" {
             ".output".to_string()
@@ -579,11 +864,12 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             ".".to_string()
         };
     }
-    for (name, path) in [
+    let checked: Vec<(&str, &String)> = vec![
         ("build.output", &declaration.build.output),
         ("build.dockerfile", &declaration.build.dockerfile),
         ("build.context", &declaration.build.context),
-    ] {
+    ];
+    for (name, path) in checked {
         if !is_inside_workdir(path) {
             anyhow::bail!("{MANIFEST_FILE} {name} must stay inside the workdir");
         }
@@ -627,6 +913,9 @@ pub fn read_app_declaration(workdir: &Path) -> anyhow::Result<AppDeclaration> {
             anyhow::bail!(
                 "{MANIFEST_FILE} code apps require non-empty start.fcRuntime and start.command"
             );
+        }
+        if declaration.start.args.is_none() || declaration.start.layers.is_none() {
+            anyhow::bail!("{MANIFEST_FILE} code apps require explicit start.args and start.layers; use [] for none and call manage_app runtime_info for available choices");
         }
     }
     if declaration
@@ -751,6 +1040,7 @@ impl BuildProduct {
 /// A finished build: the artifact, and the commit it was made from.
 pub struct BuildOutput {
     pub product: BuildProduct,
+    pub artifact_verification: Option<ArtifactVerification>,
     /// What the app declared about how it is run. Reported so the control plane
     /// can start the function the way the app expects instead of the one way it
     /// used to assume.
@@ -778,6 +1068,44 @@ pub fn build_artifact(
     workdir: &Path,
     git: Option<&BuildGitContext<'_>>,
     push: Option<&ImagePushTarget<'_>>,
+) -> anyhow::Result<BuildOutput> {
+    build_artifact_for_deploy(workdir, git, push, None)
+}
+
+/// Deploy builds also bind imported workdirs to their preflight content digest.
+pub fn build_artifact_for_deploy(
+    workdir: &Path,
+    git: Option<&BuildGitContext<'_>>,
+    push: Option<&ImagePushTarget<'_>>,
+    imported_revision: Option<&str>,
+) -> anyhow::Result<BuildOutput> {
+    build_artifact_with_push(
+        workdir,
+        git,
+        push,
+        &push_image,
+        &|path| {
+            if let Some(ctx) = git {
+                verify_git_build_revision(path, ctx)?;
+            }
+            if let Some(revision) = imported_revision {
+                if app_git::checkout_content_digest(path)? != revision {
+                    anyhow::bail!("imported checkout changed during build");
+                }
+            }
+            Ok(())
+        },
+        &verify_image_platform,
+    )
+}
+
+fn build_artifact_with_push(
+    workdir: &Path,
+    git: Option<&BuildGitContext<'_>>,
+    push: Option<&ImagePushTarget<'_>>,
+    publish: &dyn Fn(&Path, &ImagePushTarget<'_>) -> anyhow::Result<()>,
+    verify_source: &dyn Fn(&Path) -> anyhow::Result<()>,
+    verify_image: &dyn Fn(&Path, &str) -> anyhow::Result<ArtifactVerification>,
 ) -> anyhow::Result<BuildOutput> {
     let mut git_commit_sha = None;
     if let Some(ctx) = git {
@@ -810,12 +1138,15 @@ pub fn build_artifact(
             // credentials stay out of the app command and the user's Docker
             // config.
             run_shell_override(command, workdir, Some(target.image))?;
-            push_image(workdir, &target)?;
         } else {
             build_image(workdir, &declaration.build, &target)?;
         }
+        verify_source(workdir)?;
+        let artifact_verification = verify_image(workdir, target.image)?;
+        publish(workdir, &target)?;
         return Ok(BuildOutput {
             product: BuildProduct::Image(target.image.to_string()),
+            artifact_verification: Some(artifact_verification),
             git_commit_sha,
             declaration,
         });
@@ -857,6 +1188,14 @@ pub fn build_artifact(
         anyhow::bail!("{ERR_OUTPUT_MISSING}: {}", declaration.build.output);
     }
 
+    verify_source(workdir)?;
+    let artifact_verification = verify_artifact(
+        &output_dir,
+        &declaration,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )?;
+
     let bytes = zip_dir(&output_dir)?;
     if bytes.is_empty() {
         anyhow::bail!("{ERR_OUTPUT_MISSING}");
@@ -866,9 +1205,55 @@ pub fn build_artifact(
     }
     Ok(BuildOutput {
         product: BuildProduct::Archive(bytes),
+        artifact_verification: Some(artifact_verification),
         git_commit_sha,
         declaration,
     })
+}
+
+fn image_platform_result(platform: Option<&str>) -> anyhow::Result<ArtifactVerification> {
+    let platform = platform.map(str::trim);
+    if let Some(platform) = platform.filter(|p| !p.is_empty() && *p != FC_PLATFORM) {
+        anyhow::bail!("container image targets {platform}; Function Compute requires Linux/x86_64 (linux/amd64)");
+    }
+    Ok(ArtifactVerification {
+        revision: None,
+        status: if platform == Some(FC_PLATFORM) {
+            "checked"
+        } else {
+            "unknown"
+        },
+        target: "Linux/x86_64",
+        host_os: std::env::consts::OS.to_string(),
+        host_arch: std::env::consts::ARCH.to_string(),
+        unknown_files: if platform == Some(FC_PLATFORM) {
+            vec![]
+        } else {
+            vec!["container image platform".into()]
+        },
+    })
+}
+
+/// Inspect the local image after build and before the registry push. An
+/// unavailable inspection cannot establish compatibility and stays unknown.
+fn verify_image_platform(workdir: &Path, image: &str) -> anyhow::Result<ArtifactVerification> {
+    let inspected = run_docker(
+        &[
+            "image",
+            "inspect",
+            "--format",
+            "{{.Os}}/{{.Architecture}}",
+            image,
+        ],
+        workdir,
+        None,
+        BUILD_TIMEOUT,
+        ERR_BUILD_TIMEOUT,
+    );
+    match inspected {
+        Ok(output) => image_platform_result(Some(&String::from_utf8_lossy(&output.stdout))),
+        Err(_) => image_platform_result(None),
+    }
 }
 
 /// Cross-build the app's image for Function Compute and push it.
@@ -905,7 +1290,7 @@ fn build_image(
         IMAGE_BUILD_TIMEOUT,
         ERR_IMAGE_BUILD_TIMEOUT,
     )?;
-    push_image(workdir, target)
+    Ok(())
 }
 
 /// Push the built image with credentials that touch nothing of the user's.
@@ -1035,6 +1420,389 @@ mod tests {
     use std::io::Read;
 
     #[test]
+    fn mac_and_windows_native_outputs_cannot_be_published_to_linux() {
+        for (os, bytes) in [
+            ("macos", &[0xcf, 0xfa, 0xed, 0xfe][..]),
+            ("windows", &[b'M', b'Z'][..]),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("server"), bytes).unwrap();
+            let mut declaration = read_test_declaration(tmp.path());
+            declaration.start.command = Some(vec!["./server".into()]);
+            let error = verify_artifact(tmp.path(), &declaration, os, "x86_64")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("Linux/x86_64"), "{error}");
+        }
+    }
+
+    #[test]
+    fn missing_declared_entry_fails_artifact_verification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let declaration = read_test_declaration(tmp.path());
+        let error = verify_artifact(tmp.path(), &declaration, "macos", "aarch64")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("server/index.mjs"), "{error}");
+    }
+
+    #[test]
+    fn wrong_architecture_native_library_fails_artifact_verification() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        elf.resize(20, 0);
+        elf[18] = 183; // EM_AARCH64
+        std::fs::write(tmp.path().join("native.so"), elf).unwrap();
+        let error = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "windows",
+            "x86_64",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("native.so") && error.contains("Linux/x86_64"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn jar_cannot_hide_wrong_architecture_native_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("lib/native.so", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        elf.resize(20, 0);
+        elf[18] = 183;
+        zip.write_all(&elf).unwrap();
+        zip.finish().unwrap();
+
+        let error = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("app.jar")
+                && error.contains("native.so")
+                && error.contains("Linux/x86_64"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn uninspectable_nested_archive_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("nested.jar", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"nested archive bytes").unwrap();
+        zip.finish().unwrap();
+
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.unknown_files, vec!["app.jar!nested.jar"]);
+    }
+
+    #[test]
+    fn nested_zip_magic_is_unknown_even_without_archive_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("payload.blob", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"PK\x03\x04nested bytes").unwrap();
+        zip.finish().unwrap();
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.unknown_files, vec!["app.jar!payload.blob"]);
+    }
+
+    #[test]
+    fn corrupt_jar_member_crc_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let path = tmp.path().join("app.jar");
+        let jar = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file(
+            "assets/data.txt",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        let payload = b"first twenty bytes are fine; corrupt the remainder of this member";
+        zip.write_all(payload).unwrap();
+        zip.finish().unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        let start = bytes
+            .windows(payload.len())
+            .position(|window| window == payload)
+            .unwrap();
+        bytes[start + 30] ^= 0x01;
+        std::fs::write(&path, bytes).unwrap();
+
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.unknown_files, vec!["app.jar!assets/data.txt"]);
+    }
+
+    #[test]
+    fn nested_and_top_level_gzip_archives_are_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        std::fs::write(tmp.path().join("outer.tgz"), b"\x1f\x8bnot inspected").unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("nested.tar.gz", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\x1f\x8bnot inspected").unwrap();
+        zip.finish().unwrap();
+
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert!(result.unknown_files.contains(&"outer.tgz".to_string()));
+        assert!(result
+            .unknown_files
+            .contains(&"app.jar!nested.tar.gz".to_string()));
+    }
+
+    #[test]
+    fn opaque_tar_magic_is_unknown_inside_and_outside_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let mut tar = vec![0; 512];
+        tar[257..262].copy_from_slice(b"ustar");
+        std::fs::write(tmp.path().join("outer.blob"), &tar).unwrap();
+        let jar = std::fs::File::create(tmp.path().join("app.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(jar);
+        zip.start_file("nested.blob", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&tar).unwrap();
+        zip.finish().unwrap();
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert!(result.unknown_files.contains(&"outer.blob".to_string()));
+        assert!(result
+            .unknown_files
+            .contains(&"app.jar!nested.blob".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_declared_output_stops_before_archive_is_returned() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILE), serde_json::json!({
+            "build": {"kind":"node", "output":"missing-output", "command":"true"},
+            "start": {"fcRuntime":"custom.debian12", "command":["node"], "args":["server/index.mjs"], "layers":[], "port":9000}
+        }).to_string()).unwrap();
+        let error = match build_artifact(tmp.path(), None, None) {
+            Ok(_) => panic!("declared output must exist before archive is returned"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(ERR_OUTPUT_MISSING) && error.contains("missing-output"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn versioned_native_library_is_inspected() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        elf.resize(20, 0);
+        elf[18] = 183;
+        std::fs::write(tmp.path().join("libfoo.so.1"), elf).unwrap();
+        let error = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("libfoo.so.1"), "{error}");
+    }
+
+    #[test]
+    fn cross_built_linux_x86_64_library_is_checked_on_mac_and_windows() {
+        for os in ["macos", "windows"] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tmp.path().join("server")).unwrap();
+            std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+            let mut elf = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+            elf.resize(20, 0);
+            elf[18] = 62;
+            std::fs::write(tmp.path().join("native.so"), elf).unwrap();
+            let result = verify_artifact(
+                tmp.path(),
+                &read_test_declaration(tmp.path()),
+                os,
+                "aarch64",
+            )
+            .unwrap();
+            assert_eq!(result.status, "checked", "{os}");
+        }
+    }
+
+    #[test]
+    fn unclassifiable_native_library_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("server")).unwrap();
+        std::fs::write(tmp.path().join("server/index.mjs"), "ok").unwrap();
+        std::fs::write(tmp.path().join("native.so"), b"unrecognized").unwrap();
+        let result = verify_artifact(
+            tmp.path(),
+            &read_test_declaration(tmp.path()),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.unknown_files, vec!["native.so"]);
+    }
+
+    #[test]
+    fn opaque_startup_entry_is_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("index.php"), "<?php echo 'ok';").unwrap();
+        write_code_declaration(tmp.path(), "php", ".");
+        let result = verify_artifact(
+            tmp.path(),
+            &read_app_declaration(tmp.path()).unwrap(),
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(result.status, "unknown");
+        assert!(result.unknown_files.contains(&"startup entry".to_string()));
+    }
+
+    #[test]
+    fn container_image_platform_mismatch_stops_before_push() {
+        let error = image_platform_result(Some("linux/arm64"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Linux/x86_64"), "{error}");
+        assert_eq!(image_platform_result(None).unwrap().status, "unknown");
+        assert_eq!(
+            image_platform_result(Some("linux/amd64")).unwrap().status,
+            "checked"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_build_does_not_push_when_image_metadata_has_wrong_platform() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": {"kind":"container", "command":"true"},
+                "start": {"port":9000}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let target = ImagePushTarget {
+            image: "example.test/app:sha",
+            registry: "example.test",
+            username: "u",
+            password: "p",
+        };
+        let pushes = std::cell::Cell::new(0);
+        let error = match build_artifact_with_push(
+            tmp.path(),
+            None,
+            Some(&target),
+            &|_, _| {
+                pushes.set(pushes.get() + 1);
+                Ok(())
+            },
+            &|_| Ok(()),
+            &|_, _| image_platform_result(Some("linux/arm64")),
+        ) {
+            Ok(_) => panic!("wrong-platform image must not be pushed"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Linux/x86_64"), "{error}");
+        assert_eq!(pushes.get(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_rejects_wrong_platform_before_creating_upload_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(MANIFEST_FILE), serde_json::json!({
+            "build": {"kind":"node", "output":".output", "command":"mkdir -p .output && printf 'MZ' > .output/server"},
+            "start": {"fcRuntime":"custom.debian12", "command":["./server"], "args":[], "layers":[], "port":9000}
+        }).to_string()).unwrap();
+        let error = match build_artifact(tmp.path(), None, None) {
+            Ok(_) => panic!("wrong-platform artifact must not be returned for upload"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Linux/x86_64"), "{error}");
+    }
+
+    fn read_test_declaration(dir: &Path) -> AppDeclaration {
+        write_code_declaration(dir, "node", ".");
+        let mut declaration = read_app_declaration(dir).unwrap();
+        declaration.start.command = Some(vec!["node".into()]);
+        declaration.start.args = Some(vec!["server/index.mjs".into()]);
+        declaration
+    }
+
+    #[test]
     fn oss_object_key_is_apps_appid_codezip() {
         assert_eq!(oss_object_key("app-123"), "apps/app-123/code.zip");
     }
@@ -1073,8 +1841,9 @@ mod tests {
         std::fs::write(tmp.path().join("app.py"), b"print('ok')").unwrap();
         std::fs::create_dir_all(tmp.path().join(".git/objects")).unwrap();
         std::fs::write(tmp.path().join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
-        let runtime_dir =
-            teamclu_runtime_env::workspace_meta_dir_name(&teamclu_runtime_env::brand_short_name_from_env());
+        let runtime_dir = teamclu_runtime_env::workspace_meta_dir_name(
+            &teamclu_runtime_env::brand_short_name_from_env(),
+        );
         std::fs::create_dir_all(tmp.path().join(&runtime_dir)).unwrap();
         std::fs::write(tmp.path().join(&runtime_dir).join("state.json"), b"{}").unwrap();
 
@@ -1084,7 +1853,10 @@ mod tests {
             .map(|i| archive.by_index(i).unwrap().name().to_string())
             .collect();
         assert!(names.iter().any(|name| name == "app.py"), "{names:?}");
-        assert!(!names.iter().any(|name| name.starts_with(".git/")), "{names:?}");
+        assert!(
+            !names.iter().any(|name| name.starts_with(".git/")),
+            "{names:?}"
+        );
         assert!(
             !names.iter().any(|name| name.starts_with(&runtime_dir)),
             "{names:?}"
@@ -1154,6 +1926,8 @@ mod tests {
                 "start": {
                     "fcRuntime": "custom.debian12",
                     "command": ["run"],
+                    "args": [],
+                    "layers": [],
                     "port": 9000
                 }
             })
@@ -1167,7 +1941,10 @@ mod tests {
         let tmp = node_checkout();
         let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
         assert_eq!(err, ERR_MISSING_MANIFEST);
-        assert!(err.contains(r#""build""#) && err.contains(r#""start""#), "{err}");
+        assert!(
+            err.contains(r#""build""#) && err.contains(r#""start""#),
+            "{err}"
+        );
         assert!(err.contains("fc-runtime-passthrough-design.md"), "{err}");
     }
 
@@ -1274,6 +2051,8 @@ mod tests {
                     "start": {
                         "fcRuntime": "custom.debian10",
                         "command": ["run"],
+                        "args": [],
+                        "layers": [],
                         "port": 9000
                     }
                 })
@@ -1308,7 +2087,9 @@ mod tests {
         .unwrap();
         raw["start"]["fcRuntime"] = serde_json::json!("custom.debian12");
         std::fs::write(container.path().join(MANIFEST_FILE), raw.to_string()).unwrap();
-        let err = read_app_declaration(container.path()).unwrap_err().to_string();
+        let err = read_app_declaration(container.path())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("custom-container"), "{err}");
     }
 
@@ -1375,6 +2156,8 @@ mod tests {
                 "start": {
                     "fcRuntime": "custom.debian12",
                     "command": ["node"],
+                    "args": [],
+                    "layers": [],
                     "port": 9000
                 }
             })
@@ -1392,6 +2175,48 @@ mod tests {
             .read_to_string(&mut result)
             .unwrap();
         assert_eq!(result, "overridden");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn imported_build_allows_unignored_generated_output_but_rejects_source_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        app_git::init_if_needed(work).unwrap();
+        std::fs::write(work.join("source.txt"), "original").unwrap();
+        let declaration = |command: &str| {
+            serde_json::json!({
+                "build": {"kind": "node", "output": "foo/./dist", "command": command},
+                "start": {"fcRuntime": "custom.debian12", "command": ["node"],
+                    "args": ["result.txt"], "layers": [], "port": 9000}
+            })
+        };
+        std::fs::write(
+            work.join(MANIFEST_FILE),
+            declaration("mkdir -p foo/dist && printf built > foo/dist/result.txt").to_string(),
+        )
+        .unwrap();
+        let revision = app_git::checkout_content_digest(work).unwrap();
+        build_artifact_for_deploy(work, None, None, Some(&revision)).unwrap();
+        assert_eq!(app_git::checkout_content_digest(work).unwrap(), revision);
+
+        std::fs::write(
+            work.join(MANIFEST_FILE),
+            declaration(
+                "mkdir -p foo/dist && printf built > foo/dist/result.txt && printf changed > source.txt",
+            )
+            .to_string(),
+        )
+        .unwrap();
+        let revision = app_git::checkout_content_digest(work).unwrap();
+        let error = match build_artifact_for_deploy(work, None, None, Some(&revision)) {
+            Ok(_) => panic!("source mutation must reject the imported build"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("imported checkout changed during build"),
+            "{error}"
+        );
     }
 
     #[cfg(unix)]
@@ -1426,6 +2251,50 @@ mod tests {
             "reached"
         );
         assert!(!err.contains(ERR_NO_DOCKERFILE), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dirty_source_from_container_build_never_reaches_registry_push() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("tracked.txt"), b"original").unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::json!({
+                "build": { "kind": "container", "command": "printf changed > tracked.txt" },
+                "start": { "port": 9000 }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let target = ImagePushTarget {
+            image: "registry.example.com/app:sha",
+            registry: "registry.example.com",
+            username: "u",
+            password: "p",
+        };
+        let pushes = std::cell::Cell::new(0);
+        let err = match build_artifact_with_push(
+            tmp.path(),
+            None,
+            Some(&target),
+            &|_, _| {
+                pushes.set(pushes.get() + 1);
+                Ok(())
+            },
+            &|path| {
+                if std::fs::read(path.join("tracked.txt"))? != b"original" {
+                    anyhow::bail!("source changed during build");
+                }
+                Ok(())
+            },
+            &|_, _| image_platform_result(Some(FC_PLATFORM)),
+        ) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("dirty source must stop before registry push"),
+        };
+        assert!(err.contains("source changed during build"), "{err}");
+        assert_eq!(pushes.get(), 0);
     }
 
     #[cfg(unix)]
@@ -1722,6 +2591,77 @@ mod tests {
             out.stderr.len() > 128 * 1024,
             "stderr: {}",
             out.stderr.len()
+        );
+    }
+
+    #[test]
+    fn explicit_declaration_round_trips_without_null_optional_start_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("teamclu.app.json"),
+            r#"{
+              "build": {"kind": "node"},
+              "start": {"fcRuntime": "custom.debian10", "command": ["/var/fc/lang/nodejs20/bin/node"], "args": ["server/index.mjs"], "port": 9000, "layers": []}
+            }"#,
+        )
+        .unwrap();
+
+        let declaration = read_app_declaration(tmp.path()).unwrap();
+        assert_eq!(declaration.build.kind, "node");
+        assert_eq!(declaration.build.output, ".output");
+        assert_eq!(
+            declaration.start.fc_runtime.as_deref(),
+            Some("custom.debian10")
+        );
+        assert_eq!(declaration.start.port, 9000);
+        // This is the JSON forwarded from the build response to FC finalize.
+        assert_eq!(
+            serde_json::to_value(&declaration).unwrap(),
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../../services/fc/test/fixtures/daemon-explicit-declaration.json"
+            ))
+            .unwrap()
+        );
+        let container = tempfile::tempdir().unwrap();
+        write_container_declaration(container.path(), "Dockerfile", None);
+        let container_wire =
+            serde_json::to_value(read_app_declaration(container.path()).unwrap()).unwrap();
+        assert_eq!(container_wire["start"]["port"], 5000);
+        for absent in ["fcRuntime", "command", "args", "layers"] {
+            assert!(
+                container_wire["start"].get(absent).is_none(),
+                "{absent} must be omitted"
+            );
+        }
+    }
+
+    #[test]
+    fn start_entry_is_rejected_with_explicit_declaration_guidance() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("teamclu.app.json"),
+            r#"{"build":{"kind":"node"},"start":{"entry":"server/index.mjs","fcRuntime":"custom.debian10","command":["/bin/bash"]}}"#,
+        )
+        .unwrap();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("start.entry") && err.contains("runtime_info"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn code_app_requires_an_explicit_port() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            r#"{"build":{"kind":"go"},"start":{"fcRuntime":"custom.debian10","command":["./main"],"args":[],"layers":[]}}"#,
+        )
+        .unwrap();
+        let err = read_app_declaration(tmp.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("start.port") && err.contains("required"),
+            "{err}"
         );
     }
 }

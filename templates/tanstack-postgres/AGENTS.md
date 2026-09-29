@@ -69,25 +69,9 @@ async function storageCredentials() {
 
 ## 部署声明（`teamclu.app.json`）
 
-仓根 `teamclu.app.json` 声明**怎么构建、怎么启动**，平台按其中的 `build` + `start` 部署到 FC Custom Runtime：
+仓根 `teamclu.app.json` 声明本模板的 `build` 和 `start`。构建必须产出 `.output/server/index.mjs`，服务器监听平台提供的 `$PORT`。修改启动声明或上线时，读取内置 `deploy-app` skill；运行环境、版本、迁移与发布步骤以该 skill 和实时控制面信息为准。
 
-- 改 `build.kind` / `start.command` / `start.port` 以匹配 FC Custom Runtime（本模板默认 Node：`build.kind: "node"`，`start.command: ["/opt/nodejs20/bin/node"]`，`args: ["server/index.mjs"]`，`port: 9000`）。
-- **不要用**旧字段 `runtime` / `entry` —— 缺 `build` + `start` 或仍带 legacy 字段时部署会被拒。
-- 改完 **commit + push**；用户明确要求上线后，再通过控制面或 `manage_app deploy` 部署。
-
-## 怎么上线
-
-部署按 **Gitea 远端 commit** 构建，不是本机未保存的文件。改完代码后：
-
-1. **commit**（含 `pnpm-lock.yaml` 若有依赖变更）
-2. **push** 到 Gitea —— 工作树有未提交或未 push 的变更时 daemon **拒绝构建**
-3. 用户明确要求上线时，可以让用户在 TeamClu 应用列表里点「部署」，或调用
-   `manage_app` 的 `deploy` action；它会按当前登录用户的应用权限执行
-
-部署会发布到公网。除非用户明确要求上线，否则不要自行触发部署。
-
-本地：`DATABASE_URL=postgres://… pnpm dev`（线上连接串由平台注入，本地常跑不通
-DB，属正常）。
+本地预览：`pnpm dev`，打开 `http://localhost:9000`。
 
 ## 登录（`auth_mode`）
 

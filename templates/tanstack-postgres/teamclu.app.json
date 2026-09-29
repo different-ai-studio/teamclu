@@ -7,8 +7,9 @@
   },
   "start": {
     "fcRuntime": "custom.debian10",
-    "command": ["/opt/nodejs20/bin/node"],
+    "command": ["/var/fc/lang/nodejs20/bin/node"],
     "args": ["server/index.mjs"],
+    "layers": [],
     "port": 9000
   }
 }

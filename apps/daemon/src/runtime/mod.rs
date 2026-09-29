@@ -10,6 +10,7 @@ pub mod backend_session_metadata;
 pub mod context_registry;
 pub mod context_service;
 pub mod env_assembly;
+pub mod host_facts;
 pub mod execution_context;
 pub mod gateway_token;
 mod handle;

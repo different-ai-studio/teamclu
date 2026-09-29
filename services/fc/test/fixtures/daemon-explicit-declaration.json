@@ -1,0 +1,10 @@
+{
+  "build": { "kind": "node", "output": ".output", "command": null, "dockerfile": "Dockerfile", "context": "." },
+  "start": {
+    "fcRuntime": "custom.debian10",
+    "command": ["/var/fc/lang/nodejs20/bin/node"],
+    "args": ["server/index.mjs"],
+    "port": 9000,
+    "layers": []
+  }
+}

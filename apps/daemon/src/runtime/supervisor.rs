@@ -5,9 +5,12 @@
 //! delegate reload/status to the shared `RuntimeManager`.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+use sha2::{Digest, Sha256};
 
 use crate::process_util::CommandNoWindow;
 use tokio::sync::Mutex as AsyncMutex;
@@ -67,10 +70,16 @@ fn inherent_desktop_control_skill() -> Option<InherentSkill> {
 }
 
 fn inherent_skills() -> Vec<InherentSkill> {
-    let mut out = vec![InherentSkill {
-        dirname: "create-role",
-        content: include_str!("../../../../packages/app/src/lib/skills/create-role/SKILL.md"),
-    }];
+    let mut out = vec![
+        InherentSkill {
+            dirname: "create-role",
+            content: include_str!("../../../../packages/app/src/lib/skills/create-role/SKILL.md"),
+        },
+        InherentSkill {
+            dirname: "deploy-app",
+            content: include_str!("../../../../packages/app/src/lib/skills/deploy-app/SKILL.md"),
+        },
+    ];
     if let Some(skill) = inherent_desktop_control_skill() {
         out.push(skill);
     }
@@ -714,11 +723,92 @@ fn inherent_skills_dir() -> Result<PathBuf, WorkspaceControlError> {
     Ok(home.join(".agents/skills"))
 }
 
+const DEPLOY_APP_MARKER: &str = ".teamclu-managed.sha256";
+
+fn skill_io(error: impl std::fmt::Display) -> WorkspaceControlError {
+    WorkspaceControlError::Io(error.to_string())
+}
+
+fn write_managed_skill_file(path: &Path, content: &[u8]) -> Result<(), WorkspaceControlError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| skill_io("skill path has no parent"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(skill_io)?;
+    temporary.write_all(content).map_err(skill_io)?;
+    temporary.persist(path).map_err(skill_io)?;
+    Ok(())
+}
+
+fn backup_conflicting_deploy_skill(
+    skills_dir: &Path,
+    skill_dir: &Path,
+) -> Result<(), WorkspaceControlError> {
+    // A sibling of `skills`, not a child: neither Pi nor the app skill loader
+    // scans this location as a skill root.
+    let backups = skills_dir
+        .parent()
+        .ok_or_else(|| skill_io("skills directory has no parent"))?
+        .join("skill-backups");
+    std::fs::create_dir_all(&backups).map_err(skill_io)?;
+    let destination = backups.join(format!("deploy-app-{}", uuid::Uuid::new_v4()));
+    std::fs::rename(skill_dir, &destination).map_err(skill_io)?;
+    warn!(backup = %destination.display(), "preserved conflicting deploy-app skill before installing bundled copy");
+    Ok(())
+}
+
+fn ensure_managed_deploy_app_skill(
+    skills_dir: &Path,
+    bundled: &str,
+) -> Result<(), WorkspaceControlError> {
+    let skill_dir = skills_dir.join("deploy-app");
+    let skill_md = skill_dir.join("SKILL.md");
+    let marker = skill_dir.join(DEPLOY_APP_MARKER);
+    let bundled_bytes = bundled.as_bytes();
+    let bundled_digest = format!("{:x}", Sha256::digest(bundled_bytes));
+
+    match std::fs::symlink_metadata(&skill_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(skill_io(error)),
+        Ok(metadata) => {
+            let current = if metadata.is_dir() {
+                std::fs::read(&skill_md).ok()
+            } else {
+                None
+            };
+            let recorded_digest = std::fs::read_to_string(&marker).ok();
+            let current_digest = current
+                .as_ref()
+                .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+            let is_managed = recorded_digest.as_deref() == current_digest.as_deref()
+                && recorded_digest.is_some();
+            let is_current_bundle = current.as_deref() == Some(bundled_bytes);
+
+            if !is_managed && !is_current_bundle {
+                backup_conflicting_deploy_skill(skills_dir, &skill_dir)?;
+            } else if is_current_bundle {
+                if recorded_digest.as_deref() != Some(bundled_digest.as_str()) {
+                    write_managed_skill_file(&marker, bundled_digest.as_bytes())?;
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    std::fs::create_dir_all(&skill_dir).map_err(skill_io)?;
+    write_managed_skill_file(&skill_md, bundled_bytes)?;
+    write_managed_skill_file(&marker, bundled_digest.as_bytes())?;
+    Ok(())
+}
+
 fn ensure_inherent_skills_in_dir(skills_dir: &Path) -> Result<(), WorkspaceControlError> {
     std::fs::create_dir_all(skills_dir).map_err(|e| WorkspaceControlError::Io(e.to_string()))?;
     remove_non_native_desktop_control_skills(skills_dir);
 
     for skill in inherent_skills() {
+        if skill.dirname == "deploy-app" {
+            ensure_managed_deploy_app_skill(skills_dir, skill.content)?;
+            continue;
+        }
         let skill_dir = skills_dir.join(skill.dirname);
         let skill_md = skill_dir.join("SKILL.md");
         if skill_md.exists() {
@@ -2042,6 +2132,113 @@ mod tests {
     use super::*;
     use crate::config::global_team_store::TEST_HOME_LOCK;
     use crate::runtime::refresh::{self, refresh_watch};
+    use sha2::{Digest, Sha256};
+
+    fn bundled_deploy_app() -> &'static str {
+        include_str!("../../../../packages/app/src/lib/skills/deploy-app/SKILL.md")
+    }
+
+    fn deploy_skill_paths(root: &Path) -> (PathBuf, PathBuf) {
+        let dir = root.join("skills/deploy-app");
+        let backups = root.join("skill-backups");
+        (dir, backups)
+    }
+
+    #[test]
+    fn deploy_app_empty_install_records_bundled_content_as_managed() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = root.path().join("skills");
+        ensure_inherent_skills_in_dir(&skills).unwrap();
+        let (dir, backups) = deploy_skill_paths(root.path());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            bundled_deploy_app()
+        );
+        let digest = format!("{:x}", Sha256::digest(bundled_deploy_app().as_bytes()));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".teamclu-managed.sha256")).unwrap(),
+            digest
+        );
+        assert!(!backups.exists());
+    }
+
+    #[test]
+    fn deploy_app_stale_managed_copy_updates_to_bundled_version() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = root.path().join("skills");
+        let (dir, backups) = deploy_skill_paths(root.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "old bundled skill").unwrap();
+        let old_digest = format!("{:x}", Sha256::digest(b"old bundled skill"));
+        std::fs::write(dir.join(".teamclu-managed.sha256"), old_digest).unwrap();
+        ensure_inherent_skills_in_dir(&skills).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            bundled_deploy_app()
+        );
+        assert!(!backups.exists());
+    }
+
+    #[test]
+    fn deploy_app_same_name_custom_skill_is_backed_up_outside_scan_root() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = root.path().join("skills");
+        let (dir, backups) = deploy_skill_paths(root.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "custom deployment skill").unwrap();
+        std::fs::write(dir.join("notes.txt"), "keep this too").unwrap();
+        ensure_inherent_skills_in_dir(&skills).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            bundled_deploy_app()
+        );
+        let backup_dirs: Vec<_> = std::fs::read_dir(backups).unwrap().collect();
+        assert_eq!(backup_dirs.len(), 1);
+        let backup = backup_dirs[0].as_ref().unwrap().path();
+        assert_eq!(
+            std::fs::read_to_string(backup.join("SKILL.md")).unwrap(),
+            "custom deployment skill"
+        );
+        assert_eq!(
+            std::fs::read_to_string(backup.join("notes.txt")).unwrap(),
+            "keep this too"
+        );
+    }
+
+    #[test]
+    fn deploy_app_same_content_install_is_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = root.path().join("skills");
+        ensure_inherent_skills_in_dir(&skills).unwrap();
+        let (dir, backups) = deploy_skill_paths(root.path());
+        let first = std::fs::metadata(dir.join("SKILL.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        ensure_inherent_skills_in_dir(&skills).unwrap();
+        let second = std::fs::metadata(dir.join("SKILL.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(first, second);
+        assert!(!backups.exists());
+    }
+
+    #[test]
+    fn deploy_app_skill_is_installed_in_shared_skill_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let workspace = tempfile::tempdir().unwrap();
+        prepare_workspace(workspace.path()).unwrap();
+        let installed = home.path().join(".agents/skills/deploy-app/SKILL.md");
+        assert!(installed.is_file());
+        let body = std::fs::read_to_string(installed).unwrap();
+        assert!(body.contains("name: deploy-app"));
+        assert!(inherent_skills()
+            .iter()
+            .any(|skill| skill.dirname == "deploy-app"));
+    }
 
     fn isolated_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let lock = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());

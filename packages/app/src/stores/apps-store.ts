@@ -24,6 +24,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import i18n from "@/lib/i18n";
 import { usesStoredHttpsCredential } from "@/lib/apps/app-list-helpers";
 import { keepRelationship } from "@/lib/apps/app-relationship";
+import { artifactVerificationError } from "@/lib/apps/artifact-verification";
 import type { AppTypeId } from "@/lib/apps/app-types";
 import type {
   AppRow,
@@ -906,13 +907,9 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       }
     }
 
-    if (app.authMode === "none") {
-      const accepted = await publicDeployConfirm.run(PUBLIC_DEPLOY_CONFIRM_MESSAGE);
-      if (!accepted) return;
-    }
-
     set((s) => ({ deployingIds: [...s.deployingIds, appId] }));
     setDeployProgress(set, appId, "prepare");
+    let deployStarted = false;
     try {
       // Only a Gitea-managed app deploys a commit off the forge. An imported
       // app has no repo of ours and no credential for the one it came from, so
@@ -936,10 +933,27 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       if (!declared) {
         throw new Error("amuxd did not return the app declaration");
       }
+      if (viaGitea && (!declared.clean || declared.gitCommitSha !== gitCommitSha)) {
+        throw new Error("部署前请提交并推送所有改动，且本地 HEAD 必须与 Gitea HEAD 一致");
+      }
+      const revision = viaGitea ? gitCommitSha! : declared.contentDigest;
+      // The UI presents the exact server preview before using this intent.
+      // A declined dialog leaves only a replaceable preflight token, no handle.
+      const preflight = await getBackend().apps.preflightAppDeploy(appId, {
+        revision, declaration: declared.declaration, ...(gitCommitSha ? { gitCommitSha } : {}), migrationIntent: true,
+      });
+      if (app.authMode === "none" || preflight.preview.changes.length > 0) {
+        const fields = preflight.preview.changes.map(c => `${c.field}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join("\n");
+        const accepted = await publicDeployConfirm.run(`${PUBLIC_DEPLOY_CONFIRM_MESSAGE}${fields ? `\n\n本次变更：\n${fields}` : ""}`);
+        if (!accepted) return;
+      }
       const started = await getBackend().apps.deployApp(appId, {
         ...(gitCommitSha ? { gitCommitSha } : {}),
-        runtime: declared.build.kind,
+        revision,
+        declaration: declared.declaration,
+        preflightToken: preflight.token,
       });
+      deployStarted = true;
       mergeRow(set, started);
 
       setDeployProgress(set, appId, "build");
@@ -959,7 +973,8 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       let build: BuildAppResult;
       try {
         build = await buildDaemonApp(appId, app.teamId, {
-          gitCommitSha,
+        gitCommitSha,
+          revision,
           gitRemoteUrl,
           deployKeyPem,
           // Exactly one of these is set — see the control plane's startDeploy.
@@ -983,6 +998,11 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       if (!build.declaration) {
         throw new Error("amuxd build response did not include declaration");
       }
+      if (build.revision !== revision || (viaGitea && build.gitCommitSha !== revision)) {
+        throw new Error("构建版本与预检版本不一致，已停止发布");
+      }
+      const verificationError = artifactVerificationError(build.artifactVerification, revision);
+      if (verificationError) throw new Error(verificationError);
 
       // No success toast. It showed `fcEndpoint` — the raw FC function URL —
       // which is not the address the product hands out (that is the app's
@@ -990,13 +1010,11 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       // naming the wrong host on every deploy is worse than no popup: the
       // merged row flips the row to live on its own.
       setDeployProgress(set, appId, "finalize");
-      // What the daemon built, not what we asked for. A deploy publishes work
-      // the agent left uncommitted, and HEAD then sits past the sha read off
-      // Gitea before any of this started; recording that one would name a
-      // commit the running function was not built from.
+      // Finalize the exact revision that passed preflight and was built.
       const builtSha = build.gitCommitSha ?? gitCommitSha;
       const finalized = await getBackend().apps.finalizeDeploy(appId, {
         ...(builtSha ? { gitCommitSha: builtSha } : {}),
+        revision,
         // How the app says it starts. The control plane used to assume one
         // answer for every app; this is the app's own, read off its
         // declaration by the daemon that just built it.
@@ -1014,7 +1032,7 @@ export const useAppsStore = create<AppsState>((set, get) => ({
       setDeployProgress(set, appId, "done");
     } catch (e) {
       const reason = mapCloudDeployError(e);
-      await reportDeployError(set, appId, reason);
+      if (deployStarted) await reportDeployError(set, appId, reason);
       await toastError(i18n.t("apps.deployFailed", "Deploy failed"), reason);
     } finally {
       set((s) => ({ deployingIds: s.deployingIds.filter((id) => id !== appId) }));
