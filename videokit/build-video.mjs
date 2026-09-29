@@ -39,6 +39,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createDesign } from '../kits/design.mjs';
 
 const KIT = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(KIT, '..');
@@ -59,274 +60,39 @@ const FONT_BOLD =
 const FONT_REGULAR =
   process.env.VIDEO_FONT_REGULAR || '/System/Library/Fonts/Supplemental/Arial.ttf';
 
-// Editorial Calm tokens, AGENTS.md §1. Same values the gallery and the app use.
-const BG = '#fbfaf7';
-const PAPER = '#ffffff';
-const INK = '#1a1a14';
-const INK2 = '#3d3c34';
-const MUTED = '#75736a';
-const FAINT = '#a8a6a0';
-const BORDER = '#e7e2d6';
-const CORAL = '#e85a4a';
-
 const BRAND = 'TeamClu';
 const SITE = 'teamclu.ai';
 
-// ── Canvas helpers ─────────────────────────────────────────────────────────
-// `u` scales a 1080-height design coordinate to the real frame.
-const u = (v) => Math.round((v * HEIGHT) / 1080);
-const P = (n) => String(Math.round((n * HEIGHT) / 1080));
+// Design primitives live in kits/design.mjs, shared with posterkit. Every
+// measurement rule that had to be debugged the hard way is documented there:
+// cap lines and ink widths are measured, never estimated, and fit/overflow
+// warnings land in `notes` for the audit printed at the end of the build.
+const design = createDesign({
+  width: WIDTH,
+  height: HEIGHT,
+  magick: MAGICK,
+  fonts: { bold: FONT_BOLD, regular: FONT_REGULAR },
+});
+const {
+  T: { paper: PAPER, ink: INK, ink2: INK2, muted: MUTED, faint: FAINT, border: BORDER, coral: CORAL },
+  notes, SAFE_RIGHT,
+  frame, roundRect, line, poly, dot, P,
+  text, textCentered, textRight, textFit, pill, fitSize, ink, capOffset, capTop,
+  accentBar, badge, ACTORS, disc, cluster,
+  run: magickRun,
+} = design;
 
-function run(cmd, args) {
-  // Two footguns this absorbs:
-  //  - a stray null/undefined reaches ImageMagick as the literal string "null",
-  //    which it then tries to open as an image file;
-  //  - a helper array pushed without `...` arrives here as one element, and
-  //    String() would comma-join it into an "unrecognized option" mess.
-  const clean = args
-    .flat(Infinity)
-    .filter((a) => a !== null && a !== undefined && a !== '')
-    .map(String);
-  return execFileSync(cmd, clean, { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).toString();
-}
-
-function frame(extra = []) {
-  return ['-size', `${WIDTH}x${HEIGHT}`, `xc:${BG}`, '-depth', '8', ...extra];
-}
-
-/** Text drawn at a 1080-height coordinate, left baseline anchored at x,y. */
-function text(font, size, fill, str, x, y) {
-  if (!str) return [];
-  return ['-font', font, '-pointsize', P(size), '-fill', fill, '-annotate', `+${P(x)}+${P(y)}`, String(str)];
-}
-
-function roundRect(x, y, w, h, r, stroke, sw, fill) {
-  const d = `roundrectangle ${P(x)},${P(y)} ${P(x + w)},${P(y + h)} ${P(r)},${P(r)}`;
-  return ['-fill', fill || 'none', '-stroke', stroke, '-strokewidth', P(sw), '-draw', d, '-stroke', 'none'];
-}
-
-function line(x1, y1, x2, y2, color, sw) {
-  return ['-stroke', color, '-strokewidth', P(sw), '-draw', `line ${P(x1)},${P(y1)} ${P(x2)},${P(y2)}`, '-stroke', 'none'];
-}
-
-/** Filled triangle. `color` is optional — omit it for a plain fill. */
-function poly(points, color, fill) {
-  const pts = points.map(([x, y]) => `${P(x)},${P(y)}`).join(' ');
-  const out = ['-fill', fill];
-  if (color) out.push('-stroke', color, '-strokewidth', '0');
-  else out.push('-stroke', 'none');
-  out.push('-draw', `polygon ${pts}`, '-fill', 'none', '-stroke', 'none');
-  return out;
-}
-
-/**
- * Distance from the baseline up to the cap line, MEASURED per font+pointsize
- * and cached.
- *
- * Why measured and not a ratio: `-annotate +X+Y` with unset gravity treats Y as
- * the baseline, so anything aligned to a letterform must measure up from there.
- * And a constant ratio does not work — Arial Bold's cap height measures
- * 0.705–0.75 em across the sizes used here (92/128, 39/54, 22/30, 15/20), because
- * of antialiasing and pixel rounding. A fixed 0.742 put the coral bars 2–3px off
- * the cap line and the bars 10px off to the right of the word they decorate.
- *
- * Reference glyph is "H": flat cap, so no round overshoot like "C" or "O".
- */
-const _cap = new Map();
-function capOffset(font, pointsize) {
-  const key = `${font}|${pointsize}`;
-  const hit = _cap.get(key);
-  if (hit !== undefined) return hit;
-  const baseline = Math.round(pointsize * 1.5);
-  const out = run(MAGICK, [
-    '-size', '2000x400', 'xc:white',
-    '-font', font, '-pointsize', P(pointsize), '-fill', 'black',
-    '-annotate', `+0+${P(baseline)}`, 'H',
-    '-trim', '-format', '%Y', 'info:',
-  ]).trim();
-  const off = baseline - Number(out);
-  _cap.set(key, off);
-  return off;
-}
-
-const capTop = (baseline, pointsize, font = FONT_BOLD) =>
-  baseline - capOffset(font, pointsize);
-
-/** Left margin for the accent-bar cards: the bar hangs left of the text. */
+/** accentBar with this kit's left margin for the hanging-bar cards. */
 const ACCENT_X = 224;
 const TEXT_X = 254;
-
-const _ink = new Map();
-/**
- * Ink width and left side bearing for a string, measured with ImageMagick and
- * cached. `-annotate +X+Y` places INK at X + sideBearing, so centring has to
- * subtract the bearing — guessing from character count put every centred label
- * a few pixels off.
- */
-function ink(str, font, pointsize) {
-  const key = `${font}|${pointsize}|${str}`;
-  const hit = _ink.get(key);
-  if (hit) return hit;
-  const out = run(MAGICK, [
-    '-size', '6000x400', 'xc:white',
-    '-font', font, '-pointsize', P(pointsize), '-fill', 'black',
-    '-annotate', `+0+${P(Math.round(pointsize * 1.5))}`, str,
-    '-trim', '-format', '%w %X', 'info:',
-  ]).trim().split(/\s+/);
-  const val = { w: Number(out[0]), sb: Number(out[1]) };
-  _ink.set(key, val);
-  return val;
+function bar(baseline, size) {
+  return accentBar(baseline, size, { x: ACCENT_X });
 }
 
-/** Draw `str` with its ink horizontally centred on `cx`, baseline at `baseline`. */
-function textCentered(font, pointsize, fill, str, cx, baseline) {
-  if (!str) return [];
-  const { w, sb } = ink(str, font, pointsize);
-  return [
-    '-font', font, '-pointsize', P(pointsize), '-fill', fill,
-    '-annotate', `+${P(cx - w / 2 - sb)}+${P(baseline)}`, str,
-  ];
-}
-
-// ── Fitting and overflow audit ──────────────────────────────────────────────
-// Container sizes used to be guessed from character count (`t.length * 6.6`),
-// which is wrong for anything but monospace Latin: the follow-up pills in the
-// REVIEW frame were sized too narrow, so "draft the rollback note" ran out of
-// its pill and collided with the next one. Sizes now come from measured ink,
-// and anything that still has to shrink is reported instead of silently
-// overflowing.
-
-const SAFE_RIGHT = 40; // keep ink this far from the right edge
-const notes = [];
-const trunc = (s) => (s.length > 34 ? `${s.slice(0, 33)}\u2026` : s);
-
-/** Largest size <= `size` whose ink fits `maxW`. */
-function fitSize(str, font, size, maxW, min = 9) {
-  if (!str || !Number.isFinite(maxW)) return size;
-  let ps = size;
-  while (ps > min && ink(str, font, ps).w > maxW) ps -= 1;
-  return ps;
-}
-
-/** Left-aligned text that shrinks to fit `maxW`, and audits the right margin. */
-function textFit(font, size, fill, str, x, y, maxW, min = 9) {
-  if (!str) return [];
-  const ps = fitSize(str, font, size, maxW, min);
-  const w = ink(str, font, ps).w;
-  if (ps < size) notes.push(`shrank "${trunc(str)}" ${size}\u2192${ps}pt to fit ${Math.round(maxW)}px`);
-  if (x + w > WIDTH - SAFE_RIGHT) {
-    notes.push(`RIGHT OVERFLOW "${trunc(str)}" ends at ${Math.round(x + w)}, limit ${WIDTH - SAFE_RIGHT}`);
-  }
-  return text(font, ps, fill, str, x, y);
-}
-
-/**
- * A pill / chip whose WIDTH IS the measured ink plus padding. Returns the draw
- * args; use `.width` on the result to lay out the next pill.
- */
-function pill(str, font, size, x, y, opts = {}) {
-  const {
-    padX = 14, padY = 11, stroke = BORDER, fill = PAPER,
-    color = INK2, radius = 8, maxW = Infinity,
-  } = opts;
-  const ps = fitSize(str, font, size, maxW - padX * 2);
-  const cap = capOffset(font, ps);
-  const w = ink(str, font, ps).w + padX * 2;
-  const h = cap + padY * 2;
-  if (x + w > WIDTH - SAFE_RIGHT) {
-    notes.push(`PILL OVERFLOW "${trunc(str)}" ends at ${Math.round(x + w)}`);
-  }
-  return {
-    width: w,
-    height: h,
-    args: [
-      ...roundRect(x, y, w, h, radius, stroke, 1.5, fill),
-      ...text(font, ps, color, str, x + padX, y + padY + cap),
-    ],
-  };
-}
-
-/** Draw `str` with its ink right-aligned to `right`, baseline at `baseline`. */
-function textRight(font, pointsize, fill, str, right, baseline) {
-  if (!str) return [];
-  const { w, sb } = ink(str, font, pointsize);
-  return [
-    '-font', font, '-pointsize', P(pointsize), '-fill', fill,
-    '-annotate', `+${P(right - w - sb)}+${P(baseline)}`, str,
-  ];
-}
-
-// Actor discs, per AGENTS.md §4.5 / §5: humans are circles with a green online
-// dot, agents are rounded squares with a coral ring. Saturated-but-muted so the
-// strip does not read as dead grey.
-const ACTORS = [
-  { letter: 'D', kind: 'human', color: '#4a7fb5' },
-  { letter: 'I', kind: 'human', color: '#7a5ea8' },
-  { letter: 'M', kind: 'human', color: '#3f8f6a' },
-  { letter: 'R', kind: 'agent', color: '#c2703f' },
-  { letter: 'Q', kind: 'agent', color: '#a8853a' },
-];
-
-/** One actor disc. Shape + colour carry human/agent; the letter is a fallback. */
-function disc(a, x, y, d) {
-  const r = d / 2;
-  const out = [];
-  if (a.kind === 'agent') {
-    out.push(...roundRect(x, y, d, d, Math.round(d * 0.26), CORAL, 2, a.color));
-  } else {
-    out.push(['-fill', a.color, '-stroke', 'none', '-draw', `circle ${P(x + r)},${P(y + r)} ${P(x + d)},${P(y + r)}`]);
-  }
-  out.push(...textCentered(FONT_BOLD, Math.round(d * 0.44), '#ffffff', a.letter, x + r, y + r + d * 0.16));
-  if (a.kind === 'human') {
-    // green online dot, bottom-right (AGENTS.md §5)
-    out.push(['-fill', '#2eb872', '-stroke', '#ffffff', '-strokewidth', '2',
-      '-draw', `circle ${P(x + d - d * 0.17)},${P(y + d - d * 0.17)} ${P(x + d - d * 0.04)},${P(y + d - d * 0.17)}`,
-      '-stroke', 'none']);
-  }
-  return out;
-}
-
-/**
- * Overlapping actor cluster ending at `right`.
- * Discs are 40px with a 12px overlap (≈ -30%), so each still shows 28px — enough
- * for the letter to stay clear of its neighbour. The first pass used 34px discs
- * with a 9px overlap and the letters turned into noise.
- */
-function cluster(actors, right, y, d = 40, overlap = 12) {
-  const total = actors.length * d - (actors.length - 1) * overlap;
-  const left = right - total;
-  const out = [];
-  // actor 0 is leftmost, and is drawn LAST so it sits on top of its neighbour
-  for (let i = actors.length - 1; i >= 0; i -= 1) {
-    out.push(...disc(actors[i], left + i * (d - overlap), y, d));
-  }
-  return { args: out, left, width: total };
-}
-
-/**
- * The coral accent bar. Its BOTTOM edge lands on the headline's cap-top line —
- * the same rule scripts/build-producthunt-gallery.mjs uses (bar 62→98 against a
- * measured cap top of 97). Keeps coral to one spot per frame, per AGENTS.md §1.
- */
-function accentBar(baseline, pointsize, { x = ACCENT_X, height = 56 } = {}) {
-  return roundRect(x, capTop(baseline, pointsize) - height, 12, height, 3, CORAL, 0, CORAL);
-}
-
-/**
- * Coral step badge. The digit's INK BOX is centred in the square, not its
- * layout box — the digit used to sit ~10px right of centre because the
- * side bearing was ignored and the ink is only 10px wide at 30pt.
- */
-const BADGE = 62;
-const BADGE_FONT = 30;
-function badge(n, x = 96, y = 128) {
-  const capH = capOffset(FONT_BOLD, BADGE_FONT);
-  // centre the digit's ink span (capTop..baseline) on the square's centre
-  const baseline = y + (BADGE + capH) / 2;
-  return [
-    ...roundRect(x, y, BADGE, BADGE, 14, CORAL, 0, CORAL),
-    ...textCentered(FONT_BOLD, BADGE_FONT, PAPER, String(n), x + BADGE / 2, baseline),
-  ];
+/** exec for ffmpeg/ffprobe, which take a command; magick runs via design.run. */
+function runCmd(cmd, args) {
+  const clean = args.flat(Infinity).filter((a) => a !== null && a !== undefined && a !== '').map(String);
+  return execFileSync(cmd, clean, { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 28 }).toString();
 }
 
 // ── The loop chain ─────────────────────────────────────────────────────────
@@ -509,7 +275,7 @@ function renderSession(s, dest) {
     'It can be offline, permission-limited, or switched to another model mid-conversation.',
     TEXT_X, py + ph + 56, WIDTH - TEXT_X - SAFE_RIGHT));
 
-  run(MAGICK, [...parts, '-depth', '8', dest]);
+  magickRun([...parts, '-depth', '8', dest]);
 }
 
 /** COMPOUND — a skill is a versioned team object, not a personal dotfile. */
@@ -577,24 +343,24 @@ function renderSkill(s, dest) {
     'Installed skills follow the newest version on a 10-minute reconcile. Edit one locally and you get a conflict \u2014 never a silent overwrite.',
     TEXT_X, py + ph + 56, WIDTH - TEXT_X - SAFE_RIGHT));
 
-  run(MAGICK, [...parts, '-depth', '8', dest]);
+  magickRun([...parts, '-depth', '8', dest]);
 }
 
 // ── Card renderers ─────────────────────────────────────────────────────────
 
 function renderTitle(s, dest) {
-  run(MAGICK, [
+  magickRun([
     ...frame(),
-    ...accentBar(566, 128),
+    ...bar(566, 128),
     ...text(FONT_BOLD, 128, INK, BRAND, TEXT_X, 566),
     ...text(FONT_REGULAR, 46, MUTED, 'Assign \u00b7 Build \u00b7 Review \u00b7 Compound', TEXT_X + 4, 654),
   ].concat(['-depth', '8', dest]));
 }
 
 function renderEnd(s, dest) {
-  run(MAGICK, [
+  magickRun([
     ...frame(),
-    ...accentBar(530, 128),
+    ...bar(530, 128),
     ...text(FONT_BOLD, 128, INK, BRAND, TEXT_X, 530),
     ...text(FONT_REGULAR, 44, MUTED, 'The loop your team\u2019s AI work runs on.', TEXT_X + 4, 606),
     ...text(FONT_BOLD, 56, INK, SITE, TEXT_X + 4, 712),
@@ -619,7 +385,7 @@ function renderChain(s, dest) {
     parts.push(...badge(s.eyebrow[0], 258, 132));
     parts.push(...text(FONT_REGULAR, 26, MUTED, s.eyebrow[1], 348, 172));
   }
-  run(MAGICK, [...parts, '-depth', '8', dest]);
+  magickRun([...parts, '-depth', '8', dest]);
 }
 
 /**
@@ -634,7 +400,7 @@ function renderShot(s, dest) {
     throw new Error(`missing gallery frame: ${src}\nRebuild with: node scripts/build-producthunt-gallery.mjs`);
   }
   const innerW = Math.round((1270 / 760) * HEIGHT);
-  run(MAGICK, [
+  magickRun([
     '-size', `${WIDTH}x${HEIGHT}`, `xc:${BG}`,
     '(', src, '-filter', 'Lanczos', '-resize', `${innerW}x${HEIGHT}!`, ')',
     '-gravity', 'center', '-composite',
@@ -716,13 +482,13 @@ function renderAnatomy(s, dest) {
   // same baseline as the intro sub-line and overprinted it.
   parts.push(...text(FONT_REGULAR, 23, MUTED, 'full width \u2014 it is a document, not a turn', nx + 28, top + colH + 52));
 
-  run(MAGICK, [...parts, '-depth', '8', dest]);
+  magickRun([...parts, '-depth', '8', dest]);
 }
 
 function renderCard(s, dest) {
-  run(MAGICK, [
+  magickRun([
     ...frame(),
-    ...accentBar(470, 54),
+    ...bar(470, 54),
     ...text(FONT_BOLD, 54, INK, 'And it runs when you are not at the desk.', TEXT_X, 470),
     ...text(FONT_REGULAR, 34, MUTED, 'Same session. Same capabilities.', TEXT_X + 4, 548),
     ...text(FONT_BOLD, 38, INK, 'WeCom \u00b7 Feishu \u00b7 Discord \u00b7 KOOK \u00b7 WeChat \u00b7 Email', TEXT_X + 4, 640),
@@ -808,7 +574,7 @@ args.push(
   mp4,
 );
 
-run(FFMPEG, args);
+runCmd(FFMPEG, args);
 
 const stamp = (v) => {
   const h = String(Math.floor(v / 3600)).padStart(2, '0');
@@ -835,7 +601,7 @@ stills.forEach((f, i) => {
   execFileSync('cp', [f, path.join(stillOut, path.basename(f))]);
 });
 
-const probe = run(FFPROBE, [
+const probe = runCmd(FFPROBE, [
   '-v', 'error', '-select_streams', 'v:0',
   '-show_entries', 'stream=width,height,r_frame_rate,nb_frames:format=duration,size',
   '-of', 'default=noprint_wrappers=1', mp4,
