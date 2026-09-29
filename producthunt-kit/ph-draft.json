@@ -11,6 +11,16 @@
   "xAccount": "",
   "story": "I kept running into the same thing on every team I worked with: the AI agent is personal, and that's the wrong shape for a team.\n\nI'd teach my agent how we run a release. A teammate would teach theirs the same thing a month later, slightly differently. And the work itself happened in a chat window nobody else could see.\n\nSo TeamClu makes two things shared instead of private.\n\nSkills are team assets. You publish one to your team's registry with structured metadata and a changelog, and every teammate's agent follows it automatically — when you fix a broken step, the fix actually reaches people instead of dying in your dotfiles.\n\nSessions are group chats. Not 1:1 chats with a bot: add teammates, @mention people, see who's online, and branch any agent reply into its own thread. The agent is a participant, not a service.\n\nKnowledge, roles and MCP config are shared the same way, and each member still keeps a private context. Agents run on your own machines, reachable from WeCom, Feishu, Discord, KOOK, WeChat or Email.\n\nIt's MIT licensed and in beta — built in the open, and I'd rather hear where it breaks than where it's nice.",
   "thumbnail": "producthunt-kit/screenshots/thumbnail-512.png",
+  "video": {
+    "_note": "PH 的 media 步骤要的是一个**可访问的视频链接**，不是文件上传（§7.5 实测：自动化给 file input 赋值做不到）。先把 MP4 传 YouTube，粘链接。",
+    "asset": "videokit/out/teamclu-tour-1080p.mp4",
+    "captions": "videokit/out/teamclu-tour-1080p.srt",
+    "spec": "1920x1080, 30fps, 52.0s, 9.2 MB, H.264 High, yuv420p, faststart, **no audio track**",
+    "rebuild": "node videokit/build-video.mjs",
+    "youtubeUrl": "",
+    "_silentWarning": "成片无声。PH 能接受；YouTube 建议照 videokit/voiceover.md 配音 + 垫音乐，见那里的 ffmpeg 混音命令。",
+    "_contentNote": "画面就是那五张 gallery 真实截图 + 运镜，没有模拟界面。若之后改成真录屏，这条视频留作备用。"
+  },
   "gallery": [
     "producthunt-kit/screenshots/ph-1-workspace-1270x760.png",
     "producthunt-kit/screenshots/ph-2-team-skills-1270x760.png",

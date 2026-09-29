@@ -21,6 +21,9 @@
 | `src/README.md` | 截图来源与「如何重拍」说明 |
 | `src/team-skills.png` | ② 的原始截图：团队技能详情（版本历史 / owner / 恢复） |
 | `src/group-session.png` | ④ 的原始截图：会话里的 @提及与 agent 参与者 |
+| `../videokit/README.md` | **宣传视频**：52 秒英文片（YouTube + PH 用），构建脚本与重录说明 |
+| `../videokit/out/teamclu-tour-1080p.mp4` | 成片 1920×1080 / 52.0s / 9.2 MB（**无声**） |
+| `../videokit/youtube.md` · `voiceover.md` | YouTube 标题/描述/标签/章节；配音稿与混音命令 |
 | `screenshots/ph-1-workspace-1270x760.png` | Gallery ①（主图）：团队工作台 |
 | `screenshots/ph-2-team-skills-1270x760.png` | Gallery ②：**团队共享 Skills** |
 | `screenshots/ph-3-channels-1270x760.png` | Gallery ③：多通道网关 |
@@ -264,6 +267,7 @@ WeCom group: wrOOCIYgAAze..          （企业微信群 ID）
 | ☑ **§4 的两张团队截图已拍** | 原图在 `src/`；④ 已裁掉含业务数据的列表列 |
 | ☐ **确认 ④ 的裁剪可接受** | 否则用演示团队重拍完整三栏版，见 §4。**这是当前最该补的一项**——「群聊」主张最有说服力的部分（参与者头像簇、在线状态）恰恰不在图里 |
 | ☐ 决定 ②④ 是否重拍英文版 | PH 主流量在英文区，而 ②④ 是**中文界面**。`src/README.md` 写了重拍方法（应用切语言 + 演示数据）。不重拍也能发，只是转化率打折——自己权衡 |
+| ☑ **Demo 视频已做成** | `videokit/out/teamclu-tour-1080p.mp4` · 52s · 1080p · 无声。见 §9。⚠️ 视频里 ②④ 同样是**中文界面**，重拍英文版时视频要跟着重跑 |
 | ☐ 官网已同步并确认 | `teamclu.ai` 是现有官网（私有仓 `teamclaw-website`）。发布前确认：域名能打开、**分享链接能出预览卡片**（og 标签）、首页叙事与本材料一致、站上无模拟图冒充产品截图 |
 | ☑ **确认 GitHub 仓库 public** | 已核实：`different-ai-studio/teamclu` 为 PUBLIC（2026-09-28） |
 | ☐ **切一个新 release** | 线上最新是 `v0.4.1-beta.43`（2026-09-05），代码已到 `beta.71`——**落后 28 个版本**。访客按下 install 拿到的是三周前的构建。见 §6 |
@@ -322,7 +326,8 @@ GitHub 仓库：https://github.com/different-ai-studio/teamclu   （已确认 pu
 下载链接：https://github.com/different-ai-studio/teamclu/releases/latest   （待切新版）
 X / Twitter：@________________          ← 没有就留空，不要编
 联系邮箱：support@teamclu.ai           ← 已确认，取自官网 Footer
-Demo 视频：________________
+Demo 视频：videokit/out/teamclu-tour-1080p.mp4   ← 已做成，52s 1080p（见 §9）
+Demo 视频链接（YouTube）：________________        ← 上传后回填，PH 要的是链接不是文件
 ```
 
 > `[PH link]` 在 `social-launch.md` 里出现 10 处，发布后统一换成当天的帖子 URL。
@@ -448,3 +453,41 @@ TeamClu，**已否决**，原因是三条具体的：
    另外 `README.md` 架构图仍写 `local agents … opencode (default)`，
    而 pi 自 2026-09-04 起是唯一本地运行时（ADR-0014）——文案不点名任何运行时，
    所以不受影响，但别照 README 答。
+
+---
+
+## 9. Demo 视频
+
+**成片**：`videokit/out/teamclu-tour-1080p.mp4` · 1920×1080 · 30fps · **52.0 秒** ·
+9.2 MB · H.264 High / yuv420p / faststart · **无音轨**
+**字幕**：`videokit/out/teamclu-tour-1080p.srt`
+**重建**：`node videokit/build-video.mjs`（约 30 秒，需 ImageMagick + ffmpeg）
+
+细节、运镜参数、坑和混音命令见 **`videokit/README.md`**。YouTube 侧的标题/描述/
+标签/章节在 `videokit/youtube.md`，配音稿在 `videokit/voiceover.md`。
+
+### 它是什么形态
+
+**五张 gallery 真实截图 + 运镜**，不是录屏。开场片头卡、结尾尾卡，中间按
+「工作台 → 群聊 → 团队技能 → 通道 → 浏览器」推进，交叉溶解 0.5 秒。
+**没有凭空造任何一个界面**，符合 §5「站上无模拟图冒充产品截图」。
+
+**诚实的上限**：它展示界面，**没有**展示 agent 真的在流式回一句话——那才是最有
+说服力的部分。所以定位是「今天就能交付的 PH 视频」；想要更强的 YouTube 版本，
+照 `docs/demo-video-script.md` 录一版真的，这条留作备用。
+
+### 填进 PH 的步骤
+
+§7 的 `Demo 视频链接` 要的是**一个可访问的链接，不是文件上传**——§7.5 已实测，
+自动化无法给 file input 赋值。所以：
+
+1. 把 MP4 传 YouTube（**Unlisted** 即可，PH 只要能访问）
+2. 复制链接，填进 PH 发帖流程的 media / video 字段
+3. 回填 §7 的 `Demo 视频链接` 与 `ph-draft.json` 的 `video.youtubeUrl`
+
+### 三个已知短板
+
+1. **无声。** PH 能接受；YouTube 建议照 `videokit/voiceover.md` 配音 + 垫音乐。
+2. **②④ 是中文界面**（和 gallery 同一个问题，见 §5）。重拍英文版后要重跑构建。
+3. **字略软。** 源是 1270px 宽的 gallery 图，放到 1080 高是 1.42× 放大。Lanczos
+   之后补了一道很轻的 unsharp，够用但不锐。要锐只能重拍更高分辨率的原图。

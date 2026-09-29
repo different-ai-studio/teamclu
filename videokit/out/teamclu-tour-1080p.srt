@@ -1,0 +1,27 @@
+1
+00:00:00,000 --> 00:00:03,500
+TeamClu — shared skills and group chat for your team’s AI agents.
+
+2
+00:00:03,750 --> 00:00:12,000
+Your team and its agents, one workspace.
+
+3
+00:00:12,250 --> 00:00:21,500
+Sessions are group chats — teammates and agents in one thread.
+
+4
+00:00:21,750 --> 00:00:31,000
+Skills your whole team shares — publish once, everyone’s agent follows.
+
+5
+00:00:31,250 --> 00:00:38,500
+Reach your agents in WeCom, Feishu, Discord, KOOK, WeChat and Email.
+
+6
+00:00:38,750 --> 00:00:46,000
+Agents in your browser side panel.
+
+7
+00:00:46,250 --> 00:00:52,000
+TeamClu — MIT licensed, open source, in beta. teamclu.ai
