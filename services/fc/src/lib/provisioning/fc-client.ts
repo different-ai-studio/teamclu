@@ -305,6 +305,21 @@ function isAlreadyExists(e: any): boolean {
   return e?.statusCode === 409 || /AlreadyExists/i.test(e?.code ?? e?.data?.Code ?? "");
 }
 
+function isTriggerNotFound(e: any): boolean {
+  return (e?.code ?? e?.data?.Code) === "TriggerNotFound";
+}
+
+async function retryTriggerNotFound<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (e) {
+      if (!isTriggerNotFound(e) || attempt === 3) throw e;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function makeFcOps(client: any, cfg: FcOpsConfig) {
   function codeLocation(ossObjectName: string) {
@@ -384,25 +399,30 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         authType: "anonymous",
         methods: ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
       });
-      try {
-        await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
-          body: new $fc.CreateTriggerInput({
-            triggerName: "http", triggerType: "http", triggerConfig,
-          }),
-        }));
-      } catch (e) {
-        if (!isAlreadyExists(e)) throw e;
-        // Triggers created earlier keep whatever method list they were made
-        // with — creating is a no-op for them, so repair it explicitly rather
-        // than leaving already-deployed apps refusing OPTIONS forever.
-        await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({
-          body: new $fc.UpdateTriggerInput({ triggerConfig }),
-        }));
-      }
-      const t = await client.getTrigger(functionName, "http");
-      const url = t?.body?.httpTrigger?.urlInternet;
-      if (!url) throw new Error("http trigger has no urlInternet");
-      return url;
+      return retryTriggerNotFound(async () => {
+        try {
+          await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
+            body: new $fc.CreateTriggerInput({
+              triggerName: "http", triggerType: "http", triggerConfig,
+            }),
+          }));
+        } catch (e) {
+          if (!isAlreadyExists(e)) throw e;
+          // Triggers created earlier keep whatever method list they were made
+          // with — creating is a no-op for them, so repair it explicitly rather
+          // than leaving already-deployed apps refusing OPTIONS forever.
+          await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({
+            body: new $fc.UpdateTriggerInput({ triggerConfig }),
+          }));
+        }
+        // FC may acknowledge create before the new trigger is readable. A
+        // missing trigger is not a successful deploy: retry the idempotent
+        // create/update and read before binding a domain to it.
+        const t = await client.getTrigger(functionName, "http");
+        const url = t?.body?.httpTrigger?.urlInternet;
+        if (!url) throw new Error("http trigger has no urlInternet");
+        return url;
+      });
     },
 
     /**
@@ -428,16 +448,18 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         ],
       });
       const body = { protocol: "HTTP", routeConfig };
-      try {
-        await client.createCustomDomain(new $fc.CreateCustomDomainRequest({
-          body: new $fc.CreateCustomDomainInput({ domainName, ...body }),
-        }));
-      } catch (e) {
-        if (!isAlreadyExists(e)) throw e;
-        await client.updateCustomDomain(domainName, new $fc.UpdateCustomDomainRequest({
-          body: new $fc.UpdateCustomDomainInput(body),
-        }));
-      }
+      await retryTriggerNotFound(async () => {
+        try {
+          await client.createCustomDomain(new $fc.CreateCustomDomainRequest({
+            body: new $fc.CreateCustomDomainInput({ domainName, ...body }),
+          }));
+        } catch (e) {
+          if (!isAlreadyExists(e)) throw e;
+          await client.updateCustomDomain(domainName, new $fc.UpdateCustomDomainRequest({
+            body: new $fc.UpdateCustomDomainInput(body),
+          }));
+        }
+      });
       return `http://${domainName}`;
     },
 
