@@ -1,102 +1,121 @@
-# posterkit — 功能海报
+# posterkit — 功能海报（英文 · 1920×1080 · Editorial Calm）
 
 > 基线：`feat/product-hunt-launch` · 2026-09-29
-> 英文 · 1920×1080 · Editorial Calm
 
 | 文件 | 内容 |
 |---|---|
-| `build-poster.mjs` | 构建脚本（ImageMagick，无 ffmpeg 依赖） |
-| `out/skills-management-1920x1080.png` | **成片** Skills 管理海报 |
+| `build-poster.mjs` | 构建入口（ImageMagick，无 ffmpeg 依赖） |
+| `layout.mjs` | 版式：主张 + 四卡 + 页脚 NOT BUILT |
+| `topics/*.mjs` | **只有文案**，每张卡标注了 `docs/features/` 出处 |
+| `out/*.png` | 成片（已入库，不用装 ImageMagick 也能发） |
 | `../kits/design.mjs` | 与 videokit 共用的绘图原语（实测字形度量） |
 
 ```bash
-node posterkit/build-poster.mjs
+node posterkit/build-poster.mjs              # 全部 topic
+node posterkit/build-poster.mjs sessions     # 只出一张
 ```
 
-需要 `magick`（`brew install imagemagick`）。重跑字节级一致（已验证 sha256
-`ab2488abad…`）——`kits/design.mjs` 的 `run()` 统一过滤了 ImageMagick 会自动
-写入的 `date:create` / `date:modify`，所以 git 不会每次构建都脏。
+`brew install imagemagick`。**构建以退出码报审计**：任何溢出或缩字都会让
+`process.exit(1)`，不会静默出一张坏图。重跑字节级一致（`-strip` 去掉了
+ImageMagick 自动写入的时间戳）。
 
----
+## 现有 topic
 
-## 1. 这张图只说一句话
+| topic | 主张 | 出处 |
+|---|---|---|
+| `skills-management` | A skill is not a prompt fragment. It is a team asset you can own, version, and audit. | 06 |
+| `sessions` | The atom of a chat app is a message. The atom of TeamClu is the session. | 03 |
 
-> **A skill is not a prompt fragment.
-> It is a team asset you can own, version, and audit.**
+## 1. 每张图只说一句话
 
-这是 `docs/features/06-skills-roles-marketplace.md` §0 的原话（"skill 不是『给
-agent 的提示词片段』，而是『团队可以拥有、版本化、审计的资产』"）。**不是功能
-罗列**——下面四张卡是把这句话变成真的机制，每个数字都能追到出处：
+两张海报都是「一句判断 + 四个把它变成真的机制」，**不是功能罗列**。
+每张卡的每个数字都能追到 `docs/features/` 的具体小节——被人在评论区追问时
+要答得出来。
+
+`sessions` 的四卡：
 
 | 卡 | 机制 | 出处 |
 |---|---|---|
-| ① PUBLISH GATE | 6 个必填字段，`when_not_to_use` 最关键 | 06 §4 |
-| ② VERSION HISTORY | 追加式版本历史，每次发版必填 changelog | 06 §3.1 |
-| ③ AUTO-FOLLOW | 10 分钟后台对账，无 update 按钮 | 06 §6.1 |
-| ④ CONFLICTS | 脏改产生冲突人工决策，不静默覆盖 | 06 §6.4 |
+| ① THE UNIT | 会话有参与者/权限/绑定 agent/工作区/生命周期；消息只有内容 | 03 §0 |
+| ② AGENTS | agent 是**参与者不是服务端**：可离线、可限权、可中途换模型 | 03 §2.2 |
+| ③ REPLY FORM | 人的消息是气泡（宽度由内容决定），agent 回复是**笔记**（全宽、有结构） | 03 §3.2 |
+| ④ THREADS | **只有 agent 回复能开线程**；线程是独立云会话，主列表隐藏；懒 fork | 03 §6.1–6.2 |
 
-**刻意不放的**：Roles、ClawHub 市场、权限面板。06 §9 说 role 本质是「一组 skill
-的命名组合」，跟着 skill 机制走，不该单独立一栏。
+## 2. 页脚那行 NOT BUILT 是故意的
 
----
+`skills-management`：成员间可见性隔离没做（§1.3），任何成员都能发布、
+owner 是责任不是权限（§3.3）。
 
-## 2. 页脚那行 "NOT BUILT" 是故意的
+`sessions`：**@提及不是权限**——被提及不等于被加入会话（§7.3）；**presence 是
+actor 级不是 session 级**，同一个人在所有会话里都显示在线（§7.2）。
 
-> Per-member skill visibility. One key per team, shared by all members — it
-> protects against the cloud provider, not against colleagues. And any team
-> member can publish: owner is responsibility, not permission.
-
-两条都是 06 里的原话（§1.3 / §3.3）。**只印好话的海报不如印出边界的可信**——
-这和你 PH FAQ 里如实写「skill 没有成员间可见性隔离」是同一个选择。第二句
-（owner 是责任不是权限）反直觉，值得直接说出来。
-
----
+两条都反直觉且是真实设计边界。只印好话的海报不如印边界——这和 PH FAQ 的
+口径一致。
 
 ## 3. 改文案
 
-全部在 `build-poster.mjs` 顶部的 `CLAIM_1/2`、`SUB`、`CARDS`、`NOT_BUILT`
-四个常量里。
+只改 `topics/<slug>.mjs`，然后重跑。
 
-**卡片高度是硬约束**：`CARD_H = 440`，正文从 `+158` 开始，每行 30px，段间距
-10px，所以每张卡最多 **8 行**（240 + 20）。改文案后必须重跑看审计输出：
+**硬约束，改完必须看审计：**
+
+| 项 | 预算 |
+|---|---|
+| 卡片正文行数 | **最多 8 行**（`BODY_LINE_BUDGET`，从 `+158` 起，每行 30px，段间距 10px） |
+| 卡片标题 | **≤ 19 字符**（27pt 不缩字；超了会被缩，与其它卡不齐） |
+| 主张两行 | 62pt，两行都要放得下 1520px |
+| 页脚 | 两行，每行 `CONTENT - 260` |
+
+超了会明确报出来：
 
 ```
-layout audit: no overflow, nothing shrunk to fit
+card 3 (AUTO-FOLLOW) body is 10 lines, budget 8
+shrank "A participant, not a service" 27→25pt to fit 317px
 ```
 
-超了会逐条报出来，例如：
+**先跑构建，别先看图。** 第一版 skills 海报就是文字掉出卡片外，是审计抓到的。
 
+## 4. 加一个新 topic
+
+在 `topics/` 建 `xxx.mjs`，default export：
+
+```js
+export default {
+  slug: 'xxx',                      // → out/xxx-1920x1080.png
+  eyebrow: 'FEATURE NAME',
+  claim1: '…', claim2: '…',         // 两行，62pt
+  sub: '…',                          // 一行
+  cards: [                          // 必须正好 4 张
+    { label: 'UPPERCASE', title: '≤19 chars', body: ['…', '…'] },
+    // 或 { label, title, lead: [[{t:'a'},{t:'b',hi:true}]], note: '…' }
+  ],
+  notBuilt: ['…', '…'],              // 页脚两行
+  site: 'teamclu.ai',
+};
 ```
-card 3 (AUTO-FOLLOW) body overruns by 8px
-```
 
-**这一版已经踩过一次**：AUTO-FOLLOW 初稿 10 行，文字直接掉出卡片外。是审计抓到
-的，不是眼睛。改文案时先跑构建，别先看图。
+然后 `node posterkit/build-poster.mjs xxx`。四卡是版式写死的（`renderPoster` 会
+校验），少于或多于四张直接报错。
 
----
+## 5. 排版为什么是"实测"而不是"估算"
 
-## 4. 排版为什么是"实测"而不是"估算"
+`kits/design.mjs` 里所有几何都量，不猜。三个具体原因：
 
-`kits/design.mjs` 里所有几何都量，不猜。原因很具体：
-
-- `-annotate +X+Y` 未设 gravity 时 **Y 是基线**，而 `-draw rectangle` 是绝对坐标。
-  两者混用会让 coral 色条浮在标题上方并压住字（视频那边已经修过三轮）。
+- `-annotate +X+Y` 未设 gravity 时 **Y 是基线**，`-draw rectangle` 是绝对坐标。
+  混用会让 coral 色条浮在标题上方并压住字（videokit 那边修过三轮）。
 - **固定 cap 比例不成立**：Arial Bold 实测 0.705–0.75 em 随字号跳
-  （92/128、39/54、22/30、15/20），抗锯齿和像素取整造成的。所以
-  `capOffset()` 按 font+pointsize 实测。
-- **按字数估宽度不成立**：`t.length * 6.6` 这种每字系数把视频里
-  "draft the rollback note" 挤出了自己的 pill。现在 `pill()` 的宽度就是墨迹
-  + padding，`wrap()` 按实测宽度断行。
+  （92/128、39/54、22/30、15/20），抗锯齿和像素取整造成的。`capOffset()` 按
+  font+pointsize 实测。
+- **按字数估宽度不成立**：`t.length * 6.6` 这种每字系数在 videokit 里把
+  "draft the rollback note" 挤出了自己的 pill。现在 `pill()` 宽度 = 墨迹 +
+  padding，`wrap()` 按实测宽度断行。
 
-`kits/design.mjs` 被 videokit 和 posterkit 共用，所以两边共享同一套已修好的规则。
-（`scripts/build-producthunt-gallery.mjs` 保留了自己的 token 副本——那个脚本已经
-稳定并被 producthunt-kit 引用，刻意不顺手重构。）
+（`scripts/build-producthunt-gallery.mjs` 保留了自己的 token 副本——那脚本已稳定
+并被 producthunt-kit 引用，刻意不顺手重构。）
 
----
+## 6. 尺寸
 
-## 5. 尺寸
+只出了 **1920×1080**。改 `layout.mjs` 顶部的 `W` / `H` 和 `M` / `CARD_*` 即可，
+但卡片宽度是四等分，改完**必须重跑审计**确认不溢出。
 
-只出了 **1920×1080**。要别的比例改 `W` / `H` 和 `M`、`CARD_*` 几个常量——注意
-卡片宽度是 `(CONTENT - CARD_GAP*3)/4` 的四等分，改宽度要重跑审计确认不溢出。
-
-需要竖版（小红书 3:4）或方版（即刻/X 1:1）的话直接说，布局要重排而不是简单裁切。
+竖版（小红书 3:4）、方版（即刻 / X 1:1）需要**重排**而不是裁切——四卡横排在
+3:4 下每张只剩 ~250px 宽，8 行放不下。说一声我出。
