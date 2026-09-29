@@ -275,7 +275,7 @@ function renderSession(s, dest) {
     'It can be offline, permission-limited, or switched to another model mid-conversation.',
     TEXT_X, py + ph + 56, WIDTH - TEXT_X - SAFE_RIGHT));
 
-  magickRun([...parts, '-depth', '8', dest]);
+  magickRun([...parts, '-depth', '8', '-strip', dest]);
 }
 
 /** COMPOUND — a skill is a versioned team object, not a personal dotfile. */
@@ -343,7 +343,7 @@ function renderSkill(s, dest) {
     'Installed skills follow the newest version on a 10-minute reconcile. Edit one locally and you get a conflict \u2014 never a silent overwrite.',
     TEXT_X, py + ph + 56, WIDTH - TEXT_X - SAFE_RIGHT));
 
-  magickRun([...parts, '-depth', '8', dest]);
+  magickRun([...parts, '-depth', '8', '-strip', dest]);
 }
 
 // ── Card renderers ─────────────────────────────────────────────────────────
@@ -354,7 +354,7 @@ function renderTitle(s, dest) {
     ...bar(566, 128),
     ...text(FONT_BOLD, 128, INK, BRAND, TEXT_X, 566),
     ...text(FONT_REGULAR, 46, MUTED, 'Assign \u00b7 Build \u00b7 Review \u00b7 Compound', TEXT_X + 4, 654),
-  ].concat(['-depth', '8', dest]));
+  ].concat(['-depth', '8', '-strip', dest]));
 }
 
 function renderEnd(s, dest) {
@@ -365,7 +365,7 @@ function renderEnd(s, dest) {
     ...text(FONT_REGULAR, 44, MUTED, 'The loop your team\u2019s AI work runs on.', TEXT_X + 4, 606),
     ...text(FONT_BOLD, 56, INK, SITE, TEXT_X + 4, 712),
     ...text(FONT_REGULAR, 30, FAINT, 'MIT licensed \u00b7 open source \u00b7 in beta', TEXT_X + 4, 772),
-  ].concat(['-depth', '8', dest]));
+  ].concat(['-depth', '8', '-strip', dest]));
 }
 
 function renderChain(s, dest) {
@@ -385,7 +385,7 @@ function renderChain(s, dest) {
     parts.push(...badge(s.eyebrow[0], 258, 132));
     parts.push(...text(FONT_REGULAR, 26, MUTED, s.eyebrow[1], 348, 172));
   }
-  magickRun([...parts, '-depth', '8', dest]);
+  magickRun([...parts, '-depth', '8', '-strip', dest]);
 }
 
 /**
@@ -413,7 +413,7 @@ function renderShot(s, dest) {
     ...badge(s.step, 96, HEIGHT - 178),
     ...roundRect(176, HEIGHT - 186, s.label.length * 16 + 44, 78, 14, BORDER, 1.5, PAPER),
     ...text(FONT_REGULAR, 28, INK2, s.label, 200, HEIGHT - 186 + 49),
-    '-depth', '8', dest,
+    '-depth', '8', '-strip', dest,
   ]);
 }
 
@@ -482,7 +482,7 @@ function renderAnatomy(s, dest) {
   // same baseline as the intro sub-line and overprinted it.
   parts.push(...text(FONT_REGULAR, 23, MUTED, 'full width \u2014 it is a document, not a turn', nx + 28, top + colH + 52));
 
-  magickRun([...parts, '-depth', '8', dest]);
+  magickRun([...parts, '-depth', '8', '-strip', dest]);
 }
 
 function renderCard(s, dest) {
@@ -493,7 +493,7 @@ function renderCard(s, dest) {
     ...text(FONT_REGULAR, 34, MUTED, 'Same session. Same capabilities.', TEXT_X + 4, 548),
     ...text(FONT_BOLD, 38, INK, 'WeCom \u00b7 Feishu \u00b7 Discord \u00b7 KOOK \u00b7 WeChat \u00b7 Email', TEXT_X + 4, 640),
     ...text(FONT_REGULAR, 26, FAINT, 'capability lives in the kernel, not in the channel', TEXT_X + 4, 700),
-  ].concat(['-depth', '8', dest]));
+  ].concat(['-depth', '8', '-strip', dest]));
 }
 
 // ── Build ──────────────────────────────────────────────────────────────────
@@ -570,6 +570,14 @@ args.push(
   '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
   '-profile:v', 'high', '-level', '4.0', '-pix_fmt', 'yuv420p',
   '-r', String(FPS), '-movflags', '+faststart',
+  // Without bitexact the mp4 muxer stamps a creation/modification time into the
+  // mvhd atom — a binary field, NOT a visible tag, which is why `ffprobe
+  // -show_entries format_tags` looks clean. The result is that the file bytes
+  // differ between runs even when the input pixels are identical, so "did this
+  // refactor change the video?" could not actually be answered by comparing
+  // hashes. Confirmed by measurement: identical still signatures produced
+  // different MP4 hashes.
+  '-fflags', '+bitexact', '-flags:v', '+bitexact',
   '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
   mp4,
 );

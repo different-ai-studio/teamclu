@@ -148,12 +148,35 @@ layout audit: no overflow, nothing shrunk to fit
 
 ## 4. 编码
 
-`-c:v libx264 -preset slow -crf 18 -profile:v high -level 4.0 -pix_fmt yuv420p
--movflags +faststart -color_primaries bt709 -color_trc bt709 -colorspace bt709`
+```
+-c:v libx264 -preset slow -crf 18 -profile:v high -level 4.0 -pix_fmt yuv420p
+-movflags +faststart -color_primaries bt709 -color_trc bt709 -colorspace bt709
+-fflags +bitexact -flags:v +bitexact
+```
 
 成片只有 **85 kbps**，看着吓人但正常：9 张静止画面，x264 几乎不用花码率。已验证
 **无 banding**——平坦 `#fbfaf7` 区域取 400×300 采样，24 色、标准差 310，是
 x264 加的轻微抖动（这反而是缓解 banding 的），不是色阶断裂。YouTube 也会重编。
+
+### 可复现性（这里踩过一个坑）
+
+静帧输出带 `-strip`，MP4 带 `-fflags +bitexact`。两个都不是洁癖，是必需的：
+
+- **没有 `-strip` 时静帧不可复现。** ImageMagick 会往每张 PNG 写
+  `date:create` / `date:modify`，像素完全相同的两张图哈希不同，于是
+  `out/stills/*.png` 每次重建都让 `git status` 变脏，而 diff 什么都看不出来
+  ——这会训练人不再看 git status。
+- **没有 `bitexact` 时 MP4 不可复现**，而且**比静帧更难查**：ffmpeg 把
+  creation/modification time 写进 `mvhd` atom，那是个**二进制字段，不是可见
+  tag**，所以 `ffprobe -show_entries format_tags` 输出是干净的，看不出问题。
+
+  实测：输入静帧的像素签名完全相同（`fa6fdb80…`），MP4 哈希却不同
+  （`32a01220…` vs `da946ac6…`）。**这意味着之前几次「重构后字节级不变」的
+  结论是靠不住的**——那个信号其实一直在变。加 `bitexact` 后隔 5 秒三次构建
+  哈希一致（`eb7dee70…`），并逐帧签名（3s / 20s / 40s / 60s）确认画面内容
+  与改前完全一致，即这个修复只动元数据、不动画面。
+
+现在**可以用哈希判断「这次改动有没有动到成片」**。这是它唯一的用途。
 
 静帧从 1270×760 放到 1080 高（1.42×）用 Lanczos。字略软，这是 1270px 源的天花板。
 
