@@ -9,32 +9,61 @@ const layer = (name: string, version: number) => ({ layerName: name, version,
   compatibleRuntime: ["custom.debian10"] });
 function fixture(fail = false): CatalogClient {
   return {
-    async listLayers(req) { return { body: req.nextToken ? { layers: [{ layerName: "Java21" }] } :
-      { layers: [{ layerName: "Java17" }, { layerName: "Python310" }], nextToken: "page2" } }; },
-    async listLayerVersions(name, req) {
-      if (req.startVersion && fail) throw Object.assign(new Error("provider detail"), { code: "AccessDenied" });
-      return { body: req.startVersion ? { layers: [layer(name, 1)] } : { layers: [layer(name, 2)], nextVersion: 1 } };
+    async listLayers(req) {
+      if (req.nextToken) {
+        if (fail) throw Object.assign(new Error("provider page unavailable"), { code: "AccessDenied" });
+        return { body: { layers: [layer("Java21", 2)] } };
+      }
+      return { body: { layers: [layer("Java17", 2), layer("Python310", 3)], nextToken: "page2" } };
     },
   };
 }
-test("Java catalog includes all paginated versions and separates documented builtins", async () => {
+test("official current layer records remain usable when version listing rejects public layers", async () => {
+  const read = createRuntimeCatalogReader(() => ({
+    async listLayers() { return { body: { layers: [layer("Nodejs20", 3), layer("Java21", 2)] } }; },
+    async listLayerVersions() { throw Object.assign(new Error("official versions unavailable"), { code: "LayerNotFound" }); },
+  }));
+  const result = await read("cn-shenzhen");
+  assert.equal(result.sourceStatus.officialLayers.complete, true);
+  assert.deepEqual(result.candidates.filter(c => c.source === "officialLayers").map(c => `${c.name}:${c.version}`),
+    ["Nodejs20:3", "Java21:2"]);
+  const declaration = { build: { kind: "node", output: ".output" }, start: { fcRuntime: "custom.debian10",
+    command: ["/var/fc/lang/nodejs20/bin/node"], args: ["server/index.mjs"], layers: [], port: 9000 } };
+  assert.doesNotThrow(() => preflightAppDeploy("app-1", "a".repeat(40), declaration, null,
+    { region: "cn-shenzhen", capabilities: result.candidates, catalogComplete: result.sourceStatus.officialLayers.complete }));
+});
+test("malformed regional layer metadata cannot unlock a first deployment", async () => {
+  const read = createRuntimeCatalogReader(() => ({
+    async listLayers() { return { body: { layers: [{ ...layer("Nodejs20", 3), layerVersionArn:
+      "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3" }] } }; },
+  }));
+  const result = await read("cn-shenzhen");
+  assert.equal(result.sourceStatus.officialLayers.complete, false);
+  assert.deepEqual(result.candidates.filter(c => c.source === "officialLayers"), []);
+  const declaration = { build: { kind: "node", output: ".output" }, start: { fcRuntime: "custom.debian10",
+    command: ["/var/fc/lang/nodejs20/bin/node"], args: ["server/index.mjs"], layers: [], port: 9000 } };
+  assert.throws(() => preflightAppDeploy("app-1", "a".repeat(40), declaration, null,
+    { region: "cn-shenzhen", capabilities: result.candidates, catalogComplete: result.sourceStatus.officialLayers.complete }),
+    (e: any) => e.code === "discovery_unavailable");
+});
+test("Java catalog includes current versions from all listing pages and separates documented builtins", async () => {
   const read = createRuntimeCatalogReader(() => fixture());
   const result = await read("cn-shenzhen", "java");
   assert.deepEqual(result.candidates.filter(c => c.source === "officialLayers").map(c => `${c.name}:${c.version}`),
-    ["Java17:2", "Java17:1", "Java21:2", "Java21:1"]);
+    ["Java17:2", "Java21:2"]);
   assert.deepEqual(result.candidates.filter(c => c.source === "documentation").map(c => c.name), ["java8", "java11"]);
   assert.ok(result.candidates.filter(c => c.source === "documentation").every(c => c.teamcluDeployable === "providerAvailableButUnsupported"));
   assert.ok(result.candidates.filter(c => c.source === "officialLayers").every(c => c.teamcluDeployable === "unknown" && !('path' in c)));
   assert.equal(result.sourceStatus.officialLayers.complete, true);
+  assert.match(result.sourceStatus.officialLayers.provenance, /current published official versions only/);
   assert.equal(result.sourceStatus.documentation.observedAt, "2026-09-28");
 });
 
 test("production catalog only verifies historically deployed Nodejs20 layers on the observed runtime", async () => {
   const client: CatalogClient = {
-    async listLayers() { return { body: { layers: [{ layerName: "Nodejs20" }, { layerName: "Java17" }] } }; },
-    async listLayerVersions(name) { return { body: { layers: [
-      { ...layer(name, 3), compatibleRuntime: ["custom.debian10", "custom.debian12"] },
-      layer(name, 4),
+    async listLayers() { return { body: { layers: [
+      { ...layer("Nodejs20", 3), compatibleRuntime: ["custom.debian10", "custom.debian12"] },
+      layer("Java17", 4),
     ] } }; },
   };
   const catalog = await createRuntimeCatalogReader(() => client)("cn-shenzhen");
@@ -51,11 +80,11 @@ test("production catalog only verifies historically deployed Nodejs20 layers on 
     (e: any) => e.code === "unsupported_layer");
   assert.doesNotThrow(() => preflightAppDeploy("app-1", "a".repeat(40), { ...base, start: { ...base.start, command: ["/var/fc/lang/nodejs20/bin/node"], layers: [] } }, null, options));
 });
-test("failed later version pages preserve partial candidates and visible source errors", async () => {
+test("failed later listing pages preserve partial candidates and visible source errors", async () => {
   const result = await createRuntimeCatalogReader(() => fixture(true))("cn-shenzhen", "java");
   assert.equal(result.sourceStatus.officialLayers.complete, false);
   assert.ok(result.sourceStatus.officialLayers.errors.some(e => e.includes("AccessDenied")));
-  assert.ok(result.candidates.some(c => c.name === "Java21"));
+  assert.ok(result.candidates.some(c => c.name === "Java17"));
 });
 test("cache expires, is bounded by region, and marks stale results on refresh failure", async () => {
   let now = 0; let calls = 0; let failed = false;
