@@ -325,12 +325,30 @@ X / Twitter：@________________          ← 没有就留空，不要编
 Demo 视频：________________
 ```
 
-> `[PH link]` 在 `social-launch.md` 里出现 10 处，发布后统一换成当天的帖子 URL。Maker 姓名已全部填好。
-> `social-launch.md` 里出现 10 处，发布后统一换成当天的帖子 URL。
+> `[PH link]` 在 `social-launch.md` 里出现 10 处，发布后统一换成当天的帖子 URL。
 
 **Maker 姓名怎么确认的**（不是猜的）：已登录的 PH 账号是 `@b319`，其 profile 页
 显示名为 **Bertrand**（加入于 2026-08-08，已发布过 TradingPlan）；git 提交身份为
 `b319 <weigan.huang@gmail.com>`；截图里的「负责人 · Bertrand」是同一人。
+
+**由谁发布：只用 `@b319`，不要用第二个账号重发**（2026-09-28 决定）。
+
+财务负责人另有一个账号（`lynnlin603@gmail.com`）。曾经考虑用它重新发布
+TeamClu，**已否决**，原因是三条具体的：
+
+1. `@b319` 名下已有 in-progress 的 TeamClu 产品条目，换号发会在 PH 上产生
+   **两个 TeamClu 产品**。产品名唯一性由 PH 人工裁定，重复条目轻则被合并。
+2. PH 明确禁止多账号操作同一产品。用小号重发抬排名是风控重点识别对象，
+   一旦被判定，损失的不是这个帖子，而是这个域名之后所有发布能力。
+3. 新账号零历史、零社区关系，首发日没有人可以动员；而 `@b319` 已有一次
+   发布记录。
+
+**替代做法**：在 `@b319` 的 TeamClu 帖子里把财务负责人加为 **co-maker**，
+发布时两个名字一起显示。既表达了「谁在管这件事」，又完全避开重复产品。
+
+> ⚠️ 加 co-maker 必须由**帖子所属账号**（`@b319`）操作，不能反过来。所以
+> 资料（头像、显示名、bio）要在新账号里先填好，再切回 `@b319` 加人 ——
+> 顺序反了会把资料存进错的账号。
 
 ---
 
@@ -353,11 +371,27 @@ Demo 视频：________________
 > ⚠️ **所以要选 `Choose a product...` 里已有的 TeamClu，不要走「填链接新建」那条路**，
 > 否则会变成两个产品条目。
 >
-> 这个下拉是自定义组件，只响应**可信用户事件**（trusted event），脚本设 `.value`
-> 或派发 `KeyboardEvent` 都不会弹出选项，必须真人点击或真实按键。这一步需要人工。
+> 这个下拉是自定义组件，只响应**可信用户事件**（trusted event）。以下六种脚本
+> 方式全部试过、全部无效：原生 value setter + `input`/`change`、逐字符
+> `KeyboardEvent`、`pointerdown`/`mousedown`/`focus`/`click` 组合派发。
+> **这一步只能真人点击。**
 >
 > 选完之后才会进入 §1 描述的 Name / Tagline / Description / Topics / Pricing。
 > **所以 §1 的字段名与上限需要在选完产品之后重新核对一遍**，别直接照抄。
+
+### 浏览器自动化的可行边界
+
+这次实测下来，值得记一笔，免得下次重走：
+
+| 能力 | 状态 |
+|------|------|
+| AppleScript `execute javascript` 读页面 / 设值 / 读回验证 | **可用**（需在 `View → Developer` 勾选 Allow JavaScript from Apple Events） |
+| 上传图片（file input） | **不可用** — 脚本无法给 file input 赋值 |
+| 点击 React 自定义下拉 | **不可用** — 只认真实事件 |
+| 按屏幕坐标点击 / 键盘输入 | **不可用** — Chrome 窗口在另一个 macOS Space，`screencapture` 抓不到，autoui 的视觉后端 API key 无效 |
+
+入口脚本是 `ph-driver.mjs`（按 URL 匹配 producthunt.com 的标签页并执行传入的 JS）。
+它读得到页面、填得了文本、验得了结果，但凡是需要「真实用户」的动作就卡住。
 
 ---
 
