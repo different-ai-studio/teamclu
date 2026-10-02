@@ -65,7 +65,7 @@ const IDENTITY_IN_ORG_A = "11111111-1111-4111-8111-111111111111";
 const deps = (over: Partial<GateDeps> = {}): GateDeps => ({
   // Default: the visitor holds an identity in the app's org. Tests that need
   // an outsider return null.
-  resolveTenantIdentity: async () => IDENTITY_IN_ORG_A,
+  resolveRoleIdentities: async () => [IDENTITY_IN_ORG_A],
   // Default: an active org member. Tests that need outsiders pass [].
   resolveVisitorRoles: async () => ["member"],
   secureCookies: true,
@@ -155,7 +155,7 @@ test("the any audience admits any signed-in visitor", async () => {
       app({ authAudience: "any" }),
       // Would reject if consulted; the any audience must not consult it.
       deps({
-        resolveTenantIdentity: async () => null,
+        resolveRoleIdentities: async () => [],
         resolveVisitorRoles: async () => [],
       }),
     );
@@ -172,7 +172,7 @@ test("the org audience admits a colleague via any roles_users row", async () => 
       req("/", { cookie }),
       app({ authAudience: "org" }),
       deps({
-        resolveTenantIdentity: async () => IDENTITY_IN_ORG_A,
+        resolveRoleIdentities: async () => [IDENTITY_IN_ORG_A],
         resolveVisitorRoles: async () => ["member"],
       }),
     );
@@ -181,30 +181,51 @@ test("the org audience admits a colleague via any roles_users row", async () => 
   });
 });
 
-test("roles are graded against the tenant identity, never the auth user id", async () => {
-  // The bug this pins down: `roles_users.user_id` references `public.users.id`,
-  // and for a person holding identities in several tenants only ONE of those
-  // rows can carry the auth user's own id. Keying the role read by `session.sub`
-  // therefore fetched their PRIMARY row's roles and graded them against THIS
-  // tenant's door — invisible until someone is cross-tenant, and then it either
-  // admits or rejects for reasons that have nothing to do with this app.
+test("roles are graded against verified public user rows, never an unverified auth id", async () => {
   await withEnv({}, async () => {
     const cookie = await sessionCookie();
-    const seen: Array<{ id: string; org: string }> = [];
+    const seen: Array<{ ids: string[]; org: string }> = [];
     const out = await applyAuthGate(
       req("/", { cookie }),
       app({ authAudience: "org" }),
       deps({
-        resolveTenantIdentity: async () => IDENTITY_IN_ORG_A,
-        resolveVisitorRoles: async (identityId, orgId) => {
-          seen.push({ id: identityId, org: orgId });
+        resolveRoleIdentities: async () => [IDENTITY_IN_ORG_A],
+        resolveVisitorRoles: async (identityIds, orgId) => {
+          seen.push({ ids: identityIds, org: orgId });
           return ["member"];
         },
       }),
     );
     assert.equal(out.response, null);
-    assert.deepEqual(seen, [{ id: IDENTITY_IN_ORG_A, org: ORG_A }]);
+    assert.deepEqual(seen, [{ ids: [IDENTITY_IN_ORG_A], org: ORG_A }]);
     assert.notEqual(IDENTITY_IN_ORG_A, "user-1", "the fixture must not make this pass by accident");
+  });
+});
+
+test("a required role on the account's second role-bearing row admits the visitor", async () => {
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    const second = "22222222-2222-4222-8222-222222222222";
+    const out = await applyAuthGate(
+      req("/staff", { cookie }),
+      app({ authScope: "paths", authRules: [{ path: "/staff", auth: "required", roles: ["admin"] }] }),
+      deps({
+        resolveRoleIdentities: async () => [IDENTITY_IN_ORG_A, second],
+        resolveVisitorRoles: async (ids) => ids.includes(second) ? ["member", "admin"] : ["member"],
+      }),
+    );
+    assert.equal(out.response, null);
+    assert.equal(out.identity?.orgId, ORG_A);
+
+    const missingSecond = await applyAuthGate(
+      req("/staff", { cookie }),
+      app({ authScope: "paths", authRules: [{ path: "/staff", auth: "required", roles: ["admin"] }] }),
+      deps({
+        resolveRoleIdentities: async () => [IDENTITY_IN_ORG_A],
+        resolveVisitorRoles: async () => ["member"],
+      }),
+    );
+    assert.equal(missingSecond.response?.status, 403);
   });
 });
 
@@ -219,7 +240,7 @@ test("an outsider is rejected before their roles are ever read", async () => {
       req("/", { cookie }),
       app({ authAudience: "org" }),
       deps({
-        resolveTenantIdentity: async () => null,
+        resolveRoleIdentities: async () => [],
         resolveVisitorRoles: async () => {
           roleReads += 1;
           return ["admin"];
@@ -238,7 +259,7 @@ test("the org audience turns away a user with no org roles with a 403, not a red
       req("/", { cookie }),
       app({ authAudience: "org" }),
       deps({
-        resolveTenantIdentity: async () => null,
+        resolveRoleIdentities: async () => [],
         resolveVisitorRoles: async () => [],
       }),
     );
@@ -256,7 +277,7 @@ test("a visitor with no org roles of their own is an outsider", async () => {
       req("/", { cookie }),
       app({ authAudience: "org" }),
       deps({
-        resolveTenantIdentity: async () => null,
+        resolveRoleIdentities: async () => [],
         resolveVisitorRoles: async () => [],
       }),
     );
@@ -285,7 +306,7 @@ test("an unset audience is read as org, not as open", async () => {
       req("/", { cookie }),
       app({ authAudience: null }),
       deps({
-        resolveTenantIdentity: async () => null,
+        resolveRoleIdentities: async () => [],
         resolveVisitorRoles: async () => [],
       }),
     );
@@ -301,7 +322,7 @@ test("a path rule's audience narrows an app that admits anyone", async () => {
   await withEnv({}, async () => {
     const cookie = await sessionCookie();
     const outsider = deps({
-      resolveTenantIdentity: async () => null,
+      resolveRoleIdentities: async () => [],
       resolveVisitorRoles: async () => [],
     });
     const walled = app({
@@ -323,7 +344,7 @@ test("a path rule's audience widens an employees-only app", async () => {
   await withEnv({}, async () => {
     const cookie = await sessionCookie();
     const outsider = deps({
-      resolveTenantIdentity: async () => null,
+      resolveRoleIdentities: async () => [],
       resolveVisitorRoles: async () => [],
     });
     const walled = app({
@@ -354,7 +375,7 @@ test("a rule that says nothing about audience leaves the app's own value alone",
         authRules: [{ path: "/reports", auth: "required" }],
       }),
       deps({
-        resolveTenantIdentity: async () => null,
+        resolveRoleIdentities: async () => [],
         resolveVisitorRoles: async () => [],
       }),
     );
@@ -423,7 +444,7 @@ test("required + empty roles admits any signed-in visitor", async () => {
       }),
       // Would reject under org audience; empty roles skips the org check.
       deps({
-        resolveTenantIdentity: async () => null,
+        resolveRoleIdentities: async () => [],
         resolveVisitorRoles: async () => [],
       }),
     );
@@ -690,7 +711,7 @@ test("a public path names nobody when the visitor would be refused entry", async
       req("/", { cookie }),
       a,
       deps({
-        resolveTenantIdentity: async () => null,
+        resolveRoleIdentities: async () => [],
         resolveVisitorRoles: async () => [],
       }),
     );

@@ -50,39 +50,25 @@ export type GateApp = {
 
 export type GateDeps = {
   /**
-   * The visitor's identity row IN THIS ORG — `public.users.id` for the row
-   * whose `auth_user_id` is this auth user and whose `org_id` is the app's —
-   * or null when they hold no identity there.
-   *
-   * WHY THIS IS AN EXISTENCE CHECK AND NOT "the visitor's org". It used to be
-   * the latter: one `public.users` row was read by `id = <auth uid>` and its
-   * `org_id` compared to the app's. That can only ever answer with a single
-   * org, because `public.users.id` IS the auth user id for signed-in users
-   * (78,767 of the 78,779 rows that carry an `auth_user_id`). One person
-   * legitimately holds a row per tenant, so the single-row read silently
-   * pinned every visitor to whichever row happened to be their primary one —
-   * and the account picker's "sign in as my identity in tenant B" never
-   * reached the gate at all. Asking whether an identity EXISTS in the app's
-   * org is the question the multi-tenant model actually poses.
-   *
-   * Returns the row id, not a boolean, because the role check below must be
-   * keyed by THAT row: `roles_users.user_id` references `public.users.id`
-   * (2,246 of 2,246 rows), so keying roles by the auth uid would grade the
-   * primary row's roles against this tenant's door.
+   * Live `public.users.id` rows for this auth account with active role bindings
+   * in the app org. The row's default `org_id` can differ: team creation and
+   * invite flows assign org roles to the account's primary row without
+   * creating another tenant row. The binding's `org_id` is authoritative.
+   * Returns an empty list when the account has no such binding.
    *
    * Injected because answering it is a control-plane read this module has no
    * business owning.
    */
-  resolveTenantIdentity: (userId: string, orgId: string) => Promise<string | null>;
+  resolveRoleIdentities: (userId: string, orgId: string) => Promise<string[]>;
   /**
-   * Active role codes for a tenant identity (`roles_users` ∩ active `roles`).
+   * Active role codes across the selected public.users rows (`roles_users` ∩ active `roles`).
    * Used for non-empty `roles` intersection and for legacy `audience: org`
    * (any assignment).
    *
-   * `identityId` is what {@link resolveTenantIdentity} returned — a
-   * `public.users.id`, NOT the auth user id.
+   * `identityIds` are what {@link resolveRoleIdentities} returned — verified
+   * `public.users.id` rows, never an unverified auth user id.
    */
-  resolveVisitorRoles: (identityId: string, orgId: string) => Promise<string[]>;
+  resolveVisitorRoles: (identityIds: string[], orgId: string) => Promise<string[]>;
   env?: NodeJS.ProcessEnv;
   /** False only on a plain-http local box. */
   secureCookies?: boolean;
@@ -392,14 +378,12 @@ async function admitByRoles(
   // a permissions bug that is not there.
   if (!app.orgId) return { ok: false, denial: "no_app_org", orgId: null };
 
-  // No identity in this tenant is a rejected visitor, not a missing role: they
-  // may well be an admin somewhere else. Both end in `wrong_org`, but the
-  // order matters — asking for roles first would query `roles_users` with an
-  // auth uid that means nothing in this org.
-  const identityId = await deps.resolveTenantIdentity(session.sub, app.orgId);
-  if (!identityId) return { ok: false, denial: "wrong_org", orgId: null };
+  // Resolve verified public.users rows with active bindings in this org
+  // before reading its role codes. A role in another org never suffices.
+  const identityIds = await deps.resolveRoleIdentities(session.sub, app.orgId);
+  if (identityIds.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
 
-  const codes = await deps.resolveVisitorRoles(identityId, app.orgId);
+  const codes = await deps.resolveVisitorRoles(identityIds, app.orgId);
   if (required === null) {
     if (codes.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
     return { ok: true, denial: "none", orgId: app.orgId };
