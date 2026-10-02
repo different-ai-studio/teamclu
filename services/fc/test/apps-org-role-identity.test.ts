@@ -6,7 +6,7 @@ const AUTH_ID = "cf985f96-b2e7-4d98-8e58-36ddb7133474";
 const ORG_ID = "7860249f-5359-44f0-8dff-94a99ca07409";
 const OTHER_ORG = "22222222-2222-4222-8222-222222222222";
 
-function db(users: Array<{ id: string; auth_user_id: string; deleted_at: string | null }>,
+function db(users: Array<{ id: string; auth_user_id: string | null; deleted_at: string | null }>,
   bindings: Array<{ user_id: string; org_id: string; status: string }>) {
   return {
     schema(name: string) {
@@ -32,12 +32,28 @@ function db(users: Array<{ id: string; auth_user_id: string; deleted_at: string 
   };
 }
 
-test("an active app-org role on the creator's primary identity admits them without a tenant row", async () => {
+test("an active app-org role on a linked primary identity admits the creator", async () => {
   const admin = db(
     [{ id: AUTH_ID, auth_user_id: AUTH_ID, deleted_at: null }],
     [{ user_id: AUTH_ID, org_id: ORG_ID, status: "active" }],
   );
   assert.deepEqual(await findAppOrgRoleIdentities(admin, AUTH_ID, ORG_ID), [AUTH_ID]);
+});
+
+test("a legacy primary user row with null auth_user_id admits its matching auth account", async () => {
+  const admin = db(
+    [{ id: AUTH_ID, auth_user_id: null, deleted_at: null }],
+    [{ user_id: AUTH_ID, org_id: ORG_ID, status: "active" }],
+  );
+  assert.deepEqual(await findAppOrgRoleIdentities(admin, AUTH_ID, ORG_ID), [AUTH_ID]);
+});
+
+test("an ID collision with another account's auth_user_id does not grant access", async () => {
+  const admin = db(
+    [{ id: AUTH_ID, auth_user_id: "33333333-3333-4333-8333-333333333333", deleted_at: null }],
+    [{ user_id: AUTH_ID, org_id: ORG_ID, status: "active" }],
+  );
+  assert.deepEqual(await findAppOrgRoleIdentities(admin, AUTH_ID, ORG_ID), []);
 });
 
 test("a role in another org or an inactive role cannot supply app-org identity", async () => {

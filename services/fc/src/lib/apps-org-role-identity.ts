@@ -1,23 +1,24 @@
 /**
- * Find the public.users row carrying an explicit active role in this app org.
- * Team membership can attach a role to the account's primary row even when
- * that row belongs to another tenant. The role's org_id, not the user's
- * default tenant, determines whether that grant applies here.
+ * Find the public.users rows carrying explicit active roles in this app org.
+ * Newer rows link by auth_user_id; legacy primary rows may have id = auth uid
+ * with auth_user_id null. The role's org_id, not the row's default tenant,
+ * determines whether a grant applies here.
  */
 export async function findAppOrgRoleIdentities(
   admin: any,
   authUserId: string,
   orgId: string,
 ): Promise<string[]> {
-  const { data: users, error: usersError } = await admin
-    .schema("public")
-    .from("users")
-    .select("id")
-    .eq("auth_user_id", authUserId)
-    .is("deleted_at", null);
-  if (usersError) throw new Error(`app org identity lookup failed: ${usersError.message}`);
+  const [linked, legacyPrimary] = await Promise.all([
+    admin.schema("public").from("users").select("id")
+      .eq("auth_user_id", authUserId).is("deleted_at", null),
+    admin.schema("public").from("users").select("id")
+      .eq("id", authUserId).is("auth_user_id", null).is("deleted_at", null),
+  ]);
+  if (linked.error) throw new Error(`app org identity lookup failed: ${linked.error.message}`);
+  if (legacyPrimary.error) throw new Error(`app org primary identity lookup failed: ${legacyPrimary.error.message}`);
 
-  const ids = [...new Set<string>((users ?? []).flatMap((user: any): string[] =>
+  const ids = [...new Set<string>((linked.data ?? []).concat(legacyPrimary.data ?? []).flatMap((user: any): string[] =>
     typeof user.id === "string" && user.id ? [user.id] : []))];
   if (ids.length === 0) return [];
 
