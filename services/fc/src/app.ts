@@ -28,7 +28,7 @@ export type AppDeps = {
    * opening — fail closed, because the alternative is serving a page that was
    * marked as staff-only to whoever asks.
    */
-  resolveTenantIdentity?: GateDeps["resolveTenantIdentity"];
+  resolveRoleIdentities?: GateDeps["resolveRoleIdentities"];
   /**
    * Active role codes for a tenant identity. Absent, role / legacy-org checks
    * see an empty set (deny).
@@ -197,7 +197,7 @@ export function createApp(deps: AppDeps): Hono {
       // on a plain-HTTP response, and the redirect is what guarantees the
       // login round trip happens over TLS.
       const gate = await applyAuthGate(c.req.raw, target, {
-        resolveTenantIdentity: deps.resolveTenantIdentity ?? (async () => null),
+        resolveRoleIdentities: deps.resolveRoleIdentities ?? (async () => []),
         resolveVisitorRoles: deps.resolveVisitorRoles ?? (async () => []),
         secureCookies: forwardedProto(c) === "https",
       });
