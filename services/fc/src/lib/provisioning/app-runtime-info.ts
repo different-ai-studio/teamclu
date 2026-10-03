@@ -12,7 +12,11 @@ export function projectFunction(raw: any) {
     args: config?.args ?? null,
     port: config?.port ?? null,
     healthCheckPath: config?.healthCheckConfig?.httpGetUrl ?? null,
-    layers: Array.isArray(body?.layers) ? body.layers.filter((x: unknown): x is string => typeof x === "string") : [],
+    // GetFunction returns FunctionLayer objects; create/update inputs use ARN strings.
+    layers: Array.isArray(body?.layers) ? body.layers
+      .map((layer: unknown) => typeof layer === "string" ? layer
+        : layer && typeof layer === "object" ? (layer as { arn?: unknown }).arn : undefined)
+      .filter((arn: unknown): arn is string => typeof arn === "string") : [],
     status: body?.status ?? null,
   };
 }
