@@ -11578,8 +11578,8 @@ snapshots:
     dependencies:
       '@react-native/js-polyfills': 0.85.3
       '@react-native/metro-babel-transformer': 0.85.3(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1)
-      metro-config: 0.84.4(supports-color@8.1.1)
-      metro-runtime: 0.84.4
+      metro-config: 0.84.5(supports-color@8.1.1)
+      metro-runtime: 0.84.5
     transitivePeerDependencies:
       - '@babel/core'
       - bufferutil
