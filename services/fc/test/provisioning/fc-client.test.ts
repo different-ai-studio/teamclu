@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { makeFcOps, fcEndpoint, accountIdFromRoleArn, readAppsFcVpcConfig } from "../../src/lib/provisioning/fc-client.js";
 
 const TARGET = { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "app-a" };
-const DOMAIN = "app-a.origins.test";
+const DOMAIN = "app-a-76af539e.origins.test";
 const ORIGIN: OriginAuthConfig = {
   activeKey: { version: "v2", masterKey: Buffer.alloc(32, 42) },
   previousKey: { version: "v1", masterKey: Buffer.alloc(32, 43) },
@@ -623,4 +623,28 @@ test('malformed domain route reports field drift without a raw parser error', as
   const { client } = fakeClient({ getCustomDomain: async () => ({ body: domain }) });
   const summary = await makeFcOps(client, OPS_CONFIG).readOriginSecurity('tc-app-1', DOMAIN, TARGET);
   assert.equal(summary.status, 'drift'); assert.ok(summary.driftFields.includes('routeConfig'));
+});
+test('raw ASCII slug deploys on its canonical UUID-suffixed origin host', async () => {
+  const { client, calls } = fakeClient();
+  const host = 'app-a-76af539e.origins.test';
+  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', host, TARGET), `https://${host}`);
+  assert.equal(calls.find(c => c[0] === 'createCustomDomain')[1].body.domainName, host);
+});
+test('raw Chinese slug deploys on its canonical punycode UUID-suffixed host', async () => {
+  const target = { ...TARGET, slug: '测试应用' };
+  const host = 'xn---76af539e-fv0r280khztdm1e.origins.test';
+  const { client, calls } = fakeClient({ listCustomDomains: async () => ({ body: { customDomains: [protectedDomain(host)] } }) });
+  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', host, target), `https://${host}`);
+  assert.equal(calls.find(c => c[0] === 'createCustomDomain')[1].body.domainName, host);
+});
+test('slug whose canonical UUID-suffixed label exceeds DNS limit is rejected before mutation', async () => {
+  const slug = 'a'.repeat(56), target = { ...TARGET, slug };
+  const { client, calls } = fakeClient({ listCustomDomains: async () => ({ body: { customDomains: [] } }) });
+  await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', `${slug}.origins.test`, target), /domainName/);
+  assert.equal(calls.length, 0);
+});
+test('unencodable slug is rejected as a target domain mismatch before mutation', async () => {
+  const target = { ...TARGET, slug: '\uD800' }, { client, calls } = fakeClient();
+  await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', `${target.slug}.origins.test`, target), /domainName/);
+  assert.equal(calls.length, 0);
 });

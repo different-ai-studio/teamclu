@@ -5,6 +5,7 @@ import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
 import { imageForPull } from "./apps-registry.js";
 import { ApiError } from "../http-utils.js";
+import { appPublicLabel } from "../apps-public-host.js";
 import {
   isContainerKind,
   resolveLayers,
@@ -389,7 +390,8 @@ function requireOriginConfig(cfg: FcOpsConfig): OriginAuthConfig {
   return cfg.originAuth;
 }
 function assertOriginTarget(config: OriginAuthConfig, domainName: string, target: OriginTarget) {
-  if (!target || domainName !== `${target.slug}.${config.routeDomain}`) throw new Error("FC origin configuration mismatch: domainName");
+  const label = target && appPublicLabel(target.slug, target.appId);
+  if (!label || domainName !== `${label}.${config.routeDomain}`) throw new Error("FC origin configuration mismatch: domainName");
   assertOriginCertificate(config, domainName);
   originJwks(config, target.appId);
 }
