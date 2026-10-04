@@ -106,6 +106,25 @@ describe('AppAuthTabContent', () => {
     ])
   })
 
+  it('loads nullable public and inherited rules without writes and preserves them on an unrelated edit', async () => {
+    const authRules = [
+      {path:'/public',auth:'public',roles:null,audience:null},
+      {path:'/staff',auth:'required',roles:null,audience:null},
+      {path:'/other',auth:'required',audience:'org'},
+    ] as unknown as AppRow['authRules']
+    await renderWith({authAudience:'org',authRules})
+    expect(screen.getByTestId('app-auth-rule-roles-0')).toHaveProperty('disabled',true)
+    expect(screen.getByTestId('app-auth-rule-roles-1').textContent).toContain('继承应用默认')
+    expect(screen.getByTestId('app-auth-save')).toHaveProperty('disabled',true)
+    expect(storeMocks.updateAuthPolicy).not.toHaveBeenCalled()
+    await userEvent.setup().type(screen.getByTestId('app-auth-rule-path-2'),'/edit')
+    await userEvent.setup().click(screen.getByTestId('app-auth-save'))
+    await waitFor(() => expect(storeMocks.updateAuthPolicy).toHaveBeenCalled())
+    expect(storeMocks.updateAuthPolicy.mock.calls[0][1].authRules).toEqual([
+      authRules![0],authRules![1],{path:'/other/edit',auth:'required',audience:'org'},
+    ])
+  })
+
   it('shows three columns: path, login, and roles', async () => {
     await renderWith({ authScope: 'all', authAudience: 'any' })
     expect(screen.getByText('页面地址')).toBeTruthy()

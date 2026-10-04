@@ -1,4 +1,4 @@
-import { resolvePathPolicy, type AuthRule, type AuthScope, type AuthAudience } from "./apps-auth-paths.js";
+import { readStoredAuthRule, resolvePathPolicy, type AuthRule, type AuthScope, type AuthAudience } from "./apps-auth-paths.js";
 import { ApiError } from "./http-utils.js";
 
 export interface EffectiveAuthPolicy {
@@ -35,11 +35,11 @@ export function buildAppAuthInfo(input: AppAuthInfoInput): AppAuthInfo {
   }
   // The gateway trims trailing whitespace/slashes on stored paths; retain raw
   // rules but identify the root using the same read normalization.
-  const isRoot = (rule: AuthRule) => rule.path.trim().replace(/\/+$/, "") === "";
+  const isRoot = (rule: AuthRule) => readStoredAuthRule(rule)?.path === "/";
   const root = input.authRules.find(isRoot);
   const explain = (path: string, rule?: AuthRule): EffectiveAuthPolicy => {
     const inherited = !rule || (
-      rule.auth === "required" && rule.roles === undefined && rule.audience === undefined
+      rule.auth === "required" && rule.roles == null && rule.audience == null
     );
     if (input.authMode !== "platform") {
       return { path, kind: "public", roleCodes: [], inherited, source: "auth_mode" };
@@ -75,7 +75,7 @@ export function buildAppAuthInfo(input: AppAuthInfoInput): AppAuthInfo {
     organizationStatus: input.organization ? "configured" : "unconfigured",
     effectivePolicies: [
       explain("/", root),
-      ...input.authRules.filter((rule) => !isRoot(rule)).map((rule) => explain(rule.path, rule)),
+      ...input.authRules.filter((rule) => !isRoot(rule)).map((rule) => explain(readStoredAuthRule(rule)!.path, rule)),
     ],
   };
 }

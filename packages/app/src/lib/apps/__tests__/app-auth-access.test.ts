@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { baselineToRowState, buildAuthPolicyPatch, exceptionRulesToRowState, ruleToRowState, rowStateToRule } from '../app-auth-access'
+import { baselineToRowState, buildAuthPolicyPatch, exceptionRulesToRowState, ruleToRowState, rowStateToRule, summarizeAppAuthBaseline } from '../app-auth-access'
 import type { AppAuthRule, AppAuthAudience } from '@/lib/backend/types'
 
 describe('lossless auth policy editor', () => {
@@ -53,4 +53,33 @@ describe('lossless auth policy editor', () => {
     expect(buildAuthPolicyPatch(baselineToRowState(app), exceptions, app).authRules).toEqual(app.authRules.slice(1))
   })
 
+})
+
+describe('gateway-readable stored compatibility', () => {
+ it('preserves nullable WHO fields for public and required rules on path edits', () => {
+  for (const auth of ['public','required'] as const) for (const audience of [null,'org','any'] as const) {
+   const rule = {path:'/staff',auth,roles:null,audience} as unknown as AppAuthRule
+   const row = ruleToRowState(rule,'org')
+   expect(row.audienceMode).toBe(auth === 'public' || audience === null ? 'inherit' : audience === 'org' ? 'any_org_role' : 'any_authenticated')
+   expect(rowStateToRule({...row,path:'/other'})).toEqual({...rule,path:'/other'})
+  }
+  for (const authAudience of ['org','any'] as const) {
+   const app = {authMode:'platform' as const,authScope:'all' as const,authAudience,authRules:[{path:'/',auth:'required',roles:null,audience:null} as unknown as AppAuthRule]}
+   expect(summarizeAppAuthBaseline(app).roleCodes).toEqual(authAudience === 'org' ? null : [])
+  }
+ })
+ it('preserves duplicate roots and first-winner semantics on unrelated edits', () => {
+  for (const secondAuth of ['public','required'] as const) for (const authScope of ['all','paths'] as const) for (const auth of ['public','required'] as const) for (const path of ['/','/ ','///']) {
+   const first = {path,auth,roles:['reviewer']}
+   const app = {authScope,authAudience:'org' as const,authRules:[first,{path:'/',auth:secondAuth,roles:['admin']},{path:'/staff',auth:'required' as const}]}
+   const baseline = baselineToRowState(app)
+   expect(baseline.originalRule).toEqual(first)
+   expect(baseline.requiresLogin).toBe(auth === 'required')
+   const rows = exceptionRulesToRowState(app)
+   expect(rows).toHaveLength(2)
+   rows[1].path='/other'
+   expect(buildAuthPolicyPatch(baseline,rows,app)).toEqual({...app,authRules:[first,app.authRules[1],{path:'/other',auth:'required'}]})
+   expect(summarizeAppAuthBaseline({...app,authMode:'platform'})).toEqual({requiresLogin:auth === 'required',roleCodes:auth === 'required' ? ['reviewer'] : []})
+  }
+ })
 })

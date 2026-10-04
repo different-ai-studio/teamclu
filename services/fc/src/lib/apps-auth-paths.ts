@@ -247,7 +247,7 @@ function matchesPrefix(path: string, prefix: string): boolean {
 }
 
 /** One stored rule, or null when the row holds something unusable. */
-function readRule(entry: unknown): AuthRule | null {
+export function readStoredAuthRule(entry: unknown): AuthRule | null {
   if (!entry || typeof entry !== "object") return null;
   const path = (entry as any).path;
   const auth = (entry as any).auth;
@@ -342,7 +342,7 @@ export function resolvePathPolicy(
   let bestLength = -1;
 
   for (const entry of rawRules) {
-    const rule = readRule(entry);
+    const rule = readStoredAuthRule(entry);
     if (!rule) return protectedFallback; // an unreadable rule invalidates the whole set
     const prefix = rule.path.toLowerCase();
     if (!matchesPrefix(path, prefix)) continue;

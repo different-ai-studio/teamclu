@@ -46,3 +46,22 @@ test("auth info refuses unreadable rules rather than explaining a wider audience
  }
  assert.throws(()=>module.buildAppAuthInfo({...input,authRules:[{path:" /",auth:"required"}]}));
 });
+
+test("non-root explanation normalizes gateway stored paths", () => {
+ for (const path of ["/staff ", "/staff/// "]) {
+  const rules = [{path,auth:"required" as const,roles:["admin"]}];
+  const info = module.buildAppAuthInfo({...input,authScope:"paths",authRules:rules});
+  assert.deepEqual(info.authRules,rules);
+  assert.deepEqual(info.effectivePolicies[1],{path:"/staff",kind:"org_roles",roleCodes:["admin"],inherited:false,source:"roles"});
+ }
+});
+test("nullable WHO fields inherit the app audience", () => {
+ for (const authAudience of ["org","any"] as const) {
+  const authRules = [{path:"/staff",auth:"required",roles:null,audience:null}] as any;
+  const info = module.buildAppAuthInfo({...input,authAudience,authRules});
+  assert.deepEqual(info.authRules,authRules);
+  assert.equal(info.effectivePolicies[1].inherited,true);
+  assert.equal(info.effectivePolicies[1].source,"app_audience");
+  assert.equal(info.effectivePolicies[1].kind,authAudience === "org" ? "any_org_role" : "any_authenticated");
+ }
+});

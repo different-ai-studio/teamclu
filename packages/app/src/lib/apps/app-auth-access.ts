@@ -44,14 +44,15 @@ export function formatAppAuthAccessSummary(summary: AppAuthAccessSummary): strin
 }
 
 type Policy = Pick<AppRow, 'authScope' | 'authAudience' | 'authRules'>
-const cloneRule = (rule: AppAuthRule): AppAuthRule => ({ ...rule, ...(rule.roles !== undefined ? { roles: [...rule.roles] } : {}) })
+const cloneRule = (rule: AppAuthRule): AppAuthRule => ({ ...rule, ...(Array.isArray(rule.roles) ? { roles: [...rule.roles] } : {}) })
 const modeOf = (rule: AppAuthRule): AppAuthRowState['audienceMode'] =>
-  rule.roles !== undefined ? (rule.roles.length ? 'org_roles' : 'any_authenticated') :
+  rule.auth === 'public' ? 'inherit' :
+  rule.roles != null ? (rule.roles.length ? 'org_roles' : 'any_authenticated') :
     rule.audience === 'org' ? 'any_org_role' : rule.audience === 'any' ? 'any_authenticated' : 'inherit'
 
 export function ruleToRowState(rule: AppAuthRule, _appAudience: AppAuthAudience): AppAuthRowState {
   return { path: rule.path, requiresLogin: rule.auth === 'required', audienceMode: modeOf(rule),
-    roleCodes: [...(rule.roles ?? [])], originalRule: cloneRule(rule), source: 'rule' }
+    roleCodes: rule.auth === 'public' ? [] : [...(rule.roles ?? [])], originalRule: cloneRule(rule), source: 'rule' }
 }
 
 export function sameAuthRow(a: AppAuthRowState, b: AppAuthRowState): boolean {
@@ -80,15 +81,21 @@ export function sameAuthRules(a: AppAuthRule[], b: AppAuthRule[]): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+// Match the gateway's stored-path reader, without the write normalizer's wildcard rewrite.
+const isStoredRoot = (rule: AppAuthRule): boolean => rule.path.startsWith('/') &&
+  rule.path.trim().replace(/\/+$/, '') === ''
+const baselineRuleIndex = (app: Policy): number => (app.authRules ?? []).findIndex(isStoredRoot)
+
 export function baselineToRowState(app: Policy): AppAuthRowState {
-  const root = (app.authRules ?? []).find(r => r.path === '/' && r.auth === 'required')
-  if (app.authScope !== 'paths' && root) return ruleToRowState(root, app.authAudience ?? 'org')
+  const root = (app.authRules ?? [])[baselineRuleIndex(app)]
+  if (root) return ruleToRowState(root, app.authAudience ?? 'org')
   return { path: '/', requiresLogin: app.authScope !== 'paths',
     audienceMode: app.authAudience === 'any' ? 'any_authenticated' : 'any_org_role', roleCodes: [], source: 'app_baseline' }
 }
 
 export function exceptionRulesToRowState(app: Policy): AppAuthRowState[] {
-  return (app.authRules ?? []).filter(r => !(app.authScope !== 'paths' && r.path === '/' && r.auth === 'required'))
+  const selectedIndex = baselineRuleIndex(app)
+  return (app.authRules ?? []).filter((_r, index) => index !== selectedIndex)
     .map(r => ruleToRowState(r, app.authAudience ?? 'org'))
 }
 
@@ -99,12 +106,12 @@ export function buildAuthPolicyPatch(baseline: AppAuthRowState, exceptions: AppA
   const baselineChanged = !sameAuthRow(baseline, originalBaseline)
   const authAudience = baselineChanged && baseline.source === 'app_baseline' && baseline.audienceMode !== 'org_roles'
     ? (baseline.audienceMode === 'any_authenticated' ? 'any' : 'org') : originalPolicy.authAudience ?? 'org'
-  const authScope = baseline.requiresLogin ? 'all' : 'paths'
+  const authScope = baselineChanged ? (baseline.requiresLogin ? 'all' : 'paths') : originalPolicy.authScope ?? 'all'
   const rules = exceptions.map(rowStateToRule)
-  const needsRoot = baseline.requiresLogin && (baseline.source === 'rule' || baseline.audienceMode === 'org_roles')
+  const needsRoot = baseline.source === 'rule' || (baseline.requiresLogin && baseline.audienceMode === 'org_roles')
   if (needsRoot) {
     const root = rowStateToRule(baseline)
-    const originalIndex = (originalPolicy.authRules ?? []).findIndex(r => r.path === '/' && r.auth === 'required')
+    const originalIndex = baselineRuleIndex(originalPolicy)
     const precedingRules = (originalPolicy.authRules ?? []).slice(0, originalIndex)
     const insertionIndex = originalIndex < 0 ? 0 : exceptions.filter(row => row.originalRule &&
       precedingRules.some(rule => sameAuthRules([rule], [row.originalRule!]))).length
@@ -121,11 +128,10 @@ export function summarizeAppAuthBaseline(
     return { requiresLogin: false, roleCodes: [] }
   }
   const scope: AppAuthScope = app.authScope ?? 'all'
-  if (scope === 'paths') {
-    return { requiresLogin: false, roleCodes: [] }
-  }
-  const root = (app.authRules ?? []).find((r) => r.path === '/' && r.auth === 'required')
-  if (root && root.roles !== undefined) {
+  const root = (app.authRules ?? [])[baselineRuleIndex(app)]
+  if (!root && scope === 'paths') return { requiresLogin: false, roleCodes: [] }
+  if (root?.auth === 'public') return { requiresLogin: false, roleCodes: [] }
+  if (root && root.roles != null) {
     return { requiresLogin: true, roleCodes: [...root.roles] }
   }
   const audience: AppAuthAudience = root?.audience ?? app.authAudience ?? 'org'

@@ -123,3 +123,44 @@ Deployment remains separate: first the compatible FC API, then updated desktop/
 introspect, with isolated temporary accounts/fixtures and explicit platform deploy
 authorization. Nothing here repairs app7's independent application-level creator
 check, changes app6/app7 permissions, migrates authRules, or creates new roles.
+
+
+## Final review compatibility fixes (base `3e2371f4`)
+
+FC discovery now uses the gateway stored-rule reader for normalized non-root
+explanation paths. Raw rules remain unchanged. Nullable roles/audience inherit
+exactly as absent keys; public WHO fields do not affect editor meaning, and
+nullable raw fields survive untouched/path-only edits. UI regression mounts the
+real editor with successful nullable discovery and verifies zero initial writes
+and preservation in an unrelated save payload.
+
+Baseline editing and summaries use the first normalized root in either scope,
+including public-first/required-later configurations. Only the selected root is
+removed from exception rows; nonselected duplicates remain in original order for
+write validation. Unrelated edits preserve original authScope. The controller
+approved this correction to the plan's limited all-scope baseline discussion.
+The matrix includes both scopes, both first/second verdicts and `/`, `/ `, `///`.
+
+RED observed: FC auth-info 4 pass/2 fail (public misexplanation and null
+inheritance); helper 17 pass/2 fail (null crash and public-root precedence).
+Expanding the root matrix to paths then produced 43 pass/1 fail in combined UI
+checks before correcting paths-scope baseline selection. Final results:
+
+| Command | Result |
+| --- | --- |
+| `cd services/fc && node --import tsx --test test/apps-auth-info.test.ts test/apps-auth-paths.test.ts` | 44 passed |
+| `pnpm --dir packages/app test:unit src/lib/apps/__tests__/app-auth-access.test.ts src/components/apps/__tests__/AppAuthTabContent.test.tsx` | 44 passed (19 helper + 25 editor) |
+| `pnpm --dir services/fc test` | 1665 passed, 13 skipped, 0 failed |
+| `pnpm --dir packages/app test:unit` | 4182 passed, 10 skipped; 606 files passed, 1 skipped |
+| `pnpm --dir services/fc typecheck` | Passed |
+| `pnpm --dir packages/app typecheck` | Passed |
+| `cd packages/app && pnpm exec eslint src/lib/apps/app-auth-access.ts src/lib/apps/__tests__/app-auth-access.test.ts src/components/apps/__tests__/AppAuthTabContent.test.tsx` | Passed |
+| `git diff --check` | Passed |
+
+Logs: `/private/tmp/final-fix-fc.log`, `/private/tmp/final-fix-app.log`.
+Supabase integration skips and existing Vite/jsdom warnings remain. This wave
+made no live writes or deployment, no Rust production edits and no repeated
+unrelated Rust checks; prior evidence above remains intact. A mistaken initial
+test-writing cwd failed before editing files and was corrected; that unchanged
+4-test pass was not counted as RED. A read-only process-list attempt was denied
+by the sandbox; completed suite logs supply verification instead.
