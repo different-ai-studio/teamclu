@@ -42,6 +42,7 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
   const item = useTeamShareBrowserStore(
     (s) => s.skills.items.find((x) => x.id === slug) ?? s.skills.items.find((x) => x.slug === slug),
   )
+  const isBuiltin = item?.kind === 'personal' && item.personalSource === 'builtin'
   const select = useTeamShareBrowserStore((s) => s.select)
   const loadSection = useTeamShareBrowserStore((s) => s.loadSection)
   const reconcileSkills = useTeamShareBrowserStore((s) => s.reconcileSkills)
@@ -90,7 +91,7 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
   const dirty = load.state === 'ready' && content !== baseline
 
   const handleSave = React.useCallback(async () => {
-    if (!item || !filePath || !dirty || saving) return
+    if (!item || isBuiltin || !filePath || !dirty || saving) return
     setSaving(true)
     try {
       if (rel === 'SKILL.md') {
@@ -140,7 +141,7 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
     } finally {
       setSaving(false)
     }
-  }, [item, filePath, dirty, saving, rel, workspacePath, content, loadSection, reconcileSkills, t])
+  }, [item, isBuiltin, filePath, dirty, saving, rel, workspacePath, content, loadSection, reconcileSkills, t])
 
   // Cmd/Ctrl+S, the shortcut anyone editing a script will reach for first.
   React.useEffect(() => {
@@ -195,18 +196,20 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
         >
           <FolderSearch className="h-4 w-4" />
         </Button>
-        <Button
-          type="button"
-          onClick={() => void handleSave()}
-          disabled={!dirty || saving}
-          className={cn(
-            'h-8 shrink-0 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90',
-            !dirty && 'opacity-50',
-          )}
-        >
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-          {t('teamShare.saveLocal', 'Save to this device')}
-        </Button>
+        {!isBuiltin && (
+          <Button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={!dirty || saving}
+            className={cn(
+              'h-8 shrink-0 gap-1.5 bg-coral text-[13px] font-semibold text-white hover:bg-coral/90',
+              !dirty && 'opacity-50',
+            )}
+          >
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+            {t('teamShare.saveLocal', 'Save to this device')}
+          </Button>
+        )}
       </div>
 
       <div className="min-h-0 flex-1">
@@ -223,6 +226,7 @@ export function SkillFileEditor({ slug, rel }: { slug: string; rel: string }) {
               filename={fileName}
               filePath={filePath}
               onChange={setContent}
+              readOnly={isBuiltin}
               isDark={isDark}
             />
           </Suspense>

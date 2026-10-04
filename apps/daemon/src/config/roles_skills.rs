@@ -77,7 +77,12 @@ pub struct RolesSkillsStateDto {
 // ── Scanner ──────────────────────────────────────────────────────────────────
 
 const ROLE_SKILL_DIR: &str = "skills";
-const INHERENT_SKILL_NAMES: &[&str] = &["create-role", "macos-control", "windows-control"];
+const INHERENT_SKILL_NAMES: &[&str] = &[
+    "create-role",
+    "deploy-app",
+    "macos-control",
+    "windows-control",
+];
 
 /// Skills that ship with the binary. They are read-only everywhere — the
 /// scanner classifies them as `builtin`, and the agent-management RPC refuses
@@ -1340,6 +1345,34 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].dir_path, expected.to_string_lossy());
         assert!(rows[0].content.contains("claude"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deploy_app_bridge_is_labelled_builtin() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        seed_skill(
+            home.path(),
+            ".agents/skills",
+            "deploy-app",
+            "bundled deployment skill",
+        );
+        std::fs::create_dir_all(ws.path().join(".claude/skills")).unwrap();
+        std::os::unix::fs::symlink(
+            home.path().join(".agents/skills/deploy-app"),
+            ws.path().join(".claude/skills/deploy-app"),
+        )
+        .unwrap();
+        let state = scan_roles_skills_state(ws.path()).unwrap();
+        let skill = state
+            .skills
+            .iter()
+            .find(|s| s.filename == "deploy-app")
+            .unwrap();
+        assert_eq!(skill.source.as_deref(), Some("builtin"));
+        assert!(skill.content.contains("bundled deployment skill"));
     }
 
     /// `builtin` is a property of the skill's name, not of the root it sits in.
