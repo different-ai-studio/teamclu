@@ -1,3 +1,5 @@
+import { X509Certificate } from "node:crypto";
+import { assertOriginCertificate, originJwks, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
@@ -114,6 +116,8 @@ export function readAppsFcVpcConfig(env: NodeJS.ProcessEnv = process.env): AppsF
 }
 
 export interface FcOpsConfig {
+  /** Server-only origin credentials. Required only for entrypoint operations. */
+  originAuth?: OriginAuthConfig;
   bucket: string;
   role: string | undefined;
   region: string;
@@ -320,6 +324,80 @@ async function retryTriggerNotFound<T>(operation: () => Promise<T>): Promise<T> 
   }
 }
 
+const ORIGIN_TOKEN_LOOKUP = "header:X-Teamclu-Origin-Authorization:Bearer";
+const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"];
+class OriginProviderError extends Error {
+  constructor(readonly operation: string, error?: any) {
+    const code = error?.code ?? error?.data?.Code;
+    // An arbitrary provider error message/request can include submitted JWKS or PEM.
+    const known = ["AccessDenied", "Forbidden", "Unauthorized", "TriggerNotFound", "CustomDomainNotFound", "InvalidArgument", "Throttling", "InternalError"];
+    super(`FC origin ${operation}: ${known.includes(code) ? code : "ProviderError"}`);
+  }
+}
+async function originCall<T>(operation: string, call: () => Promise<T>): Promise<T> {
+  try { return await call(); } catch (error) {
+    if (error instanceof OriginSecurityDrift) throw error;
+    throw new OriginProviderError(operation, error);
+  }
+}
+function jsonObject(value: unknown): any {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch { return undefined; }
+}
+function jwtInfo(config: OriginAuthConfig, target: OriginTarget) {
+  return { JWKS: originJwks(config, target.appId), TokenLookup: ORIGIN_TOKEN_LOOKUP, ClaimPassBy: "" };
+}
+function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, target: OriginTarget): string[] {
+  const fields: string[] = [];
+  if (authType !== "jwt") fields.push("authConfig.authType");
+  const info = jsonObject(raw);
+  if (!info) return [...fields, "authConfig.authInfo"];
+  // Header names are case insensitive. Prefix, source count and source type are not.
+  const lookup = typeof info.TokenLookup === "string" ? info.TokenLookup.split(":") : [];
+  if (lookup.length !== 3 || lookup[0] !== "header" || lookup[1].toLowerCase() !== "x-teamclu-origin-authorization" || lookup[2] !== "Bearer") fields.push("authConfig.TokenLookup");
+  if (info.ClaimPassBy !== undefined && info.ClaimPassBy !== "") fields.push("authConfig.ClaimPassBy");
+  const keys = jsonObject(info.JWKS)?.keys;
+  const normalize = (items: any[]) => items.map(key => {
+    if (!jsonObject(key)) return "invalid";
+    return JSON.stringify([key.kty, key.alg, key.use, key.kid, key.k]);
+  }).sort();
+  if (!Array.isArray(keys) || JSON.stringify(normalize(keys)) !== JSON.stringify(normalize(originJwks(config, target.appId).keys))) fields.push("authConfig.JWKS");
+  return fields;
+}
+function certificateFingerprints(pem: unknown): string[] | undefined {
+  if (typeof pem !== "string") return undefined;
+  try {
+    const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g);
+    return blocks?.map(block => new X509Certificate(block).fingerprint256);
+  } catch { return undefined; }
+}
+function domainDrift(domain: any, functionName: string, config: OriginAuthConfig, target: OriginTarget, alias = false): string[] {
+  const fields: string[] = [];
+  if (domain?.protocol !== "HTTPS") fields.push("protocol");
+  const routes = domain?.routeConfig?.routes;
+  if (!Array.isArray(routes) || !routes.length || routes.some((route: any) => route?.functionName !== functionName || (!alias && (route.path !== "/*" || (route.qualifier ?? "LATEST") !== "LATEST"))) || (!alias && routes.length !== 1)) fields.push("routeConfig");
+  fields.push(...jwtDrift(domain?.authConfig?.authType, domain?.authConfig?.authInfo, config, target));
+  const fingerprints = certificateFingerprints(domain?.certConfig?.certificate);
+  if (!fingerprints?.length || JSON.stringify(fingerprints) !== JSON.stringify(certificateFingerprints(config.certificate))) fields.push("certConfig.certificate");
+  if (domain?.certConfig?.certName !== config.certName) fields.push("certConfig.certName");
+  return fields;
+}
+function requireOriginConfig(cfg: FcOpsConfig): OriginAuthConfig {
+  if (!cfg.originAuth) throw new Error("FC origin configuration missing: originAuth");
+  return cfg.originAuth;
+}
+function assertOriginTarget(config: OriginAuthConfig, domainName: string, target: OriginTarget) {
+  if (!target || domainName !== `${target.slug}.${config.routeDomain}`) throw new Error("FC origin configuration mismatch: domainName");
+  assertOriginCertificate(config, domainName);
+  originJwks(config, target.appId);
+}
+class OriginSecurityDrift extends Error {}
+function driftError(fields: string[]): Error {
+  return new OriginSecurityDrift(`FC origin security drift: ${[...new Set(fields)].join(", ")}`);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function makeFcOps(client: any, cfg: FcOpsConfig) {
   function codeLocation(ossObjectName: string) {
@@ -390,77 +468,101 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
         if (!isNotFound(e)) throw e;
       }
     },
-    async ensureHttpTrigger(functionName: string): Promise<string> {
-      // A method missing from this list is refused by the trigger with a 403
-      // that never reaches the app. The original four left OPTIONS out, which
-      // fails every CORS preflight a browser sends, and HEAD out, which is what
-      // link previews and health checks use.
-      const triggerConfig = JSON.stringify({
-        authType: "anonymous",
-        methods: ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
-      });
-      return retryTriggerNotFound(async () => {
+    async ensureHttpTrigger(functionName: string): Promise<{ internetUrlDisabled: true }> {
+      requireOriginConfig(cfg);
+      const triggerConfig = JSON.stringify({ authType: "anonymous", disableURLInternet: true, methods: HTTP_METHODS });
+      // Keep the HTTP trigger for domain routing, but never publish its default URL.
+      await originCall("ensureHttpTrigger", () => retryTriggerNotFound(async () => {
         try {
           await client.createTrigger(functionName, new $fc.CreateTriggerRequest({
-            body: new $fc.CreateTriggerInput({
-              triggerName: "http", triggerType: "http", triggerConfig,
-            }),
+            body: new $fc.CreateTriggerInput({ triggerName: "http", triggerType: "http", triggerConfig }),
           }));
         } catch (e) {
           if (!isAlreadyExists(e)) throw e;
-          // Triggers created earlier keep whatever method list they were made
-          // with — creating is a no-op for them, so repair it explicitly rather
-          // than leaving already-deployed apps refusing OPTIONS forever.
-          await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({
-            body: new $fc.UpdateTriggerInput({ triggerConfig }),
-          }));
+          await client.updateTrigger(functionName, "http", new $fc.UpdateTriggerRequest({ body: new $fc.UpdateTriggerInput({ triggerConfig }) }));
         }
-        // FC may acknowledge create before the new trigger is readable. A
-        // missing trigger is not a successful deploy: retry the idempotent
-        // create/update and read before binding a domain to it.
-        const t = await client.getTrigger(functionName, "http");
-        const url = t?.body?.httpTrigger?.urlInternet;
-        if (!url) throw new Error("http trigger has no urlInternet");
-        return url;
-      });
+        const trigger = await client.getTrigger(functionName, "http");
+        if (jsonObject(trigger?.body?.triggerConfig)?.disableURLInternet !== true) throw driftError(["disableURLInternet"]);
+      }));
+      return { internetUrlDisabled: true };
     },
 
-    /**
-     * Bind `domainName` to `functionName`, so requests carrying that Host reach
-     * this app.
-     *
-     * The default `*.fcapp.run` hostname refuses to forward **any** 3xx with
-     * `ExternalRedirectForbidden` (Alibaba product change, 2025-04-01) and is
-     * documented as test-only. A trailing-slash normalisation or a login
-     * redirect is enough to break an app on it, so every deployed app gets a
-     * custom domain instead.
-     *
-     * `HTTP`, not HTTPS: the only client is our own proxy, reaching FC over
-     * Alibaba's internal network. Serving HTTPS here would mean uploading a
-     * certificate to FC, which is a manual PEM snapshot that CAS never renews.
-     *
-     * Idempotent — a redeploy re-points the same domain at the same function.
-     */
-    async ensureCustomDomain(functionName: string, domainName: string): Promise<string> {
-      const routeConfig = new $fc.RouteConfig({
-        routes: [
-          new $fc.PathConfig({ path: "/*", functionName, qualifier: "LATEST" }),
-        ],
-      });
-      const body = { protocol: "HTTP", routeConfig };
-      await retryTriggerNotFound(async () => {
+    /** Configure only the current app's controlled domain, then verify all target mappings. */
+    async ensureCustomDomain(functionName: string, domainName: string, target: OriginTarget): Promise<string> {
+      const config = requireOriginConfig(cfg);
+      assertOriginTarget(config, domainName, target);
+      const body = {
+        protocol: "HTTPS",
+        routeConfig: new $fc.RouteConfig({ routes: [new $fc.PathConfig({ path: "/*", functionName, qualifier: "LATEST" })] }),
+        authConfig: new $fc.AuthConfig({ authType: "jwt", authInfo: JSON.stringify(jwtInfo(config, target)) }),
+        certConfig: new $fc.CertConfig({ certName: config.certName, certificate: config.certificate, privateKey: config.privateKey }),
+      };
+      await originCall("ensureCustomDomain", () => retryTriggerNotFound(async () => {
         try {
-          await client.createCustomDomain(new $fc.CreateCustomDomainRequest({
-            body: new $fc.CreateCustomDomainInput({ domainName, ...body }),
-          }));
+          await client.createCustomDomain(new $fc.CreateCustomDomainRequest({ body: new $fc.CreateCustomDomainInput({ domainName, ...body }) }));
         } catch (e) {
           if (!isAlreadyExists(e)) throw e;
-          await client.updateCustomDomain(domainName, new $fc.UpdateCustomDomainRequest({
-            body: new $fc.UpdateCustomDomainInput(body),
-          }));
+          await client.updateCustomDomain(domainName, new $fc.UpdateCustomDomainRequest({ body: new $fc.UpdateCustomDomainInput(body) }));
         }
-      });
-      return `http://${domainName}`;
+      }));
+      const summary = await this.readOriginSecurity(functionName, domainName, target);
+      if (summary.status !== "protected") throw driftError(summary.driftFields);
+      return `https://${domainName}`;
+    },
+
+    /** Read-only; never return provider config, symmetric JWKS, request objects or PEM. */
+    async readOriginSecurity(functionName: string, domainName: string, target: OriginTarget): Promise<OriginSecuritySummary> {
+      const summary: OriginSecuritySummary = { status: "unavailable", internetUrlDisabled: null, customDomainAuth: "unknown", httpsOnly: null, driftFields: [] };
+      try {
+        const config = requireOriginConfig(cfg);
+        assertOriginTarget(config, domainName, target);
+        const trigger: any = await originCall("getTrigger", () => client.getTrigger(functionName, "http"));
+        const disabled = jsonObject(trigger?.body?.triggerConfig)?.disableURLInternet;
+        summary.internetUrlDisabled = typeof disabled === "boolean" ? disabled : null;
+        if (disabled !== true) summary.driftFields.push("disableURLInternet");
+        const domain: any = await originCall("getCustomDomain", () => client.getCustomDomain(domainName));
+        const auth = domain?.body?.authConfig?.authType;
+        summary.customDomainAuth = auth === "jwt" ? "jwt" : auth === "anonymous" ? "none" : "unknown";
+        summary.httpsOnly = domain?.body?.protocol ? domain.body.protocol === "HTTPS" : null;
+        summary.driftFields.push(...domainDrift(domain?.body, functionName, config, target));
+
+        // Lists are account scoped: scan every page, match routes, and never mutate aliases.
+        async function pages(operation: string, field: string, request: (token?: string) => Promise<any>, visit: (item: any) => Promise<void>) {
+          let token: string | undefined;
+          const seen = new Set<string>();
+          do {
+            const response = await originCall(operation, () => request(token));
+            const items = response?.body?.[field], next = response?.body?.nextToken;
+            if (!Array.isArray(items) || (next !== undefined && next !== null && typeof next !== "string")) throw new OriginProviderError(operation);
+            for (const item of items) await visit(item);
+            token = next || undefined;
+            if (token && seen.has(token)) throw new OriginProviderError(operation);
+            if (token) seen.add(token);
+          } while (token);
+        }
+        await pages("listTriggers", "triggers", token => client.listTriggers(functionName, new $fc.ListTriggersRequest({ limit: 100, nextToken: token })), async item => {
+          if (!item || typeof item.triggerType !== "string" || typeof item.triggerName !== "string") throw new OriginProviderError("listTriggers");
+          if (item.triggerType !== "http" || item.triggerName === "http") return;
+          // The normal deploy owns only the standard HTTP trigger; every extra
+          // HTTP entrypoint is drift, even when it appears independently protected.
+          summary.driftFields.push("extraHttpTriggers");
+        });
+        await pages("listCustomDomains", "customDomains", token => client.listCustomDomains(new $fc.ListCustomDomainsRequest({ limit: 100, nextToken: token })), async item => {
+          const routes = item?.routeConfig?.routes;
+          if (typeof item?.domainName !== "string" || !Array.isArray(routes) || routes.some((route: any) => typeof route?.functionName !== "string")) throw new OriginProviderError("listCustomDomains");
+          if (item.domainName === domainName || !routes.some((route: any) => route.functionName === functionName)) return;
+          const alias: any = await originCall("getCustomDomain", () => client.getCustomDomain(item.domainName));
+          if (domainDrift(alias?.body, functionName, config, target, true).length) summary.driftFields.push("customDomainAliases");
+          try { assertOriginCertificate(config, item.domainName); } catch { summary.driftFields.push("customDomainAliases"); }
+        });
+        summary.driftFields = [...new Set(summary.driftFields)];
+        summary.status = summary.driftFields.length ? "drift" : "protected";
+      } catch (error) {
+        summary.status = "unavailable";
+        summary.driftFields.push(error instanceof OriginProviderError ? error.operation : "originAuth");
+        summary.driftFields = [...new Set(summary.driftFields)];
+      }
+      return summary;
     },
 
     /** Drop an app's custom domain. Best-effort: a missing one is done. */
