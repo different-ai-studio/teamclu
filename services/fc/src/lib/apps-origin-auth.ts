@@ -1,5 +1,6 @@
 import { createHmac, createPrivateKey, X509Certificate } from 'node:crypto';
 import { SignJWT } from 'jose';
+import { appPublicLabel } from './apps-public-host.js';
 export type OriginKey = {
   version: string;
   masterKey: Uint8Array;
@@ -136,4 +137,34 @@ export async function signOriginToken(config: OriginAuthConfig, target: OriginTa
     .setProtectedHeader({ alg: 'HS256', kid: config.activeKey.version, typ: 'JWT' })
     .setIssuedAt(issuedAt).setExpirationTime(issuedAt + 60)
     .sign(deriveKey(config.activeKey, appId));
+}
+
+/**
+ * Existing endpoints keep their unsigned forwarding path. Only the exact
+ * managed HTTPS origin can receive a platform credential.
+ */
+export function classifyOriginEndpoint(endpoint: string, target: OriginTarget, routeDomain: string): 'protected' | 'legacy' {
+  let url: URL;
+  try { url = new URL(endpoint); } catch { invalid('origin endpoint'); }
+  // URL normalizes backslashes, whitespace and dot segments. None may turn an
+  // unusual stored endpoint into an authenticated destination.
+  if (!/^https?:\/\//i.test(endpoint) || /[\s\\]/.test(endpoint) || url.username || url.password || !['http:', 'https:'].includes(url.protocol))
+    invalid('origin endpoint');
+  if (url.protocol === 'http:') return 'legacy';
+  const domain = routeDomain.trim().toLowerCase();
+  if (!domain) {
+    if (url.hostname.endsWith('.fcapp.run')) return 'legacy';
+    invalid('route domain');
+  }
+  if (!hostnameValid(domain)) invalid('route domain');
+  const host = url.hostname.replace(/\.$/, '');
+  if (host !== domain && !host.endsWith(`.${domain}`)) return 'legacy';
+  const appId = normalizedAppId(target.appId);
+  const label = appPublicLabel(target.slug, appId);
+  if (!label || !hostnameValid(`${label}.${domain}`)) invalid('origin hostname');
+  // Raw shape rejects paths that URL would normalize back to '/'. Default
+  // HTTPS port is harmless; non-default ports, query and fragments are not.
+  if (url.hostname !== `${label}.${domain}` || url.port || !/^https:\/\/[^/?#]+\/?$/i.test(endpoint))
+    invalid('origin endpoint');
+  return 'protected';
 }

@@ -1,3 +1,4 @@
+import { classifyOriginEndpoint, signOriginToken, type OriginAuthConfig, type OriginTarget } from "./apps-origin-auth.js";
 import { appPublicLabel, appsPublicDomain, parseAppPublicHost } from "./apps-public-host.js";
 
 /**
@@ -384,14 +385,23 @@ export async function proxyToApp(
   endpoint: string,
   fetchImpl: typeof fetch = fetch,
   identity: ProxyIdentity | null = null,
+  origin?: { target: OriginTarget; config: OriginAuthConfig },
 ): Promise<Response> {
+  let protectedOrigin = false;
+  let upstream: URL;
+  try {
+    if (origin) protectedOrigin = classifyOriginEndpoint(endpoint, origin.target, origin.config.routeDomain) === "protected";
+    upstream = new URL(endpoint);
+  } catch {
+    return new Response("app origin is unavailable", { status: 503 });
+  }
   const incoming = new URL(request.url);
-  const upstream = new URL(endpoint);
   upstream.pathname = incoming.pathname;
   upstream.search = incoming.search;
 
   const headers = strip(request.headers);
   headers.delete("host");
+  headers.delete("x-teamclu-origin-authorization");
   // Drop any client-supplied identity BEFORE writing our own, and drop it
   // unconditionally — including on apps with no login wall, where `identity`
   // is null and nothing is written back. Skipping the delete in that branch
@@ -409,18 +419,36 @@ export async function proxyToApp(
   headers.set("x-forwarded-proto", incoming.protocol.replace(":", ""));
   fillFetchMetadata(headers, incoming);
 
-  const hasBody = request.method !== "GET" && request.method !== "HEAD";
-  const res = await fetchImpl(upstream, {
-    method: request.method,
-    headers,
-    body: hasBody ? request.body : undefined,
-    // Node's fetch refuses a streamed body without it, and buffering instead
-    // would hold whole uploads in the API's memory.
-    ...(hasBody ? { duplex: "half" } : {}),
-    // A 302 belongs to the app; following it here would silently rewrite the
-    // app's own navigation into a response from a different URL.
-    redirect: "manual",
-  } as RequestInit);
+  if (protectedOrigin) {
+    try {
+      const token = await signOriginToken(origin!.config, origin!.target, upstream.hostname);
+      headers.set("x-teamclu-origin-authorization", `Bearer ${token}`);
+    } catch {
+      return new Response("app origin is unavailable", { status: 503 });
+    }
+  }
 
-  return new Response(res.body, { status: res.status, headers: stripForcedDownload(strip(res.headers)) });
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  let res: Response;
+  try {
+    res = await fetchImpl(upstream, {
+      method: request.method,
+      headers,
+      body: hasBody ? request.body : undefined,
+      // Node's fetch refuses a streamed body without it, and buffering instead
+      // would hold whole uploads in the API's memory.
+      ...(hasBody ? { duplex: "half" } : {}),
+      // A 302 belongs to the app; following it here would silently rewrite the
+      // app's own navigation into a response from a different URL.
+      redirect: "manual",
+    } as RequestInit);
+  } catch (error) {
+    // A transport error can include outbound headers; do not expose or log a JWT.
+    if (protectedOrigin) return new Response("app origin is unavailable", { status: 502 });
+    throw error;
+  }
+
+  const responseHeaders = stripForcedDownload(strip(res.headers));
+  responseHeaders.delete("x-teamclu-origin-authorization");
+  return new Response(res.body, { status: res.status, headers: responseHeaders });
 }
