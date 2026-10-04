@@ -120,6 +120,10 @@ export function registerApps(router) {
     return { body: out };
   });
 
+  router.get("/v1/apps/:appId/auth-info", async (ctx) => {
+    return { body: await ctx.repository.getAppAuthInfo(decodeURIComponent(ctx.params.appId)) };
+  });
+
   router.patch("/v1/apps/:appId", async (ctx) => {
     const appId = decodeURIComponent(ctx.params.appId);
     const body = ctx.json ?? {};

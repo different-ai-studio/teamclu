@@ -7403,6 +7403,51 @@ paths:
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/auth-info:
+    get:
+      operationId: readAppAuthInfo
+      summary: Read application organization role catalog and effective auth policies
+      description: |
+        Checks app visibility and existing organization catalog authorization.
+        Returns configuration and active role catalog only, never users or secrets.
+        The application organization is authoritative; mismatched team organizations
+        are rejected. A legacy app without an organization may derive it from its team.
+        An unconfigured organization returns null and is not a configurable catalog.
+        Catalog authorization or upstream failures fail the entire request.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Raw auth configuration and effective organization policy information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppAuthInfo"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: Unclassified upstream query failure; no partial catalog is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "502":
+          description: Upstream catalog query failed; no partial catalog is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Application organization metadata is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /v1/apps/{appId}/runtime-info:
     get:
       operationId: readAppRuntimeInfo
@@ -9823,6 +9868,57 @@ components:
         The baseline for which paths sit behind the login wall, applied when no
         rule in `authRules` matches. `all` — the whole site. `paths` — only
         what the rules protect. Defaults to `all`.
+    AppAuthInfo:
+      type: object
+      required: [appId, teamId, organization, roleScope, roles, authMode, authScope, authAudience, authRules, effectivePolicies, organizationStatus]
+      properties:
+        appId: { type: string }
+        teamId: { type: string }
+        organization:
+          type: [object, "null"]
+          required: [id, name]
+          properties:
+            id: { type: string }
+            name: { type: string }
+        roleScope: { type: string, enum: [organization] }
+        organizationStatus: { type: string, enum: [configured, unconfigured] }
+        roles:
+          type: array
+          items:
+            type: object
+            required: [id, code, name, status]
+            properties:
+              id: { type: string }
+              code: { type: string }
+              name: { type: string }
+              status: { type: string }
+        authMode:
+          $ref: "#/components/schemas/AppAuthMode"
+        authScope:
+          $ref: "#/components/schemas/AppAuthScope"
+        authAudience:
+          $ref: "#/components/schemas/AppAuthAudience"
+        authRules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppAuthRule"
+        effectivePolicies:
+          type: array
+          description: Baseline at / (root rule when present), then each non-root raw rule in order.
+          items:
+            $ref: "#/components/schemas/EffectiveAuthPolicy"
+    EffectiveAuthPolicy:
+      type: object
+      required: [path, kind, roleCodes, inherited, source]
+      properties:
+        path: { type: string }
+        kind: { type: string, enum: [public, any_authenticated, any_org_role, org_roles] }
+        roleCodes:
+          type: [array, "null"]
+          items: { type: string }
+          description: Empty for public or any_authenticated; null for any_org_role; fixed codes for org_roles.
+        inherited: { type: boolean }
+        source: { type: string, enum: [auth_mode, roles, rule_audience, app_audience, scope_baseline] }
     AppAuthRule:
       type: object
       required: [path, auth]
@@ -9847,19 +9943,16 @@ components:
           items: { type: string }
           description: >-
             Role codes that may access this path when auth=required.
-            Empty or omitted = any authenticated user. Ignored when auth=public.
-            Prefer this over audience; audience is legacy-read only.
+            Empty = any authenticated user. Non-empty = one matching active role in the app organization.
+            Explicit roles takes precedence over rule audience, then app authAudience.
+            Omitted roles inherits rule audience or the app default. Ignored when auth=public.
         audience:
           type: string
           enum: [any, org]
-          deprecated: true
           description: >-
-            Legacy read-only. Who satisfied the login on this path before
-            `roles` existed. Only meaningful with `auth: required`, and
-            OPTIONAL: an absent `audience` means "use the app's own
-            `authAudience`", never a default of its own. New writes should emit
-            `roles` instead. `audience: any` maps to `roles: []`; `audience:
-            org` maps to any active org role assignment.
+            Only meaningful with auth=required and absent roles. any admits any
+            authenticated user; org dynamically admits any active organization role,
+            including future roles. If omitted, inherit app authAudience.
     AppEnvVar:
       type: object
       required: [key, isSecret, value, updatedAt]

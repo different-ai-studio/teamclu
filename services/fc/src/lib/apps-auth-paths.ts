@@ -33,8 +33,9 @@ export type AuthAudience = (typeof AUTH_AUDIENCES)[number];
  *
  * `roles` is the preferred WHO filter for `auth: "required"`: an empty list
  * means any signed-in user; a non-empty list means the visitor needs an
- * intersection with their active org role codes. `audience` is legacy-read
- * only (`any` ≡ `roles: []`, `org` ≡ any `roles_users` row) and is only
+ * intersection with their active org role codes. `audience` remains supported
+ * for dynamic organization audiences (`any` ≡ `roles: []`, `org` ≡ any active
+ * organization role) and is only
  * meaningful with `auth: "required"`. Absent `roles` AND absent `audience`
  * means "whatever the app's own `auth_audience` says" — NOT a hard-coded
  * default. Every rule stored before these keys existed is absent, so reading
@@ -246,7 +247,7 @@ function matchesPrefix(path: string, prefix: string): boolean {
 }
 
 /** One stored rule, or null when the row holds something unusable. */
-function readRule(entry: unknown): AuthRule | null {
+export function readStoredAuthRule(entry: unknown): AuthRule | null {
   if (!entry || typeof entry !== "object") return null;
   const path = (entry as any).path;
   const auth = (entry as any).auth;
@@ -341,7 +342,7 @@ export function resolvePathPolicy(
   let bestLength = -1;
 
   for (const entry of rawRules) {
-    const rule = readRule(entry);
+    const rule = readStoredAuthRule(entry);
     if (!rule) return protectedFallback; // an unreadable rule invalidates the whole set
     const prefix = rule.path.toLowerCase();
     if (!matchesPrefix(path, prefix)) continue;

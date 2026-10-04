@@ -40,7 +40,14 @@ pub(crate) enum RouteAccess {
 pub(crate) fn route_access(path: &str) -> RouteAccess {
     use RouteAccess::*;
     match path {
-        "/app-manage" => ReadActions(&["list", "status", "runtime_info", "sessions", "logs"]),
+        "/app-manage" => ReadActions(&[
+            "list",
+            "status",
+            "auth_info",
+            "runtime_info",
+            "sessions",
+            "logs",
+        ]),
         "/app-access" => ReadActions(&["list"]),
         "/app-data" => ReadActions(&["tables", "rows"]),
         "/app-files" => ReadActions(&["usage", "list", "download_url"]),
@@ -376,6 +383,22 @@ mod tests {
             "the buffered body must reach the handler intact"
         );
         assert_eq!(asked.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn auth_info_reads_without_a_mutation_caller_but_updates_still_require_one() {
+        let (verifier, asked) = stub_verifier(|| Err(CallerRejection::UnknownAgent));
+        let body = r#"{"action":"auth_info","app_id":"app-1"}"#;
+        let (status, echoed) = call(guarded_router(verifier), "/app-manage", body, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(echoed, body);
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+        for action in ["update", "deploy"] {
+            let (verifier, _) = stub_verifier(|| Ok(()));
+            let body = serde_json::json!({"action":action, "app_id":"app-1"}).to_string();
+            let (status, _) = call(guarded_router(verifier), "/app-manage", &body, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{action}");
+        }
     }
 
     #[tokio::test]

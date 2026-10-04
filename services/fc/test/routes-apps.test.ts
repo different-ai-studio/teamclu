@@ -983,3 +983,14 @@ test("GET runtime-info forwards a validated language filter", async () => {
     getAppRuntimeInfo: async () => { throw new Error("must not call repository"); },
   } }), (e: any) => e?.statusCode === 400);
 });
+
+
+test("GET auth-info preserves response and catalog failures", async () => {
+  const { router, routes } = makeRouter();
+  registerApps(router);
+  const handler = findRoute(routes, "GET", "/v1/apps/:appId/auth-info")[2];
+  const info = { appId: "app 1", roles: [{ code: "reviewer" }] };
+  assert.deepEqual(await handler({params: {appId: "app%201"}, repository: {getAppAuthInfo: async (id) => { assert.equal(id, "app 1"); return info; }}}), {body: info});
+  const denied = Object.assign(new Error("catalog forbidden"), {statusCode: 403});
+  await assert.rejects(handler({params: {appId: "app"}, repository: {getAppAuthInfo: async () => {throw denied;}}}), (e) => e === denied);
+});

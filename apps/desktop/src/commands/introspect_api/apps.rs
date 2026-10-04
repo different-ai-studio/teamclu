@@ -612,9 +612,10 @@ fn dir_has_files(dir: &str) -> bool {
 
 // ─── manage_app ─────────────────────────────────────────────────────────────
 
-const MANAGE_ACTIONS: [&str; 12] = [
+const MANAGE_ACTIONS: [&str; 13] = [
     "list",
     "status",
+    "auth_info",
     "runtime_info",
     "sessions",
     "create",
@@ -674,6 +675,7 @@ pub(super) async fn handle_app_manage(
         super::confirm::confirm_with_user(app, confirmation).await?;
     }
     let out = match action.as_str() {
+        "auth_info" => read_app_auth_info(&api, &row).await?,
         "status" => json!({ "action": "status", "app": app_status(&api, &row).await }),
         "runtime_info" => json!({
             "action": "runtime_info",
@@ -796,6 +798,87 @@ fn describe_code_version(row: &Value, head: Option<&Value>) -> String {
             short_sha(deployed)
         ),
     }
+}
+
+/// The Cloud API owns policy resolution. Preserve raw rules, and expose only
+/// the discovery contract (never spread an app row or arbitrary response).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppAuthInfo {
+    app_id: String,
+    team_id: String,
+    organization: Option<AuthOrganization>,
+    role_scope: String,
+    roles: Vec<AuthRole>,
+    auth_mode: String,
+    auth_scope: String,
+    auth_audience: String,
+    auth_rules: Vec<Value>,
+    effective_policies: Vec<EffectiveAuthPolicy>,
+    organization_status: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct AuthOrganization {
+    id: String,
+    name: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct AuthRole {
+    id: String,
+    code: String,
+    name: String,
+    status: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EffectiveAuthPolicy {
+    path: String,
+    kind: String,
+    role_codes: Option<Vec<String>>,
+    inherited: bool,
+    source: String,
+}
+
+/// Uses the selected row from the common status selector and authenticated API.
+async fn read_app_auth_info(api: &AppApi, row: &Value) -> Result<Value, String> {
+    let response = api
+        .get(
+            &app_path(&row_id(row)?, "/auth-info"),
+            "Reading app organization roles and auth policies",
+        )
+        .await?;
+    let info: AppAuthInfo = serde_json::from_value(response)
+        .map_err(|_| "App auth discovery unavailable: unreadable Cloud API response".to_string())?;
+    let policies: Vec<Value> = info
+        .effective_policies
+        .into_iter()
+        .map(|policy| {
+            json!({
+                "path": policy.path,
+                "kind": policy.kind,
+                "role_codes": policy.role_codes,
+                "inherited": policy.inherited,
+                "source": policy.source,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "action": "auth_info",
+        "app_id": info.app_id,
+        "team_id": info.team_id,
+        "organization": info.organization,
+        "role_scope": info.role_scope,
+        "roles": info.roles,
+        "auth_mode": info.auth_mode,
+        "auth_scope": info.auth_scope,
+        "auth_audience": info.auth_audience,
+        "auth_rules": info.auth_rules,
+        "effective_policies": policies,
+        "organization_status": info.organization_status,
+    }))
 }
 
 /// Only revision facts from the selected daemon's manifest enter status.
@@ -953,7 +1036,7 @@ fn update_patch(v: &Value) -> Result<Value, String> {
     if let Some(rules) = v.get("auth_rules").or_else(|| v.get("authRules")) {
         let list = rules
             .as_array()
-            .ok_or("auth_rules must be an array of {path, auth, audience?}")?;
+            .ok_or("auth_rules must be an array of {path, auth, audience?, roles?}")?;
         for rule in list {
             let path = rule.get("path").and_then(Value::as_str).unwrap_or("");
             let auth = rule.get("auth").and_then(Value::as_str).unwrap_or("");
@@ -1549,6 +1632,106 @@ async fn read_app_logs(api: &AppApi, row: &Value, v: &Value) -> Result<Value, St
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn auth_info_maps_cloud_facts_and_reports_unconfigured_or_forbidden() {
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            routing::get,
+            Json, Router,
+        };
+        let rules = json!([
+            {"path":"/any", "auth":"required", "roles":[], "audience":"org"},
+            {"path":"/staff", "auth":"required", "roles":["custom"]},
+            {"path":"/org", "auth":"required", "audience":"org"}
+        ]);
+        let info = json!({
+            "appId":"app-1", "teamId":"team-1", "organization":{"id":"org-1", "name":"Organization"},
+            "roleScope":"organization", "roles":[{"id":"role-1", "code":"custom", "name":"Custom", "status":"active"}],
+            "authMode":"platform", "authScope":"paths", "authAudience":"org", "authRules":rules,
+            "effectivePolicies":[{"path":"/staff", "kind":"org_roles", "roleCodes":["custom"], "inherited":false, "source":"roles"}],
+            "organizationStatus":"configured"
+        });
+        let mut unconfigured = info.clone();
+        unconfigured["organization"] = Value::Null;
+        unconfigured["organizationStatus"] = json!("unconfigured");
+        unconfigured["roles"] = json!([]);
+        let router = Router::new()
+            .route("/v1/apps/app-1/auth-info", get({let info = info.clone(); move |headers: HeaderMap| {let info = info.clone(); async move {
+                assert_eq!(headers["authorization"], "Bearer test-token");
+                Json(info)
+            }}}))
+            .route("/v1/apps/unconfigured/auth-info", get(move || {let info = unconfigured.clone(); async move {Json(info)}}))
+            .route("/v1/apps/malformed/auth-info", get(|| async {
+                Json(json!({"appId":"malformed", "roles":[]}))
+            }))
+            .route("/v1/apps/forbidden/auth-info", get(|| async {
+                (StatusCode::FORBIDDEN, Json(json!({"error":{"code":"org_roles_forbidden", "message":"organization role directory is not visible"}})))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let api = AppApi {
+            fc: crate::commands::oss_sync::fc_client::FcClient {
+                client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                base_url: format!("http://{addr}"),
+                jwt: "test-token".into(),
+            },
+        };
+        let result = read_app_auth_info(&api, &json!({"id":"app-1"}))
+            .await
+            .unwrap();
+        let missing = read_app_auth_info(&api, &json!({"id":"unconfigured"}))
+            .await
+            .unwrap();
+        let error = read_app_auth_info(&api, &json!({"id":"forbidden"}))
+            .await
+            .unwrap_err();
+        let malformed = read_app_auth_info(&api, &json!({"id":"malformed"}))
+            .await
+            .unwrap_err();
+        assert_eq!(malformed, "App auth discovery unavailable: unreadable Cloud API response");
+        assert!(!malformed.contains("test-token"));
+        server.abort();
+        assert_eq!(
+            result,
+            json!({
+                "action":"auth_info", "app_id":"app-1", "team_id":"team-1", "organization":{"id":"org-1", "name":"Organization"},
+                "role_scope":"organization", "roles":[{"id":"role-1", "code":"custom", "name":"Custom", "status":"active"}],
+                "auth_mode":"platform", "auth_scope":"paths", "auth_audience":"org", "auth_rules":rules,
+                "effective_policies":[{"path":"/staff", "kind":"org_roles", "role_codes":["custom"], "inherited":false, "source":"roles"}],
+                "organization_status":"configured"
+            })
+        );
+        assert_eq!(missing["organization_status"], "unconfigured");
+        assert!(missing["organization"].is_null());
+        assert!(
+            error.contains("403") && error.contains("organization role directory"),
+            "{error}"
+        );
+        assert!(!error.contains("test-token"));
+    }
+
+    #[test]
+    fn auth_info_action_is_supported() {
+        assert!(super::require_action(
+            &serde_json::json!({"action":"auth_info"}),
+            &super::MANAGE_ACTIONS
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn update_patch_preserves_roles_and_legacy_audience() {
+        let rules = serde_json::json!([
+            {"path":"/api/staff/*", "auth":"required", "roles":["custom"]},
+            {"path":"/login", "auth":"required", "roles":[]},
+            {"path":"/org", "auth":"required", "audience":"org"},
+            {"path":"/both", "auth":"required", "roles":[], "audience":"org"}
+        ]);
+        let patch = super::update_patch(&serde_json::json!({"auth_rules":rules})).unwrap();
+        assert_eq!(patch["authRules"], rules);
+    }
+
     #[test]
     fn status_exposes_selected_checkout_revision_and_cleanliness() {
         let mut status = serde_json::json!({});

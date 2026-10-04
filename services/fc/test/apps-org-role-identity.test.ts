@@ -88,3 +88,15 @@ test("roles on two live identities in the same org are both considered", async (
   );
   assert.deepEqual(await findAppOrgRoleIdentities(admin, AUTH_ID, ORG_ID), [AUTH_ID, second]);
 });
+
+test("a reused auth account loses role identity immediately when its binding becomes inactive or is removed", async () => {
+ const bindings = [{user_id:AUTH_ID,org_id:ORG_ID,status:"active"}];
+ const admin = db([{id:AUTH_ID,auth_user_id:AUTH_ID,deleted_at:null}],bindings);
+ assert.deepEqual(await findAppOrgRoleIdentities(admin,AUTH_ID,ORG_ID),[AUTH_ID]);
+ bindings[0].status = "inactive";
+ assert.deepEqual(await findAppOrgRoleIdentities(admin,AUTH_ID,ORG_ID),[]);
+ bindings[0].status = "active";
+ assert.deepEqual(await findAppOrgRoleIdentities(admin,AUTH_ID,ORG_ID),[AUTH_ID]);
+ bindings.splice(0);
+ assert.deepEqual(await findAppOrgRoleIdentities(admin,AUTH_ID,ORG_ID),[]);
+});

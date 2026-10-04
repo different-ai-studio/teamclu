@@ -17,12 +17,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { getBackend } from '@/lib/backend'
-import type { OrgRole } from '@/lib/backend/cloud-api/org-roles'
+import type { AppAuthInfo } from '@/lib/backend/types'
 import {
   type AppAuthRowState,
   baselineToRowState,
   buildAuthPolicyPatch,
   exceptionRulesToRowState,
+  sameAuthRow,
 } from '@/lib/apps/app-auth-access'
 import { useAppsStore } from '@/stores/apps-store'
 import { AppTabShell } from './AppTabShell'
@@ -31,8 +32,8 @@ import type { AppAuthMode, AppRow } from '@/lib/backend/types'
 /**
  * Who on the internet may open the deployed site, page by page.
  *
- * Each row is three columns: path, whether login is required, and which org
- * roles may pass (only when login is on). Empty roles = any signed-in user.
+ * Each row names a path, login requirement, and explicit audience mode.
+ * Dynamic organization access and inherited defaults never become fixed roles.
  * The top row is the baseline — every path no rule mentions.
  */
 
@@ -80,7 +81,7 @@ function RolesMultiSelect({
   onChange,
 }: {
   roleCodes: string[]
-  options: OrgRole[]
+  options: AppAuthInfo['roles']
   disabled?: boolean
   testId?: string
   onChange: (next: string[]) => void
@@ -88,7 +89,7 @@ function RolesMultiSelect({
   const { t } = useTranslation()
   const label =
     roleCodes.length === 0
-      ? t('apps.auth.roles.any', '任意用户')
+      ? t('apps.auth.roles.choose', '选择至少一个角色')
       : roleCodes.join(', ')
 
   const toggle = (code: string, checked: boolean) => {
@@ -111,23 +112,24 @@ function RolesMultiSelect({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[220px] p-2">
-        {options.length === 0 ? (
+        {options.length === 0 && roleCodes.length === 0 ? (
           <p className="px-1 py-2 text-[12.5px] text-muted-foreground">
             {t('apps.auth.roles.empty', '还没有可分配的角色')}
           </p>
         ) : (
           <ul className="max-h-[220px] space-y-0.5 overflow-y-auto">
-            {options.map((role) => {
+            {[...options, ...roleCodes.filter(code => !options.some(role => role.code === code)).map(code => ({ id: code, code, name: code, status: 'missing' }))].map((role) => {
               const checked = roleCodes.includes(role.code)
               return (
                 <li key={role.id}>
                   <label className="flex cursor-pointer items-center gap-2 rounded-[6px] px-1.5 py-1.5 text-[12.5px] hover:bg-selected">
                     <Checkbox
                       checked={checked}
+                      disabled={role.status !== 'active' && !checked}
                       onCheckedChange={(v) => toggle(role.code, v === true)}
                     />
                     <span className="min-w-0 truncate">
-                      <span className="text-foreground">{role.name}</span>
+                      <span className="text-foreground">{role.name}{role.status !== 'active' ? ` (${t('apps.auth.roles.unavailable', '已停用或缺失')})` : ''}</span>
                       <span className="ml-1 font-mono text-[11px] text-faint">{role.code}</span>
                     </span>
                   </label>
@@ -152,7 +154,7 @@ export function AppAuthTabContent({ appId }: { appId: string }) {
         '线上站点每个页面谁能打开。跟团队里谁能改代码无关 —— 那在「协作权限」。',
       )}
     >
-      {(app) => <AuthBody app={app} />}
+      {(app) => <AuthBody key={app.id} app={app} />}
     </AppTabShell>
   )
 }
@@ -164,102 +166,85 @@ function AuthBody({ app }: { app: AppRow }) {
   const deploying = useAppsStore((s) => s.deployingIds.includes(app.id))
 
   const [mode, setMode] = React.useState<AppAuthMode>(app.authMode)
-  const [orgRoles, setOrgRoles] = React.useState<OrgRole[]>([])
+  const [orgRoles, setOrgRoles] = React.useState<AppAuthInfo['roles']>([])
+  const [organization, setOrganization] = React.useState<AppAuthInfo['organization']>(null)
   const [rolesLoaded, setRolesLoaded] = React.useState(false)
   const [rolesError, setRolesError] = React.useState(false)
-  const [baseline, setBaseline] = React.useState<AppAuthRowState>({
-    path: '/',
-    requiresLogin: true,
-    roleCodes: [],
-  })
-  const [rules, setRules] = React.useState<AppAuthRowState[]>([])
-  const [loadedMode, setLoadedMode] = React.useState<AppAuthMode>(app.authMode)
-  const [loadedBaseline, setLoadedBaseline] = React.useState<AppAuthRowState | null>(null)
-  const [loadedRules, setLoadedRules] = React.useState<AppAuthRowState[] | null>(null)
+  const [policy, setPolicy] = React.useState(app)
+  const [baseline, setBaseline] = React.useState(() => baselineToRowState(app))
+  const [rules, setRules] = React.useState(() => exceptionRulesToRowState(app))
   const [saving, setSaving] = React.useState(false)
+  const [saveError, setSaveError] = React.useState<'write' | 'readback' | null>(null)
+  const [defaultConfirmed, setDefaultConfirmed] = React.useState(false)
+  const active = React.useRef(true)
 
-  const allRoleCodes = React.useMemo(
-    () => orgRoles.map((r) => r.code).sort(),
-    [orgRoles],
-  )
-
+  const acceptPolicy = (next: AppRow) => {
+    setPolicy(next)
+    setMode(next.authMode)
+    setBaseline(baselineToRowState(next))
+    setRules(exceptionRulesToRowState(next))
+    setDefaultConfirmed(false)
+  }
   React.useEffect(() => {
+    active.current = true
     let cancelled = false
-    setRolesLoaded(false)
-    setRolesError(false)
-    void (async () => {
-      try {
-        const items = await getBackend().orgRoles.list(app.teamId)
-        if (cancelled) return
-        setOrgRoles(items.filter((r) => r.status === 'active' || !r.status))
-        setRolesLoaded(true)
-      } catch {
-        if (cancelled) return
-        // Deliberately NOT `setOrgRoles([]); setRolesLoaded(true)`. An empty
-        // catalog is indistinguishable from "this app restricts nobody": it
-        // makes `baselineToRowState` render a legacy `audience: org` app as
-        // "any signed-in user", and saving from that state writes `roles: []`,
-        // which the gateway admits every authenticated visitor on. One failed
-        // request would silently open a staff-only app. Surface it and block
-        // the save instead.
-        setRolesError(true)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [app.teamId])
-
-  React.useEffect(() => {
-    if (!rolesLoaded) return
-    const nextBaseline = baselineToRowState(app, allRoleCodes)
-    const nextRules = exceptionRulesToRowState(app, allRoleCodes)
-    setMode(app.authMode)
-    setBaseline(nextBaseline)
-    setRules(nextRules)
-    setLoadedMode(app.authMode)
-    setLoadedBaseline(nextBaseline)
-    setLoadedRules(nextRules)
-  }, [app, allRoleCodes, rolesLoaded])
+    void getBackend().apps.getAppAuthInfo(app.id).then(info => {
+      if (cancelled) return
+      setOrgRoles(info.roles)
+      setOrganization(info.organizationStatus === 'configured' ? info.organization : null)
+      setRolesLoaded(true)
+      acceptPolicy({ ...app, authMode: info.authMode, authScope: info.authScope, authAudience: info.authAudience, authRules: info.authRules })
+    }).catch(() => { if (!cancelled) setRolesError(true) })
+    return () => { cancelled = true; active.current = false }
+    // Store/catalog updates must never reset a draft. The body is keyed by app id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app.id])
 
   const walled = mode === 'platform'
-  const pendingPatch = React.useMemo(
-    () => buildAuthPolicyPatch(baseline, rules),
-    [baseline, rules],
-  )
-
-  const nothingProtected =
-    walled &&
-    !baseline.requiresLogin &&
-    !rules.some((r) => r.requiresLogin)
-  const blankPath = rules.some((r) => !r.path.trim())
-
-  const sameRow = (a: AppAuthRowState, b: AppAuthRowState) =>
-    a.path === b.path &&
-    a.requiresLogin === b.requiresLogin &&
-    a.roleCodes.length === b.roleCodes.length &&
-    a.roleCodes.every((c, i) => c === b.roleCodes[i])
-
-  const dirty =
-    mode !== loadedMode ||
-    (walled &&
-      loadedBaseline !== null &&
-      loadedRules !== null &&
-      (!sameRow(baseline, loadedBaseline) ||
-        rules.length !== loadedRules.length ||
-        rules.some((r, i) => !sameRow(r, loadedRules[i]!))))
-
+  const nothingProtected = walled && !baseline.requiresLogin && !rules.some(r => r.requiresLogin)
+  const blankPath = rules.some(r => !r.path.trim())
+  const emptySelection = [baseline, ...rules].some(r => r.requiresLogin && r.audienceMode === 'org_roles' && !r.roleCodes.length)
+  const dirty = mode !== policy.authMode || (walled &&
+    (!sameAuthRow(baseline, baselineToRowState(policy)) || rules.length !== exceptionRulesToRowState(policy).length ||
+      rules.some((r, i) => !sameAuthRow(r, exceptionRulesToRowState(policy)[i]!))))
+  const defaultChanged = baseline.source === 'app_baseline' && baseline.audienceMode !== 'org_roles' && baseline.audienceMode !== baselineToRowState(policy).audienceMode &&
+    rules.some(r => r.requiresLogin && r.audienceMode === 'inherit')
   const save = async () => {
     setSaving(true)
+    setSaveError(null)
     try {
-      await updateAuthPolicy(app.id, {
-        authMode: mode,
-        ...(walled ? pendingPatch : {}),
-      })
-    } finally {
-      setSaving(false)
-    }
+      const succeeded = await updateAuthPolicy(app.id, { authMode: mode,
+        ...(walled ? buildAuthPolicyPatch(baseline, rules, policy) : {}) })
+      if (!active.current) return
+      if (!succeeded) { setSaveError('write'); return }
+      try {
+        const [info, serverApp] = await Promise.all([getBackend().apps.getAppAuthInfo(app.id), getBackend().apps.getApp(app.id)])
+        if (!active.current) return
+        if (!serverApp) throw new Error('App unavailable')
+        setOrgRoles(info.roles)
+        setOrganization(info.organizationStatus === 'configured' ? info.organization : null)
+        acceptPolicy({ ...serverApp, authMode: info.authMode, authScope: info.authScope, authAudience: info.authAudience, authRules: info.authRules })
+      } catch { if (active.current) setSaveError('readback') }
+    } catch { if (active.current) setSaveError('write') }
+    finally { if (active.current) setSaving(false) }
   }
+
+  const audienceControl = (row: AppAuthRowState, testId: string, onChange: (patch: Partial<AppAuthRowState>) => void) => (
+    <div className="space-y-1">
+      <Select value={row.audienceMode} onValueChange={value => { onChange({ audienceMode: value as AppAuthRowState['audienceMode'], roleCodes: [] }); setDefaultConfirmed(false) }}
+        disabled={saving || !row.requiresLogin || !rolesLoaded || rolesError}>
+        <SelectTrigger data-testid={testId} className="h-9 rounded-[7px] text-[12.5px]"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="any_authenticated">{t('apps.auth.audience.any', '任意已登录用户')}</SelectItem>
+          <SelectItem value="any_org_role" disabled={!organization}>{t('apps.auth.audience.org', '组织内任意有效角色')}</SelectItem>
+          <SelectItem value="org_roles" disabled={!organization}>{t('apps.auth.audience.roles', '指定组织角色之一')}</SelectItem>
+          {(row.audienceMode === 'inherit' || (row.originalRule?.auth === 'required' && row.originalRule.roles === undefined && row.originalRule.audience === undefined)) && <SelectItem value="inherit">{t('apps.auth.audience.inherit', '继承应用默认')} · {(baseline.source === 'app_baseline' && baseline.audienceMode !== 'org_roles' ? baseline.audienceMode === 'any_authenticated' : policy.authAudience === 'any') ? t('apps.auth.audience.any', '任意已登录用户') : t('apps.auth.audience.org', '组织内任意有效角色')}</SelectItem>}
+        </SelectContent>
+      </Select>
+      {row.requiresLogin && row.audienceMode === 'org_roles' && <RolesMultiSelect roleCodes={row.roleCodes} options={orgRoles}
+        disabled={saving || !organization || !rolesLoaded || rolesError} testId={`${testId}-codes`} onChange={roleCodes => onChange({ roleCodes })} />}
+    </div>
+  )
 
   const setRule = (index: number, patch: Partial<AppAuthRowState>) =>
     setRules((rs) =>
@@ -280,6 +265,16 @@ function AuthBody({ app }: { app: AppRow }) {
 
   return (
     <div className="space-y-6" data-testid="app-auth-tab">
+      {!rolesLoaded && !rolesError && <p data-testid="app-auth-loading">{t('common.loading', '加载中')}</p>}
+      {organization && <p className="text-[12.5px] text-muted-foreground">{t('apps.auth.organization', '组织角色范围')} · {organization.name}</p>}
+      {rolesLoaded && !organization && <p className="text-destructive">{t('apps.auth.organizationMissing', '应用未配置组织，无法配置组织受众。')}</p>}
+      {saveError && <p role="alert" data-testid={saveError === 'readback' ? 'app-auth-readback-error' : 'app-auth-save-error'} className="text-destructive">
+        {saveError === 'readback' ? t('apps.auth.readbackFailed', '保存已成功，确认读取失败。草稿已保留，请重新打开确认。') : t('apps.auth.saveFailed', '保存失败，草稿已保留。')}
+      </p>}
+      {emptySelection && <p role="alert" className="text-destructive">{t('apps.auth.rolesRequired', '指定角色模式至少选择一个角色；任意用户请切换到任意已登录用户。')}</p>}
+      {defaultChanged && <label className="flex items-center gap-2 text-[12.5px]"><Checkbox checked={defaultConfirmed} onCheckedChange={v => setDefaultConfirmed(v === true)} />
+        {t('apps.auth.confirmDefault', '确认更改应用默认受众，以下继承规则也将改变：')} {rules.filter(r => r.requiresLogin && r.audienceMode === 'inherit').map(r => r.path).join(', ')}
+      </label>}
       <section>
         <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-2">
           {t('apps.controlPanel.authMode', '登录方式')}
@@ -288,7 +283,7 @@ function AuthBody({ app }: { app: AppRow }) {
           <Select
             value={mode}
             onValueChange={(v) => setMode(v as AppAuthMode)}
-            disabled={saving}
+            disabled={saving || !rolesLoaded || rolesError}
           >
             <SelectTrigger
               className="h-9 w-[220px] rounded-[7px] text-[13px]"
@@ -339,16 +334,10 @@ function AuthBody({ app }: { app: AppRow }) {
               <LoginSelect
                 value={baseline.requiresLogin}
                 onChange={setBaselineLogin}
-                disabled={saving}
+                disabled={saving || !rolesLoaded || rolesError}
                 testId="app-auth-baseline-login"
               />
-              <RolesMultiSelect
-                roleCodes={baseline.roleCodes}
-                options={orgRoles}
-                disabled={saving || !baseline.requiresLogin}
-                testId="app-auth-baseline-roles"
-                onChange={(roleCodes) => setBaseline((b) => ({ ...b, roleCodes }))}
-              />
+              {audienceControl(baseline, 'app-auth-baseline-roles', patch => setBaseline(b => ({ ...b, ...patch })))}
               <span className="w-9 shrink-0" aria-hidden />
             </div>
 
@@ -367,28 +356,22 @@ function AuthBody({ app }: { app: AppRow }) {
                       value={rule.path}
                       onChange={(e) => setRule(i, { path: e.target.value })}
                       placeholder="/admin"
-                      disabled={saving}
+                      disabled={saving || !rolesLoaded || rolesError}
                       className="h-9 min-w-0 rounded-[7px] font-mono text-[12.5px]"
                       data-testid={`app-auth-rule-path-${i}`}
                     />
                     <LoginSelect
                       value={rule.requiresLogin}
                       onChange={(requiresLogin) => setRule(i, { requiresLogin })}
-                      disabled={saving}
+                      disabled={saving || !rolesLoaded || rolesError}
                       testId={`app-auth-rule-login-${i}`}
                     />
-                    <RolesMultiSelect
-                      roleCodes={rule.roleCodes}
-                      options={orgRoles}
-                      disabled={saving || !rule.requiresLogin}
-                      testId={`app-auth-rule-roles-${i}`}
-                      onChange={(roleCodes) => setRule(i, { roleCodes })}
-                    />
+                    {audienceControl(rule, `app-auth-rule-roles-${i}`, patch => setRule(i, patch))}
                     <Button
                       type="button"
                       size="icon"
                       variant="ghost"
-                      disabled={saving}
+                      disabled={saving || !rolesLoaded || rolesError}
                       className="h-9 w-9 shrink-0 text-muted-foreground"
                       onClick={() => setRules((rs) => rs.filter((_, j) => j !== i))}
                       aria-label={t('common.remove', 'Remove')}
@@ -405,7 +388,7 @@ function AuthBody({ app }: { app: AppRow }) {
             type="button"
             size="sm"
             variant="outline"
-            disabled={saving}
+            disabled={saving || !rolesLoaded || rolesError}
             className="mt-2 h-9 gap-1.5 rounded-[7px] text-[13px]"
             onClick={() =>
               setRules((rs) => [
@@ -413,7 +396,9 @@ function AuthBody({ app }: { app: AppRow }) {
                 {
                   path: '',
                   requiresLogin: true,
-                  roleCodes: [...baseline.roleCodes],
+                  audienceMode: 'inherit',
+                  roleCodes: [],
+                  source: 'rule',
                 },
               ])
             }
@@ -432,7 +417,7 @@ function AuthBody({ app }: { app: AppRow }) {
           <p className="mt-1.5 text-[12px] text-faint">
             {t(
               'apps.auth.rolesHint',
-              '需要登录且未选角色时，任意已登录用户都可进入；选了角色则仅持有其中任一角色的成员可进入。',
+              '组织内任意有效角色动态包含未来角色；指定组织角色只允许所选角色之一。',
             )}
           </p>
           <p className="mt-1.5 text-[12px] text-signal">
@@ -448,7 +433,7 @@ function AuthBody({ app }: { app: AppRow }) {
         <Button
           type="button"
           className="h-9 rounded-[7px] text-[13px]"
-          disabled={saving || !dirty || mode === 'third' || nothingProtected || blankPath || !rolesLoaded || rolesError}
+          disabled={saving || !dirty || mode === 'third' || nothingProtected || blankPath || emptySelection || !rolesLoaded || rolesError || (defaultChanged && !defaultConfirmed) || (walled && !organization && [baseline, ...rules].some(r => r.requiresLogin && (r.audienceMode === 'any_org_role' || r.audienceMode === 'org_roles' || (r.audienceMode === 'inherit' && policy.authAudience !== 'any'))))}
           onClick={() => void save()}
           data-testid="app-auth-save"
         >
@@ -458,7 +443,7 @@ function AuthBody({ app }: { app: AppRow }) {
           <span className="text-[12.5px] text-destructive" data-testid="app-auth-roles-error">
             {t(
               'apps.auth.rolesLoadFailed',
-              '角色列表加载失败，暂时无法保存 —— 否则会把已设的角色限制清空。请重试。',
+              '角色列表加载失败，原规则已保留，暂时无法修改或保存。请重试。',
             )}
           </span>
         )}

@@ -1,3 +1,6 @@
+import { buildAppAuthInfo } from "../src/lib/apps-auth-info.js";
+import { handleBusinessApiRequest } from "../src/lib/business-api.js";
+import { parseAuthRules } from "../src/lib/apps-auth-paths.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -867,4 +870,59 @@ test("an unreadable path still admits a visitor who holds an org role", async ()
     assert.equal(out.response, null);
     assert.equal(out.identity?.userId, "user-1");
   });
+});
+
+test("persisted PATCH/auth-info roundtrip and the same cookie follow current organization roles", async () => {
+ await withEnv({}, async () => {
+  let stored = app({authScope:"paths",authAudience:"org"});
+  let authorized = true;
+  const roles = [{id:"r-reviewer",code:"reviewer",name:"Reviewer",status:"active"}];
+  const repository = {
+   async updateApp(id: string, patch: any) {
+    assert.equal(id,APP_ID);
+    if (!authorized) throw Object.assign(new Error("app administration forbidden"),{statusCode:403,code:"forbidden"});
+    stored = {...stored,...patch,authRules:parseAuthRules(patch.authRules)};
+    return structuredClone(stored);
+   },
+   async getAppAuthInfo(id: string) {
+    return buildAppAuthInfo({appId:id,teamId:TEAM_ID,organization:{id:ORG_A,name:"Fixture"},roles,authMode:"platform",authScope:stored.authScope as any,authAudience:stored.authAudience as any,authRules:stored.authRules as any});
+   },
+  };
+  const api = async (method: string, suffix = "", body?: unknown) => handleBusinessApiRequest({
+   httpMethod:method,path:`/v1/apps/${APP_ID}${suffix}`,headers:{Authorization:"Bearer fixture-token"},body:body === undefined ? undefined : JSON.stringify(body),
+  },{createRepository:()=>repository});
+  const save = async (rule: any) => {
+   const result = await api("PATCH","",{authRules:[rule]});
+   assert.equal(result.statusCode,200,result.body);
+   const read = await api("GET","/auth-info");
+   assert.equal(read.statusCode,200,read.body);
+   const info = JSON.parse(read.body);
+   assert.deepEqual(info.authRules,[rule]);
+   return info;
+  };
+  const cookie = await sessionCookie();
+  let currentRoles = ["reviewer"];
+  const currentDeps = deps({resolveVisitorRoles:async ()=>currentRoles});
+  const access = () => applyAuthGate(req("/reports/detail",{cookie}),stored,currentDeps);
+  assert.equal((await save({path:"/reports",auth:"required",audience:"org"})).effectivePolicies[1].kind,"any_org_role");
+  assert.equal((await access()).response,null);
+  assert.equal((await save({path:"/reports",auth:"required",roles:["admin"]})).effectivePolicies[1].kind,"org_roles");
+  assert.equal((await access()).response?.status,403);
+  await save({path:"/reports",auth:"required",roles:["admin","reviewer"]});
+  assert.equal((await access()).response,null);
+  currentRoles = []; // Revoked/inactive binding, cookie remains valid.
+  assert.equal((await access()).response?.status,403);
+  currentRoles = ["future_reviewer"];
+  roles.push({id:"r-future",code:"future_reviewer",name:"Future",status:"active"});
+  assert.equal((await access()).response?.status,403,"fixed list excludes future roles");
+  await save({path:"/reports",auth:"required",audience:"org"});
+  assert.equal((await access()).response,null,"dynamic policy includes future roles");
+  const before = structuredClone(stored);
+  authorized = false;
+  assert.equal((await api("PATCH","",{authRules:[{path:"/reports",auth:"public"}]})).statusCode,403);
+  assert.deepEqual(stored,before);
+  assert.deepEqual(JSON.parse((await api("GET","/auth-info")).body).authRules,before.authRules);
+  currentRoles = [];
+  assert.equal((await applyAuthGate(req("/reports",{cookie}),{...stored,createdBy:"user-1"} as GateApp,currentDeps)).response?.status,403,"creator metadata grants no site access");
+ });
 });

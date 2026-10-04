@@ -1574,8 +1574,8 @@
       "baseline": "其余所有页面",
       "noRules": "还没有单独设置的页面 —— 全站都按上面这条。",
       "addPage": "添加一个页面",
-      "rolesHint": "需要登录且未选角色时，任意已登录用户都可进入；选了角色则仅持有其中任一角色的成员可进入。",
-      "rolesLoadFailed": "角色列表加载失败，暂时无法保存 —— 否则会把已设的角色限制清空。请重试。",
+      "rolesHint": "组织内任意有效角色动态包含未来角色；指定组织角色只允许所选角色之一。",
+      "rolesLoadFailed": "角色列表加载失败，原规则已保留，暂时无法修改或保存。请重试。",
       "nothingProtected": "其余页面设为公开时，至少要有一个页面需要登录 —— 否则这道墙什么也没挡。",
       "blankPath": "有一行还没填路径。",
       "col": {
@@ -1588,15 +1588,28 @@
         "required": "需要登录"
       },
       "roles": {
-        "any": "任意用户",
-        "empty": "还没有可分配的角色"
+        "empty": "还没有可分配的角色",
+        "choose": "选择至少一个角色",
+        "unavailable": "已停用或缺失"
       },
       "access": {
         "public": "不需要登录",
         "any": "需要登录 · 任意用户",
         "org": "需要登录 · 组织角色",
         "roles": "需要登录 · {{roles}}"
-      }
+      },
+      "audience": {
+        "any": "任意已登录用户",
+        "org": "组织内任意有效角色",
+        "roles": "指定组织角色之一",
+        "inherit": "继承应用默认"
+      },
+      "organization": "组织角色范围",
+      "organizationMissing": "应用未配置组织，无法配置组织受众。",
+      "saveFailed": "保存失败，草稿已保留。",
+      "readbackFailed": "保存已成功，确认读取失败。草稿已保留，请重新打开确认。",
+      "rolesRequired": "指定角色模式至少选择一个角色；任意用户请切换到任意已登录用户。",
+      "confirmDefault": "确认更改应用默认受众，以下继承规则也将改变："
     },
     "env": {
       "tabTitle": "变量与密钥",
@@ -2013,7 +2026,7 @@
       "rolesSkills": "角色与技能",
       "deps": "依赖",
       "billing": "账单",
-      "teamRoles": "团队角色",
+      "teamRoles": "组织角色",
       "knowledgeAcl": "知识库权限",
       "providerKeys": "供应商 Key",
       "operatorOrgs": "组织",
@@ -3481,7 +3494,7 @@
       }
     },
     "teamRoles": {
-      "title": "团队角色",
+      "title": "组织角色",
       "description": "组织级角色，同组织下各团队共用。系统角色不可编辑。",
       "noTeam": "加入或创建团队后才能管理角色。",
       "newRole": "新建角色",

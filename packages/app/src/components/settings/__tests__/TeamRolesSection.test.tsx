@@ -79,6 +79,12 @@ beforeEach(() => {
 })
 
 describe('TeamRolesSection', () => {
+  it('shows organization role scope shared across teams', async () => {
+    render(<TeamRolesSection />)
+    expect(await screen.findByText('组织角色')).toBeTruthy()
+    expect(screen.getByText(/同组织下各团队共用/)).toBeTruthy()
+  })
+
   it('lists system and custom roles', async () => {
     render(<TeamRolesSection />)
     await screen.findByText('Owner')

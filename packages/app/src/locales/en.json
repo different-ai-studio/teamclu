@@ -1574,8 +1574,8 @@
       "baseline": "Every other page",
       "noRules": "No page has its own setting yet — the whole site follows the line above.",
       "addPage": "Add a page",
-      "rolesHint": "With login required and no roles selected, any signed-in user may enter. Selected roles admit members who hold any one of them.",
-      "rolesLoadFailed": "Could not load the role list, so saving is blocked — otherwise it would clear the roles this app restricts to. Please retry.",
+      "rolesHint": "Any active organization role includes future roles. Selected organization roles allow only the specified roles.",
+      "rolesLoadFailed": "Could not load authorization information. Original rules are preserved; editing and saving are unavailable. Retry.",
       "nothingProtected": "When every other page is public, at least one page has to require a login — otherwise this wall stops nothing.",
       "blankPath": "One row still has no path.",
       "col": {
@@ -1588,15 +1588,28 @@
         "required": "Login required"
       },
       "roles": {
-        "any": "Anyone signed in",
-        "empty": "No roles to choose from yet"
+        "empty": "No roles to choose from yet",
+        "choose": "Select at least one role",
+        "unavailable": "Inactive or missing"
       },
       "access": {
         "public": "No login needed",
         "any": "Sign in · anyone",
         "org": "Sign in · org roles",
         "roles": "Sign in · {{roles}}"
-      }
+      },
+      "audience": {
+        "any": "Any signed-in user",
+        "org": "Any active organization role",
+        "roles": "One of the selected organization roles",
+        "inherit": "Inherit app default"
+      },
+      "organization": "Organization role scope",
+      "organizationMissing": "This app has no organization configured. Organization audiences are unavailable.",
+      "saveFailed": "Saving failed. Your draft is preserved.",
+      "readbackFailed": "Saved successfully, but the confirmation read failed. Your draft is preserved; reopen to confirm.",
+      "rolesRequired": "Select at least one role, or switch to Any signed-in user.",
+      "confirmDefault": "Confirm the app default audience change. These inherited rules will also change:"
     },
     "env": {
       "tabTitle": "Variables & secrets",
@@ -2013,7 +2026,7 @@
       "rolesSkills": "Roles & Skills",
       "deps": "Dependencies",
       "billing": "Billing",
-      "teamRoles": "Team Roles",
+      "teamRoles": "Organization Roles",
       "knowledgeAcl": "Knowledge Access",
       "providerKeys": "Provider Keys",
       "operatorOrgs": "Orgs",
@@ -3481,7 +3494,7 @@
       }
     },
     "teamRoles": {
-      "title": "Team Roles",
+      "title": "Organization Roles",
       "description": "Org-scoped roles shared across teams in this organization. System roles cannot be edited.",
       "noTeam": "Join or create a team to manage roles.",
       "newRole": "New role",

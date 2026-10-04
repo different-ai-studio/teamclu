@@ -5216,3 +5216,48 @@ test("getHomeOrgId is null when there is no users row", async () => {
   const { repo } = homeOrgRepo(null);
   try { assert.equal(await repo.getHomeOrgId(), null); } finally { delete process.env.DEFAULT_ORG_ID; }
 });
+
+
+function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=null, appVisible=true, authRules: authRules = [{path:"/staff",auth:"required",audience:"org"}]}={}) {
+ const calls=[];
+ const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
+ return {repo,calls};
+}
+test("auth_info_checks_app_and_catalog_visibility",async()=>{
+ const {repo,calls}=authInfoRepo({member:false});
+ await assert.rejects(repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===403);
+ assert.equal(calls.some(c=>c.table==="roles"),false);
+ const hidden=authInfoRepo({appVisible:false});
+ await assert.rejects(hidden.repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===404);
+ assert.equal(hidden.calls.some(c=>c.table==="roles"),false);
+});
+test("auth info aggregates only the active application organization catalog",async()=>{
+ const {repo,calls}=authInfoRepo();
+ const info=await repo.getAppAuthInfo("app");
+ assert.deepEqual(info.organization,{id:"org-1",name:"Organization"});
+ assert.deepEqual(info.roles,[{id:"review",code:"reviewer",name:"Reviewer",status:"active"}]);
+ assert.deepEqual(info.authRules,[{path:"/staff",auth:"required",audience:"org"}]);
+ assert.equal(calls.some(c=>c.table==="roles_users"),false);
+ assert.ok(calls.some(c=>c.table==="roles" && c.op==="eq" && c.column==="org_id" && c.value==="org-1"));
+});
+test("auth info rejects organization mismatch and propagates directory failures",async()=>{
+ const mismatch=authInfoRepo({appOrg:"other"});
+ await assert.rejects(mismatch.repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===403);
+ assert.equal(mismatch.calls.some(c=>c.table==="roles"),false);
+ const error=Object.assign(new Error("catalog unavailable"),{code:"upstream"});
+ await assert.rejects(authInfoRepo({rolesError:error}).repo.getAppAuthInfo("app"),e=>e===error);
+});
+test("auth info supports legacy team organization fallback and unconfigured teams",async()=>{
+ assert.equal((await authInfoRepo({appOrg:null}).repo.getAppAuthInfo("app")).organization.id,"org-1");
+ const {repo,calls}=authInfoRepo({appOrg:null,teamOrg:null});
+ const info=await repo.getAppAuthInfo("app");
+ assert.equal(info.organization,null);
+ assert.equal(info.organizationStatus,"unconfigured");
+ assert.deepEqual(info.roles,[]);
+ assert.equal(calls.some(c=>c.table==="roles"),false);
+});
+
+test("auth info never normalizes malformed stored rules into an empty rule list",async()=>{
+ const {repo}=authInfoRepo({authRules:{broken:true} as any});
+ await assert.rejects(repo.getAppAuthInfo("app"),(error:any)=>error.statusCode===503);
+});
