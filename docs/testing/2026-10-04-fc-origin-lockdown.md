@@ -111,3 +111,38 @@ SDK mock 代替。允许与拒绝使用现有授权测试账号/组织/角色；
 
 保存记录时不附认证秘密。既有应用的安全状态不属于本结果，不因新测试应用
 通过而推断已修复。
+
+## 本地最终审阅与验证记录
+
+2026-10-04，全分支只读集成/架构审阅通过，审阅范围
+`94f20934..ff0e323e`，分支 `fix/fc-origin-lockdown`。
+**未发现 Critical 或 Important 问题**，本地实现具备合入条件；
+此结论不授权推送、提 PR、上线或修改已有应用，也不代表真实 FC 入口已封闭。
+云端验收状态仍为“尚未执行”。
+
+审阅核对了部署与网关的规范 Host/完整 UUID 一致性、鉴权后签发、
+业务 Authorization/Cookie 保留、手动重定向、预检/部署/finalize 配置重验、
+所有分页入口核对、提供商读回后才提交 Live、秘密白名单摘要、
+双版本轮换及已有应用兼容边界。未发现匿名回退或已有应用修复工具。
+
+以下为此前实际完成的最终本地验证证据，审阅及本次状态文档更新未重复跑全套。
+pnpm 命令在 `services/fc` 执行并带
+`--config.verify-deps-before-run=false`，前端 lint 在根目录执行：
+
+| 检查 | 实际结果 |
+| --- | --- |
+| `node --import tsx --test test/apps-origin-config-wiring.test.ts test/deploy-env-parity.test.ts` | 7 pass / 0 fail / 0 skip；真实 Compose 映射与合成多行 PEM 配置边界 |
+| `pnpm test` | 1,796 tests；1,783 pass / 0 fail / 13 原有外部/live 环境 skip（包括本地 Supabase 不可达） |
+| `pnpm typecheck`、`pnpm build` | 各 exit 0 |
+| `pnpm openapi:lint` | exit 0，11 项已有警告：7 ambiguous paths、3 missing 4xx、1 missing 2xx |
+| 根目录 `pnpm lint` | exit 1，`eslint: command not found`；缺少前端依赖，其范围为 `packages/app`，不覆盖此次 FC/Markdown/YAML |
+| Git whitespace 检查 | 实现提交的 diff/cached/show 检查及本次文档 `git diff --check` 均通过 |
+
+CI 无适用于此次 FC/Markdown/YAML 的格式化命令；未安装依赖或引入
+格式化改动。Docker/Dokploy 真实多行秘密注入、实际 FC `authInfo` JWT/HTTPS
+入口行为及正式网关登录/角色/上传，仍须另行授权后按上面的新应用流程验证。
+
+延期 Minor 维护事项：测试证书 fixture 于 **2036-10-01** 到期；配置加载器
+使用真实时钟，固定 JWT/证书断言时钟不能隔离这一校验。须在到期前更新
+测试证书，或另行引入受控配置测试时钟，避免届时导致无关测试失败。
+当前无生产/安全阻塞；本次仅记录，不修改产品、测试配置或 fixture。
