@@ -1689,7 +1689,10 @@ mod tests {
         let malformed = read_app_auth_info(&api, &json!({"id":"malformed"}))
             .await
             .unwrap_err();
-        assert_eq!(malformed, "App auth discovery unavailable: unreadable Cloud API response");
+        assert_eq!(
+            malformed,
+            "App auth discovery unavailable: unreadable Cloud API response"
+        );
         assert!(!malformed.contains("test-token"));
         server.abort();
         assert_eq!(
