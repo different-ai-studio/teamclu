@@ -33,8 +33,9 @@ export type AuthAudience = (typeof AUTH_AUDIENCES)[number];
  *
  * `roles` is the preferred WHO filter for `auth: "required"`: an empty list
  * means any signed-in user; a non-empty list means the visitor needs an
- * intersection with their active org role codes. `audience` is legacy-read
- * only (`any` ≡ `roles: []`, `org` ≡ any `roles_users` row) and is only
+ * intersection with their active org role codes. `audience` remains supported
+ * for dynamic organization audiences (`any` ≡ `roles: []`, `org` ≡ any active
+ * organization role) and is only
  * meaningful with `auth: "required"`. Absent `roles` AND absent `audience`
  * means "whatever the app's own `auth_audience` says" — NOT a hard-coded
  * default. Every rule stored before these keys existed is absent, so reading

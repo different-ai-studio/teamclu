@@ -5,6 +5,19 @@
  * test/repository-contract.test.ts against a stub client.
  */
 export function runBusinessRepositoryContract({ test, assert, createRepository }) {
+  test("repository contract: auth-info returns raw config and active org catalog", async () => {
+    const info = await createRepository().getAppAuthInfo("app-1");
+    assert.equal(info.appId, "app-1");
+    assert.equal(info.roleScope, "organization");
+    assert.equal(info.organizationStatus, "configured");
+    assert.ok(info.roles.some(role => role.code === "reviewer"));
+    assert.ok(info.roles.every(role => role.status === "active"));
+    assert.deepEqual(info.authRules, [{path:"/staff",auth:"required",audience:"org"}]);
+    assert.equal(info.effectivePolicies.find(policy => policy.path === "/staff").kind, "any_org_role");
+    await assert.rejects(createRepository().getAppAuthInfo("missing"), error => error.statusCode === 404);
+    await assert.rejects(createRepository().getAppAuthInfo("catalog-denied"), error => error.statusCode === 403);
+  });
+
   test("repository contract: sessions keep canonical fields and ordering", async () => {
     const repo = createRepository();
     // teamId is what the list resolves the caller's actor from — a user has one

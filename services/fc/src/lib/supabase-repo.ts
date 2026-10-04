@@ -3,6 +3,7 @@
  *
  * Contract: lib/repository-contract.ts.
  */
+import { buildAppAuthInfo, type AppAuthInfo } from "./apps-auth-info.js";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createClient as defaultCreateClient } from "@supabase/supabase-js";
 import { verifyTrustedExternalJwt } from "./trusted-external-jwt.js";
@@ -4598,6 +4599,46 @@ export function createSupabaseBusinessRepository(options) {
         ...mapApp(r),
         ...appRelationshipFor(r, viewer.actorId, viewer.grants),
       }));
+    },
+
+    async getAppAuthInfo(appId: string): Promise<AppAuthInfo> {
+      const app = await this.getApp(appId);
+      if (!app) throw new ApiError(404, "not_found", "app not found");
+      // Caller-scoped read: the gateway uses the app tenant pointer, not a
+      // currently selected team or a service-role catalog query.
+      const { data: raw, error } = await supabase.from("apps")
+        .select("org_id, auth_rules").eq("id", appId).maybeSingle();
+      if (error) throw error;
+      if (!raw) throw new ApiError(404, "not_found", "app not found");
+      const teamOrgId = await this.resolveTeamOrgId(app.teamId);
+      const orgId = raw.org_id ?? teamOrgId;
+      if (orgId && orgId !== teamOrgId) {
+        throw new ApiError(403, "forbidden", "application organization does not match team role catalog");
+      }
+      let organization: AppAuthInfo["organization"] = null;
+      let roles: AppAuthInfo["roles"] = [];
+      if (orgId) {
+        // Reuse the catalog's membership authorization; failure aborts the
+        // entire response, even when the app itself was readable.
+        const catalog = await this.listOrgRoles(app.teamId);
+        const { data: org, error: orgError } = await supabase.schema("public")
+          .from("orgs").select("id, name").eq("id", orgId).maybeSingle();
+        if (orgError) throw orgError;
+        if (!org) throw new ApiError(503, "app_org_unavailable", "application organization metadata unavailable");
+        organization = { id: orgId, name: org.name };
+        roles = catalog.filter((role) => role.status === "active")
+          .map(({ id, code, name, status }) => ({ id, code, name, status }));
+      }
+      return buildAppAuthInfo({
+        appId: app.id,
+        teamId: app.teamId,
+        organization,
+        roles,
+        authMode: app.authMode,
+        authScope: app.authScope,
+        authAudience: app.authAudience,
+        authRules: raw.auth_rules ?? [],
+      });
     },
 
     async getApp(appId: string) {

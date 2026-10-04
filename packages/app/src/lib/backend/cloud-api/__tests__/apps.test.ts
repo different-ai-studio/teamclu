@@ -34,3 +34,18 @@ describe("apps module · setAppType", () => {
     );
   });
 });
+
+
+describe("apps module · auth-info", () => {
+ it("returns the full catalog/config response using encoded app ID", async () => {
+  const info = {appId:"app 1", teamId:"team", organization:{id:"org",name:"Org"},roleScope:"organization",roles:[{id:"r",code:"reviewer",name:"Reviewer",status:"active"}],authMode:"platform",authScope:"paths",authAudience:"org",authRules:[{path:"/staff",auth:"required",audience:"org"}],effectivePolicies:[],organizationStatus:"configured"};
+  const client = {get:vi.fn(async()=>info)} as unknown as CloudApiClient;
+  expect(await createAppsModule(client).getAppAuthInfo("app 1")).toEqual(info);
+  expect(client.get).toHaveBeenCalledWith("/v1/apps/app%201/auth-info");
+ });
+ for (const status of [403,404,503]) it(`propagates ${status}`,async()=>{
+  const error = new CloudApiError(status,"unavailable","failed",null);
+  const client={get:vi.fn(async()=>{throw error;})} as unknown as CloudApiClient;
+  await expect(createAppsModule(client).getAppAuthInfo("app")).rejects.toBe(error);
+ });
+});

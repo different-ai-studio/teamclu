@@ -1484,7 +1484,29 @@ export interface AppDataRowsQuery {
   filter?: { column: string; op: AppDataFilterOp; value?: string } | null;
 }
 
+export interface EffectiveAuthPolicy {
+  path: string;
+  kind: "public" | "any_authenticated" | "any_org_role" | "org_roles";
+  roleCodes: string[] | null;
+  inherited: boolean;
+  source: "auth_mode" | "roles" | "rule_audience" | "app_audience" | "scope_baseline";
+}
+export interface AppAuthInfo {
+  appId: string;
+  teamId: string;
+  organization: { id: string; name: string } | null;
+  roleScope: "organization";
+  roles: Array<{ id: string; code: string; name: string; status: string }>;
+  authMode: AppAuthMode;
+  authScope: AppAuthScope;
+  authAudience: AppAuthAudience;
+  authRules: AppAuthRule[];
+  effectivePolicies: EffectiveAuthPolicy[];
+  organizationStatus: "configured" | "unconfigured";
+}
+
 export interface AppsBackend {
+  getAppAuthInfo(appId: string): Promise<AppAuthInfo>;
   listApps(teamId: string): Promise<AppRow[]>;
   createApp(input: {
     teamId: string;

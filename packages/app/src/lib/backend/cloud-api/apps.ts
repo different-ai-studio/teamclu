@@ -1,5 +1,6 @@
 import type {
   AppsBackend,
+  AppAuthInfo,
   AppFilesPage,
   AppFilesQuery,
   AppStorageUsage,
@@ -32,6 +33,10 @@ type Page<T> = { items: T[] };
 
 export function createAppsModule(client: CloudApiClient): AppsBackend {
   return {
+    async getAppAuthInfo(appId) {
+      return client.get<AppAuthInfo>(`/v1/apps/${encodeURIComponent(appId)}/auth-info`);
+    },
+
     async listApps(teamId) {
       const params = new URLSearchParams({ teamId, limit: "100" });
       const page = await client.get<Page<AppRow>>(`/v1/apps?${params}`);
