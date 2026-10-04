@@ -1,3 +1,5 @@
+import { ApiError } from "../src/lib/http-utils.js";
+import { installOriginEnv, ORIGIN_ENV } from "./fixtures/apps-origin-auth/config.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SignJWT } from "jose";
@@ -1969,6 +1971,9 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
           return Promise.resolve({ data: matchRows()[0] ?? null, error: null });
         },
         then(resolve: any, reject: any) {
+          if (ctx.op === "update") {
+            for (const row of matchRows()) Object.assign(row, ctx.update);
+          }
           return Promise.resolve({ data: matchRows(), error: null }).then(resolve, reject);
         },
       };
@@ -2003,6 +2008,7 @@ function appsRepo(supabase: any, extra: any = {}) {
     accessToken: "caller-token",
     createClient: () => supabase,
     gitea: fakeGitea(),
+    validateAppOrigin: () => ({}),
     ...extra,
   });
 }
@@ -5260,4 +5266,129 @@ test("auth info supports legacy team organization fallback and unconfigured team
 test("auth info never normalizes malformed stored rules into an empty rule list",async()=>{
  const {repo}=authInfoRepo({authRules:{broken:true} as any});
  await assert.rejects(repo.getAppAuthInfo("app"),(error:any)=>error.statusCode===503);
+});
+
+
+test("origin config failure prevents preflight, deploy and finalize database writes", async () => {
+  for (const phase of ["preflight", "deploy", "finalize"]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: phase === "finalize" ? "awaiting_build" : null, fc_function_name: "fn", deploy_token: APP_PREFLIGHT_TOKEN }] } }), {
+      readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+      validateAppOrigin: () => { throw Object.assign(new Error("origin security unavailable: originAuth"), { statusCode: 503, code: "origin_security_unavailable" }); },
+      startDeploy: async () => { throw new Error("must not mint"); },
+      finalizeDeploy: async () => { throw new Error("must not publish"); },
+    });
+    await assert.rejects(() => phase === "preflight" ? repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION })
+      : phase === "deploy" ? repo.deployApp("app-1", APP_DEPLOY) : repo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN)),
+      (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable");
+    assert.deepEqual(calls.filter(c => c.table === "apps" && c.op === "update"), [], phase);
+  }
+});
+
+test("app status adds readonly origin evidence without exposing auth config", async () => {
+  const calls: any[] = [];
+  const app = { ...APP_ROW, fc_endpoint: "http://old.origins.test", fc_function_name: "legacy-fn" };
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [app] } }), {
+    readAppOriginSecurity: async (row: any) => {
+      assert.equal(row.slug, app.slug);
+      return { status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["extraHttpTriggers", "SECRET"], privateKey: "SECRET" };
+    },
+  });
+  const status = await repo.getApp("app-1");
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.deepEqual(status.originSecurity, { status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["extraHttpTriggers"] });
+  assert.deepEqual(info.originSecurity, status.originSecurity);
+  assert.equal(status.fcEndpoint, app.fc_endpoint);
+  assert.equal(JSON.stringify({ status, info }).includes("SECRET"), false);
+  assert.equal(calls.some(c => c.op === "update"), false);
+  assert.ok(calls.some(c => c.op === "select" && c.table === "apps" && c.columns.includes("fc_endpoint") && c.columns.includes("slug")));
+});
+
+
+test("extra HTTP triggers and unsafe aliases block preflight and deploy without state writes", async () => {
+  for (const field of ["extraHttpTriggers", "customDomainAliases"]) {
+    for (const phase of ["preflight", "deploy"]) {
+      const calls: any[] = [];
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+        readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+        readAppOriginSecurity: async () => ({ status: "legacy_unverified", driftFields: [field] }),
+        startDeploy: async () => { throw new Error("must not mint"); },
+      });
+      await assert.rejects(() => phase === "preflight" ? repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }) : repo.deployApp("app-1", APP_DEPLOY),
+        (error: any) => error.statusCode === 409 && error.code === "origin_security_drift" && error.message.includes(field));
+      assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+    }
+  }
+});
+
+test("legacy standard trigger and domain drift remains eligible for a normal redeploy", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+    readAppOriginSecurity: async () => ({ status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["disableURLInternet", "protocol", "authConfig.authType"] }),
+  });
+  const result = await repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION });
+  assert.equal(result.preview.originSecurity.status, "legacy_unverified");
+  assert.equal(result.preview.originSecurity.internetUrlDisabled, false);
+});
+
+test("production config validator prevents token reservation for missing config and invalid target", async () => {
+  const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
+  for (const failure of [...Object.keys(ORIGIN_ENV), "hostname", "invalidCertificate", "certificateHostname", "keyring", "appId"]) {
+    const restore = installOriginEnv();
+    try {
+      if (failure in ORIGIN_ENV) delete process.env[failure];
+      if (failure === "invalidCertificate") process.env.APPS_FC_ORIGIN_TLS_CERT_PEM = "SECRET_INVALID_CERT";
+      if (failure === "certificateHostname") process.env.APPS_FC_ROUTE_DOMAIN = "other.test";
+      if (failure === "keyring") process.env.APPS_FC_ORIGIN_KEYRING = "SECRET_INVALID_KEYRING";
+      const calls: any[] = [];
+      const appId = failure === "appId" ? "invalid-id" : id;
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id: appId, slug: failure === "hostname" ? "x".repeat(200) : "app-a", provision_status: "ready", deploy_token: null }] } }), { validateAppOrigin: undefined });
+      await assert.rejects(() => repo.preflightAppDeploy(appId, { revision: APP_REVISION, declaration: APP_DECLARATION }),
+        (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable" && !error.message.includes("SECRET"));
+      assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false, failure);
+    } finally { restore(); }
+  }
+});
+
+test("production deploy and finalize recheck origin configuration removed after successful preflight", async () => {
+  for (const phase of ["deploy", "finalize"]) {
+    const restore = installOriginEnv();
+    try {
+      const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
+      const calls: any[] = [];
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id, slug: "app-a", provision_status: "ready", deploy_token: null, fc_function_name: "fn" }] } }), {
+        validateAppOrigin: undefined,
+        readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+        startDeploy: async () => ({ fcFunctionName: "fn", fcRegion: "cn-hangzhou" }),
+        finalizeDeploy: async () => { throw new Error("must not publish"); },
+      });
+      const preflight = await repo.preflightAppDeploy(id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+      assert.ok(preflight.token);
+      if (phase === "finalize") await repo.deployApp(id, { ...APP_DEPLOY, preflightToken: preflight.token });
+      const beforeWrites = calls.filter(c => c.table === "apps" && c.op === "update").length;
+      delete process.env.APPS_FC_ORIGIN_KEYRING;
+      await assert.rejects(() => phase === "deploy" ? repo.deployApp(id, { ...APP_DEPLOY, preflightToken: preflight.token })
+        : repo.finalizeDeploy(id, { ...appFinalize(preflight.token) }),
+        (error: any) => error.code === "origin_security_unavailable" && error.statusCode === 503);
+      assert.equal(calls.filter(c => c.table === "apps" && c.op === "update").length, beforeWrites);
+    } finally { restore(); }
+  }
+});
+
+
+test("origin verification failure never commits Live status, endpoint or revision and records a safe retryable error", async () => {
+  for (const code of ["origin_security_drift", "origin_security_unavailable"]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "awaiting_build", fc_function_name: "fn", git_commit_sha: "old-revision" }] } }), {
+      finalizeDeploy: async () => { throw new ApiError(code === "origin_security_drift" ? 409 : 503, code, "origin security: routeConfig"); },
+    });
+    await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN)), (error: any) => error.code === code);
+    const writes = calls.filter(c => c.table === "apps" && c.op === "update").map(c => c.row);
+    assert.deepEqual(writes.map(row => row.fc_status), ["deploying", "deploy_error"]);
+    assert.equal(writes.some(row => "fc_endpoint" in row || "git_commit_sha" in row || "start_spec" in row), false);
+    const status = await repo.getApp("app-1");
+    assert.equal(status.gitCommitSha, "old-revision");
+    assert.equal(status.fcStatus, "deploy_error");
+    assert.equal(writes.at(-1).deploy_token, null);
+  }
 });

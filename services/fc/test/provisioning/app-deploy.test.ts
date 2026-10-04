@@ -1,4 +1,5 @@
-import { test } from "node:test";
+import { installOriginEnv } from "../fixtures/apps-origin-auth/config.js";
+import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   startDeploy,
@@ -12,6 +13,10 @@ import {
   assertDeployAllowed,
   STALE_DEPLOY_MS,
 } from "../../src/lib/provisioning/app-deploy.js";
+
+let restoreOriginEnv: () => void;
+before(() => { restoreOriginEnv = installOriginEnv(); });
+after(() => restoreOriginEnv());
 
 test("startDeploy mints the upload handle and names the function + object", async () => {
   const out = await startDeploy(
@@ -27,7 +32,7 @@ test("startDeploy mints the upload handle and names the function + object", asyn
 test("startDeploy keeps the stored legacy function name on redeploy", async () => {
   const out = await startDeploy(
     { mintUploadUrl: async () => "https://oss.example/put" },
-    { appId: "app-1", slug: "new-slug", region: "cn-shenzhen", fcFunctionName: "legacy-fn" },
+    { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "new-slug", region: "cn-shenzhen", fcFunctionName: "legacy-fn" },
   );
   assert.equal(out.fcFunctionName, "legacy-fn");
   assert.equal(out.fcRegion, "cn-shenzhen");
@@ -39,7 +44,7 @@ test("startDeploy does NOT touch FC — the code object does not exist yet", asy
   let mintCalls = 0;
   await startDeploy(
     { mintUploadUrl: async () => { mintCalls += 1; return "https://oss.example/put"; } },
-    { appId: "app-1", region: "cn-hangzhou" },
+    { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", region: "cn-hangzhou" },
   );
   assert.equal(mintCalls, 1);
 });
@@ -65,13 +70,14 @@ test("finalizeDeploy provisions the org DB + schema, then sets code + env togeth
       },
       fcOps: {
         ensureFunction: async (n: string, a: any) => { calls.push(["ensureFunction", n, a]); },
-        ensureHttpTrigger: async (n: string) => { calls.push(["trigger", n]); return "https://fn.example.fcapp.run"; },
+        ensureHttpTrigger: async (n: string) => { calls.push(["trigger", n]); return { internetUrlDisabled: true as const }; },
+        ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
       },
       genPassword: () => "pw-fixed",
     },
     {
       appId: "3f1c9a2e-0000-4000-8000-000000000abc",
-      slug: "Demo App",
+      slug: "demo",
       orgId,
       appType: "data_app",
       fcFunctionName: "tc-app-3f1c9a2e-0000-4000-8000-000000000abc",
@@ -79,7 +85,7 @@ test("finalizeDeploy provisions the org DB + schema, then sets code + env togeth
       declaration,
     },
   );
-  assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
+  assert.deepEqual(out, { fcEndpoint: "https://demo-3f1c9a2e.origins.test" });
 
   assert.equal(calls[0][0], "provisionDb");
   assert.equal(calls[0][1], "postgres://host:5432/postgres");
@@ -93,7 +99,7 @@ test("finalizeDeploy provisions the org DB + schema, then sets code + env togeth
   assert.match(args.env.DATABASE_URL, /tc_org_/);
   assert.match(args.env.DATABASE_URL, /pw-fixed/);
   assert.deepEqual(args.declaration, declaration);
-  assert.equal(calls.at(-1)[0], "trigger");
+  assert.ok(calls.some(call => call[0] === "trigger"));
 });
 
 test("a data app without orgId fails before provisioning", async () => {
@@ -104,10 +110,11 @@ test("a data app without orgId fails before provisioning", async () => {
         provisionDb: async () => { throw new Error("must not be called"); },
         fcOps: {
           ensureFunction: async () => { throw new Error("must not be called"); },
-          ensureHttpTrigger: async () => "unused",
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+          ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
         },
       },
-      { appId: "app-1", slug: "demo", appType: "data_app", fcFunctionName: "tc-app-1", ossObjectName: "k" },
+      { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "demo", appType: "data_app", fcFunctionName: "tc-app-1", ossObjectName: "k" },
     ),
     /org/,
   );
@@ -138,12 +145,13 @@ test("data_app finalize rewrites DATABASE_URL host via APPS_DB_APP_URL", async (
         }),
         fcOps: {
           ensureFunction: async (_n: string, a: any) => { calls.push(a); },
-          ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+          ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
         },
         genPassword: () => "pw-fixed",
       },
       {
-        appId: "app-1",
+        appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
         slug: "demo",
         orgId,
         appType: "data_app",
@@ -187,11 +195,12 @@ test("data_app finalize fails when APPS_DB_APP_URL is set but VPC env is missing
           }),
           fcOps: {
             ensureFunction: async () => { throw new Error("must not be called"); },
-            ensureHttpTrigger: async () => "unused",
+            ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+            ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
           },
         },
         {
-          appId: "app-1",
+          appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
           slug: "demo",
           orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
           appType: "data_app",
@@ -225,11 +234,12 @@ test("data_app finalize fails when admin URL is compose-internal and APPS_DB_APP
         }),
         fcOps: {
           ensureFunction: async () => { throw new Error("must not be called"); },
-          ensureHttpTrigger: async () => "unused",
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+          ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
         },
       },
       {
-        appId: "app-1",
+        appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
         slug: "demo",
         orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         appType: "data_app",
@@ -250,11 +260,12 @@ test("a static app deploys with no database at all", async () => {
       {
         fcOps: {
           ensureFunction: async (n: string, a: any) => { calls.push([appType, n, a]); },
-          ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+          ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
         },
       } as any,
       {
-        appId: "app-1",
+        appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
         slug: "demo",
         appType,
         fcFunctionName: "tc-app-1",
@@ -270,7 +281,7 @@ test("a static app deploys with no database at all", async () => {
         },
       },
     );
-    assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
+    assert.deepEqual(out, { fcEndpoint: "https://demo-76af539e.origins.test" });
   }
   assert.equal(calls.length, 2);
   for (const [type, , args] of calls) {
@@ -285,10 +296,11 @@ test("a data app without a configured database fails loudly", async () => {
       {
         fcOps: {
           ensureFunction: async () => { throw new Error("must not be called"); },
-          ensureHttpTrigger: async () => "unused",
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+          ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
         },
       } as any,
-      { appId: "app-1", slug: "demo", appType: "data_app", fcFunctionName: "tc-app-1", ossObjectName: "k" },
+      { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "demo", appType: "data_app", fcFunctionName: "tc-app-1", ossObjectName: "k" },
     ),
     /APPS_DB_ADMIN_URL/,
   );
@@ -308,11 +320,12 @@ test("finalizeDeploy merges platform OAuth env into the function env", async () 
     {
       fcOps: {
         ensureFunction: async (_n: string, a: any) => { calls.push(a); },
-        ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+        ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+        ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
       },
     },
     {
-      appId: "app-1",
+      appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
       slug: "demo",
       appType: "static_web",
       fcFunctionName: "tc-app-1",
@@ -380,17 +393,17 @@ test("gitCommitSha is optional for an app with no forge repo", () => {
 
 test("finalizeDeploy binds a custom domain and serves the app on it", async () => {
   const prev = process.env.APPS_FC_ROUTE_DOMAIN;
-  process.env.APPS_FC_ROUTE_DOMAIN = "fc-apps.example.com";
+  process.env.APPS_FC_ROUTE_DOMAIN = "origins.test";
   try {
     const bound: string[][] = [];
     const out = await finalizeDeploy(
       {
         fcOps: {
           ensureFunction: async () => {},
-          ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+          ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
           ensureCustomDomain: async (fn: string, domain: string) => {
             bound.push([fn, domain]);
-            return `http://${domain}`;
+            return `https://${domain}`;
           },
         },
       },
@@ -405,39 +418,26 @@ test("finalizeDeploy binds a custom domain and serves the app on it", async () =
     // Same label as the public host, so the two correlate in logs on both sides.
     assert.deepEqual(bound, [[
       "tc-app-3f1c9a2e-0000-4000-8000-000000000abc",
-      "demo-3f1c9a2e.fc-apps.example.com",
+      "demo-3f1c9a2e.origins.test",
     ]]);
-    assert.deepEqual(out, { fcEndpoint: "http://demo-3f1c9a2e.fc-apps.example.com" });
+    assert.deepEqual(out, { fcEndpoint: "https://demo-3f1c9a2e.origins.test" });
   } finally {
     if (prev === undefined) delete process.env.APPS_FC_ROUTE_DOMAIN;
     else process.env.APPS_FC_ROUTE_DOMAIN = prev;
   }
 });
 
-test("finalizeDeploy falls back to the trigger URL with no route domain", async () => {
+test("finalizeDeploy refuses to publish with no route domain", async () => {
   const prev = process.env.APPS_FC_ROUTE_DOMAIN;
   delete process.env.APPS_FC_ROUTE_DOMAIN;
   try {
-    const out = await finalizeDeploy(
-      {
-        fcOps: {
-          ensureFunction: async () => {},
-          ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
-          ensureCustomDomain: async () => { throw new Error("must not be called"); },
-        },
-      },
-      {
-        appId: "3f1c9a2e-0000-4000-8000-000000000abc",
-        slug: "demo",
-        appType: "static_web",
-        fcFunctionName: "tc-app-x",
-        ossObjectName: "apps/x/code.zip",
-      },
-    );
-    assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
-  } finally {
-    if (prev !== undefined) process.env.APPS_FC_ROUTE_DOMAIN = prev;
-  }
+    await assert.rejects(() => finalizeDeploy({ fcOps: {
+      ensureFunction: async () => { throw new Error("must not mutate"); },
+      ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+      ensureCustomDomain: async () => { throw new Error("must not mutate"); },
+    } }, { appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo", appType: "static_web", fcFunctionName: "fn", ossObjectName: "code.zip" }),
+    (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable");
+  } finally { process.env.APPS_FC_ROUTE_DOMAIN = prev; }
 });
 
 test("deleting an app drops its custom domain too", async () => {
@@ -445,7 +445,7 @@ test("deleting an app drops its custom domain too", async () => {
   // one per deleted app is how a later create starts failing for a different
   // app entirely.
   const prev = process.env.APPS_FC_ROUTE_DOMAIN;
-  process.env.APPS_FC_ROUTE_DOMAIN = "fc-apps.example.com";
+  process.env.APPS_FC_ROUTE_DOMAIN = "origins.test";
   try {
     const dropped: string[] = [];
     const { teardownAppResources } = await import("../../src/lib/provisioning/app-delete.js");
@@ -458,7 +458,7 @@ test("deleting an app drops its custom domain too", async () => {
       },
       { appId: "3f1c9a2e-0000-4000-8000-000000000abc", slug: "demo" },
     );
-    assert.deepEqual(dropped, ["demo-3f1c9a2e.fc-apps.example.com"]);
+    assert.deepEqual(dropped, ["demo-3f1c9a2e.origins.test"]);
   } finally {
     if (prev === undefined) delete process.env.APPS_FC_ROUTE_DOMAIN;
     else process.env.APPS_FC_ROUTE_DOMAIN = prev;
@@ -467,7 +467,7 @@ test("deleting an app drops its custom domain too", async () => {
 
 test("a failing custom-domain delete never blocks the rest of teardown", async () => {
   const prev = process.env.APPS_FC_ROUTE_DOMAIN;
-  process.env.APPS_FC_ROUTE_DOMAIN = "fc-apps.example.com";
+  process.env.APPS_FC_ROUTE_DOMAIN = "origins.test";
   try {
     let deletedFn = false;
     const { teardownAppResources } = await import("../../src/lib/provisioning/app-delete.js");
@@ -507,13 +507,13 @@ test("a container app is minted a registry to push to, not an upload URL", async
         };
       },
     },
-    { appId: "app-1", region: "cn-shenzhen", buildKind: "container", gitCommitSha: "abc1234" },
+    { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", region: "cn-shenzhen", buildKind: "container", gitCommitSha: "abc1234" },
   );
-  assert.deepEqual(minted, { appId: "app-1", sha: "abc1234" });
+  assert.deepEqual(minted, { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", sha: "abc1234" });
   assert.equal(out.presignedPut, undefined);
   assert.equal(out.ossObjectName, undefined);
   assert.equal(out.image?.username, "temp-user");
-  assert.match(out.image?.reference ?? "", /tc-app-app-1:abc1234$/);
+  assert.match(out.image?.reference ?? "", /tc-app-76af539e-5341-4e96-bda7-6c8dacf2b092:abc1234$/);
 });
 
 test("a container deploy on a deployment with no registry names the variable", async () => {
@@ -526,7 +526,7 @@ test("a container deploy on a deployment with no registry names the variable", a
           mintUploadUrl: async () => "https://oss.example/put",
           imagePushUnavailable: "APPS_REGISTRY_HOST is not set",
         },
-        { appId: "app-1", region: "cn-shenzhen", buildKind: "container" },
+        { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", region: "cn-shenzhen", buildKind: "container" },
       ),
     (e: any) => {
       assert.equal(e.statusCode ?? e.status, 503);
@@ -540,7 +540,7 @@ test("an app that declares nothing still gets the upload handle", async () => {
   // Every client older than container support sends no runtime at all.
   const out = await startDeploy(
     { mintUploadUrl: async (k: string) => `https://oss.example/${k}` },
-    { appId: "app-1", region: "cn-shenzhen" },
+    { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", region: "cn-shenzhen" },
   );
   assert.ok(out.presignedPut);
   assert.equal(out.image, undefined);
@@ -602,13 +602,14 @@ test("finalizeDeploy refuses an image outside the app's own repository", async (
     ensureLogStore: async () => { calls.push("ensureLogStore"); },
     fcOps: {
       ensureFunction: async () => { calls.push("ensureFunction"); },
-      ensureHttpTrigger: async () => { calls.push("trigger"); return "https://fn.example.fcapp.run"; },
+      ensureHttpTrigger: async () => { calls.push("trigger"); return { internetUrlDisabled: true as const }; },
+      ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
     },
     ownsImage: (appId: string, image: string) =>
       image.startsWith(`registry.example.com/apps/tc-app-${appId}:`),
   };
   const input = {
-    appId: "app-1",
+    appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
     slug: "demo",
     orgId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     appType: "data_app",
@@ -630,9 +631,9 @@ test("finalizeDeploy refuses an image outside the app's own repository", async (
         database: "tc_org_x",
         connectionString: "postgres://app_role:pw@host:5432/tc_org_x?options=-c%20search_path%3Dapp_demo",
       }) } as never,
-    { ...input, image: "registry.example.com/apps/tc-app-app-1:sha" },
+    { ...input, image: "registry.example.com/apps/tc-app-76af539e-5341-4e96-bda7-6c8dacf2b092:sha" },
   );
-  assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
+  assert.deepEqual(out, { fcEndpoint: "https://demo-76af539e.origins.test" });
 });
 
 test("finalizeDeploy leaves the image unchecked where no registry is configured", async () => {
@@ -644,11 +645,12 @@ test("finalizeDeploy leaves the image unchecked where no registry is configured"
     {
       fcOps: {
         ensureFunction: async (_n: string, a: any) => { ensured = a; },
-        ensureHttpTrigger: async () => "https://fn.example.fcapp.run",
+        ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
+        ensureCustomDomain: async (_fn, domain) => `https://${domain}`,
       },
     } as never,
     {
-      appId: "app-1",
+      appId: "76af539e-5341-4e96-bda7-6c8dacf2b092",
       slug: "demo",
       appType: "static_web",
       fcFunctionName: "tc-app-app-1",
@@ -656,6 +658,21 @@ test("finalizeDeploy leaves the image unchecked where no registry is configured"
       image: "anything.example.com/whatever:1",
     },
   );
-  assert.deepEqual(out, { fcEndpoint: "https://fn.example.fcapp.run" });
+  assert.deepEqual(out, { fcEndpoint: "https://demo-76af539e.origins.test" });
   assert.equal(ensured.image, "anything.example.com/whatever:1");
+});
+
+
+test("origin config is validated before provisioning and no default URL is published", async () => {
+  const calls: string[] = [];
+  await assert.rejects(() => finalizeDeploy({
+    readOriginAuth: () => { throw new Error("Invalid apps origin configuration: APPS_FC_ROUTE_DOMAIN"); },
+    fcOps: {
+      ensureFunction: async () => { calls.push("function"); },
+      ensureHttpTrigger: async () => { calls.push("trigger"); return { internetUrlDisabled: true }; },
+      ensureCustomDomain: async () => "https://safe.origins.test",
+    },
+  } as any, { appId: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "app-a", appType: "static_web", fcFunctionName: "fn", ossObjectName: "code.zip" }),
+  (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable");
+  assert.deepEqual(calls, []);
 });

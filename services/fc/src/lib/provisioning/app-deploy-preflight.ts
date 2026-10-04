@@ -1,10 +1,12 @@
+import { projectOriginSecurity } from "./app-runtime-info.js";
+import type { OriginSecuritySummary } from "../apps-origin-auth.js";
 import { createHash, randomUUID } from "node:crypto";
 import { ApiError } from "../http-utils.js";
 import { parseAppDeployDeclaration, resolveLayers, type AppDeployDeclaration } from "./app-runtime-spec.js";
 import type { RuntimeCandidate } from "./app-runtime-catalog.js";
 
 type Live = { runtime?: string | null; startSpec?: unknown; provider?: unknown; drift?: boolean; driftFields?: string[] } | null;
-type Options = { region: string; capabilities: RuntimeCandidate[]; catalogComplete?: boolean; migrationIntent?: boolean };
+type Options = { region: string; capabilities: RuntimeCandidate[]; catalogComplete?: boolean; migrationIntent?: boolean; originSecurity?: OriginSecuritySummary };
 type Change = { field: string; from: unknown; to: unknown };
 
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) =>
@@ -65,7 +67,7 @@ export function preflightAppDeploy(appId: string, revision: string, rawDeclarati
   const payload = { appId, revision: revision.toLowerCase(), declarationDigest: digest(declaration), baselineDigest: baseline(live), migrationIntent: !!options.migrationIntent, issuedAt: Date.now(), nonce: randomUUID() };
   return {
     token: Buffer.from(JSON.stringify(payload)).toString("base64url"),
-    preview: { firstDeploy: !live, changes, requiresMigrationApproval: migration },
+    preview: { originSecurity: projectOriginSecurity(options.originSecurity), firstDeploy: !live, changes, requiresMigrationApproval: migration },
   };
 }
 

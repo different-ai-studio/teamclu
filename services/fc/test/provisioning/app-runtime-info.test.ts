@@ -1,7 +1,8 @@
+import { installOriginEnv } from "../fixtures/apps-origin-auth/config.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Function as FcFunction, FunctionLayer, CustomRuntimeConfig, GetFunctionResponse } from "@alicloud/fc20230330";
-import { projectFunction, driftFields } from "../../src/lib/provisioning/app-runtime-info.js";
+import { projectFunction, driftFields, readAppOriginSecurity, projectOriginSecurity } from "../../src/lib/provisioning/app-runtime-info.js";
 import { preflightAppDeploy } from "../../src/lib/provisioning/app-deploy-preflight.js";
 
 const region = "cn-shenzhen";
@@ -62,4 +63,51 @@ test("absent or unusable provider layers remain empty and detect missing pinned 
     assert.deepEqual(provider.layers, []);
     assert.deepEqual(driftFields(start, provider, region, "node"), ["layers"]);
   }
+});
+
+
+const originRow = { id: "76af539e-5341-4e96-bda7-6c8dacf2b092", slug: "app-a", fc_function_name: "legacy-name", fc_region: "cn-shenzhen" };
+const protectedSummary = { status: "protected" as const, internetUrlDisabled: true, customDomainAuth: "jwt" as const, httpsOnly: true, driftFields: [] };
+
+test("origin status correlates the raw slug and full UUID with the canonical Host", async () => {
+  const restore = installOriginEnv();
+  try {
+    const seen: unknown[] = [];
+    const result = await readAppOriginSecurity({ ...originRow, fc_endpoint: "https://app-a-76af539e.origins.test" },
+      async (name, host, target, _config, actualRegion) => { seen.push(name, host, target, actualRegion); return protectedSummary; });
+    assert.deepEqual(result, protectedSummary);
+    assert.deepEqual(seen, ["legacy-name", "app-a-76af539e.origins.test", { appId: originRow.id, slug: originRow.slug }, "cn-shenzhen"]);
+  } finally { restore(); }
+});
+
+test("legacy status remains unverified and retains readonly unexpected-entry evidence", async () => {
+  const restore = installOriginEnv();
+  try {
+    for (const endpoint of ["http://app-a-76af539e.origins.test", "https://old.fcapp.run"]) {
+      const result = await readAppOriginSecurity({ ...originRow, fc_endpoint: endpoint }, async () => ({ ...protectedSummary, status: "drift", driftFields: ["extraHttpTriggers"] }));
+      assert.equal(result.status, "legacy_unverified");
+      assert.deepEqual(result.driftFields, ["extraHttpTriggers"]);
+    }
+    delete process.env.APPS_FC_ROUTE_DOMAIN;
+    const result = await readAppOriginSecurity({ ...originRow, fc_endpoint: "https://old.fcapp.run" }, async () => { throw new Error("must not read"); });
+    assert.equal(result.status, "legacy_unverified");
+  } finally { restore(); }
+});
+
+test("origin status fails safely without provider/configuration or for an incorrect managed Host", async () => {
+  const restore = installOriginEnv();
+  try {
+    for (const endpoint of ["https://app-a-76af539e.origins.test", "https://other-76af539e.origins.test"]) {
+      const result = await readAppOriginSecurity({ ...originRow, fc_endpoint: endpoint }, async () => { throw new Error("SECRET JWT JWKS PEM"); });
+      assert.equal(result.status, "unavailable");
+      assert.equal(JSON.stringify(result).includes("SECRET"), false);
+    }
+    delete process.env.APPS_FC_ORIGIN_KEYRING;
+    assert.equal((await readAppOriginSecurity({ ...originRow, fc_endpoint: "https://app-a-76af539e.origins.test" })).status, "unavailable");
+  } finally { restore(); }
+});
+
+test("origin security projection rejects arbitrary fields, enum strings and secret drift values", () => {
+  assert.deepEqual(projectOriginSecurity({ status: "SECRET", internetUrlDisabled: "SECRET", customDomainAuth: "SECRET", httpsOnly: "SECRET", driftFields: ["SECRET", "authConfig.JWKS", "authConfig.JWKS", { secret: "SECRET" }], privateKey: "SECRET", authConfig: "SECRET" }),
+    { status: "unavailable", internetUrlDisabled: null, customDomainAuth: "unknown", httpsOnly: null, driftFields: ["authConfig.JWKS"] });
 });

@@ -82,7 +82,7 @@ import {
 import { isLegalFcTransition } from "./provisioning/app-fc-status.js";
 import { readRuntimeCatalog as defaultReadRuntimeCatalog, type AppLanguage } from "./provisioning/app-runtime-catalog.js";
 import { readRuntimeObservations } from "./provisioning/app-runtime-observations.js";
-import { readAppFunction as defaultReadAppFunction, projectFunction, providerErrorCode, driftFields } from "./provisioning/app-runtime-info.js";
+import { readAppFunction as defaultReadAppFunction, projectFunction, providerErrorCode, driftFields, validateAppOrigin as defaultValidateAppOrigin, readAppOriginSecurity as defaultReadAppOriginSecurity, projectOriginSecurity } from "./provisioning/app-runtime-info.js";
 import { preflightAppDeploy as checkAppDeployPreflight, verifyAppDeployPreflight, isAppDeployPreflightExpired } from "./provisioning/app-deploy-preflight.js";
 import { appsRegion } from "./provisioning/apps-oss.js";
 import {
@@ -604,6 +604,11 @@ function constantTimeEquals(expected: string, actual: string): boolean {
   return timingSafeEqual(a, padded) && a.length === b.length;
 }
 
+function assertNoUnexpectedOriginEntries(summary: { driftFields: string[] }): void {
+  const fields = summary.driftFields.filter(field => field === "extraHttpTriggers" || field === "customDomainAliases");
+  if (fields.length) throw new ApiError(409, "origin_security_drift", `origin security drift: ${fields.join(", ")}`);
+}
+
 export function createSupabaseBusinessRepository(options) {
   const {
     supabaseUrl,
@@ -641,6 +646,8 @@ export function createSupabaseBusinessRepository(options) {
     appLogsUnavailableReason,
     readRuntimeCatalog = defaultReadRuntimeCatalog,
     readAppFunction = defaultReadAppFunction,
+    validateAppOrigin = defaultValidateAppOrigin,
+    readAppOriginSecurity = defaultReadAppOriginSecurity,
     trustedExternalJwtSecret = process.env.TRUSTED_EXTERNAL_JWT_SECRET,
     // Optional fan-out hook — called after every successful message INSERT.
     // Best-effort: errors are logged and swallowed so the insert outcome is
@@ -4652,7 +4659,8 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
       if (!data) return null;
       const viewer = await this.resolveAppViewer(data.team_id, [data.id]);
-      return { ...mapApp(data), ...appRelationshipFor(data, viewer.actorId, viewer.grants) };
+      return { ...mapApp(data), ...appRelationshipFor(data, viewer.actorId, viewer.grants),
+        originSecurity: projectOriginSecurity(await readAppOriginSecurity(data)) };
     },
 
     /**
@@ -5167,7 +5175,7 @@ export function createSupabaseBusinessRepository(options) {
 
     async preflightAppDeploy(appId: string, input: { revision?: string; gitCommitSha?: string; declaration?: unknown; migrationIntent?: boolean }) {
       const { data: existing, error } = await supabase.from("apps")
-        .select("id, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token")
+        .select("id, slug, team_id, created_by_actor_id, provision_status, git_auth_kind, fc_status, deploy_started_at, deploy_token")
         .eq("id", appId).maybeSingle();
       if (error) throw error;
       if (!existing) return null;
@@ -5185,11 +5193,13 @@ export function createSupabaseBusinessRepository(options) {
       } else if (!revision.startsWith("sha256:")) {
         throw new ApiError(400, "validation_failed", "imported deploy requires a content digest");
       }
+      validateAppOrigin({ appId: existing.id, slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
       if (!info) return null;
+      assertNoUnexpectedOriginEntries(info.originSecurity);
       const result = checkAppDeployPreflight(appId, revision, input.declaration, info.currentDeployment,
         { region: info.deploymentContract.region, capabilities: info.capabilities,
-          catalogComplete: info.sourceStatus.officialLayers.complete, migrationIntent: input.migrationIntent === true });
+          originSecurity: info.originSecurity, catalogComplete: info.sourceStatus.officialLayers.complete, migrationIntent: input.migrationIntent === true });
       if (existing.deploy_token && !isAppDeployPreflightExpired(existing.deploy_token)) {
         try {
           verifyAppDeployPreflight(existing.deploy_token, appId, revision, input.declaration, info.currentDeployment);
@@ -5251,8 +5261,10 @@ export function createSupabaseBusinessRepository(options) {
       if (progress === "blocked") {
         throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
       }
+      validateAppOrigin({ appId: existing.id, slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
       if (!info) return null;
+      assertNoUnexpectedOriginEntries(info.originSecurity);
       verifyAppDeployPreflight(input.preflightToken, appId, revision, declaration, info.currentDeployment);
       if (progress === "stale") {
         await supabase.from("apps").update({
@@ -5351,8 +5363,10 @@ export function createSupabaseBusinessRepository(options) {
       }
       if (!finalizeDeploy) throw deployUnavailable(deployUnavailableReason);
       const revision = String(input?.revision ?? "");
+      validateAppOrigin({ appId: existing.id, slug: existing.slug });
       const info = await this.getAppRuntimeInfo(appId);
       if (!info) return null;
+      assertNoUnexpectedOriginEntries(info.originSecurity);
       verifyAppDeployPreflight(deployToken, appId, revision, declaration, info.currentDeployment);
       if (existing.git_auth_kind === GITEA_AUTH_KIND && gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
       // Claim this specific token and state atomically before FC or storage mutation.
@@ -5459,7 +5473,7 @@ export function createSupabaseBusinessRepository(options) {
         invalidateAppHosts({ id: appId, slug: existing.slug, customDomain: existing.custom_domain });
         return mapApp(row);
       } catch (e: any) {
-        if (e instanceof ApiError) throw e;
+        if (e instanceof ApiError && !["origin_security_drift", "origin_security_unavailable"].includes(e.code)) throw e;
         await supabase
           .from("apps")
           .update({
@@ -5470,6 +5484,7 @@ export function createSupabaseBusinessRepository(options) {
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId);
+        if (e instanceof ApiError) throw e;
         throw new ApiError(502, "finalize_failed", String(e?.message ?? e));
       }
     },
@@ -5599,7 +5614,7 @@ export function createSupabaseBusinessRepository(options) {
     async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at")
+        .select("id, slug, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -5660,6 +5675,7 @@ export function createSupabaseBusinessRepository(options) {
             : ["build.kind", "build.output", "start.fcRuntime", "start.command", "start.args", "start.port", "start.layers"],
         },
         currentDeployment,
+        originSecurity: projectOriginSecurity(await readAppOriginSecurity(app)),
         capabilities: catalog.candidates,
         observations: readRuntimeObservations(language),
         sourceStatus,

@@ -10,6 +10,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { jwtVerify } from "jose";
+import * as originAuth from "../src/lib/apps-origin-auth.js";
+import { mintAppSession, APP_COOKIE } from "../src/lib/apps-auth-session.js";
 import { createApp } from "../src/app.js";
 import { appPublicUrl, appPublicLabel, parseAppPublicHost } from "../src/lib/apps-public-host.js";
 import {
@@ -747,3 +750,201 @@ test("two apps claiming one domain serve neither", async () => {
   const lookup = makeSupabaseVanityLookup(() => client);
   assert.equal(await withDomain(() => lookup("shop.example.com")), null);
 });
+
+
+// --- protected origins ------------------------------------------------------
+const ROUTE_DOMAIN = "origins.test";
+const ORIGIN_HOST = "website-18e4ecad.origins.test";
+const originTarget = { appId: APP_ID, slug: "website" };
+const originEnv = {
+  APPS_FC_ROUTE_DOMAIN: ROUTE_DOMAIN,
+  APPS_FC_ORIGIN_KEYRING: JSON.stringify({ active: { version: "v1", key: Buffer.alloc(32, 42).toString("base64url") } }),
+  APPS_FC_ORIGIN_TLS_CERT_NAME: "test-only",
+  APPS_FC_ORIGIN_TLS_CERT_PEM: fs.readFileSync(new URL("./fixtures/apps-origin-auth/cert.pem", import.meta.url), "utf8"),
+  APPS_FC_ORIGIN_TLS_KEY_PEM: fs.readFileSync(new URL("./fixtures/apps-origin-auth/key.pem", import.meta.url), "utf8"),
+};
+const originConfig = () => originAuth.readAppsOriginAuthConfig(originEnv);
+const originOptions = () => ({ target: originTarget, config: originConfig() });
+async function verifyOriginHeader(headers: Headers, host = ORIGIN_HOST) {
+  const credential = headers.get("x-teamclu-origin-authorization");
+  assert.match(credential ?? "", /^Bearer [^.]+\.[^.]+\.[^.]+$/);
+  const key = Buffer.from(originAuth.originJwks(originConfig(), APP_ID).keys[0].k, "base64url");
+  const { payload } = await jwtVerify(credential!.slice(7), key, { algorithms: ["HS256"] });
+  assert.equal(payload.appId, APP_ID);
+  assert.equal(payload.originHost, host);
+  assert.ok(payload.exp! - payload.iat! <= 60);
+  return credential!;
+}
+for (const identity of [null, { userId: "trusted-user", email: "trusted@example.com", orgId: "trusted-org" }]) {
+  test(`protected proxy signs ${identity ? "trusted login" : "anonymous public"} requests and replaces forgeries`, async () => {
+    let seen = new Headers();
+    const response = await proxyToApp(new Request("https://public.example/", { headers: {
+      "X-TeaMClu-Origin-Authorization": "Bearer client-forgery", "X-Teamclu-User-Id": "fake-user",
+      "X-Teamclu-User-Email": "fake@example.com", "X-Teamclu-Org-Id": "fake-org",
+      authorization: "Bearer business-token", cookie: "business-cookie=value",
+    } }), `https://${ORIGIN_HOST}`, (async (_u: any, init: any) => { seen = new Headers(init.headers); return new Response("page"); }) as typeof fetch, identity, originOptions());
+    await verifyOriginHeader(seen);
+    assert.equal(seen.get("x-teamclu-user-id"), identity?.userId ?? null);
+    assert.equal(seen.get("x-teamclu-user-email"), identity?.email ?? null);
+    assert.equal(seen.get("x-teamclu-org-id"), identity?.orgId ?? null);
+    assert.equal(seen.get("authorization"), "Bearer business-token");
+    assert.equal(seen.get("cookie"), "business-cookie=value");
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-teamclu-origin-authorization"), null);
+  });
+}
+for (const [slug, host] of [["website", ORIGIN_HOST], ["teamclu-官网", "xn--teamclu--18e4ecad-nx65apz36b.origins.test"]]) {
+  test(`classifier protects the canonical ASCII host for raw slug ${slug}`, () => {
+    const classify = originAuth.classifyOriginEndpoint;
+    assert.equal(classify(`https://${host}`, { appId: APP_ID, slug }, ROUTE_DOMAIN), "protected");
+    assert.equal(classify(`https://${host}:443/`, { appId: APP_ID, slug }, ROUTE_DOMAIN), "protected");
+  });
+  test(`protected proxy signs the canonical host for raw slug ${slug}`, async () => {
+    let seen = new Headers();
+    await proxyToApp(new Request("https://public.example/"), `https://${host}`, (async (_u: any, i: any) => { seen = new Headers(i.headers); return new Response("ok"); }) as typeof fetch, null, { target: { appId: APP_ID, slug }, config: originConfig() });
+    await verifyOriginHeader(seen, host);
+  });
+}
+for (const endpoint of [
+  `https://other-18e4ecad.${ROUTE_DOMAIN}`, `https://website.${ROUTE_DOMAIN}`, `https://${ORIGIN_HOST}:8443`,
+  `https://user:password@${ORIGIN_HOST}`, `https://${ORIGIN_HOST}/extra`, `https://${ORIGIN_HOST}/../`,
+  `https://${ORIGIN_HOST}?extra=1`, `https://${ORIGIN_HOST}#fragment`, `https://${ORIGIN_HOST}.`,
+  `ftp://${ORIGIN_HOST}`, `not-a-url`,
+]) {
+  test(`invalid protected target does not fetch: ${endpoint}`, async () => {
+    let calls = 0;
+    const response = await proxyToApp(new Request("https://public.example/"), endpoint, (async () => { calls++; return new Response("unsafe"); }) as typeof fetch, null, originOptions());
+    assert.equal(calls, 0); assert.ok(response.status >= 500);
+    assert.doesNotMatch(await response.text(), /password|Bearer|eyJ/);
+  });
+}
+for (const endpoint of [`http://${ORIGIN_HOST}`, "https://tc-app-x-abc123.cn-shenzhen.fcapp.run", "https://existing.example/base?old=1"]) {
+  test(`legacy endpoint stays unsigned and removes a supplied credential: ${endpoint}`, async () => {
+    let seen = new Headers();
+    const response = await proxyToApp(new Request("https://public.example/path?x=1", { headers: { "X-Teamclu-Origin-Authorization": "Bearer client-forgery" } }), endpoint, (async (_u: any, init: any) => { seen = new Headers(init.headers); return new Response("legacy", { status: 202 }); }) as typeof fetch, null, originOptions());
+    assert.equal(seen.get("x-teamclu-origin-authorization"), null);
+    assert.equal(response.status, 202); assert.equal(await response.text(), "legacy");
+  });
+}
+test("four-argument legacy callers also remove origin credential forgeries", async () => {
+  const headers = await forwardedHeaders(new Request("https://public.example/", { headers: { "X-TEAMCLU-Origin-Authorization": "forgery" } }));
+  assert.equal(headers.get("x-teamclu-origin-authorization"), null);
+});
+for (const method of ["HEAD", "OPTIONS", "POST"]) {
+  test(`protected ${method} preserves streamed body, path and query`, async () => {
+    const request = new Request("https://public.example/upload?x=1", { method, ...(method === "POST" ? { body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("streamed upload")); c.close(); } }), duplex: "half" } : {}) } as RequestInit);
+    let seen: any;
+    const response = await proxyToApp(request, `https://${ORIGIN_HOST}`, (async (url: any, init: any) => { seen = { url: String(url), ...init }; return new Response(null, { status: 204 }); }) as typeof fetch, null, originOptions());
+    await verifyOriginHeader(new Headers(seen.headers));
+    assert.equal(seen.url, `https://${ORIGIN_HOST}/upload?x=1`); assert.equal(seen.method, method);
+    assert.equal(seen.body, method === "HEAD" ? undefined : request.body);
+    if (method !== "HEAD") assert.equal(seen.duplex, "half");
+    assert.equal(response.status, 204);
+  });
+}
+test("protected multipart upload retains content type and bytes", async () => {
+  const form = new FormData(); form.append("file", new Blob(["image-data"]), "photo.png");
+  const request = new Request("https://public.example/upload", { method: "POST", body: form });
+  const expectedBody = await request.clone().text();
+  await proxyToApp(request, `https://${ORIGIN_HOST}`, (async (_u: any, init: any) => {
+    await verifyOriginHeader(new Headers(init.headers));
+    assert.equal(new Headers(init.headers).get("content-type"), request.headers.get("content-type"));
+    assert.equal(await new Response(init.body).text(), expectedBody); return new Response("uploaded");
+  }) as typeof fetch, null, originOptions());
+});
+test("protected external redirect remains manual and cannot return its credential header", async () => {
+  let calls = 0;
+  const response = await proxyToApp(new Request("https://public.example/"), `https://${ORIGIN_HOST}`, (async (_u: any, init: any) => {
+    calls++; assert.equal(init.redirect, "manual");
+    const token = await verifyOriginHeader(new Headers(init.headers));
+    return new Response(null, { status: 302, headers: { location: "https://external.example/login", "X-Teamclu-Origin-Authorization": token } });
+  }) as typeof fetch, null, originOptions());
+  assert.equal(calls, 1); assert.equal(response.status, 302);
+  assert.equal(response.headers.get("location"), "https://external.example/login");
+  assert.equal(response.headers.get("x-teamclu-origin-authorization"), null);
+});
+test("protected SSE passes through without consuming its stream", async () => {
+  let finished = false;
+  const stream = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("data: first\n\n")); }, cancel() { finished = true; } });
+  const response = await proxyToApp(new Request("https://public.example/events"), `https://${ORIGIN_HOST}`, (async (_u: any, init: any) => { await verifyOriginHeader(new Headers(init.headers)); return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } }); }) as typeof fetch, null, originOptions());
+  assert.equal(response.headers.get("content-type"), "text/event-stream"); assert.equal(response.headers.get("cache-control"), "no-cache");
+  const reader = response.body!.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), "data: first\n\n");
+  assert.equal(finished, false); await reader.cancel();
+});
+test("protected fetch errors cannot expose credentials in platform responses", async () => {
+  const response = await proxyToApp(new Request("https://public.example/"), `https://${ORIGIN_HOST}`, (async (_u: any, init: any) => { const credential = await verifyOriginHeader(new Headers(init.headers)); throw new Error(`transport error contains ${credential}`); }) as typeof fetch, null, originOptions());
+  assert.ok(response.status >= 500); assert.doesNotMatch(await response.text(), /Bearer|eyJ|transport error/);
+});
+async function withOriginEnv(body: () => Promise<void>, extra: Record<string, string | undefined> = {}) {
+  const values = { ...originEnv, APPS_PUBLIC_DOMAIN: DOMAIN, LOGIN_DOMAIN: "login.example.com", APPS_AUTH_SESSION_SECRET: "gateway-test-session-secret-at-least-32-characters", ...extra };
+  const previous = Object.fromEntries(Object.keys(values).map(k => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(values)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  try { await body(); } finally { for (const [k, v] of Object.entries(previous)) if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+}
+function deployedTarget(over: Record<string, unknown> = {}) {
+  return { id: APP_ID, slug: "website", fcEndpoint: `https://${ORIGIN_HOST}`, fcStatus: "live", ...unauthed, ...over };
+}
+for (const loggedIn of [false, true]) {
+  test(`app.ts signs ${loggedIn ? "logged-in" : "public anonymous"} protected traffic using DB target`, async () => withOriginEnv(async () => {
+    const oldFetch = globalThis.fetch; let seen = new Headers();
+    globalThis.fetch = (async (_u: any, init: any) => { seen = new Headers(init.headers); return new Response("app-page"); }) as typeof fetch;
+    try {
+      const application = createApp(deps(async () => deployedTarget(loggedIn ? { authMode: "platform", authAudience: "any", authScope: "all" } : {})));
+      const cookie = loggedIn ? `${APP_COOKIE}=${(await mintAppSession({ sub: "signed-in", email: "real@example.com", appId: APP_ID })).token}` : "business-cookie=value";
+      const response = await application.request(`https://website-18e4ecad.${DOMAIN}/`, { headers: { cookie } });
+      assert.equal(response.status, 200); await verifyOriginHeader(seen);
+      assert.equal(seen.get("x-teamclu-user-id"), loggedIn ? "signed-in" : null);
+    } finally { globalThis.fetch = oldFetch; }
+  }));
+}
+test("app.ts denies role access before loading missing origin config or fetching", async () => withOriginEnv(async () => {
+  const oldFetch = globalThis.fetch; let calls = 0;
+  globalThis.fetch = (async () => { calls++; return new Response("unsafe"); }) as typeof fetch;
+  try {
+    const cookie = `${APP_COOKIE}=${(await mintAppSession({ sub: "outsider", email: "outsider@example.com", appId: APP_ID })).token}`;
+    const application = createApp({ ...deps(async () => deployedTarget({ authMode: "platform", authAudience: "org", orgId: "org-a", authScope: "all" })), resolveRoleIdentities: async () => [], resolveVisitorRoles: async () => [] });
+    const response = await application.request(`https://website-18e4ecad.${DOMAIN}/`, { headers: { cookie } });
+    assert.equal(response.status, 403); assert.equal(calls, 0);
+  } finally { globalThis.fetch = oldFetch; }
+}, { APPS_FC_ORIGIN_KEYRING: undefined }));
+test("app.ts protected target without credentials is unavailable while legacy and API still work", async () => withOriginEnv(async () => {
+  const oldFetch = globalThis.fetch; let calls = 0;
+  globalThis.fetch = (async (_u: any, init: any) => { calls++; assert.equal(new Headers(init.headers).get("x-teamclu-origin-authorization"), null); return new Response("legacy"); }) as typeof fetch;
+  try {
+    let target: any = deployedTarget();
+    const application = createApp(deps(async (host: string) => host.includes("website-18e4ecad") ? target : null));
+    const blocked = await application.request(`https://website-18e4ecad.${DOMAIN}/`);
+    assert.equal(blocked.status, 503); assert.equal(calls, 0); assert.doesNotMatch(await blocked.text(), /Bearer|eyJ|PRIVATE KEY/);
+    target = deployedTarget({ fcEndpoint: `http://${ORIGIN_HOST}` });
+    const legacy = await application.request(`https://website-18e4ecad.${DOMAIN}/`, { headers: { "X-Teamclu-Origin-Authorization": "forged" } });
+    assert.equal(legacy.status, 200); assert.equal(await legacy.text(), "legacy"); assert.equal(calls, 1);
+    assert.equal((await application.request("https://api.example/healthz")).status, 200);
+  } finally { globalThis.fetch = oldFetch; }
+}, { APPS_FC_ORIGIN_KEYRING: undefined }));
+
+
+for (const [endpoint, status] of [
+  [`http://${ORIGIN_HOST}`, 200],
+  ["https://tc-app-x-abc123.cn-shenzhen.fcapp.run", 200],
+  [`https://${ORIGIN_HOST}`, 503],
+] as const) {
+  test(`missing route domain handles ${endpoint} without guessing protected traffic`, async () => withOriginEnv(async () => {
+    const oldFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (_u: any, init: any) => {
+      calls++;
+      assert.equal(new Headers(init.headers).get("x-teamclu-origin-authorization"), null);
+      return new Response("legacy");
+    }) as typeof fetch;
+    try {
+      const application = createApp(deps(async () => deployedTarget({ fcEndpoint: endpoint })));
+      const response = await application.request(`https://website-18e4ecad.${DOMAIN}/`, {
+        headers: { "X-Teamclu-Origin-Authorization": "client-forgery" },
+      });
+      assert.equal(response.status, status);
+      assert.equal(calls, status === 200 ? 1 : 0);
+      if (status === 503) assert.doesNotMatch(await response.text(), /Bearer|eyJ|PRIVATE KEY/);
+    } finally { globalThis.fetch = oldFetch; }
+  }, { APPS_FC_ROUTE_DOMAIN: undefined, APPS_FC_ORIGIN_KEYRING: undefined }));
+}

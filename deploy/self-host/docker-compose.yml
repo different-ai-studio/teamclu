@@ -445,16 +445,21 @@ services:
       APPS_SLS_PROJECT: "${APPS_SLS_PROJECT:-}"
       APPS_SLS_LOGSTORE: "${APPS_SLS_LOGSTORE:-}"
       # Parent domain for per-app vanity hostnames
-      # (<slug>-<id8>.<this>). Blank = feature off: apps keep their raw
-      # Function Compute trigger URL and Caddy never asks about a certificate.
+      # (<slug>-<id8>.<this>). Blank = vanity feature off; Caddy never asks
+      # about its certificate. New app deploys still require protected origins.
       # Requires a wildcard A record for *.<this> pointing at this box.
       APPS_PUBLIC_DOMAIN: "${APPS_PUBLIC_DOMAIN:-}"
       # Zone the app's FC custom domain lives in, e.g. fc-apps.example.com.
       # MUST be a different zone from APPS_PUBLIC_DOMAIN: that one resolves to
       # this proxy, so forwarding to it would resolve straight back here. Blank
-      # keeps apps on their *.fcapp.run trigger URL, which refuses to forward
-      # any 3xx (ExternalRedirectForbidden).
+      # fails new/normal deployments; no default public URL fallback.
       APPS_FC_ROUTE_DOMAIN: "${APPS_FC_ROUTE_DOMAIN:-}"
+      # Platform server-only keyring and actual multiline PEM. Missing values
+      # fail deployment preflight; never pass these into user app environments.
+      APPS_FC_ORIGIN_KEYRING: "${APPS_FC_ORIGIN_KEYRING:-}"
+      APPS_FC_ORIGIN_TLS_CERT_NAME: "${APPS_FC_ORIGIN_TLS_CERT_NAME:-}"
+      APPS_FC_ORIGIN_TLS_CERT_PEM: "${APPS_FC_ORIGIN_TLS_CERT_PEM:-}"
+      APPS_FC_ORIGIN_TLS_KEY_PEM: "${APPS_FC_ORIGIN_TLS_KEY_PEM:-}"
       # Belayo only: the bearer token Traefik's HTTP provider sends to
       # /internal/traefik/dynamic for verified custom domains. Blank keeps the
       # endpoint off; self-host serves custom domains through Caddy instead.

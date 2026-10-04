@@ -7,8 +7,9 @@ import { isRateLimited, resolveClientIp } from "./lib/rate-limit.js";
 import { handleSyncRequest } from "./lib/legacy-sync.js";
 import * as admin from "./lib/admin-handlers.js";
 import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
-import { parseAppPublicHost } from "./lib/apps-public-host.js";
+import { appsFcRouteDomain, parseAppPublicHost } from "./lib/apps-public-host.js";
 import { handleLoginRequest, isLoginHost, type LookupLoginApp } from "./lib/apps-login-service.js";
+import { classifyOriginEndpoint, readAppsOriginAuthConfig, type OriginAuthConfig } from "./lib/apps-origin-auth.js";
 import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 import { makeTraefikDynamicEndpoint, type ListTraefikCustomDomains } from "./lib/apps-traefik-provider.js";
 
@@ -203,7 +204,18 @@ export function createApp(deps: AppDeps): Hono {
       });
       if (gate.response) return gate.response;
 
-      const res = await proxyToApp(c.req.raw, target.fcEndpoint, fetch, gate.identity);
+      const originTarget = { appId: target.id, slug: target.slug };
+      let origin: { target: typeof originTarget; config: OriginAuthConfig } | undefined;
+      try {
+        if (classifyOriginEndpoint(target.fcEndpoint, originTarget, appsFcRouteDomain()) === "protected") {
+          // Loaded only after authorization and only for managed HTTPS origins:
+          // missing secrets must not take API startup or old HTTP apps down.
+          origin = { target: originTarget, config: readAppsOriginAuthConfig(process.env) };
+        }
+      } catch {
+        return c.text("app origin is unavailable", 503);
+      }
+      const res = await proxyToApp(c.req.raw, target.fcEndpoint, fetch, gate.identity, origin);
       // Sliding renewal rides along on whatever the app answered.
       if (gate.setCookie) res.headers.append("Set-Cookie", gate.setCookie);
       return res;

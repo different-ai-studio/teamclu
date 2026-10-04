@@ -1,3 +1,5 @@
+import { readAppsOriginAuthConfig } from "./lib/apps-origin-auth.js";
+import { readAppOriginSecurity } from "./lib/provisioning/app-runtime-info.js";
 import { handle } from "hono/aws-lambda";
 import { createApp } from "./app.js";
 import {
@@ -191,7 +193,7 @@ function makeDeployDeps() {
       }
     : undefined;
 
-  const fcOps = makeFcOps(getFcClient(profile), {
+  const fcConfig = {
     bucket,
     role: process.env.ROLE_ARN,
     // What the deployed function logs into the registry with. Deployment-level
@@ -205,7 +207,8 @@ function makeDeployDeps() {
     region: profile.region,
     vpc: appsFcVpc,
     logs: () => appLogsProvisioner().config(),
-  });
+  };
+  const secureFcOps = () => makeFcOps(getFcClient(profile), { ...fcConfig, originAuth: readAppsOriginAuthConfig(process.env) });
   const appsAdminUrl = process.env.APPS_DB_ADMIN_URL?.trim() || undefined;
   const appsAppUrl = process.env.APPS_DB_APP_URL?.trim() || undefined;
   const s3 = getAppsS3Client(profile);
@@ -218,6 +221,7 @@ function makeDeployDeps() {
     // The caller's `region` is ignored: `fc_region` must record where the
     // function actually went, which is the apps region, not the deployment's
     // default REGION.
+    readAppOriginSecurity,
     startDeploy: (a: {
       appId: string;
       region: string;
@@ -241,7 +245,11 @@ function makeDeployDeps() {
         {
           appsAdminUrl,
           appsAppUrl,
-          fcOps,
+          fcOps: {
+            ensureFunction: (name, args) => secureFcOps().ensureFunction(name, args),
+            ensureHttpTrigger: name => secureFcOps().ensureHttpTrigger(name),
+            ensureCustomDomain: (name, domain, target) => secureFcOps().ensureCustomDomain(name, domain, target),
+          },
           ensureLogStore: () => appLogsProvisioner().ensure(),
           // Bound to this deployment's registry, so finalize can tell an image
           // this app's build pushed from any other the registry holds.

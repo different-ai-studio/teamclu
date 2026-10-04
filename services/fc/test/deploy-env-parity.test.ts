@@ -110,10 +110,11 @@ test("Belayo Dokploy and self-host declare the same Cloud API environment", () =
 /**
  * Every environment variable the service reads.
  *
- * Three access shapes are in use: `process.env.FOO` directly, `env.FOO` on an
+ * Access shapes include `process.env.FOO` directly, `env.FOO` on an
  * injected `env` object (publishableKeyFromEnv), and `envValue("FOO")` — the
  * blank-is-absent reader in routes/config.ts. Matching only some would report
- * live variables as dead.
+ * live variables as dead. Origin configuration uses `required(env, "FOO")`
+ * to reject missing server secrets without including their values in errors.
  */
 function envVarsReadBySource(): Set<string> {
   const found = new Set<string>();
@@ -129,6 +130,7 @@ function envVarsReadBySource(): Set<string> {
         for (const m of src.matchAll(/\benv\.([A-Z_0-9]+)/g)) found.add(m[1]);
         for (const m of src.matchAll(/\benv\[["']([A-Z_0-9]+)["']\]/g)) found.add(m[1]);
         for (const m of src.matchAll(/\benvValue\(["']([A-Z_0-9]+)["'](?:\s*,[^)]*)?\)/g)) found.add(m[1]);
+        for (const m of src.matchAll(/\brequired\(env,\s*["']([A-Z_0-9]+)["']\)/g)) found.add(m[1]);
       }
     }
   };

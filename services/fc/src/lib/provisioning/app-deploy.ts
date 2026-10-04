@@ -1,4 +1,6 @@
-import { appFcRouteHost, appPublicLabel, appPublicUrl } from "../apps-public-host.js";
+import { validateAppOrigin, projectOriginSecurity } from "./app-runtime-info.js";
+import type { OriginAuthConfig, OriginTarget } from "../apps-origin-auth.js";
+import { appPublicLabel, appPublicUrl } from "../apps-public-host.js";
 import { randomBytes } from "node:crypto";
 import {
   provisionAppPostgres,
@@ -322,6 +324,8 @@ export async function startDeploy(deps: StartDeployDeps, input: StartDeployInput
 }
 
 export interface FinalizeDeps {
+  /** Read fresh origin configuration for every finalize attempt. */
+  readOriginAuth?: () => OriginAuthConfig;
   /**
    * Superuser / CREATEDB connection URL (typically `…/postgres` on self-host).
    * Absent → only static apps can finalize; data apps fail naming APPS_DB_ADMIN_URL.
@@ -350,9 +354,9 @@ export interface FinalizeDeps {
         image?: string;
       },
     ) => Promise<void>;
-    ensureHttpTrigger: (name: string) => Promise<string>;
+    ensureHttpTrigger: (name: string) => Promise<{ internetUrlDisabled: true }>;
     /** Absent on a deployment that has no route domain configured. */
-    ensureCustomDomain?: (functionName: string, domainName: string) => Promise<string>;
+    ensureCustomDomain?: (functionName: string, domainName: string, target: OriginTarget) => Promise<string>;
   };
   genPassword?: () => string;
   extraEnv?: (input: FinalizeInput) => Record<string, string>;
@@ -442,6 +446,10 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     );
   }
 
+  const target = { appId: input.appId, slug: input.slug };
+  const { host: routeHost } = validateAppOrigin(target, deps.readOriginAuth);
+  if (!deps.fcOps.ensureCustomDomain) throw new ApiError(503, "origin_security_unavailable", "origin security unavailable: routeConfig");
+
   const env: Record<string, string> = { NODE_ENV: "production" };
   if (input.declaration) {
     env.PORT = String(input.declaration.start.port);
@@ -516,19 +524,29 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     declaration: input.declaration,
     image: input.image,
   });
-  // The trigger URL is still created: it is what the function is reachable on
-  // before a custom domain exists, and the only address a deployment without a
-  // route domain has.
-  const triggerUrl = await deps.fcOps.ensureHttpTrigger(input.fcFunctionName);
-
-  // Prefer the custom domain. `*.fcapp.run` refuses to forward any 3xx
-  // (`ExternalRedirectForbidden`), so an app that merely normalises a trailing
-  // slash is broken on it — see `ensureCustomDomain`.
-  const routeHost = appFcRouteHost(input.slug, input.appId);
-  if (routeHost && deps.fcOps.ensureCustomDomain) {
-    return { fcEndpoint: await deps.fcOps.ensureCustomDomain(input.fcFunctionName, routeHost) };
+  try {
+    const trigger = await deps.fcOps.ensureHttpTrigger(input.fcFunctionName);
+    if (trigger?.internetUrlDisabled !== true) {
+      throw new ApiError(409, "origin_security_drift", "origin security drift: disableURLInternet");
+    }
+    // Provider verifies trigger, domain, certificate, JWT and extra entrypoints
+    // before this URL can reach the Live-state commit in the repository.
+    const endpoint = await deps.fcOps.ensureCustomDomain(input.fcFunctionName, routeHost, target);
+    if (endpoint !== `https://${routeHost}`) {
+      throw new ApiError(409, "origin_security_drift", "origin security drift: originEndpoint");
+    }
+    return { fcEndpoint: endpoint };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    const prefix = "FC origin security drift:";
+    if ((error as Error)?.message?.startsWith(prefix)) {
+      const fields = projectOriginSecurity({ driftFields: (error as Error).message.slice(prefix.length).split(",").map(field => field.trim()) }).driftFields;
+      const unavailable = fields.some(field => ["originAuth", "getTrigger", "getCustomDomain", "listTriggers", "listCustomDomains"].includes(field));
+      throw new ApiError(unavailable ? 503 : 409, unavailable ? "origin_security_unavailable" : "origin_security_drift",
+        `origin security ${unavailable ? "unavailable" : "drift"}: ${fields.join(", ") || "routeConfig"}`);
+    }
+    throw new ApiError(503, "origin_security_unavailable", "origin security unavailable: routeConfig");
   }
-  return { fcEndpoint: triggerUrl };
 }
 
 /**

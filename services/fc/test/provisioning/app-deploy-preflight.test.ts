@@ -118,3 +118,12 @@ test("container first deploy does not require official layer discovery", () => {
 test("missing legacy deployment snapshot cannot be treated as an unchanged runtime", () => {
   assert.throws(() => preflightAppDeploy("app-1", revision, declaration, { ...live, startSpec: null }, { region: "cn-hangzhou", capabilities: [] }), (e: any) => e.code === "live_state_drift");
 });
+
+
+test("preflight preview adds only a safe origin security summary", () => {
+  const originSecurity = { status: "protected", internetUrlDisabled: true, customDomainAuth: "jwt", httpsOnly: true, driftFields: [], privateKey: "SECRET", authConfig: { JWKS: "SECRET" } };
+  const result = preflightAppDeploy("app-1", revision, declaration, null,
+    { region: "cn-hangzhou", capabilities: [], catalogComplete: true, originSecurity } as any);
+  assert.deepEqual((result.preview as any).originSecurity, { status: "protected", internetUrlDisabled: true, customDomainAuth: "jwt", httpsOnly: true, driftFields: [] });
+  assert.equal(JSON.stringify(result).includes("SECRET"), false);
+});
