@@ -13,7 +13,7 @@ import { SectionHeader, SettingCard } from './shared'
 const CODE_RE = /^[a-z][a-z0-9_]*$/
 
 /**
- * Org role catalog — Settings「团队管理」→ 团队角色.
+ * Org role catalog — Settings「团队管理」→ 组织角色.
  *
  * System roles (owner/admin/member/finance) are read-only. Custom roles are
  * CRUD'd via Cloud API `orgRoles`. Delete with member bindings returns 409
@@ -154,7 +154,7 @@ export function TeamRolesSection() {
       <div className="space-y-6">
         <SectionHeader
           icon={Users}
-          title={t('settings.teamRoles.title', '团队角色')}
+          title={t('settings.teamRoles.title', '组织角色')}
           description={t('settings.teamRoles.noTeam', 'Join or create a team to manage roles.')}
         />
       </div>
@@ -167,10 +167,10 @@ export function TeamRolesSection() {
         <div className="min-w-0 flex-1">
           <SectionHeader
             icon={Users}
-            title={t('settings.teamRoles.title', '团队角色')}
+            title={t('settings.teamRoles.title', '组织角色')}
             description={t(
               'settings.teamRoles.description',
-              'Org-scoped roles shared across teams in this organization. System roles cannot be edited.',
+              '组织级角色，同组织下各团队共用。系统角色不可编辑。',
             )}
           />
         </div>

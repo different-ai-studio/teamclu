@@ -10,12 +10,14 @@ import type {
   AppRow,
 } from '@/lib/backend/types'
 
-/** One editable row (baseline or a path exception). */
+/** Editable state retains the raw rule separately from its displayed meaning. */
 export type AppAuthRowState = {
   path: string
   requiresLogin: boolean
-  /** Only meaningful when `requiresLogin`. Empty = any signed-in user. */
+  audienceMode: 'any_authenticated' | 'any_org_role' | 'org_roles' | 'inherit'
   roleCodes: string[]
+  originalRule?: AppAuthRule
+  source: 'rule' | 'app_baseline'
 }
 
 export type AppAuthAccessSummary = {
@@ -41,152 +43,74 @@ export function formatAppAuthAccessSummary(summary: AppAuthAccessSummary): strin
   return `需要登录 · ${summary.roleCodes.join(', ')}`
 }
 
-function effectiveAudience(
-  rule: AppAuthRule | undefined,
-  appAudience: AppAuthAudience,
-): AppAuthAudience {
-  return rule?.audience ?? appAudience
+type Policy = Pick<AppRow, 'authScope' | 'authAudience' | 'authRules'>
+const cloneRule = (rule: AppAuthRule): AppAuthRule => ({ ...rule, ...(rule.roles !== undefined ? { roles: [...rule.roles] } : {}) })
+const modeOf = (rule: AppAuthRule): AppAuthRowState['audienceMode'] =>
+  rule.roles !== undefined ? (rule.roles.length ? 'org_roles' : 'any_authenticated') :
+    rule.audience === 'org' ? 'any_org_role' : rule.audience === 'any' ? 'any_authenticated' : 'inherit'
+
+export function ruleToRowState(rule: AppAuthRule, _appAudience: AppAuthAudience): AppAuthRowState {
+  return { path: rule.path, requiresLogin: rule.auth === 'required', audienceMode: modeOf(rule),
+    roleCodes: [...(rule.roles ?? [])], originalRule: cloneRule(rule), source: 'rule' }
 }
 
-/**
- * Map a stored rule into UI state. `allRoleCodes` is used when legacy
- * `audience: org` (or inherited org) has no `roles` — prefill every active
- * org role code so a save migrates off audience.
- */
-export function ruleToRowState(
-  rule: AppAuthRule,
-  appAudience: AppAuthAudience,
-  allRoleCodes: string[],
-): AppAuthRowState {
-  if (rule.auth === 'public') {
-    return { path: rule.path, requiresLogin: false, roleCodes: [] }
-  }
-  if (rule.roles !== undefined) {
-    return { path: rule.path, requiresLogin: true, roleCodes: [...rule.roles] }
-  }
-  const audience = effectiveAudience(rule, appAudience)
-  return {
-    path: rule.path,
-    requiresLogin: true,
-    roleCodes: audience === 'org' ? [...allRoleCodes] : [],
-  }
+export function sameAuthRow(a: AppAuthRowState, b: AppAuthRowState): boolean {
+  return a.path === b.path && a.requiresLogin === b.requiresLogin && a.audienceMode === b.audienceMode &&
+    a.roleCodes.length === b.roleCodes.length && a.roleCodes.every(code => b.roleCodes.includes(code))
 }
 
 export function rowStateToRule(row: AppAuthRowState): AppAuthRule {
+  const original = row.originalRule
+  if (original) {
+    const parsed = ruleToRowState(original, 'org')
+    // A path edit must not normalize an untouched audience, including dual fields.
+    if (row.requiresLogin === parsed.requiresLogin && row.audienceMode === parsed.audienceMode &&
+      row.roleCodes.length === parsed.roleCodes.length && row.roleCodes.every(code => parsed.roleCodes.includes(code))) {
+      return { ...cloneRule(original), path: row.path }
+    }
+  }
   if (!row.requiresLogin) return { path: row.path, auth: 'public' }
-  return { path: row.path, auth: 'required', roles: [...row.roleCodes] }
+  if (row.audienceMode === 'org_roles' && !row.roleCodes.length) throw new Error('Select at least one organization role')
+  return { path: row.path, auth: 'required',
+    ...(row.audienceMode === 'any_org_role' ? { audience: 'org' as const } :
+      row.audienceMode === 'inherit' ? {} : { roles: row.audienceMode === 'org_roles' ? [...row.roleCodes] : [] }) }
 }
 
 export function sameAuthRules(a: AppAuthRule[], b: AppAuthRule[]): boolean {
-  if (a.length !== b.length) return false
-  return a.every((r, i) => {
-    const o = b[i]
-    if (r.path !== o.path || r.auth !== o.auth) return false
-    const ra = r.roles
-    const oa = o.roles
-    if (ra === undefined && oa === undefined) {
-      return r.audience === o.audience
-    }
-    if (ra === undefined || oa === undefined) return false
-    if (ra.length !== oa.length) return false
-    return ra.every((code, j) => code === oa[j])
-  })
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
-/**
- * Baseline from authScope + authAudience (+ optional `/` rule with roles).
- * When a `/` required rule carries explicit `roles`, that is the baseline WHO
- * and the rule is excluded from the exception list by the loader.
- */
-export function baselineToRowState(
-  app: Pick<AppRow, 'authScope' | 'authAudience' | 'authRules'>,
-  allRoleCodes: string[],
-): AppAuthRowState {
-  const scope: AppAuthScope = app.authScope ?? 'all'
-  const audience: AppAuthAudience = app.authAudience ?? 'org'
-  const rules = app.authRules ?? []
-  const root = rules.find((r) => r.path === '/' && r.auth === 'required')
-
-  if (scope === 'paths') {
-    return { path: '/', requiresLogin: false, roleCodes: [] }
-  }
-
-  if (root && root.roles !== undefined) {
-    return { path: '/', requiresLogin: true, roleCodes: [...root.roles] }
-  }
-
-  if (root) {
-    return ruleToRowState(root, audience, allRoleCodes)
-  }
-
-  return {
-    path: '/',
-    requiresLogin: true,
-    roleCodes: audience === 'org' ? [...allRoleCodes] : [],
-  }
+export function baselineToRowState(app: Policy): AppAuthRowState {
+  const root = (app.authRules ?? []).find(r => r.path === '/' && r.auth === 'required')
+  if (app.authScope !== 'paths' && root) return ruleToRowState(root, app.authAudience ?? 'org')
+  return { path: '/', requiresLogin: app.authScope !== 'paths',
+    audienceMode: app.authAudience === 'any' ? 'any_authenticated' : 'any_org_role', roleCodes: [], source: 'app_baseline' }
 }
 
-/**
- * Path exceptions for the editor. Under `authScope: all`, a `/` required rule
- * is the baseline WHO and is omitted here (see `baselineToRowState`).
- */
-export function exceptionRulesToRowState(
-  app: Pick<AppRow, 'authScope' | 'authAudience' | 'authRules'>,
-  allRoleCodes: string[],
-): AppAuthRowState[] {
-  const scope: AppAuthScope = app.authScope ?? 'all'
-  const audience: AppAuthAudience = app.authAudience ?? 'org'
-  const rules = app.authRules ?? []
-  const dropRootBaseline =
-    scope !== 'paths' && rules.some((r) => r.path === '/' && r.auth === 'required')
-
-  return rules
-    .filter((r) => !(dropRootBaseline && r.path === '/'))
-    .map((r) => ruleToRowState(r, audience, allRoleCodes))
+export function exceptionRulesToRowState(app: Policy): AppAuthRowState[] {
+  return (app.authRules ?? []).filter(r => !(app.authScope !== 'paths' && r.path === '/' && r.auth === 'required'))
+    .map(r => ruleToRowState(r, app.authAudience ?? 'org'))
 }
 
-/**
- * Build the PATCH body. Baseline login is encoded as authScope=all plus a `/`
- * required rule with `roles` (so WHO migrates off authAudience). Public
- * baseline is authScope=paths with no injected `/`.
- */
-/**
- * `auth_audience` is legacy, but it is still the gateway's LAST-RESORT answer to
- * "who may enter" — the one it uses when a path's own verdict cannot be read
- * (an encoded separator, a corrupt rule set). Writing `any` unconditionally
- * made that last resort admit every signed-in visitor, including for an app
- * whose every rule names specific roles. So it tracks the policy: `any` only
- * when nothing here restricts anybody.
- */
-function fallbackAudience(rows: AppAuthRowState[]): AppAuthAudience {
-  const restricts = rows.some((r) => r.requiresLogin && r.roleCodes.length > 0)
-  return restricts ? 'org' : 'any'
-}
-
-export function buildAuthPolicyPatch(
-  baseline: AppAuthRowState,
-  exceptions: AppAuthRowState[],
-): {
-  authAudience: AppAuthAudience
-  authScope: AppAuthScope
-  authRules: AppAuthRule[]
+export function buildAuthPolicyPatch(baseline: AppAuthRowState, exceptions: AppAuthRowState[], originalPolicy: Policy): {
+  authAudience: AppAuthAudience; authScope: AppAuthScope; authRules: AppAuthRule[]
 } {
-  const exceptionRules = exceptions.map(rowStateToRule)
-  if (!baseline.requiresLogin) {
-    return {
-      authAudience: fallbackAudience(exceptions),
-      authScope: 'paths',
-      authRules: exceptionRules,
-    }
+  const originalBaseline = baselineToRowState(originalPolicy)
+  const baselineChanged = !sameAuthRow(baseline, originalBaseline)
+  const authAudience = baselineChanged && baseline.source === 'app_baseline' && baseline.audienceMode !== 'org_roles'
+    ? (baseline.audienceMode === 'any_authenticated' ? 'any' : 'org') : originalPolicy.authAudience ?? 'org'
+  const authScope = baseline.requiresLogin ? 'all' : 'paths'
+  const rules = exceptions.map(rowStateToRule)
+  const needsRoot = baseline.requiresLogin && (baseline.source === 'rule' || baseline.audienceMode === 'org_roles')
+  if (needsRoot) {
+    const root = rowStateToRule(baseline)
+    const originalIndex = (originalPolicy.authRules ?? []).findIndex(r => r.path === '/' && r.auth === 'required')
+    const precedingRules = (originalPolicy.authRules ?? []).slice(0, originalIndex)
+    const insertionIndex = originalIndex < 0 ? 0 : exceptions.filter(row => row.originalRule &&
+      precedingRules.some(rule => sameAuthRules([rule], [row.originalRule!]))).length
+    rules.splice(insertionIndex, 0, root)
   }
-
-  const rootRule = rowStateToRule({ ...baseline, path: '/' })
-  const withoutRoot = exceptionRules.filter((r) => r.path !== '/')
-  return {
-    authAudience: fallbackAudience([baseline, ...exceptions]),
-    authScope: 'all',
-    authRules: [rootRule, ...withoutRoot],
-  }
+  return { authAudience, authScope, authRules: rules }
 }
 
 /** Read-only summary of the baseline wall (settings / control panel). */
@@ -204,7 +128,7 @@ export function summarizeAppAuthBaseline(
   if (root && root.roles !== undefined) {
     return { requiresLogin: true, roleCodes: [...root.roles] }
   }
-  const audience: AppAuthAudience = app.authAudience ?? 'org'
+  const audience: AppAuthAudience = root?.audience ?? app.authAudience ?? 'org'
   if (audience === 'any') {
     return { requiresLogin: true, roleCodes: [] }
   }

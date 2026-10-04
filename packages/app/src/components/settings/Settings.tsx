@@ -64,7 +64,7 @@ const teamManagementSections: Section[] = [
   { id: 'billing', label: 'Billing', labelKey: 'settings.nav.billing', icon: Wallet },
   { id: 'tokenUsage', label: 'Token Usage', labelKey: 'settings.nav.tokenUsage', icon: Coins },
   { id: 'leaderboard', label: 'Leaderboard', labelKey: 'settings.nav.leaderboard', icon: Trophy },
-  { id: 'teamRoles', label: '团队角色', labelKey: 'settings.nav.teamRoles', icon: Users },
+  { id: 'teamRoles', label: '组织角色', labelKey: 'settings.nav.teamRoles', icon: Users },
 ]
 
 // Platform operator sections. Shown only to an operator of this deployment,
