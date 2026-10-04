@@ -33,7 +33,10 @@ export function buildAppAuthInfo(input: AppAuthInfoInput): AppAuthInfo {
   if (!Array.isArray(input.authRules) || resolvePathPolicy("/", input.authScope, input.authRules).unreadable) {
     throw new ApiError(503, "app_auth_unavailable", "application auth rules are unreadable");
   }
-  const root = input.authRules.find((rule) => rule.path === "/");
+  // The gateway trims trailing whitespace/slashes on stored paths; retain raw
+  // rules but identify the root using the same read normalization.
+  const isRoot = (rule: AuthRule) => rule.path.trim().replace(/\/+$/, "") === "";
+  const root = input.authRules.find(isRoot);
   const explain = (path: string, rule?: AuthRule): EffectiveAuthPolicy => {
     const inherited = !rule || (
       rule.auth === "required" && rule.roles === undefined && rule.audience === undefined
@@ -72,7 +75,7 @@ export function buildAppAuthInfo(input: AppAuthInfoInput): AppAuthInfo {
     organizationStatus: input.organization ? "configured" : "unconfigured",
     effectivePolicies: [
       explain("/", root),
-      ...input.authRules.filter((rule) => rule.path !== "/").map((rule) => explain(rule.path, rule)),
+      ...input.authRules.filter((rule) => !isRoot(rule)).map((rule) => explain(rule.path, rule)),
     ],
   };
 }

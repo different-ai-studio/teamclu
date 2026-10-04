@@ -212,6 +212,54 @@ describe('AppAuthTabContent', () => {
     expect(storeMocks.updateAuthPolicy.mock.calls[0][1].authRules).toEqual([{ path: '/staff', auth: 'required', roles: ['reviewer'] }])
   })
 
+  it('shows selected orphan codes even when the active catalog is empty', async () => {
+    orgRolesList.mockResolvedValue([])
+    await renderWith({ authRules: [{ path: '/staff', auth: 'required', roles: ['reviewer'] }] })
+    await userEvent.setup().click(screen.getByTestId('app-auth-rule-roles-0-codes'))
+    expect(screen.getByRole('checkbox').getAttribute('data-state')).toBe('checked')
+    expect(screen.getByText(/已停用或缺失/)).toBeTruthy()
+    expect(storeMocks.updateAuthPolicy).not.toHaveBeenCalled()
+  })
+
+  it('preserves an actually inactive catalog role and permits explicit removal', async () => {
+    orgRolesList.mockResolvedValue([{ id: 'r-reviewer', code: 'reviewer', name: 'Reviewer', status: 'inactive' } as never])
+    await renderWith({ authRules: [{ path: '/staff', auth: 'required', roles: ['reviewer'] }] })
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('app-auth-rule-roles-0-codes'))
+    expect(screen.getByText(/Reviewer.*已停用或缺失/)).toBeTruthy()
+    const checkbox = screen.getByRole('checkbox')
+    expect(checkbox.getAttribute('data-state')).toBe('checked')
+    expect(checkbox).not.toHaveProperty('disabled', true)
+    await user.click(checkbox)
+    await user.keyboard('{Escape}')
+    expect(screen.getByTestId('app-auth-save')).toHaveProperty('disabled', true)
+    expect(storeMocks.updateAuthPolicy).not.toHaveBeenCalled()
+  })
+
+  for (const phase of ['write', 'readback'] as const) {
+    it(`ignores old-app ${phase} completion after an app switch`, async () => {
+      let finish!: (value: any) => void
+      const pending = new Promise(resolve => { finish = resolve })
+      const view = await renderWith({ authRules: [{ path: '/old', auth: 'required', audience: 'org' }] })
+      if (phase === 'write') storeMocks.updateAuthPolicy.mockReturnValueOnce(pending)
+      else getAppAuthInfo.mockReturnValueOnce(pending)
+      const user = userEvent.setup()
+      await user.type(screen.getByTestId('app-auth-rule-path-0'), '/edit')
+      await user.click(screen.getByTestId('app-auth-save'))
+      if (phase === 'readback') await waitFor(() => expect(getAppAuthInfo).toHaveBeenCalledTimes(2))
+      const next = { ...baseApp, id: 'app-2', authRules: [{ path: '/next', auth: 'required' as const, roles: [] }] }
+      storeMocks.items = [next]
+      view.rerender(<AppAuthTabContent appId="app-2" />)
+      await waitFor(() => expect(screen.getByTestId('app-auth-rule-path-0')).toHaveProperty('value', '/next'))
+      await act(async () => { finish(phase === 'write' ? false : { ...baseApp, roles: [], organization: null, organizationStatus: 'unconfigured', authRules: [{ path: '/stale', auth: 'required' }] }); await pending })
+      expect(screen.getByTestId('app-auth-rule-path-0')).toHaveProperty('value', '/next')
+      expect(screen.queryByTestId('app-auth-save-error')).toBeNull()
+      expect(screen.queryByTestId('app-auth-readback-error')).toBeNull()
+      expect(screen.getByTestId('app-auth-save')).toHaveProperty('disabled', true)
+      expect(storeMocks.updateAuthPolicy).toHaveBeenCalledTimes(1)
+    })
+  }
+
   it('requires confirmation of an app-default change affecting inherited paths', async () => {
     await renderWith({ authAudience: 'org', authRules: [{ path: '/staff', auth: 'required' }] })
     const user = userEvent.setup()

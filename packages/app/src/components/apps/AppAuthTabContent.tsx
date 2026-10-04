@@ -112,7 +112,7 @@ function RolesMultiSelect({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[220px] p-2">
-        {options.length === 0 ? (
+        {options.length === 0 && roleCodes.length === 0 ? (
           <p className="px-1 py-2 text-[12.5px] text-muted-foreground">
             {t('apps.auth.roles.empty', '还没有可分配的角色')}
           </p>

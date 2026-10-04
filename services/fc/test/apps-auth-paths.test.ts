@@ -412,3 +412,22 @@ test("appAdmitsAnyAudience: an unreadable rule set refuses rather than throws", 
   // ...but a readable set that says `any` at the app level still opens it.
   assert.equal(appAdmitsAnyAudience("paths", "not-an-array", "any"), true);
 });
+
+test("mixed public, inherited, dynamic and fixed policy keeps one longest-prefix winner", () => {
+ const rules = [
+ {path:"/",auth:"public"},
+ {path:"/reports",auth:"required",audience:"org"},
+ {path:"/reports/export",auth:"required",roles:["reviewer"]},
+ {path:"/reports/export/help",auth:"required",roles:[],audience:"org"},
+ {path:"/legacy",auth:"required"},
+ ];
+ for (const [path,expected] of [
+ ["/",{requiresLogin:false,audience:null,roles:null}],
+ ["/reports/x",{requiresLogin:true,audience:"org",roles:null}],
+ ["/reports/export/x",{requiresLogin:true,audience:null,roles:["reviewer"]}],
+ ["/reports/export/help/x",{requiresLogin:true,audience:"org",roles:[]}],
+ ["/legacy/x",{requiresLogin:true,audience:null,roles:null}],
+ ]) assert.deepEqual(resolvePathPolicy(path as string,"paths",rules),expected);
+ for (const bad of ["/reports%2fexport", "/reports%2e%2e/export"]) assert.equal(resolvePathPolicy(bad,"paths",rules).unreadable,true);
+ assert.equal(resolvePathPolicy("/", "paths", [...rules,{path:"/bad",auth:"required",roles:"reviewer"}]).unreadable,true);
+});

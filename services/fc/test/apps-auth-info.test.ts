@@ -36,3 +36,13 @@ test("auth info refuses unreadable rules rather than explaining a wider audience
   assert.throws(()=>module.buildAppAuthInfo({...input, authRules:authRules as any}), (error: any)=>error.statusCode===503);
  }
 });
+
+ test("root explanation uses gateway read normalization while preserving raw rules", () => {
+ for (const path of ["/ ", "///"]) {
+  const rules = [{path, auth:"required" as const, audience:"org" as const}];
+  const info = module.buildAppAuthInfo({...input, authRules:rules});
+  assert.deepEqual(info.authRules,rules);
+  assert.deepEqual(info.effectivePolicies,[{path:"/",kind:"any_org_role",roleCodes:null,inherited:false,source:"rule_audience"}]);
+ }
+ assert.throws(()=>module.buildAppAuthInfo({...input,authRules:[{path:" /",auth:"required"}]}));
+});

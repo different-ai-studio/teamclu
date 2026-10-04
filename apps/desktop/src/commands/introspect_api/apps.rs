@@ -1661,6 +1661,9 @@ mod tests {
                 Json(info)
             }}}))
             .route("/v1/apps/unconfigured/auth-info", get(move || {let info = unconfigured.clone(); async move {Json(info)}}))
+            .route("/v1/apps/malformed/auth-info", get(|| async {
+                Json(json!({"appId":"malformed", "roles":[]}))
+            }))
             .route("/v1/apps/forbidden/auth-info", get(|| async {
                 (StatusCode::FORBIDDEN, Json(json!({"error":{"code":"org_roles_forbidden", "message":"organization role directory is not visible"}})))
             }));
@@ -1683,6 +1686,11 @@ mod tests {
         let error = read_app_auth_info(&api, &json!({"id":"forbidden"}))
             .await
             .unwrap_err();
+        let malformed = read_app_auth_info(&api, &json!({"id":"malformed"}))
+            .await
+            .unwrap_err();
+        assert_eq!(malformed, "App auth discovery unavailable: unreadable Cloud API response");
+        assert!(!malformed.contains("test-token"));
         server.abort();
         assert_eq!(
             result,
