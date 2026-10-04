@@ -30,6 +30,51 @@ select bundled versus external Supabase. Both targets are containers and expose
 Secrets remain in the self-host .env, GitHub environments, and Dokploy. Never
 add secret values to these manifests.
 
+## Protected FC origins
+
+The [Cloud API origin runbook](../../services/fc/README.md#protected-fc-app-origins)
+defines the server-only `APPS_FC_ORIGIN_KEYRING`,
+`APPS_FC_ORIGIN_TLS_CERT_NAME`, `APPS_FC_ORIGIN_TLS_CERT_PEM` and
+`APPS_FC_ORIGIN_TLS_KEY_PEM`. All four names are in `cloud-api.env.keys`; that
+manifest is an allowlist contract, not a secret injector. New/normal app
+deployments also require `APPS_FC_ROUTE_DOMAIN`, a distinct public zone, a valid
+Host-covering certificate and JWT-protected HTTPS origin. Internal DNS alone
+does not prevent public FC Host overrides.
+
+Before a separately authorized release, generate the independent master key
+offline and set the four values in Dokploy's protected Cloud API environment.
+The keyring is single-line JSON; the two PEM values must contain real newline
+bytes. Use the deployment's supported multiline/quoted environment entry,
+preserving each PEM as **one variable**. Do not paste raw PEM lines as separate
+`KEY=value` records or use literal `\n`: FC does not unescape them. If the
+chosen UI/API entry cannot retain newlines, stop and use a supported secret
+injection path rather than flattening PEM or printing it to debug output.
+
+`.github/scripts/belayo-rollout.sh` updates the Swarm image and Dokploy's
+desired image only; it neither serializes multiline PEM nor updates service
+environment values. Editing Dokploy desired config or adding allowlist names
+does not prove the running service received them. Apply the environment through
+an explicitly authorized Dokploy Cloud API deployment, then run the runbook's
+secret-safe `readAppsOriginAuthConfig` / `assertOriginCertificate` check inside
+the running Cloud API container for the chosen canonical origin Host. Keep
+shell tracing disabled and never record `docker service inspect` env output.
+
+After server config is applied, use TeamClu to initiate the chosen app's normal
+deployment and verify provider readback before claiming protection. Server/image
+restart does not upload or renew the FC custom-domain certificate. Start expiry
+alerts 30 days before expiry; renewal requires secure server PEM replacement
+followed by a later explicitly requested normal target deployment. The existing
+Traefik wildcard renewal described below covers public app ingress only.
+Follow the runbook's two-version rotation: prepare **every protected target
+using the keyring** in separately authorized normal deploys before switching
+the signing key, wait more than 60 seconds after all old signers stop, and remove
+old validation keys only through subsequent authorized target deployments.
+Never restore anonymous ingress on rollback. Existing apps are not repaired by
+this release and remain unverified until their own normal redeploy.
+
+The [new-app acceptance checklist](../../docs/testing/2026-10-04-fc-origin-lockdown.md)
+is **尚未执行**; local SDK tests are not evidence of live FC rejection.
+
 ## Cloud API release pipeline
 
 `.github/workflows/belayo-cloud-api.yml` builds `services/fc` as an immutable
