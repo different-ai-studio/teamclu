@@ -1,3 +1,5 @@
+import { ORIGIN_CONFIG } from "./fixtures/apps-origin-auth/config.js";
+import { finalizeDeploy } from "../src/lib/provisioning/app-deploy.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appFunctionName } from "../src/lib/provisioning/app-deploy.js";
@@ -45,4 +47,48 @@ test("the name is always a legal Function Compute name", () => {
     assert.match(name, legal, `illegal for slug ${JSON.stringify(slug)}: ${name}`);
   }
   assert.match(appFunctionName(APP_ID), legal);
+});
+
+
+test("publish rejects trigger readback drift, provider failures and noncanonical endpoints without leaking provider secrets", async () => {
+  for (const scenario of ["trigger", "drift", "provider", "readUnavailable", "http", "default", "foreign"]) {
+    const calls: unknown[] = [];
+    await assert.rejects(() => finalizeDeploy({
+      readOriginAuth: () => ORIGIN_CONFIG,
+      fcOps: {
+        ensureFunction: async (_name, params) => { calls.push(params.env); },
+        ensureHttpTrigger: async () => scenario === "trigger" ? { internetUrlDisabled: false } as any : { internetUrlDisabled: true },
+        ensureCustomDomain: async (_name, domain, target) => {
+          assert.deepEqual(target, { appId: APP_ID, slug: "app-a" });
+          if (scenario === "drift") throw new Error("FC origin security drift: authConfig.JWKS SECRET");
+          if (scenario === "provider") throw new Error("SECRET JWT JWKS PEM");
+          if (scenario === "readUnavailable") throw new Error("FC origin security drift: getTrigger");
+          return scenario === "http" ? `http://${domain}` : scenario === "default" ? "https://fn.fcapp.run" : "https://other.origins.test";
+        },
+      },
+    }, { appId: APP_ID, slug: "app-a", appType: "static_web", fcFunctionName: "fn", ossObjectName: "code.zip" }),
+    (error: any) => {
+      assert.equal(error.code, ["provider", "readUnavailable"].includes(scenario) ? "origin_security_unavailable" : "origin_security_drift");
+      assert.equal(error.statusCode, ["provider", "readUnavailable"].includes(scenario) ? 503 : 409);
+      assert.equal(error.message.includes("SECRET"), false);
+      return true;
+    });
+    assert.deepEqual(calls, [{ NODE_ENV: "production" }], "origin secrets never enter app environment");
+  }
+});
+
+
+test("origin domain matching the public gateway domain is rejected before FC mutation", async () => {
+  const original = process.env.APPS_PUBLIC_DOMAIN;
+  try {
+    process.env.APPS_PUBLIC_DOMAIN = " Origins.TeSt. ";
+    const calls: string[] = [];
+    await assert.rejects(() => finalizeDeploy({ readOriginAuth: () => ORIGIN_CONFIG, fcOps: {
+      ensureFunction: async () => { calls.push("function"); },
+      ensureHttpTrigger: async () => { calls.push("trigger"); return { internetUrlDisabled: true }; },
+      ensureCustomDomain: async (_fn, domain) => { calls.push("domain"); return `https://${domain}`; },
+    } }, { appId: APP_ID, slug: "app-a", appType: "static_web", fcFunctionName: "fn", ossObjectName: "code.zip" }),
+      (error: any) => error.code === "origin_security_unavailable" && error.statusCode === 503);
+    assert.deepEqual(calls, []);
+  } finally { if (original === undefined) delete process.env.APPS_PUBLIC_DOMAIN; else process.env.APPS_PUBLIC_DOMAIN = original; }
 });

@@ -39,9 +39,8 @@ const MAX_LABEL_BYTES = 63;
  * itself, so nothing changes for the apps that already deploy.
  *
  * `null` when the label cannot be expressed — unencodable, or past the 63-byte
- * limit. Callers then fall back to the app's FC trigger URL, which is the same
- * thing that happens on a deployment with no apps domain at all. Fail closed:
- * a hostname no certificate can cover is worse than no vanity hostname.
+ * limit. Existing routing helpers may return no vanity hostname. Publishing
+ * requires a valid label covered by the origin certificate and fails closed.
  */
 export function appPublicLabel(slug: string, appId: string): string | null {
   const ascii = domainToASCII(`${slug}-${appId.slice(0, ID_PREFIX_LEN)}`);
@@ -60,7 +59,8 @@ export function appPublicLabel(slug: string, appId: string): string | null {
  * Compute instead, which is how the request reaches the app at all — Node's
  * fetch cannot override `Host`, so DNS has to carry the routing.
  *
- * Blank keeps the old behaviour: the app is served on its `*.fcapp.run`
+ * Blank is supported for legacy routing/deletion only. New deploys require
+ * a verified HTTPS JWT origin and never publish a `*.fcapp.run`
  * trigger URL, which cannot forward redirects.
  */
 export const appsFcRouteDomain = (env: Env = process.env) =>
