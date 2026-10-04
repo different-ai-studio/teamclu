@@ -764,6 +764,37 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn deploy_app_cannot_be_overwritten_or_updated() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let ws = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".agents/skills/deploy-app");
+        fs::create_dir_all(&dir).unwrap();
+        let original = "---\nname: deploy-app\ndescription: Bundled.\n---\n";
+        fs::write(dir.join("SKILL.md"), original).unwrap();
+        let replacement = "---\nname: deploy-app\ndescription: Changed.\n---\n";
+        let create = CreatePackRequest {
+            slug: "deploy-app".into(),
+            content: replacement.into(),
+            files: vec![],
+        };
+        let err =
+            create_pack(ws.path(), home.path(), &create, &ClaimedTeamContext::NoTeam).unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::BuiltinSkillReadOnly);
+        let update = UpdatePackRequest {
+            slug: "deploy-app".into(),
+            content: replacement.into(),
+            files: vec![],
+            expected_digest: None,
+            delete_files: vec![],
+        };
+        let err =
+            update_pack(ws.path(), home.path(), &update, &ClaimedTeamContext::NoTeam).unwrap_err();
+        assert_eq!(err.code, ManagedSkillErrorCode::BuiltinSkillReadOnly);
+        assert_eq!(fs::read_to_string(dir.join("SKILL.md")).unwrap(), original);
+    }
+
+    #[test]
     fn update_request_deserializes_delete_files_camel_case() {
         let payload = serde_json::json!({
             "slug": "demo",
