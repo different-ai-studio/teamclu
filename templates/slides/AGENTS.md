@@ -38,7 +38,7 @@ reveal 自带的全部主题（black、white、league、solarized 等）。
 
 本地预览：`pnpm dev`，打开 `http://localhost:9000`。左右键翻页，`S` 演讲者视图，`Esc` 总览。
 
-For platform sign-in, role-based access, or protected endpoints, use the built-in `app-auth` skill.
+涉及平台登录、角色权限或受保护接口时，使用内置 `app-auth` skill。
 
 ## 登录（`auth_mode`）
 
