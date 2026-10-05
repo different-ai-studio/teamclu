@@ -1,4 +1,4 @@
-import { classifyOriginEndpoint, signOriginToken, type OriginAuthConfig, type OriginTarget } from "./apps-origin-auth.js";
+import { classifyOriginEndpoint, signOriginToken, ORIGIN_VERSION_HEADER, type OriginAuthConfig, type OriginTarget } from "./apps-origin-auth.js";
 import { appPublicLabel, appsPublicDomain, parseAppPublicHost } from "./apps-public-host.js";
 
 /**
@@ -402,6 +402,8 @@ export async function proxyToApp(
   const headers = strip(request.headers);
   headers.delete("host");
   headers.delete("x-teamclu-origin-authorization");
+  // Reserve this for FC's fixed signed-version mapping, including legacy apps.
+  headers.delete(ORIGIN_VERSION_HEADER);
   // Drop any client-supplied identity BEFORE writing our own, and drop it
   // unconditionally — including on apps with no login wall, where `identity`
   // is null and nothing is written back. Skipping the delete in that branch
@@ -450,5 +452,6 @@ export async function proxyToApp(
 
   const responseHeaders = stripForcedDownload(strip(res.headers));
   responseHeaders.delete("x-teamclu-origin-authorization");
+  responseHeaders.delete(ORIGIN_VERSION_HEADER);
   return new Response(res.body, { status: res.status, headers: responseHeaders });
 }

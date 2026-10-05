@@ -1,4 +1,4 @@
-import { originJwks, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
+import { originJwks, ORIGIN_VERSION_HEADER, ORIGIN_VERSION_CLAIM_MAPPING, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
@@ -348,9 +348,9 @@ function jsonObject(value: unknown): any {
   } catch { return undefined; }
 }
 function jwtInfo(config: OriginAuthConfig, target: OriginTarget) {
-  // FC validates every supplied claimPassBy element, including an empty string.
-  // Omit the optional field when no claims should be forwarded.
-  return { jwks: originJwks(config, target.appId), tokenLookup: ORIGIN_TOKEN_LOOKUP };
+  // FC rejects omitted/empty mappings in the deployed region. Forward only
+  // the signed key version into an isolated metadata header, never identity.
+  return { jwks: originJwks(config, target.appId), tokenLookup: ORIGIN_TOKEN_LOOKUP, claimPassBy: ORIGIN_VERSION_CLAIM_MAPPING };
 }
 function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, target: OriginTarget): string[] {
   const fields: string[] = [];
@@ -360,7 +360,8 @@ function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, tar
   // Header names are case insensitive. Prefix, source count and source type are not.
   const lookup = typeof info.tokenLookup === "string" ? info.tokenLookup.split(":") : [];
   if (lookup.length !== 3 || lookup[0] !== "header" || lookup[1].toLowerCase() !== "x-teamclu-origin-authorization" || lookup[2] !== "Bearer ") fields.push("authConfig.TokenLookup");
-  if (info.claimPassBy !== undefined && info.claimPassBy !== "") fields.push("authConfig.ClaimPassBy");
+  const mapping = typeof info.claimPassBy === "string" ? info.claimPassBy.split(":") : [];
+  if (mapping.length !== 3 || mapping[0] !== "header" || mapping[1] !== "version" || mapping[2].toLowerCase() !== ORIGIN_VERSION_HEADER.toLowerCase()) fields.push("authConfig.ClaimPassBy");
   const keys = jsonObject(info.jwks)?.keys;
   const normalize = (items: any[]) => items.map(key => {
     if (!jsonObject(key)) return "invalid";

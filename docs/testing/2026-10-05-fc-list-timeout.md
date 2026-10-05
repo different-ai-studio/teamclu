@@ -22,4 +22,6 @@ confirms a resolution and larger-page probes pass.
 Separate outstanding acceptance blocker: FC rejected omitted/empty claimPassBy;
 the diagnostic app currently uses a non-identity version mapping. That mapping
 is not accepted by the platform's original no-claim-mapping security policy.
-The pagination workaround does not resolve that separate issue.
+The pagination workaround does not resolve that separate issue. The subsequent
+fixed-metadata mapping contract is documented in
+[FC origin version claim](2026-10-05-fc-origin-version-claim.md).
