@@ -76,6 +76,10 @@ fn inherent_skills() -> Vec<InherentSkill> {
             content: include_str!("../../../../packages/app/src/lib/skills/create-role/SKILL.md"),
         },
         InherentSkill {
+            dirname: "app-auth",
+            content: include_str!("../../../../packages/app/src/lib/skills/app-auth/SKILL.md"),
+        },
+        InherentSkill {
             dirname: "deploy-app",
             content: include_str!("../../../../packages/app/src/lib/skills/deploy-app/SKILL.md"),
         },
@@ -2231,13 +2235,13 @@ mod tests {
         let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
         let workspace = tempfile::tempdir().unwrap();
         prepare_workspace(workspace.path()).unwrap();
-        let installed = home.path().join(".agents/skills/deploy-app/SKILL.md");
-        assert!(installed.is_file());
-        let body = std::fs::read_to_string(installed).unwrap();
-        assert!(body.contains("name: deploy-app"));
-        assert!(inherent_skills()
-            .iter()
-            .any(|skill| skill.dirname == "deploy-app"));
+        for name in ["deploy-app", "app-auth"] {
+            let installed = home.path().join(format!(".agents/skills/{name}/SKILL.md"));
+            assert!(installed.is_file());
+            let body = std::fs::read_to_string(installed).unwrap();
+            assert!(body.contains(&format!("name: {name}")));
+            assert!(inherent_skills().iter().any(|skill| skill.dirname == name));
+        }
     }
 
     fn isolated_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {

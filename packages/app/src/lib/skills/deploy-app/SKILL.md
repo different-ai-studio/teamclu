@@ -16,12 +16,4 @@ The checkout declares the desired build and start behavior. The live deployment 
 
 Custom environment, access, domain, data, files, and cron changes use their matching `manage_app_*` tools and the signed-in user's permissions. Never request or print secret values.
 
-## App access checks
-
-Before changing login permissions, call `manage_app auth_info` for the selected app. Use its organization, organization-scoped active role **codes**, raw rules, and effective policies. If discovery fails or the organization is unconfigured, report that and stop role configuration; an unavailable catalog is not an empty catalog.
-
-Choose the intended required audience explicitly: `roles: []` admits any signed-in user; `audience: "org"` with no `roles` admits any current or future active organization role; a nonempty `roles` array admits one of those selected codes. Explicit `roles` wins over rule audience, then the app default. Preserve untouched raw rules, including inherited defaults, when replacing the full list. Do not add a fixed User ID allowlist for organization-role permissions. The gateway checks current active organization roles on each matching request; do not rebuild that decision with an app-side member list. App code consumes the trusted platform identity on gateway-protected requests. App creators and collaborators do not automatically pass the site's role check; `manage_app_access` manages collaborators, not visitors.
-
-Check page URLs and the **actual data endpoints** separately. Longest matching path prefix wins; a protected page does not protect an unmatched data request. Public and employee flows may share Server Functions: inspect their actual routes and checks, and preserve public access rather than locking the shared prefix wholesale. No particular employee endpoint path is required.
-
-Use the existing permission update tool and native approval, then call `auth_info` again to compare persisted raw rules and effective audiences with the intent. Verify public and restricted requests, including a visitor without a matching role. A rejected update leaves the previous policy in place; do not report success from a proposed patch or bypass approval. These access checks do not authorize publishing or changing role assignments.
+For TeamClu platform sign-in, organization roles, or protected pages and data endpoints, read the inherent `app-auth` skill before implementation. At release, verify its saved policies and report any auth acceptance limits.

@@ -18,15 +18,11 @@
  *   X-Teamclu-User-Email  their address
  *   X-Teamclu-Org-Id      their organisation, when there is one
  *
- * These appear only when the visitor satisfies EVERY condition for entering
- * this app. They carry exactly one meaning wherever they appear — "this person
- * is allowed in" — so an app never has to re-check an audience. On a public
- * path of an app whose wall is set to staff-only, an outsider arrives with no
- * headers at all rather than with headers you would have to second-guess.
- *
- * The proxy strips any client-supplied copy of these before writing its own, so
- * a caller cannot forge one. They are trustworthy exactly because they came
- * through that hop — never read them from a request that did not.
+ * Identity is scoped to the current request, not an employee role grant.
+ * X-Teamclu-User-Id is a platform user ID, never created_by_actor_id.
+ * Only rely on employee admission when THIS endpoint has the employee policy.
+ * The gateway strips client identity headers before injecting trusted ones;
+ * direct origin requests must be rejected. Read the app-auth skill.
  *
  * WHAT THIS DOES NOT DO
  *

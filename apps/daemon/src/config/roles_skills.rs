@@ -80,6 +80,7 @@ const ROLE_SKILL_DIR: &str = "skills";
 const INHERENT_SKILL_NAMES: &[&str] = &[
     "create-role",
     "deploy-app",
+    "app-auth",
     "macos-control",
     "windows-control",
 ];
@@ -1387,6 +1388,7 @@ mod tests {
         let _guard = crate::test_brand_env::BrandEnvGuard::set("teamclu");
         let ws = tempfile::tempdir().unwrap();
         seed_skill(ws.path(), ".agents/skills", "create-role", "inherent");
+        seed_skill(ws.path(), ".agents/skills", "app-auth", "auth guidance");
         seed_skill(ws.path(), ".agents/skills", "elsewhere", "shared root");
         seed_skill(ws.path(), ".claude/skills", "claude-one", "claude root");
 
@@ -1400,6 +1402,7 @@ mod tests {
         };
 
         assert_eq!(source_of("create-role").as_deref(), Some("builtin"));
+        assert_eq!(source_of("app-auth").as_deref(), Some("builtin"));
         // Everything else keeps its root's own label.
         assert_eq!(source_of("elsewhere").as_deref(), Some("shared"));
         assert_eq!(source_of("claude-one").as_deref(), Some("claude"));
