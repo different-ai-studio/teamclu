@@ -676,21 +676,51 @@ test("Google login uses the central login host as a PKCE callback", async () => 
       assert.equal(start?.status, 302);
       const authorize = new URL(start!.headers.get("location")!);
       assert.equal(authorize.searchParams.get("provider"), "google");
-      assert.equal(authorize.searchParams.get("redirect_to"), "https://login.example.com/oauth/callback");
+      const returnTo = new URL(authorize.searchParams.get("redirect_to")!);
+      assert.equal(returnTo.origin + returnTo.pathname, "https://login.example.com/oauth/callback");
+      assert.equal(authorize.searchParams.has("state"), false, "GoTrue owns the provider state");
       assert.equal(authorize.searchParams.get("code_challenge_method"), "s256");
-      const state = authorize.searchParams.get("state")!;
+      const state = returnTo.searchParams.get("login_state")!;
+      assert.ok(state);
       const callback = await handleLoginRequest(
-        get(`/oauth/callback?code=provider-code&state=${encodeURIComponent(state)}`, {
+        get(`/oauth/callback?code=provider-code&login_state=${encodeURIComponent(state)}`, {
           cookie: `${LOGIN_STATE_COOKIE}=${cookieValue(start!, LOGIN_STATE_COOKIE)}`,
         }),
         d,
       );
       assert.equal(callback?.status, 302);
+      assert.match(d.calls[0].url, /grant_type=pkce/);
+      assert.equal(d.calls[0].body.auth_code, "provider-code");
+      assert.ok(d.calls[0].body.code_verifier);
       assert.match(callback!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
       assert.match(callback!.headers.get("set-cookie")!, new RegExp(`${SSO_COOKIE}=`));
       assert.match(callback!.headers.get("set-cookie")!, new RegExp(`${LOGIN_STATE_COOKIE}=;`));
     },
   );
+});
+
+test("OAuth callbacks reject missing, tampered, legacy or mismatched login state before exchange", async () => {
+  await withEnv({ APP_FEATURES_JSON: JSON.stringify({ auth: { google: true } }) }, async () => {
+    const d = deps();
+    const start = await handleLoginRequest(get(`/oauth/google?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`), d);
+    const other = await handleLoginRequest(get(`/oauth/google?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`), d);
+    const authorize = new URL(start!.headers.get("location")!);
+    const state = new URL(authorize.searchParams.get("redirect_to")!).searchParams.get("login_state")!;
+    assert.ok(state);
+    const cookie = `${LOGIN_STATE_COOKIE}=${cookieValue(start!, LOGIN_STATE_COOKIE)}`;
+    for (const [query, header] of [
+      ["code=provider-code", cookie],
+      ["code=provider-code&login_state=tampered", cookie],
+      [`code=provider-code&state=${state}`, cookie],
+      [`code=provider-code&login_state=${state}`, ""],
+      [`code=provider-code&login_state=${state}`, `${LOGIN_STATE_COOKIE}=${cookieValue(other!, LOGIN_STATE_COOKIE)}`],
+    ]) {
+      const result = await handleLoginRequest(get(`/oauth/callback?${query}`, { cookie: header }), d);
+      assert.equal(result?.status, 400);
+      assert.match(result!.headers.get("set-cookie")!, new RegExp(`${LOGIN_STATE_COOKIE}=;`));
+    }
+    assert.equal(d.calls.length, 0, "invalid callbacks must never exchange codes");
+  });
 });
 
 test("Web SSO is not part of app login, even where the deployment enables it", async () => {
