@@ -1,4 +1,4 @@
-import { createHmac, createPrivateKey, X509Certificate } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { SignJWT } from 'jose';
 import { appPublicLabel } from './apps-public-host.js';
 export type OriginKey = {
@@ -9,9 +9,6 @@ export type OriginAuthConfig = {
   activeKey: OriginKey;
   previousKey?: OriginKey;
   routeDomain: string;
-  certName: string;
-  certificate: string;
-  privateKey: string;
 };
 export type OriginTarget = {
   appId: string;
@@ -52,21 +49,6 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
     invalid(name);
   return value;
 }
-function certificateMaterial(config: OriginAuthConfig, now: Date): X509Certificate {
-  let certificate: X509Certificate;
-  try {
-    certificate = new X509Certificate(config.certificate);
-    if (!certificate.checkPrivateKey(createPrivateKey(config.privateKey)))
-      invalid('TLS key mismatch');
-  }
-  catch {
-    invalid('TLS certificate/key');
-  }
-  const time = now.getTime();
-  if (!Number.isFinite(time) || time < Date.parse(certificate.validFrom) || time >= Date.parse(certificate.validTo))
-    invalid('TLS certificate validity');
-  return certificate;
-}
 export function readAppsOriginAuthConfig(env: NodeJS.ProcessEnv): OriginAuthConfig {
   let keyring: unknown;
   try {
@@ -86,20 +68,8 @@ export function readAppsOriginAuthConfig(env: NodeJS.ProcessEnv): OriginAuthConf
     invalid('route domain');
   const config: OriginAuthConfig = {
     activeKey, ...(previousKey ? { previousKey } : {}), routeDomain,
-    certName: required(env, 'APPS_FC_ORIGIN_TLS_CERT_NAME').trim(),
-    certificate: required(env, 'APPS_FC_ORIGIN_TLS_CERT_PEM'),
-    privateKey: required(env, 'APPS_FC_ORIGIN_TLS_KEY_PEM'),
   };
-  certificateMaterial(config, new Date());
   return config;
-}
-export function assertOriginCertificate(config: OriginAuthConfig, hostname: string, now = new Date()): void {
-  if (!hostnameValid(hostname))
-    invalid('origin hostname');
-  const certificate = certificateMaterial(config, now);
-  // SAN takes precedence; never allow a matching CN to override a mismatched SAN.
-  if (!certificate.checkHost(hostname, { subject: 'default' }))
-    invalid('TLS certificate hostname');
 }
 function normalizedAppId(appId: string): string {
   if (typeof appId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(appId))
@@ -140,8 +110,9 @@ export async function signOriginToken(config: OriginAuthConfig, target: OriginTa
 }
 
 /**
- * Existing endpoints keep their unsigned forwarding path. Only the exact
- * managed HTTPS origin can receive a platform credential.
+ * Only the exact managed HTTP/HTTPS origin can receive a platform credential.
+ * Other existing endpoints retain unsigned forwarding. A canonical legacy
+ * HTTP origin may be signed, but FC protection is established by readback.
  */
 export function classifyOriginEndpoint(endpoint: string, target: OriginTarget, routeDomain: string): 'protected' | 'legacy' {
   let url: URL;
@@ -150,7 +121,6 @@ export function classifyOriginEndpoint(endpoint: string, target: OriginTarget, r
   // unusual stored endpoint into an authenticated destination.
   if (!/^https?:\/\//i.test(endpoint) || /[\s\\]/.test(endpoint) || url.username || url.password || !['http:', 'https:'].includes(url.protocol))
     invalid('origin endpoint');
-  if (url.protocol === 'http:') return 'legacy';
   const domain = routeDomain.trim().toLowerCase();
   if (!domain) {
     if (url.hostname.endsWith('.fcapp.run')) return 'legacy';
@@ -162,9 +132,10 @@ export function classifyOriginEndpoint(endpoint: string, target: OriginTarget, r
   const appId = normalizedAppId(target.appId);
   const label = appPublicLabel(target.slug, appId);
   if (!label || !hostnameValid(`${label}.${domain}`)) invalid('origin hostname');
-  // Raw shape rejects paths that URL would normalize back to '/'. Default
-  // HTTPS port is harmless; non-default ports, query and fragments are not.
-  if (url.hostname !== `${label}.${domain}` || url.port || !/^https:\/\/[^/?#]+\/?$/i.test(endpoint))
+  // Raw shape rejects paths that URL would normalize back to '/'. The
+  // canonical origin has no nondefault port, query, fragment or path.
+  // Keep signing existing HTTPS origins until their next normal deployment.
+  if (url.hostname !== `${label}.${domain}` || url.port || !/^https?:\/\/[^/?#]+\/?$/i.test(endpoint))
     invalid('origin endpoint');
   return 'protected';
 }

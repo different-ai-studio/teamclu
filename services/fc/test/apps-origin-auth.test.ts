@@ -1,20 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
-import { X509Certificate, generateKeyPairSync } from 'node:crypto';
 import { jwtVerify, decodeProtectedHeader } from 'jose';
-import { readAppsOriginAuthConfig, assertOriginCertificate, originJwks, signOriginToken } from '../src/lib/apps-origin-auth.js';
-const certificate = readFileSync(new URL('./fixtures/apps-origin-auth/cert.pem', import.meta.url), 'utf8');
-const privateKey = readFileSync(new URL('./fixtures/apps-origin-auth/key.pem', import.meta.url), 'utf8');
-const cert = new X509Certificate(certificate);
-// Committed test-only certificate: valid 2026-10-04 through 2036-10-01.
+import { readAppsOriginAuthConfig, originJwks, signOriginToken } from '../src/lib/apps-origin-auth.js';
 const now = new Date('2027-01-01T00:00:00Z');
 const appA = { appId: '76af539e-5341-4e96-bda7-6c8dacf2b092', slug: 'app-a' };
 const appB = { appId: '11111111-2222-4333-8444-555555555555', slug: 'app-b' };
 const hostA = 'app-a.origins.test';
 const master = Buffer.alloc(32, 42).toString('base64url');
-function env(): NodeJS.ProcessEnv { return { APPS_FC_ORIGIN_KEYRING: JSON.stringify({ active: { version: 'v2', key: master }, previous: { version: 'v1', key: Buffer.alloc(32, 43).toString('base64url') } }), APPS_FC_ROUTE_DOMAIN: 'origins.test', APPS_FC_ORIGIN_TLS_CERT_NAME: 'origin-test', APPS_FC_ORIGIN_TLS_CERT_PEM: certificate, APPS_FC_ORIGIN_TLS_KEY_PEM: privateKey }; }
+function env(): NodeJS.ProcessEnv { return { APPS_FC_ORIGIN_KEYRING: JSON.stringify({ active: { version: 'v2', key: master }, previous: { version: 'v1', key: Buffer.alloc(32, 43).toString('base64url') } }), APPS_FC_ROUTE_DOMAIN: 'origins.test' }; }
 function config() { return readAppsOriginAuthConfig(env()); }
+test('HTTP origin accepts keyring and route domain without TLS material', () => {
+  const values = env();
+  delete values.APPS_FC_ORIGIN_TLS_CERT_NAME;
+  delete values.APPS_FC_ORIGIN_TLS_CERT_PEM;
+  delete values.APPS_FC_ORIGIN_TLS_KEY_PEM;
+  assert.equal(readAppsOriginAuthConfig(values).routeDomain, 'origins.test');
+});
 function key(appId: string) { return Buffer.from(originJwks(config(), appId).keys[0].k, 'base64url'); }
 test('stable independent app and version keys normalize UUID case', () => {
   const cfg = config(), keys = originJwks(cfg, appA.appId).keys;
@@ -72,15 +73,3 @@ test('invalid UUID rejects before deriving or signing', async () => { for (const
   assert.throws(() => originJwks(config(), appId));
   await assert.rejects(signOriginToken(config(), { ...appA, appId }, hostA, now));
 } });
-test('certificate SAN, validity and private key must match', () => {
-  const cfg = config();
-  assert.doesNotThrow(() => assertOriginCertificate(cfg, hostA, now));
-  assert.throws(() => assertOriginCertificate(cfg, 'cn-only.test', now));
-  assert.throws(() => assertOriginCertificate(cfg, 'nested.app-a.origins.test', now));
-  assert.throws(() => assertOriginCertificate(cfg, hostA, new Date(Date.parse(cert.validFrom) - 1)));
-  assert.throws(() => assertOriginCertificate(cfg, hostA, new Date(Date.parse(cert.validTo))));
-  const otherKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-  assert.throws(() => assertOriginCertificate({ ...cfg, privateKey: otherKey }, hostA, now));
-  for (const field of ['certificate', 'privateKey'] as const)
-    assert.throws(() => assertOriginCertificate({ ...cfg, [field]: 'secret-malformed-pem' }, hostA, now), error => !String(error).includes('secret-malformed-pem'));
-});

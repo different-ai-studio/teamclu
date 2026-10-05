@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { originJwks, type OriginAuthConfig } from "../../src/lib/apps-origin-auth.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -9,19 +8,25 @@ const DOMAIN = "app-a-76af539e.origins.test";
 const ORIGIN: OriginAuthConfig = {
   activeKey: { version: "v2", masterKey: Buffer.alloc(32, 42) },
   previousKey: { version: "v1", masterKey: Buffer.alloc(32, 43) },
-  routeDomain: "origins.test", certName: "origin-test",
-  certificate: readFileSync(new URL("../fixtures/apps-origin-auth/cert.pem", import.meta.url), "utf8"),
-  privateKey: readFileSync(new URL("../fixtures/apps-origin-auth/key.pem", import.meta.url), "utf8"),
+  routeDomain: "origins.test",
 };
 function protectedTrigger(name = "http") {
   return { triggerName: name, triggerType: "http", triggerConfig: JSON.stringify({ disableURLInternet: true, authType: "anonymous", methods: ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"] }) };
 }
 function protectedDomain(domainName = DOMAIN, functionName = "tc-app-1") {
-  return { domainName, protocol: "HTTPS", routeConfig: { routes: [{ path: "/*", functionName, qualifier: "LATEST" }] },
-    certConfig: { certName: ORIGIN.certName, certificate: ORIGIN.certificate },
+  return { domainName, protocol: "HTTP", routeConfig: { routes: [{ path: "/*", functionName, qualifier: "LATEST" }] },
     authConfig: { authType: "jwt", authInfo: JSON.stringify({ JWKS: originJwks(ORIGIN, TARGET.appId), TokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer", ClaimPassBy: "" }) } };
 }
 const OPS_CONFIG = { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", originAuth: ORIGIN };
+test('managed HTTP domain uses JWT without requiring a certificate', async () => {
+  const { client, calls } = fakeClient();
+  const endpoint = await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET);
+  assert.equal(endpoint, `http://${DOMAIN}`);
+  const body = calls.find(c => c[0] === 'createCustomDomain')?.[1].body;
+  assert.equal(body.protocol, 'HTTP');
+  assert.equal(body.certConfig, undefined);
+  assert.equal(body.authConfig.authType, 'jwt');
+});
 
 const NODE_DECL = {
   build: { kind: "node" as const, output: ".output" },
@@ -355,7 +360,7 @@ test("ensureCustomDomain recovers when FC has not recognized the verified HTTP t
     },
   });
   const ops = makeFcOps(client as any, { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", originAuth: ORIGIN });
-  assert.equal(await ops.ensureCustomDomain("tc-app-1", DOMAIN, TARGET), `https://${DOMAIN}`);
+  assert.equal(await ops.ensureCustomDomain("tc-app-1", DOMAIN, TARGET), `http://${DOMAIN}`);
   assert.equal(attempts, 2);
 });
 
@@ -502,12 +507,12 @@ for (const existing of [false, true]) {
     assert.equal(JSON.parse(c[existing ? 3 : 2].body.triggerConfig).disableURLInternet, true);
     assert.deepEqual(result, { internetUrlDisabled: true });
   });
-  test(`domain ${existing ? 'update' : 'create'} sends HTTPS certificate and app JWT`, async () => {
+  test(`domain ${existing ? 'update' : 'create'} sends HTTP app JWT`, async () => {
     const { client, calls } = fakeClient(existing ? { createCustomDomain: async () => { throw { code: 'CustomDomainAlreadyExists' }; } } : {});
-    assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `https://${DOMAIN}`);
+    assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `http://${DOMAIN}`);
     const c = calls.find(c => c[0] === (existing ? 'updateCustomDomain' : 'createCustomDomain'));
     const body = c[existing ? 2 : 1].body;
-    assert.equal(body.protocol, 'HTTPS'); assert.equal(body.certConfig.privateKey, ORIGIN.privateKey); assert.equal(body.certConfig.certificate, ORIGIN.certificate);
+    assert.equal(body.protocol, 'HTTP'); assert.equal(body.certConfig, undefined);
     assert.equal(body.authConfig.authType, 'jwt'); assert.deepEqual(JSON.parse(body.authConfig.authInfo), JSON.parse(protectedDomain().authConfig.authInfo));
   });
 }
@@ -519,6 +524,7 @@ for (const value of [false, undefined]) {
 }
 const driftCases: Array<[string, (d: any) => void]> = [
   ['protocol', d => { d.protocol = 'HTTP,HTTPS'; }],
+  ['protocol', d => { d.protocol = 'HTTPS'; }],
   ['routeConfig', d => { d.routeConfig.routes[0].functionName = 'other-function'; }],
   ['routeConfig', d => { delete d.routeConfig; }],
   ['authConfig.authType', d => { d.authConfig.authType = 'anonymous'; }],
@@ -527,7 +533,6 @@ const driftCases: Array<[string, (d: any) => void]> = [
   ['authConfig.TokenLookup', d => { const a = JSON.parse(d.authConfig.authInfo); a.TokenLookup += ',cookie:token'; d.authConfig.authInfo = JSON.stringify(a); }],
   ['authConfig.ClaimPassBy', d => { const a = JSON.parse(d.authConfig.authInfo); a.ClaimPassBy = 'header:sub:X-Teamclu-User'; d.authConfig.authInfo = JSON.stringify(a); }],
   ['authConfig.authInfo', d => { delete d.authConfig.authInfo; }],
-  ['certConfig.certificate', d => { d.certConfig.certificate = 'secret-wrong-cert'; }],
 ];
 for (const [field, change] of driftCases) {
   test(`domain readback rejects drift in ${field}`, async () => {
@@ -540,7 +545,7 @@ test('semantic comparison accepts key ordering, header casing and provider defau
   const d = protectedDomain(), a = JSON.parse(d.authConfig.authInfo); a.JWKS.keys.reverse();
   d.authConfig.authInfo = JSON.stringify({ TokenLookup: 'header:x-teamclu-origin-authorization:Bearer', JWKS: a.JWKS });
   const { client } = fakeClient({ getCustomDomain: async () => ({ body: { ...d, createdTime: 'default' } }) });
-  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `https://${DOMAIN}`);
+  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `http://${DOMAIN}`);
 });
 test('rejects second-page anonymous trigger without mutating extra triggers', async () => {
   const { client, calls } = fakeClient({ listTriggers: async (_: string, r: any) => ({ body: r.nextToken ? { triggers: [{ ...protectedTrigger('extra'), triggerConfig: '{"authType":"anonymous","disableURLInternet":false}' }] } : { triggers: [protectedTrigger()], nextToken: 'next' } }) });
@@ -557,18 +562,18 @@ for (const mode of ['anonymous', 'protected', 'other-app-key']) {
       getCustomDomain: async (n: string) => ({ body: n === alias.domainName ? alias : protectedDomain(n) }),
     });
     const run = makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET);
-    if (mode === 'protected') assert.equal(await run, `https://${DOMAIN}`); else await assert.rejects(run, /customDomainAliases/);
+    if (mode === 'protected') assert.equal(await run, `http://${DOMAIN}`); else await assert.rejects(run, /customDomainAliases/);
     assert.equal(calls.filter(c => c[0] === 'createCustomDomain').length, 1); assert.ok(!calls.some(c => c[0] === 'updateCustomDomain'));
   });
 }
 for (const operation of ['getTrigger', 'getCustomDomain', 'listTriggers', 'listCustomDomains']) {
   test(`${operation} errors are sanitized and read-only status unavailable`, async () => {
-    const error = Object.assign(new Error(`secret ${ORIGIN.privateKey}`), { code: 'AccessDenied', request: { key: ORIGIN.privateKey } });
+    const error = Object.assign(new Error(`secret ${"test-private-secret"}`), { code: 'AccessDenied', request: { key: "test-private-secret" } });
     const { client, calls } = fakeClient({ [operation]: async () => { throw error; } });
     const ops = makeFcOps(client, OPS_CONFIG), summary = await ops.readOriginSecurity('tc-app-1', DOMAIN, TARGET);
     assert.equal(summary.status, 'unavailable'); assert.ok(summary.driftFields.includes(operation)); assert.ok(!JSON.stringify(summary).includes('secret'));
     assert.ok(!calls.some(c => /^(create|update)/.test(c[0])));
-    await assert.rejects(ops.ensureCustomDomain('tc-app-1', DOMAIN, TARGET), e => !String(e).includes('secret') && !String(e).includes(ORIGIN.privateKey));
+    await assert.rejects(ops.ensureCustomDomain('tc-app-1', DOMAIN, TARGET), e => !String(e).includes('secret') && !String(e).includes("test-private-secret"));
   });
 }
 for (const operation of ['listTriggers', 'listCustomDomains']) {
@@ -601,12 +606,12 @@ for (const auth of ['disabled-anonymous', 'protected-jwt']) {
 for (const operation of ['createTrigger', 'updateTrigger', 'createCustomDomain', 'updateCustomDomain']) {
   test(`${operation} management failures cannot expose JWKS or private keys`, async () => {
     const sensitive = originJwks(ORIGIN, TARGET.appId).keys[0].k;
-    const bad = Object.assign(new Error(`${sensitive} ${ORIGIN.privateKey}`), { code: 'AccessDenied', data: { request: ORIGIN } });
+    const bad = Object.assign(new Error(`${sensitive} ${"test-private-secret"}`), { code: 'AccessDenied', data: { request: ORIGIN } });
     const overrides: Record<string, any> = { [operation]: async () => { throw bad; } };
     if (operation.startsWith('update')) overrides[operation.replace('update', 'create')] = async () => { throw { code: 'AlreadyExists' }; };
     const { client } = fakeClient(overrides), ops = makeFcOps(client, OPS_CONFIG);
     const run = operation.includes('Trigger') ? ops.ensureHttpTrigger('tc-app-1') : ops.ensureCustomDomain('tc-app-1', DOMAIN, TARGET);
-    await assert.rejects(run, error => String(error).includes('AccessDenied') && !String(error).includes(sensitive) && !String(error).includes(ORIGIN.privateKey) && !(error as any).data);
+    await assert.rejects(run, error => String(error).includes('AccessDenied') && !String(error).includes(sensitive) && !String(error).includes("test-private-secret") && !(error as any).data);
   });
 }
 test('incomplete trigger readback fails closed', async () => {
@@ -627,14 +632,14 @@ test('malformed domain route reports field drift without a raw parser error', as
 test('raw ASCII slug deploys on its canonical UUID-suffixed origin host', async () => {
   const { client, calls } = fakeClient();
   const host = 'app-a-76af539e.origins.test';
-  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', host, TARGET), `https://${host}`);
+  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', host, TARGET), `http://${host}`);
   assert.equal(calls.find(c => c[0] === 'createCustomDomain')[1].body.domainName, host);
 });
 test('raw Chinese slug deploys on its canonical punycode UUID-suffixed host', async () => {
   const target = { ...TARGET, slug: '测试应用' };
   const host = 'xn---76af539e-fv0r280khztdm1e.origins.test';
   const { client, calls } = fakeClient({ listCustomDomains: async () => ({ body: { customDomains: [protectedDomain(host)] } }) });
-  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', host, target), `https://${host}`);
+  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', host, target), `http://${host}`);
   assert.equal(calls.find(c => c[0] === 'createCustomDomain')[1].body.domainName, host);
 });
 test('slug whose canonical UUID-suffixed label exceeds DNS limit is rejected before mutation', async () => {

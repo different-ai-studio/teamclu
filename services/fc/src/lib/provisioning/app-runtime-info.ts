@@ -1,5 +1,5 @@
 import { appPublicLabel } from "../apps-public-host.js";
-import { assertOriginCertificate, classifyOriginEndpoint, originJwks, readAppsOriginAuthConfig, type OriginAuthConfig, type OriginSecuritySummary, type OriginTarget } from "../apps-origin-auth.js";
+import { classifyOriginEndpoint, originJwks, readAppsOriginAuthConfig, type OriginAuthConfig, type OriginSecuritySummary, type OriginTarget } from "../apps-origin-auth.js";
 import { ApiError } from "../http-utils.js";
 import * as $fc from "@alicloud/fc20230330";
 import { getFcClient, makeFcOps } from "./fc-client.js";
@@ -57,7 +57,7 @@ export function driftFields(start: any, provider: ReturnType<typeof projectFunct
 const ORIGIN_FIELDS = new Set([
   "originAuth", "originEndpoint", "originHost", "providerFunction", "disableURLInternet", "protocol", "routeConfig",
   "authConfig.authType", "authConfig.authInfo", "authConfig.TokenLookup", "authConfig.ClaimPassBy", "authConfig.JWKS",
-  "certConfig.certificate", "certConfig.certName", "extraHttpTriggers", "customDomainAliases",
+  "extraHttpTriggers", "customDomainAliases",
   "getTrigger", "getCustomDomain", "listTriggers", "listCustomDomains",
 ]);
 /** Whitelist at every response boundary, even for injected provider readers. */
@@ -80,7 +80,6 @@ export function validateAppOrigin(target: OriginTarget, readConfig = () => readA
     const label = appPublicLabel(target.slug, target.appId);
     if (!label) throw new Error("origin hostname");
     const host = `${label}.${config.routeDomain}`;
-    assertOriginCertificate(config, host);
     originJwks(config, target.appId);
     return { config, host };
   } catch {

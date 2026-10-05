@@ -28,123 +28,60 @@ All other vars (Supabase, OSS, APNs, MQTT, Apps/CodeUp) are kept in parity with
 
 ## Protected FC app origins
 
-This is a runbook for a separately authorized server release and subsequent
-normal deployment of a chosen app. Local implementation does not establish
-cloud acceptance. The [acceptance record](../../docs/testing/2026-10-04-fc-origin-lockdown.md)
-starts at **尚未执行**. Existing apps are not repaired or migrated by this change;
-their old HTTP/default endpoints remain `legacy_unverified` until their owner
-explicitly initiates a normal redeploy. Do not claim these apps are safe.
+Dev and prod use an **HTTP** connection from the TeamClu gateway to the FC
+custom-domain origin. Public app URLs remain HTTPS at Caddy/Traefik. This removes
+the FC-origin certificate requirement, but the internal hop carries the origin JWT,
+business Authorization/Cookie and platform identity headers in plaintext. Operators
+must treat that network path as trusted; an internal DNS name alone does not stop
+public FC Host overrides. FC JWT verification is still mandatory.
 
-New deployments keep the standard HTTP Trigger but explicitly disable its
-default public URL (`disableURLInternet: true`). Their custom origin must be
-HTTPS-only with FC JWT verification of `X-Teamclu-Origin-Authorization`, without
-claim-to-identity-header mapping. The gateway owns platform identity headers;
-the application's `Authorization` and Cookie remain independent. A CNAME to an
-internal FC address supplies routing, **not** access control: the same custom
-Host can reach the public account FC ingress, so JWT validation is required.
+New deployments keep the standard HTTP Trigger with `disableURLInternet: true`.
+The custom domain is HTTP-only with FC JWT verification of
+`X-Teamclu-Origin-Authorization`, and no claim-to-identity-header mapping. The
+gateway replaces any client-supplied origin credential or platform identity headers;
+application Authorization and Cookie values remain independent. Finalize reads back
+the trigger, domain, JWT keys and all extra entrypoints before marking an app Live.
+Existing apps are not repaired by this change; read-only status remains
+`legacy_unverified` until a separately requested normal redeploy. An old canonical
+HTTP endpoint may receive a gateway JWT, but that does not make its unprotected FC
+entrypoint safe; only FC readback can establish protection.
 
 ### Prepare server-only configuration
 
-`APPS_FC_ROUTE_DOMAIN` must differ from `APPS_PUBLIC_DOMAIN`. The certificate must
-cover each canonical origin Host (`<slug>-<id8>.<APPS_FC_ROUTE_DOMAIN>`; use the
-platform-generated label for non-ASCII slugs).
+Set `APPS_FC_ROUTE_DOMAIN` to a distinct origin zone, different from
+`APPS_PUBLIC_DOMAIN`. It must route each canonical origin Host
+(`<slug>-<id8>.<APPS_FC_ROUTE_DOMAIN>`) to FC. Configure
+`APPS_FC_ORIGIN_KEYRING` in **both dev and prod** as JSON
+`{"active":{"version":"v1","key":"<base64url-master-key>"}}` with an independent,
+cryptographically random master key of at least 32 bytes. An optional `previous`
+entry has the same shape and a different version. Do not reuse login, Supabase,
+app-session or agent-management keys. Keep each environment's keyring stable
+across restarts; never generate it at service startup.
 
-| Variable | Required value |
-| --- | --- |
-| `APPS_FC_ORIGIN_KEYRING` | JSON `{"active":{"version":"v1","key":"<base64url-master-key>"}}`; optional `previous` has the same shape and a distinct version |
-| `APPS_FC_ORIGIN_TLS_CERT_NAME` | Nonempty certificate name sent to FC |
-| `APPS_FC_ORIGIN_TLS_CERT_PEM` | Full PEM certificate chain, with real newline bytes |
-| `APPS_FC_ORIGIN_TLS_KEY_PEM` | Matching PEM private key, with real newline bytes |
+The keyring is a server-only secret. Never put it in an app-function environment,
+agent output, source control, logs or deployment previews. Symmetric JWKS from FC
+management APIs is secret too. Generate and deliver the keyring through the
+approved deployment secret channel; do not print it or pass it in shell arguments.
+Configure the keyring **before** switching the gateway image, since old canonical
+HTTP apps can require the signer after the switch. If it is missing, protected
+traffic fails closed rather than falling back to unsigned forwarding.
 
-Generate the independent master key **offline**, using at least 32 cryptographically
-random bytes. Do not reuse login JWT, Supabase, app-session or agent-management
-keys. For example, on a trusted offline administration machine, this writes a
-mode-0600 file without printing the key:
-
-```bash
-umask 077
-node --input-type=module -e 'import {randomBytes} from "node:crypto"; import {writeFileSync} from "node:fs"; writeFileSync("origin-keyring.json", JSON.stringify({active:{version:"v1",key:randomBytes(32).toString("base64url")}}), {mode:0o600,flag:"wx"});'
-```
-
-Keep that version stable across restarts; never generate a key at server startup.
-Transfer the keyring, issued certificate chain and private key through the
-deployment's secret channel. They belong only in the platform server environment,
-never in app-function env, agent output, source control, logs or deployment
-previews. Symmetric JWKS returned by FC management APIs is also secret; do not
-record full `authConfig`, JWTs, keys or PEM in status/acceptance reports.
-
-For self-host, edit `deploy/self-host/.env` with mode 0600. Compose accepts
-single-quoted multiline values: paste the **actual** certificate/key lines
-between the quotes. The example below is deliberately unusable:
-
-```dotenv
-APPS_FC_ORIGIN_KEYRING='{"active":{"version":"v1","key":"<offline-generated-base64url-key>"}}'
-APPS_FC_ORIGIN_TLS_CERT_NAME=teamclu-origin-v1
-APPS_FC_ORIGIN_TLS_CERT_PEM='-----BEGIN CERTIFICATE-----
-<issued certificate chain; real newlines>
------END CERTIFICATE-----'
-APPS_FC_ORIGIN_TLS_KEY_PEM='<matching private key; real newlines>'
-```
-
-Literal `\n` strings are not decoded by the FC config loader. Do not use
-`docker compose config`, `printenv`, shell tracing or service-inspect env output
-to check secrets: these can print the entire keyring/private key. Apply the
-updated server configuration after the compatible image is available:
+For self-host, put the single-line JSON keyring in `deploy/self-host/.env` (mode
+0600), rebuild/restart FC through the normal release, then check the running
+container without printing secret values:
 
 ```bash
 cd deploy/self-host
-docker compose up -d fc
-docker compose exec -T fc node --input-type=module -e 'import {readAppsOriginAuthConfig,assertOriginCertificate} from "./dist/lib/apps-origin-auth.js"; const config=readAppsOriginAuthConfig(process.env); assertOriginCertificate(config,process.argv[1]); console.log("origin configuration valid for target Host");' '<canonical-target-origin-host>'
+docker compose exec -T fc node --input-type=module -e 'import {readAppsOriginAuthConfig} from "./dist/lib/apps-origin-auth.js"; readAppsOriginAuthConfig(process.env); console.log("origin configuration valid");'
 ```
 
-This validates the values actually received by FC without exposing them. It
-does not upload a certificate to Alibaba FC. A changed image must first be built
-or loaded through the deployment's normal release procedure; `up -d fc` applies
-the env and existing image. See the [Belayo-specific procedure](../../deploy/belayo/README.md#protected-fc-origins)
-for Dokploy, whose image rollout does not sync environment changes.
-
-On the secured administration machine, verify Host coverage, current validity
-and matching key before injection. Use the full canonical target Host, not only
-the parent zone. Public-key hashes may be compared locally; private PEM stays
-in files, never command arguments or output:
-
-```bash
-openssl x509 -in fullchain.pem -noout -checkhost '<canonical-target-origin-host>'
-openssl x509 -in fullchain.pem -noout -dates
-openssl x509 -in fullchain.pem -noout -checkend 2592000
-openssl x509 -in fullchain.pem -noout -pubkey | openssl pkey -pubin -outform DER | openssl sha256
-openssl pkey -in privkey.pem -pubout -outform DER | openssl sha256
-```
-
-The config loader additionally checks not-before/not-after, matching key and
-SAN-aware Host coverage. Missing keyring/route/TLS configuration, invalid keys,
-expired/not-yet-valid or mismatched certificates block deployment with a safe
-`503 origin_security_unavailable`. Extra HTTP Triggers or unsafe same-function
-custom-domain aliases produce `409 origin_security_drift`; readback failures
-block publication. No unverified/default HTTP fallback is published or marked
-Live. Do not work around a failed preflight by reopening anonymous access.
-
-### Apply and renew a target certificate
-
-After applying server configuration, open the chosen app in TeamClu and ask its
-Agent to perform that app's normal deployment. Preflight must pass; finalize
-must read back the disabled default URL, HTTPS-only/JWT custom domain and
-expected verification keys before reporting Live and persisting the HTTPS
-endpoint. Retry failures through the same normal deploy path; do not silently
-modify other apps or extra entrypoints.
-
-Monitor certificate expiry **starting 30 days before expiry**, including the
-certificate served by each protected target. `openssl x509 -checkend 2592000`
-returns nonzero inside that window; route the alert to the deployment operator.
-Obtain renewal from the issuer, repeat Host/date/key checks, securely replace
-the two server PEM values (and certificate name if changed), and apply server
-config with the command above or the authorized Dokploy procedure. **Restarting
-the server does not update the uploaded FC certificate.** A later explicitly
-requested normal deployment of each chosen target uploads and verifies the
-renewed certificate; check that target's live TLS certificate and expiry after
-deployment. This runbook adds no scheduled FC certificate updater or bulk app
-repair. The Belayo public `*.apps.mx5.cn` Traefik renewal workflow does not renew
-these FC origin certificates.
+For prod, use the [Belayo procedure](../../deploy/belayo/README.md#protected-fc-origins)
+to set the keyring in Dokploy and roll the Cloud API image. A normal app deploy
+then configures its HTTP-only custom domain and verifies JWT readback. Missing
+keyring/route configuration blocks deployment with safe `503
+origin_security_unavailable`; extra HTTP Triggers, unsafe aliases or JWT/domain
+drift block publication with `409 origin_security_drift`. Do not reopen anonymous
+access as a workaround.
 
 ### Rotate the master key without breaking protected origins
 
@@ -172,8 +109,8 @@ using this keyring**, not just a convenient test app:
 
 JWTs expire within 60 seconds. A leaked credential can still be replayed against
 the **same** app in that window; there is no nonce store or single-use guarantee.
-Credentials travel only over HTTPS in the dedicated request header and must
-not enter browser responses, query strings or logs. Distinct app-derived keys
+Credentials travel over HTTP on the origin hop in the dedicated request header;
+they must not enter browser responses, query strings or logs. Distinct app-derived keys
 reject A's credential at B. Rollback must preserve disabled default URL and
 origin authentication: use a compatible gateway/keyring or return explicit
 unavailability. Never roll back to anonymous triggers/domains.

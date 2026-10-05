@@ -1,5 +1,7 @@
 # FC 应用源站入口封闭 Implementation Plan
 
+2026-10-05 修订：本计划记录原 HTTPS 实施过程。dev 和 prod 的现行 HTTP + JWT 源站要求见 [FC 源站运行手册](../../services/fc/README.md#protected-fc-app-origins)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 让后续部署的应用只能通过 TeamClu 网关访问，封闭默认 URL 和自定义 Host 两条匿名旁路。

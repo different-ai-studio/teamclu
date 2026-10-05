@@ -208,8 +208,8 @@ export function createApp(deps: AppDeps): Hono {
       let origin: { target: typeof originTarget; config: OriginAuthConfig } | undefined;
       try {
         if (classifyOriginEndpoint(target.fcEndpoint, originTarget, appsFcRouteDomain()) === "protected") {
-          // Loaded only after authorization and only for managed HTTPS origins:
-          // missing secrets must not take API startup or old HTTP apps down.
+          // Loaded only after authorization and only for managed HTTP/HTTPS origins.
+          // Missing keys fail closed for these origins without blocking API startup.
           origin = { target: originTarget, config: readAppsOriginAuthConfig(process.env) };
         }
       } catch {

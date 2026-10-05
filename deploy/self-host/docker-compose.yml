@@ -457,9 +457,6 @@ services:
       # Platform server-only keyring and actual multiline PEM. Missing values
       # fail deployment preflight; never pass these into user app environments.
       APPS_FC_ORIGIN_KEYRING: "${APPS_FC_ORIGIN_KEYRING:-}"
-      APPS_FC_ORIGIN_TLS_CERT_NAME: "${APPS_FC_ORIGIN_TLS_CERT_NAME:-}"
-      APPS_FC_ORIGIN_TLS_CERT_PEM: "${APPS_FC_ORIGIN_TLS_CERT_PEM:-}"
-      APPS_FC_ORIGIN_TLS_KEY_PEM: "${APPS_FC_ORIGIN_TLS_KEY_PEM:-}"
       # Belayo only: the bearer token Traefik's HTTP provider sends to
       # /internal/traefik/dynamic for verified custom domains. Blank keeps the
       # endpoint off; self-host serves custom domains through Caddy instead.

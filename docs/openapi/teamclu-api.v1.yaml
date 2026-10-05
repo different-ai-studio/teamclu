@@ -6980,7 +6980,7 @@ paths:
         must be the exact remote HEAD; for an import it is a sha256 content
         digest. The returned token is stored on this app and must be passed to
         deploy and finalize. A new preflight cannot replace an active deploy.
-        Validates origin keys, HTTPS certificate and target Host before reserving
+        Validates origin keys and target Host before reserving
         a token (503 origin_security_unavailable on invalid configuration).
       tags: [Apps]
       parameters:
@@ -7113,8 +7113,8 @@ paths:
         admin); members with `prompt` or `view` receive 404. Provisions
         (idempotently) the app's Postgres schema and scoped role, points the
         FC function at the uploaded artifact with a matching `DATABASE_URL`,
-        disables the default public URL and verifies HTTPS JWT origin routing
-        before storing the HTTPS `fcEndpoint` with `fcStatus: live`.
+        disables the default public URL and verifies HTTP JWT origin routing
+        before storing the HTTP `fcEndpoint` with `fcStatus: live`.
         Missing origin configuration returns 503 `origin_security_unavailable`;
         provider entrypoint drift returns 409 `origin_security_drift`.
         Failures land on `deploy_error` with the reason in `provisionError`;
@@ -9591,8 +9591,8 @@ components:
       additionalProperties: false
       required: [status, internetUrlDisabled, customDomainAuth, httpsOnly, driftFields]
       description: >-
-        Read-only safe entrypoint evidence; no keys, JWTs, JWKS or TLS private
-        material. Legacy endpoints remain legacy_unverified until a normal redeploy.
+        Read-only safe entrypoint evidence; no keys, JWTs or JWKS. `httpsOnly` is false for protected HTTP
+        origins. Legacy endpoints remain legacy_unverified until a normal redeploy.
       properties:
         status: { type: string, enum: [protected, legacy_unverified, drift, unavailable] }
         internetUrlDisabled: { type: [boolean, "null"] }

@@ -1,5 +1,4 @@
-import { X509Certificate } from "node:crypto";
-import { assertOriginCertificate, originJwks, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
+import { originJwks, type OriginAuthConfig, type OriginTarget, type OriginSecuritySummary } from "../apps-origin-auth.js";
 import FcClient, * as $fc from "@alicloud/fc20230330";
 import { Config } from "@alicloud/openapi-client";
 import { appsRegion, type AppsOssProfile } from "./apps-oss.js";
@@ -367,22 +366,12 @@ function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, tar
   if (!Array.isArray(keys) || JSON.stringify(normalize(keys)) !== JSON.stringify(normalize(originJwks(config, target.appId).keys))) fields.push("authConfig.JWKS");
   return fields;
 }
-function certificateFingerprints(pem: unknown): string[] | undefined {
-  if (typeof pem !== "string") return undefined;
-  try {
-    const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g);
-    return blocks?.map(block => new X509Certificate(block).fingerprint256);
-  } catch { return undefined; }
-}
 function domainDrift(domain: any, functionName: string, config: OriginAuthConfig, target: OriginTarget, alias = false): string[] {
   const fields: string[] = [];
-  if (domain?.protocol !== "HTTPS") fields.push("protocol");
+  if (domain?.protocol !== "HTTP") fields.push("protocol");
   const routes = domain?.routeConfig?.routes;
   if (!Array.isArray(routes) || !routes.length || routes.some((route: any) => route?.functionName !== functionName || (!alias && (route.path !== "/*" || (route.qualifier ?? "LATEST") !== "LATEST"))) || (!alias && routes.length !== 1)) fields.push("routeConfig");
   fields.push(...jwtDrift(domain?.authConfig?.authType, domain?.authConfig?.authInfo, config, target));
-  const fingerprints = certificateFingerprints(domain?.certConfig?.certificate);
-  if (!fingerprints?.length || JSON.stringify(fingerprints) !== JSON.stringify(certificateFingerprints(config.certificate))) fields.push("certConfig.certificate");
-  if (domain?.certConfig?.certName !== config.certName) fields.push("certConfig.certName");
   return fields;
 }
 function requireOriginConfig(cfg: FcOpsConfig): OriginAuthConfig {
@@ -392,7 +381,6 @@ function requireOriginConfig(cfg: FcOpsConfig): OriginAuthConfig {
 function assertOriginTarget(config: OriginAuthConfig, domainName: string, target: OriginTarget) {
   const label = target && appPublicLabel(target.slug, target.appId);
   if (!label || domainName !== `${label}.${config.routeDomain}`) throw new Error("FC origin configuration mismatch: domainName");
-  assertOriginCertificate(config, domainName);
   originJwks(config, target.appId);
 }
 class OriginSecurityDrift extends Error {}
@@ -494,10 +482,9 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       const config = requireOriginConfig(cfg);
       assertOriginTarget(config, domainName, target);
       const body = {
-        protocol: "HTTPS",
+        protocol: "HTTP",
         routeConfig: new $fc.RouteConfig({ routes: [new $fc.PathConfig({ path: "/*", functionName, qualifier: "LATEST" })] }),
         authConfig: new $fc.AuthConfig({ authType: "jwt", authInfo: JSON.stringify(jwtInfo(config, target)) }),
-        certConfig: new $fc.CertConfig({ certName: config.certName, certificate: config.certificate, privateKey: config.privateKey }),
       };
       await originCall("ensureCustomDomain", () => retryTriggerNotFound(async () => {
         try {
@@ -509,7 +496,7 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
       }));
       const summary = await this.readOriginSecurity(functionName, domainName, target);
       if (summary.status !== "protected") throw driftError(summary.driftFields);
-      return `https://${domainName}`;
+      return `http://${domainName}`;
     },
 
     /** Read-only; never return provider config, symmetric JWKS, request objects or PEM. */
@@ -555,7 +542,6 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
           if (item.domainName === domainName || !routes.some((route: any) => route.functionName === functionName)) return;
           const alias: any = await originCall("getCustomDomain", () => client.getCustomDomain(item.domainName));
           if (domainDrift(alias?.body, functionName, config, target, true).length) summary.driftFields.push("customDomainAliases");
-          try { assertOriginCertificate(config, item.domainName); } catch { summary.driftFields.push("customDomainAliases"); }
         });
         summary.driftFields = [...new Set(summary.driftFields)];
         summary.status = summary.driftFields.length ? "drift" : "protected";
