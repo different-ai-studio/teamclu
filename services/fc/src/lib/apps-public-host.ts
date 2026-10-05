@@ -60,7 +60,7 @@ export function appPublicLabel(slug: string, appId: string): string | null {
  * fetch cannot override `Host`, so DNS has to carry the routing.
  *
  * Blank is supported for legacy routing/deletion only. New deploys require
- * a verified HTTPS JWT origin and never publish a `*.fcapp.run`
+ * a verified HTTP JWT origin and never publish a `*.fcapp.run`
  * trigger URL, which cannot forward redirects.
  */
 export const appsFcRouteDomain = (env: Env = process.env) =>

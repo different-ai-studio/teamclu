@@ -95,7 +95,7 @@ function finalizeHarness() {
         seen = args.env;
       },
       ensureHttpTrigger: async () => ({ internetUrlDisabled: true }),
-      ensureCustomDomain: async (_name: string, domain: string) => `https://${domain}`,
+      ensureCustomDomain: async (_name: string, domain: string) => `http://${domain}`,
     },
   };
   return { deps, env: () => seen! };

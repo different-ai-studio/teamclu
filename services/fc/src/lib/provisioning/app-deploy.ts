@@ -529,10 +529,10 @@ export async function finalizeDeploy(deps: FinalizeDeps, input: FinalizeInput): 
     if (trigger?.internetUrlDisabled !== true) {
       throw new ApiError(409, "origin_security_drift", "origin security drift: disableURLInternet");
     }
-    // Provider verifies trigger, domain, certificate, JWT and extra entrypoints
+    // Provider verifies trigger, HTTP domain, JWT and extra entrypoints
     // before this URL can reach the Live-state commit in the repository.
     const endpoint = await deps.fcOps.ensureCustomDomain(input.fcFunctionName, routeHost, target);
-    if (endpoint !== `https://${routeHost}`) {
+    if (endpoint !== `http://${routeHost}`) {
       throw new ApiError(409, "origin_security_drift", "origin security drift: originEndpoint");
     }
     return { fcEndpoint: endpoint };

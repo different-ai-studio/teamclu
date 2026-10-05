@@ -121,9 +121,9 @@ test("missing legacy deployment snapshot cannot be treated as an unchanged runti
 
 
 test("preflight preview adds only a safe origin security summary", () => {
-  const originSecurity = { status: "protected", internetUrlDisabled: true, customDomainAuth: "jwt", httpsOnly: true, driftFields: [], privateKey: "SECRET", authConfig: { JWKS: "SECRET" } };
+  const originSecurity = { status: "protected", internetUrlDisabled: true, customDomainAuth: "jwt", httpsOnly: false, driftFields: [], privateKey: "SECRET", authConfig: { JWKS: "SECRET" } };
   const result = preflightAppDeploy("app-1", revision, declaration, null,
     { region: "cn-hangzhou", capabilities: [], catalogComplete: true, originSecurity } as any);
-  assert.deepEqual((result.preview as any).originSecurity, { status: "protected", internetUrlDisabled: true, customDomainAuth: "jwt", httpsOnly: true, driftFields: [] });
+  assert.deepEqual((result.preview as any).originSecurity, { status: "protected", internetUrlDisabled: true, customDomainAuth: "jwt", httpsOnly: false, driftFields: [] });
   assert.equal(JSON.stringify(result).includes("SECRET"), false);
 });

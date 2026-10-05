@@ -5333,12 +5333,11 @@ test("legacy standard trigger and domain drift remains eligible for a normal red
 
 test("production config validator prevents token reservation for missing config and invalid target", async () => {
   const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
-  for (const failure of [...Object.keys(ORIGIN_ENV), "hostname", "invalidCertificate", "certificateHostname", "keyring", "appId"]) {
+  for (const failure of [...Object.keys(ORIGIN_ENV), "hostname", "invalidRouteDomain", "keyring", "appId"]) {
     const restore = installOriginEnv();
     try {
       if (failure in ORIGIN_ENV) delete process.env[failure];
-      if (failure === "invalidCertificate") process.env.APPS_FC_ORIGIN_TLS_CERT_PEM = "SECRET_INVALID_CERT";
-      if (failure === "certificateHostname") process.env.APPS_FC_ROUTE_DOMAIN = "other.test";
+      if (failure === "invalidRouteDomain") process.env.APPS_FC_ROUTE_DOMAIN = "invalid..test";
       if (failure === "keyring") process.env.APPS_FC_ORIGIN_KEYRING = "SECRET_INVALID_KEYRING";
       const calls: any[] = [];
       const appId = failure === "appId" ? "invalid-id" : id;

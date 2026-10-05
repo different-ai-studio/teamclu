@@ -51,7 +51,7 @@ test("the name is always a legal Function Compute name", () => {
 
 
 test("publish rejects trigger readback drift, provider failures and noncanonical endpoints without leaking provider secrets", async () => {
-  for (const scenario of ["trigger", "drift", "provider", "readUnavailable", "http", "default", "foreign"]) {
+  for (const scenario of ["trigger", "drift", "provider", "readUnavailable", "https", "default", "foreign"]) {
     const calls: unknown[] = [];
     await assert.rejects(() => finalizeDeploy({
       readOriginAuth: () => ORIGIN_CONFIG,
@@ -63,7 +63,7 @@ test("publish rejects trigger readback drift, provider failures and noncanonical
           if (scenario === "drift") throw new Error("FC origin security drift: authConfig.JWKS SECRET");
           if (scenario === "provider") throw new Error("SECRET JWT JWKS PEM");
           if (scenario === "readUnavailable") throw new Error("FC origin security drift: getTrigger");
-          return scenario === "http" ? `http://${domain}` : scenario === "default" ? "https://fn.fcapp.run" : "https://other.origins.test";
+          return scenario === "https" ? `https://${domain}` : scenario === "default" ? "https://fn.fcapp.run" : "https://other.origins.test";
         },
       },
     }, { appId: APP_ID, slug: "app-a", appType: "static_web", fcFunctionName: "fn", ossObjectName: "code.zip" }),
