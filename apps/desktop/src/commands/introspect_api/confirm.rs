@@ -214,19 +214,26 @@ pub(crate) fn app_exposure_change(zh: bool, row: &Value, patch: &Value) -> Optio
         return None;
     }
     let name = app_name(row);
-    let lines = lines.join("\n");
+    let mut effective = row.clone();
+    for field in FIELDS {
+        if let Some(value) = patch.get(field) {
+            effective[field] = value.clone();
+        }
+    }
+    let summary = access_policy_summary(zh, &effective);
+    let lines = format!("{}\n\n{summary}", lines.join("\n"));
     let hint = declined_hint(zh);
     Some(if zh {
         Confirmation {
-            title: "修改应用的访问设置？".into(),
+            title: "修改应用访问权限？".into(),
             message: format!("一个 agent 请求修改应用「{name}」：\n\n{lines}\n\n{hint}"),
-            accept: "修改".into(),
+            accept: "应用权限设置".into(),
         }
     } else {
         Confirmation {
             title: "Change who can reach this app?".into(),
             message: format!("An agent wants to change “{name}”:\n\n{lines}\n\n{hint}"),
-            accept: "Change".into(),
+            accept: "Apply access settings".into(),
         }
     })
 }
@@ -301,6 +308,110 @@ fn exposure_line(zh: bool, field: &str, to: &Value) -> String {
         (_, true) => format!("路径规则 → {} 条", to.as_array().map_or(0, Vec::len)),
         (_, false) => format!("Path rules → {}", to.as_array().map_or(0, Vec::len)),
     }
+}
+
+/// Describe the resulting policy, including defaults omitted from the patch.
+/// Keep precedence aligned with the gateway: roles, rule audience, app audience.
+fn access_rule_audience(zh: bool, rule: Option<&Value>, app: &Value) -> String {
+    if let Some(roles) = rule.and_then(|r| r.get("roles")).and_then(Value::as_array) {
+        if roles.is_empty() {
+            return if zh {
+                "需要平台登录，允许任何已登录用户"
+            } else {
+                "platform sign-in required; any signed-in user"
+            }
+            .into();
+        }
+        let codes = roles
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return if zh {
+            format!("需要平台登录，指定组织角色：{codes}")
+        } else {
+            format!("platform sign-in required; organization roles: {codes}")
+        };
+    }
+    let audience = rule
+        .and_then(|r| r.get("audience"))
+        .and_then(Value::as_str)
+        .or_else(|| app.get("authAudience").and_then(Value::as_str))
+        .unwrap_or("org");
+    match (audience, zh) {
+        ("any", true) => "需要平台登录，允许任何已登录用户",
+        ("any", false) => "platform sign-in required; any signed-in user",
+        (_, true) => "需要平台登录，仅允许当前组织成员（需有有效组织角色）",
+        (_, false) => {
+            "platform sign-in required; organization members (active organization role required)"
+        }
+    }
+    .into()
+}
+
+fn access_policy_summary(zh: bool, app: &Value) -> String {
+    if app.get("authMode").and_then(Value::as_str) != Some("platform") {
+        return if zh {
+            "变更后：平台登录保护未启用；所有路径公开"
+        } else {
+            "After this change: platform login protection is disabled; all paths are public"
+        }
+        .into();
+    }
+    let public = if zh { "公开" } else { "public" };
+    let separator = if zh { "：" } else { ": " };
+    let mut lines = vec![if zh {
+        "变更后的访问规则："
+    } else {
+        "Access rules after this change:"
+    }
+    .to_string()];
+    let rules = match app.get("authRules") {
+        None | Some(Value::Null) => &[][..],
+        Some(Value::Array(rules)) => rules.as_slice(),
+        _ => {
+            return if zh {
+                "变更后的路径规则无法解析，请核对配置"
+            } else {
+                "Resulting path rules cannot be read; verify the configuration"
+            }
+            .into()
+        }
+    };
+    let mut root = None;
+    for rule in rules {
+        let path = rule.get("path").and_then(Value::as_str).unwrap_or("?");
+        if path.trim().trim_end_matches('/').is_empty() {
+            root = Some(rule);
+        }
+        let policy = if rule.get("auth").and_then(Value::as_str) == Some("public") {
+            public.to_string()
+        } else {
+            access_rule_audience(zh, Some(rule), app)
+        };
+        lines.push(format!("{path}{separator}{policy}"));
+    }
+    let fallback = if let Some(rule) = root {
+        if rule.get("auth").and_then(Value::as_str) == Some("public") {
+            public.to_string()
+        } else {
+            access_rule_audience(zh, Some(rule), app)
+        }
+    } else if app.get("authScope").and_then(Value::as_str) == Some("paths") {
+        public.to_string()
+    } else {
+        access_rule_audience(zh, None, app)
+    };
+    lines.push(format!(
+        "{}{separator}{fallback}",
+        if zh {
+            "未匹配路径"
+        } else {
+            "Unmatched paths"
+        }
+    ));
+    lines.push(if zh { "路径按前缀匹配，以最长匹配规则为准。组织角色由平台动态检查。" } else { "Paths match by prefix; the longest matching rule wins. Organization roles are checked dynamically by the platform." }.into());
+    lines.join("\n")
 }
 
 /// `manage_app_access` `grant`.
@@ -551,6 +662,94 @@ mod tests {
             "{}",
             asked.message
         );
+    }
+
+    #[test]
+    fn access_approval_describes_paths_and_inherited_org_audience() {
+        let row = json!({"name":"Test", "authMode":"none", "authAudience":"org", "authScope":"all", "authRules":[]});
+        let patch = json!({"authMode":"platform", "authScope":"paths", "authRules":[
+            {"path":"/staff", "auth":"required"},
+            {"path":"/api/staff", "auth":"required", "audience":"org"}
+        ]});
+        let asked = app_exposure_change(true, &row, &patch).unwrap();
+        assert!(
+            asked
+                .message
+                .contains("/staff：需要平台登录，仅允许当前组织成员"),
+            "{}",
+            asked.message
+        );
+        assert!(asked
+            .message
+            .contains("/api/staff：需要平台登录，仅允许当前组织成员"));
+        assert!(asked.message.contains("未匹配路径：公开"));
+        assert!(asked.message.contains("路径按前缀匹配，以最长匹配规则为准"));
+        assert_eq!(asked.accept, "应用权限设置");
+    }
+
+    #[test]
+    fn access_approval_explains_role_precedence_public_exceptions_and_root() {
+        let row = json!({"name":"Test", "authMode":"platform", "authAudience":"org", "authScope":"all", "authRules":[]});
+        let patch = json!({"authRules":[
+            {"path":"/", "auth":"required", "roles":[]},
+            {"path":"/staff", "auth":"required", "roles":["admin","finance"], "audience":"any"},
+            {"path":"/public", "auth":"public"}
+        ]});
+        let asked = app_exposure_change(false, &row, &patch).unwrap();
+        assert!(
+            asked
+                .message
+                .contains("/staff: platform sign-in required; organization roles: admin, finance"),
+            "{}",
+            asked.message
+        );
+        assert!(asked
+            .message
+            .contains("/: platform sign-in required; any signed-in user"));
+        assert!(asked.message.contains("/public: public"));
+        assert!(asked
+            .message
+            .contains("Unmatched paths: platform sign-in required; any signed-in user"));
+        assert_eq!(asked.accept, "Apply access settings");
+    }
+
+    #[test]
+    fn disabled_login_wall_does_not_describe_stored_rules_as_protection() {
+        let row = json!({"name":"Test", "authMode":"platform", "authScope":"paths", "authRules":[{"path":"/staff","auth":"required","roles":["admin"]}]});
+        let asked = app_exposure_change(true, &row, &json!({"authMode":"none"})).unwrap();
+        assert!(
+            asked.message.contains("平台登录保护未启用；所有路径公开"),
+            "{}",
+            asked.message
+        );
+        assert!(!asked.message.contains("/staff：需要"));
+    }
+
+    #[test]
+    fn access_approval_preserves_defaults_on_partial_updates_and_rule_removal() {
+        let row = json!({"name":"Test", "authMode":"platform", "authAudience":"org", "authScope":"all", "authRules":[{"path":"/public","auth":"public"}]});
+        let asked = app_exposure_change(false, &row, &json!({"authAudience":"any"})).unwrap();
+        assert!(asked.message.contains("/public: public"));
+        assert!(asked
+            .message
+            .contains("Unmatched paths: platform sign-in required; any signed-in user"));
+        let removed = app_exposure_change(false, &row, &json!({"authRules":[]})).unwrap();
+        assert!(!removed.message.contains("/public: public"));
+        assert!(removed
+            .message
+            .contains("Unmatched paths: platform sign-in required; organization members"));
+        assert_eq!(
+            app_exposure_change(false, &row, &json!({"authAudience":"org"})),
+            None
+        );
+    }
+
+    #[test]
+    fn access_approval_does_not_treat_unreadable_rules_as_public() {
+        let row = json!({"name":"Test", "authMode":"platform", "authScope":"paths", "authRules":"invalid"});
+        let asked = app_exposure_change(false, &row, &json!({"authAudience":"any"})).unwrap();
+        assert!(asked.message.contains("path rules cannot be read"));
+        assert!(!asked.message.contains("Unmatched paths: public"));
     }
 
     #[test]
