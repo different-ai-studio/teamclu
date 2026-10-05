@@ -347,7 +347,7 @@ function jsonObject(value: unknown): any {
   } catch { return undefined; }
 }
 function jwtInfo(config: OriginAuthConfig, target: OriginTarget) {
-  return { JWKS: originJwks(config, target.appId), TokenLookup: ORIGIN_TOKEN_LOOKUP, ClaimPassBy: "" };
+  return { jwks: originJwks(config, target.appId), tokenLookup: ORIGIN_TOKEN_LOOKUP, claimPassBy: "" };
 }
 function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, target: OriginTarget): string[] {
   const fields: string[] = [];
@@ -355,10 +355,10 @@ function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, tar
   const info = jsonObject(raw);
   if (!info) return [...fields, "authConfig.authInfo"];
   // Header names are case insensitive. Prefix, source count and source type are not.
-  const lookup = typeof info.TokenLookup === "string" ? info.TokenLookup.split(":") : [];
+  const lookup = typeof info.tokenLookup === "string" ? info.tokenLookup.split(":") : [];
   if (lookup.length !== 3 || lookup[0] !== "header" || lookup[1].toLowerCase() !== "x-teamclu-origin-authorization" || lookup[2] !== "Bearer") fields.push("authConfig.TokenLookup");
-  if (info.ClaimPassBy !== undefined && info.ClaimPassBy !== "") fields.push("authConfig.ClaimPassBy");
-  const keys = jsonObject(info.JWKS)?.keys;
+  if (info.claimPassBy !== undefined && info.claimPassBy !== "") fields.push("authConfig.ClaimPassBy");
+  const keys = jsonObject(info.jwks)?.keys;
   const normalize = (items: any[]) => items.map(key => {
     if (!jsonObject(key)) return "invalid";
     return JSON.stringify([key.kty, key.alg, key.use, key.kid, key.k]);
