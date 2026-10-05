@@ -324,7 +324,8 @@ async function retryTriggerNotFound<T>(operation: () => Promise<T>): Promise<T> 
   }
 }
 
-const ORIGIN_TOKEN_LOOKUP = "header:X-Teamclu-Origin-Authorization:Bearer";
+// FC removes the prefix verbatim; include the gateway's separating space.
+const ORIGIN_TOKEN_LOOKUP = "header:X-Teamclu-Origin-Authorization:Bearer ";
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"];
 class OriginProviderError extends Error {
   constructor(readonly operation: string, error?: any) {
@@ -358,7 +359,7 @@ function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, tar
   if (!info) return [...fields, "authConfig.authInfo"];
   // Header names are case insensitive. Prefix, source count and source type are not.
   const lookup = typeof info.tokenLookup === "string" ? info.tokenLookup.split(":") : [];
-  if (lookup.length !== 3 || lookup[0] !== "header" || lookup[1].toLowerCase() !== "x-teamclu-origin-authorization" || lookup[2] !== "Bearer") fields.push("authConfig.TokenLookup");
+  if (lookup.length !== 3 || lookup[0] !== "header" || lookup[1].toLowerCase() !== "x-teamclu-origin-authorization" || lookup[2] !== "Bearer ") fields.push("authConfig.TokenLookup");
   if (info.claimPassBy !== undefined && info.claimPassBy !== "") fields.push("authConfig.ClaimPassBy");
   const keys = jsonObject(info.jwks)?.keys;
   const normalize = (items: any[]) => items.map(key => {

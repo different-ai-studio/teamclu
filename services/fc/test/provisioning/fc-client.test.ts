@@ -15,9 +15,19 @@ function protectedTrigger(name = "http") {
 }
 function protectedDomain(domainName = DOMAIN, functionName = "tc-app-1") {
   return { domainName, protocol: "HTTP", routeConfig: { routes: [{ path: "/*", functionName, qualifier: "LATEST" }] },
-    authConfig: { authType: "jwt", authInfo: JSON.stringify({ jwks: originJwks(ORIGIN, TARGET.appId), tokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer" }) } };
+    authConfig: { authType: "jwt", authInfo: JSON.stringify({ jwks: originJwks(ORIGIN, TARGET.appId), tokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer " }) } };
 }
 const OPS_CONFIG = { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", originAuth: ORIGIN };
+test('readback rejects a Bearer prefix that would leave a space in the extracted JWT', async () => {
+  const domain = protectedDomain();
+  const info = JSON.parse(domain.authConfig.authInfo);
+  info.tokenLookup = 'header:X-Teamclu-Origin-Authorization:Bearer';
+  domain.authConfig.authInfo = JSON.stringify(info);
+  const { client } = fakeClient({ getCustomDomain: async () => ({ body: domain }) });
+  const result = await makeFcOps(client, OPS_CONFIG).readOriginSecurity('tc-app-1', DOMAIN, TARGET);
+  assert.equal(result.status, 'drift');
+  assert.ok(result.driftFields.includes('authConfig.TokenLookup'));
+});
 test('uppercase JWT configuration is not accepted as protected provider readback', async () => {
   const domain = protectedDomain();
   domain.authConfig.authInfo = JSON.stringify({
@@ -526,6 +536,7 @@ for (const existing of [false, true]) {
     assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `http://${DOMAIN}`);
     const c = calls.find(c => c[0] === (existing ? 'updateCustomDomain' : 'createCustomDomain'));
     const body = c[existing ? 2 : 1].body;
+    assert.equal(JSON.parse(body.authConfig.authInfo).tokenLookup, 'header:X-Teamclu-Origin-Authorization:Bearer ');
     assert.equal(body.protocol, 'HTTP'); assert.equal(body.certConfig, undefined);
     assert.equal(Object.hasOwn(JSON.parse(body.authConfig.authInfo), 'claimPassBy'), false, 'FC rejects an empty claim mapping; omit the field');
     assert.equal(body.authConfig.authType, 'jwt'); assert.deepEqual(JSON.parse(body.authConfig.authInfo), JSON.parse(protectedDomain().authConfig.authInfo));
@@ -558,7 +569,7 @@ for (const [field, change] of driftCases) {
 }
 test('semantic comparison accepts key ordering, header casing and provider defaults', async () => {
   const d = protectedDomain(), a = JSON.parse(d.authConfig.authInfo); a.jwks.keys.reverse();
-  d.authConfig.authInfo = JSON.stringify({ tokenLookup: 'header:x-teamclu-origin-authorization:Bearer', jwks: a.jwks });
+  d.authConfig.authInfo = JSON.stringify({ tokenLookup: 'header:x-teamclu-origin-authorization:Bearer ', jwks: a.jwks });
   const { client } = fakeClient({ getCustomDomain: async () => ({ body: { ...d, createdTime: 'default' } }) });
   assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `http://${DOMAIN}`);
 });
