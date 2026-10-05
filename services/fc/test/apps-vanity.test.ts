@@ -768,6 +768,7 @@ async function verifyOriginHeader(headers: Headers, host = ORIGIN_HOST) {
   assert.match(credential ?? "", /^Bearer [^.]+\.[^.]+\.[^.]+$/);
   const key = Buffer.from(originAuth.originJwks(originConfig(), APP_ID).keys[0].k, "base64url");
   const { payload } = await jwtVerify(credential!.slice(7), key, { algorithms: ["HS256"] });
+  assert.equal(payload.version, "v1");
   assert.equal(payload.appId, APP_ID);
   assert.equal(payload.originHost, host);
   assert.ok(payload.exp! - payload.iat! <= 60);
@@ -779,9 +780,11 @@ for (const identity of [null, { userId: "trusted-user", email: "trusted@example.
     const response = await proxyToApp(new Request("https://public.example/", { headers: {
       "X-TeaMClu-Origin-Authorization": "Bearer client-forgery", "X-Teamclu-User-Id": "fake-user",
       "X-Teamclu-User-Email": "fake@example.com", "X-Teamclu-Org-Id": "fake-org",
+      "X-TeaMClu-Origin-Version": "client-forgery",
       authorization: "Bearer business-token", cookie: "business-cookie=value",
     } }), `http://${ORIGIN_HOST}`, (async (_u: any, init: any) => { seen = new Headers(init.headers); return new Response("page"); }) as typeof fetch, identity, originOptions());
     await verifyOriginHeader(seen);
+    assert.equal(seen.get("x-teamclu-origin-version"), null);
     assert.equal(seen.get("x-teamclu-user-id"), identity?.userId ?? null);
     assert.equal(seen.get("x-teamclu-user-email"), identity?.email ?? null);
     assert.equal(seen.get("x-teamclu-org-id"), identity?.orgId ?? null);
@@ -820,8 +823,9 @@ for (const endpoint of [
 for (const endpoint of ["http://existing.example", "https://tc-app-x-abc123.cn-shenzhen.fcapp.run", "https://existing.example/base?old=1"]) {
   test(`legacy endpoint stays unsigned and removes a supplied credential: ${endpoint}`, async () => {
     let seen = new Headers();
-    const response = await proxyToApp(new Request("https://public.example/path?x=1", { headers: { "X-Teamclu-Origin-Authorization": "Bearer client-forgery" } }), endpoint, (async (_u: any, init: any) => { seen = new Headers(init.headers); return new Response("legacy", { status: 202 }); }) as typeof fetch, null, originOptions());
+    const response = await proxyToApp(new Request("https://public.example/path?x=1", { headers: { "X-Teamclu-Origin-Authorization": "Bearer client-forgery", "X-Teamclu-Origin-Version": "forgery" } }), endpoint, (async (_u: any, init: any) => { seen = new Headers(init.headers); return new Response("legacy", { status: 202 }); }) as typeof fetch, null, originOptions());
     assert.equal(seen.get("x-teamclu-origin-authorization"), null);
+    assert.equal(seen.get("x-teamclu-origin-version"), null);
     assert.equal(response.status, 202); assert.equal(await response.text(), "legacy");
   });
 }
@@ -856,11 +860,12 @@ test("protected external redirect remains manual and cannot return its credentia
   const response = await proxyToApp(new Request("https://public.example/"), `http://${ORIGIN_HOST}`, (async (_u: any, init: any) => {
     calls++; assert.equal(init.redirect, "manual");
     const token = await verifyOriginHeader(new Headers(init.headers));
-    return new Response(null, { status: 302, headers: { location: "https://external.example/login", "X-Teamclu-Origin-Authorization": token } });
+    return new Response(null, { status: 302, headers: { location: "https://external.example/login", "X-Teamclu-Origin-Authorization": token, "X-Teamclu-Origin-Version": "v1" } });
   }) as typeof fetch, null, originOptions());
   assert.equal(calls, 1); assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), "https://external.example/login");
   assert.equal(response.headers.get("x-teamclu-origin-authorization"), null);
+  assert.equal(response.headers.get("x-teamclu-origin-version"), null);
 });
 test("protected SSE passes through without consuming its stream", async () => {
   let finished = false;

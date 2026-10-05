@@ -15,7 +15,7 @@ function protectedTrigger(name = "http") {
 }
 function protectedDomain(domainName = DOMAIN, functionName = "tc-app-1") {
   return { domainName, protocol: "HTTP", routeConfig: { routes: [{ path: "/*", functionName, qualifier: "LATEST" }] },
-    authConfig: { authType: "jwt", authInfo: JSON.stringify({ jwks: originJwks(ORIGIN, TARGET.appId), tokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer " }) } };
+    authConfig: { authType: "jwt", authInfo: JSON.stringify({ jwks: originJwks(ORIGIN, TARGET.appId), tokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer ", claimPassBy: "header:version:X-Teamclu-Origin-Version" }) } };
 }
 const OPS_CONFIG = { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", originAuth: ORIGIN };
 test('readback rejects a Bearer prefix that would leave a space in the extracted JWT', async () => {
@@ -49,7 +49,7 @@ test('managed HTTP domain uses JWT without requiring a certificate', async () =>
   assert.equal(body.protocol, 'HTTP');
   assert.equal(body.certConfig, undefined);
   assert.equal(body.authConfig.authType, 'jwt');
-  assert.deepEqual(Object.keys(JSON.parse(body.authConfig.authInfo)).sort(), ['jwks', 'tokenLookup']);
+  assert.deepEqual(Object.keys(JSON.parse(body.authConfig.authInfo)).sort(), ['claimPassBy', 'jwks', 'tokenLookup']);
 });
 
 const NODE_DECL = {
@@ -538,7 +538,7 @@ for (const existing of [false, true]) {
     const body = c[existing ? 2 : 1].body;
     assert.equal(JSON.parse(body.authConfig.authInfo).tokenLookup, 'header:X-Teamclu-Origin-Authorization:Bearer ');
     assert.equal(body.protocol, 'HTTP'); assert.equal(body.certConfig, undefined);
-    assert.equal(Object.hasOwn(JSON.parse(body.authConfig.authInfo), 'claimPassBy'), false, 'FC rejects an empty claim mapping; omit the field');
+    assert.equal(JSON.parse(body.authConfig.authInfo).claimPassBy, 'header:version:X-Teamclu-Origin-Version');
     assert.equal(body.authConfig.authType, 'jwt'); assert.deepEqual(JSON.parse(body.authConfig.authInfo), JSON.parse(protectedDomain().authConfig.authInfo));
   });
 }
@@ -569,7 +569,7 @@ for (const [field, change] of driftCases) {
 }
 test('semantic comparison accepts key ordering, header casing and provider defaults', async () => {
   const d = protectedDomain(), a = JSON.parse(d.authConfig.authInfo); a.jwks.keys.reverse();
-  d.authConfig.authInfo = JSON.stringify({ tokenLookup: 'header:x-teamclu-origin-authorization:Bearer ', jwks: a.jwks });
+  d.authConfig.authInfo = JSON.stringify({ tokenLookup: 'header:x-teamclu-origin-authorization:Bearer ', jwks: a.jwks, claimPassBy: 'header:version:x-teamclu-origin-version' });
   const { client } = fakeClient({ getCustomDomain: async () => ({ body: { ...d, createdTime: 'default' } }) });
   assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `http://${DOMAIN}`);
 });
@@ -596,11 +596,16 @@ test('single-item lists still traverse every page before accepting origin securi
   assert.deepEqual(triggerTokens, [undefined, 'trigger-page-2']);
   assert.deepEqual(domainTokens, [undefined, 'domain-page-2']);
 });
-for (const mode of ['anonymous', 'protected', 'other-app-key']) {
+for (const mode of ['anonymous', 'protected', 'other-app-key', 'identity-mapping', 'extra-mapping']) {
   test(`checks second-page ${mode} alias without mutating unrelated functions`, async () => {
     const alias = protectedDomain('alias.origins.test');
     if (mode === 'anonymous') alias.authConfig.authType = 'anonymous';
     if (mode === 'other-app-key') { const a = JSON.parse(alias.authConfig.authInfo); a.jwks = originJwks(ORIGIN, '11111111-2222-4333-8444-555555555555'); alias.authConfig.authInfo = JSON.stringify(a); }
+    if (mode === 'identity-mapping' || mode === 'extra-mapping') {
+      const a = JSON.parse(alias.authConfig.authInfo);
+      a.claimPassBy = mode === 'identity-mapping' ? 'header:sub:X-Teamclu-User-Id' : `${a.claimPassBy},header:sub:X-Teamclu-User-Id`;
+      alias.authConfig.authInfo = JSON.stringify(a);
+    }
     const { client, calls } = fakeClient({
       listCustomDomains: async (r: any) => ({ body: r.nextToken ? { customDomains: [alias] } : { customDomains: [protectedDomain(), { domainName: 'other.example.com', routeConfig: { routes: [{ functionName: 'other' }] } }], nextToken: 'next' } }),
       getCustomDomain: async (n: string) => ({ body: n === alias.domainName ? alias : protectedDomain(n) }),
@@ -697,3 +702,14 @@ test('unencodable slug is rejected as a target domain mismatch before mutation',
   await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', `${target.slug}.origins.test`, target), /domainName/);
   assert.equal(calls.length, 0);
 });
+
+for (const mapping of [undefined, '', null, [], 'header:sub:X-Teamclu-Origin-Version', 'header:version:X-Teamclu-User-Id', 'cookie:version:X-Teamclu-Origin-Version', 'header:version:X-Teamclu-Origin-Version,header:sub:X-Teamclu-User-Id', 'header:version:X-Teamclu-Origin-Version,header:version:X-Teamclu-Origin-Version', 'header:version:X-Teamclu-Origin-Version:extra']) {
+  test(`rejects noncanonical origin claim mapping ${JSON.stringify(mapping)}`, async () => {
+    const d = protectedDomain(), a = JSON.parse(d.authConfig.authInfo);
+    a.claimPassBy = mapping; d.authConfig.authInfo = JSON.stringify(a);
+    const { client } = fakeClient({ getCustomDomain: async () => ({ body: d }) });
+    const result = await makeFcOps(client, OPS_CONFIG).readOriginSecurity('tc-app-1', DOMAIN, TARGET);
+    assert.equal(result.status, 'drift');
+    assert.ok(result.driftFields.includes('authConfig.ClaimPassBy'));
+  });
+}

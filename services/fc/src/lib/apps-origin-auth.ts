@@ -1,6 +1,10 @@
 import { createHmac } from 'node:crypto';
 import { SignJWT } from 'jose';
 import { appPublicLabel } from './apps-public-host.js';
+// FC requires a nonempty claim mapping. This metadata is never a user identity
+// or an authorization signal; only FC may populate it from the signed token.
+export const ORIGIN_VERSION_HEADER = 'X-Teamclu-Origin-Version';
+export const ORIGIN_VERSION_CLAIM_MAPPING = `header:version:${ORIGIN_VERSION_HEADER}`;
 export type OriginKey = {
   version: string;
   masterKey: Uint8Array;
