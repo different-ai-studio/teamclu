@@ -532,14 +532,16 @@ export function makeFcOps(client: any, cfg: FcOpsConfig) {
             if (token) seen.add(token);
           } while (token);
         }
-        await pages("listTriggers", "triggers", token => client.listTriggers(functionName, new $fc.ListTriggersRequest({ limit: 100, nextToken: token })), async item => {
+        // Temporary workaround for cn-shenzhen signed list timeouts with limit > 1.
+        // Keep full nextToken traversal; see docs/testing/2026-10-05-fc-list-timeout.md.
+        await pages("listTriggers", "triggers", token => client.listTriggers(functionName, new $fc.ListTriggersRequest({ limit: 1, nextToken: token })), async item => {
           if (!item || typeof item.triggerType !== "string" || typeof item.triggerName !== "string") throw new OriginProviderError("listTriggers");
           if (item.triggerType !== "http" || item.triggerName === "http") return;
           // The normal deploy owns only the standard HTTP trigger; every extra
           // HTTP entrypoint is drift, even when it appears independently protected.
           summary.driftFields.push("extraHttpTriggers");
         });
-        await pages("listCustomDomains", "customDomains", token => client.listCustomDomains(new $fc.ListCustomDomainsRequest({ limit: 100, nextToken: token })), async item => {
+        await pages("listCustomDomains", "customDomains", token => client.listCustomDomains(new $fc.ListCustomDomainsRequest({ limit: 1, nextToken: token })), async item => {
           const routes = item?.routeConfig?.routes;
           if (typeof item?.domainName !== "string" || !Array.isArray(routes) || routes.some((route: any) => typeof route?.functionName !== "string")) throw new OriginProviderError("listCustomDomains");
           if (item.domainName === domainName || !routes.some((route: any) => route.functionName === functionName)) return;

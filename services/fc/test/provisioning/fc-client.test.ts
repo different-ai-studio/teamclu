@@ -578,6 +578,24 @@ test('rejects second-page anonymous trigger without mutating extra triggers', as
   await assert.rejects(makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), /extraHttpTriggers/);
   assert.ok(!calls.some(c => c[0] === 'updateTrigger'));
 });
+test('single-item lists still traverse every page before accepting origin security', async () => {
+  const triggerTokens: (string | undefined)[] = [], domainTokens: (string | undefined)[] = [];
+  const { client } = fakeClient({
+    listTriggers: async (_: string, r: any) => {
+      assert.equal(r.limit, 1);
+      triggerTokens.push(r.nextToken);
+      return { body: r.nextToken ? { triggers: [] } : { triggers: [protectedTrigger()], nextToken: 'trigger-page-2' } };
+    },
+    listCustomDomains: async (r: any) => {
+      assert.equal(r.limit, 1);
+      domainTokens.push(r.nextToken);
+      return { body: r.nextToken ? { customDomains: [{ domainName: 'other.example.com', routeConfig: { routes: [{ functionName: 'other' }] } }] } : { customDomains: [protectedDomain()], nextToken: 'domain-page-2' } };
+    },
+  });
+  assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `http://${DOMAIN}`);
+  assert.deepEqual(triggerTokens, [undefined, 'trigger-page-2']);
+  assert.deepEqual(domainTokens, [undefined, 'domain-page-2']);
+});
 for (const mode of ['anonymous', 'protected', 'other-app-key']) {
   test(`checks second-page ${mode} alias without mutating unrelated functions`, async () => {
     const alias = protectedDomain('alias.origins.test');
