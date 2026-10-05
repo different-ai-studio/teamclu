@@ -218,11 +218,14 @@ function handleLogout(app: GateApp, origin: string, env: NodeJS.ProcessEnv, secu
   return redirect(target, [clearSessionCookie(APP_COOKIE, secure)]);
 }
 
-function wrongOrgPage(app: GateApp, origin: string, email: string): Response {
+function accessDeniedPage(email: string, missingRole: boolean): Response {
+  const message = missingRole
+    ? "当前账号没有访问此页面所需的组织角色，请联系管理员。"
+    : "当前账号在应用所属组织中没有有效角色，请联系管理员。";
   return page(
     "无权访问",
     `${statusIcon("lock")}<h1>无权访问</h1>` +
-      `<p class="sub">当前账号 <strong>${esc(email)}</strong> 不属于这个应用所在的组织。</p>` +
+      `<p class="sub">当前账号：<strong>${esc(email)}</strong></p><p class="sub">${message}</p>` +
       `<form method="post" action="${esc(APP_AUTH_LOGOUT_PATH)}">` +
       `<button class="btn btn-primary" type="submit">换一个账号</button></form>`,
     403,
@@ -305,8 +308,8 @@ export async function applyAuthGate(
   if (admission.denial === "no_app_org") {
     return answered(misconfigured("该应用所属团队未关联组织"));
   }
-  if (admission.denial === "wrong_org") {
-    return answered(wrongOrgPage(app, origin, session.email));
+  if (admission.denial === "wrong_org" || admission.denial === "missing_role") {
+    return answered(accessDeniedPage(session.email, admission.denial === "missing_role"));
   }
 
   return {
@@ -318,7 +321,7 @@ export async function applyAuthGate(
 
 type Admission = {
   ok: boolean;
-  denial: "none" | "anonymous" | "wrong_org" | "no_app_org";
+  denial: "none" | "anonymous" | "wrong_org" | "missing_role" | "no_app_org";
   orgId: string | null;
 };
 
@@ -384,13 +387,13 @@ async function admitByRoles(
   if (identityIds.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
 
   const codes = await deps.resolveVisitorRoles(identityIds, app.orgId);
+  if (codes.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
   if (required === null) {
-    if (codes.length === 0) return { ok: false, denial: "wrong_org", orgId: null };
     return { ok: true, denial: "none", orgId: app.orgId };
   }
   const have = new Set(codes);
   if (!required.some((code) => have.has(code))) {
-    return { ok: false, denial: "wrong_org", orgId: null };
+    return { ok: false, denial: "missing_role", orgId: null };
   }
   return { ok: true, denial: "none", orgId: app.orgId };
 }

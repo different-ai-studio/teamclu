@@ -269,7 +269,7 @@ test("the org audience turns away a user with no org roles with a 403, not a red
     // They ARE logged in; bouncing them to the login page would loop forever.
     assert.equal(out.response?.status, 403);
     assert.equal(out.identity, null);
-    assert.match(await out.response!.text(), /不属于这个应用所在的组织/);
+    assert.match(await out.response!.text(), /当前账号在应用所属组织中没有有效角色/);
   });
 });
 
@@ -432,6 +432,27 @@ test("required + roles [admin] admits an admin and denies a member", async () =>
     );
     assert.equal(member.response?.status, 403);
     assert.equal(member.identity, null);
+  });
+});
+
+test("role denial explains permission for page and API without claiming wrong organization", async () => {
+  await withEnv({}, async () => {
+    const cookie = await sessionCookie();
+    for (const path of ["/staff", "/api/staff/test"]) {
+      const gated = app({ authScope: "paths", authRules: [{ path, auth: "required", roles: ["admin"] }] });
+      for (const codes of [["member"], []]) {
+        const out = await applyAuthGate(req(path, { cookie }), gated,
+          deps({ resolveVisitorRoles: async () => codes }));
+        assert.equal(out.response?.status, 403);
+        assert.equal(out.identity, null);
+        const body = await out.response!.text();
+        assert.match(body, codes.length ? /当前账号没有访问此页面所需的组织角色/ : /当前账号在应用所属组织中没有有效角色/);
+        assert.doesNotMatch(body, /不属于这个应用所在的组织/);
+        assert.match(body, /联系管理员/);
+        assert.match(body, /method="post"/);
+        assert.match(body, /换一个账号/);
+      }
+    }
   });
 });
 
