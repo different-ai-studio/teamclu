@@ -55,4 +55,4 @@ Adapt the table and returned columns to the app schema. The front end fetches th
 
 Use local tests for missing identity, input/ownership checks, and applicant isolation; test mocks do not prove production role admission. Read `auth_info` after policy changes to verify saved rules and effective policy for page and employee endpoint paths. An anonymous live request to employee data must not return data; test spoofed identity headers through the gateway without real credentials. Check available origin-security status, and report unknown bypass protection rather than assuming it.
 
-真实账号登录需要可用账号和获授权的交互能力。Agent 无法登录时，将真实登录、角色准入与拒绝、退出和角色变化后的请求验证标记为“待验收”，提供操作步骤；不得把 mock 测试或规则读回称为真实登录验收通过。
+Real-account sign-in requires an available account and authorized interactive access. If the agent cannot sign in, mark real sign-in, role admission and rejection, logout, and request checks after role changes as "pending acceptance" and provide manual test steps. Do not report mock tests or policy readback as successful real-account sign-in acceptance.

@@ -11,7 +11,7 @@ test('app-auth is bundled and classified read-only by both inventories', () => {
 });
 test('auth skill separates identity from role admission and records login test limits', () => {
   const s = read('packages/app/src/lib/skills/app-auth/SKILL.md');
-  for (const term of ['manage_app auth_info', 'created_by_actor_id', 'X-Teamclu-User-Id', '/api/staff', '/_serverFn', 'roles: []', '真实账号', '待验收']) assert.ok(s.includes(term), term);
+  for (const term of ['manage_app auth_info', 'created_by_actor_id', 'X-Teamclu-User-Id', '/api/staff', '/_serverFn', 'roles: []', 'Real-account sign-in', 'pending acceptance']) assert.ok(s.includes(term), term);
   assert.match(s, /createFileRoute/);
   assert.match(s, /401/);
   assert.match(s, /mock/);
