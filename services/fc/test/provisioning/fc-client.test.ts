@@ -15,7 +15,7 @@ function protectedTrigger(name = "http") {
 }
 function protectedDomain(domainName = DOMAIN, functionName = "tc-app-1") {
   return { domainName, protocol: "HTTP", routeConfig: { routes: [{ path: "/*", functionName, qualifier: "LATEST" }] },
-    authConfig: { authType: "jwt", authInfo: JSON.stringify({ jwks: originJwks(ORIGIN, TARGET.appId), tokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer", claimPassBy: "" }) } };
+    authConfig: { authType: "jwt", authInfo: JSON.stringify({ jwks: originJwks(ORIGIN, TARGET.appId), tokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer" }) } };
 }
 const OPS_CONFIG = { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", originAuth: ORIGIN };
 test('uppercase JWT configuration is not accepted as protected provider readback', async () => {
@@ -39,7 +39,7 @@ test('managed HTTP domain uses JWT without requiring a certificate', async () =>
   assert.equal(body.protocol, 'HTTP');
   assert.equal(body.certConfig, undefined);
   assert.equal(body.authConfig.authType, 'jwt');
-  assert.deepEqual(Object.keys(JSON.parse(body.authConfig.authInfo)).sort(), ['claimPassBy', 'jwks', 'tokenLookup']);
+  assert.deepEqual(Object.keys(JSON.parse(body.authConfig.authInfo)).sort(), ['jwks', 'tokenLookup']);
 });
 
 const NODE_DECL = {
@@ -527,6 +527,7 @@ for (const existing of [false, true]) {
     const c = calls.find(c => c[0] === (existing ? 'updateCustomDomain' : 'createCustomDomain'));
     const body = c[existing ? 2 : 1].body;
     assert.equal(body.protocol, 'HTTP'); assert.equal(body.certConfig, undefined);
+    assert.equal(Object.hasOwn(JSON.parse(body.authConfig.authInfo), 'claimPassBy'), false, 'FC rejects an empty claim mapping; omit the field');
     assert.equal(body.authConfig.authType, 'jwt'); assert.deepEqual(JSON.parse(body.authConfig.authInfo), JSON.parse(protectedDomain().authConfig.authInfo));
   });
 }

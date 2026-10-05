@@ -347,7 +347,9 @@ function jsonObject(value: unknown): any {
   } catch { return undefined; }
 }
 function jwtInfo(config: OriginAuthConfig, target: OriginTarget) {
-  return { jwks: originJwks(config, target.appId), tokenLookup: ORIGIN_TOKEN_LOOKUP, claimPassBy: "" };
+  // FC validates every supplied claimPassBy element, including an empty string.
+  // Omit the optional field when no claims should be forwarded.
+  return { jwks: originJwks(config, target.appId), tokenLookup: ORIGIN_TOKEN_LOOKUP };
 }
 function jwtDrift(authType: unknown, raw: unknown, config: OriginAuthConfig, target: OriginTarget): string[] {
   const fields: string[] = [];
