@@ -15,9 +15,22 @@ function protectedTrigger(name = "http") {
 }
 function protectedDomain(domainName = DOMAIN, functionName = "tc-app-1") {
   return { domainName, protocol: "HTTP", routeConfig: { routes: [{ path: "/*", functionName, qualifier: "LATEST" }] },
-    authConfig: { authType: "jwt", authInfo: JSON.stringify({ JWKS: originJwks(ORIGIN, TARGET.appId), TokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer", ClaimPassBy: "" }) } };
+    authConfig: { authType: "jwt", authInfo: JSON.stringify({ jwks: originJwks(ORIGIN, TARGET.appId), tokenLookup: "header:X-Teamclu-Origin-Authorization:Bearer", claimPassBy: "" }) } };
 }
 const OPS_CONFIG = { bucket: "b", role: "acs:ram::1:role/fc", region: "cn-shenzhen", originAuth: ORIGIN };
+test('uppercase JWT configuration is not accepted as protected provider readback', async () => {
+  const domain = protectedDomain();
+  domain.authConfig.authInfo = JSON.stringify({
+    JWKS: originJwks(ORIGIN, TARGET.appId),
+    TokenLookup: 'header:X-Teamclu-Origin-Authorization:Bearer',
+    ClaimPassBy: '',
+  });
+  const { client } = fakeClient({ getCustomDomain: async () => ({ body: domain }) });
+  const result = await makeFcOps(client, OPS_CONFIG).readOriginSecurity('tc-app-1', DOMAIN, TARGET);
+  assert.equal(result.status, 'drift');
+  assert.ok(result.driftFields.includes('authConfig.JWKS'));
+  assert.ok(result.driftFields.includes('authConfig.TokenLookup'));
+});
 test('managed HTTP domain uses JWT without requiring a certificate', async () => {
   const { client, calls } = fakeClient();
   const endpoint = await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET);
@@ -26,6 +39,7 @@ test('managed HTTP domain uses JWT without requiring a certificate', async () =>
   assert.equal(body.protocol, 'HTTP');
   assert.equal(body.certConfig, undefined);
   assert.equal(body.authConfig.authType, 'jwt');
+  assert.deepEqual(Object.keys(JSON.parse(body.authConfig.authInfo)).sort(), ['claimPassBy', 'jwks', 'tokenLookup']);
 });
 
 const NODE_DECL = {
@@ -528,10 +542,10 @@ const driftCases: Array<[string, (d: any) => void]> = [
   ['routeConfig', d => { d.routeConfig.routes[0].functionName = 'other-function'; }],
   ['routeConfig', d => { delete d.routeConfig; }],
   ['authConfig.authType', d => { d.authConfig.authType = 'anonymous'; }],
-  ['authConfig.JWKS', d => { const a = JSON.parse(d.authConfig.authInfo); a.JWKS.keys[0].k = 'secret-wrong-key'; d.authConfig.authInfo = JSON.stringify(a); }],
-  ['authConfig.JWKS', d => { const a = JSON.parse(d.authConfig.authInfo); a.JWKS.keys.push({ ...a.JWKS.keys[0], kid: 'extra' }); d.authConfig.authInfo = JSON.stringify(a); }],
-  ['authConfig.TokenLookup', d => { const a = JSON.parse(d.authConfig.authInfo); a.TokenLookup += ',cookie:token'; d.authConfig.authInfo = JSON.stringify(a); }],
-  ['authConfig.ClaimPassBy', d => { const a = JSON.parse(d.authConfig.authInfo); a.ClaimPassBy = 'header:sub:X-Teamclu-User'; d.authConfig.authInfo = JSON.stringify(a); }],
+  ['authConfig.JWKS', d => { const a = JSON.parse(d.authConfig.authInfo); a.jwks.keys[0].k = 'secret-wrong-key'; d.authConfig.authInfo = JSON.stringify(a); }],
+  ['authConfig.JWKS', d => { const a = JSON.parse(d.authConfig.authInfo); a.jwks.keys.push({ ...a.jwks.keys[0], kid: 'extra' }); d.authConfig.authInfo = JSON.stringify(a); }],
+  ['authConfig.TokenLookup', d => { const a = JSON.parse(d.authConfig.authInfo); a.tokenLookup += ',cookie:token'; d.authConfig.authInfo = JSON.stringify(a); }],
+  ['authConfig.ClaimPassBy', d => { const a = JSON.parse(d.authConfig.authInfo); a.claimPassBy = 'header:sub:X-Teamclu-User'; d.authConfig.authInfo = JSON.stringify(a); }],
   ['authConfig.authInfo', d => { delete d.authConfig.authInfo; }],
 ];
 for (const [field, change] of driftCases) {
@@ -542,8 +556,8 @@ for (const [field, change] of driftCases) {
   });
 }
 test('semantic comparison accepts key ordering, header casing and provider defaults', async () => {
-  const d = protectedDomain(), a = JSON.parse(d.authConfig.authInfo); a.JWKS.keys.reverse();
-  d.authConfig.authInfo = JSON.stringify({ TokenLookup: 'header:x-teamclu-origin-authorization:Bearer', JWKS: a.JWKS });
+  const d = protectedDomain(), a = JSON.parse(d.authConfig.authInfo); a.jwks.keys.reverse();
+  d.authConfig.authInfo = JSON.stringify({ tokenLookup: 'header:x-teamclu-origin-authorization:Bearer', jwks: a.jwks });
   const { client } = fakeClient({ getCustomDomain: async () => ({ body: { ...d, createdTime: 'default' } }) });
   assert.equal(await makeFcOps(client, OPS_CONFIG).ensureCustomDomain('tc-app-1', DOMAIN, TARGET), `http://${DOMAIN}`);
 });
@@ -556,7 +570,7 @@ for (const mode of ['anonymous', 'protected', 'other-app-key']) {
   test(`checks second-page ${mode} alias without mutating unrelated functions`, async () => {
     const alias = protectedDomain('alias.origins.test');
     if (mode === 'anonymous') alias.authConfig.authType = 'anonymous';
-    if (mode === 'other-app-key') { const a = JSON.parse(alias.authConfig.authInfo); a.JWKS = originJwks(ORIGIN, '11111111-2222-4333-8444-555555555555'); alias.authConfig.authInfo = JSON.stringify(a); }
+    if (mode === 'other-app-key') { const a = JSON.parse(alias.authConfig.authInfo); a.jwks = originJwks(ORIGIN, '11111111-2222-4333-8444-555555555555'); alias.authConfig.authInfo = JSON.stringify(a); }
     const { client, calls } = fakeClient({
       listCustomDomains: async (r: any) => ({ body: r.nextToken ? { customDomains: [alias] } : { customDomains: [protectedDomain(), { domainName: 'other.example.com', routeConfig: { routes: [{ functionName: 'other' }] } }], nextToken: 'next' } }),
       getCustomDomain: async (n: string) => ({ body: n === alias.domainName ? alias : protectedDomain(n) }),
