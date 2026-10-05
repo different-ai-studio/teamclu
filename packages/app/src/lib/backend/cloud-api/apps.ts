@@ -1,5 +1,6 @@
 import type {
   AppsBackend,
+  AppUndeployResult,
   AppAuthInfo,
   AppFilesPage,
   AppFilesQuery,
@@ -192,6 +193,9 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         if (e instanceof CloudApiError && e.status === 404) return false;
         throw e;
       }
+    },
+    async undeployApp(appId) {
+      return client.post<AppUndeployResult>(`/v1/apps/${encodeURIComponent(appId)}/undeploy`, {});
     },
     async deleteApp(appId) {
       try {

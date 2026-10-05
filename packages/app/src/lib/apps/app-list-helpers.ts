@@ -14,8 +14,9 @@ export function canReseed(status: string): boolean {
  * helper that only has the last successful deployment snapshot.
  */
 export function deployDisabledReason(
-  app: Pick<AppRow, 'authMode'>,
+  app: Pick<AppRow, 'authMode'> & Partial<Pick<AppRow, 'fcStatus'>>,
 ): string | null {
+  if (app.fcStatus === 'uninstalling' || app.fcStatus === 'uninstall_failed') return 'apps.undeploy.incomplete'
   if (app.authMode === 'third') return 'apps.deployDisabledThird'
   return null
 }
@@ -40,6 +41,9 @@ export function appStatusMeta(
   app: Pick<AppRow, 'provisionStatus' | 'fcStatus' | 'fcEndpoint'>,
   deploying: boolean,
 ): { dot: 'live' | 'ready' | 'failed' | 'idle'; key: string; fallback: string } {
+  if (app.fcStatus === 'uninstalling') return { dot: 'idle', key: 'apps.undeploy.running', fallback: '卸载中…' }
+  if (app.fcStatus === 'uninstall_failed') return { dot: 'failed', key: 'apps.undeploy.incomplete', fallback: '清理未完成' }
+  if (app.fcStatus === 'uninstalled') return { dot: 'idle', key: 'apps.undeploy.done', fallback: '已卸载' }
   if (deploying) return { dot: 'idle', key: 'apps.deploying', fallback: '部署中…' }
   if (app.fcStatus === 'live' && app.fcEndpoint) return { dot: 'live', key: 'apps.live', fallback: '已上线' }
   if (app.fcStatus === 'deploy_error') return { dot: 'failed', key: 'apps.deployFailed', fallback: '部署失败' }

@@ -152,3 +152,11 @@ describe('firstPromptForApp', () => {
     expect(firstPromptForApp(app('  spaced  ', 'slides'))).toContain('：spaced\n')
   })
 })
+
+it.each([['uninstalling','卸载中…'],['uninstall_failed','清理未完成'],['uninstalled','已卸载']])('shows %s lifecycle distinctly', (fcStatus,fallback)=>{
+ expect(appStatusMeta({provisionStatus:'ready',fcStatus,fcEndpoint:null},false).fallback).toBe(fallback);
+});
+
+it.each(['uninstalling','uninstall_failed'])('blocks deploy while %s cleanup owns app',fcStatus=>{
+ expect(deployDisabledReason({authMode:'none',fcStatus})).toBe('apps.undeploy.incomplete');
+});
