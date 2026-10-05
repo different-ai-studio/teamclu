@@ -183,6 +183,10 @@ export function createApp(deps: AppDeps): Hono {
       // An app that exists but has never deployed is a real app with nothing
       // to serve yet — say so, rather than proxying to null.
       if (!isServable(target)) {
+        if (["uninstalling", "uninstall_failed", "uninstalled"].includes(target.fcStatus ?? "")) {
+          c.header("Cache-Control", "no-store");
+          return c.text("应用尚未上线或已下线", 503);
+        }
         return c.text("app is not deployed yet", 404);
       }
       // After the lookup, so an HTTP link to a hostname that is not an app

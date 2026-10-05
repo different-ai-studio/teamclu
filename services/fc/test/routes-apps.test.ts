@@ -994,3 +994,23 @@ test("GET auth-info preserves response and catalog failures", async () => {
   const denied = Object.assign(new Error("catalog forbidden"), {statusCode: 403});
   await assert.rejects(handler({params: {appId: "app"}, repository: {getAppAuthInfo: async () => {throw denied;}}}), (e) => e === denied);
 });
+
+test('POST undeploy accepts an operation but never claims completion for 202',async()=>{
+ const {router,routes}=makeRouter();registerApps(router);
+ const handler=findRoute(routes,'POST','/v1/apps/:appId/undeploy')[2];
+ const operation={id:'op-1',status:'pending'};
+ const out=await handler({params:{appId:'app-1'},repository:{undeployApp:async()=>({app:{id:'app-1'},operation})}});
+ assert.equal(out.statusCode,202);assert.deepEqual(out.body.operation,operation);
+ await assert.rejects(handler({params:{appId:'hidden'},repository:{undeployApp:async()=>null}}),(e:any)=>e.statusCode===404);
+ const done=await handler({params:{appId:'app-1'},repository:{undeployApp:async()=>({app:{id:'app-1'},operation:{...operation,status:'succeeded'}})}});
+ assert.equal(done.statusCode,200);
+});
+
+test('authenticated heartbeat runs persistent cleanup with raw service client and no repository',async()=>{
+ const {router,routes}=makeRouter();const tables:string[]=[];
+ const client:any={rpc:async(name:string)=>{assert.equal(name,'report_expired_app_undeploy_calls');return {data:null,error:null}},from:(table:string)=>{tables.push(table);const q:any={then:(resolve:any)=>resolve({data:[],error:null})};for(const key of ['select','eq','in','order','limit','not','lte','delete','lt'])q[key]=()=>q;return q;}};
+ registerApps(router,{createServiceRoleClient:()=>client,makeAppUndeployDeps:()=>({})});
+ const tick=findRoute(routes,'POST','/v1/internal/app-cron/tick');assert.equal(tick[3].auth,'cron-tick');
+ const result=await tick[2]({repository:undefined});
+ assert.equal(result.body.cleanup.processed,0);assert.ok(tables.includes('app_lifecycle_operations'));assert.ok(tables.includes('app_cron_jobs'));
+});

@@ -6970,6 +6970,37 @@ paths:
                   ok: { type: boolean, enum: [true] }
         "404":
           $ref: "#/components/responses/Error"
+  /v1/apps/{appId}/undeploy:
+    post:
+      operationId: undeployApp
+      summary: Uninstall deployment while retaining the app and its data
+      description: >-
+        App administrator only. Stops new gateway requests and durably schedules
+        cleanup of deployment resources. Retains code, sessions, files, database,
+        login policy and scheduled-job definitions. A 202 is acceptance, not completion.
+        Repeat requests return the same operation; failed cleanup may be retried.
+        An active deployment or deletion returns 409.
+      tags: [Apps]
+      parameters:
+        - $ref: "#/components/parameters/AppId"
+      responses:
+        "200":
+          description: Deployment already uninstalled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppUndeployResult" }
+        "202":
+          description: Cleanup accepted or already in progress
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppUndeployResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Conflicting lifecycle operation or unresolved provider outcome
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
   /v1/apps/{appId}/deploy/preflight:
     post:
       operationId: preflightAppDeploy
@@ -9510,7 +9541,7 @@ components:
       description: |
         Deploy lifecycle, orthogonal to `provisionStatus` (which tracks the repo
         and its seeding). `null` means the app has never been deployed.
-      enum: [not_deployed, awaiting_build, building, deploying, live, deploy_error]
+      enum: [not_deployed, awaiting_build, building, deploying, live, deploy_error, uninstalling, uninstall_failed, uninstalled]
     AppBuildKind:
       type: string
       description: |
@@ -9599,10 +9630,39 @@ components:
         customDomainAuth: { type: string, enum: [jwt, none, unknown] }
         httpsOnly: { type: [boolean, "null"] }
         driftFields: { type: array, items: { type: string } }
+    AppUndeployOperation:
+      type: object
+      required: [id, appId, status, startedAt, updatedAt, steps, error]
+      properties:
+        id: { type: string, format: uuid }
+        appId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, running, failed, succeeded] }
+        startedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        error: { type: [string, "null"] }
+        steps:
+          type: object
+          additionalProperties:
+            type: object
+            required: [status]
+            properties:
+              status: { type: string, enum: [succeeded, failed, skipped] }
+              error: { type: string }
+    AppUndeployResult:
+      type: object
+      required: [app, operation]
+      properties:
+        app: { $ref: "#/components/schemas/App" }
+        operation: { $ref: "#/components/schemas/AppUndeployOperation" }
     App:
       type: object
       required: [id, teamId, name, slug, type, visibility, provisionStatus, createdAt, updatedAt]
       properties:
+        canManageDeployment:
+          type: boolean
+          description: Whether the current caller has app administrator permission.
+        undeployOperation:
+          $ref: "#/components/schemas/AppUndeployOperation"
         originSecurity:
           $ref: "#/components/schemas/OriginSecuritySummary"
           description: Returned by app status reads; legacy endpoints are not migrated by a read.

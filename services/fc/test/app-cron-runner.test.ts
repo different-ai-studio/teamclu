@@ -510,3 +510,10 @@ test("the tick stops claiming when its own clock runs out", async () => {
   assert.ok(untouched.length > 0, "unclaimed jobs must keep their schedule");
 });
 
+
+for (const fc_status of ['uninstalling','uninstall_failed','uninstalled']) test(`cron skips ${fc_status} apps and advances schedule without fetching`,async()=>{
+ const db=makeDb({app_cron_jobs:[job()],apps:[{...apps()[0],fc_status}],app_cron_runs:[]});
+ let called=false;
+ const result=await runDueAppCronJobs({client:db,env:ENV as any,now:new Date('2026-09-10T09:00:30.000Z'),fetchImpl:(async()=>{called=true;return new Response('data')}) as any});
+ assert.equal(called,false);assert.equal(result.outcomes[0].status,'failed');
+});

@@ -166,7 +166,7 @@ test("ask says yes for a real app, even before it has ever deployed", async () =
 
 // --- serving ---------------------------------------------------------------
 
-test("a vanity host with nothing deployed behind it 404s instead of proxying to null", async () => {
+test("a vanity host with nothing deployed responds offline instead of proxying to null", async () => {
   const app = createApp(deps(async () => ({
     id: APP_ID, slug: "website", fcEndpoint: null, fcStatus: "awaiting_build",
   })));
@@ -952,3 +952,17 @@ for (const [endpoint, status] of [
     } finally { globalThis.fetch = oldFetch; }
   }, { APPS_FC_ROUTE_DOMAIN: undefined, APPS_FC_ORIGIN_KEYRING: undefined }));
 }
+
+test('positive lookup rechecks lifecycle after cache warms without waiting for TTL',async()=>{
+ let status='live';
+ const lookup=makeVanityLookup({getServiceRoleClient:()=>({from:()=>({select:()=>({eq:()=>({limit:async()=>({data:[{id:APP_ID,slug:'website',fc_status:status,fc_endpoint:'http://up'}],error:null})})})})})});
+ await withDomain(async()=>{
+  __resetVanityCache();assert.equal((await lookup(`website-18e4ecad.${DOMAIN}`))?.fcStatus,'live');
+  status='uninstalling';assert.equal((await lookup(`website-18e4ecad.${DOMAIN}`))?.fcStatus,'uninstalling');
+ });
+});
+
+test('uninstalled site responds offline without reaching the origin',async()=>{
+ const app=createApp(deps(async()=>({id:APP_ID,slug:'website',fcEndpoint:'http://old',fcStatus:'uninstalled'})));
+ await withDomain(async()=>{const res=await app.request('/',{headers:{host:`website-18e4ecad.${DOMAIN}`}});assert.equal(res.status,503);assert.equal(res.headers.get('cache-control'),'no-store');assert.match(await res.text(),/应用尚未上线或已下线/);});
+});

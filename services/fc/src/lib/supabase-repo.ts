@@ -1,3 +1,5 @@
+import { assertLifecycleAvailable, lifecycleRpc, operationView } from "./app-lifecycle.js";
+import { appFcRouteHost } from "./apps-public-host.js";
 /**
  * The business repository — PostgREST + caller JWT + RLS.
  *
@@ -4659,7 +4661,8 @@ export function createSupabaseBusinessRepository(options) {
       if (error) throw error;
       if (!data) return null;
       const viewer = await this.resolveAppViewer(data.team_id, [data.id]);
-      return { ...mapApp(data), ...appRelationshipFor(data, viewer.actorId, viewer.grants),
+      const permission = await this.resolveAppCallerPermissionForApp(data);
+      return { ...mapApp(data), canManageDeployment: permission?.level === "admin", ...appRelationshipFor(data, viewer.actorId, viewer.grants),
         originSecurity: projectOriginSecurity(await readAppOriginSecurity(data)) };
     },
 
@@ -5182,6 +5185,7 @@ export function createSupabaseBusinessRepository(options) {
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return null;
       if (existing.provision_status !== "ready") throw new ApiError(409, "app_not_ready", "app must be seeded before deploy");
+      assertLifecycleAvailable(existing.fc_status);
       const progress = checkDeployInProgress({ fc_status: existing.fc_status, deploy_started_at: existing.deploy_started_at });
       if (progress === "blocked") throw new ApiError(409, "deploy_in_progress", "a deploy is already in progress");
       const revision = String(input?.revision ?? "");
@@ -5276,6 +5280,8 @@ export function createSupabaseBusinessRepository(options) {
         existing.fc_status = "deploy_error";
       }
       if (!startDeploy) throw deployUnavailable(deployUnavailableReason);
+      const lifecycleAdmin = await serviceRoleClient("app deployment lifecycle");
+      const lifecycle = await lifecycleRpc(lifecycleAdmin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "deploy", p_token: input.preflightToken });
       const deployToken = input.preflightToken;
       const deployStartedAt = new Date().toISOString();
       try {
@@ -5320,7 +5326,6 @@ export function createSupabaseBusinessRepository(options) {
           revision,
         };
       } catch (e: any) {
-        if (e instanceof ApiError) throw e;
         await supabase
           .from("apps")
           .update({
@@ -5331,6 +5336,7 @@ export function createSupabaseBusinessRepository(options) {
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId);
+        await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: input.preflightToken });
         throw new ApiError(502, "deploy_failed", String(e?.message ?? e));
       }
     },
@@ -5369,6 +5375,12 @@ export function createSupabaseBusinessRepository(options) {
       assertNoUnexpectedOriginEntries(info.originSecurity);
       verifyAppDeployPreflight(deployToken, appId, revision, declaration, info.currentDeployment);
       if (existing.git_auth_kind === GITEA_AUTH_KIND && gitCommitSha !== revision) throw new ApiError(409, "revision_mismatch", "built SHA differs from preflight revision");
+      const lifecycleAdmin = await serviceRoleClient("app deployment lifecycle");
+      let { data: lifecycle, error: lifecycleError } = await lifecycleAdmin.from("app_lifecycle_operations")
+        .select("id, token, kind, status").eq("app_id", appId).neq("status", "succeeded").maybeSingle();
+      if (lifecycleError) throw lifecycleError;
+      if (!lifecycle) lifecycle = await lifecycleRpc(lifecycleAdmin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "deploy", p_token: deployToken });
+      if (!lifecycle || lifecycle.kind !== "deploy" || lifecycle.token !== deployToken) throw new ApiError(409, "lifecycle_conflict", "this deploy no longer owns the app lifecycle");
       // Claim this specific token and state atomically before FC or storage mutation.
       const { data: claimed, error: claimError } = await supabase.from("apps")
         .update({ fc_status: "deploying", updated_at: new Date().toISOString() })
@@ -5376,6 +5388,8 @@ export function createSupabaseBusinessRepository(options) {
         .select("id").maybeSingle();
       if (claimError) throw claimError;
       if (!claimed) throw new ApiError(409, "deploy_in_progress", "this deploy is already finalizing or its token changed");
+      const { error: flightError } = await lifecycleAdmin.from("app_lifecycle_operations").update({ in_flight: true }).eq("id", lifecycle.id).neq("status", "succeeded");
+      if (flightError) throw flightError;
       try {
         // Convenience env for the app's own code. The login wall does not
         // depend on it: the proxy gateway enforces the wall before a request
@@ -5464,16 +5478,16 @@ export function createSupabaseBusinessRepository(options) {
             deploy_started_at: null,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", appId)
+          .eq("id", appId).eq("deploy_token", deployToken)
           .select(APP_COLUMNS)
           .maybeSingle();
         if (updErr) throw updErr;
         if (!row) return null;
+        await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: deployToken });
         // The proxy caches fc_endpoint/fc_status per host.
         invalidateAppHosts({ id: appId, slug: existing.slug, customDomain: existing.custom_domain });
         return mapApp(row);
       } catch (e: any) {
-        if (e instanceof ApiError && !["origin_security_drift", "origin_security_unavailable"].includes(e.code)) throw e;
         await supabase
           .from("apps")
           .update({
@@ -5484,6 +5498,9 @@ export function createSupabaseBusinessRepository(options) {
             updated_at: new Date().toISOString(),
           })
           .eq("id", appId);
+        if (!/timeout|timedout|etimedout|econnreset/i.test(String(e?.code ?? ""))) {
+          await lifecycleRpc(lifecycleAdmin, "finish_app_lifecycle", { p_operation_id: lifecycle.id, p_token: deployToken });
+        }
         if (e instanceof ApiError) throw e;
         throw new ApiError(502, "finalize_failed", String(e?.message ?? e));
       }
@@ -5624,11 +5641,12 @@ export function createSupabaseBusinessRepository(options) {
       if (!permission) return null;
 
       const region = app.fc_region || appsRegion();
+      const offline = ["uninstalling", "uninstall_failed", "uninstalled"].includes(app.fc_status);
       // A failed later deploy may leave the last successful snapshot intact.
       const deployed = app.fc_status === "live" || !!app.env_deployed_at || !!app.start_spec || !!app.fc_endpoint;
       const catalog = await readRuntimeCatalog(region, language);
       const sourceStatus: any = { ...catalog.sourceStatus,
-        provider: { checkedAt: null, observedAt: null, complete: !deployed, stale: false,
+        provider: { checkedAt: null, observedAt: null, complete: !deployed || offline, stale: false,
           errors: [], error: null, provenance: "Alibaba FC 2023-03-30 GetFunction" } };
       let currentDeployment: any = null;
       if (deployed) {
@@ -5639,11 +5657,14 @@ export function createSupabaseBusinessRepository(options) {
           deployedAt: app.env_deployed_at ?? null,
           functionName: app.fc_function_name ?? null,
           provider: null,
+          ...(offline ? { serving: false, historical: true } : {}),
           drift: false,
           driftFields: [],
         };
         sourceStatus.provider.checkedAt = new Date().toISOString();
-        if (app.fc_function_name) {
+        if (offline) {
+          // Retained successful configuration is history, not an active provider read.
+        } else if (app.fc_function_name) {
           try {
             const provider = projectFunction(await readAppFunction(app.fc_function_name, region));
             currentDeployment.provider = provider;
@@ -6760,6 +6781,18 @@ export function createSupabaseBusinessRepository(options) {
       return (data ?? []).map(mapAppCronRunRow);
     },
 
+    async undeployApp(appId: string) {
+      const app = await this.getApp(appId);
+      if (!app) return null;
+      const permission = await this.resolveAppCallerPermissionForApp({ id: app.id, team_id: app.teamId, created_by_actor_id: app.createdByActorId });
+      if (!permission || permission.level !== "admin") return null;
+      const admin = await serviceRoleClient("app deployment lifecycle");
+      const operation = await lifecycleRpc(admin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "undeploy", p_token: null, p_origin_domain: appFcRouteHost(app.slug, appId) });
+      if (!operation) throw new ApiError(409, "not_deployed", "app has no deployment to uninstall");
+      invalidateAppHosts({ id: appId, slug: app.slug, customDomain: app.customDomain });
+      return { app: await this.getApp(appId), operation: operationView(operation) };
+    },
+
     async deleteApp(appId: string) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
@@ -6775,6 +6808,13 @@ export function createSupabaseBusinessRepository(options) {
       if (!permission || permission.level !== "admin") return false;
 
       const admin = await serviceRoleClient("delete app and archive workspace");
+      const deletion = await lifecycleRpc(admin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "delete", p_token: null });
+      const { data: acquired, error: acquireError } = await admin.from("app_lifecycle_operations")
+        .update({ status: "running", in_flight: true, updated_at: new Date().toISOString() })
+        .eq("id", deletion.id).eq("status", "pending").eq("in_flight", false).select("id").maybeSingle();
+      if (acquireError) throw acquireError;
+      if (!acquired) throw new ApiError(409, "lifecycle_conflict", "app deletion already running");
+      try {
       const teardownInput = {
         appId,
         // Carries the app's custom-domain host, which is built from the slug.
@@ -6811,6 +6851,14 @@ export function createSupabaseBusinessRepository(options) {
       if (delErr) throw delErr;
       invalidateAppHosts({ id: appId, slug: existing.slug, customDomain: existing.custom_domain });
       return true;
+      } catch (error: any) {
+        // A known failure can be retried. A transport failure remains fenced.
+        const unknown = /timeout|timedout|etimedout|econnreset/i.test(String(error?.code ?? ""));
+        await admin.from("app_lifecycle_operations").update({ status: "failed", in_flight: unknown,
+          error: unknown ? "Provider outcome unknown; operator reconciliation required." : "App deletion failed; retry deletion.",
+          updated_at: new Date().toISOString() }).eq("id", deletion.id);
+        throw error;
+      }
     },
 
     // ─── Team skills registry ────────────────────────────────────────────────

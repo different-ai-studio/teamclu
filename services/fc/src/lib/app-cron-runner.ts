@@ -254,11 +254,14 @@ async function executeJob(
 
   const { data: app, error } = await db
     .from("apps")
-    .select("id, slug")
+    .select("id, slug, fc_status")
     .eq("id", job.app_id)
     .maybeSingle();
   if (error) throw error;
 
+  if (app && ["uninstalling", "uninstall_failed", "uninstalled"].includes(app.fc_status)) {
+    return finish(db, job, { startedAt, finishedAt: new Date(), status: "failed", responseStatus: null, error: "应用已下线，未执行定时任务。" });
+  }
   const base = app ? appPublicUrl(app.slug, app.id, ctx.env) : null;
   if (!base) {
     return finish(db, job, {
