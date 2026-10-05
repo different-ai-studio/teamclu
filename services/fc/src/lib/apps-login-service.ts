@@ -883,13 +883,15 @@ async function handleOAuthStart(
     state,
     codeVerifier: verifier,
   });
-  const callback = `${loginOrigin(req, secure, env)}${OAUTH_CALLBACK_PATH}`;
+  // GoTrue owns the provider OAuth state. Carry our cookie-bound correlation
+  // value in redirect_to instead; a top-level state overrides GoTrue's value.
+  const callback = new URL(`${loginOrigin(req, secure, env)}${OAUTH_CALLBACK_PATH}`);
+  callback.searchParams.set("login_state", state);
   const target = new URL(`${base}/auth/v1/authorize`);
   target.searchParams.set("provider", provider);
-  target.searchParams.set("redirect_to", callback);
+  target.searchParams.set("redirect_to", callback.toString());
   target.searchParams.set("code_challenge", pkceChallenge(verifier));
   target.searchParams.set("code_challenge_method", "s256");
-  target.searchParams.set("state", state);
   return redirect(
     target.toString(),
     [serializeSessionCookie(LOGIN_STATE_COOKIE, loginState.token, LOGIN_STATE_TTL_SECONDS, secure)],
@@ -906,7 +908,7 @@ async function handleOAuthCallback(
   const token = readCookie(req.headers.get("cookie"), LOGIN_STATE_COOKIE) ?? "";
   const state = await verifyLoginState(token);
   const clear = () => clearSessionCookie(LOGIN_STATE_COOKIE, secure);
-  if (!state || url.searchParams.get("state") !== state.state || !isOAuthProvider(state.provider)) {
+  if (!state || url.searchParams.get("login_state") !== state.state || !isOAuthProvider(state.provider)) {
     return clearLoginState(noticePage("登录状态已失效，请重新开始。", 400), secure);
   }
   const ctx = await contextFromLoginState(state, deps, env);
