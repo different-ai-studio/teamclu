@@ -38,11 +38,7 @@ reveal 自带的全部主题（black、white、league、solarized 等）。
 
 本地预览：`pnpm dev`，打开 `http://localhost:9000`。左右键翻页，`S` 演讲者视图，`Esc` 总览。
 
-## 平台鉴权契约
-
-实现平台登录、角色权限、员工页面或数据接口前，读取内置 `app-auth` skill；它是身份、角色和路径保护的统一契约。申请人自建的 mock 短信登录可以保留，与平台员工登录分开。
-
-平台 user ID 与 `created_by_actor_id` 不同，不能直接比较。创建者或协作者的管理权限不等于员工访问权限；不能硬编码创建者或成员名单。保护员工页面时也要保护实际员工数据接口，通常使用独立 `/api/staff` 前缀；共享 `/_serverFn` 不能一并锁住或留下员工操作未保护。接口实现示例见 skill。无法完成真实账号登录时明确列为待验收。
+For platform sign-in, role-based access, or protected endpoints, use the built-in `app-auth` skill.
 
 ## 登录（`auth_mode`）
 
