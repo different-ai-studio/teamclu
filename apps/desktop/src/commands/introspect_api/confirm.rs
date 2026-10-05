@@ -171,6 +171,29 @@ pub(crate) fn app_deploy_with_preview(zh: bool, row: &Value, preview: &Value) ->
     request
 }
 
+/// `manage_app` `undeploy`: retain the app and its user-owned data.
+pub(crate) fn app_undeploy(zh: bool, row: &Value) -> Confirmation {
+    let name = app_name(row);
+    let url = row["publicUrl"]
+        .as_str()
+        .or_else(|| row["fcEndpoint"].as_str())
+        .unwrap_or("—");
+    let hint = declined_hint(zh);
+    if zh {
+        Confirmation {
+            title: "卸载线上部署？".into(),
+            message: format!("一个 agent 请求卸载应用「{name}」的线上部署。\n{url}\n\n线上应用将停止服务，并清理 FC 函数、HTTP 入口、源站映射和部署产物。代码、会话、数据库和上传文件会保留，之后可重新部署。清理失败可重试。\n\n{hint}"),
+            accept: "卸载部署".into(),
+        }
+    } else {
+        Confirmation {
+            title: "Uninstall this deployment?".into(),
+            message: format!("An agent wants to uninstall the deployment of “{name}”.\n{url}\n\nThe site will stop serving. Its FC function, HTTP trigger, origin mapping and build artifact will be cleaned. Code, sessions, database and uploaded files are retained. You can deploy it again or retry failed cleanup.\n\n{hint}"),
+            accept: "Uninstall deployment".into(),
+        }
+    }
+}
+
 /// `manage_app` `delete`.
 pub(crate) fn app_delete(zh: bool, row: &Value) -> Confirmation {
     let name = app_name(row);
@@ -792,5 +815,16 @@ mod tests {
 
         let empty = mcp_servers_replace(true, "/work/app", &json!({}));
         assert!(empty.message.contains("删除全部 MCP 服务"));
+    }
+    #[test]
+    fn uninstall_confirmation_names_preserved_data_and_target() {
+        let row = serde_json::json!({"name":"优惠", "publicUrl":"https://app.example"});
+        let zh = app_undeploy(true, &row);
+        assert!(zh.message.contains("https://app.example"));
+        assert!(zh.message.contains("数据库"));
+        assert!(zh.message.contains("重新部署"));
+        let en = app_undeploy(false, &row);
+        assert!(en.message.contains("sessions"));
+        assert_eq!(en.accept, "Uninstall deployment");
     }
 }

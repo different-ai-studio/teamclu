@@ -372,6 +372,7 @@ pub(super) fn app_brief(row: &Value) -> Value {
         "url": url,
         "provision_status": f("provisionStatus"),
         "fc_status": f("fcStatus"),
+        "undeploy_operation": f("undeployOperation"),
         "auth_mode": f("authMode"),
         "auth_mode_pending_redeploy": f("authModePendingRedeploy"),
         "git_commit_sha": f("gitCommitSha"),
@@ -612,7 +613,7 @@ fn dir_has_files(dir: &str) -> bool {
 
 // ─── manage_app ─────────────────────────────────────────────────────────────
 
-const MANAGE_ACTIONS: [&str; 13] = [
+const MANAGE_ACTIONS: [&str; 14] = [
     "list",
     "status",
     "auth_info",
@@ -624,6 +625,7 @@ const MANAGE_ACTIONS: [&str; 13] = [
     "download",
     "move_workdir",
     "deploy",
+    "undeploy",
     "logs",
     "delete",
 ];
@@ -641,7 +643,7 @@ pub(super) async fn handle_app_manage(
     // Argument mistakes are refused before anything is resolved, so they cost
     // no round trip and read as the mistakes they are.
     match action.as_str() {
-        "delete" => require_named_app(&v, "delete")?,
+        "delete" | "undeploy" => require_named_app(&v, &action)?,
         "update" => {
             update_patch(&v)?;
         }
@@ -668,6 +670,7 @@ pub(super) async fn handle_app_manage(
     let confirmation = match action.as_str() {
         "deploy" => None,
         "delete" => Some(super::confirm::app_delete(zh, &row)),
+        "undeploy" => Some(super::confirm::app_undeploy(zh, &row)),
         "update" => super::confirm::app_exposure_change(zh, &row, &update_patch(&v)?),
         _ => None,
     };
@@ -707,6 +710,7 @@ pub(super) async fn handle_app_manage(
         }
         "logs" => read_app_logs(&api, &row, &v).await?,
         "delete" => delete_app(app, &api, &row).await?,
+        "undeploy" => undeploy_app(app, &api, &row).await?,
         other => return Err(format!("Unknown action: {other}")),
     };
     Ok(out.to_string())
@@ -1155,6 +1159,25 @@ async fn update_app(
         "app": app_settings(&updated),
         "notes": update_notes(row, &patch, &updated),
     }))
+}
+
+async fn undeploy_app(app: &AppHandle, api: &AppApi, row: &Value) -> Result<Value, String> {
+    let app_id = row_id(row)?;
+    let result = api
+        .call(
+            Method::POST,
+            &app_path(&app_id, "/undeploy"),
+            Some(&json!({})),
+            None,
+            "Uninstalling the deployment (needs admin on it)",
+        )
+        .await?;
+    notify_app_changed(app, &result["app"]);
+    let complete = result["operation"]["status"].as_str() == Some("succeeded");
+    Ok(
+        json!({"ok": true, "action": "undeploy", "app": app_brief(&result["app"]), "operation": result["operation"],
+        "complete": complete, "note": if complete {"Deployment uninstalled. App, code, sessions and user data were retained."} else {"Uninstall accepted, not yet complete. Read manage_app status to verify cleanup progress; do not claim success until the operation succeeds."}}),
+    )
 }
 
 async fn delete_app(app: &AppHandle, api: &AppApi, row: &Value) -> Result<Value, String> {
