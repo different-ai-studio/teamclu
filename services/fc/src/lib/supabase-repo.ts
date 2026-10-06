@@ -5631,7 +5631,7 @@ export function createSupabaseBusinessRepository(options) {
     async getAppRuntimeInfo(appId: string, language?: AppLanguage) {
       const { data: app, error } = await supabase
         .from("apps")
-        .select("id, slug, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at")
+        .select("id, slug, team_id, type, created_by_actor_id, fc_status, fc_endpoint, fc_function_name, fc_region, runtime, start_spec, git_commit_sha, env_deployed_at, updated_at, undeploy_operation")
         .eq("id", appId)
         .maybeSingle();
       if (error) throw error;
@@ -5641,6 +5641,11 @@ export function createSupabaseBusinessRepository(options) {
       if (!permission) return null;
 
       const region = app.fc_region || appsRegion();
+      const cleanupAt = Date.parse(app.undeploy_operation?.updatedAt ?? "");
+      const deployedAt = Date.parse(app.env_deployed_at ?? "");
+      const completedUninstall = app.undeploy_operation?.status === "succeeded"
+        && Number.isFinite(cleanupAt) && (!Number.isFinite(deployedAt) || cleanupAt >= deployedAt)
+        && ["uninstalled", "awaiting_build", "building", "deploying", "deploy_error"].includes(app.fc_status);
       const offline = ["uninstalling", "uninstall_failed", "uninstalled"].includes(app.fc_status);
       // A failed later deploy may leave the last successful snapshot intact.
       const deployed = app.fc_status === "live" || !!app.env_deployed_at || !!app.start_spec || !!app.fc_endpoint;
@@ -5658,6 +5663,7 @@ export function createSupabaseBusinessRepository(options) {
           functionName: app.fc_function_name ?? null,
           provider: null,
           ...(offline ? { serving: false, historical: true } : {}),
+          ...(completedUninstall && offline ? { uninstallOperationId: app.undeploy_operation.id } : {}),
           drift: false,
           driftFields: [],
         };
@@ -5675,8 +5681,16 @@ export function createSupabaseBusinessRepository(options) {
           } catch (e) {
             sourceStatus.provider.error = providerErrorCode(e);
             sourceStatus.provider.errors = [sourceStatus.provider.error];
-            currentDeployment.drift = sourceStatus.provider.error === "function_missing";
-            if (currentDeployment.drift) currentDeployment.driftFields = ["providerFunction"];
+            if (completedUninstall && sourceStatus.provider.error === "function_missing") {
+              // A restoration may have partially created FC before failing.
+              // Only a confirmed missing function can reuse removed-provider evidence.
+              Object.assign(currentDeployment, { historical: true, serving: false,
+                uninstallOperationId: app.undeploy_operation.id });
+              sourceStatus.provider.complete = true;
+            } else {
+              currentDeployment.drift = sourceStatus.provider.error === "function_missing";
+              if (currentDeployment.drift) currentDeployment.driftFields = ["providerFunction"];
+            }
           }
         } else {
           sourceStatus.provider.error = "function_name_missing";
@@ -6797,7 +6811,7 @@ export function createSupabaseBusinessRepository(options) {
       const { data: existing, error: selErr } = await supabase
         .from("apps")
         .select(
-          "id, team_id, workspace_id, slug, name, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
+          "id, team_id, workspace_id, slug, name, fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation, fc_function_name, auth_mode, oauth_client_id, git_auth_kind, git_remote_url, created_by_actor_id, custom_domain",
         )
         .eq("id", appId)
         .maybeSingle();
@@ -6807,6 +6821,17 @@ export function createSupabaseBusinessRepository(options) {
       const permission = await this.resolveAppCallerPermissionForApp(existing);
       if (!permission || permission.level !== "admin") return false;
 
+      const assertUninstalled = (app: any) => {
+        const neverDeployed = (app.fc_status == null || app.fc_status === "not_deployed")
+          && !app.fc_endpoint && !app.env_deployed_at && !app.start_spec;
+        const uninstalled = app.fc_status === "uninstalled"
+          && app.undeploy_operation?.status === "succeeded";
+        if (!neverDeployed && !uninstalled) {
+          throw new ApiError(409, "app_uninstall_required", "Uninstall the deployment successfully before deleting this app.");
+        }
+      };
+      assertUninstalled(existing);
+
       const admin = await serviceRoleClient("delete app and archive workspace");
       const deletion = await lifecycleRpc(admin, "begin_app_lifecycle", { p_app_id: appId, p_kind: "delete", p_token: null });
       const { data: acquired, error: acquireError } = await admin.from("app_lifecycle_operations")
@@ -6815,6 +6840,13 @@ export function createSupabaseBusinessRepository(options) {
       if (acquireError) throw acquireError;
       if (!acquired) throw new ApiError(409, "lifecycle_conflict", "app deletion already running");
       try {
+      // Recheck under the lifecycle lock to prevent a concurrent deploy race.
+      const { data: lockedApp, error: lockedError } = await admin.from("apps")
+        .select("fc_status, fc_endpoint, env_deployed_at, start_spec, undeploy_operation")
+        .eq("id", appId).maybeSingle();
+      if (lockedError) throw lockedError;
+      if (!lockedApp) throw new ApiError(404, "not_found", "app not found");
+      assertUninstalled(lockedApp);
       const teardownInput = {
         appId,
         // Carries the app's custom-domain host, which is built from the slug.
@@ -6826,8 +6858,7 @@ export function createSupabaseBusinessRepository(options) {
         gitRemoteUrl: existing.git_remote_url,
       };
       const teardown: TeardownAppDeps = {
-        ...(teardownDeps ?? {}),
-        gotrue,
+        // Explicit uninstall already removed deployment resources.
         gitea,
         deleteSecret: (kind) => deleteAppSecretSupabase(admin, appId, kind),
       };

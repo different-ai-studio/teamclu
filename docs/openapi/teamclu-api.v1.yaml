@@ -6950,9 +6950,11 @@ paths:
       operationId: deleteApp
       summary: Delete an app (admin required)
       description: |
-        Requires `admin` permission (the creator is treated as admin). Tears down
-        the FC function, HTTP trigger, OSS artifact, and GoTrue OAuth client;
-        revokes Gitea deploy keys and archives the repo under a `deleted-` prefix.
+        Requires `admin` permission (the creator is treated as admin). A deployed app
+        must be manually uninstalled successfully first; otherwise returns 409
+        `app_uninstall_required`. Never-deployed apps can be deleted directly.
+        Deletion does not initiate deployment cleanup. It revokes Gitea deploy
+        keys and archives the repo under a `deleted-` prefix.
         Postgres schema, local workdirs, and linked sessions (app_id nulled) are
         kept. The orphaned workspace row is archived with the archived repo URL.
       tags: [Apps]
@@ -6968,6 +6970,8 @@ paths:
                 required: [ok]
                 properties:
                   ok: { type: boolean, enum: [true] }
+        "409":
+          $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
   /v1/apps/{appId}/undeploy:
@@ -7535,6 +7539,11 @@ paths:
                       startSpec: { type: [object, "null"], additionalProperties: true }
                       commit: { type: [string, "null"] }
                       deployedAt: { type: [string, "null"], format: date-time }
+                      historical: { type: boolean }
+                      serving: { type: boolean }
+                      uninstallOperationId:
+                        type: [string, "null"]
+                        description: Server-confirmed cleanup evidence for restoring an intentionally removed FC function.
                       functionName: { type: [string, "null"] }
                       provider:
                         type: [object, "null"]

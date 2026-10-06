@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { deployDisabledReason } from '@/lib/apps/app-list-helpers'
 import { openAppPreview } from '@/lib/tabs/app-tabs'
 import { useAppsStore, type DeployPhase } from '@/stores/apps-store'
+import { AppDeploymentControl } from './AppDeploymentControl'
 import type { AppRow } from '@/lib/backend/types'
 
 const LINGER_MS = 800
@@ -139,6 +140,7 @@ export function AppDeployFooter({ app }: AppDeployFooterProps) {
         >
           {t('apps.preview', '预览')}
         </button>
+        <AppDeploymentControl app={app} compact disabled={deploying} />
       </div>
 
       {deployBlocked && (
