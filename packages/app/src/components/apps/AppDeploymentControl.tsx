@@ -43,11 +43,11 @@ export function AppDeploymentControl({ app, compact = false, disabled = false }:
     finally { setBusy(false) }
   }
   if (compact && current.canManageDeployment !== true) return null
-  return <div className={compact ? "inline-flex items-center gap-1 text-[11.5px] text-muted-foreground" : "space-y-3 text-[12.5px] text-muted-foreground"} data-testid="app-undeploy-control">
+  return <div className={compact ? "inline-flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11.5px] text-muted-foreground" : "space-y-3 text-[12.5px] text-muted-foreground"} data-testid="app-undeploy-control">
     {compact && <span className="mr-2 text-faint" aria-hidden>·</span>}
     {!compact && <p className="leading-relaxed">{t('apps.undeploy.hint', '线上应用将停止服务。代码、会话、数据库和上传文件会保留，之后可重新部署。')}</p>}
-    {['uninstalling', 'uninstalled', 'uninstall_failed'].includes(current.fcStatus ?? '') && <p role="status" className="flex items-center gap-1.5 font-medium text-foreground">
-      {current.fcStatus === 'uninstalling' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : current.fcStatus === 'uninstalled' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleAlert className="h-3.5 w-3.5 text-destructive" />}
+    {['uninstalling', 'uninstalled', 'uninstall_failed'].includes(current.fcStatus ?? '') && <p role="status" className="flex min-w-0 items-center gap-1.5 break-words font-medium text-foreground">
+      {current.fcStatus === 'uninstalling' ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : current.fcStatus === 'uninstalled' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleAlert className="h-3.5 w-3.5 text-destructive" />}
       {current.fcStatus === 'uninstalling' ? t('apps.undeploy.running', '卸载中…') : current.fcStatus === 'uninstalled' ? t('apps.undeploy.done', '已卸载') : t('apps.undeploy.incomplete', '清理未完成')}
     </p>}
     {!compact && Object.keys(current.undeployOperation?.steps ?? {}).length > 0 && <details open={current.fcStatus === 'uninstall_failed' || current.fcStatus === 'uninstalling'} className="rounded-[8px] border border-border-soft bg-background px-3 py-2">
@@ -65,7 +65,7 @@ export function AppDeploymentControl({ app, compact = false, disabled = false }:
     {current.undeployOperation?.error && <p role="alert">{current.undeployOperation.error}</p>}
     {readError && <p role="alert">{t('apps.undeploy.checkFailed', '无法读取卸载状态，请刷新重试。')}</p>}
     {current.canManageDeployment === true && current.fcStatus === 'uninstalled' && !compact && <Button variant="outline" size="sm" className="h-8 rounded-[7px] text-[12px]" disabled={pending || readError} onClick={() => void deploy(app.id)}>{t('apps.undeploy.redeploy', '重新部署')}</Button>}
-    {current.canManageDeployment === true && current.fcStatus !== 'uninstalled' && <Button variant={compact ? "ghost" : "outline"} size="sm" className={compact ? "h-auto p-0 text-[11.5px] font-normal hover:bg-transparent hover:underline underline-offset-2" : "mt-1 h-8 rounded-[7px] text-[12px]"} disabled={pending || conflict || !deployed || readError} onClick={() => setOpen(true)}>
+    {current.canManageDeployment === true && current.fcStatus !== 'uninstalled' && !(compact && current.fcStatus === 'uninstalling') && <Button variant={compact ? "ghost" : "outline"} size="sm" className={compact ? "h-auto p-0 text-[11.5px] font-normal hover:bg-transparent hover:underline underline-offset-2" : "mt-1 h-8 rounded-[7px] text-[12px]"} disabled={pending || conflict || !deployed || readError} onClick={() => setOpen(true)}>
       {current.fcStatus === 'uninstall_failed' ? t('apps.undeploy.retry', '重试清理') : t('apps.undeploy.title', '卸载部署')}
     </Button>}
     <AlertDialog open={open} onOpenChange={value => { if (!busy) setOpen(value) }}>

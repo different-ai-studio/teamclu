@@ -16,7 +16,8 @@ export function canReseed(status: string): boolean {
 export function deployDisabledReason(
   app: Pick<AppRow, 'authMode'> & Partial<Pick<AppRow, 'fcStatus'>>,
 ): string | null {
-  if (app.fcStatus === 'uninstalling' || app.fcStatus === 'uninstall_failed') return 'apps.undeploy.incomplete'
+  if (app.fcStatus === 'uninstalling') return 'apps.undeploy.running'
+  if (app.fcStatus === 'uninstall_failed') return 'apps.undeploy.incomplete'
   if (app.authMode === 'third') return 'apps.deployDisabledThird'
   return null
 }

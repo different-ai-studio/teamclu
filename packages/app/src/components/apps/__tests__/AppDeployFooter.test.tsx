@@ -140,3 +140,21 @@ it('loads server management permission before offering footer uninstall', async 
   render(<AppDeployFooter app={live} />)
   expect(await screen.findByRole('button', { name: '卸载部署' })).toBeEnabled()
 })
+
+it('shows one uninstall progress state without an extra action or failure hint', async () => {
+  const running = app({ fcStatus: 'uninstalling', canManageDeployment: true })
+  deployment.getApp.mockResolvedValue(running)
+  render(<AppDeployFooter app={running} />)
+  expect(await screen.findByRole('status')).toHaveTextContent('卸载中…')
+  expect(screen.queryByRole('button', { name: '卸载部署' })).toBeNull()
+  expect(screen.getByTestId('app-deploy-footer')).not.toHaveTextContent('第三方登录尚未支持部署')
+})
+
+it('shows retry and one cleanup failure state', async () => {
+  const failed = app({ fcStatus: 'uninstall_failed', canManageDeployment: true })
+  deployment.getApp.mockResolvedValue(failed)
+  render(<AppDeployFooter app={failed} />)
+  expect(await screen.findByRole('button', { name: '重试清理' })).toBeEnabled()
+  expect(screen.getByRole('status')).toHaveTextContent('清理未完成')
+  expect(screen.getByTestId('app-deploy-footer')).not.toHaveTextContent('第三方登录尚未支持部署')
+})
