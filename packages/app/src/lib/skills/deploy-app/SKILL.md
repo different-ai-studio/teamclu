@@ -17,3 +17,9 @@ The checkout declares the desired build and start behavior. The live deployment 
 Custom environment, access, domain, data, files, and cron changes use their matching `manage_app_*` tools and the signed-in user's permissions. Never request or print secret values.
 
 For TeamClu platform sign-in, organization roles, or protected pages and data endpoints, read the inherent `app-auth` skill before implementation. At release, verify its saved policies and report any auth acceptance limits.
+
+## Uninstalling a deployment
+
+Only when the user explicitly requests uninstalling a deployment, call `manage_app undeploy` with an explicit app ID or name and obtain its native confirmation. This stops new gateway requests and cleans the FC function, HTTP trigger, origin domain mapping, build artifact and any legacy login client. It retains the App, code repository, sessions, database, uploaded files, auth policy and scheduled-job definitions. It does not delete the App or archive its repository.
+
+An accepted operation is not a completed uninstall. Read `manage_app status` until `undeploy_operation.status` is `succeeded`; report individual failed steps and retry only when the user requests it. An unknown provider outcome remains fenced for operator reconciliation: do not force a new deploy or bypass the lock. After successful uninstall, use the normal deployment flow to publish again, retaining the last successful configuration as history. Verify retained data and platform login after redeployment; report real-account verification as pending when unavailable.

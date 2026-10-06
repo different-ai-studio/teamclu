@@ -1,3 +1,5 @@
+import { makeUndeployStore, runAppUndeployTick } from "../app-undeploy-runner.js";
+import { makeAppUndeployDeps } from "../provisioning/app-undeploy-config.js";
 import { ApiError } from "../http-utils.js";
 import { parseLimit, requireString } from "../routing-utils.js";
 import { runDueAppCronJobs } from "../app-cron-runner.js";
@@ -92,7 +94,7 @@ function normalizeGitRemoteUrl(raw: unknown): string | null {
   return stripUrlCredentials(url);
 }
 
-export function registerApps(router) {
+export function registerApps(router, tickDeps = { createServiceRoleClient, makeAppUndeployDeps }) {
   router.get("/v1/apps", async (ctx) => {
     const teamId = ctx.query.get("teamId");
     requireString(teamId, "teamId");
@@ -137,6 +139,12 @@ export function registerApps(router) {
     const ok = await ctx.repository.deleteApp(appId);
     if (!ok) throw new ApiError(404, "not_found", "app not found");
     return { body: { ok: true } };
+  });
+
+  router.post("/v1/apps/:appId/undeploy", async (ctx) => {
+    const out = await ctx.repository.undeployApp(decodeURIComponent(ctx.params.appId));
+    if (!out) throw new ApiError(404, "not_found", "app not found");
+    return { statusCode: out.operation?.status === "succeeded" ? 200 : 202, body: out };
   });
 
   router.post("/v1/apps/:appId/deploy/preflight", async (ctx) => {
@@ -552,8 +560,13 @@ export function registerApps(router) {
   // authentication: a constant-time compare against APP_CRON_SECRET, which
   // fails closed when the variable is unset.
   router.post("/v1/internal/app-cron/tick", { auth: "cron-tick" }, async () => {
-    const out = await runDueAppCronJobs({ client: createServiceRoleClient() });
-    return { body: out };
+    // Same heartbeat in both deploy targets; raw service client by design.
+    const client = tickDeps.createServiceRoleClient();
+    // Both jobs share the existing 55-second heartbeat request window.
+    const started = Date.now();
+    const cleanup = await runAppUndeployTick({ store: makeUndeployStore(client), deps: tickDeps.makeAppUndeployDeps(), maxTickMs: 25_000 });
+    const out = await runDueAppCronJobs({ client, maxTickMs: Math.max(0, 45_000 - (Date.now() - started)) });
+    return { body: { ...out, cleanup } };
   });
 
   // The deployed app asking for its own credentials. `auth: "app-token"` gets a

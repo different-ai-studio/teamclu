@@ -1,0 +1,10 @@
+begin;
+select plan(6);
+select has_table('amux','app_lifecycle_operations');
+select has_column('amux','apps','undeploy_operation');
+select ok(not has_function_privilege('authenticated','amux.begin_app_lifecycle(uuid,text,text,text)','execute'),'users cannot bypass app administrator authorization');
+select ok(not has_function_privilege('anon','amux.claim_app_undeploy(uuid)','execute'),'anonymous cannot run cleanup');
+select ok(has_function_privilege('service_role','amux.finish_app_undeploy(uuid,uuid,jsonb)','execute'),'service worker can record completion');
+select ok(not has_table_privilege('authenticated','amux.app_lifecycle_operations','UPDATE'),'users cannot forge operation completion');
+select * from finish();
+rollback;

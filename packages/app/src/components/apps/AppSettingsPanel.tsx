@@ -1,3 +1,4 @@
+import { AppDeploymentControl } from './AppDeploymentControl'
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check, Copy, ExternalLink, FolderInput, Loader2, RefreshCw, Trash2 } from 'lucide-react'
@@ -983,7 +984,9 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
         )}
       </Section>
 
-      {/* Last, and on its own: the only irreversible control on the page. */}
+      <Section title={t('apps.undeploy.title', '卸载部署')}><AppDeploymentControl app={app} /></Section>
+
+      {/* Deleting the app is separate from uninstalling its deployment. */}
       <Section title={t('apps.settingsPage.dangerGroup', '危险操作')} danger>
         <Row label={t('apps.delete', '删除')}>
           <p className="text-[12.5px] leading-relaxed text-muted-foreground">

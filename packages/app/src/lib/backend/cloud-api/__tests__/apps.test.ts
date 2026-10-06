@@ -49,3 +49,12 @@ describe("apps module · auth-info", () => {
   await expect(createAppsModule(client).getAppAuthInfo("app")).rejects.toBe(error);
  });
 });
+
+describe('apps module · undeploy',()=>{
+ it('returns accepted operation without declaring completion',async()=>{
+  const result={app:{id:'a',fcStatus:'uninstalling'},operation:{id:'op',status:'pending'}};
+  const client={post:vi.fn(async()=>result)} as unknown as CloudApiClient;
+  expect(await createAppsModule(client).undeployApp('app 1')).toEqual(result);
+  expect(client.post).toHaveBeenCalledWith('/v1/apps/app%201/undeploy',{});
+ });
+});

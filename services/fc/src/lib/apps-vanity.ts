@@ -194,7 +194,9 @@ export function makeVanityLookup(deps: {
     if (!key) return null;
     const now = Date.now();
     const hit = hostCache.get(key);
-    if (hit && hit.expiresAt > now) return hit.app;
+    if (hit && hit.expiresAt > now && !hit.app) return null;
+    // Positive answers contain authorization and lifecycle state. Never serve
+    // a cached live row after another worker starts an uninstall.
 
     const app = await lookup(host);
     if (hostCache.size >= CACHE_MAX) {

@@ -1836,7 +1836,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
   return {
     auth: appsAuth(),
     from(table: string) {
-      const ctx: any = { table, op: null, filters: {}, isFilters: {}, inFilters: {}, limitCount: null };
+      const ctx: any = { table, op: null, filters: {}, isFilters: {}, neqFilters: {}, inFilters: {}, limitCount: null };
       // `resolveCurrentMemberActor` filters `actor_type = 'member'` and the
       // agent git-credential path filters `'agent'`. A seeded `actorRow` that
       // names its own type must answer only the matching lookup; one that does
@@ -1852,6 +1852,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         for (const [col, val] of Object.entries(ctx.filters)) {
           rows = rows.filter((r) => r[col as string] === val);
         }
+        for (const [col, val] of Object.entries(ctx.neqFilters)) rows = rows.filter(r => r[col] !== val);
         for (const [col, val] of Object.entries(ctx.isFilters)) {
           rows = rows.filter((r) => (val === null ? r[col as string] == null : r[col as string] === val));
         }
@@ -1862,6 +1863,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         return rows;
       };
       const builder: any = {
+        neq(col: string, val: any) { ctx.neqFilters[col] = val; return builder; },
         select(columns: string) {
           calls.push({ table, op: ctx.op ? `${ctx.op}.select` : "select", columns });
           return builder;
@@ -1979,7 +1981,17 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
       };
       return builder;
     },
-    async rpc() { return { data: [], error: null }; },
+    async rpc(name, args) {
+      state.app_lifecycle_operations ??= [];
+      const active=state.app_lifecycle_operations.find(r=>r.app_id===args.p_app_id && r.status!=='succeeded');
+      if (name==='begin_app_lifecycle') {
+        if(active) return {data:null,error:{code:'55000'}};
+        const op={id:'operation-'+(state.app_lifecycle_operations.length+1),app_id:args.p_app_id,kind:args.p_kind,token:args.p_token,status:'pending',in_flight:false,steps:{},snapshot:{}};
+        state.app_lifecycle_operations.push(op);return {data:op,error:null};
+      }
+      if(name==='finish_app_lifecycle') {const op=state.app_lifecycle_operations.find(r=>r.id===args.p_operation_id);if(op)op.status='succeeded';return {data:null,error:null};}
+      return { data: [], error: null };
+    },
   };
 }
 
@@ -2007,6 +2019,7 @@ function appsRepo(supabase: any, extra: any = {}) {
     publishableKey: "publishable-key",
     accessToken: "caller-token",
     createClient: () => supabase,
+    createServiceRoleClient: () => supabase,
     gitea: fakeGitea(),
     validateAppOrigin: () => ({}),
     ...extra,
@@ -5390,4 +5403,19 @@ test("origin verification failure never commits Live status, endpoint or revisio
     assert.equal(status.fcStatus, "deploy_error");
     assert.equal(writes.at(-1).deploy_token, null);
   }
+});
+
+test('undeploy rejects prompt collaborators before any service mutation', async () => {
+ const calls:any[]=[]; const service=()=>{throw new Error('must not create service client')};
+ const repo=appsRepo(appsSupabase({calls,seed:{apps:[{...APP_ROW,created_by_actor_id:'another',fc_status:'live'}],app_member_access:[{app_id:'app-1',member_id:'actor-app-1',permission_level:'prompt'}]}}),{createServiceRoleClient:service});
+ assert.equal(await repo.undeployApp('app-1'),null);
+ assert.equal(calls.filter(c=>['update','delete','insert'].includes(c.op)).length,0);
+});
+
+test('undeploy only queues lifecycle cleanup and preserves app data and workspace', async () => {
+ const calls:any[]=[];const supabase=appsSupabase({calls,seed:{apps:[{...APP_ROW,fc_status:'live',git_commit_sha:'last-live'}]}});
+ const repo=appsRepo(supabase);const result=await repo.undeployApp('app-1');
+ assert.equal(result.operation.status,'pending');assert.equal(result.app.gitCommitSha,'last-live');
+ assert.equal(result.app.workspaceId,'ws-1');
+ assert.equal(calls.filter(c=>['update','delete','insert'].includes(c.op)).length,0);
 });

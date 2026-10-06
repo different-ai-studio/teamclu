@@ -1226,7 +1226,16 @@ export type VerifyAppDomainResult =
   | { status: "pending"; message: string }
   | { status: "not_found" };
 
+export interface AppUndeployOperation {
+  id: string; appId: string; status: 'pending' | 'running' | 'failed' | 'succeeded';
+  startedAt: string; updatedAt: string; error: string | null;
+  steps: Partial<Record<'httpTrigger' | 'originDomain' | 'function' | 'artifact' | 'oauthClient', { status: 'succeeded' | 'failed' | 'skipped'; error?: string }>>;
+}
+export interface AppUndeployResult { app: AppRow; operation: AppUndeployOperation }
+
 export interface AppRow {
+  canManageDeployment?: boolean;
+  undeployOperation?: AppUndeployOperation;
   id: string;
   teamId: string;
   name: string;
@@ -1600,6 +1609,7 @@ export interface AppsBackend {
   /** Revoke a member grant (creator or app admin only). False on 404. */
   removeAppAccess(appId: string, memberId: string): Promise<boolean>;
   /** Delete an app (admin required). False on 404. */
+  undeployApp(appId: string): Promise<AppUndeployResult>;
   deleteApp(appId: string): Promise<boolean>;
   /** Change auth mode (creator only). Returns null on 404. */
   /**

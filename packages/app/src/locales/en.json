@@ -1889,6 +1889,26 @@
       "lockfileOutOfSync": "pnpm-lock.yaml does not match package.json. Commit the lockfile, then retry.",
       "buildOutputMissing": "The build produced no .output/ directory. Check the build script.",
       "daemonNotConnected": "The local amuxd is not connected, so nothing can build. Make sure the daemon is running, then retry."
+    },
+    "undeploy": {
+      "title": "Uninstall deployment",
+      "confirm": "Uninstall this deployment?",
+      "hint": "The live app will stop serving. Code, sessions, database and uploaded files are retained. You can deploy it again.",
+      "running": "Uninstalling…",
+      "incomplete": "Cleanup incomplete",
+      "done": "Uninstalled",
+      "retry": "Retry cleanup",
+      "failed": "Could not uninstall deployment",
+      "checkFailed": "Could not read cleanup status. Refresh to retry.",
+      "httpTrigger": "HTTP trigger",
+      "originDomain": "Origin domain mapping",
+      "function": "FC function",
+      "artifact": "Build artifact",
+      "oauthClient": "Legacy login client",
+      "succeeded": "Cleaned",
+      "skipped": "Not needed",
+      "stepFailed": "Cleanup failed",
+      "accept": "Confirm uninstall"
     }
   },
   "knowledgeAcl": {

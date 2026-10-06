@@ -1889,6 +1889,26 @@
       "lockfileOutOfSync": "pnpm-lock.yaml 与 package.json 不一致，请提交 lockfile 后重试。",
       "buildOutputMissing": "构建未产出 .output/ 目录，请检查构建脚本。",
       "daemonNotConnected": "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。"
+    },
+    "undeploy": {
+      "title": "卸载部署",
+      "confirm": "卸载线上部署？",
+      "hint": "线上应用将停止服务。代码、会话、数据库和上传文件会保留，之后可重新部署。",
+      "running": "卸载中…",
+      "incomplete": "清理未完成",
+      "done": "已卸载",
+      "retry": "重试清理",
+      "failed": "卸载部署失败",
+      "checkFailed": "无法读取卸载状态，请刷新重试。",
+      "httpTrigger": "HTTP 入口",
+      "originDomain": "源站域名映射",
+      "function": "FC 函数",
+      "artifact": "部署产物",
+      "oauthClient": "遗留登录客户端",
+      "succeeded": "已清理",
+      "skipped": "无需清理",
+      "stepFailed": "清理失败",
+      "accept": "确认卸载"
     }
   },
   "knowledgeAcl": {
