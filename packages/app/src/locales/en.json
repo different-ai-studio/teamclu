@@ -1895,7 +1895,7 @@
       "details": "View cleanup details",
       "redeploy": "Redeploy",
       "section": "Live deployment",
-      "title": "Uninstall deployment",
+      "title": "Undeploy",
       "confirm": "Uninstall this deployment?",
       "hint": "The live app will stop serving. Code, sessions, database and uploaded files are retained. You can deploy it again.",
       "running": "Uninstalling…",
