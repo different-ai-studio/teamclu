@@ -111,7 +111,7 @@ export function AppDeployFooter({ app }: AppDeployFooterProps) {
         </div>
       )}
 
-      <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-muted-foreground">
         <button
           type="button"
           disabled={deployDisabled}
@@ -143,7 +143,7 @@ export function AppDeployFooter({ app }: AppDeployFooterProps) {
         <AppDeploymentControl app={app} compact disabled={deploying} />
       </div>
 
-      {deployBlocked && (
+      {deployBlocked && !['uninstalling', 'uninstall_failed'].includes(app.fcStatus ?? '') && (
         <p className="mt-1.5 text-[11px] leading-snug text-faint">
           {t(deployBlocked, '第三方登录尚未支持部署')}
         </p>

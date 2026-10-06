@@ -158,5 +158,5 @@ it.each([['uninstalling','卸载中…'],['uninstall_failed','清理未完成'],
 });
 
 it.each(['uninstalling','uninstall_failed'])('blocks deploy while %s cleanup owns app',fcStatus=>{
- expect(deployDisabledReason({authMode:'none',fcStatus})).toBe('apps.undeploy.incomplete');
+ expect(deployDisabledReason({authMode:'none',fcStatus})).toBe(fcStatus === 'uninstalling' ? 'apps.undeploy.running' : 'apps.undeploy.incomplete');
 });
