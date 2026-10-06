@@ -348,6 +348,8 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
   const gitKind = appGitKind(app)
   const repoHint = REPO_HINTS[gitKind.kind]
   const deployed = Boolean(app.fcStatus) && app.fcStatus !== 'not_deployed'
+  const deleteBlocked = !((!app.fcStatus || app.fcStatus === 'not_deployed') && !app.fcEndpoint && !app.startSpec)
+    && !(app.fcStatus === 'uninstalled' && app.undeployOperation?.status === 'succeeded')
   const address = app.publicUrl ?? app.fcEndpoint
   const creator = app.createdByActorId
     ? (actors.find((actor) => actor.id === app.createdByActorId)?.display_name ?? null)
@@ -984,15 +986,16 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
         )}
       </Section>
 
-      <Section title={t('apps.undeploy.title', '卸载部署')}><AppDeploymentControl app={app} /></Section>
+      <Section title={t('apps.undeploy.section', '线上部署')}><div className="px-4 py-3"><AppDeploymentControl app={app} /></div></Section>
 
       {/* Deleting the app is separate from uninstalling its deployment. */}
       <Section title={t('apps.settingsPage.dangerGroup', '危险操作')} danger>
         <Row label={t('apps.delete', '删除')}>
+          {deleteBlocked && <p className="mb-2 text-[12.5px] text-muted-foreground">{t('apps.controlPanel.uninstallBeforeDelete', '请先手动卸载线上部署，清理成功后才能删除应用。')}</p>}
           <p className="text-[12.5px] leading-relaxed text-muted-foreground">
             {t(
               'apps.controlPanel.deleteHint',
-              '删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
+              '请先卸载线上部署；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
             )}
           </p>
           <Button
@@ -1000,6 +1003,7 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
             variant="outline"
             size="sm"
             className="mt-2.5 h-8 gap-1.5 rounded-[7px] border-destructive/30 text-[12px] text-destructive hover:bg-destructive/5 hover:text-destructive"
+            disabled={deleting || deleteBlocked}
             onClick={() => setDeleteOpen(true)}
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -1155,7 +1159,7 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
             <AlertDialogDescription>
               {t(
                 'apps.controlPanel.deleteConfirm',
-                '线上站点会立刻下线，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
+                '线上部署已卸载，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。',
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -1165,7 +1169,7 @@ export function AppSettingsPanel({ app }: { app: AppRow }) {
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              disabled={deleting}
+              disabled={deleting || deleteBlocked}
               onClick={() => void handleDelete()}
             >
               {deleting ? (

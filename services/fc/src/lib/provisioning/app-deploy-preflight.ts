@@ -5,7 +5,7 @@ import { ApiError } from "../http-utils.js";
 import { parseAppDeployDeclaration, resolveLayers, type AppDeployDeclaration } from "./app-runtime-spec.js";
 import type { RuntimeCandidate } from "./app-runtime-catalog.js";
 
-type Live = { runtime?: string | null; startSpec?: unknown; provider?: unknown; drift?: boolean; driftFields?: string[] } | null;
+type Live = { runtime?: string | null; startSpec?: unknown; provider?: unknown; drift?: boolean; driftFields?: string[]; historical?: boolean; serving?: boolean; uninstallOperationId?: string | null } | null;
 type Options = { region: string; capabilities: RuntimeCandidate[]; catalogComplete?: boolean; migrationIntent?: boolean; originSecurity?: OriginSecuritySummary };
 type Change = { field: string; from: unknown; to: unknown };
 
@@ -15,11 +15,16 @@ const canonical = (value: unknown): string => JSON.stringify(value, (_key, item)
 const digest = (value: unknown): string => createHash("sha256").update(canonical(value)).digest("hex");
 const normalized = (raw: unknown): AppDeployDeclaration => parseAppDeployDeclaration(raw);
 
+function removedByUninstall(live: Live): boolean {
+  return live?.historical === true && live.serving === false
+    && typeof live.uninstallOperationId === "string" && live.uninstallOperationId.length > 0;
+}
+
 function baseline(live: Live): string {
   const provider = live?.provider as Record<string, unknown> | undefined;
   const config = provider && Object.fromEntries(["runtime", "command", "args", "port", "healthCheckPath", "layers"]
     .map(key => [key, provider[key] ?? null]));
-  return digest(live && { runtime: live.runtime ?? null, startSpec: live.startSpec ?? null, provider: config ?? null, drift: !!live.drift });
+  return digest(live && { runtime: live.runtime ?? null, startSpec: live.startSpec ?? null, provider: config ?? null, drift: !!live.drift, uninstallOperationId: live.uninstallOperationId ?? null });
 }
 
 export function preflightAppDeploy(appId: string, revision: string, rawDeclaration: unknown, live: Live, options: Options) {
@@ -28,7 +33,7 @@ export function preflightAppDeploy(appId: string, revision: string, rawDeclarati
   }
   const declaration = normalized(rawDeclaration);
   const layers = resolveLayers(options.region, declaration.build.kind, declaration.start.layers);
-  if (live?.drift || (live && (!live.provider || !live.startSpec))) {
+  if (live?.drift || (live && ((!live.provider && !removedByUninstall(live)) || !live.startSpec))) {
     throw new ApiError(409, "live_state_drift", `live provider configuration differs from the last successful deploy: ${(live.driftFields ?? []).join(", ") || "provider unavailable"}`);
   }
   const from = live?.startSpec as Record<string, unknown> | undefined;
@@ -53,7 +58,7 @@ export function preflightAppDeploy(appId: string, revision: string, rawDeclarati
   }
   const pinnedLayers = live?.startSpec ? resolveLayers(options.region, declaration.build.kind, (live.startSpec as { layers?: string[] }).layers ?? []) : [];
   for (const layer of layers) {
-    if (pinnedLayers.includes(layer) && live?.provider) continue;
+    if (pinnedLayers.includes(layer) && (live?.provider || removedByUninstall(live))) continue;
     if (!options.catalogComplete) throw new ApiError(503, "discovery_unavailable", `cannot verify new layer ${layer} while regional discovery is incomplete`);
     const candidate = options.capabilities.find(item => item.arn === layer);
     const runtime = declaration.build.kind === "container" ? "custom-container" : declaration.start.fcRuntime;
@@ -87,5 +92,5 @@ export function verifyAppDeployPreflight(token: string, appId: string, revision:
   if (payload.revision !== revision.toLowerCase()) throw new ApiError(409, "preflight_mismatch", "preflight revision mismatch");
   if (payload.declarationDigest !== digest(normalized(rawDeclaration))) throw new ApiError(409, "preflight_mismatch", "preflight declaration mismatch");
   if (payload.baselineDigest !== baseline(live)) throw new ApiError(409, "preflight_mismatch", "preflight live baseline changed");
-  if (live?.drift || (live && !live.provider)) throw new ApiError(409, "live_state_drift", "provider drift after preflight");
+  if (live?.drift || (live && !live.provider && !removedByUninstall(live))) throw new ApiError(409, "live_state_drift", "provider drift after preflight");
 }

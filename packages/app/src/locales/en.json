@@ -1846,9 +1846,10 @@
       "accessGranted": "Access granted",
       "accessRevoked": "Access revoked",
       "accessError": "Permission update failed",
-      "deleteHint": "The live site goes offline immediately; the app's database and uploaded files are kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
+      "uninstallBeforeDelete": "Manually uninstall the deployment first. Delete becomes available after cleanup succeeds.",
+      "deleteHint": "Uninstall the deployment first; the app's database and uploaded files are kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
       "deleteTitle": "Delete this app?",
-      "deleteConfirm": "The live site goes offline immediately and the app database is kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
+      "deleteConfirm": "The deployment is already uninstalled and the app database is kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
       "permission": {
         "view": "view",
         "prompt": "prompt",
@@ -1891,6 +1892,9 @@
       "daemonNotConnected": "The local amuxd is not connected, so nothing can build. Make sure the daemon is running, then retry."
     },
     "undeploy": {
+      "details": "View cleanup details",
+      "redeploy": "Redeploy",
+      "section": "Live deployment",
       "title": "Uninstall deployment",
       "confirm": "Uninstall this deployment?",
       "hint": "The live app will stop serving. Code, sessions, database and uploaded files are retained. You can deploy it again.",

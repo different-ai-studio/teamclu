@@ -1846,9 +1846,10 @@
       "accessGranted": "已授权",
       "accessRevoked": "已撤销",
       "accessError": "权限操作失败",
-      "deleteHint": "删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
+      "uninstallBeforeDelete": "请先手动卸载线上部署，清理成功后才能删除应用。",
+      "deleteHint": "请先卸载线上部署；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
       "deleteTitle": "删除应用？",
-      "deleteConfirm": "线上站点会立刻下线，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
+      "deleteConfirm": "线上部署已卸载，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
       "permission": {
         "view": "view",
         "prompt": "prompt",
@@ -1891,6 +1892,9 @@
       "daemonNotConnected": "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。"
     },
     "undeploy": {
+      "details": "查看清理详情",
+      "redeploy": "重新部署",
+      "section": "线上部署",
       "title": "卸载部署",
       "confirm": "卸载线上部署？",
       "hint": "线上应用将停止服务。代码、会话、数据库和上传文件会保留，之后可重新部署。",

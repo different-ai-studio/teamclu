@@ -2819,7 +2819,7 @@ test("apps: a non-creator's authMode change destroys nothing before the 404", as
   assert.deepEqual(disabled, [], "the OAuth client must survive a 404'd PATCH");
 });
 
-test("apps: deleteApp tears down resources, archives workspace, and removes the row", async () => {
+test("apps: deleteApp requires completed uninstall, archives workspace, and removes the row", async () => {
   const deletedKeys: number[] = [];
   const fcDeleted: string[] = [];
   const ossDeleted: string[] = [];
@@ -2833,7 +2833,8 @@ test("apps: deleteApp tears down resources, archives workspace, and removes the 
         ...GITEA_MANAGED_APP,
         workspace_id: "ws-1",
         fc_function_name: "tc-app-app-1",
-        fc_status: "live",
+        fc_status: "uninstalled",
+        undeploy_operation: { status: "succeeded", id: "cleanup-1" },
         auth_mode: "platform",
         oauth_client_id: "oauth-cid",
       }],
@@ -2864,9 +2865,9 @@ test("apps: deleteApp tears down resources, archives workspace, and removes the 
   assert.equal(await repo.deleteApp("app-1"), true);
   assert.deepEqual(deletedKeys, [9]);
   assert.ok(archivedRepo);
-  assert.deepEqual(oauthDisabled, ["oauth-cid"]);
-  assert.ok(fcDeleted.includes("fn:tc-app-app-1"));
-  assert.deepEqual(ossDeleted, ["apps/app-1/code.zip"]);
+  assert.deepEqual(oauthDisabled, []);
+  assert.deepEqual(fcDeleted, []);
+  assert.deepEqual(ossDeleted, []);
   const wsUpdate = calls.find((c) => c.table === "workspaces" && c.op === "update");
   assert.equal(wsUpdate?.row.archived, true);
   assert.equal(wsUpdate?.row.path, "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git");
@@ -5418,4 +5419,81 @@ test('undeploy only queues lifecycle cleanup and preserves app data and workspac
  assert.equal(result.operation.status,'pending');assert.equal(result.app.gitCommitSha,'last-live');
  assert.equal(result.app.workspaceId,'ws-1');
  assert.equal(calls.filter(c=>['update','delete','insert'].includes(c.op)).length,0);
+});
+
+for (const fcStatus of ["live", "deploy_error", "uninstalling", "uninstall_failed"]) {
+ test(`apps: delete refuses ${fcStatus} until manual uninstall succeeds`, async () => {
+  const calls:any[]=[];
+  const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:fcStatus}]}});
+  const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+  await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+  assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+ });
+}
+
+for (const fcStatus of ["uninstalled", "awaiting_build", "building", "deploying", "deploy_error"]) {
+ test(`runtime info preserves completed uninstall evidence while ${fcStatus}`, async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "tc-app-app-1", fc_status: fcStatus, runtime: "node", start_spec: APP_DECLARATION.start,
+    env_deployed_at: "2026-10-05T00:00:00Z",
+    undeploy_operation: { id: "cleanup-1", status: "succeeded", updatedAt: "2026-10-06T00:00:00Z" } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => { throw Object.assign(new Error("removed provider"), { statusCode: 404 }); },
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment.uninstallOperationId, "cleanup-1");
+  assert.equal(info.currentDeployment.historical, true);
+  assert.equal(info.currentDeployment.serving, false);
+  assert.equal(info.currentDeployment.drift, false);
+ });
+}
+
+test("apps: delete requires cleanup success evidence even for uninstalled status", async () => {
+ const calls:any[]=[];
+ const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:"uninstalled"}]}});
+ const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+ await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+ assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+});
+
+test("apps: delete rechecks uninstall state after lifecycle lock acquisition", async () => {
+ const calls:any[]=[];
+ const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:"uninstalled",undeploy_operation:{status:"succeeded"}}]}});
+ const rpc=admin.rpc.bind(admin);
+ admin.rpc=async (...args:any[])=>{
+  const result=await rpc(...args);
+  if(args[0]==="begin_app_lifecycle") await admin.from("apps").update({fc_status:"live"}).eq("id","app-1");
+  return result;
+ };
+ const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+ await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+ assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+ assert.equal(calls.some(c=>c.table==="workspaces"&&c.op==="update"),false);
+});
+
+test("runtime info reads provider after a deployment supersedes old uninstall evidence", async () => {
+ let reads=0;
+ const repo=logsRepo({...LIVE_APP,fc_function_name:"tc-app-app-1",fc_status:"awaiting_build",runtime:"node",start_spec:APP_DECLARATION.start,
+   env_deployed_at:"2026-10-06T02:00:00Z",undeploy_operation:{id:"cleanup-1",status:"succeeded",updatedAt:"2026-10-06T01:00:00Z"}}, {
+   readRuntimeCatalog:async()=>({candidates:[],sourceStatus:{}}),
+   readAppFunction:async()=>{reads++;return {runtime:"custom.debian10",customRuntimeConfig:APP_DECLARATION.start,layers:[]};},
+ });
+ const info=await repo.getAppRuntimeInfo("app-1");
+ assert.equal(reads,1);
+ assert.equal(info.currentDeployment.uninstallOperationId,undefined);
+ assert.equal(info.currentDeployment.historical,undefined);
+ assert.ok(info.currentDeployment.provider);
+});
+
+test("runtime info does not hide FC recreated by a partially failed restoration", async () => {
+ let reads=0;
+ const repo=logsRepo({...LIVE_APP,fc_function_name:"tc-app-app-1",fc_status:"deploy_error",runtime:"node",start_spec:APP_DECLARATION.start,
+   env_deployed_at:"2026-10-05T00:00:00Z",undeploy_operation:{id:"cleanup-1",status:"succeeded",updatedAt:"2026-10-06T01:00:00Z"}}, {
+   readRuntimeCatalog:async()=>({candidates:[],sourceStatus:{}}),
+   readAppFunction:async()=>{reads++;return {runtime:"custom.debian11",customRuntimeConfig:APP_DECLARATION.start,layers:[]};},
+ });
+ const info=await repo.getAppRuntimeInfo("app-1");
+ assert.equal(reads,1);
+ assert.equal(info.currentDeployment.uninstallOperationId,undefined);
+ assert.equal(info.currentDeployment.historical,undefined);
+ assert.equal(info.currentDeployment.drift,true);
 });

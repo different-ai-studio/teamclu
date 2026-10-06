@@ -127,3 +127,23 @@ test("preflight preview adds only a safe origin security summary", () => {
   assert.deepEqual((result.preview as any).originSecurity, { status: "protected", internetUrlDisabled: true, customDomainAuth: "jwt", httpsOnly: false, driftFields: [] });
   assert.equal(JSON.stringify(result).includes("SECRET"), false);
 });
+
+const removed = { ...live, provider: null, historical: true, serving: false, uninstallOperationId: "cleanup-1" };
+test("completed uninstall permits a pinned redeploy without inventing an active provider", () => {
+  const result = preflightAppDeploy("app-1", revision, declaration, removed, { region: "cn-hangzhou", capabilities: [] });
+  assert.equal(result.preview.firstDeploy, false);
+  assert.deepEqual(result.preview.changes, []);
+  assert.doesNotThrow(() => verifyAppDeployPreflight(result.token, "app-1", revision, declaration, removed));
+  assert.throws(() => verifyAppDeployPreflight(result.token, "app-1", revision, declaration, {...removed, uninstallOperationId: "cleanup-2"}), /baseline/i);
+});
+test("missing provider without completed cleanup evidence still blocks redeploy", () => {
+  for (const baseline of [{...live,provider:null},{...removed,uninstallOperationId:null},{...removed,serving:true}]) {
+    assert.throws(() => preflightAppDeploy("app-1",revision,declaration,baseline,{region:"cn-hangzhou",capabilities:[]}), (e:any)=>e.code==="live_state_drift");
+  }
+});
+
+test("restoring an uninstalled app still requires intent for a runtime migration", () => {
+  const changed = structuredClone(declaration);
+  changed.start.command = ["other-command"];
+  assert.throws(() => preflightAppDeploy("app-1",revision,changed,removed,{region:"cn-hangzhou",capabilities:[]}), (e:any)=>e.code==="runtime_migration_required");
+});
