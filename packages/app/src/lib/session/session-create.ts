@@ -138,11 +138,6 @@ export async function createSessionShell(
     teamId: args.teamId,
     participantCount: participantActorIds.length,
   })
-  void trackEvent('session_created', {
-    participantCount: participantActorIds.length,
-    hasIdea: !!args.ideaId,
-  })
-
   // Mirror into local libsql immediately so the session-list-store + Actors
   // panel see the new session without waiting for a Supabase refetch.
   if (isTauri()) {

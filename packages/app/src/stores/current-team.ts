@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { getBackend } from "@/lib/backend";
 import { useAuthStore } from "./auth-store";
-import { trackEvent } from "@/lib/telemetry/analytics";
 
 export async function setLocalCacheTeamGate(teamId: string | null): Promise<void> {
   try {
@@ -305,7 +304,6 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
       console.warn("[CurrentTeam] daemon refresh after switch failed", e);
     }
     set({ loading: false });
-    void trackEvent("team_switched");
   },
 
   setActiveTeam: async (team) => {
