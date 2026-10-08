@@ -509,6 +509,15 @@
       "continue": "Continue",
       "creating": "Creating…"
     },
+    "identityPicker": {
+      "title": "Choose an organization",
+      "subtitle": "You belong to more than one organization. Pick the one to enter this time.",
+      "superAdmin": "Super admin",
+      "admin": "Admin",
+      "unnamedOrg": "Unnamed organization",
+      "current": "Current account",
+      "switching": "Switching…"
+    },
     "signIn": "Sign in",
     "willEmailCode": "We'll email you a 6-digit code.",
     "email": "Email",

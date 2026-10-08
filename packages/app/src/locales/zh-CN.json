@@ -509,6 +509,15 @@
       "continue": "继续",
       "creating": "正在创建…"
     },
+    "identityPicker": {
+      "title": "选择要进入的组织",
+      "subtitle": "你在多个组织中都有身份，选择这次要进入哪一个。",
+      "superAdmin": "超级管理员",
+      "admin": "管理员",
+      "unnamedOrg": "未命名组织",
+      "current": "当前账号",
+      "switching": "正在切换…"
+    },
     "signIn": "登录",
     "willEmailCode": "我们将向你的邮箱发送 6 位验证码。",
     "email": "邮箱",

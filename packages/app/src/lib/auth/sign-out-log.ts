@@ -19,6 +19,8 @@ export type SignOutReason =
   | "no_team_screen"
   /** The same button on the name-your-team screen. */
   | "name_team_screen"
+  /** "Sign out and use another account" on the post-sign-in org picker. */
+  | "identity_picker"
   /** Settings → Diagnostics → sign in again. */
   | "diagnostics_relogin"
   /** Team bootstrap got a 401 and the token refresh after it failed too. */
