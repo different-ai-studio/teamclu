@@ -170,7 +170,7 @@ jobs:
           test -n "${OSS_ACCESS_KEY_ID:-}" || { echo '::error::OSS secrets not configured'; exit 1; }
           python3 -m pip install oss2 --quiet
           python3 - <<'PY'
-          import json, os
+          import hashlib, json, os
           import oss2
           endpoint = os.environ['OSS_ENDPOINT']
           if not endpoint.startswith('http'):
@@ -180,7 +180,13 @@ jobs:
           arch, pi, node, sdk = os.environ['ARCH'], os.environ['PI'], os.environ['NODE'], os.environ['SDK']
           asset, sha = os.environ['ASSET'], os.environ['SHA256']
           key = f'pi-bundle/win-{arch}/{pi}-{node}/{asset}'
-          bucket.put_object_from_file(key, asset, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+          if bucket.object_exists(key):
+              # Never replace a published bundle (zips are not reproducible
+              # either); describe the one already there.
+              sha = hashlib.sha256(bucket.get_object(key).read()).hexdigest()
+              print(f'{key} is already published; keeping it')
+          else:
+              bucket.put_object_from_file(key, asset, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
           manifest = json.dumps({'piVersion': pi, 'nodeVersion': node, 'mcpSdkVersion': sdk, 'asset': asset, 'sha256': sha}, indent=2).encode()
           # Per-version manifest only: win-<arch>/latest.json is the legacy
           # pointer builds without per-version lookup read, frozen at the last
@@ -189,7 +195,8 @@ jobs:
               'Cache-Control': 'no-cache, no-store, max-age=0',
               'Content-Type': 'application/json',
           })
-          print(f'✅ {key} ({sha})')
+          # ASCII only: the Windows runner's stdout is cp1252.
+          print(f'published {key} ({sha})')
           PY
 
       - name: Verify the public manifest
@@ -205,6 +212,7 @@ jobs:
           import json, os, sys
           m = json.loads(sys.argv[1])
           assert m['piVersion'] == os.environ['PI'] and m['nodeVersion'] == os.environ['NODE'], m
-          assert m['sha256'] == os.environ['SHA256'], m
+          # Not compared with this run's zip: an already-published bundle is kept.
+          assert len(m['sha256']) == 64, m
           print(m)
           PY

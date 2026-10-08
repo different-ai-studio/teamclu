@@ -65,7 +65,15 @@ jobs:
           VERSION: ${{ steps.pi.outputs.version }}
         run: |
           set -euo pipefail
-          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/$VERSION/manifest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
+          # Served = the per-version manifest exists and, if the frozen
+          # latest.json names this version too, both carry the same digest.
+          SERVED=$(node -e '
+            const get = (u) => fetch(u, { signal: AbortSignal.timeout(15000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+            Promise.all([get(process.argv[1]), get(process.argv[2])]).then(([m, legacy]) => {
+              const ok = m && m.version === process.env.VERSION &&
+                !(legacy && legacy.version === m.version && legacy.sha256 !== m.sha256)
+              console.log(ok ? m.version : "")
+            })' "$OSS_BASE/$VERSION/manifest.json" "$OSS_BASE/latest.json")
           if [ "$SERVED" = "$VERSION" ]; then
             echo "Pi OSS mirror already serves $VERSION"
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -134,13 +142,33 @@ jobs:
           bucket = oss2.Bucket(auth, endpoint, os.environ['OSS_BUCKET'])
           version = os.environ['VERSION']
           key = f'pi/{version}/{asset}'
-          bucket.put_object_from_file(key, path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+          if bucket.object_exists(key):
+              # Never replace a published asset: npm pack is not byte-for-byte
+              # reproducible, so new bytes would break every manifest that
+              # already records this version's digest. Describe what is there.
+              sha256 = hashlib.sha256(bucket.get_object(key).read()).hexdigest()
+              print(f'{key} is already published; keeping it')
+          else:
+              bucket.put_object_from_file(key, path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
           manifest = json.dumps({'version': version, 'asset': asset, 'sha256': sha256}, indent=2).encode()
           # Per-version manifest only; pi/latest.json stays frozen (see header).
           bucket.put_object(f'pi/{version}/manifest.json', manifest, headers={
               'Cache-Control': 'no-cache, no-store, max-age=0',
               'Content-Type': 'application/json',
           })
+          # latest.json is frozen (see header), but when it names this version
+          # its digest must describe the bytes actually served.
+          try:
+              legacy = json.loads(bucket.get_object('pi/latest.json').read())
+          except oss2.exceptions.NoSuchKey:
+              legacy = None
+          if legacy and legacy.get('version') == version and legacy.get('asset') == asset and legacy.get('sha256') != sha256:
+              legacy['sha256'] = sha256
+              bucket.put_object('pi/latest.json', json.dumps(legacy, indent=2).encode(), headers={
+                  'Cache-Control': 'no-cache, no-store, max-age=0',
+                  'Content-Type': 'application/json',
+              })
+              print(f'repaired the pi/latest.json digest for {version}')
           print(f'published {key} ({sha256})')
           PY
 
@@ -202,7 +230,15 @@ jobs:
           VERSION: ${{ steps.sdk.outputs.version }}
         run: |
           set -euo pipefail
-          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/$VERSION/manifest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
+          # Served = the per-version manifest exists and, if the frozen
+          # latest.json names this version too, both carry the same digest.
+          SERVED=$(node -e '
+            const get = (u) => fetch(u, { signal: AbortSignal.timeout(15000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+            Promise.all([get(process.argv[1]), get(process.argv[2])]).then(([m, legacy]) => {
+              const ok = m && m.version === process.env.VERSION &&
+                !(legacy && legacy.version === m.version && legacy.sha256 !== m.sha256)
+              console.log(ok ? m.version : "")
+            })' "$OSS_BASE/$VERSION/manifest.json" "$OSS_BASE/latest.json")
           if [ "$SERVED" = "$VERSION" ]; then
             echo "MCP SDK OSS mirror already serves $VERSION"
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -267,13 +303,33 @@ jobs:
           bucket = oss2.Bucket(auth, endpoint, os.environ['OSS_BUCKET'])
           version = os.environ['VERSION']
           key = f'mcp-sdk/{version}/{asset}'
-          bucket.put_object_from_file(key, path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+          if bucket.object_exists(key):
+              # Never replace a published asset: npm pack is not byte-for-byte
+              # reproducible, so new bytes would break every manifest that
+              # already records this version's digest. Describe what is there.
+              sha256 = hashlib.sha256(bucket.get_object(key).read()).hexdigest()
+              print(f'{key} is already published; keeping it')
+          else:
+              bucket.put_object_from_file(key, path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
           manifest = json.dumps({'version': version, 'asset': asset, 'sha256': sha256}, indent=2).encode()
           # Per-version manifest only; mcp-sdk/latest.json stays frozen (see header).
           bucket.put_object(f'mcp-sdk/{version}/manifest.json', manifest, headers={
               'Cache-Control': 'no-cache, no-store, max-age=0',
               'Content-Type': 'application/json',
           })
+          # latest.json is frozen (see header), but when it names this version
+          # its digest must describe the bytes actually served.
+          try:
+              legacy = json.loads(bucket.get_object('mcp-sdk/latest.json').read())
+          except oss2.exceptions.NoSuchKey:
+              legacy = None
+          if legacy and legacy.get('version') == version and legacy.get('asset') == asset and legacy.get('sha256') != sha256:
+              legacy['sha256'] = sha256
+              bucket.put_object('mcp-sdk/latest.json', json.dumps(legacy, indent=2).encode(), headers={
+                  'Cache-Control': 'no-cache, no-store, max-age=0',
+                  'Content-Type': 'application/json',
+              })
+              print(f'repaired the mcp-sdk/latest.json digest for {version}')
           print(f'published {key} ({sha256})')
           PY
 
