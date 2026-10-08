@@ -705,6 +705,13 @@ fn install_with_npm_ci(source: RegistrySource) -> anyhow::Result<()> {
 /// OSS with `npm --offline`. Their dependencies are inlined
 /// (`bundledDependencies`, see `mirror-pi-oss.yml`), so nothing is fetched.
 /// `--no-save` keeps the materialized manifests exactly as the lock has them.
+///
+/// `--ignore-scripts`: the bundles are built on Linux, so they carry only the
+/// Linux variant of each platform-specific optional dependency. pi >= 1.0
+/// pulls esbuild in (via `@earendil-works/chord`, whose bundler pi never
+/// loads), and esbuild's postinstall fails the whole install when its binary
+/// for this platform is missing. The tree's other install scripts are a
+/// protobufjs version notice and a no-op, so nothing needed is skipped.
 fn install_from_oss_bundles(pi_version: &str, sdk_version: &str) -> anyhow::Result<()> {
     let pi = mirrored_bundle("Pi", PI_MIRROR_BASE, pi_version)?;
     let sdk = if sdk_version.is_empty() {
@@ -723,6 +730,7 @@ fn install_from_oss_bundles(pi_version: &str, sdk_version: &str) -> anyhow::Resu
         "--no-audit".into(),
         "--no-fund".into(),
         "--omit=dev".into(),
+        "--ignore-scripts".into(),
         pi.path().to_string_lossy().to_string(),
     ];
     if let Some(sdk) = &sdk {
