@@ -927,7 +927,16 @@ pub fn prepare_workspace(workspace_path: &Path) -> Result<(), WorkspaceControlEr
 
     ensure_workspace_knowledge_link(workspace_path);
 
-    crate::config::materialize_policy_file(workspace_path)?;
+    // The same policy is appended to the system prompt, so the file is only a
+    // convenience copy. An unwritable meta dir (e.g. a root-owned `.teamclu/`
+    // left by a sudo run) must not stop the session from starting.
+    if let Err(e) = crate::config::materialize_policy_file(workspace_path) {
+        warn!(
+            workspace = %workspace_path.display(),
+            error = %e,
+            "writing skill creation policy file failed; continuing"
+        );
+    }
     materialize_opencode_for_prepare(workspace_path)?;
     ensure_inherent_skills_in_dir(&inherent_skills_dir()?)?;
     // Claude bridge only: may soft-skip on Windows without symlink privilege
@@ -2681,6 +2690,30 @@ mod tests {
         assert_eq!(dto.recommended_action, "none");
 
         handle.abort();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_workspace_survives_unwritable_meta_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".teamclu");
+        std::fs::create_dir(&meta).unwrap();
+        std::fs::set_permissions(&meta, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores mode bits; there is nothing to prove then.
+        if std::fs::create_dir(meta.join("probe")).is_ok() {
+            return;
+        }
+
+        let result = prepare_workspace(dir.path());
+        std::fs::set_permissions(&meta, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        result.unwrap();
+        assert!(dir.path().join("opencode.json").is_file());
+        assert!(!meta.join("instructions").exists());
     }
 
     #[test]
