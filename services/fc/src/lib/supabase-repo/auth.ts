@@ -205,6 +205,35 @@ export function createSupabaseAuthRepository(options) {
       };
     },
 
+    // amux.list_my_identities: the caller's person's identities (one per org).
+    async listMyIdentities(ctx: { accessToken?: string } = {}) {
+      const client = clientForToken(ctx.accessToken);
+      const { data, error } = await client.rpc("list_my_identities");
+      if (error) throw error;
+      return (data ?? []).map((r: any) => ({
+        userId: requiredString(r.user_id, "auth.listMyIdentities", "user_id"),
+        orgId: r.org_id ?? null,
+        orgName: r.org_name ?? null,
+        orgLogo: r.org_logo ?? null,
+        adminType: Number(r.admin_type ?? 0),
+        isCurrent: r.is_current === true,
+      }));
+    },
+
+    // amux.mint_identity_session: a refresh token for one of the caller's own
+    // identities; anything else is 42501.
+    async mintIdentitySession(userId, ctx: { accessToken?: string } = {}) {
+      const client = clientForToken(ctx.accessToken);
+      const { data, error } = await client.rpc("mint_identity_session", { p_user_id: userId });
+      if (error) {
+        if ((error.code || "") === "42501") {
+          throw new ApiError(403, "forbidden", error.message ?? "not one of your identities");
+        }
+        throw new ApiError(400, "validation_failed", error.message ?? "identity switch failed");
+      }
+      return { refreshToken: requiredString(data, "auth.mintIdentitySession", "refresh_token") };
+    },
+
     async acceptPendingInvite(inviteId, ctx: { accessToken?: string } = {}) {
       const client = clientForToken(ctx.accessToken);
       const { data, error } = await client.rpc("accept_pending_invite", { p_invite_id: inviteId });
