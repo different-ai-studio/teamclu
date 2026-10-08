@@ -323,6 +323,21 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
         }
     }
 
+    public func listMyIdentities() async throws -> [MyIdentity] {
+        await ensureStarted()
+        let page: CloudListPage<MyIdentity> = try await api.get("/v1/auth/identities")
+        return page.items
+    }
+
+    public func switchIdentity(userID: String) async throws {
+        await ensureStarted()
+        let encoded = userID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? userID
+        let res: CloudIdentitySession = try await api.post(
+            "/v1/auth/identities/\(encoded)/session", body: EmptyBody()
+        )
+        try await setSession(refreshToken: res.refreshToken)
+    }
+
     public func acceptPendingInvite(inviteID: String) async throws -> ClaimResult {
         await ensureStarted()
         let encoded = inviteID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? inviteID
@@ -606,6 +621,10 @@ private struct CloudPendingInvite: Decodable, Sendable {
     let teamName: String?
     let teamRole: String?
     let invitedByDisplayName: String?
+}
+
+private struct CloudIdentitySession: Decodable, Sendable {
+    let refreshToken: String
 }
 
 private struct CloudSwitchTeamResult: Decodable, Sendable {
