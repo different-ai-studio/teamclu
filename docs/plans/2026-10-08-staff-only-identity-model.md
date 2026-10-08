@@ -76,6 +76,14 @@ service_role 在 UPDATE 中改 `admin_type`，INSERT 不受限。
   `clampSharedTenantRole`、升级账号流程、`DEFAULT_ORG_ID`。这些分支现在保护的是 DEFAULT_ORG
   里的存量用户，提前拆会重新打开 2026-09-09 修掉的跨租户泄露。
 
+- **T12 应用登录页（FC 托管的 app 登录）**：网关按 `auth_user_id = 会话账号` 在 app 的 org
+  里找身份。手机号登录本来就按租户登录；邮箱 / 密码 / OAuth 和跨 app 的 SSO 捷径原先直接用
+  「登录的那个账号」，邮箱用户在受邀 org 的身份（合成账号）会被拒。现在由
+  `apps-tenant-identity.ts` 按同一个人（同手机号 / 邮箱关联）换成该 org 的身份；SSO 捷径
+  在对方没有该 org 身份、且 app 需要 org 成员时退回登录页，而不是进「无权访问」。查不到
+  （例如库里还没有 `email_users_links`）时保持原账号。app 自助注册复用手机号账号时优先会员行，
+  不挂到员工身份的账号上。
+
 迁移：`20261008000000`（T1/T2/T7）、`20261008010000`（bot）、`20261008020000`（T6）、
 `20261008030000`（T3）、`20261008040000`（T5）。belayo 需手工按序执行；都是只加不改或
 `create or replace`，可先于代码上线。`email_users_links` 建在 `public`，执行前需完成 T0。

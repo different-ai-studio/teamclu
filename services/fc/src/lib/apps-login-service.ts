@@ -18,6 +18,7 @@ import {
   verifySsoSession,
 } from "./apps-auth-session.js";
 import { appAdmitsAnyAudience } from "./apps-auth-paths.js";
+import type { TenantIdentity, TenantVisitor } from "./apps-tenant-identity.js";
 import { isRateLimited, resolveClientIp } from "./rate-limit.js";
 import { resolveFeatures } from "./routes/config.js";
 
@@ -159,6 +160,11 @@ export type LoginServiceDeps = {
   secureCookies?: boolean;
   /** Seam so tests can drive the limiter deterministically. */
   rateLimited?: (key: string, max: number) => boolean;
+  /**
+   * The visitor's identity in an org (apps-tenant-identity.ts). Absent: every
+   * login keeps the account it signed in as, as before.
+   */
+  resolveTenantIdentity?: (visitor: TenantVisitor, orgId: string) => Promise<TenantIdentity>;
 };
 
 /** Verification codes per IP+email per minute. GoTrue also limits sending. */
@@ -729,6 +735,23 @@ async function authRepository(deps: LoginServiceDeps): Promise<PhoneAuthReposito
   return repository as PhoneAuthRepository;
 }
 
+/**
+ * The visitor as their identity in this app's org — see apps-tenant-identity.
+ * Email / password / OAuth name a person, not a tenant identity; without this
+ * an email user whose identity here sits on a synthetic account would be signed
+ * in as their own account and turned away by the gateway. A failed lookup
+ * keeps the account they signed in as.
+ */
+async function asTenant(ctx: LoginContext, user: TenantVisitor, deps: LoginServiceDeps): Promise<TenantIdentity> {
+  if (!ctx.app.orgId || !deps.resolveTenantIdentity) return { user, inOrg: true };
+  try {
+    return await deps.resolveTenantIdentity(user, ctx.app.orgId);
+  } catch (error) {
+    console.warn("app login: tenant identity lookup failed; keeping the signed-in account", error);
+    return { user, inOrg: true };
+  }
+}
+
 async function bounceWithSso(
   ctx: LoginContext,
   user: { sub: string; email: string },
@@ -934,7 +957,7 @@ async function handleOAuthCallback(
   }
   const user = userFromAuthBody(result.body);
   if (!user) return clearLoginState(retryPage(ctx, "登录服务没有返回有效账号。", 503), secure);
-  return bounceWithSso(ctx, user, secure, [clear()]);
+  return bounceWithSso(ctx, (await asTenant(ctx, user, deps)).user, secure, [clear()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -987,7 +1010,16 @@ async function handleRoot(
   // service: the second app a visitor opens costs them two redirects and no
   // typing.
   const session = await verifySsoSession(readCookie(req.headers.get("cookie"), SSO_COOKIE) ?? "");
-  if (session) return bounceWithCode(ctx, session);
+  if (session) {
+    // The previous app may have been another org's, where this person is a
+    // different account. Carry them over as their identity here; if they have
+    // none and this app requires one, let them sign in as someone who does
+    // instead of bouncing them into the gateway's refusal.
+    const tenant = await asTenant(ctx, session, deps);
+    if (tenant.inOrg || appAdmitsAnyAudience(ctx.app.authScope, ctx.app.authRules, ctx.app.authAudience)) {
+      return bounceWithCode(ctx, tenant.user);
+    }
+  }
 
   const method = url.searchParams.get("method");
   if (method === "phone" && authMethodEnabled("phone", env)) return phonePage(ctx, env);
@@ -1068,7 +1100,7 @@ async function handleVerify(
     return codePage(ctx, email, "登录服务暂时不可用，请稍后再试。", 503);
   }
 
-  return bounceWithSso(ctx, user, secure);
+  return bounceWithSso(ctx, (await asTenant(ctx, user, deps)).user, secure);
 }
 
 /**
@@ -1122,7 +1154,7 @@ async function handlePassword(
 
   const user = userFromAuthBody(result.body, email);
   if (!user) return passwordPage(ctx, env, email, "登录服务暂时不可用，请稍后再试。", 503);
-  return bounceWithSso(ctx, user, secure);
+  return bounceWithSso(ctx, (await asTenant(ctx, user, deps)).user, secure);
 }
 
 function handleLogout(secure: boolean): Response {

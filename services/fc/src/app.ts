@@ -8,7 +8,7 @@ import { handleSyncRequest } from "./lib/legacy-sync.js";
 import * as admin from "./lib/admin-handlers.js";
 import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
 import { appsFcRouteDomain, parseAppPublicHost } from "./lib/apps-public-host.js";
-import { handleLoginRequest, isLoginHost, type LookupLoginApp } from "./lib/apps-login-service.js";
+import { handleLoginRequest, isLoginHost, type LookupLoginApp, type LoginServiceDeps } from "./lib/apps-login-service.js";
 import { classifyOriginEndpoint, readAppsOriginAuthConfig, type OriginAuthConfig } from "./lib/apps-origin-auth.js";
 import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 import { makeTraefikDynamicEndpoint, type ListTraefikCustomDomains } from "./lib/apps-traefik-provider.js";
@@ -30,6 +30,8 @@ export type AppDeps = {
    * marked as staff-only to whoever asks.
    */
   resolveRoleIdentities?: GateDeps["resolveRoleIdentities"];
+  /** The visitor's identity in an app's org, for the login service. */
+  resolveTenantIdentity?: LoginServiceDeps["resolveTenantIdentity"];
   /**
    * Active role codes for a tenant identity. Absent, role / legacy-org checks
    * see an empty set (deny).
@@ -115,6 +117,7 @@ export function createApp(deps: AppDeps): Hono {
       const res = await handleLoginRequest(c.req.raw, {
         lookupApp,
         createAuthRepository: deps.createAuthRepository,
+        resolveTenantIdentity: deps.resolveTenantIdentity,
         secureCookies: forwardedProto(c) === "https",
       });
       return res ?? next();

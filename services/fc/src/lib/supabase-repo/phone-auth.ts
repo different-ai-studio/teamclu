@@ -232,7 +232,7 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
   async function findAuthUserIdForPhone(phone: string): Promise<string | null> {
     const { data, error } = await admin
       .from("users")
-      .select("auth_user_id")
+      .select("auth_user_id, admin_type")
       .eq("mobile", phone)
       .is("deleted_at", null);
     if (error) {
@@ -242,7 +242,15 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     // handful of rows (the busiest number in production has eight), so the
     // predicate costs nothing to apply locally and the query stays a plain
     // equality that every caller of this module can reason about.
-    return (data ?? []).map((r: any) => r.auth_user_id).find((id: any) => !!id) ?? null;
+    //
+    // Member rows first. Since every TeamClu identity is its own account
+    // (docs/plans/2026-10-08-staff-only-identity-model.md), a staff row's
+    // account is that org's identity; an app sign-up must not hang a member
+    // row in another tenant off it.
+    const rows = [...(data ?? [])].sort(
+      (a: any, b: any) => Number(Number(a.admin_type ?? 1) !== 1) - Number(Number(b.admin_type ?? 1) !== 1),
+    );
+    return rows.map((r: any) => r.auth_user_id).find((id: any) => !!id) ?? null;
   }
 
   /**

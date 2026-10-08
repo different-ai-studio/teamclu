@@ -652,3 +652,25 @@ test("staff-only never touches the app login page", async () => {
     .login({ phone: "13700000046", code: "123456", tenantOrgId: "org-gym" });
   assert.equal(r.user.id, "card");
 });
+
+test("an app sign-up hangs its member row off a member account, not a staff identity's", async () => {
+  // Every TeamClu identity is its own account: the staff row's account IS that
+  // org's identity, and a member row in another tenant must not join it.
+  const authStore = { users: [
+    { id: "staff-acct", email: "staff@gym.local" },
+    { id: "member-acct", email: "13700000048@phone.example.test" },
+  ] as any[] };
+  const db = {
+    auth_verify_code: [code("13700000048")],
+    users: [
+      { id: "staff", org_id: "org-gym", admin_type: 2, mobile: "13700000048", auth_user_id: "staff-acct", deleted_at: null },
+      { id: "card", org_id: "org-other", admin_type: 1, mobile: "13700000048", auth_user_id: "member-acct", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore).login({
+    phone: "13700000048", code: "123456", tenantOrgId: "org-app", allowSignup: true,
+  });
+  assert.equal(r.created, true);
+  assert.equal(r.user.org_id, "org-app");
+  assert.equal(r.user.auth_user_id, "member-acct");
+});
