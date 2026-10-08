@@ -113,7 +113,7 @@ export function createSupabaseAuthRepository(options) {
     });
   }
 
-  async function assignMemberRoleOnClaim(client: any, result: { teamId: string; actorType: string }, accessToken?: string) {
+  async function assignMemberRoleOnClaim(client: any, result: { teamId: string; actorId: string; actorType: string }, accessToken?: string) {
     if (result.actorType !== "member") return;
     if (!accessToken) {
       throw new ApiError(
@@ -132,9 +132,18 @@ export function createSupabaseAuthRepository(options) {
       );
     }
     const admin = serviceRoleClient("assign member org role on invite claim");
+    // The role belongs to the identity the actor was created on, which is the
+    // caller's own account only when it had no identity yet: claim_team_invite
+    // joins as the caller's identity IN the team's org, minting one if needed.
+    const { data: actorRow, error: actorErr } = await admin
+      .from("actors")
+      .select("user_id")
+      .eq("id", result.actorId)
+      .maybeSingle();
+    if (actorErr) throw actorErr;
     await assignSystemOrgRole(admin, {
       teamId: result.teamId,
-      userId,
+      userId: actorRow?.user_id ?? userId,
       code: "member",
     });
   }

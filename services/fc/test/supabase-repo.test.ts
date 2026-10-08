@@ -354,6 +354,51 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
   assert.equal(insert.row.role_id, "role-member");
 });
 
+test("auth repo claimInvite grants the org role to the identity the actor joined as", async () => {
+  // claim_team_invite joins as the caller's identity IN the team's org, minting
+  // a new account when the caller already has one elsewhere. The role belongs
+  // to that identity, not to the account that sent the request.
+  const adminCalls: any[] = [];
+  const admin = fakeSupabase({
+    tableCalls: adminCalls,
+    tableData: {
+      actors: [{ id: "actor-9", user_id: "identity-in-org-9" }],
+      teams: [{ id: "team-9", oid: "org-9" }],
+      roles: [{ id: "role-member", org_id: "org-9", code: "member", is_system: true }],
+      roles_users: [],
+    },
+  });
+  const repo = createSupabaseAuthRepository({
+    supabaseUrl: "https://example.supabase.co",
+    publishableKey: "publishable-key",
+    createServiceRoleClient: () => admin,
+    createClient() {
+      return fakeSupabase({
+        auth: {
+          async getUser() {
+            return { data: { user: { id: "caller-account" } }, error: null };
+          },
+        },
+        rpcData: {
+          claim_team_invite: [{
+            actor_id: "actor-9",
+            team_id: "team-9",
+            actor_type: "member",
+            display_name: "Joiner",
+            refresh_token: "rt-for-identity",
+          }],
+        },
+      });
+    },
+  });
+
+  const result = await repo.claimInvite("invite-token", { accessToken: "member-jwt" });
+  assert.equal(result.refreshToken, "rt-for-identity");
+  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  assert.ok(insert, "member roles_users must be inserted via service-role");
+  assert.equal(insert.row.user_id, "identity-in-org-9");
+});
+
 test("auth repo claimInvite fails loud when member claim has no authenticated user", async () => {
   const repo = createSupabaseAuthRepository({
     supabaseUrl: "https://example.supabase.co",
