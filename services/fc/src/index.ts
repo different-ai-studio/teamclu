@@ -489,6 +489,10 @@ export function makeAuthRepoFactory() {
       phoneEmailDomain: process.env.PHONE_EMAIL_DOMAIN || undefined,
       phoneAuthEncryptionKey: process.env.PHONE_AUTH_ENCRYPTION_KEY || undefined,
       smsDebugMode: process.env.SMS_DEBUG_MODE === "1" || process.env.SMS_DEBUG_MODE === "true",
+      // On where public.users is a partner's membership table (belayo): TeamClu
+      // sign-in admits staff only. See PhoneAuthOptions.staffOnly.
+      phoneLoginStaffOnly:
+        process.env.PHONE_LOGIN_STAFF_ONLY === "1" || process.env.PHONE_LOGIN_STAFF_ONLY === "true",
     });
 }
 

@@ -69,6 +69,17 @@ export interface PhoneAuthOptions {
   verifyCaptcha?: (token: string) => Promise<{ verifyResult: boolean; message?: string }>;
   /** When true, skip real SMS and return the code in the response (dev only). */
   smsDebugMode?: boolean;
+  /**
+   * TeamClu sign-in admits staff only (`PHONE_LOGIN_STAFF_ONLY`). Where
+   * `public.users` is a partner's membership table, a member row is a gym
+   * card, not a TeamClu account: the platform-wide login then offers only
+   * staff rows (admin_type >= 2) and the phone's own DEFAULT_ORG identity, and
+   * a phone with neither gets a fresh DEFAULT_ORG identity instead of signing
+   * in as the member. Off where no partner shares the table: there an invite
+   * moves a phone sign-up into the team's org as admin_type 1, and this rule
+   * would lock it out. Never applies to the app login page (`tenantOrgId`).
+   */
+  staffOnly?: boolean;
   createClient: (url: string, key: string, opts?: any) => any;
   /** Injectable clock (ms) for tests. */
   nowMs?: () => number;
@@ -99,6 +110,7 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     sendSms,
     verifyCaptcha,
     smsDebugMode = false,
+    staffOnly = false,
     createClient,
     nowMs = () => Date.now(),
     genCode = defaultGenCode,
@@ -148,6 +160,61 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     const withActor = new Set((actorRows ?? []).map((a: any) => a.user_id));
     const kept = rows.filter((r) => Number(r.admin_type ?? 0) >= 2 || withActor.has(r.id));
     return kept.length > 0 ? kept : rows;
+  }
+
+  // A row TeamClu may sign in as under `staffOnly`: an employee record, or the
+  // phone's own platform identity, which phone sign-up writes into
+  // DEFAULT_ORG as admin_type 1.
+  function isTeamCluIdentity(r: any): boolean {
+    return Number(r.admin_type ?? 0) >= 2 || r.org_id === defaultOrgId;
+  }
+
+  // Staff rows when there are any; the platform identity only stands in for
+  // someone who has no org of their own. Empty means "create one".
+  function staffOnlyAccounts(rows: any[]): any[] {
+    const staff = rows.filter((r) => Number(r.admin_type ?? 0) >= 2);
+    return staff.length > 0 ? staff : rows.filter((r) => r.org_id === defaultOrgId);
+  }
+
+  /**
+   * The auth account a NEW platform identity signs in as under `staffOnly`.
+   *
+   * Not `ensureAuthUserForPhone`: that reuses whatever auth account any row of
+   * this phone is bound to, and when the only rows are memberships it hands
+   * back the member's own account — the session would then be the member,
+   * which is exactly what staff-only refuses. Only the synthetic phone account
+   * belongs to TeamClu; reuse it if it exists (an app login may have minted
+   * it), else create it.
+   */
+  async function ensurePlatformAuthUser(phone: string): Promise<{ authId: string; created: boolean }> {
+    const email = syntheticEmail(phone);
+    const { data: created, error: createErr } = await admin.auth.admin.createUser({
+      email,
+      password: deterministicPassword(phone, encryptionKey),
+      email_confirm: true,
+      app_metadata: { org_id: defaultOrgId },
+    });
+    if (created?.user) return { authId: created.user.id, created: true };
+    // Taken: the admin API has no lookup by email, but a magiclink for an
+    // existing account carries the user. Asked only after the collision —
+    // for an unknown email GoTrue turns a magiclink into a signup.
+    const { data: link, error: linkErr } = await admin.auth.admin.generateLink({ type: "magiclink", email });
+    const existing = link?.user?.id;
+    if (!existing) {
+      throw new ApiError(
+        500,
+        "internal",
+        `platform auth user unavailable: ${createErr?.message ?? linkErr?.message ?? "no user"}`,
+      );
+    }
+    // It may carry an app tenant's org claim; this identity is DEFAULT_ORG's.
+    const { error: syncErr } = await admin.auth.admin.updateUserById(existing, {
+      app_metadata: { org_id: defaultOrgId },
+    });
+    if (syncErr) {
+      throw new ApiError(500, "internal", `org claim sync failed: ${syncErr.message}`);
+    }
+    return { authId: existing, created: false };
   }
 
   function syntheticEmail(phone: string): string {
@@ -446,11 +513,18 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       // both a membership and a staff record with no way to sign in as a
       // member at all.
       const explicitPick = !!(userId && userId.trim() !== "");
+      // Staff-only governs TeamClu's own sign-in, never an app's login page.
+      const platformStaffOnly = staffOnly && !tenantOrgId;
+      if (platformStaffOnly && explicitPick && !(matched ?? []).every(isTeamCluIdentity)) {
+        throw new ApiError(403, "forbidden", "会员账号不能登录，请使用员工账号");
+      }
       const users = explicitPick
         ? matched
         : tenantOrgId
           ? (matched ?? [])
-          : await accountsForPicker(matched ?? []);
+          : platformStaffOnly
+            ? staffOnlyAccounts(matched ?? [])
+            : await accountsForPicker(matched ?? []);
 
       // Ambiguous: let the client pick (org/account picker). Don't consume the code.
       if (users && users.length > 1) {
@@ -549,7 +623,9 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       // (15,459 phone numbers already carry one). Reuse it — one person, one
       // auth account, identities per tenant. That is the same "same phone =
       // same person" rule the account picker is built on.
-      const { authId, created: createdAuthUser } = await ensureAuthUserForPhone(phone);
+      const { authId, created: createdAuthUser } = platformStaffOnly
+        ? await ensurePlatformAuthUser(phone)
+        : await ensureAuthUserForPhone(phone);
 
       const nickname = `user_${Math.random().toString(36).slice(2, 6)}_${phone.slice(-4)}`;
       const { data: userRow, error: insUserErr } = await admin

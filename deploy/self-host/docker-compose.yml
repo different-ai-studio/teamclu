@@ -558,6 +558,9 @@ services:
       # missing .env row does not break app finalize.
       AUTH_BASE_URL: "${AUTH_BASE_URL:-https://${FC_DOMAIN}}"
       SMS_DEBUG_MODE: "${SMS_DEBUG_MODE:-}"
+      # TeamClu phone sign-in admits staff only. Belayo sets it; self-host has
+      # no partner membership rows, so it stays off here.
+      PHONE_LOGIN_STAFF_ONLY: "${PHONE_LOGIN_STAFF_ONLY:-}"
       # Postgres pool size for the apps admin connection.
       PG_POOL_MAX: "${PG_POOL_MAX:-}"
       # Extra browser origins allowed by Hono's CORS policy (comma-separated,

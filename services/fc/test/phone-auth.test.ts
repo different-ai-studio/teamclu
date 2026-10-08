@@ -70,12 +70,21 @@ function makeFakeSupabase(db: { auth_verify_code: any[]; users: any[]; actors?: 
     schema: () => ({ from: (t: string) => builder(t) }),
     auth: {
       admin: {
-        generateLink: async () => ({ data: { properties: { hashed_token: "ht_123" } }, error: null }),
+        generateLink: async ({ email }: any = {}) => ({
+          data: {
+            properties: { hashed_token: "ht_123" },
+            user: authStore.users.find((x: any) => x.email === email) ?? null,
+          },
+          error: null,
+        }),
         getUserById: async (id: string) => {
           const u = authStore.users.find((x: any) => x.id === id);
           return { data: { user: u ?? null }, error: u ? null : { message: "not found" } };
         },
         createUser: async ({ email, app_metadata }: any) => {
+          if (authStore.users.some((x: any) => x.email === email)) {
+            return { data: { user: null }, error: { message: "A user with this email address has already been registered" } };
+          }
           const u = { id: `auth-${idSeq++}`, email, app_metadata };
           authStore.users.push(u);
           return { data: { user: u }, error: null };
@@ -378,7 +387,7 @@ test("login rejects a wrong/expired code", async () => {
 // `/v1/auth/phone/login` serves for desktop and iOS — must keep behaving as the
 // tests above describe, and the last test in this block is what holds that.
 
-const code = (phone: string) => ({
+const codeRow = (phone: string) => ({
   id: "c1", phone, code: "123456", used: false,
   expires_at: new Date(2_000_000_000_000).toISOString(), created_at: "x",
 });
@@ -386,7 +395,7 @@ const code = (phone: string) => ({
 test("tenant scoping hides identities in other orgs instead of offering them", async () => {
   const authStore = { users: [{ id: "a1", email: "13700000030@phone.example.test" }] };
   const db = {
-    auth_verify_code: [code("13700000030")],
+    auth_verify_code: [codeRow("13700000030")],
     users: [
       { id: "here", org_id: "org-tenant", admin_type: 2, mobile: "13700000030", auth_user_id: "a1", deleted_at: null },
       { id: "elsewhere", org_id: "org-other", admin_type: 1, mobile: "13700000030", auth_user_id: "a1", deleted_at: null },
@@ -403,7 +412,7 @@ test("tenant scoping hides identities in other orgs instead of offering them", a
 test("two identities inside one tenant still get a picker, carrying admin_type and email", async () => {
   const authStore = { users: [{ id: "a1", email: "13700000031@phone.example.test" }] };
   const db = {
-    auth_verify_code: [code("13700000031")],
+    auth_verify_code: [codeRow("13700000031")],
     users: [
       { id: "member", org_id: "org-tenant", admin_type: 1, email: "m@x.test", mobile: "13700000031", auth_user_id: "a1", deleted_at: null },
       { id: "coach", org_id: "org-tenant", admin_type: 2, email: "c@x.test", mobile: "13700000031", auth_user_id: "a1", deleted_at: null },
@@ -422,7 +431,7 @@ test("two identities inside one tenant still get a picker, carrying admin_type a
 test("no identity in the tenant and no signup permission is a plain refusal", async () => {
   const authStore = { users: [{ id: "a1", email: "13700000032@phone.example.test" }] };
   const db = {
-    auth_verify_code: [code("13700000032")],
+    auth_verify_code: [codeRow("13700000032")],
     users: [
       { id: "elsewhere", org_id: "org-other", admin_type: 1, mobile: "13700000032", auth_user_id: "a1", deleted_at: null },
     ],
@@ -444,7 +453,7 @@ test("signup lands in the tenant and REUSES the phone's existing auth account", 
     users: [{ id: "a1", email: "13700000033@phone.example.test", app_metadata: { org_id: "org-default" } }],
   };
   const db = {
-    auth_verify_code: [code("13700000033")],
+    auth_verify_code: [codeRow("13700000033")],
     users: [
       { id: "elsewhere", org_id: "org-other", admin_type: 1, mobile: "13700000033", auth_user_id: "a1", deleted_at: null },
     ],
@@ -469,7 +478,7 @@ test("an app login never rewrites the org claim the desktop and iOS sessions rea
     users: [{ id: "a1", email: "13700000034@phone.example.test", app_metadata: { org_id: "org-default" } }],
   };
   const db = {
-    auth_verify_code: [code("13700000034")],
+    auth_verify_code: [codeRow("13700000034")],
     users: [
       { id: "here", org_id: "org-tenant", admin_type: 1, mobile: "13700000034", auth_user_id: "a1", deleted_at: null },
     ],
@@ -487,7 +496,7 @@ test("omitting the tenant options leaves the platform-wide path untouched", asyn
     users: [{ id: "a1", email: "13700000035@phone.example.test", app_metadata: { org_id: "org-default" } }],
   };
   const db = {
-    auth_verify_code: [code("13700000035")],
+    auth_verify_code: [codeRow("13700000035")],
     users: [
       { id: "a", org_id: "org-one", admin_type: 2, mobile: "13700000035", auth_user_id: "a1", deleted_at: null },
       { id: "b", org_id: "org-two", admin_type: 2, mobile: "13700000035", auth_user_id: "a1", deleted_at: null },
@@ -503,11 +512,129 @@ test("the org claim is still synced on the platform-wide path", async () => {
     users: [{ id: "a1", email: "13700000036@phone.example.test", app_metadata: { org_id: "org-default" } }],
   };
   const db = {
-    auth_verify_code: [code("13700000036")],
+    auth_verify_code: [codeRow("13700000036")],
     users: [
       { id: "only", org_id: "org-own", admin_type: 2, mobile: "13700000036", auth_user_id: "a1", deleted_at: null },
     ],
   };
   await repoWith(db, authStore).login({ phone: "13700000036", code: "123456" });
   assert.equal(authStore.users[0].app_metadata.org_id, "org-own");
+});
+
+// --- staff-only (PHONE_LOGIN_STAFF_ONLY) -------------------------------------
+//
+// TeamClu sign-in admits staff only. A gym card is not an account, even one
+// that once picked up an actor through the old picker.
+
+test("staff-only signs a staff phone straight in, past its card and its platform identity", async () => {
+  // A real shape seen on belayo: a staff row, the gym card TeamClu used to sign in as (with an
+  // actor), and the DEFAULT_ORG identity phone sign-up made for that person.
+  const authStore = { users: [{ id: "staff", email: "staff@gym.local", app_metadata: { org_id: "org-gym" } }] };
+  const db = {
+    auth_verify_code: [codeRow("13700000040")],
+    users: [
+      { id: "staff", org_id: "org-gym", admin_type: 2, mobile: "13700000040", auth_user_id: "staff", deleted_at: null },
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000040", auth_user_id: "card", deleted_at: null },
+      { id: "shadow", org_id: "org-default", admin_type: 1, mobile: "13700000040", auth_user_id: "shadow", deleted_at: null },
+    ],
+    actors: [{ id: "a1", user_id: "card" }, { id: "a2", user_id: "shadow" }],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true }).login({ phone: "13700000040", code: "123456" });
+  assert.equal(r.multiUser, undefined);
+  assert.equal(r.user.id, "staff");
+});
+
+test("staff-only still offers a picker between two staff rows", async () => {
+  const db = {
+    auth_verify_code: [codeRow("13700000041")],
+    users: [
+      { id: "s1", org_id: "org-a", admin_type: 2, mobile: "13700000041", auth_user_id: "s1", deleted_at: null },
+      { id: "s2", org_id: "org-b", admin_type: 3, mobile: "13700000041", auth_user_id: "s2", deleted_at: null },
+      { id: "card", org_id: "org-c", admin_type: 1, mobile: "13700000041", auth_user_id: "card", deleted_at: null },
+      { id: "shadow", org_id: "org-default", admin_type: 1, mobile: "13700000041", auth_user_id: "shadow", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, { users: [] }, { staffOnly: true }).login({ phone: "13700000041", code: "123456" });
+  assert.equal(r.multiUser, true);
+  assert.deepEqual(r.users.map((u: any) => u.id).sort(), ["s1", "s2"]);
+});
+
+test("staff-only falls back to the phone's platform identity when it has no staff row", async () => {
+  const authStore = { users: [{ id: "shadow", email: "13700000042@phone.example.test", app_metadata: { org_id: "org-default" } }] };
+  const db = {
+    auth_verify_code: [codeRow("13700000042")],
+    users: [
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000042", auth_user_id: "card", deleted_at: null },
+      { id: "shadow", org_id: "org-default", admin_type: 1, mobile: "13700000042", auth_user_id: "shadow", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true }).login({ phone: "13700000042", code: "123456" });
+  assert.equal(r.user.id, "shadow");
+  assert.equal(db.users.length, 2, "nothing new created");
+});
+
+test("staff-only gives a members-only phone a NEW platform identity, not the member's account", async () => {
+  // The card is bound to the partner's own auth account. Signing in as it is
+  // signing in as the member; the new identity must sit on the synthetic one.
+  const authStore = { users: [{ id: "card", email: "om_x@wechat.com", app_metadata: { org_id: "org-gym" } }] };
+  const db = {
+    auth_verify_code: [codeRow("13700000043")],
+    users: [
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000043", auth_user_id: "card", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true }).login({ phone: "13700000043", code: "123456" });
+  assert.equal(r.created, true);
+  assert.equal(r.user.org_id, "org-default");
+  assert.notEqual(r.user.auth_user_id, "card");
+  const authUser = authStore.users.find((u: any) => u.id === r.user.auth_user_id)!;
+  assert.equal(authUser.email, "13700000043@phone.example.test");
+  assert.equal(r.user.id, authUser.id, "a freshly minted auth account takes its own row id");
+  assert.equal(db.auth_verify_code[0].used, true);
+});
+
+test("staff-only reuses an existing synthetic auth account and moves its claim to DEFAULT_ORG", async () => {
+  // An app login may already have minted `<phone>@domain` for a tenant row.
+  const authStore = { users: [{ id: "app-auth", email: "13700000044@phone.example.test", app_metadata: { org_id: "org-gym" } }] };
+  const db = {
+    auth_verify_code: [codeRow("13700000044")],
+    users: [
+      { id: "app-auth", org_id: "org-gym", admin_type: 1, mobile: "13700000044", auth_user_id: "app-auth", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true }).login({ phone: "13700000044", code: "123456" });
+  assert.equal(r.user.org_id, "org-default");
+  assert.equal(r.user.auth_user_id, "app-auth");
+  assert.notEqual(r.user.id, "app-auth", "the tenant row keeps its id");
+  assert.equal(authStore.users.length, 1);
+  assert.equal((authStore.users[0].app_metadata as any).org_id, "org-default");
+});
+
+test("staff-only refuses an explicit pick of a member row", async () => {
+  // A client holding a list from before the switch must not sign in as a card.
+  const db = {
+    auth_verify_code: [codeRow("13700000045")],
+    users: [
+      { id: "staff", org_id: "org-gym", admin_type: 2, mobile: "13700000045", auth_user_id: "staff", deleted_at: null },
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000045", auth_user_id: "card", deleted_at: null },
+    ],
+  };
+  await assert.rejects(
+    () => repoWith(db, { users: [] }, { staffOnly: true }).login({ phone: "13700000045", code: "123456", userId: "card" }),
+    (e: any) => e.statusCode === 403,
+  );
+  assert.equal(db.auth_verify_code[0].used, false);
+});
+
+test("staff-only never touches the app login page", async () => {
+  const authStore = { users: [{ id: "card", email: "13700000046@phone.example.test" }] };
+  const db = {
+    auth_verify_code: [codeRow("13700000046")],
+    users: [
+      { id: "card", org_id: "org-gym", admin_type: 1, mobile: "13700000046", auth_user_id: "card", deleted_at: null },
+    ],
+  };
+  const r: any = await repoWith(db, authStore, { staffOnly: true })
+    .login({ phone: "13700000046", code: "123456", tenantOrgId: "org-gym" });
+  assert.equal(r.user.id, "card");
 });
