@@ -823,6 +823,7 @@ test("createTeam mints a personal org when the caller carries none — never DEF
 
     assert.equal(rpcCalls.length, 2);
     assert.equal(rpcCalls[0].name, "ensure_personal_org");
+    assert.equal(rpcCalls[0].args.p_name, "My Team", "the team name names the new org too");
     assert.equal(rpcCalls[1].name, "create_team");
     assert.equal(rpcCalls[1].args.p_oid, "org-mine");
     assert.equal(rpcCalls[1].args.p_name, "My Team");

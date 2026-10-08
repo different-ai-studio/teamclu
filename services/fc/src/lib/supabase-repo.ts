@@ -1226,8 +1226,10 @@ export function createSupabaseBusinessRepository(options) {
       if (!fallbackOrg) {
         // Same switch as the bootstrap path: minting an org IS self-registration.
         assertNewOrgAllowed();
+        // The team name names the new org too (the iOS create-team screen is
+        // this path) — one name for both, as bootstrap does.
         const { data: provisioned, error: orgErr } =
-          await supabase.rpc("ensure_personal_org");
+          await supabase.rpc("ensure_personal_org", { p_name: input.name ?? null });
         if (orgErr) throw orgErr;
         fallbackOrg = (provisioned as string | null) ?? null;
       }
