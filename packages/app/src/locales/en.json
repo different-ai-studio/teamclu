@@ -1810,6 +1810,8 @@
       "permissionsReadOnly": "Only the creator or an admin can manage member access.",
       "noAccessRows": "No other members granted yet",
       "pickMember": "Pick member",
+      "searchMember": "Search members…",
+      "noMatchingMembers": "No matching members",
       "grantAccess": "Grant",
       "revokeAccess": "Revoke",
       "accessGranted": "Access granted",
