@@ -558,6 +558,8 @@ services:
       # missing .env row does not break app finalize.
       AUTH_BASE_URL: "${AUTH_BASE_URL:-https://${FC_DOMAIN}}"
       SMS_DEBUG_MODE: "${SMS_DEBUG_MODE:-}"
+      # Org whose ALIYUN_SMS_CONFIG metadata sends phone codes; empty → DEFAULT_ORG_ID.
+      SMS_CONFIG_ORG_ID: "${SMS_CONFIG_ORG_ID:-}"
       # Postgres pool size for the apps admin connection.
       PG_POOL_MAX: "${PG_POOL_MAX:-}"
       # Extra browser origins allowed by Hono's CORS policy (comma-separated,

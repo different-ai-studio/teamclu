@@ -45,6 +45,7 @@ export function createSupabaseAuthRepository(options) {
     phoneEmailDomain = undefined,
     phoneAuthEncryptionKey = undefined,
     smsDebugMode = false,
+    smsConfigOrgId = undefined,
     sendSms = undefined,
     verifyCaptcha = undefined,
   } = options;
@@ -70,6 +71,7 @@ export function createSupabaseAuthRepository(options) {
       phoneEmailDomain,
       encryptionKey: phoneAuthEncryptionKey,
       smsDebugMode,
+      smsConfigOrgId,
       sendSms: sendSms ?? makeDysmsSender({ createClient, supabaseUrl, serviceRoleKey }),
       verifyCaptcha,
       createClient,

@@ -489,6 +489,9 @@ export function makeAuthRepoFactory() {
       phoneEmailDomain: process.env.PHONE_EMAIL_DOMAIN || undefined,
       phoneAuthEncryptionKey: process.env.PHONE_AUTH_ENCRYPTION_KEY || undefined,
       smsDebugMode: process.env.SMS_DEBUG_MODE === "1" || process.env.SMS_DEBUG_MODE === "true",
+      // Whose SMS account sends verification codes. Falls back to DEFAULT_ORG_ID,
+      // which is being retired (docs/plans/2026-10-08-staff-only-identity-model.md).
+      smsConfigOrgId: process.env.SMS_CONFIG_ORG_ID || undefined,
     });
 }
 
