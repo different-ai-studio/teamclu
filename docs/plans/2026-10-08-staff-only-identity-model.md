@@ -1,8 +1,8 @@
 # 只认员工的身份模型：每个 org 一个身份，废除 DEFAULT_ORG
 
 - 日期：2026-10-08
-- 状态：已定稿，待实现
-- 关联分支：`task/teamclaw-login-staff-only`（已实现手机号登录只认员工、切换团队只认员工、员工邀请的 bot 为 admin_type 2）
+- 状态：T1–T8、T9a 已实现（分支 `task/teamclaw-login-staff-only`）；T9b、T11 待人工确认后进行
+- 总览 issue：#1647
 
 ## 背景
 
@@ -53,6 +53,33 @@ service_role 在 UPDATE 中改 `admin_type`，INSERT 不受限。
 
 **切换团队**：`switch_active_team` 按同一个人的所有 ≥2 身份找 actor，签发对应身份的会话。
 
+## 实现记录（与上文任务表的差异）
+
+- **「只认员工」是数据库设置，不是参数也不是环境变量。** `amux.deployment_settings`
+  的 `staff_only` 键 + `amux.staff_only()`；登录（FC 读取）、切换团队、团队列表、成员邀请
+  共用这一处。RPC 参数可被直连 PostgREST 的调用方省略，会让「只有员工能邀请」形同虚设，
+  所以不用参数；原先的 `PHONE_LOGIN_STAFF_ONLY` 环境变量已删除。开启方式（各环境手工）：
+  `insert into amux.deployment_settings (key, value) values ('staff_only', 'true');`
+  **在 T11 完成前不要开启**：存量 `admin_type 1` 的身份会被拒。
+- **T3 没有新增 `create_tenant`**：`amux.ensure_personal_org` 是 bootstrap 与 create_team
+  共用的建 org 入口，直接在这里写 admin_type 3、mobile、邮箱关联；create_team 现在也把团队名
+  作为 org 名传入（iOS 建团队走这条路）。
+- **T5 落在两个 SQL 函数**：`amux.list_my_identities()`、`amux.mint_identity_session(id)`，
+  对应 `GET /v1/auth/identities`、`POST /v1/auth/identities/:userId/session`。
+- **T7 并入 T1/T2 的迁移** `20261008000000`：switch_active_team / list_teams_for_picker
+  保持原签名，改用 `amux.person_identities()`。
+- **短信配置**改读 `SMS_CONFIG_ORG_ID`（未设时回退 `DEFAULT_ORG_ID`），为 T9b 删除
+  `DEFAULT_ORG_ID` 做准备。
+- **T9 拆成两步。** T9a（已做）：停止向 DEFAULT_ORG 写新数据——手机号注册（T4）、
+  绑定手机号接口（改为 410）。T9b（待 T11 之后）：拆除 bootstrap 共享分支、
+  `move_caller_to_own_org`、picker/join 的 `p_default_org_id`、`getHomeOrgId` 特例、
+  `clampSharedTenantRole`、升级账号流程、`DEFAULT_ORG_ID`。这些分支现在保护的是 DEFAULT_ORG
+  里的存量用户，提前拆会重新打开 2026-09-09 修掉的跨租户泄露。
+
+迁移：`20261008000000`（T1/T2/T7）、`20261008010000`（bot）、`20261008020000`（T6）、
+`20261008030000`（T3）、`20261008040000`（T5）。belayo 需手工按序执行；都是只加不改或
+`create or replace`，可先于代码上线。`email_users_links` 建在 `public`，执行前需完成 T0。
+
 ## 任务
 
 | # | 任务 | 依赖 |
@@ -73,8 +100,8 @@ T10（bot 规则）已在关联分支完成。
 
 ## 上线顺序
 
-T0 与 T1 并行 → T2（只加不改的迁移）→ T6 → T3、T4、T5、T7（服务端，可并行）→ T8（客户端）→ T9 → T11。
-T6 必须先于或与 T3 同时上线，见「跨 org 超管」。
+T0 → 迁移（按序）→ FC → 客户端 → T11（人工确认）→ 开启 `staff_only` → T9b。
+T6 必须先于或与 T3 同时上线，见「跨 org 超管」——它们在同一批迁移里。
 belayo 的迁移手工执行，必须先于依赖它的代码；新增 RPC 参数一律带默认值。
 
 ## 风险与注意
