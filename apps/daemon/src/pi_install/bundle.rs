@@ -10,9 +10,11 @@
 //! Layout on OSS (`BUNDLE_BASE`):
 //!
 //! ```text
-//! <base>/<platform>/latest.json
+//! <base>/<platform>/<piVersion>-<nodeVersion>/manifest.json
 //!     {"piVersion","nodeVersion","mcpSdkVersion","asset","sha256"}
 //! <base>/<platform>/<piVersion>-<nodeVersion>/<asset>      immutable
+//! <base>/<platform>/latest.json   legacy single pointer, frozen; read only
+//!                                 as a fallback
 //! ```
 //!
 //! Inside the archive:
@@ -32,7 +34,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{download_bytes, progress, progress_route, sha256_hex, NETWORK_PROBE_TIMEOUT};
+use super::{download_bytes, fetch_json, progress, progress_route, sha256_hex};
 
 const BUNDLE_BASE: &str = "https://teamclaw.ucar.cc/pi-bundle";
 
@@ -56,7 +58,14 @@ pub(crate) fn platform(os: &str, arch: &str) -> Option<&'static str> {
     }
 }
 
-fn manifest_url(platform: &str) -> String {
+fn manifest_url(platform: &str, pi: &str, node: &str) -> String {
+    format!(
+        "{}/{platform}/{pi}-{node}/manifest.json",
+        BUNDLE_BASE.trim_end_matches('/')
+    )
+}
+
+fn legacy_manifest_url(platform: &str) -> String {
     format!(
         "{}/{platform}/latest.json",
         BUNDLE_BASE.trim_end_matches('/')
@@ -90,27 +99,11 @@ pub(crate) fn matches_locks(
         && manifest.sha256.len() == 64
 }
 
-fn fetch_manifest(platform: &str) -> Option<BundleManifest> {
-    let url = manifest_url(platform);
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()?
-        .block_on(async {
-            reqwest::Client::builder()
-                .timeout(NETWORK_PROBE_TIMEOUT)
-                .build()
-                .ok()?
-                .get(url)
-                .send()
-                .await
-                .ok()?
-                .error_for_status()
-                .ok()?
-                .json::<BundleManifest>()
-                .await
-                .ok()
-        })
+/// The manifest for this build's pi + Node pair, falling back to the legacy
+/// single `latest.json` (see `super::mirror_manifest` for why both exist).
+fn fetch_manifest(platform: &str, pi: &str, node: &str) -> Option<BundleManifest> {
+    fetch_json(&manifest_url(platform, pi, node))
+        .or_else(|| fetch_json(&legacy_manifest_url(platform)))
 }
 
 /// Unpack the bundle's `node/<v>` and `pi/` trees into a staging directory,
@@ -177,16 +170,16 @@ pub(crate) fn try_install(force: bool) -> anyhow::Result<bool> {
     let Some(platform) = platform(std::env::consts::OS, std::env::consts::ARCH) else {
         return Ok(false);
     };
-    let Some(manifest) = fetch_manifest(platform) else {
+    let pi = super::required_version();
+    let node = super::required_node_version();
+    let sdk = super::required_mcp_sdk_version();
+    let Some(manifest) = fetch_manifest(platform, &pi, &node) else {
         progress(
             "bundle",
             "no prebuilt runtime bundle reachable; installing with npm",
         );
         return Ok(false);
     };
-    let pi = super::required_version();
-    let node = super::required_node_version();
-    let sdk = super::required_mcp_sdk_version();
     if !matches_locks(&manifest, &pi, &node, &sdk) {
         progress(
             "bundle",
@@ -279,7 +272,11 @@ mod tests {
     fn urls_follow_the_oss_layout() {
         let m = manifest("0.84.2", "24.20.0", "1.30.0");
         assert_eq!(
-            manifest_url("win-x64"),
+            manifest_url("win-x64", "1.1.0", "24.20.0"),
+            "https://teamclaw.ucar.cc/pi-bundle/win-x64/1.1.0-24.20.0/manifest.json"
+        );
+        assert_eq!(
+            legacy_manifest_url("win-x64"),
             "https://teamclaw.ucar.cc/pi-bundle/win-x64/latest.json"
         );
         assert_eq!(

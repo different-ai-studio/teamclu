@@ -15,7 +15,11 @@ name: Mirror Node.js runtime to OSS
 
 on:
   workflow_call: {}
+  # main only: a branch that bumps the lock must not publish over what
+  # released builds install. To stage a version before merging, run the
+  # workflow by hand on that branch (workflow_dispatch).
   push:
+    branches: [main]
     paths:
       - apps/daemon/pi.lock.json
       - .github/workflows/mirror-node-oss.yml

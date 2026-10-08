@@ -35,7 +35,8 @@
  *
  * ## MCP
  *
- * pi has no MCP of its own. This extension is the MCP client, built on the
+ * pi's own MCP extension is CLI-only (see the MCP client section), so this
+ * extension is the MCP client, built on the
  * official `@modelcontextprotocol/sdk`, which `amuxd pi install` installs into
  * this file's directory (`pi_install::mcp_sdk`). Local (stdio) and remote
  * (streamable HTTP, falling back to SSE) servers are both supported, matching
@@ -135,12 +136,19 @@ type ExtensionAPI = {
 /** pi's default prompt embeds a self-documentation index under "Pi documentation …".
  *  Anthropic's OAuth subscription discriminator rejects that block as non–Claude Code
  *  usage. TeamClu users never need it; strip for the native anthropic provider only.
- *  Stop before project_context, skills (`formatSkillsForPrompt`), or cwd — pi 0.84.2 order. */
-const PI_SELF_DOCUMENTATION_BLOCK =
+ *
+ *  pi ≥ 0.99 wraps every prompt section in a tag, so the index is its own
+ *  `<docs>…</docs>` block. pi 0.84 had untagged sections; that form is still
+ *  matched (stopping before project_context, skills, or cwd) because the legacy
+ *  `--mode rpc` fallback runs whatever pi the user has installed. */
+const PI_SELF_DOCUMENTATION_BLOCK = /\n\n<docs>\nPi documentation[\s\S]*?\n<\/docs>(?=\n|$)/;
+const LEGACY_PI_SELF_DOCUMENTATION_BLOCK =
   /\n\nPi documentation[\s\S]*?(?=\n\n<project_context>|\n\nThe following skills provide|\nCurrent working directory:)/;
 
 function stripPiSelfDocumentation(prompt: string): string {
-  return prompt.replace(PI_SELF_DOCUMENTATION_BLOCK, "");
+  return prompt
+    .replace(PI_SELF_DOCUMENTATION_BLOCK, "")
+    .replace(LEGACY_PI_SELF_DOCUMENTATION_BLOCK, "");
 }
 
 function shouldStripPiSelfDocumentation(ctx?: ExtensionContext): boolean {
@@ -437,8 +445,10 @@ function registerTeamProvider(pi: ExtensionAPI): void {
 // ---------------------------------------------------------------------------
 
 /**
- * pi ships no MCP client — "**No MCP.** … or build an extension that adds MCP
- * support" (pi's README). This section is that client: it connects to every
+ * pi ≥ 0.99 bundles an MCP extension, but only the `pi` CLI loads it (it reads
+ * `mcp.json`); the SDK host (`assets/pi-host/host.mjs`) does not, and the
+ * workspace's MCP config is amuxd's, not pi's. This section is the client the
+ * host uses: it connects to every
  * server the workspace configures and republishes their tools as pi tools, so
  * a workspace presents the same tool set on pi as it does on opencode.
  *

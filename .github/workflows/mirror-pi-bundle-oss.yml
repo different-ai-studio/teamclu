@@ -20,7 +20,11 @@ name: Build the Windows pi runtime bundle for OSS
 
 on:
   workflow_call: {}
+  # main only: a branch that bumps the lock must not publish over what
+  # released builds install. To stage a version before merging, run the
+  # workflow by hand on that branch (workflow_dispatch).
   push:
+    branches: [main]
     paths:
       - apps/daemon/pi.lock.json
       - apps/daemon/pi-runtime/**
@@ -73,7 +77,7 @@ jobs:
           SDK: ${{ steps.pins.outputs.sdk }}
         run: |
           set -euo pipefail
-          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/win-$ARCH/latest.json" 2>/dev/null || echo '{}')
+          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/win-$ARCH/$PI-$NODE/manifest.json" 2>/dev/null || echo '{}')
           python3 - "$SERVED" <<'PY'
           import json, os, sys
           m = json.loads(sys.argv[1] or '{}')
@@ -166,7 +170,7 @@ jobs:
           test -n "${OSS_ACCESS_KEY_ID:-}" || { echo '::error::OSS secrets not configured'; exit 1; }
           python3 -m pip install oss2 --quiet
           python3 - <<'PY'
-          import json, os
+          import hashlib, json, os
           import oss2
           endpoint = os.environ['OSS_ENDPOINT']
           if not endpoint.startswith('http'):
@@ -176,13 +180,23 @@ jobs:
           arch, pi, node, sdk = os.environ['ARCH'], os.environ['PI'], os.environ['NODE'], os.environ['SDK']
           asset, sha = os.environ['ASSET'], os.environ['SHA256']
           key = f'pi-bundle/win-{arch}/{pi}-{node}/{asset}'
-          bucket.put_object_from_file(key, asset, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+          if bucket.object_exists(key):
+              # Never replace a published bundle (zips are not reproducible
+              # either); describe the one already there.
+              sha = hashlib.sha256(bucket.get_object(key).read()).hexdigest()
+              print(f'{key} is already published; keeping it')
+          else:
+              bucket.put_object_from_file(key, asset, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
           manifest = json.dumps({'piVersion': pi, 'nodeVersion': node, 'mcpSdkVersion': sdk, 'asset': asset, 'sha256': sha}, indent=2).encode()
-          bucket.put_object(f'pi-bundle/win-{arch}/latest.json', manifest, headers={
+          # Per-version manifest only: win-<arch>/latest.json is the legacy
+          # pointer builds without per-version lookup read, frozen at the last
+          # version they pin, so it is never rewritten here.
+          bucket.put_object(f'pi-bundle/win-{arch}/{pi}-{node}/manifest.json', manifest, headers={
               'Cache-Control': 'no-cache, no-store, max-age=0',
               'Content-Type': 'application/json',
           })
-          print(f'✅ {key} ({sha})')
+          # ASCII only: the Windows runner's stdout is cp1252.
+          print(f'published {key} ({sha})')
           PY
 
       - name: Verify the public manifest
@@ -193,11 +207,12 @@ jobs:
           SHA256: ${{ steps.zip.outputs.sha256 }}
         run: |
           set -euo pipefail
-          MANIFEST=$(curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 "$OSS_BASE/win-$ARCH/latest.json")
+          MANIFEST=$(curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 "$OSS_BASE/win-$ARCH/$PI-$NODE/manifest.json")
           python3 - "$MANIFEST" <<'PY'
           import json, os, sys
           m = json.loads(sys.argv[1])
           assert m['piVersion'] == os.environ['PI'] and m['nodeVersion'] == os.environ['NODE'], m
-          assert m['sha256'] == os.environ['SHA256'], m
+          # Not compared with this run's zip: an already-published bundle is kept.
+          assert len(m['sha256']) == 64, m
           print(m)
           PY
