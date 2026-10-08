@@ -15,6 +15,12 @@ name: Nightly TeamClu Beta / Copilot361 Release
 # groups guard each channel's latest.json), so we dispatch it twice rather than
 # adding a brand matrix there.
 #
+# Nothing merged since the last nightly bump → the scheduled run stops before
+# bumping, so an idle day ships no release (clients would otherwise be
+# force-upgraded to an identical build). "Since the last bump" rather than
+# "today": a day that was skipped leaves its changes for the next night.
+# A manual dispatch always releases — dispatching is the intent to ship.
+#
 # NOTE ON TOKENS: pushing the bump to `main` and dispatching another workflow
 # both need write scopes. The default GITHUB_TOKEN works UNLESS `main` is a
 # protected branch (its pushes can't bypass protection). If so, set a repo
@@ -46,12 +52,39 @@ jobs:
           # Use the PAT (needed if main is protected) when present, else the
           # default token. `token` controls the credentials persisted for push.
           token: ${{ secrets.NIGHTLY_DISPATCH_PAT || secrets.GITHUB_TOKEN }}
+          # History back to the previous nightly bump, for the change check.
+          fetch-depth: 0
+
+      - name: Anything to release since the last nightly?
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          BUMP_SUBJECT='^chore(release): nightly beta v'
+          LAST="$(git log -1 --format=%H --grep="$BUMP_SUBJECT" HEAD || true)"
+          if [ -z "$LAST" ]; then
+            CHANGES="unknown (no previous nightly bump found)"
+            RELEASE=true
+          else
+            # Every commit since that bump except bumps themselves.
+            CHANGES="$(git log --format=%s "$LAST"..HEAD | grep -vc "$BUMP_SUBJECT" || true)"
+            if [ "$CHANGES" -gt 0 ]; then RELEASE=true; else RELEASE=false; fi
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ]; then RELEASE=true; fi
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+          echo "Commits since last nightly bump ($LAST): $CHANGES -> release=$RELEASE"
+          if [ "$RELEASE" = false ]; then
+            echo "No changes since the last nightly beta ($(git log -1 --format='%s' "$LAST")) — skipping tonight's release." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - uses: actions/setup-node@v7
+        if: steps.changes.outputs.release == 'true'
         with:
           node-version: lts/*
 
       - name: Compute next beta version
+        if: steps.changes.outputs.release == 'true'
         id: ver
         run: |
           set -euo pipefail
@@ -70,9 +103,11 @@ jobs:
           echo "Next beta version: $NEXT"
 
       - name: Bump the four version sources
+        if: steps.changes.outputs.release == 'true'
         run: node scripts/bump-desktop-version.mjs "${{ steps.ver.outputs.next }}"
 
       - name: Commit + push bump to main
+        if: steps.changes.outputs.release == 'true'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -81,6 +116,7 @@ jobs:
           git push origin HEAD:main
 
       - name: Dispatch TeamClu Beta and Copilot361 releases
+        if: steps.changes.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ secrets.NIGHTLY_DISPATCH_PAT || secrets.GITHUB_TOKEN }}
           TAG: v${{ steps.ver.outputs.next }}
