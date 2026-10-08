@@ -19,6 +19,8 @@ of a procedure, not as a record of state.
 | File | What it does |
 |------|--------------|
 | `gateway_session_switch_rds.sql` | Standalone copy of `20260728000000_gateway_session_switch.sql` (`gateway_key` + `list_gateway_sessions` + `attach_gateway_session`), adapted for a plain PostgreSQL/RDS target rather than a Supabase one. |
+| `agent_account_public_email_precheck.sql` | Read-only. Counts the agent accounts (`daemon.<id>@amuxd.run`) whose `public.users.email` is blank, and lists where saas-mono already references the staff-grade ones (roles, scheduling, performance). Run before the backfill. |
+| `agent_account_public_email_backfill.sql` | Copies each agent account's login email into its blank `public.users.email` (rows minted before `20261009000000_agent_account_public_email.sql`). |
 
 ## Running one
 
