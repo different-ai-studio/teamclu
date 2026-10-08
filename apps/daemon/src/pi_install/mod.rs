@@ -304,7 +304,8 @@ const REGISTRY_USABLE_BYTES_PER_SEC: f64 = 1024.0 * 1024.0;
 /// dip during the probe would send a user outside China to a Chinese registry.
 const MIRROR_ADVANTAGE: f64 = 1.5;
 
-/// `latest.json` served next to an OSS-mirrored npm bundle.
+/// `<version>/manifest.json` (or legacy `latest.json`) served next to an
+/// OSS-mirrored npm bundle.
 #[derive(Debug, Deserialize)]
 pub(super) struct MirrorManifest {
     pub version: String,
@@ -475,26 +476,43 @@ pub(super) fn apply_registry(command: &mut std::process::Command, source: Regist
     }
 }
 
-pub(super) fn mirror_manifest(base: &str) -> Option<MirrorManifest> {
-    let url = format!("{}/latest.json", base.trim_end_matches('/'));
+/// The manifest for exactly `version`: `<base>/<version>/manifest.json`.
+///
+/// Every published version keeps its own manifest, so builds pinned to
+/// different versions all resolve theirs at once. `latest.json` is only the
+/// fallback for a version mirrored before per-version manifests existed; the
+/// mirror workflows no longer move it, because builds that predate this
+/// lookup read nothing else.
+pub(super) fn mirror_manifest(base: &str, version: &str) -> Option<MirrorManifest> {
+    fetch_json(&mirror_manifest_url(base, version))
+        .or_else(|| fetch_json(&format!("{}/latest.json", base.trim_end_matches('/'))))
+}
+
+pub(super) fn mirror_manifest_url(base: &str, version: &str) -> String {
+    format!("{}/{version}/manifest.json", base.trim_end_matches('/'))
+}
+
+/// GET a small JSON document from OSS within the probe timeout; `None` on any
+/// failure (unreachable, non-2xx, wrong shape).
+pub(super) fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .ok()
-        .and_then(|runtime| {
-            runtime.block_on(async {
-                let response = reqwest::Client::builder()
-                    .timeout(NETWORK_PROBE_TIMEOUT)
-                    .build()
-                    .ok()?
-                    .get(url)
-                    .send()
-                    .await
-                    .ok()?
-                    .error_for_status()
-                    .ok()?;
-                response.json::<MirrorManifest>().await.ok()
-            })
+        .ok()?
+        .block_on(async {
+            reqwest::Client::builder()
+                .timeout(NETWORK_PROBE_TIMEOUT)
+                .build()
+                .ok()?
+                .get(url)
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?
+                .json::<T>()
+                .await
+                .ok()
         })
 }
 
@@ -602,13 +620,13 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 /// as a temporary `.tgz` that npm can install without contacting a registry.
 ///
 /// `label` only names the thing in errors and progress lines; `base` is the
-/// OSS prefix that serves `latest.json` and `<version>/<asset>`.
+/// OSS prefix that serves `<version>/manifest.json` and `<version>/<asset>`.
 pub(super) fn mirrored_bundle(
     label: &str,
     base: &str,
     version: &str,
 ) -> anyhow::Result<tempfile::NamedTempFile> {
-    let manifest = mirror_manifest(base)
+    let manifest = mirror_manifest(base, version)
         .ok_or_else(|| anyhow::anyhow!("{label} OSS mirror is unavailable"))?;
     if manifest.version.trim_start_matches('v') != version {
         anyhow::bail!(
@@ -997,6 +1015,18 @@ mod tests {
         assert_eq!(
             RegistrySource::Mirror(CN_NPM_REGISTRY),
             RegistrySource::Mirror("https://registry.npmmirror.com")
+        );
+    }
+
+    #[test]
+    fn mirror_manifest_is_looked_up_per_version() {
+        assert_eq!(
+            mirror_manifest_url(PI_MIRROR_BASE, "1.1.0"),
+            "https://teamclaw.ucar.cc/pi/1.1.0/manifest.json"
+        );
+        assert_eq!(
+            mirror_manifest_url("https://teamclaw.ucar.cc/mcp-sdk/", "1.30.0"),
+            "https://teamclaw.ucar.cc/mcp-sdk/1.30.0/manifest.json"
         );
     }
 

@@ -8,9 +8,19 @@ name: Mirror Pi runtime to OSS
 #
 # Both jobs read `apps/daemon/pi.lock.json` (`version` / `mcpSdkVersion`), the
 # same file `pi_install` compiles in, so a lock bump refreshes both mirrors.
+#
+# Each version gets its own `<version>/manifest.json`, which builds look up by
+# their pinned version, so every released build keeps finding its own package.
+# `latest.json` is a legacy single pointer that builds from before per-version
+# manifests still read; it is frozen at the last version they pin and is never
+# rewritten here.
 on:
   workflow_call: {}
+  # main only: a branch that bumps the lock must not publish over what
+  # released builds install. To stage a version before merging, run the
+  # workflow by hand on that branch (workflow_dispatch).
   push:
+    branches: [main]
     paths:
       - apps/daemon/pi.lock.json
       - apps/daemon/pi-runtime/**
@@ -55,7 +65,7 @@ jobs:
           VERSION: ${{ steps.pi.outputs.version }}
         run: |
           set -euo pipefail
-          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/latest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
+          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/$VERSION/manifest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
           if [ "$SERVED" = "$VERSION" ]; then
             echo "Pi OSS mirror already serves $VERSION"
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -78,9 +88,9 @@ jobs:
           # npm include it in the new tarball. Optional native dependencies stay
           # optional: npm may omit an unsupported platform binary, as upstream
           # itself does during a normal install.
-          # The upstream tarball's shrinkwrap includes stale development
-          # entries. It is not usable for a production-only bundle.
-          rm npm-shrinkwrap.json
+          # pi 0.84's tarball shipped a shrinkwrap with stale development
+          # entries, unusable for a production-only bundle; pi >= 1.0 ships none.
+          rm -f npm-shrinkwrap.json
           npm install --omit=dev --no-audit --no-fund
           node <<'NODE'
           const fs = require('fs')
@@ -126,7 +136,8 @@ jobs:
           key = f'pi/{version}/{asset}'
           bucket.put_object_from_file(key, path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
           manifest = json.dumps({'version': version, 'asset': asset, 'sha256': sha256}, indent=2).encode()
-          bucket.put_object('pi/latest.json', manifest, headers={
+          # Per-version manifest only; pi/latest.json stays frozen (see header).
+          bucket.put_object(f'pi/{version}/manifest.json', manifest, headers={
               'Cache-Control': 'no-cache, no-store, max-age=0',
               'Content-Type': 'application/json',
           })
@@ -145,7 +156,7 @@ jobs:
           # release (run 32605980446: "Failed to connect to teamclaw.ucar.cc
           # port 443 after 300450 ms"). Bound the wait and retry instead.
           RETRY=(--connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 --retry-connrefused)
-          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/latest.json")
+          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/$VERSION/manifest.json")
           echo "$MANIFEST" | node -e '
             let s=""; process.stdin.on("data", x => s += x).on("end", () => {
               const m = JSON.parse(s)
@@ -156,7 +167,7 @@ jobs:
           curl -fsI "${RETRY[@]}" "$OSS_BASE/$VERSION/$ASSET" >/dev/null
 
   mirror-mcp-sdk:
-    # The pi extension is the MCP client (pi has no MCP of its own) and imports
+    # The pi extension is the host's MCP client (pi's own is CLI-only) and imports
     # `@modelcontextprotocol/sdk` from a node_modules next to it. `amuxd pi
     # install` installs it; this job is the mainland fallback for that install.
     runs-on: ubuntu-latest
@@ -191,7 +202,7 @@ jobs:
           VERSION: ${{ steps.sdk.outputs.version }}
         run: |
           set -euo pipefail
-          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/latest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
+          SERVED=$(curl --connect-timeout 5 --max-time 15 -fsSL "$OSS_BASE/$VERSION/manifest.json" 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || true)
           if [ "$SERVED" = "$VERSION" ]; then
             echo "MCP SDK OSS mirror already serves $VERSION"
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -258,7 +269,8 @@ jobs:
           key = f'mcp-sdk/{version}/{asset}'
           bucket.put_object_from_file(key, path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})
           manifest = json.dumps({'version': version, 'asset': asset, 'sha256': sha256}, indent=2).encode()
-          bucket.put_object('mcp-sdk/latest.json', manifest, headers={
+          # Per-version manifest only; mcp-sdk/latest.json stays frozen (see header).
+          bucket.put_object(f'mcp-sdk/{version}/manifest.json', manifest, headers={
               'Cache-Control': 'no-cache, no-store, max-age=0',
               'Content-Type': 'application/json',
           })
@@ -275,7 +287,7 @@ jobs:
           # GitHub runners only most of the time, and a bare curl has no connect
           # timeout.
           RETRY=(--connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 --retry-connrefused)
-          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/latest.json")
+          MANIFEST=$(curl -fsSL "${RETRY[@]}" "$OSS_BASE/$VERSION/manifest.json")
           echo "$MANIFEST" | node -e '
             let s=""; process.stdin.on("data", x => s += x).on("end", () => {
               const m = JSON.parse(s)
