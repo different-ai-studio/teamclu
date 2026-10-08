@@ -6,7 +6,6 @@ import {
   createSupabaseAuthRepository,
   createSupabaseBusinessRepository,
   publishableKeyFromEnv,
-  phoneLoginStaffOnly,
 } from "./lib/supabase-repo.js";
 import { queryParams } from "./lib/routing-utils.js";
 import { fanoutMessage } from "./lib/push-dispatch.js";
@@ -490,9 +489,6 @@ export function makeAuthRepoFactory() {
       phoneEmailDomain: process.env.PHONE_EMAIL_DOMAIN || undefined,
       phoneAuthEncryptionKey: process.env.PHONE_AUTH_ENCRYPTION_KEY || undefined,
       smsDebugMode: process.env.SMS_DEBUG_MODE === "1" || process.env.SMS_DEBUG_MODE === "true",
-      // On where public.users is a partner's membership table (belayo): TeamClu
-      // sign-in admits staff only. See PhoneAuthOptions.staffOnly.
-      phoneLoginStaffOnly: phoneLoginStaffOnly(),
     });
 }
 

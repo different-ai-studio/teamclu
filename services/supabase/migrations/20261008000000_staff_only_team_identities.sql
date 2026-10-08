@@ -1,70 +1,149 @@
--- TeamClu admits staff only, at team switch as well as at sign-in.
+-- One person, one identity per org — and TeamClu acts only as staff.
+--
+-- docs/plans/2026-10-08-staff-only-identity-model.md (T1, T2, T7).
 --
 -- Where `public.users` is the partner's membership register (belayo), an
--- admin_type 1 row in a tenant org is a gym card, not a TeamClu account. Phone
--- login stopped offering those under PHONE_LOGIN_STAFF_ONLY, but sign-in was
--- only half of it: switch_active_team resolves ANY same-phone actor and mints a
--- session for the identity that holds it, and list_teams_for_picker lists every
--- same-phone identity's teams. Signing in as your staff record and then picking
--- a team that a card of yours once joined handed the card's session straight
--- back. On the live box 16 people hold an actor on a card row.
+-- admin_type 1 row in a tenant org is a gym card, not a TeamClu account.
+-- TeamClu now acts only as identities with admin_type >= 2: a partner employee
+-- record, a tenant creator (3) or an invited member (2). Each identity has its
+-- own auth account, because saas-mono resolves people by
+-- `public.users.id = auth uid`.
 --
--- Both functions take `p_staff_only` (FC passes it from PHONE_LOGIN_STAFF_ONLY)
--- and then accept an identity only when amux.is_teamclu_identity() says so —
--- the same rule phone login applies (services/fc/src/lib/supabase-repo/
--- phone-auth.ts, isTeamCluIdentity). The caller's own identity is not exempt:
--- a card session from before the switch loses its teams too, and has to sign in
+-- What ties one person's identities together:
+--   * phone users — the shared `mobile`, as before;
+--   * email users — public.email_users_links (email → user_id), new here. The
+--     first identity of an email user is the account they sign in with; later
+--     ones sit on synthetic `<id>@teamclu.email` accounts and are reachable only
+--     through this table.
+--
+-- switch_active_team / list_teams_for_picker resolve "this person" through
+-- amux.person_identities(), and when amux.staff_only() is on keep only
+-- identities amux.is_teamclu_identity() accepts — the caller's own included, so
+-- a card session from before the switch loses its teams and has to sign in
 -- again as staff.
 --
--- Off by default, and must stay off on self-host: there claim_team_invite moves
--- a phone sign-up into the team's org at admin_type 1, so the rule would read
--- every invited user as a card.
+-- Staff-only is a DATABASE setting (amux.deployment_settings, key
+-- 'staff_only'), not an RPC argument: the Supabase gateway is publicly
+-- reachable, and a rule a caller can opt out of by omitting a parameter is no
+-- rule — least of all the invite rule built on it (20261008020000), where
+-- opting out would mint back-office accounts. FC reads the same setting for
+-- phone login. Off unless an operator sets it, and it stays off until existing
+-- admin_type 1 identities are migrated (T11): on self-host claim_team_invite
+-- moved invited phone sign-ups into the team's org at admin_type 1.
 --
--- Adding a parameter changes the signature, so both functions are dropped and
--- recreated (CREATE OR REPLACE cannot), and their grants are restated. Callers
--- passing named arguments without `p_staff_only` keep resolving to the new
--- function through the default. Bodies are otherwise carried forward verbatim
--- from 20260802120000_switch_active_team_no_org_id_update.sql and
--- 20260909010000_shared_org_not_self_joinable.sql.
+-- Both functions keep their signatures (CREATE OR REPLACE, grants untouched).
 
-create or replace function amux.is_teamclu_identity(p_user_id uuid, p_default_org_id uuid)
+-- ── Email identity links ───────────────────────────────────────────────────
+create table if not exists public.email_users_links (
+  id uuid primary key default gen_random_uuid(),
+  email text not null check (email = lower(btrim(email)) and email <> ''),
+  user_id uuid not null unique references public.users(id) on delete cascade,
+  org_id uuid,
+  created_at timestamptz not null default now()
+);
+create index if not exists email_users_links_email_idx on public.email_users_links (email);
+
+comment on table public.email_users_links is
+  'TeamClu: which identities (public.users rows) belong to the person who signs in with this email. One row per identity; the person is the email. Phone users need no row — their identities share `mobile`. Written only by TeamClu SECURITY DEFINER functions.';
+
+-- Exposed schema: no policy at all, so only SECURITY DEFINER code and
+-- service_role reach it.
+alter table public.email_users_links enable row level security;
+revoke all on public.email_users_links from anon, authenticated;
+
+-- ── Deployment setting ─────────────────────────────────────────────────────
+create table if not exists amux.deployment_settings (
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamptz not null default now()
+);
+comment on table amux.deployment_settings is
+  'Per-deployment switches an operator sets by hand (service_role / owner). Not reachable from client roles. Keys: staff_only (boolean) — see 20261008000000_staff_only_team_identities.sql.';
+alter table amux.deployment_settings enable row level security;
+revoke all on amux.deployment_settings from anon, authenticated;
+
+create or replace function amux.staff_only()
+returns boolean
+language sql
+stable security definer
+set search_path to 'amux'
+as $function$
+  select coalesce((select (value)::text::boolean from amux.deployment_settings where key = 'staff_only'), false);
+$function$;
+
+comment on function amux.staff_only() is
+  'TeamClu acts only as admin_type >= 2 identities (login, team switch, picker, member invites). Set per deployment: insert into amux.deployment_settings values (''staff_only'', ''true'').';
+
+grant execute on function amux.staff_only() to authenticated, service_role;
+
+-- ── Who TeamClu may act as ─────────────────────────────────────────────────
+
+create or replace function amux.is_teamclu_identity(p_user_id uuid)
 returns boolean
 language sql
 stable security definer
 set search_path to 'amux', 'public', 'auth'
 as $function$
-  -- A live employee record (admin_type >= 2, the partner's own test), or the
-  -- phone's platform identity, which phone sign-up writes into the shared
-  -- tenant (DEFAULT_ORG) at admin_type 1. An auth account with no
-  -- public.users row at all is not a card, so it passes.
+  -- A live identity with admin_type >= 2. An auth account with no
+  -- public.users row at all (a fresh sign-up before it creates a tenant) is not
+  -- a card, so it passes; it holds no actor anyway.
   select coalesce(
-    (select u.deleted_at is null
-            and (u.admin_type >= 2 or u.org_id = p_default_org_id)
+    (select u.deleted_at is null and u.admin_type >= 2
        from public.users u
       where u.id = p_user_id),
     true
   );
 $function$;
 
-comment on function amux.is_teamclu_identity(uuid, uuid) is
-  'Staff-only rule (PHONE_LOGIN_STAFF_ONLY): may TeamClu act as this identity? True for a live employee record (admin_type >= 2), for a row in p_default_org_id (a phone sign-up''s platform identity), and for an account with no public.users row; false for a partner membership card. Keep in step with isTeamCluIdentity in services/fc/src/lib/supabase-repo/phone-auth.ts.';
+comment on function amux.is_teamclu_identity(uuid) is
+  'Staff-only rule (amux.staff_only()): may TeamClu act as this identity? True for a live row with admin_type >= 2 and for an account with no public.users row; false for a partner membership card. Keep in step with isTeamCluIdentity in services/fc/src/lib/supabase-repo/phone-auth.ts.';
 
-grant execute on function amux.is_teamclu_identity(uuid, uuid) to authenticated, service_role;
+grant execute on function amux.is_teamclu_identity(uuid) to authenticated, service_role;
 
-drop function if exists amux.switch_active_team(uuid);
+-- ── Who "this person" is ───────────────────────────────────────────────────
+create or replace function amux.person_identities(p_user_id uuid)
+returns setof uuid
+language sql
+stable security definer
+set search_path to 'amux', 'public', 'auth'
+as $function$
+  with me as (
+    select nullif(btrim(u.mobile), '') as mobile
+      from public.users u
+     where u.id = p_user_id
+  ), my_emails as (
+    select l.email from public.email_users_links l where l.user_id = p_user_id
+    union
+    select lower(btrim(au.email)) from auth.users au
+     where au.id = p_user_id and coalesce(btrim(au.email), '') <> ''
+  )
+  select p_user_id where p_user_id is not null
+  union
+  select u.id
+    from public.users u
+    join me on me.mobile is not null and u.mobile = me.mobile
+   where u.deleted_at is null
+  union
+  select l.user_id
+    from public.email_users_links l
+    join my_emails e on e.email = l.email;
+$function$;
 
-create function amux.switch_active_team(
-  p_team_id uuid,
-  p_default_org_id uuid default null,
-  p_staff_only boolean default false
-)
+comment on function amux.person_identities(uuid) is
+  'Every identity of the person behind p_user_id: itself, every live row sharing its mobile, and every row linked through public.email_users_links to one of its emails. Not filtered by admin_type — callers apply amux.is_teamclu_identity() when staff-only.';
+
+revoke all on function amux.person_identities(uuid) from public;
+grant execute on function amux.person_identities(uuid) to authenticated, service_role;
+
+-- ── Team switch ────────────────────────────────────────────────────────────
+create or replace function amux.switch_active_team(p_team_id uuid)
 returns table(actor_id uuid, team_id uuid, refresh_token text)
 language plpgsql security definer
 set search_path to 'amux', 'public', 'auth', 'app'
 as $function$
 declare
   v_caller_id uuid := auth.uid();
-  v_mobile text;
+  v_staff_only boolean := amux.staff_only();
   v_actor uuid;
   v_member_user_id uuid;
   v_rt text;
@@ -73,29 +152,13 @@ begin
     raise exception 'switch requires authentication' using errcode = '42501';
   end if;
 
-  select nullif(btrim(u.mobile), '') into v_mobile
-    from public.users u
-   where u.id = v_caller_id
-   limit 1;
-
   select a.id, a.user_id into v_actor, v_member_user_id
     from amux.actors a
    where a.team_id = p_team_id
-     and (
-       a.user_id = v_caller_id
-       or (
-         v_mobile is not null
-         and exists (
-           select 1
-             from public.users u
-            where u.id = a.user_id
-              and u.mobile = v_mobile
-         )
-       )
-     )
+     and a.user_id in (select p.id from amux.person_identities(v_caller_id) as p(id))
      -- Staff-only: never mint a session for a membership card, the caller's
      -- own included.
-     and (not p_staff_only or amux.is_teamclu_identity(a.user_id, p_default_org_id))
+     and (not v_staff_only or amux.is_teamclu_identity(a.user_id))
    order by case when a.user_id = v_caller_id then 0 else 1 end, a.created_at asc
    limit 1;
   if v_actor is null then
@@ -112,14 +175,14 @@ begin
 end;
 $function$;
 
-grant execute on function amux.switch_active_team(uuid, uuid, boolean) to authenticated, service_role;
 
-drop function if exists amux.list_teams_for_picker(uuid, boolean);
+-- ── Team picker ────────────────────────────────────────────────────────────
+-- Body carried forward from 20260909010000_shared_org_not_self_joinable.sql;
+-- related_users now comes from amux.person_identities().
 
-create function amux.list_teams_for_picker(
+create or replace function amux.list_teams_for_picker(
   p_default_org_id uuid default null,
-  p_include_empty_orgs boolean default false,
-  p_staff_only boolean default false
+  p_include_empty_orgs boolean default false
 )
 returns table(team_id uuid, team_name text, team_slug text, org_id uuid, org_name text,
               visibility text, is_member boolean, item_type text,
@@ -128,25 +191,13 @@ language sql
 stable security definer
 set search_path to 'amux', 'public', 'auth'
 as $function$
-  with current_identity as (
-    select u.id, nullif(btrim(u.mobile), '') as mobile
-      from public.users u
-     where u.id = auth.uid()
-     limit 1
-  ), related_users as (
-    -- WHO AM I: every identity this person signs in as. Phone-wide on purpose —
-    -- a phone sign-up's own record is customer-grade, and the teams it created
-    -- hang off exactly that record. Retain the caller even with no phone.
-    select r.id from (
-      select auth.uid() as id
-       where auth.uid() is not null
-      union
-      select u.id
-        from public.users u
-        join current_identity c on c.mobile is not null and u.mobile = c.mobile
-    ) r
-    -- Staff-only: a membership card is not one of the identities I sign in as.
-    where not p_staff_only or amux.is_teamclu_identity(r.id, p_default_org_id)
+  with related_users as (
+    -- WHO AM I: every identity of this person (same phone, or linked through
+    -- public.email_users_links), the caller included. Under staff-only only
+    -- the ones TeamClu may act as.
+    select p.id
+      from amux.person_identities(auth.uid()) as p(id)
+     where not amux.staff_only() or amux.is_teamclu_identity(p.id)
   ), employee_orgs as (
     -- WHOSE TENANT AM I IN: the orgs I hold an employee record in, plus my own
     -- org — unless my own org is the shared tenant, which every phone sign-up
@@ -160,7 +211,7 @@ as $function$
      where u.id = auth.uid()
        and u.org_id is not null
        and (p_default_org_id is null or u.org_id is distinct from p_default_org_id)
-       and (not p_staff_only or amux.is_teamclu_identity(u.id, p_default_org_id))
+       and (not amux.staff_only() or amux.is_teamclu_identity(u.id))
   ), member_teams as (
     -- No org filter: an actor in the team is the membership.
     select t.id, t.name, t.slug, t.oid, t.visibility, true as is_member, 'team'::text as item_type,
@@ -224,7 +275,6 @@ as $function$
   order by org_name nulls last, item_type, team_name, created_at nulls last, team_id;
 $function$;
 
-comment on function amux.list_teams_for_picker(uuid, boolean, boolean) is
-  'Cross-org team picker source: teams the caller holds an actor in, plus public teams they could join in the orgs they belong to. Membership is resolved phone-wide (any same-phone identity''s actor counts, as in switch_active_team) — except under p_staff_only, where only identities amux.is_teamclu_identity() accepts count, the caller''s own included; the ORG set is caller_employee_orgs() plus the caller''s own org, and the own-org arm drops out when that org is p_default_org_id, the shared tenant every phone sign-up is stamped with. Also returns created_at / member_count / owner_name so the client can disambiguate teams that share a name.';
+comment on function amux.list_teams_for_picker(uuid, boolean) is
+  'Cross-org team picker source: teams any identity of the caller (amux.person_identities: same phone or linked email) holds an actor in, plus public teams they could join in the orgs they belong to. Under amux.staff_only() only identities amux.is_teamclu_identity() accepts count, the caller''s own included. The ORG set is caller_employee_orgs() plus the caller''s own org; the own-org arm drops out when that org is p_default_org_id. Also returns created_at / member_count / owner_name so the client can disambiguate teams that share a name.';
 
-grant execute on function amux.list_teams_for_picker(uuid, boolean, boolean) to authenticated, service_role;
