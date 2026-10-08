@@ -13,6 +13,17 @@ import { typeChangeNeedsRedeploy } from "../validation/app-type.js";
 // subscribed, which we never do.
 export const REALTIME_TRANSPORT_OPTS = { transport: WebSocket };
 
+/**
+ * PHONE_LOGIN_STAFF_ONLY: TeamClu acts only as staff identities (or a phone's
+ * own DEFAULT_ORG identity), never as a partner membership card. Read by phone
+ * login and by the switch / picker RPCs, which must agree — see
+ * 20261008000000_staff_only_team_identities.sql.
+ */
+export function phoneLoginStaffOnly(): boolean {
+  const v = process.env.PHONE_LOGIN_STAFF_ONLY;
+  return v === "1" || v === "true";
+}
+
 export function requiredRow(data, operation) {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row) throw new ApiError(502, "upstream_unavailable", `${operation} returned no row`);

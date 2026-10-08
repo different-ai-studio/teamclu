@@ -226,7 +226,16 @@ export function createSupabaseAuthRepository(options) {
     // org swap). 42501 (non-member / unauthenticated) maps to 403.
     async switchActiveTeam(teamId, ctx: { accessToken?: string } = {}) {
       const client = clientForToken(ctx.accessToken);
-      const { data, error } = await client.rpc("switch_active_team", { p_team_id: teamId });
+      // Staff-only: the RPC must not mint a session for a membership card the
+      // phone also holds — phone login already refuses to sign in as one. The
+      // extra arguments go only when the flag is on, so a database that has not
+      // run 20261008000000 yet still resolves the call while it is off.
+      const { data, error } = await client.rpc("switch_active_team", {
+        p_team_id: teamId,
+        ...(phoneLoginStaffOnly
+          ? { p_default_org_id: defaultOrgId || null, p_staff_only: true }
+          : {}),
+      });
       if (error) {
         const code = error?.code || "";
         if (code === "42501") {

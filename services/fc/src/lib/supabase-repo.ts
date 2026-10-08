@@ -188,9 +188,9 @@ import {
   mapSessionFull, mapDirectoryActor, publishableKeyFromEnv, outgoingMessageRow,
   mapTeam, mapSession, mapMessage, mapWorkspace, mapShortcut, mapTeamRole, mapPermission,
   mapActor, mapTeamMember, mapIdeaRow, mapIdeaFeedRow, mapShortcutRow, mapIdeaActivityRow,
-  mapFeedbackRow, mapLeaderboardRow, chunkedIn,
+  mapFeedbackRow, mapLeaderboardRow, chunkedIn, phoneLoginStaffOnly,
 } from "./supabase-repo/shared.js";
-export { publishableKeyFromEnv } from "./supabase-repo/shared.js";
+export { publishableKeyFromEnv, phoneLoginStaffOnly } from "./supabase-repo/shared.js";
 export { createSupabaseAuthRepository } from "./supabase-repo/auth.js";
 import { normalizePhone } from "./supabase-repo/phone-auth.js";
 
@@ -1080,6 +1080,10 @@ export function createSupabaseBusinessRepository(options) {
       const { data, error } = await supabase.rpc("list_teams_for_picker", {
         p_default_org_id: process.env.DEFAULT_ORG_ID || null,
         p_include_empty_orgs: false,
+        // Same rule switch_active_team applies, so the picker never lists a
+        // team only a membership card of this phone belongs to. Sent only when
+        // on: a database without 20261008000000 must still resolve the call.
+        ...(phoneLoginStaffOnly() ? { p_staff_only: true } : {}),
       });
       if (error) throw error;
       return (data ?? []).map((r: any) => ({
