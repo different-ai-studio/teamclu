@@ -466,8 +466,8 @@ impl PiProcessPool {
                     worktree,
                     &session_dir,
                 );
-                // `dist/cli.js` is the package's declared `bin` (0.84.2 ships no
-                // `dist/bundle/`).
+                // `dist/cli.js` is the unbundled CLI entry; pi ≥ 0.99 declares
+                // `dist/bundle/cli.js` as its `bin` but still ships this one.
                 cmd.arg(launch.package_root.join("dist").join("cli.js"))
                     .arg("--mode")
                     .arg("rpc")
