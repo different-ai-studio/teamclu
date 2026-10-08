@@ -10,6 +10,24 @@ export function registerAuth(router) {
     return { body: out };
   });
 
+  // The signed-in person's identities, one per org — the login-time org picker
+  // for an email user (phone login offers its own). Bearer forwarded: the RPC
+  // resolves the person from auth.uid().
+  router.get("/v1/auth/identities", { auth: "none" }, async (ctx) => {
+    const accessToken = extractBearerToken(ctx.headers);
+    const items = await ctx.repository.listMyIdentities({ accessToken });
+    return { body: { items } };
+  });
+
+  // A refresh token for one of the caller's own identities; the client adopts
+  // it through /v1/auth/refresh.
+  router.post("/v1/auth/identities/:userId/session", { auth: "none" }, async (ctx) => {
+    const accessToken = extractBearerToken(ctx.headers);
+    const userId = decodeURIComponent(ctx.params.userId);
+    const out = await ctx.repository.mintIdentitySession(userId, { accessToken });
+    return { body: out };
+  });
+
   // Anonymous / quick-trial sign-in has been removed from the product. Kept as
   // an explicit 410 rather than deleted so already-installed clients get a
   // legible answer instead of a 404 that reads like a routing bug. GoTrue's own

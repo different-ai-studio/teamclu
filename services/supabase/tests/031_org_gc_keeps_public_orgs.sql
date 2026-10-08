@@ -1,19 +1,13 @@
 -- 031_org_gc_keeps_public_orgs.sql
 --
--- amux.claim_team_invite_legacy moves a member onto the invite team's org
--- (strict single-org) and then collects what the org they left behind still
--- holds. 20260817000000_org_gc_keeps_public_orgs.sql narrowed that collection to
--- our own amux.teams: public.orgs is a saas-mono-owned mirror, and on a merged
--- instance deleting a row there cascades into another product's tables.
+-- amux.claim_team_invite_legacy used to move a member onto the invite team's org
+-- (strict single-org) and then collect the amux.teams of the org they left;
+-- 20260817000000 had already narrowed that to our own tables (public.orgs is
+-- saas-mono-owned). 20261008020000 retired the move altogether: the claimer
+-- joins as their identity IN the team's org and nothing they had is touched.
 --
--- This file pins both halves at once, because the failure modes point in
--- opposite directions: dropping the orgs delete is only safe if the teams delete
--- still happens, and re-adding the orgs delete is exactly the regression worth
--- catching.
---
--- Fixture shape: alice is the SOLE user of the old org, so switching her org
--- empties it and the GC condition is genuinely met — a test where the old org
--- keeps a user would pass no matter what the GC does.
+-- Fixture shape kept from the GC days on purpose: alice is the SOLE user of her
+-- org, the case where the old body deleted her teams.
 
 begin;
 
@@ -87,23 +81,22 @@ select is((select actor_type from claimed), 'member',
 
 select is((select org_id from public.users
             where id = '9c000000-0000-4000-8000-0000000000a1'),
+          '9c000000-0000-4000-8000-000000000001'::uuid,
+          'the claimer is NOT moved: their identity stays in their org');
+
+select is((select u.org_id from amux.actors a join public.users u on u.id = a.user_id
+            where a.id = (select actor_id from claimed)),
           '9c000000-0000-4000-8000-000000000002'::uuid,
-          'claimer is moved onto the invite team org');
+          'they joined as an identity in the invite team''s org');
 
-select ok(not exists (select 1 from public.users
-                       where org_id = '9c000000-0000-4000-8000-000000000001'),
-          'the old org really is empty, so the GC branch was reached');
-
--- The regression this file exists for.
 select ok(exists (select 1 from public.orgs
                    where id = '9c000000-0000-4000-8000-000000000001'),
-          'the vacated org row survives — public.orgs is saas-mono-owned');
+          'her org row survives — public.orgs is saas-mono-owned');
 
--- ...and the half that must keep working.
 select is((select count(*) from amux.teams
             where oid = '9c000000-0000-4000-8000-000000000001'),
-          0::bigint,
-          'amux.teams under the vacated org are still collected');
+          1::bigint,
+          'her team survives — nothing is collected any more');
 
 select * from finish();
 rollback;

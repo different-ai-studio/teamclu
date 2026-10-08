@@ -1,4 +1,4 @@
-import type { AuthBackend, AuthClaimResult, AuthSession, PendingInvite, Unsubscribe } from "@/lib/backend/types";
+import type { AuthBackend, AuthClaimResult, AuthSession, MyIdentity, PendingInvite, Unsubscribe } from "@/lib/backend/types";
 import { BackendError } from "@/lib/backend/errors";
 import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 import { isChromeExtension } from "@/lib/config/platform";
@@ -89,6 +89,24 @@ export function createAuthModule(
     async adoptSession(refreshToken: string): Promise<AuthSession | null> {
       const next = await adoptRefreshToken(refreshToken);
       return mapSession(next);
+    },
+    async listMyIdentities(): Promise<MyIdentity[]> {
+      const page = await client.get<{ items: MyIdentity[] }>("/v1/auth/identities");
+      return page?.items ?? [];
+    },
+    async switchIdentity(userId: string): Promise<AuthSession | null> {
+      const out = await client.post<{ refreshToken: string }>(
+        `/v1/auth/identities/${encodeURIComponent(userId)}/session`,
+        {},
+      );
+      if (!out?.refreshToken) {
+        throw new BackendError({
+          category: "Unknown",
+          operation: "auth.switchIdentity",
+          message: "Identity switch returned no session.",
+        });
+      }
+      return mapSession(await adoptRefreshToken(out.refreshToken));
     },
     async claimInvite(token: string): Promise<AuthClaimResult> {
       const claim = await client.post<AuthClaimResult>("/v1/invites/claim", { token });

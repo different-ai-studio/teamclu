@@ -192,7 +192,6 @@ import {
 } from "./supabase-repo/shared.js";
 export { publishableKeyFromEnv } from "./supabase-repo/shared.js";
 export { createSupabaseAuthRepository } from "./supabase-repo/auth.js";
-import { normalizePhone } from "./supabase-repo/phone-auth.js";
 
 /**
  * Longest PostgREST URL we let out of this process.
@@ -1226,8 +1225,10 @@ export function createSupabaseBusinessRepository(options) {
       if (!fallbackOrg) {
         // Same switch as the bootstrap path: minting an org IS self-registration.
         assertNewOrgAllowed();
+        // The team name names the new org too (the iOS create-team screen is
+        // this path) — one name for both, as bootstrap does.
         const { data: provisioned, error: orgErr } =
-          await supabase.rpc("ensure_personal_org");
+          await supabase.rpc("ensure_personal_org", { p_name: input.name ?? null });
         if (orgErr) throw orgErr;
         fallbackOrg = (provisioned as string | null) ?? null;
       }
@@ -1376,29 +1377,6 @@ export function createSupabaseBusinessRepository(options) {
         teamId: requiredString(row.team_id, "account.upgradeAccount", "team_id"),
         teamName: requiredString(row.team_name, "account.upgradeAccount", "team_name"),
       };
-    },
-
-    // Phone identity upgrade (partner-aligned): bind a phone to the caller's
-    // account via our own verification code + a public.users row in the default
-    // org (NOT GoTrue phone_change). See bind_phone_to_account RPC.
-    async bindPhone({ phone, code }) {
-      const defaultOrgId = process.env.DEFAULT_ORG_ID || null;
-      // Match send-code's canonical bare 11-digit form so the verify-code lookup
-      // (and the stored public.users.mobile) line up; clients send E.164 +86….
-      const { data, error } = await supabase.rpc("bind_phone_to_account", {
-        p_phone: normalizePhone(phone),
-        p_code: code,
-        p_default_org_id: defaultOrgId,
-      });
-      if (error) {
-        const c = error?.code || "";
-        if (c === "42501") throw new ApiError(403, "forbidden", error.message ?? "not allowed");
-        if (c === "23505") throw new ApiError(409, "conflict", error.message ?? "phone already in use");
-        if (c === "23514") throw new ApiError(400, "validation_failed", error.message ?? "invalid bind");
-        throw new ApiError(400, "validation_failed", error.message ?? "phone bind failed");
-      }
-      const row = requiredRow(data, "account.bindPhone");
-      return { userId: requiredString(row.user_id, "account.bindPhone", "user_id"), bound: Boolean(row.bound) };
     },
 
     async createTeamInvite(teamId, input) {

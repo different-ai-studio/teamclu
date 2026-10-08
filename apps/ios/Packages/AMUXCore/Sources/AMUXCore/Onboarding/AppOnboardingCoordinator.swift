@@ -107,6 +107,11 @@ public enum AppOnboardingRoute: Equatable, Sendable {
     /// — show the org→team picker (`teamChoices`). See
     /// docs/specs/2026-06-17-teamclu-phone-login-and-tenancy.md §6.
     case selectTeam
+    /// The sign-in named a person with identities in more than one org (an
+    /// email user's later identities sit on accounts nobody signs in to
+    /// directly) — pick which org to enter (`identityChoices`). See
+    /// docs/plans/2026-10-08-staff-only-identity-model.md.
+    case selectIdentity
     /// Signed in, no team, and the user said at onboarding that they are
     /// joining an existing team — so no team is auto-created for them. The UI
     /// offers pending invites, pasting an invite, switching account, or
@@ -152,6 +157,10 @@ public protocol AppOnboardingStore: Sendable {
     func acceptPendingInvite(inviteID: String) async throws -> ClaimResult
     /// Marks the invite declined (`POST /v1/invites/:id/decline`).
     func declinePendingInvite(inviteID: String) async throws
+    /// The signed-in person's identities, one per org. Defaulted to none.
+    func listMyIdentities() async throws -> [MyIdentity]
+    /// Become one of the caller's own identities (mints and installs its session).
+    func switchIdentity(userID: String) async throws
 
     // Auth sign-in methods
     func signIn(email: String, password: String) async throws
@@ -206,6 +215,45 @@ public extension AppOnboardingStore {
     }
 }
 
+/// One identity of the signed-in person — one per org (`GET /v1/auth/identities`).
+public struct MyIdentity: Identifiable, Equatable, Sendable, Decodable {
+    public let userID: String
+    public let orgID: String?
+    public let orgName: String?
+    public let orgLogo: String?
+    public let adminType: Int
+    /// The identity the current session belongs to.
+    public let isCurrent: Bool
+    public var id: String { userID }
+
+    public init(userID: String, orgID: String?, orgName: String?, orgLogo: String?, adminType: Int, isCurrent: Bool) {
+        self.userID = userID
+        self.orgID = orgID
+        self.orgName = orgName
+        self.orgLogo = orgLogo
+        self.adminType = adminType
+        self.isCurrent = isCurrent
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "userId"
+        case orgID = "orgId"
+        case orgName, orgLogo, adminType, isCurrent
+    }
+}
+
+/// Defaults so non-cloud stores and test fakes have a single identity and no
+/// switch.
+public extension AppOnboardingStore {
+    func listMyIdentities() async throws -> [MyIdentity] { [] }
+    func switchIdentity(userID: String) async throws {
+        throw NSError(
+            domain: "AppOnboardingStore", code: 0,
+            userInfo: [NSLocalizedDescriptionKey: String(localized: "Switching identities is not supported by this backend.")]
+        )
+    }
+}
+
 /// An invite addressed to the caller's verified email/phone, still pending.
 public struct PendingInvite: Identifiable, Equatable, Sendable {
     /// inviteId — the accept/decline routing key.
@@ -250,6 +298,8 @@ public final class AppOnboardingCoordinator {
     public var route: AppOnboardingRoute = .loading
     /// Teams shown by the org→team picker when `route == .selectTeam`.
     public var teamChoices: [MembershipTeam] = []
+    /// Identities shown by the org picker when `route == .selectIdentity`.
+    public var identityChoices: [MyIdentity] = []
     public var currentContext: AppContext?
     public var pendingCreatedTeam: CreatedTeam?
     public var errorMessage: String?
@@ -1245,6 +1295,46 @@ public final class AppOnboardingCoordinator {
 
     // MARK: - Private helpers
 
+    /// After a sign-in that names a person (email, password, Apple, Google):
+    /// several identities → show the org picker and return true; exactly one
+    /// that is not this account → become it. Best effort — a failed lookup
+    /// keeps the signed-in account.
+    private func offerIdentityChoice() async -> Bool {
+        do {
+            let identities = try await store.listMyIdentities()
+            if identities.count > 1 {
+                identityChoices = identities
+                route = .selectIdentity
+                return true
+            }
+            if let only = identities.first, identities.count == 1, !only.isCurrent {
+                try await store.switchIdentity(userID: only.userID)
+            }
+        } catch {
+            onboardingLogger.error("identity lookup failed: \(error.localizedDescription, privacy: .public)")
+        }
+        return false
+    }
+
+    /// The org picker's choice: swap to that identity's session (unless it is
+    /// the current one) and carry on with the normal team bootstrap.
+    public func chooseIdentity(_ identity: MyIdentity) async {
+        guard !isBusy else { return }
+        isBusy = true
+        errorMessage = nil
+        do {
+            if !identity.isCurrent {
+                try await store.switchIdentity(userID: identity.userID)
+            }
+            isBusy = false
+            identityChoices = []
+            await bootstrap()
+        } catch {
+            isBusy = false
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func performAuth(_ action: @escaping () async throws -> Void) async {
         guard !isBusy else { return }
         isBusy = true
@@ -1253,6 +1343,7 @@ public final class AppOnboardingCoordinator {
         do {
             try await action()
             isBusy = false
+            if await offerIdentityChoice() { return }
             await bootstrap()
         } catch let outcome as UpgradeOutcome {
             // Anonymous upgrade hit an email/phone already owned by another

@@ -9,6 +9,7 @@ import {
   hasBackendConfig,
 } from "@/lib/backend";
 import type { AuthClaimResult, AuthSession, PendingInvite } from "@/lib/backend";
+import type { MyIdentity } from "@/lib/backend/types";
 import { accessTokenMatchesBackend } from "@/lib/auth/auth-client";
 import { CloudApiError } from "@/lib/backend/cloud-api/http";
 import { clearBootstrapAppliedFields, fetchAndApplyBootstrap } from "@/lib/config/bootstrap";
@@ -56,6 +57,13 @@ interface AuthState {
   /** Stashed OTP token while the multi-user picker is shown. */
   pendingPhoneOTPToken: string;
   selectPhoneUser: (userId: string) => Promise<void>;
+  /**
+   * The signed-in person's identities (one per org) when there is more than
+   * one to choose from after an email / password / OAuth sign-in. Non-null
+   * shows the org picker and holds team bootstrap until a choice is made.
+   */
+  identityChoices: MyIdentity[] | null;
+  chooseIdentity: (userId: string) => Promise<void>;
   /** Invite token to claim once the user signs in with a real account. */
   pendingInviteToken: string | null;
   hydrate: () => Promise<void>;
@@ -105,6 +113,30 @@ function errorMessageFor(error: unknown): string {
   // ("Host '…' is not reachable: …") discarded on the way.
   if (typeof error === "string" && error.trim()) return error.trim();
   return "Authentication failed.";
+}
+
+/**
+ * After a sign-in that names a person rather than an identity (email, password,
+ * OAuth): which of their identities to act as. An email user's later identities
+ * sit on synthetic accounts nobody signs in to directly
+ * (docs/plans/2026-10-08-staff-only-identity-model.md). Several → let them
+ * pick; exactly one that is not this account → become it. Best effort: a
+ * failed lookup keeps the session as it is.
+ */
+async function resolveIdentityChoice(
+  session: AuthSession | null,
+): Promise<{ session: AuthSession | null; choices: MyIdentity[] | null }> {
+  if (!session) return { session, choices: null };
+  try {
+    const identities = await getBackend().auth.listMyIdentities();
+    if (identities.length > 1) return { session, choices: identities };
+    if (identities.length === 1 && !identities[0].isCurrent) {
+      return { session: await getBackend().auth.switchIdentity(identities[0].userId), choices: null };
+    }
+  } catch (error) {
+    console.warn("[auth] identity lookup failed; keeping the signed-in account", error);
+  }
+  return { session, choices: null };
 }
 
 function storeSession(session: AuthSession | null): StoreAuthSession | null {
@@ -190,6 +222,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   otpEmail: null,
   otpPhone: null,
   phoneMultiUsers: [],
+  identityChoices: null,
   pendingPhoneOTPToken: "",
   pendingInviteToken: readPendingInviteToken(),
   hydrate: async () => {
@@ -263,8 +296,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     set({ loading: true, authFlow: "idle", errorMessage: null });
     try {
-      const session = await getBackend().auth.verifyOtp(email, code);
-      set({ session: storeSession(session), loading: false, otpEmail: null });
+      const verified = await getBackend().auth.verifyOtp(email, code);
+      const { session, choices } = await resolveIdentityChoice(verified);
+      set({ session: storeSession(session), identityChoices: choices, loading: false, otpEmail: null });
     } catch (error) {
       set({ loading: false, errorMessage: errorMessageFor(error) });
       return;
@@ -320,6 +354,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ loading: false, errorMessage: errorMessageFor(error) });
     }
   },
+  chooseIdentity: async (userId) => {
+    const choice = get().identityChoices?.find((identity) => identity.userId === userId);
+    if (!choice) return;
+    if (choice.isCurrent) {
+      set({ identityChoices: null });
+      return;
+    }
+    set({ loading: true, errorMessage: null });
+    try {
+      const session = await getBackend().auth.switchIdentity(userId);
+      set({ session: storeSession(session), identityChoices: null, loading: false });
+    } catch (error) {
+      set({ loading: false, errorMessage: errorMessageFor(error) });
+    }
+  },
   resetOtp: () => set({ otpEmail: null, otpPhone: null, phoneMultiUsers: [], pendingPhoneOTPToken: "", errorMessage: null }),
   signInWithPassword: async (email, password) => {
     if (!hasBackendConfig()) {
@@ -328,8 +377,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     set({ loading: true, authFlow: "idle", errorMessage: null });
     try {
-      const session = await getBackend().auth.signInWithPassword(email, password);
-      set({ session: storeSession(session), loading: false, otpEmail: null, otpPhone: null });
+      const signedIn = await getBackend().auth.signInWithPassword(email, password);
+      const { session, choices } = await resolveIdentityChoice(signedIn);
+      set({ session: storeSession(session), identityChoices: choices, loading: false, otpEmail: null, otpPhone: null });
       return true;
     } catch (error) {
       set({ loading: false, errorMessage: errorMessageFor(error) });
@@ -343,8 +393,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     set({ loading: true, authFlow: "idle", errorMessage: null, oauthPending: provider });
     try {
-      const session = await getBackend().auth.signInWithOAuth(provider);
-      set({ session: storeSession(session), loading: false, otpEmail: null, oauthPending: null });
+      const signedIn = await getBackend().auth.signInWithOAuth(provider);
+      const { session, choices } = await resolveIdentityChoice(signedIn);
+      set({ session: storeSession(session), identityChoices: choices, loading: false, otpEmail: null, oauthPending: null });
     } catch (error) {
       // A user-initiated cancel is not an error to surface — just re-enable the
       // controls. friendlyError tags cancellations with code "oauth_cancelled".
@@ -503,7 +554,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signOut: async (reason = "unspecified", detail) => {
     logSignOut(reason, { user: get().session?.user?.id, server: configuredServerUrl(), detail });
     await getBackend().auth.signOut();
-    set({ session: null, authFlow: "idle", otpEmail: null, otpPhone: null, phoneMultiUsers: [], pendingPhoneOTPToken: "", pendingInvites: [] });
+    set({ session: null, authFlow: "idle", otpEmail: null, otpPhone: null, phoneMultiUsers: [], pendingPhoneOTPToken: "", pendingInvites: [], identityChoices: null });
     void clearIntrospectAuthBridge();
     // Reset the current team so the NEXT login doesn't inherit
     // the previous user's team. Without this the current-team store kept the old

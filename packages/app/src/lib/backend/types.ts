@@ -83,6 +83,17 @@ export interface PendingInvite {
 
 export type Unsubscribe = () => void;
 
+/** One identity of the signed-in person — one per org (GET /v1/auth/identities). */
+export interface MyIdentity {
+  userId: string;
+  orgId: string | null;
+  orgName: string | null;
+  orgLogo: string | null;
+  adminType: number;
+  /** The identity the current session belongs to. */
+  isCurrent: boolean;
+}
+
 export interface AuthBackend {
   getSession(): Promise<AuthSession | null>;
   onAuthStateChange(listener: (session: AuthSession | null) => void): Unsubscribe;
@@ -108,6 +119,10 @@ export interface AuthBackend {
   /** Install a session minted server-side (e.g. by activateTeam) from its
    *  refresh token, so the client adopts a fresh JWT (new org_id). */
   adoptSession(refreshToken: string): Promise<AuthSession | null>;
+  /** The signed-in person's identities, one per org (login-time org picker). */
+  listMyIdentities(): Promise<MyIdentity[]>;
+  /** Become one of the caller's own identities: mints its session and adopts it. */
+  switchIdentity(userId: string): Promise<AuthSession | null>;
 }
 
 export interface SessionListEntry {

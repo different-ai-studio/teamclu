@@ -6639,6 +6639,68 @@ paths:
               schema: { type: object }
         "401":
           $ref: "#/components/responses/Error"
+  /v1/auth/identities:
+    get:
+      operationId: listMyIdentities
+      summary: The signed-in person's identities, one per org
+      description: |
+        Every identity of the caller's person (same phone, or linked through
+        public.email_users_links) that has its own account. Where the
+        deployment admits staff only, only identities with admin_type >= 2.
+        The signed-in identity comes first with isCurrent = true. Used for the
+        login-time org picker of an email user.
+      tags: [Auth]
+      responses:
+        "200":
+          description: Identities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, orgId, adminType, isCurrent]
+                      properties:
+                        userId: { type: string, format: uuid }
+                        orgId: { type: [string, "null"], format: uuid }
+                        orgName: { type: [string, "null"] }
+                        orgLogo: { type: [string, "null"] }
+                        adminType: { type: integer }
+                        isCurrent: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/auth/identities/{userId}/session:
+    post:
+      operationId: mintIdentitySession
+      summary: A session for one of the caller's own identities
+      description: |
+        Returns a refresh token for the picked identity; exchange it with
+        POST /v1/auth/refresh. 403 when the id is not one of the caller's
+        identities (or is not admitted where the deployment admits staff only).
+      tags: [Auth]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Refresh token for the picked identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [refreshToken]
+                properties:
+                  refreshToken: { type: string }
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /v1/auth/signin-idtoken:
     post:
       operationId: signInWithIdToken

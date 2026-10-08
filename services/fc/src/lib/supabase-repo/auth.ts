@@ -45,6 +45,7 @@ export function createSupabaseAuthRepository(options) {
     phoneEmailDomain = undefined,
     phoneAuthEncryptionKey = undefined,
     smsDebugMode = false,
+    smsConfigOrgId = undefined,
     sendSms = undefined,
     verifyCaptcha = undefined,
   } = options;
@@ -70,6 +71,7 @@ export function createSupabaseAuthRepository(options) {
       phoneEmailDomain,
       encryptionKey: phoneAuthEncryptionKey,
       smsDebugMode,
+      smsConfigOrgId,
       sendSms: sendSms ?? makeDysmsSender({ createClient, supabaseUrl, serviceRoleKey }),
       verifyCaptcha,
       createClient,
@@ -113,7 +115,7 @@ export function createSupabaseAuthRepository(options) {
     });
   }
 
-  async function assignMemberRoleOnClaim(client: any, result: { teamId: string; actorType: string }, accessToken?: string) {
+  async function assignMemberRoleOnClaim(client: any, result: { teamId: string; actorId: string; actorType: string }, accessToken?: string) {
     if (result.actorType !== "member") return;
     if (!accessToken) {
       throw new ApiError(
@@ -132,9 +134,18 @@ export function createSupabaseAuthRepository(options) {
       );
     }
     const admin = serviceRoleClient("assign member org role on invite claim");
+    // The role belongs to the identity the actor was created on, which is the
+    // caller's own account only when it had no identity yet: claim_team_invite
+    // joins as the caller's identity IN the team's org, minting one if needed.
+    const { data: actorRow, error: actorErr } = await admin
+      .from("actors")
+      .select("user_id")
+      .eq("id", result.actorId)
+      .maybeSingle();
+    if (actorErr) throw actorErr;
     await assignSystemOrgRole(admin, {
       teamId: result.teamId,
-      userId,
+      userId: actorRow?.user_id ?? userId,
       code: "member",
     });
   }
@@ -192,6 +203,35 @@ export function createSupabaseAuthRepository(options) {
           matchedVia: row.matched_via ?? null,
         })),
       };
+    },
+
+    // amux.list_my_identities: the caller's person's identities (one per org).
+    async listMyIdentities(ctx: { accessToken?: string } = {}) {
+      const client = clientForToken(ctx.accessToken);
+      const { data, error } = await client.rpc("list_my_identities");
+      if (error) throw error;
+      return (data ?? []).map((r: any) => ({
+        userId: requiredString(r.user_id, "auth.listMyIdentities", "user_id"),
+        orgId: r.org_id ?? null,
+        orgName: r.org_name ?? null,
+        orgLogo: r.org_logo ?? null,
+        adminType: Number(r.admin_type ?? 0),
+        isCurrent: r.is_current === true,
+      }));
+    },
+
+    // amux.mint_identity_session: a refresh token for one of the caller's own
+    // identities; anything else is 42501.
+    async mintIdentitySession(userId, ctx: { accessToken?: string } = {}) {
+      const client = clientForToken(ctx.accessToken);
+      const { data, error } = await client.rpc("mint_identity_session", { p_user_id: userId });
+      if (error) {
+        if ((error.code || "") === "42501") {
+          throw new ApiError(403, "forbidden", error.message ?? "not one of your identities");
+        }
+        throw new ApiError(400, "validation_failed", error.message ?? "identity switch failed");
+      }
+      return { refreshToken: requiredString(data, "auth.mintIdentitySession", "refresh_token") };
     },
 
     async acceptPendingInvite(inviteId, ctx: { accessToken?: string } = {}) {

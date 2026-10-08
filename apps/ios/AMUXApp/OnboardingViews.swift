@@ -53,7 +53,9 @@ struct CreateTeamView: View {
                     .padding(.vertical, 14)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(coordinator.isBusy)
+                // The name is required: it names the new organization and its
+                // team, and this person becomes its super admin.
+                .disabled(coordinator.isBusy || teamName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 Spacer()
             }

@@ -44,6 +44,7 @@ import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { makeSupabaseLoginAppLookup } from "./lib/apps-login-service.js";
+import { findTenantIdentity } from "./lib/apps-tenant-identity.js";
 import { makeSupabaseTraefikDomainLookup } from "./lib/apps-traefik-provider.js";
 import { createServiceRoleClient } from "./lib/supabase.js";
 import { findAppOrgRoleIdentities } from "./lib/apps-org-role-identity.js";
@@ -380,6 +381,16 @@ export function loginAppLookup() {
 }
 
 /**
+ * The visitor's identity in an app's org, for the login service (email /
+ * password / OAuth sign-ins and the SSO shortcut). Service role: the login
+ * service holds no Supabase JWT for the visitor.
+ */
+export function tenantIdentityLookup() {
+  return (visitor: { sub: string; email: string }, orgId: string) =>
+    findTenantIdentity(createServiceRoleClient(), visitor, orgId);
+}
+
+/**
  * Verified custom domains for Traefik's HTTP provider. Service role for the
  * same tokenless reason as {@link vanityLookup}: Traefik is the caller.
  */
@@ -489,6 +500,9 @@ export function makeAuthRepoFactory() {
       phoneEmailDomain: process.env.PHONE_EMAIL_DOMAIN || undefined,
       phoneAuthEncryptionKey: process.env.PHONE_AUTH_ENCRYPTION_KEY || undefined,
       smsDebugMode: process.env.SMS_DEBUG_MODE === "1" || process.env.SMS_DEBUG_MODE === "true",
+      // Whose SMS account sends verification codes. Falls back to DEFAULT_ORG_ID,
+      // which is being retired (docs/plans/2026-10-08-staff-only-identity-model.md).
+      smsConfigOrgId: process.env.SMS_CONFIG_ORG_ID || undefined,
     });
 }
 
@@ -544,6 +558,7 @@ const app = createApp({
   createSystemRepository: makeSystemRepoFactory(),
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
+  resolveTenantIdentity: tenantIdentityLookup(),
   listTraefikCustomDomains: traefikCustomDomainsLookup(),
   resolveRoleIdentities: appOrgRoleIdentitiesLookup(),
   resolveVisitorRoles: visitorRolesLookup(),

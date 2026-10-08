@@ -81,3 +81,72 @@ struct OrgTeamPickerView: View {
         }
     }
 }
+
+/// Shown after an email / Apple / Google sign-in when the person has identities
+/// in more than one org — their later identities sit on accounts nobody signs
+/// in to directly. Picking one swaps the session to that identity
+/// (`coordinator.chooseIdentity`); the team picker that follows lists that
+/// org's teams. See docs/plans/2026-10-08-staff-only-identity-model.md.
+struct IdentityPickerView: View {
+    @Bindable var coordinator: AppOnboardingCoordinator
+    @State private var busyUserID: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let err = coordinator.errorMessage {
+                    Section {
+                        Text(err).font(.footnote).foregroundStyle(.red)
+                    }
+                }
+                Section {
+                    ForEach(coordinator.identityChoices) { identity in
+                        Button {
+                            pick(identity)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(identity.orgName ?? String(localized: "Unnamed organization"))
+                                    if let role = roleLabel(identity.adminType) {
+                                        Text(role).font(.footnote).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if busyUserID == identity.userID {
+                                    ProgressView()
+                                } else if identity.isCurrent {
+                                    Text("Current account").font(.footnote).foregroundStyle(.secondary)
+                                } else {
+                                    Image(systemName: "chevron.right")
+                                        .font(.footnote)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                        .disabled(busyUserID != nil)
+                        .accessibilityIdentifier("identityPicker.row.\(identity.userID)")
+                    }
+                } footer: {
+                    Text("You belong to more than one organization. Pick the one to enter this time.")
+                }
+            }
+            .navigationTitle("Choose an organization")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private func roleLabel(_ adminType: Int) -> String? {
+        if adminType >= 3 { return String(localized: "Super admin") }
+        if adminType == 2 { return String(localized: "Admin") }
+        return nil
+    }
+
+    private func pick(_ identity: MyIdentity) {
+        guard busyUserID == nil else { return }
+        busyUserID = identity.userID
+        Task {
+            await coordinator.chooseIdentity(identity)
+            busyUserID = nil
+        }
+    }
+}

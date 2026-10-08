@@ -43,6 +43,10 @@ const { authState, currentTeamMock, backendMock } = vi.hoisted(() => ({
     acceptPendingInvite: vi.fn(),
     declinePendingInvite: vi.fn(),
     signOut: vi.fn(),
+    // Post-sign-in org picker (several identities). Null: no picker.
+    identityChoices: null as null | Array<{ userId: string; orgId: string | null; orgName: string | null; orgLogo: string | null; adminType: number; isCurrent: boolean }>,
+    chooseIdentity: vi.fn(),
+    errorMessage: null as string | null,
   },
   currentTeamMock: {
     reloadAndSwitchTo: vi.fn(),
@@ -163,6 +167,8 @@ import {
 
 beforeEach(() => {
   resetInviteLinkConfirmationForTests();
+  authState.identityChoices = null;
+  authState.chooseIdentity.mockReset();
   authState.session = { user: { id: "user-1" } };
   authState.loading = false;
   authState.authFlow = "idle";
@@ -464,6 +470,35 @@ describe("AuthGate", () => {
 
     await waitFor(() => expect(currentTeamMock.switchToTeam).toHaveBeenCalledWith("team-existing"));
     await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
+  });
+
+  it("holds bootstrap behind the org picker when the person has several identities", async () => {
+    authState.identityChoices = [
+      { userId: "user-1", orgId: "o1", orgName: "Own Co", orgLogo: null, adminType: 3, isCurrent: true },
+      { userId: "user-2", orgId: "o2", orgName: "Other Co", orgLogo: null, adminType: 2, isCurrent: false },
+    ];
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+    expect(await screen.findByText("选择要进入的组织")).toBeInTheDocument();
+    expect(backendMock.teams.listAllMyTeams).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Other Co"));
+    expect(authState.chooseIdentity).toHaveBeenCalledWith("user-2");
+  });
+
+  it("starts the team-name field empty", async () => {
+    backendMock.teams.listCurrentUserTeams.mockResolvedValueOnce([]);
+    backendMock.teams.listAllMyTeams.mockResolvedValueOnce([]);
+    render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+    const input = (await screen.findByLabelText("给你的团队起个名字")) as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(screen.getByRole("button", { name: "继续" })).toBeDisabled();
   });
 
   /** Onboarding now stops at the first-run naming screen; get past it. */
