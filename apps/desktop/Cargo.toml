@@ -48,7 +48,6 @@ tauri-plugin-window-state = "2"
 # System pasteboard file lists (Finder copy/paste). The official
 # clipboard-manager plugin is text/image only, so it cannot carry file paths.
 tauri-plugin-clipboard = "2.1"
-tauri-plugin-aptabase = "1.0"
 # OS UI language for the cold-start menu bar / tray labels. Windows does not
 # set LANG or LC_ALL, so an env probe can never see a Chinese Windows.
 sys-locale = "0.3"
@@ -61,7 +60,12 @@ teamclu-runtime-env = { path = "../../crates/teamclu-runtime-env" }
 teamclu-transport = { path = "../../crates/teamclu-transport" }
 indexmap = { version = "2", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "process", "io-util", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "stream", "rustls-tls-native-roots"] }
+# `default-tls`, `charset`, `http2` and `system-proxy` are reqwest's defaults.
+# tauri-plugin-aptabase used to switch them on for the whole crate through
+# feature unification; it is gone, so they are named here. `system-proxy` is
+# the one that matters: without it the Rust side ignores the macOS / Windows
+# proxy settings and only reads HTTP(S)_PROXY.
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "stream", "rustls-tls-native-roots", "default-tls", "charset", "http2", "system-proxy"] }
 rumqttc = { version = "0.24", features = ["websocket"] }
 notify = { version = "8", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.7"

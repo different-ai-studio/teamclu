@@ -23,9 +23,6 @@ export function createTelemetryModule(client: CloudApiClient): TelemetryBackend 
       );
       return out.items;
     },
-    async insertSessionReport(input) {
-      await client.post<void>("/v1/session-report", input);
-    },
     async insertSkillUsage(input) {
       await client.post<void>("/v1/skill-usage", input);
     },

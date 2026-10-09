@@ -21,7 +21,6 @@ pub mod opencode_paths;
 pub mod process_util;
 pub mod proto;
 pub mod sentry_utils;
-mod telemetry;
 mod terminal;
 #[cfg(test)]
 pub mod test_home;
@@ -323,41 +322,6 @@ fn start_path_probe() -> Option<PendingPathProbe> {
     Some(PendingPathProbe { rx, deadline })
 }
 
-// Foreground-activation heartbeat for Aptabase DAU.
-// `app_started` only fires on cold start; on macOS users who keep the app
-// running for days would otherwise show as DAU only on day 1. Firing
-// `app_active` on focus / Reopen (rate-limited) closes that gap.
-static LAST_ACTIVE_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-const APP_ACTIVE_THRESHOLD_SECS: i64 = 4 * 3600;
-
-fn now_unix_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-fn record_activity() {
-    LAST_ACTIVE_AT.store(now_unix_secs(), std::sync::atomic::Ordering::Relaxed);
-}
-
-fn maybe_emit_app_active(app: &tauri::AppHandle) {
-    let now = now_unix_secs();
-    let last = LAST_ACTIVE_AT.load(std::sync::atomic::Ordering::Relaxed);
-    if last != 0 && now - last < APP_ACTIVE_THRESHOLD_SECS {
-        return;
-    }
-    LAST_ACTIVE_AT.store(now, std::sync::atomic::Ordering::Relaxed);
-    telemetry::track(
-        app,
-        "app_active",
-        Some(serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "platform": std::env::consts::OS,
-        })),
-    );
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let startup_t0 = std::time::Instant::now();
@@ -377,9 +341,8 @@ pub fn run() {
         }
     );
 
-    // Create a Tokio runtime and register it with Tauri BEFORE plugin initialization.
-    // tauri-plugin-aptabase calls tokio::spawn during init (start_polling),
-    // which panics if no reactor is running on the main thread.
+    // Create a Tokio runtime and register it with Tauri BEFORE plugin initialization,
+    // so code that calls tokio::spawn during setup has a reactor on the main thread.
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let _guard = rt.enter();
     tauri::async_runtime::set(rt.handle().clone());
@@ -398,7 +361,6 @@ pub fn run() {
                 !(target.starts_with("tracing::span")
                     || target.starts_with("hyper_util")
                     || target.starts_with("hyper::")
-                    || target.starts_with("tauri_plugin_aptabase")
                     || target.starts_with("reqwest")
                     || target.starts_with("hickory_")
                     || target.starts_with("netwatch")
@@ -421,8 +383,6 @@ pub fn run() {
         // Restore window size + position across launches. Per-window state is
         // keyed by window label and stored under the OS app-data dir.
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        // NOTE: aptabase is registered in the setup() closure below so that
-        // the Tokio runtime is available when its internal `tokio::spawn` runs.
         .plugin({
             #[cfg(debug_assertions)]
             {
@@ -642,9 +602,6 @@ pub fn run() {
             local_cache::commands::local_cache_watermark_set,
             local_cache::commands::local_cache_clear_team,
             local_cache::commands::local_cache_set_current_team,
-            telemetry::commands::telemetry_get_consent,
-            telemetry::commands::telemetry_set_consent,
-            telemetry::commands::telemetry_track,
             commands::webview::webview_create,
             commands::webview::webview_close,
             commands::webview::webview_hide,
@@ -705,10 +662,6 @@ pub fn run() {
 
             // Capture the .app bundle path before an update can replace it on disk.
             commands::updater::remember_app_bundle_path();
-
-            // Register aptabase here (inside setup) so the Tokio runtime is available
-            // for its internal `tokio::spawn` polling loop.
-            app.handle().plugin(tauri_plugin_aptabase::Builder::new("A-US-9094113207").build())?;
 
             // Start introspect MCP internal API server
             {
@@ -899,12 +852,9 @@ pub fn run() {
                         tauri::WindowEvent::Moved { .. } => {
                             commands::window_chrome::reposition_traffic_lights(&main_win_clone);
                         }
-                        // DAU heartbeat: fires `app_active` once the app
-                        // returns to focus after >=4h idle.
+                        #[cfg(target_os = "macos")]
                         tauri::WindowEvent::Focused(true) => {
-                            #[cfg(target_os = "macos")]
                             commands::window_chrome::reposition_traffic_lights(&main_win_clone);
-                            maybe_emit_app_active(&close_app_handle);
                         }
                         _ => {}
                     }
@@ -985,13 +935,6 @@ pub fn run() {
                 });
             }
 
-            // Track app_started (always, regardless of consent)
-            telemetry::track(app.handle(), "app_started", Some(serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "platform": std::env::consts::OS,
-            })));
-            record_activity();
-
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -1009,7 +952,6 @@ pub fn run() {
                     // unconditionally bring the window back.
                     let state = app.state::<commands::window_chrome::MainWindowState>();
                     commands::window_chrome::show_main_window(app.clone(), state);
-                    maybe_emit_app_active(app);
                 }
                 tauri::RunEvent::Resumed => {
                     // Force-reconnect MQTT after system wake so the persistent
@@ -1041,11 +983,6 @@ pub fn run() {
                     {
                         sup.shutdown_blocking();
                     }
-                    // Fire-and-forget: enqueue the event but don't block on flush.
-                    // The aptabase plugin's own Exit handler will attempt to flush,
-                    // but we don't want to block exit for up to 10s on a network
-                    // request (the aptabase HTTP timeout) if the server is slow.
-                    telemetry::track(app, "app_exited", None);
                 }
                 tauri::RunEvent::ExitRequested { .. } => {
                     if let Some(registry) = app.try_state::<std::sync::Arc<crate::terminal::Registry>>() {

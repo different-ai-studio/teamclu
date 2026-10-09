@@ -1834,7 +1834,6 @@ export interface TelemetryBackend {
   deleteFeedback(input: TelemetryFeedbackDeleteInput): Promise<void>;
   listFeedbacks(input: { teamId: string; sessionId: string }): Promise<Array<Record<string, unknown>>>;
   listFeedbackSummary(teamId: string): Promise<Array<Record<string, unknown>>>;
-  insertSessionReport(input: Record<string, unknown>): Promise<void>;
   insertSkillUsage(input: Record<string, unknown>): Promise<void>;
   listLeaderboard(teamId: string, period?: "day" | "week" | "month"): Promise<Array<Record<string, unknown>>>;
   reportClientVersion(teamId: string, payload: { clientType: string; version: string; deviceId: string; build: string | null }): Promise<void>;

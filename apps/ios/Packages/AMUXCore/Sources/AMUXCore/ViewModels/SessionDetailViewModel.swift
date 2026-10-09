@@ -2703,10 +2703,6 @@ public final class SessionDetailViewModel {
             let body = composeBodyWithMentions(text)
             let messageID = UUID().uuidString
             let mentionIDs = Array(agentChipSelection)
-            AnalyticsSink.track("message_sent", [
-                "agentCount": String(mentionIDs.count),
-                "hasAttachments": String(!attachmentURLs.isEmpty),
-            ])
 
             // 1. Local user_prompt entry for the bubble. The
             //    reducer's .localPrompt path stamps `outboxMessageID =

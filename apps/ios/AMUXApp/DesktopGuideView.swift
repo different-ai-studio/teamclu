@@ -49,9 +49,6 @@ struct DesktopGuideView: View {
                         .padding(.vertical, 14)
                 }
                 .glassProminentButtonStyle()
-                .simultaneousGesture(TapGesture().onEnded {
-                    Analytics.track("onboarding_desktop_link_shared", ["via": "share"])
-                })
                 .accessibilityIdentifier("desktopGuide.shareButton")
 
                 Button(action: onContinue) {
@@ -97,7 +94,6 @@ struct DesktopGuideView: View {
             Spacer(minLength: 8)
             Button {
                 UIPasteboard.general.url = downloadURL
-                Analytics.track("onboarding_desktop_link_shared", ["via": "copy"])
                 copied = true
                 Task {
                     try? await Task.sleep(for: .seconds(2))

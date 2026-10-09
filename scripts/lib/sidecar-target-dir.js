@@ -12,7 +12,7 @@ const path = require("path");
  *
  *   -p amuxd             rustls only
  *   -p teamclu           + default-tls, charset, h2, http2, system-proxy
- *                        (pulled in by tauri-plugin-aptabase and serenity)
+ *                        (pulled in by serenity)
  *   -p teamclu-introspect  default-tls path, no rustls at all
  *
  * Pointed at one CARGO_TARGET_DIR they invalidate each other's reqwest subtree,
