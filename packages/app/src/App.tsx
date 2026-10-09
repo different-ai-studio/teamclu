@@ -26,7 +26,6 @@ import { useWorkspaceRuntimeRefreshPoll } from "@/hooks/use-workspace-runtime-re
 import { useOpenCodePreload } from "@/hooks/use-opencode-preload";
 import { useExternalLinkHandler } from "@/hooks/use-external-link-handler";
 import { useTauriBodyClass } from "@/hooks/use-tauri-body-class";
-import { useTelemetryConsent } from "@/hooks/use-telemetry-consent";
 import { useMemberPresenceHeartbeat } from "@/hooks/use-member-presence-heartbeat";
 import { useExtensionSessionCleanup } from "@/hooks/use-extension-session-cleanup";
 import { useFileTabSync } from "@/hooks/use-file-editor-state";
@@ -47,7 +46,6 @@ import { lazyNamed } from "@/lib/lazy-component";
 import { useEverTrue } from "@/hooks/use-ever-true";
 import { PaneLoading } from "@/components/ui/pane-loading";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { TelemetryConsentDialog } from "@/components/telemetry/TelemetryConsentDialog";
 import { RuntimeRefreshWorkspaceBanner } from "@/components/workspace/RuntimeRefreshBanner";
 import { AgentsSkillsAccessBanner } from "@/components/skills/AgentsSkillsAccessBanner";
 import { useAgentsSkillsAccessInit } from "@/hooks/use-agents-skills-access-init";
@@ -888,10 +886,9 @@ function App() {
     void openSessionFromDeeplink(pending.sessionId);
   }, [authSession]);
 
-  // Extracted hooks — initialization, telemetry consent
+  // Extracted hooks — initialization
   useTauriBodyClass();
   useOpenCodePreload();
-  const { showConsentDialog, setShowConsentDialog } = useTelemetryConsent();
 
   // First-run onboarding (welcome, dependency setup, role, model) all lives in
   // AuthGate now, ahead of this component — see #881. By the time App renders,
@@ -918,10 +915,6 @@ function App() {
       />
       <AppDeployConfirmDialog />
       <NewSessionDialog />
-      <TelemetryConsentDialog
-        open={showConsentDialog}
-        onComplete={() => setShowConsentDialog(false)}
-      />
     </>
   )
 

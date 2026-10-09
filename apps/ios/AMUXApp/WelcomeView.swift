@@ -26,7 +26,6 @@ struct WelcomeView: View {
                     OnboardingChoiceView(coordinator: coordinator, onServerChanged: onServerChanged)
                 } else {
                     IntroView {
-                        Analytics.track("onboarding_intro_completed")
                         withAnimation(.easeOut(duration: 0.25)) { hasSeenIntro = true }
                     }
                 }

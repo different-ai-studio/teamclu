@@ -2045,7 +2045,6 @@
       "shortcuts": "Shortcuts",
       "channels": "Channels",
       "tokenUsage": "Token Usage",
-      "privacy": "Privacy & Telemetry",
       "cache": "Local Cache",
       "diagnostics": "Diagnostics & Support",
       "client": "Desktop",
@@ -3053,14 +3052,6 @@
       "overQuota": "Over quota",
       "beforeStats": "No statistics before {{date}}. Usage recording began with the new billing system; earlier records stayed with the old gateway and measure a different thing, so they were not carried over."
     },
-    "privacy": {
-      "title": "Privacy & Telemetry",
-      "description": "Control anonymous usage data collection to help improve TeamClu.",
-      "analyticsTitle": "Analytics Data Collection",
-      "analyticsDesc": "Store anonymous usage metrics locally (tokens, tool stats, scores). No code, conversations, or personal data. Data stays on your device.",
-      "analyticsEnabled": "Analytics enabled",
-      "analyticsDisabled": "Analytics disabled"
-    },
     "update": {
       "check": "Check for updates",
       "checking": "Checking",
@@ -3688,18 +3679,6 @@
     "confirmRestore": "Restore"
   },
   "telemetry": {
-    "consent": {
-      "title": "Help improve {{appName}}",
-      "description": "Allow {{appName}} to collect anonymous usage data to help us improve agent quality.",
-      "collectTitle": "Collected",
-      "collectDescription": "Session duration, token usage, tool call statistics, feedback ratings, and model information",
-      "neverCollectTitle": "Never collected",
-      "neverCollectDescription": "Conversation content, code, file paths, project names, or personal information",
-      "changeAnytimeTitle": "Change anytime",
-      "changeAnytimeDescription": "You can turn this off anytime in Settings > System > Privacy & Telemetry",
-      "deny": "Not now",
-      "allow": "Allow analytics"
-    },
     "rating": {
       "question": "How was this result?",
       "starLabel": "{{count}} star",

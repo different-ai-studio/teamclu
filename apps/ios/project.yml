@@ -15,9 +15,6 @@ packages:
   Sentry:
     url: https://github.com/getsentry/sentry-cocoa
     from: "8.0.0"
-  Aptabase:
-    url: https://github.com/aptabase/aptabase-swift
-    from: "0.3.0"
 
 targets:
   AMUX:
@@ -31,8 +28,6 @@ targets:
       - package: AMUXSharedUI
       - package: Sentry
         product: SentrySwiftUI
-      - package: Aptabase
-        product: Aptabase
     settings:
       base:
         INFOPLIST_FILE: AMUXApp/Info.plist

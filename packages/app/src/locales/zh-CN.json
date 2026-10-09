@@ -2045,7 +2045,6 @@
       "shortcuts": "快捷方式",
       "channels": "通道",
       "tokenUsage": "Token 用量",
-      "privacy": "隐私与遥测",
       "cache": "本地缓存",
       "diagnostics": "诊断与支持",
       "client": "客户端",
@@ -3053,14 +3052,6 @@
       "overQuota": "已超额",
       "beforeStats": "{{date}} 之前没有统计数据。用量统计自新账单系统上线起开始记录；更早的记录停留在旧网关，口径不同，没有迁移。"
     },
-    "privacy": {
-      "title": "隐私与遥测",
-      "description": "控制匿名使用数据收集，以帮助改进 TeamClu。",
-      "analyticsTitle": "分析数据收集",
-      "analyticsDesc": "在本地存储匿名使用指标（Token、工具统计、评分等）。不包含代码、对话或个人数据，数据仅保存在您的设备上。",
-      "analyticsEnabled": "分析已启用",
-      "analyticsDisabled": "分析已禁用"
-    },
     "update": {
       "check": "检查更新",
       "checking": "检查中",
@@ -3688,18 +3679,6 @@
     "confirmRestore": "确认恢复"
   },
   "telemetry": {
-    "consent": {
-      "title": "帮助改善 {{appName}}",
-      "description": "允许 {{appName}} 收集匿名使用数据，帮助我们改善 Agent 质量。",
-      "collectTitle": "收集内容",
-      "collectDescription": "会话时长、Token 消耗、工具调用统计、反馈评分、模型信息",
-      "neverCollectTitle": "绝不收集",
-      "neverCollectDescription": "对话内容、代码、文件路径、项目名称、个人信息",
-      "changeAnytimeTitle": "随时可改",
-      "changeAnytimeDescription": "可在设置 > 系统 > 隐私与遥测中随时关闭",
-      "deny": "暂不开启",
-      "allow": "允许分析"
-    },
     "rating": {
       "question": "这次结果怎么样？",
       "starLabel": "{{count}} 星",

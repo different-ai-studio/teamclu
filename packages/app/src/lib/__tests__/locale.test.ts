@@ -96,7 +96,6 @@ const RENDERED_TEXT_SCAN_FILES = [
   'components/chat/MessageStarRating.tsx',
   'components/history/CommitList.tsx',
   'components/history/FileHistoryView.tsx',
-  'components/telemetry/TelemetryConsentDialog.tsx',
   'components/version/VersionHistoryTab.tsx',
   'components/version/VersionList.tsx',
   'components/version/VersionPreview.tsx',
