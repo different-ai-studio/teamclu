@@ -472,6 +472,14 @@ where
     Ok(())
 }
 
+/// Install pi for the first-run wizard and the post-login runtime check
+/// (`ensureRuntimeReady`), then restart amuxd if it is up.
+///
+/// The restart is what makes the install take effect: amuxd starts restoring
+/// sessions as soon as it is up, so on an upgraded machine its pi hosts are
+/// already running the old tree by the time this install replaces it. It is
+/// awaited, unlike the Dependencies panel's, because the wizard talks to the
+/// daemon right after this returns.
 async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     run_amuxd_install_pi(app, |status, line, error| {
         emit_progress(
@@ -484,7 +492,11 @@ async fn install_pi<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             },
         );
     })
-    .await
+    .await?;
+    crate::commands::amuxd_supervisor::AmuxdSupervisor::restart_if_running(app)
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("pi was installed, but restarting amuxd failed: {e}"))
 }
 
 /// Restart the desktop-managed amuxd so it re-reads `daemon.toml`.

@@ -510,15 +510,8 @@ async fn install_dependency_inner<R: Runtime>(
 /// `pi.lock.json` names the runtime versions, and plain `amuxd install-pi`
 /// lifts an older install to them, so no force flag exists or is wanted.
 ///
-/// On success the desktop-managed amuxd is restarted, because the running pi
-/// hosts still hold the old tree and would otherwise keep serving the
-/// pre-update version for the rest of the app's lifetime.
-///
-/// The restart runs detached: awaiting it would keep the frontend's
-/// `updateDependency` promise pending for the whole daemon bounce, so the
-/// Dependencies panel stayed stuck on "Updating…" long after the download was
-/// done. The download result is what this command reports; a restart failure is
-/// emitted separately on the same progress channel.
+/// On success `install_pi_via_amuxd` restarts the desktop-managed amuxd; see
+/// `restart_amuxd_after_update` for why and why it runs detached.
 #[tauri::command]
 pub async fn update_dependency<R: Runtime>(
     app: AppHandle<R>,
@@ -528,13 +521,6 @@ pub async fn update_dependency<R: Runtime>(
         let ok = install_pi_via_amuxd(&app).await;
         if ok {
             forget_dependencies();
-            // pi needs the bounce too. "pi is spawned per session, so the next
-            // spawn picks up the new binary" was wrong: the daemon pools a pi
-            // *host* child per isolation key and only respawns when its
-            // fingerprint (binary path + mode + env) changes. An in-place
-            // upgrade keeps the path, so every live host keeps running the old
-            // build while this page reports the new version off disk.
-            restart_amuxd_after_update(&app, "pi");
         }
         return Ok(ok);
     }
@@ -542,8 +528,13 @@ pub async fn update_dependency<R: Runtime>(
 }
 
 /// Bounce the desktop-managed amuxd so an updated runtime is the one actually
-/// running. Neither runtime notices a binary replaced underneath it: opencode
-/// is held open by a long-lived `serve`, pi by a pooled host child.
+/// running. "pi is spawned per session, so the next spawn picks up the new
+/// build" is wrong: the daemon pools a pi *host* child per isolation key and
+/// only respawns it when its fingerprint (binary path + mode + env) changes. An
+/// in-place install keeps the path, so every live host keeps running the old
+/// tree while this page reports the new version off disk — and when the
+/// install moved files (0.84.2 → 1.1.0 dropped the nested `pi-ai`), every
+/// model call on such a host fails. Only restarts a daemon that is up.
 ///
 /// Detached on purpose: awaiting it would keep the frontend's
 /// `updateDependency` promise pending for the whole daemon bounce, leaving the
@@ -553,7 +544,9 @@ pub async fn update_dependency<R: Runtime>(
 fn restart_amuxd_after_update<R: Runtime>(app: &AppHandle<R>, name: &'static str) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::commands::amuxd_supervisor::AmuxdSupervisor::restart(&app).await {
+        if let Err(e) =
+            crate::commands::amuxd_supervisor::AmuxdSupervisor::restart_if_running(&app).await
+        {
             let _ = app.emit(
                 "dep-install-progress",
                 DepInstallProgress {
@@ -561,7 +554,7 @@ fn restart_amuxd_after_update<R: Runtime>(app: &AppHandle<R>, name: &'static str
                     status: "failed".to_string(),
                     output_line: None,
                     error: Some(format!(
-                        "{name} was updated, but restarting amuxd failed: {e}. Restart the app to use the new version."
+                        "{name} was installed, but restarting amuxd failed: {e}. Restart the app to use the new version."
                     )),
                 },
             );
@@ -570,10 +563,12 @@ fn restart_amuxd_after_update<R: Runtime>(app: &AppHandle<R>, name: &'static str
 }
 
 /// Install-or-upgrade the managed runtime via the bundled `amuxd install-pi`,
-/// bridging its progress onto `dep-install-progress`.
+/// bridging its progress onto `dep-install-progress`, then restart amuxd so no
+/// pi host keeps the tree the install just replaced. Both the Install and the
+/// Update buttons come through here.
 async fn install_pi_via_amuxd<R: Runtime>(app: &AppHandle<R>) -> bool {
     let emit_app = app.clone();
-    crate::commands::setup::run_amuxd_install_pi(app, move |status, line, error| {
+    let ok = crate::commands::setup::run_amuxd_install_pi(app, move |status, line, error| {
         // amuxd emits "running"; the deps UI expects "installing".
         let status = if status == "running" {
             "installing"
@@ -591,7 +586,11 @@ async fn install_pi_via_amuxd<R: Runtime>(app: &AppHandle<R>) -> bool {
         );
     })
     .await
-    .is_ok()
+    .is_ok();
+    if ok {
+        restart_amuxd_after_update(app, "pi");
+    }
+    ok
 }
 
 /// Execute the actual install command and stream output via events.
