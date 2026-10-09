@@ -150,9 +150,9 @@ fn is_valid_scheme(s: &str) -> bool {
 /// so `get_session_deeplink` emits deeplinks with THIS build's scheme rather
 /// than the hardcoded `teamclu://`.
 fn introspect_mcp_config() -> Option<serde_json::Value> {
-    let binary = crate::runtime::supervisor::resolve_introspect_binary()?;
-    let sock = super::DaemonConfig::sock_path();
     let scheme = resolve_app_scheme().filter(|s| is_valid_scheme(s));
+    let binary = crate::runtime::supervisor::resolve_introspect_binary(scheme.as_deref())?;
+    let sock = super::DaemonConfig::sock_path();
     let entry = match scheme {
         Some(s) => serde_json::json!({
             "type": "local",
@@ -243,8 +243,9 @@ pub fn ensure_device_mcp() -> Result<bool, WorkspaceControlError> {
     // never write a bogus scheme into the device file.
     let app_scheme = resolve_app_scheme().filter(|s| is_valid_scheme(s));
 
-    // Refreshed on a dead path only: a reinstall moves the sidecar, but a user
-    // who disabled introspect should not find it back on after one. Also
+    // Refreshed when the path is dead (a reinstall moves the sidecar) or is not
+    // the sidecar the desktop injected for this brand; `enabled` is carried
+    // over, so a user who disabled introspect does not find it back on. Also
     // refresh when the resolved scheme env is missing/stale — that self-heals a
     // device file written before the scheme was injected, without a re-onboard.
     let introspect_stale = match mcp_obj.get("teamclu-introspect") {
