@@ -12,16 +12,17 @@
   "story": "I kept running into the same thing on every team I worked with: the AI agent is personal, and that's the wrong shape for a team.\n\nI'd teach my agent how we run a release. A teammate would teach theirs the same thing a month later, slightly differently. And the work itself happened in a chat window nobody else could see.\n\nSo TeamClu makes two things shared instead of private.\n\nSkills are team assets. You publish one to your team's registry with structured metadata and a changelog, and every teammate's agent follows it automatically — when you fix a broken step, the fix actually reaches people instead of dying in your dotfiles.\n\nSessions are group chats. Not 1:1 chats with a bot: add teammates, @mention people, see who's online, and branch any agent reply into its own thread. The agent is a participant, not a service.\n\nKnowledge, roles and MCP config are shared the same way, and each member still keeps a private context. Agents run on your own machines, reachable from WeCom, Feishu, Discord, KOOK, WeChat or Email.\n\nIt's MIT licensed and in beta — built in the open, and I'd rather hear where it breaks than where it's nice.",
   "thumbnail": "producthunt-kit/screenshots/thumbnail-512.png",
   "video": {
-    "_note": "PH 的 media 步骤要的是一个**可访问的视频链接**，不是文件上传（§7.5 实测：自动化给 file input 赋值做不到）。先把 MP4 传 YouTube，粘链接。",
-    "asset": "videokit/out/teamclu-loop-1080p.mp4",
-    "captions": "videokit/out/teamclu-loop-1080p.srt",
-    "spec": "1920x1080, 30fps, 87.0s, 794 KB, H.264 High, yuv420p, faststart, **no audio track**",
-    "rebuild": "node videokit/build-video.mjs",
-    "narrative": "ASSIGN -> BUILD -> REVIEW -> COMPOUND，和 PH 主打的「群聊 + 团队共享技能」同一条线（后者是 COMPOUND 那一站）。不是功能巡览。",
-    "youtubeUrl": "",
-    "_silentWarning": "成片无声。PH 能接受；YouTube 建议照 videokit/voiceover.md 配音 + 垫音乐（237 词，已配平到 87 秒）。",
-    "_noProductPixels": "全片**没有真实产品截图**。原因：仓库里每一张真实截图都有中文——拍的时候应用跑在中文界面。images/home.png 虽是英文界面，但会话预览里仍是中文。全部四站画成标注式规格图，不冒充产品截图。",
-    "_dropInEnglishCaptures": "在英文界面下重拍两张放到 videokit/src/assign-en.png 与 videokit/src/compound-en.png，重跑 node videokit/build-video.mjs 即自动改用真实截图（SCENES 的 prefer 字段）。拍摄要点见 videokit/README.md §2。"
+    "_note": "PH 的 media 步骤要的是一个**可访问的视频链接**，不是文件上传（§7.5 实测：自动化给 file input 赋值做不到）。",
+    "youtubeUrl": "https://youtu.be/aMSSTexvewE",
+    "youtubeWatchUrl": "https://www.youtube.com/watch?v=aMSSTexvewE",
+    "privacy": "unlisted",
+    "channel": "b319 (@b319 / weigan.huang@gmail.com)",
+    "uploadedAt": "2026-10-09",
+    "title": "TeamClu — Local AI Agents for Teams | Product Intro",
+    "source": "WeChat product intro (Weixin Videos_20261009104841.mp4), ~60s / 1280×720",
+    "alternateLoopAsset": "videokit/out/teamclu-loop-1080p.mp4",
+    "_alternateNote": "仓库里还有 87s ASSIGN→BUILD→REVIEW→COMPOUND loop 片（无声规格图）。2026-10-09 决定 PH Demo 用微信介绍片，不换 loop。loop 仍可当备用/后续替换。",
+    "_fillPhWith": "Paste youtubeUrl into the PH media / video field."
   },
   "gallery": [
     "producthunt-kit/screenshots/ph-1-workspace-1270x760.png",

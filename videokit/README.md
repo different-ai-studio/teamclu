@@ -202,6 +202,10 @@ x264 加的轻微抖动（这反而是缓解 banding 的），不是色阶断裂
 
 ### Product Hunt
 
+> **2026-10-09：** PH Demo **当前不是本目录的 loop 片**，而是已上传的微信介绍片
+> https://youtu.be/aMSSTexvewE（见 `producthunt-kit/README.md` §9.0）。
+> 本 videokit 成片仍可作备用；若要换回 loop，再走下面三步。
+
 1. 把 MP4 传 YouTube（Unlisted 即可，PH 只要能访问）
 2. 链接填进 PH 发帖流程的 media / video 字段
 3. 回填 `ph-draft.json` 的 `video` 与 producthunt-kit §7 的 `Demo 视频链接`

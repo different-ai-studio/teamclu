@@ -21,9 +21,10 @@
 | `src/README.md` | 截图来源与「如何重拍」说明 |
 | `src/team-skills.png` | ② 的原始截图：团队技能详情（版本历史 / owner / 恢复） |
 | `src/group-session.png` | ④ 的原始截图：会话里的 @提及与 agent 参与者 |
-| `../videokit/README.md` | **宣传视频**：87 秒英文片（YouTube + PH 用），主线 ASSIGN→BUILD→REVIEW→COMPOUND |
-| `../videokit/out/teamclu-loop-1080p.mp4` | 成片 1920×1080 / 87.0s / 793 KB（**无声**） |
-| `../videokit/youtube.md` · `voiceover.md` | YouTube 标题/描述/标签/章节；配音稿与混音命令 |
+| **PH Demo（YouTube）** | https://youtu.be/aMSSTexvewE — 微信介绍片 · Unlisted · 见 §9.0 |
+| `../videokit/README.md` | **备用** 87 秒 loop 片说明（ASSIGN→BUILD→REVIEW→COMPOUND） |
+| `../videokit/out/teamclu-loop-1080p.mp4` | 备用成片 1920×1080 / 87.0s / 793 KB（**无声**） |
+| `../videokit/youtube.md` · `voiceover.md` | 备用片的 YouTube 文案 / 配音稿 |
 | `screenshots/ph-1-workspace-1270x760.png` | Gallery ①（主图）：团队工作台 |
 | `screenshots/ph-2-team-skills-1270x760.png` | Gallery ②：**团队共享 Skills** |
 | `screenshots/ph-3-channels-1270x760.png` | Gallery ③：多通道网关 |
@@ -267,7 +268,7 @@ WeCom group: wrOOCIYgAAze..          （企业微信群 ID）
 | ☑ **§4 的两张团队截图已拍** | 原图在 `src/`；④ 已裁掉含业务数据的列表列 |
 | ☐ **确认 ④ 的裁剪可接受** | 否则用演示团队重拍完整三栏版，见 §4。**这是当前最该补的一项**——「群聊」主张最有说服力的部分（参与者头像簇、在线状态）恰恰不在图里 |
 | ☐ 决定 ②④ 是否重拍英文版 | PH 主流量在英文区，而 ②④ 是**中文界面**。`src/README.md` 写了重拍方法（应用切语言 + 演示数据）。不重拍也能发，只是转化率打折——自己权衡 |
-| ☑ **Demo 视频已做成** | `videokit/out/teamclu-loop-1080p.mp4` · 87s · 1080p · 无声。主线是 ASSIGN→BUILD→REVIEW→COMPOUND 这个环，**不是功能巡览**。见 §9。⚠️ 视频里用到的 ②④ 同样是**中文界面**，重拍英文版时要重跑构建 |
+| ☑ **Demo 视频已上传 YouTube** | **PH 用这个：** https://youtu.be/aMSSTexvewE （微信产品介绍片 · ~60s · Unlisted · 频道 b319）。见 §7 / §9。备用 loop 片仍在 `videokit/out/teamclu-loop-1080p.mp4` |
 | ☐ 官网已同步并确认 | `teamclu.ai` 是现有官网（私有仓 `teamclaw-website`）。发布前确认：域名能打开、**分享链接能出预览卡片**（og 标签）、首页叙事与本材料一致、站上无模拟图冒充产品截图 |
 | ☑ **确认 GitHub 仓库 public** | 已核实：`different-ai-studio/teamclu` 为 PUBLIC（2026-09-28） |
 | ☐ **切一个新 release** | 线上最新是 `v0.4.1-beta.43`（2026-09-05），代码已到 `beta.71`——**落后 28 个版本**。访客按下 install 拿到的是三周前的构建。见 §6 |
@@ -326,8 +327,9 @@ GitHub 仓库：https://github.com/different-ai-studio/teamclu   （已确认 pu
 下载链接：https://github.com/different-ai-studio/teamclu/releases/latest   （待切新版）
 X / Twitter：@________________          ← 没有就留空，不要编
 联系邮箱：support@teamclu.ai           ← 已确认，取自官网 Footer
-Demo 视频：videokit/out/teamclu-loop-1080p.mp4     ← 已做成，87s 1080p（见 §9）
-Demo 视频链接（YouTube）：________________        ← 上传后回填，PH 要的是链接不是文件
+Demo 视频：微信产品介绍片（~60s · 1280×720）    ← 2026-10-09 定为 PH Demo
+Demo 视频链接（YouTube）：https://youtu.be/aMSSTexvewE   ← Unlisted · 频道 b319 · 填进 PH media
+备用 loop 片：videokit/out/teamclu-loop-1080p.mp4      ← 87s 无声规格图，暂不作为 PH Demo
 ```
 
 > `[PH link]` 在 `social-launch.md` 里出现 10 处，发布后统一换成当天的帖子 URL。
@@ -458,6 +460,25 @@ TeamClu，**已否决**，原因是三条具体的：
 
 ## 9. Demo 视频
 
+### 9.0 当前 PH Demo（已定稿）
+
+| 项 | 值 |
+|----|-----|
+| **YouTube** | https://youtu.be/aMSSTexvewE |
+| Watch | https://www.youtube.com/watch?v=aMSSTexvewE |
+| 可见性 | Unlisted（PH 能嵌；首发日再视情况转 Public） |
+| 频道 | b319（`weigan.huang@gmail.com`） |
+| 素材 | 微信导出的产品介绍片 · ~60s · 1280×720 |
+| YouTube 标题 | `TeamClu — Local AI Agents for Teams \| Product Intro` |
+| 回填 | `ph-draft.json` → `video.youtubeUrl` · §7 占位符 |
+
+发帖时把上面的链接粘进 PH media / video 字段即可。
+
+> **2026-10-09 决定：** PH Demo 用这条微信介绍片，**不用**下面的 87s loop。
+> loop 仍保留作备用素材（叙事更贴 ASSIGN→BUILD→REVIEW→COMPOUND）。
+
+### 9.1 备用：87s loop 片（未用作当前 PH Demo）
+
 **成片**：`videokit/out/teamclu-loop-1080p.mp4` · 1920×1080 · 30fps · **87.0 秒** ·
 793 KB · H.264 High / yuv420p / faststart / bt709 · **无音轨**
 **字幕**：`videokit/out/teamclu-loop-1080p.srt`（9 条）
@@ -505,9 +526,13 @@ REVIEW 站那张「气泡 vs 笔记」对照图是全片信息密度最高的一
 ### 填进 PH 的步骤
 
 §7 的 `Demo 视频链接` 要的是**一个可访问的链接，不是文件上传**——§7.5 已实测，
-自动化无法给 file input 赋值。所以：
+自动化无法给 file input 赋值。
 
-1. 把 MP4 传 YouTube（**Unlisted** 即可，PH 只要能访问）
+**当前状态（2026-10-09）：已完成。** 直接用 https://youtu.be/aMSSTexvewE 。
+
+若以后要换成 loop 片，再走一遍：
+
+1. 把 `videokit/out/teamclu-loop-1080p.mp4` 传 YouTube（**Unlisted**）
 2. 复制链接，填进 PH 发帖流程的 media / video 字段
 3. 回填 §7 的 `Demo 视频链接` 与 `ph-draft.json` 的 `video.youtubeUrl`
 
