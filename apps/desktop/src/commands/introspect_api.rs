@@ -53,7 +53,18 @@ mod apps;
 mod caller;
 mod confirm;
 
+/// The port this API asks for first. Every brand's build asks for the same one,
+/// so when two brands' apps run at once the second finds it taken and binds an
+/// OS-assigned port instead (see [`bind_listener`]); whichever port it got is
+/// published in [`INTROSPECT_PORT_FILE`].
 pub const INTROSPECT_API_PORT: u16 = 13144;
+
+/// File name of the port this process is listening on, under
+/// `<amuxd home>/run/`, beside the bearer. The sidecar reads it before every
+/// call and falls back to its `--api-port` only when it is missing, so a
+/// brand that lost 13144 to another brand's app still reaches its own app.
+/// Must match `desktop_api::PORT_FILE` in the `teamclu-introspect` crate.
+pub const INTROSPECT_PORT_FILE: &str = "introspect.http.port";
 
 /// File name of the per-launch bearer, under `<amuxd home>/run/`. Must match
 /// `desktop_api::TOKEN_FILE` in the `teamclu-introspect` sidecar crate.
@@ -73,6 +84,29 @@ use tokio::net::TcpListener;
 /// Where this process publishes the bearer the sidecar has to present.
 pub fn introspect_token_path() -> PathBuf {
     super::amuxd_run_dir().join(INTROSPECT_TOKEN_FILE)
+}
+
+/// Where this process publishes the port it is listening on.
+pub fn introspect_port_path() -> PathBuf {
+    super::amuxd_run_dir().join(INTROSPECT_PORT_FILE)
+}
+
+/// Bind loopback on `preferred`, or on an OS-assigned port when another
+/// process — in practice another brand's app — already holds it. Binding only
+/// `preferred` made the second brand's whole introspect API fail to start, and
+/// its sidecar then sent its bearer to the first brand's app and got 401.
+async fn bind_listener(preferred: u16) -> std::io::Result<TcpListener> {
+    match TcpListener::bind(("127.0.0.1", preferred)).await {
+        Ok(listener) => Ok(listener),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            log::warn!(
+                "[IntrospectAPI] 127.0.0.1:{preferred} is in use (another TeamClu-family app?); \
+                 using an OS-assigned port"
+            );
+            TcpListener::bind(("127.0.0.1", 0)).await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// 256-bit random token, base64url without padding (43 chars) — the daemon's
@@ -347,11 +381,19 @@ pub async fn start_introspect_api(app: AppHandle) -> anyhow::Result<()> {
         )
     })?;
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", INTROSPECT_API_PORT)).await?;
+    let listener = bind_listener(INTROSPECT_API_PORT).await?;
+    let port = listener.local_addr()?.port();
+    let port_path = introspect_port_path();
+    write_token_file(&port_path, &port.to_string()).map_err(|e| {
+        anyhow::anyhow!(
+            "cannot write the introspect port to {}: {e}",
+            port_path.display()
+        )
+    })?;
     log::info!(
-        "[IntrospectAPI] Listening on 127.0.0.1:{} (bearer in {})",
-        INTROSPECT_API_PORT,
-        token_path.display()
+        "[IntrospectAPI] Listening on 127.0.0.1:{port} (bearer in {}, port in {})",
+        token_path.display(),
+        port_path.display()
     );
 
     axum::serve(listener, router(app, token, caller::daemon_verifier()))
@@ -1375,6 +1417,46 @@ mod tests {
             .method("POST")
             .uri(path)
             .header("host", "127.0.0.1:13144")
+    }
+
+    #[test]
+    fn sidecar_reads_the_files_this_process_writes() {
+        // Two crates, two copies of each name: a rename on one side would leave
+        // the sidecar reading a file nobody writes.
+        let sidecar = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/teamclu-introspect/src/desktop_api.rs"),
+        )
+        .unwrap();
+        for (name, value) in [
+            ("TOKEN_FILE", INTROSPECT_TOKEN_FILE),
+            ("PORT_FILE", INTROSPECT_PORT_FILE),
+        ] {
+            let decl = format!("pub const {name}: &str = \"{value}\";");
+            assert!(sidecar.contains(&decl), "sidecar must declare {decl}");
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_listener_takes_the_preferred_port_when_it_is_free() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let listener = bind_listener(free).await.unwrap();
+        assert_eq!(listener.local_addr().unwrap().port(), free);
+    }
+
+    #[tokio::test]
+    async fn bind_listener_falls_back_when_another_app_holds_the_port() {
+        // Another brand's app already listening on the shared default.
+        let other = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let taken = other.local_addr().unwrap().port();
+        let listener = bind_listener(taken).await.unwrap();
+        let got = listener.local_addr().unwrap().port();
+        assert_ne!(got, taken);
+        assert_ne!(got, 0);
     }
 
     #[tokio::test]

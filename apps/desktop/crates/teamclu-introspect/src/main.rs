@@ -39,7 +39,8 @@ struct Args {
     #[arg(long, default_value = ".")]
     workspace: String,
 
-    /// Port of the local TeamClu API server
+    /// Port of the local TeamClu API server, used only when the desktop has
+    /// not published one in `<amuxd home>/run/introspect.http.port`.
     #[arg(long, default_value_t = 1420)]
     api_port: u16,
 

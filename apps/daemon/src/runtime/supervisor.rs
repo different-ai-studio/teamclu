@@ -337,10 +337,25 @@ fn introspect_candidates_in_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Whether the `.app` at `bundle` registers the URL scheme `scheme`, i.e. is
+/// that brand's app. Every brand ships a `teamclu-introspect`, so the binary
+/// alone does not say whose it is; the scheme in `Info.plist` does.
+#[cfg(target_os = "macos")]
+fn bundle_registers_scheme(bundle: &Path, scheme: &str) -> bool {
+    std::fs::read_to_string(bundle.join("Contents/Info.plist"))
+        .map(|plist| plist.contains(&format!("<string>{scheme}</string>")))
+        .unwrap_or(false)
+}
+
 /// Production daemons run from `~/.amuxd/bin/amuxd`, but `teamclu-introspect`
 /// stays in the desktop app bundle (or dev `apps/desktop/binaries/`). Search
 /// those locations after the current-exe directory.
-fn find_introspect_in_installed_app_bundles() -> Option<PathBuf> {
+///
+/// With `scheme` (this daemon's brand), a macOS bundle counts only if it
+/// registers that scheme. Taking the first bundle found let a copilot361
+/// daemon pin TeamClu.app's sidecar — `read_dir` order on APFS is not
+/// alphabetical — and a path that exists is never re-resolved.
+fn find_introspect_in_installed_app_bundles(scheme: Option<&str>) -> Option<PathBuf> {
     let mut roots = Vec::new();
     #[cfg(target_os = "macos")]
     {
@@ -366,49 +381,67 @@ fn find_introspect_in_installed_app_bundles() -> Option<PathBuf> {
         }
     }
 
-    for root in roots {
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let bundle = entry.path();
-            #[cfg(target_os = "macos")]
-            {
-                if bundle.extension().and_then(|e| e.to_str()) != Some("app") {
-                    continue;
-                }
-                if let Some(found) = introspect_candidates_in_dir(&bundle.join("Contents/MacOS")) {
-                    return Some(found);
-                }
+    roots
+        .iter()
+        .find_map(|root| find_introspect_under(root, scheme))
+}
+
+/// One root of [`find_introspect_in_installed_app_bundles`].
+fn find_introspect_under(root: &Path, scheme: Option<&str>) -> Option<PathBuf> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = scheme;
+    let entries = std::fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let bundle = entry.path();
+        #[cfg(target_os = "macos")]
+        {
+            if bundle.extension().and_then(|e| e.to_str()) != Some("app") {
+                continue;
             }
-            #[cfg(target_os = "windows")]
-            {
-                if !bundle.is_dir() {
-                    continue;
-                }
-                if let Some(found) = introspect_candidates_in_dir(&bundle) {
-                    return Some(found);
-                }
+            if scheme.is_some_and(|s| !bundle_registers_scheme(&bundle, s)) {
+                continue;
+            }
+            if let Some(found) = introspect_candidates_in_dir(&bundle.join("Contents/MacOS")) {
+                return Some(found);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if !bundle.is_dir() {
+                continue;
+            }
+            if let Some(found) = introspect_candidates_in_dir(&bundle) {
+                return Some(found);
             }
         }
     }
     None
 }
 
-pub(crate) fn resolve_introspect_binary() -> Option<String> {
+/// The sidecar path the desktop app injects when it manages this daemon — its
+/// own bundle's copy, so always this brand's. `None` when unset or missing.
+fn injected_introspect_binary() -> Option<String> {
+    let path = std::env::var("TEAMCLU_INTROSPECT_BIN").ok()?;
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if Path::new(trimmed).is_file() {
+        return Some(trimmed.to_string());
+    }
+    tracing::warn!(
+        path = trimmed,
+        "TEAMCLU_INTROSPECT_BIN set but file missing; falling back"
+    );
+    None
+}
+
+/// Resolve the `teamclu-introspect` binary. `scheme` is this daemon's brand
+/// URL scheme; it keeps the last-resort scan of installed apps to this brand.
+pub(crate) fn resolve_introspect_binary(scheme: Option<&str>) -> Option<String> {
     // Desktop-managed mode injects the bundled sidecar absolute path.
-    if let Ok(path) = std::env::var("TEAMCLU_INTROSPECT_BIN") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            let p = std::path::Path::new(trimmed);
-            if p.is_file() {
-                return Some(trimmed.to_string());
-            }
-            tracing::warn!(
-                path = trimmed,
-                "TEAMCLU_INTROSPECT_BIN set but file missing; falling back"
-            );
-        }
+    if let Some(path) = injected_introspect_binary() {
+        return Some(path);
     }
 
     if std::process::Command::new("sh")
@@ -435,7 +468,7 @@ pub(crate) fn resolve_introspect_binary() -> Option<String> {
         return Some(resolved.to_string_lossy().into_owned());
     }
 
-    if let Some(resolved) = find_introspect_in_installed_app_bundles() {
+    if let Some(resolved) = find_introspect_in_installed_app_bundles(scheme) {
         return Some(resolved.to_string_lossy().into_owned());
     }
 
@@ -458,14 +491,28 @@ pub(crate) fn resolve_introspect_binary() -> Option<String> {
     None
 }
 
-pub(crate) fn introspect_command_stale(existing: &serde_json::Value) -> bool {
+fn introspect_command_binary(existing: &serde_json::Value) -> Option<&str> {
     existing
         .get("command")
         .and_then(|c| c.as_array())
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
-        .map(|p| !Path::new(p).exists())
-        .unwrap_or(true)
+}
+
+/// Whether a registered `teamclu-introspect` entry needs rewriting: its binary
+/// is gone, or the desktop injected this brand's own sidecar and the entry runs
+/// a different one. A path that still exists is otherwise kept, which is how a
+/// copilot361 daemon stayed on TeamClu.app's sidecar for good.
+pub(crate) fn introspect_command_stale(existing: &serde_json::Value) -> bool {
+    introspect_command_stale_against(existing, injected_introspect_binary().as_deref())
+}
+
+fn introspect_command_stale_against(existing: &serde_json::Value, injected: Option<&str>) -> bool {
+    match introspect_command_binary(existing) {
+        None => true,
+        Some(p) if !Path::new(p).exists() => true,
+        Some(p) => injected.is_some_and(|own| own != p),
+    }
 }
 
 /// Port of desktop `ensure_inherent_config`, now down to pruning stale
@@ -2137,6 +2184,70 @@ mod tests {
     use crate::config::global_team_store::TEST_HOME_LOCK;
     use crate::runtime::refresh::{self, refresh_watch};
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn introspect_entry_is_stale_when_its_binary_is_gone_or_not_this_brands() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = dir.path().join("ours-introspect");
+        let theirs = dir.path().join("theirs-introspect");
+        std::fs::write(&ours, "").unwrap();
+        std::fs::write(&theirs, "").unwrap();
+        let entry = |bin: &Path| serde_json::json!({ "command": [bin, "--api-port", "13144"] });
+        let ours_s = ours.to_str().unwrap();
+
+        assert!(introspect_command_stale_against(
+            &serde_json::json!({}),
+            None
+        ));
+        assert!(introspect_command_stale_against(
+            &entry(&dir.path().join("gone")),
+            None
+        ));
+        // No injected path (a CLI-started daemon): an existing binary is kept.
+        assert!(!introspect_command_stale_against(&entry(&theirs), None));
+        assert!(!introspect_command_stale_against(
+            &entry(&ours),
+            Some(ours_s)
+        ));
+        // The desktop injected this brand's sidecar; another one is replaced.
+        assert!(introspect_command_stale_against(
+            &entry(&theirs),
+            Some(ours_s)
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn app_scan_only_takes_the_bundle_that_registers_this_brands_scheme() {
+        let root = tempfile::tempdir().unwrap();
+        for (app, scheme) in [
+            ("TeamClu.app", "teamclu"),
+            ("Copilot 361.app", "copilot361"),
+        ] {
+            let macos = root.path().join(app).join("Contents/MacOS");
+            std::fs::create_dir_all(&macos).unwrap();
+            std::fs::write(macos.join("teamclu-introspect"), "").unwrap();
+            std::fs::write(
+                root.path().join(app).join("Contents/Info.plist"),
+                format!("<key>CFBundleURLSchemes</key><array><string>{scheme}</string></array>"),
+            )
+            .unwrap();
+        }
+        let found = find_introspect_under(root.path(), Some("copilot361")).unwrap();
+        assert!(
+            found.starts_with(root.path().join("Copilot 361.app")),
+            "{}",
+            found.display()
+        );
+        let found = find_introspect_under(root.path(), Some("teamclu")).unwrap();
+        assert!(
+            found.starts_with(root.path().join("TeamClu.app")),
+            "{}",
+            found.display()
+        );
+        assert!(find_introspect_under(root.path(), Some("betly")).is_none());
+        assert!(find_introspect_under(root.path(), None).is_some());
+    }
 
     fn bundled_deploy_app() -> &'static str {
         include_str!("../../../../packages/app/src/lib/skills/deploy-app/SKILL.md")
