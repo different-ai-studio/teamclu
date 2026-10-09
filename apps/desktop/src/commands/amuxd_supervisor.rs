@@ -939,6 +939,36 @@ impl AmuxdSupervisor {
         Self::ensure_started_locked(&state).await
     }
 
+    /// Restart amuxd only if one is up — the case after a pi install.
+    ///
+    /// amuxd pools its pi hosts and keeps them across an in-place install, so
+    /// a host spawned before `amuxd install-pi` goes on running the old tree.
+    /// From 0.84.2 to 1.1.0 the install also moved `pi-ai` out of
+    /// `pi-coding-agent/node_modules`, and such a host failed every model call
+    /// with "Cannot find module …/pi-ai/dist/api/openai-completions.js" until
+    /// the app was restarted. With no daemon running there is no host to
+    /// replace, so this does not start one (first run installs pi before the
+    /// daemon is set up). Returns whether it restarted.
+    pub async fn restart_if_running<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
+        let state = app.state::<AmuxdSupervisor>();
+        if state.app_exiting.load(Ordering::SeqCst) {
+            return Err("amuxd supervisor is shutting down".into());
+        }
+        let _ensure = state.ensure_lock.lock().await;
+        let child_alive = {
+            let mut inner = state.inner.lock().await;
+            child_is_alive(&mut inner.child)
+        };
+        if !child_alive && !daemon_healthz_ok().await {
+            return Ok(false);
+        }
+        {
+            let mut inner = state.inner.lock().await;
+            stop_with_child_fallback_async(&mut inner, STOP_TIMEOUT).await;
+        }
+        Self::ensure_started_locked(&state).await.map(|()| true)
+    }
+
     pub async fn status<R: Runtime>(app: &AppHandle<R>) -> DaemonSupervisorStatus {
         let state = app.state::<AmuxdSupervisor>();
         let mut guard = state.inner.lock().await;
