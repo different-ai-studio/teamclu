@@ -1348,7 +1348,6 @@ impl RuntimeSupervisor {
                     .get("display_name")
                     .cloned()
                     .unwrap_or_default(),
-                cloud_token_file: snapshot.bindings.get("TC_ACCESS_TOKEN_FILE").cloned(),
                 gateway_token: None,
                 // Not a spawn path with a listener behind it.
                 ai_proxy_base: None,
@@ -1356,7 +1355,6 @@ impl RuntimeSupervisor {
             .unwrap_or(teamclu_runtime_env::SystemEnvContext {
                 actor_id: String::new(),
                 display_name: String::new(),
-                cloud_token_file: None,
                 gateway_token: None,
                 // Not a spawn path with a listener behind it.
                 ai_proxy_base: None,
@@ -1841,7 +1839,6 @@ impl RuntimeSupervisor {
                     .get("display_name")
                     .cloned()
                     .unwrap_or_default(),
-                cloud_token_file: previous.bindings.get("TC_ACCESS_TOKEN_FILE").cloned(),
                 gateway_token: None,
                 // Not a spawn path with a listener behind it.
                 ai_proxy_base: None,
@@ -2437,7 +2434,6 @@ mod tests {
             teamclu_runtime_env::SystemEnvContext {
                 actor_id: "actor-test".to_string(),
                 display_name: "Agent Test".to_string(),
-                cloud_token_file: None,
                 gateway_token: None,
                 // Not a spawn path with a listener behind it.
                 ai_proxy_base: None,

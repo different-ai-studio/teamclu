@@ -18,7 +18,7 @@ Agent 最终拿到的环境是三层合并结果（后层覆盖前层同名 key�
 |---|---|---|
 | **Personal** | 本机用户配置的密钥 / URL | `~/.{brand}/secrets/personal-secrets.json.enc` |
 | **Team** | 团队共享加密密钥 | `{team}/_secrets/*.enc.json`（经 team secret 解密） |
-| **System** | 运行时派生 | `actor_id`、`tc_api_key`、`display_name`、`TC_ACCESS_TOKEN_FILE` 等 |
+| **System** | 运行时派生 | `actor_id`、`tc_gateway_token`、`display_name`、`TEAMCLU_RUNTIME_CONTEXT_*` 等（云端 access token **不在**其中，见 §1.1） |
 
 合并入口：`teamclu_runtime_env::resolve_runtime_env` →
 `assemble_runtime_env` → daemon `assemble_spawn_runtime_env` → 各 backend
@@ -35,6 +35,38 @@ flowchart TB
 ```
 
 优先级口诀：**System / Team 覆盖 Personal；Host OS 环境可再挡住注入（host shadowed）**。
+
+### 1.1 云端 access token：不进 env、不落盘，向 daemon 要
+
+daemon 自己的云端 access token（GoTrue JWT，约 1 小时有效）**既不注入 env，也不写文件**。
+2026-10 之前它写在 `teams/<id>/state/cloud-token`（0600）并以 `TC_ACCESS_TOKEN_FILE`
+广播给每个 agent 进程；0600 挡的是别的系统用户，挡不住同一用户下的任何进程
+（别的 AI 工具、npm postinstall……），于是改成按需向 daemon 的回环监听索取：
+
+| 项 | 值 |
+|---|---|
+| 端点 | `POST ${TEAMCLU_RUNTIME_CONTEXT_URL}/internal/runtime-context/cloud-token` |
+| 鉴权 | `Authorization: Bearer ${TEAMCLU_RUNTIME_CONTEXT_TOKEN}`（每个 host 代际一枚，只在 amuxd 自己起的 host 及其子进程的 env 里，随 host 退出作废） |
+| Body | `{"hostGenerationId": "${TEAMCLU_HOST_GENERATION_ID}", "backendKind": "${TEAMCLU_AGENT_BACKEND}"}` |
+| 响应 | 默认 JSON：`{ accessToken, expiresAtEpoch, actorId, teamId }`；带 `Accept: text/plain` 时直接返回裸 token |
+| 失败 | 401 令牌不对 / 不是这个 host 的；403 非回环；503 没有云后端；502 刷新失败 |
+
+skill 里一行即可：
+
+```bash
+TOKEN=$(curl -sf -X POST "$TEAMCLU_RUNTIME_CONTEXT_URL/internal/runtime-context/cloud-token" \
+  -H "Authorization: Bearer $TEAMCLU_RUNTIME_CONTEXT_TOKEN" \
+  -H 'Content-Type: application/json' -H 'Accept: text/plain' \
+  -d "{\"hostGenerationId\":\"$TEAMCLU_HOST_GENERATION_ID\",\"backendKind\":\"$TEAMCLU_AGENT_BACKEND\"}")
+```
+
+拿到的仍是 daemon 账号的完整 JWT。为了让提示注入「让 agent 把 token 打出来」也带不走它，
+pi 扩展（`teamclu.ts` 的 `tool_result` 钩子）会把 daemon 发过的 token 和 host 自己的
+`TEAMCLU_RUNTIME_CONTEXT_TOKEN` 从所有工具结果里替换成占位符，模型和云端 transcript
+都只见占位符。每次发放 daemon 都记一条 `runtime_context_cloud_token` 日志（带 host 代际，不带 token）。
+
+启动时 `layout::scrub_team_state_credentials` 会删掉旧 daemon 留下的所有 `state/cloud-token`，
+并把 `state/backend.toml`（含 `refresh_token`）收紧为 0600。
 
 ---
 
@@ -206,6 +238,8 @@ Agent 工具侧的 `load_agent_env_listings` 使用同一套 personal 合并逻�
 | Workspace bind | `apps/desktop/src/commands/window.rs` |
 | amuxd brand env | `apps/desktop/src/commands/amuxd_supervisor.rs` |
 | Daemon spawn 组装 | `apps/daemon/src/runtime/env_assembly.rs` |
+| 云端 access token 发放 | `apps/daemon/src/http/runtime_context.rs`（`cloud_token`） |
+| 工具结果脱敏 | `apps/daemon/assets/pi-extension/teamclu.ts`（`tool_result` 钩子） |
 | Host pool / generation | `apps/daemon/src/runtime/opencode_http/host_pool.rs` |
 | 激活诊断 | `apps/daemon/src/runtime/supervisor.rs`（`env_activation_diagnostics`） |
 | 前端状态 rollup | `packages/app/src/lib/diagnostics/env-diagnostics.ts` |

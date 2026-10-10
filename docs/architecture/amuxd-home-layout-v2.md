@@ -16,7 +16,7 @@
 > | ③ | 两个家目录各一个 helper 入口 | ✅ |
 > | ④a | 根目录收敛 `run/` `logs/` `cache/` + 白名单测试 | ✅ |
 > | ④b-1 | `teams/<id>/{shared,state,workspace}` 三层 | ✅ |
-> | ④b-2 | `backend.toml` + `cloud-token` 下沉、`_unclaimed` + claim 时 rename | ✅ |
+> | ④b-2 | `backend.toml` + `cloud-token` 下沉、`_unclaimed` + claim 时 rename（`cloud-token` 文件已于 2026-10 移除，见 `personal-env-and-runtime-env.md`） | ✅ |
 > | ④b-3 | `runtimes.toml` / `sessions/` / `history/` / `mcp-configs/` / `attachments/` / `apps/` / `members.toml` 下沉 | ✅ |
 > | ④b-4 | 每团队一把 `secret.key` + `secrets.enc` 下沉、删掉反向搬运器 | ✅ |
 > | ④c | 旧路径一次性清理 + 删除全部迁移代码 + `amuxd clear` 重写 | ✅ |
@@ -118,7 +118,6 @@ daemon.toml  device-id  mcp.json  teams/  run/  logs/  cache/  bin/
             ├── team.toml              # 团队级配置（§4.3）
             ├── secret.key             # 本团队主密钥，0600
             ├── secrets.enc            # 团队密钥 + channels 凭证
-            ├── cloud-token            # 0600，注入为 TC_ACCESS_TOKEN_FILE
             ├── opencode.json          # 团队 provider 配置（managed LLM 物化）
             ├── cloud/
             │   ├── mcp.json           # 本机已 Install 的团队 MCP（Cursor mcpServers）

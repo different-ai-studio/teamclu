@@ -127,6 +127,10 @@ async fn spawn_dedicated_runtime_context_listener(
             "/internal/runtime-context/verify",
             post(crate::http::runtime_context::verify_runtime_caller),
         )
+        .route(
+            "/internal/runtime-context/cloud-token",
+            post(crate::http::runtime_context::cloud_token),
+        )
         .with_state(state);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let join = tokio::spawn(async move {

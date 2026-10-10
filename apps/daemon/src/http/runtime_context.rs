@@ -150,6 +150,131 @@ pub async fn verify_runtime_caller(
     }
 }
 
+/// Body of `/internal/runtime-context/cloud-token`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CloudTokenRequest {
+    #[serde(rename = "hostGenerationId")]
+    pub host_generation_id: String,
+    #[serde(rename = "backendKind")]
+    pub backend_kind: String,
+}
+
+/// The daemon's current cloud access token, for the agent host that asks.
+///
+/// This replaces the `state/cloud-token` file the daemon used to keep for
+/// agents (`TC_ACCESS_TOKEN_FILE`). That file was `0600`, which is the wrong
+/// boundary: every process of this OS user could read it, not only the hosts
+/// amuxd spawned. Here the caller has to present the runtime-context token of
+/// a live host generation — the same proof `verify` asks for — and that token
+/// exists only in the environment of the hosts this daemon started (and,
+/// through them, of the skills they run), never on disk.
+///
+/// What comes back is still the daemon's own GoTrue JWT, good for whatever
+/// that identity may do until it expires (~1h). The pi extension redacts it
+/// from tool results, so a prompt-injected `curl` cannot print it into a
+/// transcript; and every issue is logged with the host generation.
+///
+/// `Accept: text/plain` returns the bare token, so a skill needs `curl` and
+/// nothing else. Anything else gets JSON.
+pub async fn cloud_token(
+    State(state): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<CloudTokenRequest>,
+) -> Response {
+    if !runtime_context_peer_allowed(peer) {
+        return problem(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Runtime context cloud-token is loopback-only",
+        );
+    }
+    let Some(service) = state.runtime_context.clone() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime_context_unavailable",
+            "Runtime context service is not configured",
+        );
+    };
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .trim();
+    if let Err(err) = service.verify_token(bearer, &body.backend_kind, &body.host_generation_id) {
+        warn!(
+            event = "runtime_context_cloud_token",
+            backend_kind = %body.backend_kind,
+            host_generation_id = %body.host_generation_id,
+            result = err.code(),
+            "cloud token refused"
+        );
+        return problem(
+            StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            err.code(),
+            session_context_error_message(&err),
+        );
+    }
+    let Some(backend) = state.backend.clone() else {
+        return problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cloud_backend_unavailable",
+            "No cloud backend to issue a token from",
+        );
+    };
+    let token = match backend.auth_token().await {
+        Ok(token) => token,
+        Err(err) => {
+            warn!(
+                event = "runtime_context_cloud_token",
+                backend_kind = %body.backend_kind,
+                host_generation_id = %body.host_generation_id,
+                error = ?err,
+                result = "refresh_failed",
+                "cloud token could not be refreshed"
+            );
+            return problem(
+                StatusCode::BAD_GATEWAY,
+                "cloud_token_unavailable",
+                "Cloud access token could not be refreshed",
+            );
+        }
+    };
+    tracing::info!(
+        event = "runtime_context_cloud_token",
+        backend_kind = %body.backend_kind,
+        host_generation_id = %body.host_generation_id,
+        result = "issued",
+        "cloud token issued to agent host"
+    );
+    let wants_text = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|m| m.trim().starts_with("text/plain")))
+        .unwrap_or(false);
+    if wants_text {
+        return (
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            token,
+        )
+            .into_response();
+    }
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({
+            "accessToken": token,
+            "expiresAtEpoch": backend.cached_credential_expiry_epoch(),
+            "actorId": backend.actor_id(),
+            "teamId": backend.team_id(),
+        })),
+    )
+        .into_response()
+}
+
 pub async fn session_prompt(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -451,6 +576,127 @@ mod tests {
             verify(&state, &token, "", "pi", loopback).await,
             StatusCode::CONFLICT
         );
+    }
+
+    async fn cloud_token_call(
+        state: &HttpState,
+        bearer: &str,
+        generation: &str,
+        backend: &str,
+        peer: SocketAddr,
+        accept: Option<&str>,
+    ) -> (StatusCode, String) {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {bearer}").parse().unwrap(),
+        );
+        if let Some(accept) = accept {
+            headers.insert(header::ACCEPT, accept.parse().unwrap());
+        }
+        let body = CloudTokenRequest {
+            host_generation_id: generation.into(),
+            backend_kind: backend.into(),
+        };
+        let response =
+            cloud_token(State(state.clone()), ConnectInfo(peer), headers, Json(body)).await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[tokio::test]
+    async fn cloud_token_is_issued_only_to_a_live_host_of_this_daemon() {
+        use crate::runtime::context_service::RuntimeContextService;
+        use std::sync::Arc;
+        use teamclu_runtime_env::session_context::TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV;
+
+        let service = Arc::new(RuntimeContextService::new());
+        let token = service
+            .env_for_generation(crate::proto::amux::AgentType::Pi, "pi-gen-1")
+            .get(TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV)
+            .cloned()
+            .expect("token");
+        let dir = tempfile::tempdir().unwrap();
+        let backend: Arc<dyn crate::backend::Backend> = Arc::new(
+            crate::backend::mock::MockBackend::with_identity("team-1", "actor-1"),
+        );
+        let state = state_with(service, dir.path()).with_backend(Some(backend));
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242);
+
+        // The live token of this host → the backend's current access token,
+        // with the identity it speaks for.
+        let (status, body) =
+            cloud_token_call(&state, &token, "pi-gen-1", "pi", loopback, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["accessToken"], "mock-token");
+        assert_eq!(json["teamId"], "team-1");
+        assert_eq!(json["actorId"], "actor-1");
+
+        // `Accept: text/plain` → the bare token, for a skill that has `curl`
+        // and nothing else.
+        let (status, body) = cloud_token_call(
+            &state,
+            &token,
+            "pi-gen-1",
+            "pi",
+            loopback,
+            Some("text/plain"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "mock-token");
+
+        // A token amuxd never minted — what any other process on the machine
+        // would have to guess now that nothing is on disk.
+        let (status, body) =
+            cloud_token_call(&state, "rtctx_invalid", "pi-gen-1", "pi", loopback, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!body.contains("mock-token"));
+        // A real token only speaks for its own host and backend.
+        assert_eq!(
+            cloud_token_call(&state, &token, "pi-gen-2", "pi", loopback, None)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            cloud_token_call(&state, &token, "pi-gen-1", "opencode", loopback, None)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        // Loopback only, like every runtime-context route.
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 4242);
+        assert_eq!(
+            cloud_token_call(&state, &token, "pi-gen-1", "pi", remote, None)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_token_without_a_cloud_backend_is_unavailable_not_forged() {
+        use crate::runtime::context_service::RuntimeContextService;
+        use std::sync::Arc;
+        use teamclu_runtime_env::session_context::TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV;
+
+        let service = Arc::new(RuntimeContextService::new());
+        let token = service
+            .env_for_generation(crate::proto::amux::AgentType::Pi, "pi-gen-1")
+            .get(TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV)
+            .cloned()
+            .expect("token");
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with(service, dir.path());
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242);
+        let (status, body) =
+            cloud_token_call(&state, &token, "pi-gen-1", "pi", loopback, None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     }
 
     #[tokio::test]

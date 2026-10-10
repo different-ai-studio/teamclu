@@ -907,16 +907,6 @@ impl DaemonConfig {
         super::layout::run_dir().join("amuxd.http.token")
     }
 
-    /// File the daemon keeps refreshed with the current cloud access token
-    /// (JWT), written `0600`. Injected into agent processes as
-    /// `TC_ACCESS_TOKEN_FILE` so long-running agents can re-read a fresh token.
-    ///
-    /// Refreshed from the active team's `backend.toml` and only valid for that
-    /// team, so it sits beside it.
-    pub fn cloud_token_path() -> PathBuf {
-        super::layout::active_state_dir().join("cloud-token")
-    }
-
     pub fn http_port_path() -> PathBuf {
         super::layout::run_dir().join("amuxd.http.port")
     }

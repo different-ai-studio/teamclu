@@ -208,18 +208,6 @@ pub fn resolve_runtime_env(
             EnvSource::System,
         );
     }
-    if let Some(path) = system.cloud_token_file.filter(|path| !path.is_empty()) {
-        insert_direct(
-            &mut bindings,
-            &mut provenance,
-            &mut overrides,
-            "TC_ACCESS_TOKEN_FILE".to_string(),
-            path,
-            EnvScope::System,
-            EnvSource::System,
-        );
-    }
-
     add_aliases(
         &mut bindings,
         &mut provenance,
@@ -385,7 +373,6 @@ mod tests {
         SystemEnvContext {
             actor_id: "actor-1".to_string(),
             display_name: "Agent".to_string(),
-            cloud_token_file: Some("/tmp/cloud-token".to_string()),
             gateway_token: None,
             ai_proxy_base: None,
         }

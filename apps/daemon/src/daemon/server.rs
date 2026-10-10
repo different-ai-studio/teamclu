@@ -37,8 +37,6 @@ use crate::daemon::session_events::{
     format_idea_prompt, message_attachment_urls, parse_mention_actor_ids, resolve_mention_actor_ids,
 };
 
-#[path = "cloud_token_file.rs"]
-mod cloud_token_file;
 #[path = "collab_runtime_ensure.rs"]
 mod collab_runtime_ensure;
 #[path = "runtime_env.rs"]
@@ -1317,17 +1315,9 @@ impl DaemonServer {
             });
         }
 
-        // Keep the cloud access-token file fresh for long-running agents. Only
-        // cloud backends have an auth surface to source it from; the env
-        // injection in `assemble_spawn_runtime_env_for_worktree` is gated the
-        // same way, so `TC_ACCESS_TOKEN_FILE` is only advertised when this task
-        // is actually maintaining the file.
-        if self.backend.cloud_auth_health().is_some() {
-            cloud_token_file::spawn(
-                self.backend.clone(),
-                crate::config::DaemonConfig::cloud_token_path(),
-            );
-        }
+        // No cloud access-token file is written for agents any more. A host
+        // that needs the daemon's token asks the runtime-context listener
+        // (`http::runtime_context::cloud_token`) with its own host token.
 
         // Deferred (post-bind) cloud-dependent startup, moved here so the HTTP
         // health endpoint bound promptly above. Channel gateways + shared-dir

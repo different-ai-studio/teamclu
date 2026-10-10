@@ -96,6 +96,25 @@ type ExtensionContext = {
     ): Promise<unknown>;
   };
 };
+/** What pi hands a `tool_result` handler (`ToolResultEventBase` upstream). */
+type ToolResultEvent = {
+  toolName: string;
+  toolCallId: string;
+  input: Record<string, unknown>;
+  content: PiToolContent[];
+  details?: unknown;
+  structuredContent?: unknown;
+  isError: boolean;
+};
+/** What a `tool_result` handler may return. Omitted fields keep pi's values,
+ *  except `details`, which pi takes from the hook result alone — and
+ *  `structuredContent`, which is dropped when `content` is replaced without it. */
+type ToolResultEventResult = {
+  content?: PiToolContent[];
+  details?: unknown;
+  structuredContent?: unknown;
+  isError?: boolean;
+};
 type ExtensionAPI = {
   on(
     event: "tool_call",
@@ -103,6 +122,13 @@ type ExtensionAPI = {
       event: ToolCallEvent,
       ctx: ExtensionContext,
     ) => Promise<{ block: boolean; reason?: string } | undefined>,
+  ): void;
+  on(
+    event: "tool_result",
+    handler: (
+      event: ToolResultEvent,
+      ctx: ExtensionContext,
+    ) => Promise<ToolResultEventResult | undefined>,
   ): void;
   on(
     event: "before_agent_start",
@@ -232,6 +258,123 @@ async function resolveTeamcluSessionId(backendSessionId: string): Promise<string
     throw new Error("session_context_unavailable");
   }
   return teamcluSessionId;
+}
+
+// ---------------------------------------------------------------------------
+// Cloud access token: fetched from amuxd on demand, redacted from tool results
+// ---------------------------------------------------------------------------
+//
+// The daemon's cloud JWT used to sit in a `0600` file advertised to every agent
+// as `TC_ACCESS_TOKEN_FILE`. That file was readable by every process of the OS
+// user, not just the hosts amuxd spawned, so it is gone: a skill that needs the
+// token asks `/internal/runtime-context/cloud-token` with this host's
+// runtime-context token (docs/architecture/personal-env-and-runtime-env.md
+// §1.1). What it gets is still the daemon's full identity for up to an hour,
+// so the `tool_result` hook keeps it out of transcripts: every token the daemon
+// has issued to this host, and the host's own runtime-context token, are
+// replaced with a placeholder before the model — and the session file, and the
+// cloud transcript — see the tool output.
+
+const REDACTED_CLOUD_TOKEN = "[teamclu:cloud-access-token redacted]";
+/** Three base64url segments, the first starting with `{"` — the shape of any
+ *  JWT the daemon could hand out. Only a trigger to re-ask the daemon what it
+ *  has issued; redaction itself is by exact match, never by shape. */
+const JWT_LIKE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+
+/** Every cloud token this host has seen the daemon issue, plus the host's own
+ *  runtime-context token. Never evicted: an expired token in a transcript is
+ *  still a credential for the minutes it has left, and the set stays small
+ *  (one new token an hour). */
+const knownCloudTokens = new Set<string>();
+let knownCloudTokensRefresh: Promise<void> | undefined;
+
+function rememberCloudToken(token: string | undefined): void {
+  const trimmed = token?.trim();
+  if (trimmed && trimmed.length >= 16) knownCloudTokens.add(trimmed);
+}
+
+/** Ask amuxd for its current cloud access token. `undefined` when this is not
+ *  an amuxd-spawned host (no runtime-context env) or the daemon refused. */
+async function fetchCloudAccessToken(): Promise<string | undefined> {
+  const baseUrl = process.env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
+  const token = process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
+  const generationId = process.env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const backendKind = process.env.TEAMCLU_AGENT_BACKEND?.trim();
+  if (!baseUrl || !token || !generationId || !backendKind) return undefined;
+  try {
+    const resp = await fetch(`${baseUrl}/internal/runtime-context/cloud-token`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/plain",
+      },
+      body: JSON.stringify({ hostGenerationId: generationId, backendKind }),
+    });
+    if (!resp.ok) return undefined;
+    const text = (await resp.text()).trim();
+    return text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Refresh the known set from the daemon, coalescing concurrent callers. */
+function refreshKnownCloudTokens(): Promise<void> {
+  if (!knownCloudTokensRefresh) {
+    knownCloudTokensRefresh = fetchCloudAccessToken()
+      .then(rememberCloudToken)
+      .finally(() => {
+        knownCloudTokensRefresh = undefined;
+      });
+  }
+  return knownCloudTokensRefresh;
+}
+
+/** Does `text` carry a JWT that is not (yet) in `known`? The daemon rotates
+ *  its token hourly, so a skill may print one issued since we last asked. */
+function unknownJwtIn(text: string, known: Set<string>): boolean {
+  for (const m of text.match(JWT_LIKE) ?? []) {
+    if (!known.has(m)) return true;
+  }
+  return false;
+}
+
+/** Replace every known token in `text`. Exact match only. */
+function redactKnownCloudTokens(text: string, tokens: Iterable<string>): string {
+  let out = text;
+  for (const token of tokens) {
+    if (token && out.includes(token)) out = out.split(token).join(REDACTED_CLOUD_TOKEN);
+  }
+  return out;
+}
+
+/** Redact a tool result's text parts and structured content. `undefined` when
+ *  nothing matched, so pi keeps the original. Images pass through untouched. */
+function redactToolResult(
+  content: PiToolContent[],
+  structuredContent: unknown,
+  tokens: Iterable<string>,
+): { content: PiToolContent[]; structuredContent: unknown } | undefined {
+  let changed = false;
+  const nextContent = content.map((part) => {
+    if (!part || part.type !== "text" || typeof part.text !== "string") return part;
+    const text = redactKnownCloudTokens(part.text, tokens);
+    if (text === part.text) return part;
+    changed = true;
+    return { ...part, text };
+  });
+  let nextStructured = structuredContent;
+  if (structuredContent !== undefined) {
+    const raw = JSON.stringify(structuredContent);
+    const scrubbed = typeof raw === "string" ? redactKnownCloudTokens(raw, tokens) : raw;
+    if (scrubbed !== raw) {
+      changed = true;
+      nextStructured = JSON.parse(scrubbed);
+    }
+  }
+  if (!changed) return undefined;
+  return { content: nextContent, structuredContent: nextStructured };
 }
 
 const sessionPromptAppendByCacheKey = new Map<string, string>();
@@ -1799,6 +1942,45 @@ export default async function (pi: ExtensionAPI) {
         return undefined;
       }
       throw e;
+    }
+  });
+
+  // -- Cloud-token redaction --------------------------------------------------
+  // Seed the known set with the host's own runtime-context token and whatever
+  // the daemon is issuing right now, so the first tool call is covered too.
+  rememberCloudToken(process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN);
+  void refreshKnownCloudTokens();
+
+  pi.on("tool_result", async (event) => {
+    try {
+      const content = Array.isArray(event.content) ? event.content : [];
+      const texts: string[] = [];
+      for (const part of content) {
+        if (part && part.type === "text" && typeof part.text === "string") texts.push(part.text);
+      }
+      if (event.structuredContent !== undefined) {
+        const raw = JSON.stringify(event.structuredContent);
+        if (typeof raw === "string") texts.push(raw);
+      }
+      if (texts.length === 0) return undefined;
+      // A JWT we do not know yet may be one the daemon issued since we last
+      // asked: re-ask once before deciding what to redact.
+      if (texts.some((t) => unknownJwtIn(t, knownCloudTokens))) {
+        await refreshKnownCloudTokens();
+      }
+      const redacted = redactToolResult(content, event.structuredContent, knownCloudTokens);
+      if (!redacted) return undefined;
+      console.error(`[teamclu] redacted cloud access token from ${event.toolName} result`);
+      // `details` has to be returned explicitly: pi takes it from the hook
+      // result alone, so omitting it would drop e.g. bash's fullOutputPath.
+      return {
+        content: redacted.content,
+        structuredContent: redacted.structuredContent,
+        details: event.details,
+      };
+    } catch (e) {
+      console.error(`[teamclu] tool_result redaction skipped: ${e}`);
+      return undefined;
     }
   });
 

@@ -265,6 +265,53 @@ const V1_ROOT_DIRS: &[&str] = &[
 /// a v1 install left behind.
 const V1_TEAM_SUBDIRS: &[&str] = &["teamclu-team", "cloud", "sync"];
 
+/// Every boot: take the cloud access-token file out of each team's `state/`
+/// and make `backend.toml` owner-only.
+///
+/// The daemon used to keep its cloud JWT in `state/cloud-token` for agents to
+/// read (`TC_ACCESS_TOKEN_FILE`). A `0600` file is the wrong boundary — every
+/// process of this OS user can read it, not just the hosts amuxd spawned — so
+/// hosts now fetch the token from the runtime-context listener, and a file an
+/// older daemon left behind (a live credential for up to an hour) is removed.
+/// `backend.toml` holds the `refresh_token`; older daemons wrote it `0644`.
+/// The writer sets `0600` now, and this covers files that are never rewritten:
+/// the teams this daemon no longer serves.
+pub fn scrub_team_state_credentials() {
+    let Ok(entries) = std::fs::read_dir(teams_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let state = entry.path().join("state");
+        if !state.is_dir() {
+            continue;
+        }
+        for name in ["cloud-token", "cloud-token.tmp"] {
+            let path = state.join(name);
+            match std::fs::remove_file(&path) {
+                Ok(()) => tracing::info!(path = %path.display(), "removed cloud access-token file"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "remove cloud access-token file")
+                }
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let backend = state.join("backend.toml");
+            if let Ok(meta) = std::fs::metadata(&backend) {
+                if meta.permissions().mode() & 0o077 != 0 {
+                    if let Err(e) =
+                        std::fs::set_permissions(&backend, std::fs::Permissions::from_mode(0o600))
+                    {
+                        tracing::warn!(path = %backend.display(), error = %e, "tighten backend.toml mode");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One-shot: remove the v1 layout. Marked by a file under `teams/`, so a second
 /// boot costs one `exists()`.
 ///
@@ -371,6 +418,45 @@ mod tests {
         // with it — an unclaimed daemon still has to boot and serve setup.
         std::fs::write(home.path().join("daemon.toml"), "active_team = [").unwrap();
         assert_eq!(active_team(), UNCLAIMED_TEAM);
+    }
+
+    #[test]
+    fn scrub_removes_cloud_token_files_and_tightens_backend_toml_everywhere() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = BrandEnvGuard::set_amuxd_home(home.path());
+
+        // The active team and one this daemon no longer serves: both get
+        // scrubbed, since both files are live credentials.
+        for team in ["team-a", "team-old"] {
+            let state = team_state_dir(team);
+            std::fs::create_dir_all(&state).unwrap();
+            std::fs::write(state.join("cloud-token"), b"jwt").unwrap();
+            std::fs::write(state.join("cloud-token.tmp"), b"jwt").unwrap();
+            std::fs::write(state.join("backend.toml"), b"kind = \"cloud_api\"\n").unwrap();
+        }
+        // A team dir with no state/ and a stray file under teams/ are skipped.
+        std::fs::create_dir_all(teams_dir().join("team-empty")).unwrap();
+        std::fs::write(teams_dir().join(".v1-purged"), b"").unwrap();
+
+        scrub_team_state_credentials();
+
+        for team in ["team-a", "team-old"] {
+            let state = team_state_dir(team);
+            assert!(!state.join("cloud-token").exists(), "{team}");
+            assert!(!state.join("cloud-token.tmp").exists(), "{team}");
+            assert!(state.join("backend.toml").is_file(), "{team}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(state.join("backend.toml"))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o600, "{team}");
+            }
+        }
+        // Idempotent: a second boot finds nothing to do and does not fail.
+        scrub_team_state_credentials();
     }
 
     #[test]

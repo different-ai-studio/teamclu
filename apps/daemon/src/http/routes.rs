@@ -69,6 +69,10 @@ pub fn build(state: HttpState) -> Router {
             "/internal/runtime-context/verify",
             post(crate::http::runtime_context::verify_runtime_caller),
         )
+        .route(
+            "/internal/runtime-context/cloud-token",
+            post(crate::http::runtime_context::cloud_token),
+        )
         .route("/v1/mqtt/recover", post(mqtt_recover))
         // Embedded protocol console. Static zero-dependency HTML inlined into
         // the binary; it drives this same daemon's /v1/sessions API over fetch

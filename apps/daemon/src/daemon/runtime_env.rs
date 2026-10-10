@@ -564,12 +564,6 @@ impl ExecutionContextAssembler {
             Some(team_id) => self.managed_llm.resolve(team_id).await,
             None => ManagedLlmState::Unknown,
         };
-        let cloud_token_file = self
-            .backend
-            .cloud_auth_health()
-            .map(|_| crate::config::DaemonConfig::cloud_token_path())
-            .map(|path| path.to_string_lossy().into_owned());
-
         if let Some(ref refresh) = self.refresh_coordinator {
             crate::runtime::refresh::refresh_watch::suppress_for_workspace_path(
                 refresh,
@@ -586,7 +580,6 @@ impl ExecutionContextAssembler {
             team_id,
             &self.actor_id,
             &self.actor_name,
-            cloud_token_file.as_deref(),
             &managed_llm,
             self.managed_llm.gateway_token().as_deref(),
             team_id
@@ -747,16 +740,6 @@ impl DaemonServer {
             Some(tid) => self.resolve_managed_llm(tid).await,
             None => ManagedLlmState::Unknown,
         };
-        // Only advertise the cloud-token file when there is a real cloud backend
-        // maintaining it (mock backends have no auth surface). The refresher task
-        // in `run()` is gated the same way, so the file exists whenever the path
-        // is injected.
-        let cloud_token_file = self
-            .backend
-            .cloud_auth_health()
-            .map(|_| crate::config::DaemonConfig::cloud_token_path())
-            .map(|p| p.to_string_lossy().into_owned());
-
         // Suppress immediately before sync disk writes (inherent MCP, then
         // global provider.team sync + workspace secret resolve). Callers
         // must not rely on a suppress issued before the awaits above.
@@ -768,7 +751,6 @@ impl DaemonServer {
             team_id.as_deref(),
             &self.config.actor.id,
             &self.config.actor.name,
-            cloud_token_file.as_deref(),
             &managed_llm,
             self.managed_llm.gateway_token().as_deref(),
             team_id
