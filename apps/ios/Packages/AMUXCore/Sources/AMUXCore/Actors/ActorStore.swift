@@ -63,6 +63,64 @@ public final class ActorStore {
         }
     }
 
+    public func getJoinLink() async -> TeamJoinLink? {
+        do {
+            let row = try await repository.getJoinLink(teamID: teamID)
+            errorMessage = nil
+            lastErrorCode = nil
+            return row
+        } catch {
+            errorMessage = error.localizedDescription
+            lastErrorCode = Self.errorCode(error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    public func putJoinLink(ttl: TeamJoinLinkTtl, maxUses: Int?, rotate: Bool) async -> TeamJoinLink? {
+        do {
+            let row = try await repository.putJoinLink(
+                teamID: teamID,
+                input: TeamJoinLinkInput(ttl: ttl, maxUses: maxUses, rotate: rotate)
+            )
+            errorMessage = nil
+            lastErrorCode = nil
+            return row
+        } catch {
+            errorMessage = error.localizedDescription
+            lastErrorCode = Self.errorCode(error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    public func revokeJoinLink() async -> Bool {
+        do {
+            try await repository.revokeJoinLink(teamID: teamID)
+            errorMessage = nil
+            lastErrorCode = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            lastErrorCode = Self.errorCode(error)
+            return false
+        }
+    }
+
+    @discardableResult
+    public func joinByLink(token: String, cloudAPIURL: URL?) async -> JoinByLinkResult? {
+        do {
+            let row = try await repository.joinByLink(token: token, cloudAPIURL: cloudAPIURL)
+            errorMessage = nil
+            lastErrorCode = nil
+            return row
+        } catch {
+            errorMessage = error.localizedDescription
+            lastErrorCode = Self.errorCode(error)
+            return nil
+        }
+    }
+
     @discardableResult
     public func createInvite(_ input: InviteCreateInput) async -> InviteCreated? {
         do {

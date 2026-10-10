@@ -512,6 +512,55 @@ public actor CloudAPIActorRepository: ActorRepository {
                              cloudAPIURL: client.baseURL)
     }
 
+    public func getJoinLink(teamID: String) async throws -> TeamJoinLink? {
+        do {
+            let row: CloudTeamJoinLink = try await client.get("/v1/teams/\(Self.enc(teamID))/join-link")
+            return try Self.teamJoinLink(row)
+        } catch CloudAPIError.requestFailed(status: 404, code: _, message: _) {
+            return nil
+        }
+    }
+
+    public func putJoinLink(teamID: String, input: TeamJoinLinkInput) async throws -> TeamJoinLink {
+        let body = CloudTeamJoinLinkRequest(
+            ttl: input.ttl.rawValue,
+            maxUses: input.maxUses,
+            rotate: input.rotate
+        )
+        let row: CloudTeamJoinLink = try await client.put(
+            "/v1/teams/\(Self.enc(teamID))/join-link",
+            body: body
+        )
+        return try Self.teamJoinLink(row)
+    }
+
+    public func revokeJoinLink(teamID: String) async throws {
+        try await client.deleteVoid("/v1/teams/\(Self.enc(teamID))/join-link")
+    }
+
+    public func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult {
+        let target = cloudAPIURL.map { client.withBaseURL($0) } ?? client
+        let row: CloudJoinByLinkResult = try await target.post(
+            "/v1/join-links/\(Self.enc(token))/join"
+        )
+        return JoinByLinkResult(teamID: row.teamId)
+    }
+
+    private static func teamJoinLink(_ row: CloudTeamJoinLink) throws -> TeamJoinLink {
+        guard let createdAt = parseCloudDate(row.createdAt) else {
+            throw ActorRepositoryError.emptyResponse("team_join_link")
+        }
+        return TeamJoinLink(
+            token: row.token,
+            url: row.url,
+            expiresAt: parseCloudDate(row.expiresAt),
+            maxUses: row.maxUses,
+            useCount: row.useCount,
+            status: row.status,
+            createdAt: createdAt
+        )
+    }
+
     public func upgradeAccount(teamID: String, orgName: String, contact: String?) async throws -> OrgUpgradeResult {
         let body = CloudUpgradeAccountRequest(teamId: teamID, orgName: orgName, contact: contact)
         let row: CloudUpgradeAccountResult = try await client.post("/v1/account/upgrade", body: body)
@@ -1156,6 +1205,26 @@ private struct CloudInviteCreated: Decodable, Sendable {
 private struct CloudAttachmentUpload: Decodable, Sendable {
     let path: String
     let url: String
+}
+
+private struct CloudTeamJoinLink: Decodable, Sendable {
+    let token: String
+    let url: String
+    let expiresAt: String?
+    let maxUses: Int?
+    let useCount: Int
+    let status: String
+    let createdAt: String
+}
+
+private struct CloudTeamJoinLinkRequest: Encodable, Sendable {
+    let ttl: String
+    let maxUses: Int?
+    let rotate: Bool
+}
+
+private struct CloudJoinByLinkResult: Decodable, Sendable {
+    let teamId: String
 }
 
 private struct CloudCreateInviteRequest: Encodable, Sendable {

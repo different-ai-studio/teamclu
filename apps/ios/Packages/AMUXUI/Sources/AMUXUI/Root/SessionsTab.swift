@@ -217,7 +217,7 @@ public struct SessionsTab: View {
                 }
                 .sheet(isPresented: $showInvite) {
                     if let actorStore {
-                        MemberInviteSheet(store: actorStore)
+                        MemberInviteSheet(store: actorStore, canManage: canManageTeam)
                     }
                 }
                 .task {
@@ -275,6 +275,12 @@ public struct SessionsTab: View {
                 ConnectionBannerOverlay(mqtt: mqtt, onReconnect: onReconnect)
             }
         }
+    }
+
+    private var canManageTeam: Bool {
+        guard let id = currentActorID else { return false }
+        guard let actor = actorStore?.actors.first(where: { $0.id == id }) else { return false }
+        return actor.isOwner || actor.isAdmin
     }
 
 }

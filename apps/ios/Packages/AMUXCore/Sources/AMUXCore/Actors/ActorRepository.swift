@@ -121,9 +121,57 @@ public struct OrgUpgradeResult: Sendable {
     }
 }
 
+public enum TeamJoinLinkTtl: String, Codable, Sendable {
+    case sevenDays = "7d"
+    case thirtyDays = "30d"
+    case never
+}
+
+public struct TeamJoinLink: Equatable, Sendable {
+    public let token: String
+    public let url: String
+    public let expiresAt: Date?
+    public let maxUses: Int?
+    public let useCount: Int
+    public let status: String
+    public let createdAt: Date
+
+    public init(token: String, url: String, expiresAt: Date?, maxUses: Int?,
+                useCount: Int, status: String, createdAt: Date) {
+        self.token = token
+        self.url = url
+        self.expiresAt = expiresAt
+        self.maxUses = maxUses
+        self.useCount = useCount
+        self.status = status
+        self.createdAt = createdAt
+    }
+}
+
+public struct TeamJoinLinkInput: Equatable, Sendable {
+    public let ttl: TeamJoinLinkTtl
+    public let maxUses: Int?
+    public let rotate: Bool
+
+    public init(ttl: TeamJoinLinkTtl, maxUses: Int?, rotate: Bool) {
+        self.ttl = ttl
+        self.maxUses = maxUses
+        self.rotate = rotate
+    }
+}
+
+public struct JoinByLinkResult: Equatable, Sendable {
+    public let teamID: String
+    public init(teamID: String) { self.teamID = teamID }
+}
+
 public protocol ActorRepository: Sendable {
     func listActors(teamID: String) async throws -> [ActorRecord]
     func createInvite(teamID: String, input: InviteCreateInput) async throws -> InviteCreated
+    func getJoinLink(teamID: String) async throws -> TeamJoinLink?
+    func putJoinLink(teamID: String, input: TeamJoinLinkInput) async throws -> TeamJoinLink
+    func revokeJoinLink(teamID: String) async throws
+    func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult
     /// Graduate the account into its own org (create org + reparent/rename team).
     func upgradeAccount(teamID: String, orgName: String, contact: String?) async throws -> OrgUpgradeResult
     func claimInvite(token: String) async throws -> ClaimResult

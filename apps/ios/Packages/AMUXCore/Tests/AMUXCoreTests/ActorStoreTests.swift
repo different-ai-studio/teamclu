@@ -231,6 +231,25 @@ private actor MockActorRepository: ActorRepository {
         return inviteCreatedToReturn
             ?? InviteCreated(token: "", expiresAt: Date(), deeplink: "")
     }
+    func getJoinLink(teamID: String) async throws -> TeamJoinLink? {
+        if let e = nextError { nextError = nil; throw e }
+        return nil
+    }
+    func putJoinLink(teamID: String, input: TeamJoinLinkInput) async throws -> TeamJoinLink {
+        if let e = nextError { nextError = nil; throw e }
+        return TeamJoinLink(
+            token: "tok", url: "https://api.acme.test/join/tok",
+            expiresAt: nil, maxUses: input.maxUses, useCount: 0,
+            status: "active", createdAt: Date()
+        )
+    }
+    func revokeJoinLink(teamID: String) async throws {
+        if let e = nextError { nextError = nil; throw e }
+    }
+    func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult {
+        if let e = nextError { nextError = nil; throw e }
+        return JoinByLinkResult(teamID: "t-joined")
+    }
     func upgradeAccount(teamID: String, orgName: String, contact: String?) async throws -> OrgUpgradeResult {
         if let e = nextError { nextError = nil; throw e }
         return OrgUpgradeResult(orgID: "org", teamID: teamID, teamName: orgName)

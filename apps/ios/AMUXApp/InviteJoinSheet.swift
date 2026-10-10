@@ -122,6 +122,19 @@ struct InviteJoinSheet: View {
     }
 
     private func submit() {
+        if let join = parseJoinToken(raw) {
+            localError = nil
+            coordinator.errorMessage = nil
+            Task {
+                await coordinator.joinByLink(token: join.token, cloudAPIURL: join.cloudAPIURL)
+                await MainActor.run {
+                    if coordinator.route == .ready {
+                        dismiss()
+                    }
+                }
+            }
+            return
+        }
         guard let token = parseToken(raw) else {
             localError = String(localized: "Couldn't read a token from that link.")
             return
@@ -156,22 +169,12 @@ struct InviteJoinSheet: View {
         onUseExistingAccount?(token)
     }
 
-    /// Accepts both `teamclu://invite?token=XYZ` and bare `XYZ`. Trims whitespace.
+    /// Named invites only. A join link must not go through the claim callback.
     private func parseToken(_ raw: String) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if let url = URL(string: trimmed),
-           let scheme = url.scheme,
-           ["teamclu", "teamclaw", "amux"].contains(scheme), url.host == "invite",
-           let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-           let token = comps.queryItems?.first(where: { $0.name == "token" })?.value,
-           !token.isEmpty {
-            return token
-        }
-        // Treat raw input without a URL scheme as the bare token.
-        if !trimmed.contains("://") {
-            return trimmed
-        }
-        return nil
+        InviteURL.parseInviteToken(raw)
+    }
+
+    private func parseJoinToken(_ raw: String) -> (token: String, cloudAPIURL: URL?)? {
+        InviteURL.parseJoinLink(raw)
     }
 }
