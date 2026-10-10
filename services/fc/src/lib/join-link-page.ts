@@ -95,10 +95,14 @@ function activePage(preview: JoinLinkPageInput): string {
           show("请输入邮箱，或 +开头的手机号");
           return;
         }
-        const res = await fetch("/v1/auth/signin-otp", {
+        const url = parsed.email ? "/v1/auth/signin-otp" : "/v1/auth/phone/send-code";
+        const body = parsed.email
+          ? { email: parsed.email }
+          : { phone: parsed.phone, captchaVerify: "desktop-captcha-pending" };
+        const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(parsed),
+          body: JSON.stringify(body),
         });
         if (!res.ok) {
           show("验证码发送失败");
@@ -114,20 +118,36 @@ function activePage(preview: JoinLinkPageInput): string {
           return;
         }
         const code = String(codeEl.value ?? "").trim();
-        const verifyBody = parsed.email
-          ? { email: parsed.email, token: code, type: "email" }
-          : { phone: parsed.phone, token: code, type: "sms" };
-        const verifyRes = await fetch("/v1/auth/verify-otp", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(verifyBody),
-        });
-        const verifyJson = await verifyRes.json().catch(() => ({}));
-        if (!verifyRes.ok) {
-          show("验证失败");
-          return;
+        let access_token;
+        if (parsed.email) {
+          const verifyRes = await fetch("/v1/auth/verify-otp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: parsed.email, token: code, type: "email" }),
+          });
+          const verifyJson = await verifyRes.json().catch(() => ({}));
+          if (!verifyRes.ok) {
+            show("验证失败");
+            return;
+          }
+          access_token = verifyJson.access_token;
+        } else {
+          const loginRes = await fetch("/v1/auth/phone/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ phone: parsed.phone, code }),
+          });
+          const loginJson = await loginRes.json().catch(() => ({}));
+          if (!loginRes.ok) {
+            show("验证失败");
+            return;
+          }
+          if (loginJson.multiUser === true) {
+            show("这个手机号对应多个账号，请改用邮箱加入。");
+            return;
+          }
+          access_token = loginJson.session && loginJson.session.access_token;
         }
-        let access_token = verifyJson.access_token;
         const joinRes = await fetch(joinUrl, {
           method: "POST",
           headers: { Authorization: "Bearer " + access_token },

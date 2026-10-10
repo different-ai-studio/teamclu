@@ -16,7 +16,11 @@ test("active page names the team and posts the otp endpoints", () => {
   assert.match(html, /\/v1\/auth\/signin-otp/);
   assert.match(html, /\/v1\/auth\/verify-otp/);
   assert.match(html, /\/v1\/join-links\/tok\/join/);
+  assert.match(html, /\/v1\/auth\/phone\/send-code/);
+  assert.match(html, /\/v1\/auth\/phone\/login/);
+  assert.match(html, /desktop-captcha-pending/);
   assert.doesNotMatch(html, /signin-password/);
+  assert.doesNotMatch(html, /"sms"/);
 });
 
 test("revoked page explains and has no login form", () => {
@@ -29,6 +33,7 @@ test("revoked page explains and has no login form", () => {
   });
   assert.match(html, /这条链接已停用/);
   assert.doesNotMatch(html, /signin-otp/);
+  assert.doesNotMatch(html, /phone\/send-code/);
 });
 
 test("GET /join/:token renders preview html", async () => {
