@@ -407,6 +407,123 @@ paths:
         # solo-only. Member invites need the account upgraded into its own org.
         "403":
           $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/join-link:
+    get:
+      operationId: getTeamJoinLink
+      summary: Get the team's unrevoked join link
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: The unrevoked link, including expired or exhausted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLink"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: putTeamJoinLink
+      summary: Create, update, or rotate the team join link
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttl]
+              properties:
+                ttl:
+                  type: string
+                  enum: ["7d", "30d", "never"]
+                maxUses:
+                  type: [integer, "null"]
+                  minimum: 1
+                rotate:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: Existing link updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLink"
+        "201":
+          description: Link created or rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLink"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: revokeTeamJoinLink
+      summary: Revoke the team's unrevoked join link
+      tags: [Teams]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "204":
+          description: Revoked
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/join-links/{token}:
+    get:
+      operationId: previewTeamJoinLink
+      summary: Preview a join link without authentication
+      tags: [Teams]
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Preview. Non-active links still return 200 with status.
+          headers:
+            Cache-Control:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLinkPreview"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/join-links/{token}/join:
+    post:
+      operationId: joinTeamByLink
+      summary: Join the team named by a join link
+      tags: [Teams]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Joined, or already a member.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamJoinLinkJoinResult"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
   /v1/teams/{teamId}/members/{actorId}:
     delete:
       operationId: removeTeamActor
@@ -11408,6 +11525,42 @@ components:
               type: [string, "null"]
             verified:
               type: boolean
+    TeamJoinLink:
+      type: object
+      required: [token, url, maxUses, useCount, status, createdAt]
+      properties:
+        token: { type: string }
+        url: { type: string, format: uri }
+        expiresAt:
+          type: [string, "null"]
+          format: date-time
+        maxUses:
+          type: [integer, "null"]
+        useCount: { type: integer }
+        status:
+          type: string
+          enum: [active, expired, exhausted]
+        createdAt: { type: string, format: date-time }
+    TeamJoinLinkPreview:
+      type: object
+      required: [teamName, inviterDisplayName, status]
+      properties:
+        teamName: { type: string }
+        inviterDisplayName: { type: string }
+        expiresAt:
+          type: [string, "null"]
+          format: date-time
+        status:
+          type: string
+          enum: [active, revoked, expired, exhausted]
+    TeamJoinLinkJoinResult:
+      type: object
+      required: [teamId, actorId, displayName, alreadyMember]
+      properties:
+        teamId: { type: string, format: uuid }
+        actorId: { type: string, format: uuid }
+        displayName: { type: string }
+        alreadyMember: { type: boolean }
     TeamMember:
       type: object
       required: [actorId, teamId, role]
