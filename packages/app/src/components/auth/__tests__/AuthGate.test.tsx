@@ -28,6 +28,10 @@ const { cachedTeamMock } = vi.hoisted(() => ({
   },
 }));
 
+const { getFreshAccessTokenMock } = vi.hoisted(() => ({
+  getFreshAccessTokenMock: vi.fn().mockResolvedValue("access-1"),
+}));
+
 const { authState, currentTeamMock, backendMock } = vi.hoisted(() => ({
   authState: {
     session: { user: { id: "user-1" } } as { user: { id: string; isAnonymous?: boolean } } | null,
@@ -87,6 +91,10 @@ vi.mock("@/lib/backend", () => ({
   getBackend: () => backendMock,
 }));
 
+vi.mock("@/lib/auth/session-store", () => ({
+  getFreshAccessToken: () => getFreshAccessTokenMock(),
+}));
+
 vi.mock("@/lib/utils", () => ({
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(" "),
   isTauri: () => isTauriMock(),
@@ -99,6 +107,7 @@ vi.mock("@/lib/config/platform", () => ({
 
 vi.mock("@/lib/config/build-config", () => ({
   extensionTeamOnboarding: extensionPolicyMock,
+  appScheme: "teamclu",
 }));
 
 vi.mock("@/lib/config/extension-auto-create-team", () => ({
@@ -160,9 +169,18 @@ import {
   resetInviteLinkConfirmationForTests,
   useInviteLinkConfirmation,
 } from "@/lib/team/invite-link-confirmation";
+import {
+  resetJoinLinkConfirmationForTests,
+  useJoinLinkConfirmation,
+} from "@/lib/team/join-link-confirmation";
+import { resetJoinLinkRedeemForTests } from "@/lib/team/join-link";
 
 beforeEach(() => {
   resetInviteLinkConfirmationForTests();
+  resetJoinLinkConfirmationForTests();
+  resetJoinLinkRedeemForTests();
+  getFreshAccessTokenMock.mockReset();
+  getFreshAccessTokenMock.mockResolvedValue("access-1");
   authState.session = { user: { id: "user-1" } };
   authState.loading = false;
   authState.authFlow = "idle";
@@ -701,6 +719,47 @@ describe("AuthGate", () => {
     );
     await waitFor(() => expect(backendMock.teams.listAllMyTeams).toHaveBeenCalled());
     expect(authState.claimPendingInvite).not.toHaveBeenCalled();
+  });
+
+  it("joins from a confirmed join link after session appears and never claims an invite", async () => {
+    isTauriMock.mockReturnValue(false);
+    authState.session = null;
+    useJoinLinkConfirmation.setState({
+      requested: null,
+      confirmed: { token: "join-tok", cloudApiUrl: "https://api.acme.test" },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ teamId: "team-join", alreadyMember: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const view = render(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Login screen")).toBeInTheDocument());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authState.claimPendingInvite).not.toHaveBeenCalled();
+
+    authState.session = { user: { id: "user-1" } };
+    view.rerender(
+      <AuthGate>
+        <div>App shell</div>
+      </AuthGate>,
+    );
+
+    await waitFor(() => expect(currentTeamMock.enterTeam).toHaveBeenCalledWith("team-join"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.acme.test/v1/join-links/join-tok/join");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "POST",
+      headers: { Authorization: "Bearer access-1" },
+    });
+    expect(authState.claimPendingInvite).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it("waits for a pending invite claim before resolving the team gate", async () => {

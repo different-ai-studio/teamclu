@@ -24,6 +24,9 @@ import { isExtensionAutoCreateTeamEnabled } from "@/lib/config/extension-auto-cr
 import { NoTeamScreen } from "./NoTeamScreen";
 import { NameYourTeamScreen } from "./NameYourTeamScreen";
 import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
+import { useJoinLinkConfirmation } from "@/lib/team/join-link-confirmation";
+import { redeemAcceptedJoinLinkOnce } from "@/lib/team/join-link";
+import { getFreshAccessToken } from "@/lib/auth/session-store";
 import type { MembershipTeam } from "@/lib/backend";
 import { useShallow } from "zustand/react/shallow";
 
@@ -264,6 +267,29 @@ export function AuthGate({ children }: AuthGateProps) {
   // nothing. Attempted-once is the condition to stop waiting on — not
   // claimed-successfully.
   const inviteClaimAttempted = useRef<string | null>(null);
+  const confirmedJoin = useJoinLinkConfirmation((s) => s.confirmed);
+  const joinAttempted = useRef<string | null>(null);
+  const joinRedeemPromise = useRef<Promise<unknown> | null>(null);
+  useEffect(() => {
+    if (!session) return;
+    if (!confirmedJoin) return;
+    if (joinAttempted.current === confirmedJoin.token) return;
+    joinAttempted.current = confirmedJoin.token;
+    const redeemPromise = getFreshAccessToken()
+      .then((accessToken) => redeemAcceptedJoinLinkOnce(confirmedJoin, accessToken));
+    joinRedeemPromise.current = redeemPromise;
+    void redeemPromise
+      .then((result) => {
+        if (result) setTeamChosen(true);
+      })
+      .catch((error) => {
+        console.warn("[AuthGate] join link redeem failed", error);
+      })
+      .finally(() => {
+        if (joinRedeemPromise.current === redeemPromise) joinRedeemPromise.current = null;
+      });
+  }, [session, confirmedJoin]);
+
   useEffect(() => {
     if (!session) return;
     if (!pendingInviteToken) return;
@@ -329,6 +355,7 @@ export function AuthGate({ children }: AuthGateProps) {
     // accepted claim switches teams afterwards (same as a claim that finishes
     // while the gate is resolving).
     if (inviteConfirmed && inviteClaimAttempted.current !== pendingInviteToken) return;
+    if (confirmedJoin && joinAttempted.current !== confirmedJoin.token) return;
     // Browser runtime (Chrome extension / web build) is a real cloud client:
     // it still needs a current team for MQTT + team-scoped reads, so it must
     // run the same team-bootstrap as desktop. The bootstrap path below is
@@ -437,7 +464,7 @@ export function AuthGate({ children }: AuthGateProps) {
         setBootstrap("error");
       }
     })();
-  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, signOut]);
+  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, confirmedJoin, signOut]);
 
   const retryBootstrap = () => {
     // Re-arm the per-user ref guard and bump the nonce so the bootstrap effect

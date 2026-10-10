@@ -74,6 +74,8 @@ import { Button } from "@/components/ui/button";
 import { onOpenUrl, getCurrent } from "@tauri-apps/plugin-deep-link";
 import { parseInviteDeeplink } from "@/lib/team/invite-deeplink";
 import { requestInviteLinkConfirmation, whenDocumentFocused } from "@/lib/team/invite-link-confirmation";
+import { parseJoinLink } from "@/lib/team/join-link";
+import { requestJoinLinkConfirmation } from "@/lib/team/join-link-confirmation";
 import { completePendingSessionDeeplink, openSessionFromDeeplink, readPendingSessionDeeplink, stashPendingSessionDeeplink } from "@/lib/session/open-session-deeplink";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { useAppsStore } from "@/stores/apps-store";
@@ -826,6 +828,12 @@ function App() {
     // user did not see appear is one they cannot judge.
     function handle(urls: string[]) {
       for (const raw of urls) {
+        const join = parseJoinLink(raw);
+        if (join) {
+          cancelFocusWait?.();
+          cancelFocusWait = whenDocumentFocused(() => requestJoinLinkConfirmation(join));
+          continue;
+        }
         const token = parseInviteDeeplink(raw);
         if (!token) continue;
         cancelFocusWait?.();
