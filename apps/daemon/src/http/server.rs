@@ -37,6 +37,10 @@ pub struct HttpHandle {
     shutdown_tx: Option<oneshot::Sender<()>>,
     runtime_context_join: Option<JoinHandle<()>>,
     runtime_context_shutdown: Option<oneshot::Sender<()>>,
+    /// Unix: the cloud-token socket (`runtime_context_unix`). `None` on
+    /// Windows and when the socket could not be bound.
+    cloud_token_socket_join: Option<JoinHandle<()>>,
+    cloud_token_socket_shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl HttpHandle {
@@ -46,6 +50,12 @@ impl HttpHandle {
             let _ = tx.send(());
         }
         if let Some(join) = self.runtime_context_join.take() {
+            let _ = join.await;
+        }
+        if let Some(tx) = self.cloud_token_socket_shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(join) = self.cloud_token_socket_join.take() {
             let _ = join.await;
         }
         if let Some(tx) = self.shutdown_tx.take() {
@@ -61,6 +71,12 @@ impl Drop for HttpHandle {
             let _ = tx.send(());
         }
         if let Some(join) = self.runtime_context_join.take() {
+            join.abort();
+        }
+        if let Some(tx) = self.cloud_token_socket_shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(join) = self.cloud_token_socket_join.take() {
             join.abort();
         }
         if let Some(tx) = self.shutdown_tx.take() {
@@ -241,6 +257,11 @@ pub async fn spawn_with_refresh_watch_registry(
         .port_file
         .clone()
         .unwrap_or_else(DaemonConfig::http_port_path);
+    #[cfg(unix)]
+    let cloud_token_socket_path = http
+        .cloud_token_socket
+        .clone()
+        .unwrap_or_else(DaemonConfig::runtime_context_sock_path);
 
     let tokens =
         TokenStore::load_or_init(&token_path).map_err(|e| anyhow::anyhow!("token store: {e}"))?;
@@ -321,6 +342,10 @@ pub async fn spawn_with_refresh_watch_registry(
     let mut runtime_context_join = None;
     let mut runtime_context_shutdown = None;
     let mut runtime_context_base_url = None;
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut cloud_token_socket_join = None;
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut cloud_token_socket_shutdown = None;
     if let Some(service) = state.runtime_context.as_ref() {
         let base_url = if needs_dedicated_runtime_context_listener(addr) {
             let (url, join, shutdown_tx) =
@@ -333,6 +358,37 @@ pub async fn spawn_with_refresh_watch_registry(
         };
         runtime_context_base_url = Some(base_url.clone());
         service.set_base_url(base_url);
+
+        // The cloud token is issued over a Unix socket, never over this TCP
+        // listener: see `runtime_context_unix`. Failing to bind it is not
+        // fatal — every other route works — but every skill on this daemon
+        // that needs the cloud token will be refused, so say so loudly.
+        #[cfg(unix)]
+        {
+            let sock_path = cloud_token_socket_path;
+            match super::runtime_context_unix::bind(&sock_path) {
+                Ok(listener) => {
+                    let (join, shutdown_tx) = super::runtime_context_unix::spawn(
+                        listener,
+                        sock_path.clone(),
+                        state.clone(),
+                    );
+                    cloud_token_socket_join = Some(join);
+                    cloud_token_socket_shutdown = Some(shutdown_tx);
+                    service.set_socket_path(sock_path.to_string_lossy().into_owned());
+                    tracing::info!(
+                        path = %sock_path.display(),
+                        "runtime-context cloud-token socket ready"
+                    );
+                }
+                Err(e) => tracing::warn!(
+                    path = %sock_path.display(),
+                    error = %e,
+                    "runtime-context cloud-token socket could not be bound; agent skills on \
+                     this daemon cannot draw the cloud access token"
+                ),
+            }
+        }
     }
 
     spawn_reapers(state.clone());
@@ -365,6 +421,8 @@ pub async fn spawn_with_refresh_watch_registry(
         shutdown_tx: Some(shutdown_tx),
         runtime_context_join,
         runtime_context_shutdown,
+        cloud_token_socket_join,
+        cloud_token_socket_shutdown,
     })
 }
 
@@ -445,6 +503,7 @@ mod tests {
             allowed_origins: vec![],
             token_file: Some(dir.path().join("token")),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let meta = metadata("actor-test".into(), "test");
@@ -485,6 +544,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(token_path.clone()),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             heartbeat_interval: std::time::Duration::from_secs(5),
             ..HttpConfig::default()
         };
@@ -540,6 +600,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(token_path.clone()),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             rate_limit_rps: 1,
             rate_limit_burst: 2,
             heartbeat_interval: std::time::Duration::from_secs(5),
@@ -756,6 +817,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(token_path.clone()),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             max_event_backlog: 2, // tiny window so we fall off quickly
             heartbeat_interval: std::time::Duration::from_secs(5),
             ..HttpConfig::default()
@@ -842,6 +904,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(token_path.clone()),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let meta = metadata("actor-x".into(), "test");
@@ -932,6 +995,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(dir.path().join("token")),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let meta = metadata("actor-abc".into(), "cloud_api");
@@ -1037,6 +1101,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(token_path.clone()),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             heartbeat_interval: std::time::Duration::from_secs(5),
             ..HttpConfig::default()
         };
@@ -1137,6 +1202,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(token_path.clone()),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             heartbeat_interval: std::time::Duration::from_secs(5),
             ..HttpConfig::default()
         };
@@ -1279,6 +1345,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(token_path.clone()),
             port_file: Some(home.path().join("http-port")),
+            cloud_token_socket: Some(home.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let runtime = crate::http::runtime_adapter::StubRuntimeAdapter::new(32);
@@ -1382,6 +1449,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(dir.path().join("token")),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let service = Arc::new(RuntimeContextService::new());
@@ -1511,6 +1579,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(dir.path().join("token")),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let service = Arc::new(RuntimeContextService::new());
@@ -1632,6 +1701,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(dir.path().join("token")),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let service = Arc::new(RuntimeContextService::new());
@@ -1736,6 +1806,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(dir.path().join("token")),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let service = Arc::new(RuntimeContextService::new());
@@ -1809,6 +1880,7 @@ mod tests {
             bind: "127.0.0.1:0".into(),
             token_file: Some(dir.path().join("token")),
             port_file: Some(dir.path().join("port")),
+            cloud_token_socket: Some(dir.path().join("rtctx.sock")),
             ..HttpConfig::default()
         };
         let service = Arc::new(RuntimeContextService::new());

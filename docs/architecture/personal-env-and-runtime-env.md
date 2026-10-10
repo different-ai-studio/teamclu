@@ -41,29 +41,55 @@ flowchart TB
 daemon 自己的云端 access token（GoTrue JWT，约 1 小时有效）**既不注入 env，也不写文件**。
 2026-10 之前它写在 `teams/<id>/state/cloud-token`（0600）并以 `TC_ACCESS_TOKEN_FILE`
 广播给每个 agent 进程；0600 挡的是别的系统用户，挡不住同一用户下的任何进程
-（别的 AI 工具、npm postinstall……），于是改成按需向 daemon 的回环监听索取：
+（别的 AI 工具、npm postinstall……），于是改成按需向 daemon 索取。
+
+**daemon 怎么知道「来要的是自己起的 agent」**，分平台：
+
+| 平台 | 端点 | 身份判定 |
+|---|---|---|
+| macOS / Linux | Unix socket `${TEAMCLU_RUNTIME_CONTEXT_SOCK}`（默认 `~/.amuxd/run/runtime-context.sock`），`POST /internal/runtime-context/cloud-token` | **不凭任何 token**。内核给出对端 pid（`LOCAL_PEERPID` / `SO_PEERCRED`），daemon 沿 `ppid` 向上走，命中一个自己 spawn 并登记在册的 host（pid + 启动时间都要对得上）才发；否则 401 `caller_not_an_agent_host` |
+| Windows | `POST ${TEAMCLU_RUNTIME_CONTEXT_URL}/internal/runtime-context/cloud-token` | `Authorization: Bearer ${TEAMCLU_RUNTIME_CONTEXT_TOKEN}` + body `{"hostGenerationId", "backendKind"}`，每个 host 代际一枚 |
+
+为什么 unix 不走 bearer：那枚 token 得放在 host 的环境变量里，skill 才能作为子进程继承到；
+而同一用户的任何进程都能读别的进程的环境变量（macOS `sysctl KERN_PROCARGS2`，Linux
+`/proc/<pid>/environ`），所以 token 对同用户进程不是边界。进程祖先链是内核维护的：
+别的进程改不了自己的父进程，孤儿只会被过继给 pid 1。unix 上 TCP 路由对 cloud-token
+一律回 403 `cloud_token_requires_unix_socket`，有 bearer 也不发。
+
+pi 的 bash 工具是 `detached` 起子进程的（每条命令自成 session），脚本里还可能再 fork，
+所以认的是祖先链而不是 session id / 进程组。副作用：bash 退出后遗留的后台任务会被过继给
+pid 1，从此要不到 token，这是预期行为。
 
 | 项 | 值 |
 |---|---|
-| 端点 | `POST ${TEAMCLU_RUNTIME_CONTEXT_URL}/internal/runtime-context/cloud-token` |
-| 鉴权 | `Authorization: Bearer ${TEAMCLU_RUNTIME_CONTEXT_TOKEN}`（每个 host 代际一枚，只在 amuxd 自己起的 host 及其子进程的 env 里，随 host 退出作废） |
-| Body | `{"hostGenerationId": "${TEAMCLU_HOST_GENERATION_ID}", "backendKind": "${TEAMCLU_AGENT_BACKEND}"}` |
 | 响应 | 默认 JSON：`{ accessToken, expiresAtEpoch, actorId, teamId }`；带 `Accept: text/plain` 时直接返回裸 token |
-| 失败 | 401 令牌不对 / 不是这个 host 的；403 非回环；503 没有云后端；502 刷新失败 |
+| 失败 | 401 不是 host 的后代 / bearer 不对；403 非回环或 unix 上走了 TCP；503 没有云后端；502 刷新失败 |
+| 审计 | 每次发放一条 `runtime_context_cloud_token` 日志：`via`（`unix_socket_ancestry` / `bearer_token`）、host 代际、对端 pid、host pid，不带 token |
 
-skill 里一行即可：
+skill 里这样取（两种平台都兼容）：
 
 ```bash
-TOKEN=$(curl -sf -X POST "$TEAMCLU_RUNTIME_CONTEXT_URL/internal/runtime-context/cloud-token" \
-  -H "Authorization: Bearer $TEAMCLU_RUNTIME_CONTEXT_TOKEN" \
-  -H 'Content-Type: application/json' -H 'Accept: text/plain' \
-  -d "{\"hostGenerationId\":\"$TEAMCLU_HOST_GENERATION_ID\",\"backendKind\":\"$TEAMCLU_AGENT_BACKEND\"}")
+tc_token() {
+  if [ -n "${TEAMCLU_RUNTIME_CONTEXT_SOCK:-}" ]; then
+    curl -sf --unix-socket "$TEAMCLU_RUNTIME_CONTEXT_SOCK" -X POST \
+      http://amuxd/internal/runtime-context/cloud-token -H 'Accept: text/plain'
+  else
+    curl -sf -X POST "$TEAMCLU_RUNTIME_CONTEXT_URL/internal/runtime-context/cloud-token" \
+      -H "Authorization: Bearer $TEAMCLU_RUNTIME_CONTEXT_TOKEN" \
+      -H 'Content-Type: application/json' -H 'Accept: text/plain' \
+      -d "{\"hostGenerationId\":\"$TEAMCLU_HOST_GENERATION_ID\",\"backendKind\":\"$TEAMCLU_AGENT_BACKEND\"}"
+  fi
+}
 ```
 
 拿到的仍是 daemon 账号的完整 JWT。为了让提示注入「让 agent 把 token 打出来」也带不走它，
 pi 扩展（`teamclu.ts` 的 `tool_result` 钩子）会把 daemon 发过的 token 和 host 自己的
 `TEAMCLU_RUNTIME_CONTEXT_TOKEN` 从所有工具结果里替换成占位符，模型和云端 transcript
-都只见占位符。每次发放 daemon 都记一条 `runtime_context_cloud_token` 日志（带 host 代际，不带 token）。
+都只见占位符。
+
+实现：`runtime::proc_tree`（祖先链与启动时间）、`http::runtime_context_unix`（socket 监听，
+hyper 直驱 axum router）、`context_service::register_host_process`（spawn 后登记 host pid）。
+沙箱 profile 已放行 `run/` 目录下的 Unix socket，沙箱内的 host 也能连。
 
 启动时 `layout::scrub_team_state_credentials` 会删掉旧 daemon 留下的所有 `state/cloud-token`，
 并把 `state/backend.toml`（含 `refresh_token`）收紧为 0600。

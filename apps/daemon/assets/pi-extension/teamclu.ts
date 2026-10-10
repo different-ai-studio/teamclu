@@ -33,6 +33,12 @@
  * - `TEAMCLU_MCP_TOOL_CACHE_DIR` — where each server's `tools/list` result is
  *   cached, so session startup does not wait on a cold connection.
  *
+ * - `TEAMCLU_RUNTIME_CONTEXT_SOCK` (unix) — the socket on which amuxd hands
+ *   this host, and every process it spawns, the daemon's cloud access token
+ *   (`POST /internal/runtime-context/cloud-token`, `Accept: text/plain` for the
+ *   bare token). Nothing is presented on it: the daemon identifies the caller
+ *   by its process ancestry. See the cloud-token section below.
+ *
  * ## MCP
  *
  * pi's own MCP extension is CLI-only (see the MCP client section), so this
@@ -55,6 +61,7 @@
  */
 
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 
 // Loose ExtensionAPI typing: the real types live in
@@ -267,10 +274,20 @@ async function resolveTeamcluSessionId(backendSessionId: string): Promise<string
 // The daemon's cloud JWT used to sit in a `0600` file advertised to every agent
 // as `TC_ACCESS_TOKEN_FILE`. That file was readable by every process of the OS
 // user, not just the hosts amuxd spawned, so it is gone: a skill that needs the
-// token asks `/internal/runtime-context/cloud-token` with this host's
-// runtime-context token (docs/architecture/personal-env-and-runtime-env.md
-// §1.1). What it gets is still the daemon's full identity for up to an hour,
-// so the `tool_result` hook keeps it out of transcripts: every token the daemon
+// token asks `/internal/runtime-context/cloud-token`
+// (docs/architecture/personal-env-and-runtime-env.md §1.1).
+//
+// How the daemon knows who is asking depends on the platform. On unix it is
+// the socket in `TEAMCLU_RUNTIME_CONTEXT_SOCK`, where the kernel reports the
+// caller's pid and the daemon walks its ancestry to a host it spawned — the
+// one thing another process of this OS user cannot fake. A secret in our
+// environment would not do: every same-user process can read it (`sysctl
+// KERN_PROCARGS2` on macOS, `/proc/<pid>/environ` on Linux), and it has to be
+// in the environment for the skills we run to use it. Windows has no such
+// socket and keeps the loopback TCP route with the runtime-context bearer.
+//
+// What comes back is still the daemon's full identity for up to an hour, so
+// the `tool_result` hook keeps it out of transcripts: every token the daemon
 // has issued to this host, and the host's own runtime-context token, are
 // replaced with a placeholder before the model — and the session file, and the
 // cloud transcript — see the tool output.
@@ -293,23 +310,76 @@ function rememberCloudToken(token: string | undefined): void {
   if (trimmed && trimmed.length >= 16) knownCloudTokens.add(trimmed);
 }
 
+/** How this host reaches amuxd for the cloud access token (see the section
+ *  comment above). `undefined` when this is not an amuxd-spawned host. The
+ *  socket wins whenever it is set: on unix the TCP route issues nothing. */
+type CloudTokenRoute =
+  | { kind: "unix-socket"; socketPath: string }
+  | {
+      kind: "tcp-bearer";
+      baseUrl: string;
+      token: string;
+      generationId: string;
+      backendKind: string;
+    };
+
+function cloudTokenRoute(env: Record<string, string | undefined>): CloudTokenRoute | undefined {
+  const socketPath = env.TEAMCLU_RUNTIME_CONTEXT_SOCK?.trim();
+  if (socketPath) return { kind: "unix-socket", socketPath };
+  const baseUrl = env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
+  const token = env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
+  const generationId = env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const backendKind = env.TEAMCLU_AGENT_BACKEND?.trim();
+  if (!baseUrl || !token || !generationId || !backendKind) return undefined;
+  return { kind: "tcp-bearer", baseUrl, token, generationId, backendKind };
+}
+
+/** `POST /internal/runtime-context/cloud-token` over the Unix socket, which
+ *  `fetch` cannot address. The body on a 2xx, `undefined` otherwise. */
+function cloudTokenOverUnixSocket(socketPath: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        socketPath,
+        path: "/internal/runtime-context/cloud-token",
+        method: "POST",
+        headers: { Accept: "text/plain", "Content-Length": "0" },
+        timeout: 10_000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const status = res.statusCode ?? 0;
+          resolve(status >= 200 && status < 300 ? Buffer.concat(chunks).toString("utf8") : undefined);
+        });
+        res.on("error", () => resolve(undefined));
+      },
+    );
+    req.on("timeout", () => req.destroy());
+    req.on("error", () => resolve(undefined));
+    req.end();
+  });
+}
+
 /** Ask amuxd for its current cloud access token. `undefined` when this is not
  *  an amuxd-spawned host (no runtime-context env) or the daemon refused. */
 async function fetchCloudAccessToken(): Promise<string | undefined> {
-  const baseUrl = process.env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
-  const token = process.env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
-  const generationId = process.env.TEAMCLU_HOST_GENERATION_ID?.trim();
-  const backendKind = process.env.TEAMCLU_AGENT_BACKEND?.trim();
-  if (!baseUrl || !token || !generationId || !backendKind) return undefined;
+  const route = cloudTokenRoute(process.env);
+  if (!route) return undefined;
   try {
-    const resp = await fetch(`${baseUrl}/internal/runtime-context/cloud-token`, {
+    if (route.kind === "unix-socket") {
+      const text = (await cloudTokenOverUnixSocket(route.socketPath))?.trim();
+      return text || undefined;
+    }
+    const resp = await fetch(`${route.baseUrl}/internal/runtime-context/cloud-token`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${route.token}`,
         "Content-Type": "application/json",
         Accept: "text/plain",
       },
-      body: JSON.stringify({ hostGenerationId: generationId, backendKind }),
+      body: JSON.stringify({ hostGenerationId: route.generationId, backendKind: route.backendKind }),
     });
     if (!resp.ok) return undefined;
     const text = (await resp.text()).trim();

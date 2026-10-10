@@ -53,8 +53,8 @@ pub use resolved_env::{
 pub use session_context::{
     is_session_scoped_mcp_tool, require_explicit_session_id_from_env, SESSION_SCOPED_MCP_TOOLS,
     TEAMCLU_AGENT_BACKEND_ENV, TEAMCLU_HOST_GENERATION_ID_ENV,
-    TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV,
-    TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
+    TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_SOCK_ENV,
+    TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV, TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
 };
 pub use team_provider::{
     managed_llm_provider_from_disk_team, read_global_team_provider,

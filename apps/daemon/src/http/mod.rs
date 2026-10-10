@@ -44,6 +44,8 @@ pub mod pi_transcript;
 pub mod rpc;
 pub mod runtime_adapter;
 pub mod runtime_context;
+#[cfg(unix)]
+pub mod runtime_context_unix;
 pub mod sessions;
 pub mod setup;
 pub mod state;

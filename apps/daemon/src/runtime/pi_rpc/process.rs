@@ -554,6 +554,31 @@ impl PiProcessPool {
             .spawn()
             .map_err(|e| spawn_failure(&e, worktree, &launch.node))?;
 
+        // Tell the runtime-context service which OS process this generation
+        // is. The cloud-token socket serves a caller only when its ancestry
+        // reaches a registered host (`runtime::proc_tree`); unregistered,
+        // nothing in this host's tree can draw the token.
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            if let Some(service) = self.context_service.read().as_ref() {
+                match crate::runtime::proc_tree::process_info(pid) {
+                    Some(info) => service.register_host_process(
+                        crate::proto::amux::AgentType::Pi,
+                        &generation_id,
+                        crate::runtime::context_registry::HostProcess {
+                            pid,
+                            start_time: info.start_time,
+                        },
+                    ),
+                    None => warn!(
+                        pid,
+                        generation = %generation_id,
+                        "pi host start time unavailable; skills in this host cannot draw the cloud token"
+                    ),
+                }
+            }
+        }
+
         let stdin = child
             .stdin
             .take()

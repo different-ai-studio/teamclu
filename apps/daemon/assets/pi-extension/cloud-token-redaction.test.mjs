@@ -47,6 +47,20 @@ function redactToolResult(content, structuredContent, tokens) {
   return { content: nextContent, structuredContent: nextStructured };
 }
 
+/** Mirror of `cloudTokenRoute` in teamclu.ts: which way this host asks amuxd
+ *  for the cloud token. The socket, when amuxd set one, is the only route on
+ *  unix; the bearer route is what Windows keeps. */
+function cloudTokenRoute(env) {
+  const socketPath = env.TEAMCLU_RUNTIME_CONTEXT_SOCK?.trim();
+  if (socketPath) return { kind: "unix-socket", socketPath };
+  const baseUrl = env.TEAMCLU_RUNTIME_CONTEXT_URL?.trim()?.replace(/\/$/, "");
+  const token = env.TEAMCLU_RUNTIME_CONTEXT_TOKEN?.trim();
+  const generationId = env.TEAMCLU_HOST_GENERATION_ID?.trim();
+  const backendKind = env.TEAMCLU_AGENT_BACKEND?.trim();
+  if (!baseUrl || !token || !generationId || !backendKind) return undefined;
+  return { kind: "tcp-bearer", baseUrl, token, generationId, backendKind };
+}
+
 const JWT_A = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkYWVtb24tYSIsImV4cCI6MX0.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const JWT_B = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkYWVtb24tYiIsImV4cCI6Mn0.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const RTCTX = "rtctx_0123456789abcdef0123456789abcdef";
@@ -103,6 +117,29 @@ test("tool result without any known token returns undefined so pi keeps the orig
   assert.equal(redactToolResult(content, { k: JWT_B }, [JWT_A]), undefined);
 });
 
+test("the socket amuxd names is the route, with the bearer route only in its absence", () => {
+  const tcp = {
+    TEAMCLU_RUNTIME_CONTEXT_URL: "http://127.0.0.1:49953/",
+    TEAMCLU_RUNTIME_CONTEXT_TOKEN: RTCTX,
+    TEAMCLU_HOST_GENERATION_ID: "pi-gen-1",
+    TEAMCLU_AGENT_BACKEND: "pi",
+  };
+  assert.deepEqual(cloudTokenRoute({ ...tcp, TEAMCLU_RUNTIME_CONTEXT_SOCK: " /run/runtime-context.sock " }), {
+    kind: "unix-socket",
+    socketPath: "/run/runtime-context.sock",
+  });
+  assert.deepEqual(cloudTokenRoute(tcp), {
+    kind: "tcp-bearer",
+    baseUrl: "http://127.0.0.1:49953",
+    token: RTCTX,
+    generationId: "pi-gen-1",
+    backendKind: "pi",
+  });
+  // Not an amuxd-spawned host: nothing to ask, nothing to seed.
+  assert.equal(cloudTokenRoute({}), undefined);
+  assert.equal(cloudTokenRoute({ ...tcp, TEAMCLU_RUNTIME_CONTEXT_TOKEN: "" }), undefined);
+});
+
 test("mirrored logic matches teamclu.ts", () => {
   const src = fs.readFileSync(
     fileURLToPath(new URL("./teamclu.ts", import.meta.url)),
@@ -115,4 +152,8 @@ test("mirrored logic matches teamclu.ts", () => {
   assert.ok(src.includes("out = out.split(token).join(REDACTED_CLOUD_TOKEN);"));
   assert.ok(src.includes('pi.on("tool_result"'));
   assert.ok(src.includes("/internal/runtime-context/cloud-token"));
+  // The socket route, and that it is preferred: both halves of the mirror above.
+  assert.ok(src.includes('const socketPath = env.TEAMCLU_RUNTIME_CONTEXT_SOCK?.trim();'));
+  assert.ok(src.includes('if (socketPath) return { kind: "unix-socket", socketPath };'));
+  assert.ok(src.includes("http.request("));
 });
