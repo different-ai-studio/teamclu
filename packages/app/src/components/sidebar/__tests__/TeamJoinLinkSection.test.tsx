@@ -109,4 +109,49 @@ describe('TeamJoinLinkSection', () => {
     fireEvent.click(await screen.findByRole('button', { name: '生成链接' }))
     await waitFor(() => expect(onUpgradeRequired).toHaveBeenCalled())
   })
+
+  it('maps a never-expiring link to 不限期 and keeps that ttl when the cap changes', async () => {
+    getTeamJoinLink.mockResolvedValueOnce({ ...ACTIVE, expiresAt: null })
+    putTeamJoinLink.mockResolvedValueOnce({ ...ACTIVE, expiresAt: null, maxUses: 3 })
+    render(<TeamJoinLinkSection teamId="team-1" />)
+    await screen.findByDisplayValue(ACTIVE.url)
+    expect(screen.getByRole('combobox')).toHaveValue('never')
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '3' } })
+    await waitFor(() => expect(putTeamJoinLink).toHaveBeenCalledWith('team-1', {
+      ttl: 'never', maxUses: 3, rotate: false,
+    }))
+  })
+
+  it('maps a 30-day term from createdAt and keeps it on rotate', async () => {
+    const thirty = {
+      ...ACTIVE,
+      createdAt: '2026-09-10T00:00:00Z',
+      expiresAt: '2026-10-10T00:00:00Z',
+      maxUses: 4,
+    }
+    getTeamJoinLink.mockResolvedValueOnce(thirty)
+    putTeamJoinLink.mockResolvedValueOnce({ ...thirty, token: 'tok-2', url: 'https://api.example.test/join/tok-2' })
+    render(<TeamJoinLinkSection teamId="team-1" />)
+    await screen.findByDisplayValue(thirty.url)
+    expect(screen.getByRole('combobox')).toHaveValue('30d')
+    fireEvent.click(screen.getByRole('button', { name: '换一条新链接' }))
+    await waitFor(() => expect(putTeamJoinLink).toHaveBeenCalledWith('team-1', {
+      ttl: '30d', maxUses: 4, rotate: true,
+    }))
+  })
+
+  it('does not put when the cap is 0', async () => {
+    getTeamJoinLink.mockResolvedValueOnce(ACTIVE)
+    render(<TeamJoinLinkSection teamId="team-1" />)
+    await screen.findByDisplayValue(ACTIVE.url)
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '0' } })
+    expect(putTeamJoinLink).not.toHaveBeenCalled()
+  })
+
+  it('hides 生成链接 after a GET failure that is not 404', async () => {
+    getTeamJoinLink.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }))
+    render(<TeamJoinLinkSection teamId="team-1" />)
+    await waitFor(() => expect(getTeamJoinLink).toHaveBeenCalledWith('team-1'))
+    expect(screen.queryByRole('button', { name: '生成链接' })).not.toBeInTheDocument()
+  })
 })

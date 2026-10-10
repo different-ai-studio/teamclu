@@ -20,11 +20,26 @@ function isUpgradeRequired(error: unknown): boolean {
   return (error as { code?: unknown })?.code === 'upgrade_required'
 }
 
-function parseCap(raw: string): number | null {
-  if (raw.trim() === '') return null
-  const n = Number(raw)
-  if (!Number.isFinite(n) || n < 1) return null
-  return Math.floor(n)
+const DAY_MS = 24 * 60 * 60 * 1000
+const SEVEN_DAYS_MS = 7 * DAY_MS
+const THIRTY_DAYS_MS = 30 * DAY_MS
+
+function inferTtl(row: TeamJoinLink): TeamJoinLinkTtl {
+  if (row.expiresAt === null) return 'never'
+  if (!row.createdAt) return '7d'
+  const created = Date.parse(row.createdAt)
+  const expires = Date.parse(row.expiresAt)
+  if (!Number.isFinite(created) || !Number.isFinite(expires)) return '7d'
+  const duration = expires - created
+  return Math.abs(duration - THIRTY_DAYS_MS) < Math.abs(duration - SEVEN_DAYS_MS) ? '30d' : '7d'
+}
+
+/** Empty → unlimited. A whole number ≥ 1 → that integer. Anything else → reject. */
+function parseCap(raw: string): { ok: true; value: number | null } | { ok: false } {
+  const trimmed = raw.trim()
+  if (trimmed === '') return { ok: true, value: null }
+  if (!/^[1-9]\d*$/.test(trimmed)) return { ok: false }
+  return { ok: true, value: Number(trimmed) }
 }
 
 export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkSectionProps) {
@@ -33,22 +48,42 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
   const [cap, setCap] = React.useState('')
   const [loading, setLoading] = React.useState(true)
   const [busy, setBusy] = React.useState(false)
+  const [loadFailed, setLoadFailed] = React.useState(false)
+  const [boundTeamId, setBoundTeamId] = React.useState(teamId)
+
+  if (boundTeamId !== teamId) {
+    setBoundTeamId(teamId)
+    setLink(null)
+    setTtl('7d')
+    setCap('')
+    setLoadFailed(false)
+    setLoading(true)
+  }
 
   React.useEffect(() => {
     let cancelled = false
+    setLink(null)
+    setTtl('7d')
+    setCap('')
+    setLoadFailed(false)
     setLoading(true)
     void getBackend().teams.getTeamJoinLink(teamId)
       .then((row) => {
         if (cancelled) return
         setLink(row)
+        setTtl(inferTtl(row))
         setCap(row.maxUses == null ? '' : String(row.maxUses))
+        setLoadFailed(false)
       })
       .catch((error: unknown) => {
         if (cancelled) return
         if (isNotFound(error)) {
           setLink(null)
+          setLoadFailed(false)
           return
         }
+        setLink(null)
+        setLoadFailed(true)
         const msg = error instanceof Error ? error.message : String(error)
         toast.error(msg)
       })
@@ -65,6 +100,7 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
     try {
       const row = await getBackend().teams.putTeamJoinLink(teamId, input)
       setLink(row)
+      setTtl(input.ttl)
     } catch (error) {
       if (isUpgradeRequired(error)) {
         onUpgradeRequired?.()
@@ -79,12 +115,14 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
 
   const onTtlChange = (next: TeamJoinLinkTtl) => {
     setTtl(next)
-    if (link) void put({ ttl: next, maxUses: parseCap(cap), rotate: false })
+    const parsed = parseCap(cap)
+    if (link && parsed.ok) void put({ ttl: next, maxUses: parsed.value, rotate: false })
   }
 
   const onCapChange = (raw: string) => {
     setCap(raw)
-    if (link) void put({ ttl, maxUses: parseCap(raw), rotate: false })
+    const parsed = parseCap(raw)
+    if (link && parsed.ok) void put({ ttl, maxUses: parsed.value, rotate: false })
   }
 
   const copyUrl = async () => {
@@ -164,16 +202,22 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
             <Button
               variant="outline"
               disabled={busy}
-              onClick={() => void put({ ttl, maxUses: parseCap(cap), rotate: true })}
+              onClick={() => {
+                const parsed = parseCap(cap)
+                if (parsed.ok) void put({ ttl, maxUses: parsed.value, rotate: true })
+              }}
             >
               换一条新链接
             </Button>
           </div>
         </>
-      ) : (
+      ) : loadFailed ? null : (
         <Button
           disabled={busy}
-          onClick={() => void put({ ttl, maxUses: parseCap(cap), rotate: false })}
+          onClick={() => {
+            const parsed = parseCap(cap)
+            if (parsed.ok) void put({ ttl, maxUses: parsed.value, rotate: false })
+          }}
         >
           生成链接
         </Button>
