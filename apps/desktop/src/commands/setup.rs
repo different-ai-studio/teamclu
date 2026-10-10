@@ -426,50 +426,68 @@ where
 {
     use tauri_plugin_shell::process::CommandEvent;
 
-    emit("started", None, None);
-    // `_child_guard` must stay alive until `rx` is drained: dropping the
-    // CommandChild early can kill the sidecar mid-install.
-    let (mut rx, _child_guard) = crate::commands::branded_amuxd_sidecar(app, ["install-pi"])?
-        .spawn()
-        .map_err(|e| format!("spawn amuxd: {e}"))?;
+    // Windows: install with amuxd and its pi hosts stopped, or the files they
+    // hold keep the install from replacing their tree.
+    #[cfg(windows)]
+    let was_running =
+        crate::commands::amuxd_supervisor::AmuxdSupervisor::pause_for_pi_install(app).await?;
 
-    let mut last_err: Option<String> = None;
-    let mut last_stderr: Option<String> = None;
-    while let Some(event) = rx.recv().await {
-        match event {
-            CommandEvent::Stdout(bytes) => {
-                let line = String::from_utf8_lossy(&bytes).trim().to_string();
-                if !line.is_empty() {
-                    emit("running", Some(line), None);
+    let result = async {
+        emit("started", None, None);
+        // `_child_guard` must stay alive until `rx` is drained: dropping the
+        // CommandChild early can kill the sidecar mid-install.
+        let (mut rx, _child_guard) = crate::commands::branded_amuxd_sidecar(app, ["install-pi"])?
+            .spawn()
+            .map_err(|e| format!("spawn amuxd: {e}"))?;
+
+        let mut last_err: Option<String> = None;
+        let mut last_stderr: Option<String> = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) => {
+                    let line = String::from_utf8_lossy(&bytes).trim().to_string();
+                    if !line.is_empty() {
+                        emit("running", Some(line), None);
+                    }
                 }
-            }
-            CommandEvent::Stderr(bytes) => {
-                let line = String::from_utf8_lossy(&bytes).trim().to_string();
-                if !line.is_empty() {
-                    last_stderr = Some(line.clone());
-                    // Forwarded, not just remembered: amuxd narrates a slow
-                    // install (registry probes, mirror fallbacks) on stderr, and
-                    // holding those back is most of why an install row could sit
-                    // on "installing…" with nothing under it. Mirrors the
-                    // opencode path, which has always emitted both pipes.
-                    emit("running", Some(line), None);
+                CommandEvent::Stderr(bytes) => {
+                    let line = String::from_utf8_lossy(&bytes).trim().to_string();
+                    if !line.is_empty() {
+                        last_stderr = Some(line.clone());
+                        // Forwarded, not just remembered: amuxd narrates a slow
+                        // install (registry probes, mirror fallbacks) on stderr, and
+                        // holding those back is most of why an install row could sit
+                        // on "installing…" with nothing under it. Mirrors the
+                        // opencode path, which has always emitted both pipes.
+                        emit("running", Some(line), None);
+                    }
                 }
+                CommandEvent::Terminated(payload) if payload.code.unwrap_or(-1) != 0 => {
+                    last_err = Some(match &last_stderr {
+                        Some(s) => format!("amuxd install-pi failed: {s}"),
+                        None => format!("amuxd install-pi exited with code {:?}", payload.code),
+                    });
+                }
+                _ => {}
             }
-            CommandEvent::Terminated(payload) if payload.code.unwrap_or(-1) != 0 => {
-                last_err = Some(match &last_stderr {
-                    Some(s) => format!("amuxd install-pi failed: {s}"),
-                    None => format!("amuxd install-pi exited with code {:?}", payload.code),
-                });
-            }
-            _ => {}
         }
+        if let Some(e) = last_err {
+            emit("failed", None, Some(e.clone()));
+            return Err(e);
+        }
+        emit("done", None, None);
+        Ok(())
     }
-    if let Some(e) = last_err {
-        emit("failed", None, Some(e.clone()));
-        return Err(e);
-    }
-    emit("done", None, None);
-    Ok(())
+    .await;
+
+    #[cfg(windows)]
+    crate::commands::amuxd_supervisor::AmuxdSupervisor::resume_after_pi_install(
+        app,
+        was_running,
+        result.is_ok(),
+    )
+    .await;
+    result
 }
 
 /// Install pi for the first-run wizard and the post-login runtime check

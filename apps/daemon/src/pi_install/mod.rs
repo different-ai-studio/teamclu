@@ -835,6 +835,9 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
         &format!("installing pi {want} and {} {want_sdk}", mcp_sdk::NPM_PKG),
     );
     materialize_runtime_manifests()?;
+    // npm rewrites node_modules in place; on Windows a pi host still running
+    // from it would hold files npm needs to replace.
+    crate::node_install::stop_managed_runtime_processes();
     match registry_source() {
         RegistrySource::OssBundle => install_from_oss_bundles(&want, &want_sdk)?,
         source => install_with_npm_ci(source)?,

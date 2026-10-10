@@ -603,15 +603,7 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
     unpack(&asset, &bytes, &partial)?;
     drop(bytes);
 
-    // A running host holds files under the old directory open; renaming a
-    // directory is allowed everywhere even then, deleting it is not.
-    if dest.exists() {
-        let old = managed_root().join(format!("{version}.old"));
-        let _ = std::fs::remove_dir_all(&old);
-        std::fs::rename(&dest, &old)?;
-        let _ = std::fs::remove_dir_all(&old);
-    }
-    std::fs::rename(&partial, &dest)?;
+    replace_dir(&partial, &dest)?;
 
     let status = doctor();
     if !status.satisfied {
@@ -627,6 +619,118 @@ pub fn run_install(force: bool) -> anyhow::Result<()> {
         &format!("Node.js {version} installed ({})", node_binary().display()),
     );
     Ok(())
+}
+
+/// Move the freshly unpacked `from` to `to`, replacing whatever is there.
+///
+/// The old tree is renamed aside before it is deleted, because a process
+/// running from it may keep it from being deleted. On Windows it does: a file
+/// a live process holds cannot be deleted, so the aside directory survives
+/// with those files in it. It used to always be `<to>.old`, and the next
+/// install then renamed onto that non-empty directory and failed with
+/// "Directory not empty (os error 145)" — on every retry, because the restart
+/// that would free the files only comes after a successful install. So each
+/// install takes a fresh aside name, leftovers from earlier installs are swept
+/// best-effort, and on Windows the processes running from the managed Node are
+/// stopped first (see [`stop_managed_runtime_processes`]).
+pub(crate) fn replace_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    stop_managed_runtime_processes();
+    sweep_aside_dirs(to);
+    if to.exists() {
+        let aside = aside_path(to);
+        std::fs::rename(to, &aside)?;
+        let _ = std::fs::remove_dir_all(&aside);
+    }
+    std::fs::rename(from, to)?;
+    Ok(())
+}
+
+/// `<to>.old-<nanos>`: never an existing directory.
+fn aside_path(to: &Path) -> PathBuf {
+    let name = to
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    to.with_file_name(format!("{name}.old-{nanos}"))
+}
+
+/// Remove the aside directories earlier installs of `to` left behind:
+/// `<to>.old-*`, and the fixed names older builds used (`<to>.old`, and
+/// `Path::with_extension("old")`, which turned `24.20.0` into `24.20.old`).
+/// Best-effort; one still held open is retried next time.
+fn sweep_aside_dirs(to: &Path) {
+    let (Some(parent), Some(name)) = (to.parent(), to.file_name()) else {
+        return;
+    };
+    let name = name.to_string_lossy();
+    let prefix = format!("{name}.old-");
+    let legacy = [
+        format!("{name}.old"),
+        to.with_extension("old")
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    ];
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+        if entry_name.starts_with(&prefix)
+            || legacy.iter().any(|l| !l.is_empty() && *l == entry_name)
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Windows: stop every process whose executable lives under the managed Node
+/// root — the pi hosts and MCP bridges — so the install can replace their
+/// trees. A daemon the desktop hard-kills does not take its pi hosts with it on
+/// Windows (`kill_on_drop` never runs), so they can outlive the daemon and even
+/// the app, holding the files open indefinitely. Anything still wanted is
+/// respawned by the daemon on demand. No-op elsewhere: unix lets a directory
+/// in use be renamed and deleted.
+pub(crate) fn stop_managed_runtime_processes() {
+    #[cfg(windows)]
+    {
+        let mut root = managed_root().to_string_lossy().into_owned();
+        if !root.ends_with('\\') {
+            root.push('\\');
+        }
+        let script = "$root = $env:AMUXD_RUNTIME_ROOT; \
+            Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase) } | \
+            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; $_.Id }";
+        match std::process::Command::new("powershell")
+            .no_window()
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("AMUXD_RUNTIME_ROOT", &root)
+            .output()
+        {
+            Ok(out) => {
+                let stopped = String::from_utf8_lossy(&out.stdout)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !stopped.is_empty() {
+                    progress(
+                        "install",
+                        &format!("stopped processes running from {root}: {stopped}"),
+                    );
+                    // Let Windows release the image and file handles.
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+            Err(e) => tracing::warn!("could not stop processes under {root}: {e}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -891,5 +995,59 @@ def0000000000000000000000000000000000000000000000000000000000000  node-v24.20.0-
         assert_eq!(v["requiredVersion"], serde_json::json!("24.20.0"));
         assert_eq!(v["managed"], serde_json::json!(true));
         assert_eq!(v["satisfied"], serde_json::json!(true));
+    }
+
+    /// The Windows failure: an earlier install left a non-empty aside
+    /// directory under the fixed name (a live pi host held files in it), and
+    /// every later install renamed onto it and failed with os error 145.
+    #[test]
+    fn replace_dir_survives_a_leftover_aside_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let to = root.path().join("24.20.0");
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join("node.exe"), "old").unwrap();
+        for leftover in ["24.20.0.old", "24.20.old", "24.20.0.old-1"] {
+            let dir = root.path().join(leftover);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("held"), "").unwrap();
+        }
+        let from = root.path().join("24.20.0.partial");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join("node.exe"), "new").unwrap();
+
+        replace_dir(&from, &to).unwrap();
+
+        assert_eq!(std::fs::read_to_string(to.join("node.exe")).unwrap(), "new");
+        let mut left: Vec<String> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["24.20.0".to_string()]);
+    }
+
+    #[test]
+    fn replace_dir_installs_into_an_empty_slot_and_spares_siblings() {
+        let root = tempfile::tempdir().unwrap();
+        let to = root.path().join("node_modules");
+        let sibling = root.path().join("node_modules.cache");
+        std::fs::create_dir_all(&sibling).unwrap();
+        let from = root.path().join("staged");
+        std::fs::create_dir_all(from.join("pkg")).unwrap();
+
+        replace_dir(&from, &to).unwrap();
+
+        assert!(to.join("pkg").is_dir());
+        assert!(!from.exists());
+        assert!(sibling.is_dir(), "only aside directories are swept");
+    }
+
+    #[test]
+    fn aside_names_are_fresh() {
+        let to = Path::new("/x/node_modules");
+        let a = aside_path(to);
+        let name = a.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("node_modules.old-"), "{name}");
+        assert_eq!(a.parent(), to.parent());
     }
 }
