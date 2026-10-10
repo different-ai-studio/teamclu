@@ -10433,7 +10433,11 @@ components:
                 - forbidden
                 - not_found
                 - conflict
+                - link_expired
+                - link_exhausted
+                - link_revoked
                 - rate_limited
+                - upgrade_required
                 - upstream_unavailable
                 - internal
             message:
