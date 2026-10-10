@@ -21,7 +21,7 @@
     "expo": "~57.0.24",
     "expo-audio": "^57.0.5",
     "expo-blur": "~57.0.2",
-    "expo-clipboard": "^57.0.1",
+    "expo-clipboard": "^57.0.2",
     "expo-constants": "~57.0.9",
     "expo-dev-client": "~57.0.10",
     "expo-document-picker": "^57.0.2",
