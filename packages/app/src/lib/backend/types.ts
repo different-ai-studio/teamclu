@@ -561,6 +561,24 @@ export interface TeamQuotas {
   members: Array<{ actorId: string; limitCredits: number | null }>;
 }
 
+export type TeamJoinLinkTtl = "7d" | "30d" | "never";
+
+export interface TeamJoinLink {
+  token: string;
+  url: string;
+  expiresAt: string | null;
+  maxUses: number | null;
+  useCount: number;
+  status: string;
+  createdAt: string;
+}
+
+export interface TeamJoinLinkInput {
+  ttl: TeamJoinLinkTtl;
+  maxUses: number | null;
+  rotate: boolean;
+}
+
 export interface TeamsBackend {
   listCurrentUserTeams(args?: { limit?: number }): Promise<TeamSummary[]>;
   getTeam(teamId: string): Promise<TeamSummary | null>;
@@ -586,6 +604,9 @@ export interface TeamsBackend {
    */
   upgradeAccount(input: { teamId: string; orgName: string; contact?: string | null }): Promise<{ orgId: string; teamId: string; teamName: string }>;
   createTeamInvite(input: TeamInviteInput): Promise<TeamInviteResult>;
+  getTeamJoinLink(teamId: string): Promise<TeamJoinLink>;
+  putTeamJoinLink(teamId: string, input: TeamJoinLinkInput): Promise<TeamJoinLink>;
+  revokeTeamJoinLink(teamId: string): Promise<void>;
   removeTeamActor(teamId: string, actorId: string): Promise<void>;
   listAllMyTeams(): Promise<MembershipTeam[]>;
   /**

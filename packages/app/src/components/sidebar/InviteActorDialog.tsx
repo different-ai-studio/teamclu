@@ -18,6 +18,8 @@ import { buildInviteDeeplink } from '@/lib/team/invite-deeplink'
 import { getEffectiveServerConfigSync } from '@/lib/config/server-config'
 import { cn } from '@/lib/utils'
 import { useCurrentTeamStore } from '@/stores/current-team'
+import { useTeamPermissions } from '@/lib/team/team-permissions'
+import { TeamJoinLinkSection } from '@/components/sidebar/TeamJoinLinkSection'
 
 type InviteKind = 'member' | 'agent'
 
@@ -37,6 +39,7 @@ export function InviteActorDialog({ open, onOpenChange, teamId }: InviteActorDia
   const { t } = useTranslation()
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null)
   const effectiveTeamId = currentTeamId ?? teamId ?? null
+  const { canManageTeam } = useTeamPermissions()
   const [kind, setKind] = React.useState<InviteKind>('member')
   const [name, setName] = React.useState('')
   // Optional. When either is filled the invitee sees this invite waiting for
@@ -157,6 +160,12 @@ export function InviteActorDialog({ open, onOpenChange, teamId }: InviteActorDia
           </div>
         ) : !invite ? (
           <div className="flex flex-col gap-3">
+            {canManageTeam && effectiveTeamId ? (
+              <TeamJoinLinkSection
+                teamId={effectiveTeamId}
+                onUpgradeRequired={() => setNeedsUpgrade(true)}
+              />
+            ) : null}
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
                 {t('invite.kindLabel', 'Kind')}

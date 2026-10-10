@@ -15,15 +15,46 @@ vi.mock('@/lib/config/server-config', () => ({
   getEffectiveServerConfigSync: () => ({ cloudApiUrl: 'https://api.example.test' }),
 }))
 
-const createTeamInvite = vi.fn(async () => ({ token: 'tok', expiresAt: '2026-09-24T00:00:00Z' }))
+const perms = vi.hoisted(() => ({ canManageTeam: false }))
+vi.mock('@/lib/team/team-permissions', () => ({
+  useTeamPermissions: () => ({
+    role: perms.canManageTeam ? 'admin' : 'member',
+    isOwner: false,
+    canManageTeam: perms.canManageTeam,
+    canEditFiles: true,
+  }),
+}))
+
+const { createTeamInvite, getTeamJoinLink, putTeamJoinLink, revokeTeamJoinLink } = vi.hoisted(() => ({
+  createTeamInvite: vi.fn(async () => ({ token: 'tok', expiresAt: '2026-09-24T00:00:00Z' })),
+  getTeamJoinLink: vi.fn(async () => {
+    throw Object.assign(new Error('missing'), { status: 404 })
+  }),
+  putTeamJoinLink: vi.fn(),
+  revokeTeamJoinLink: vi.fn(),
+}))
 vi.mock('@/lib/backend', () => ({
-  getBackend: () => ({ teams: { createTeamInvite } }),
+  getBackend: () => ({ teams: { createTeamInvite, getTeamJoinLink, putTeamJoinLink, revokeTeamJoinLink } }),
 }))
 
 const { InviteActorDialog } = await import('../InviteActorDialog')
 
 describe('InviteActorDialog', () => {
+  it('hides the section from a member', () => {
+    perms.canManageTeam = false
+    render(<InviteActorDialog open onOpenChange={() => {}} />)
+    expect(screen.queryByRole('button', { name: '生成链接' })).toBeNull()
+  })
+
+  it('shows the join-link section to an admin', async () => {
+    perms.canManageTeam = true
+    render(<InviteActorDialog open onOpenChange={() => {}} />)
+    expect(await screen.findByRole('button', { name: '生成链接' })).toBeInTheDocument()
+  })
+
   it('offers no role choice and invites members as member', async () => {
+    perms.canManageTeam = false
+
     render(<InviteActorDialog open onOpenChange={() => {}} />)
 
     expect(screen.queryByText('Role')).toBeNull()

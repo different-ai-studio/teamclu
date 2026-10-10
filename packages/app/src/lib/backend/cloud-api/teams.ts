@@ -1,4 +1,11 @@
-import type { TeamSummary, TeamsBackend, TeamInviteInput, TeamInviteResult } from "@/lib/backend/types";
+import type {
+  TeamSummary,
+  TeamsBackend,
+  TeamInviteInput,
+  TeamInviteResult,
+  TeamJoinLink,
+  TeamJoinLinkInput,
+} from "@/lib/backend/types";
 import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
 type CloudTeam = {
@@ -85,6 +92,15 @@ export function createTeamsModule(client: CloudApiClient): TeamsBackend {
         orgName: input.orgName,
         contact: input.contact ?? null,
       });
+    },
+    async getTeamJoinLink(teamId: string) {
+      return client.get<TeamJoinLink>(`/v1/teams/${encodeURIComponent(teamId)}/join-link`);
+    },
+    async putTeamJoinLink(teamId: string, input: TeamJoinLinkInput) {
+      return client.put<TeamJoinLink>(`/v1/teams/${encodeURIComponent(teamId)}/join-link`, input);
+    },
+    async revokeTeamJoinLink(teamId: string) {
+      await client.delete<void>(`/v1/teams/${encodeURIComponent(teamId)}/join-link`);
     },
     async createTeamInvite(input: TeamInviteInput) {
       const kind = input.kind ?? input.actorType;
