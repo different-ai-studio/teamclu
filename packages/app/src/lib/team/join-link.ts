@@ -117,9 +117,28 @@ export async function joinTeamByLink(
 }
 
 const redeemOnce = new Map<string, Promise<JoinLinkRedeemResult>>();
+// The promise bootstrap awaits. Set synchronously, before the POST.
+let inFlightJoin: Promise<JoinLinkRedeemResult> | null = null;
+let successfulJoin: JoinLinkRedeemResult | null = null;
+// Bumped on sign-out so a redeem that finishes afterwards cannot satisfy
+// the next person's team bootstrap.
+let joinEpoch = 0;
 
 function redeemKey(link: ParsedJoinLink): string {
   return `${link.token}\0${link.cloudApiUrl ?? ""}`;
+}
+
+export function currentJoinLinkRedeem(): Promise<JoinLinkRedeemResult> | null {
+  return inFlightJoin;
+}
+
+export function successfulJoinLinkRedeem(): JoinLinkRedeemResult | null {
+  return successfulJoin;
+}
+
+export function clearSuccessfulJoinLinkRedeem(): void {
+  successfulJoin = null;
+  joinEpoch += 1;
 }
 
 export async function redeemAcceptedJoinLink(
@@ -133,24 +152,51 @@ export async function redeemAcceptedJoinLink(
   return result;
 }
 
-/** One POST per accepted link, shared by the dialog and AuthGate. */
+/**
+ * One POST per accepted link, shared by the dialog and AuthGate.
+ *
+ * The returned promise is stored before any fetch. Callers can pass the
+ * access-token promise itself so registration happens before that await too.
+ */
 export function redeemAcceptedJoinLinkOnce(
   link: ParsedJoinLink,
-  accessToken: string,
+  accessToken: string | Promise<string>,
 ): Promise<JoinLinkRedeemResult> {
   const key = redeemKey(link);
   const existing = redeemOnce.get(key);
   if (existing) return existing;
-  const promise = redeemAcceptedJoinLink(link, accessToken).catch((error) => {
-    redeemOnce.delete(key);
-    throw error;
+
+  let resolveRedeem!: (result: JoinLinkRedeemResult) => void;
+  let rejectRedeem!: (error: unknown) => void;
+  const promise = new Promise<JoinLinkRedeemResult>((resolve, reject) => {
+    resolveRedeem = resolve;
+    rejectRedeem = reject;
   });
   redeemOnce.set(key, promise);
+  inFlightJoin = promise;
+  const epoch = joinEpoch;
+
+  void (async () => {
+    try {
+      const token = await accessToken;
+      const result = await redeemAcceptedJoinLink(link, token);
+      if (epoch === joinEpoch) successfulJoin = result;
+      resolveRedeem(result);
+    } catch (error) {
+      if (inFlightJoin === promise) inFlightJoin = null;
+      if (redeemOnce.get(key) === promise) redeemOnce.delete(key);
+      rejectRedeem(error);
+    }
+  })();
+
   return promise;
 }
 
 export function resetJoinLinkRedeemForTests(): void {
   redeemOnce.clear();
+  inFlightJoin = null;
+  successfulJoin = null;
+  joinEpoch = 0;
 }
 
 export { JoinLinkHttpError };

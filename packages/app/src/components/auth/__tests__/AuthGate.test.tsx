@@ -762,6 +762,82 @@ describe("AuthGate", () => {
     vi.unstubAllGlobals();
   });
 
+  it("enters the joined team without naming a new one or switching teams", async () => {
+    isTauriMock.mockReturnValue(false);
+    authState.session = null;
+    backendMock.teams.listAllMyTeams.mockResolvedValue([]);
+    useJoinLinkConfirmation.setState({
+      requested: null,
+      confirmed: { token: "join-tok", cloudApiUrl: "https://api.acme.test" },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ teamId: "team-join", alreadyMember: false }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const view = render(
+        <AuthGate>
+          <div>App shell</div>
+        </AuthGate>,
+      );
+
+      await waitFor(() => expect(screen.getByText("Login screen")).toBeInTheDocument());
+
+      authState.session = { user: { id: "user-1" } };
+      view.rerender(
+        <AuthGate>
+          <div>App shell</div>
+        </AuthGate>,
+      );
+
+      await waitFor(() => expect(currentTeamMock.enterTeam).toHaveBeenCalledWith("team-join"));
+      await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
+      expect(currentTeamMock.switchToTeam).not.toHaveBeenCalled();
+      expect(screen.queryByLabelText("给你的团队起个名字")).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows a revoked join link after sign-in and does not enter a team", async () => {
+    isTauriMock.mockReturnValue(false);
+    authState.session = null;
+    useJoinLinkConfirmation.setState({
+      requested: null,
+      confirmed: { token: "join-tok", cloudApiUrl: "https://api.acme.test" },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 410,
+      text: async () => JSON.stringify({ error: { code: "link_revoked" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const view = render(
+        <AuthGate>
+          <div>App shell</div>
+        </AuthGate>,
+      );
+
+      await waitFor(() => expect(screen.getByText("Login screen")).toBeInTheDocument());
+
+      authState.session = { user: { id: "user-1" } };
+      view.rerender(
+        <AuthGate>
+          <div>App shell</div>
+        </AuthGate>,
+      );
+
+      await waitFor(() => expect(screen.getByText("这条链接已停用")).toBeInTheDocument());
+      expect(currentTeamMock.enterTeam).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("waits for a pending invite claim before resolving the team gate", async () => {
     isTauriMock.mockReturnValue(false);
     extensionPolicyMock.isExtension = true;

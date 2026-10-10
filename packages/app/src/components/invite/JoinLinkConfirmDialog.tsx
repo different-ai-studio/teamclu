@@ -64,18 +64,20 @@ export function JoinLinkConfirmDialog() {
       return;
     }
     setBusy(true);
-    void (async () => {
-      try {
-        const accessToken = await getFreshAccessToken();
-        await redeemAcceptedJoinLinkOnce(requested, accessToken);
+    // Register before the token fetch and the POST so a bootstrap already
+    // in flight can await this same promise.
+    const redeemPromise = redeemAcceptedJoinLinkOnce(requested, getFreshAccessToken());
+    void redeemPromise
+      .then(() => {
         accept();
-      } catch (err) {
+      })
+      .catch((err) => {
         const code = err instanceof JoinLinkHttpError ? err.code : null;
         setError(joinLinkGoneMessage(code) ?? t("joinLink.joinFailed", "Could not join this team."));
-      } finally {
+      })
+      .finally(() => {
         setBusy(false);
-      }
-    })();
+      });
   };
 
   return (
