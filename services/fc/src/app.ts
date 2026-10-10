@@ -11,6 +11,7 @@ import { parseAppPublicHost } from "./lib/apps-public-host.js";
 import { handleLoginRequest, isLoginHost, type LookupLoginApp } from "./lib/apps-login-service.js";
 import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 import { makeTraefikDynamicEndpoint, type ListTraefikCustomDomains } from "./lib/apps-traefik-provider.js";
+import { renderJoinLinkPage } from "./lib/join-link-page.js";
 
 export type AppDeps = {
   createRepository: (args: { accessToken: string }) => unknown;
@@ -242,6 +243,35 @@ export function createApp(deps: AppDeps): Hono {
   const v1Router = createHonoRouterAdapter(app, deps);
   registerAllRoutes(v1Router as any);
 
+  // Public join page — registered before the non-v1 limiter so a WeChat group
+  // that shares one address cannot 429 the HTML itself. /join/ is also skipped
+  // in the predicate so a later reorder cannot put the page back under it.
+  app.get("/join/:token", async (c) => {
+    const token = c.req.param("token");
+    const repo = deps.createAuthRepository() as {
+      previewJoinLink: (token: string) => Promise<{
+        teamName: string;
+        inviterDisplayName: string;
+        expiresAt: string | null;
+        status: string;
+      }>;
+    };
+    try {
+      const preview = await repo.previewJoinLink(token);
+      return c.html(renderJoinLinkPage({ ...preview, token }), 200, { "Cache-Control": "no-store" });
+    } catch (err) {
+      const status = (err as { statusCode?: number }).statusCode;
+      if (status === 404) {
+        return c.html(
+          renderJoinLinkPage({ status: "invalid", token, teamName: "", inviterDisplayName: "", expiresAt: null }),
+          404,
+          { "Cache-Control": "no-store" },
+        );
+      }
+      throw err;
+    }
+  });
+
   // Rate limit everything that is NOT /v1 (mirrors old index.ts). /sync/* is
   // exempt: it is the JWT-authenticated OSS-sync data plane, and one sync tick
   // issues several requests (manifest pages + batch endpoints) — team members
@@ -253,6 +283,7 @@ export function createApp(deps: AppDeps): Hono {
     if (
       !(url.pathname.startsWith("/v1/") ||
         url.pathname === "/v1" ||
+        url.pathname.startsWith("/join/") ||
         url.pathname.startsWith("/sync/") ||
         url.pathname.startsWith("/api/auth/"))
     ) {
