@@ -43,6 +43,35 @@ function assertNewOrgAllowed(): void {
   }
 }
 
+function mapJoinLinkAdminError(error: { code?: string; message?: string }): never {
+  const code = error?.code || "";
+  const msg = error?.message ?? "";
+  if (code === "42501" && msg.includes("升级账号后才能邀请成员加入团队")) {
+    throw new ApiError(403, "upgrade_required", "升级账号后才能邀请成员加入团队");
+  }
+  if (code === "42501" && msg.includes("team owner or admin access required")) {
+    throw new ApiError(403, "forbidden", "team owner or admin access required");
+  }
+  if (code === "P0002" || msg.includes("link_not_found")) {
+    throw new ApiError(404, "not_found", "link_not_found");
+  }
+  if (code === "22023") {
+    throw new ApiError(400, "validation_failed", msg || "invalid join link");
+  }
+  throw error;
+}
+
+function mapTeamJoinLinkRow(row: any) {
+  return {
+    token: requiredString(row.token, "teams.joinLink", "token"),
+    expiresAt: row.expires_at ?? null,
+    maxUses: row.max_uses ?? null,
+    useCount: Number(row.use_count ?? 0),
+    status: requiredString(row.status, "teams.joinLink", "status"),
+    createdAt: requiredString(row.created_at, "teams.joinLink", "created_at"),
+  };
+}
+
 /** Map the turn-trace RPCs' SQLSTATEs onto HTTP errors. */
 function turnTraceRpcError(error: { code?: string; message?: string }): unknown {
   if (error.code === "P0002") return new ApiError(404, "not_found", "message not found");
@@ -1389,6 +1418,41 @@ export function createSupabaseBusinessRepository(options) {
       }
       const row = requiredRow(data, "account.bindPhone");
       return { userId: requiredString(row.user_id, "account.bindPhone", "user_id"), bound: Boolean(row.bound) };
+    },
+
+    async getTeamJoinLink(teamId) {
+      const { data, error } = await supabase.rpc("get_team_join_link", { p_team_id: teamId });
+      if (error) mapJoinLinkAdminError(error);
+      return mapTeamJoinLinkRow(requiredRow(data, "teams.getTeamJoinLink"));
+    },
+
+    async putTeamJoinLink(teamId, input) {
+      // The RPC does not return `created`. Compute it in FC: missing unrevoked
+      // row (404) or rotate=true → 201. A race between get and put is acceptable.
+      let created = input.rotate === true;
+      const existing = await supabase.rpc("get_team_join_link", { p_team_id: teamId });
+      if (existing.error) {
+        try {
+          mapJoinLinkAdminError(existing.error);
+        } catch (err) {
+          if (!(err instanceof ApiError && err.statusCode === 404)) throw err;
+          created = true;
+        }
+      }
+      const { data, error } = await supabase.rpc("put_team_join_link", {
+        p_team_id: teamId,
+        p_ttl: input.ttl,
+        p_max_uses: input.maxUses ?? null,
+        p_rotate: input.rotate === true,
+        p_default_org_id: process.env.DEFAULT_ORG_ID || null,
+      });
+      if (error) mapJoinLinkAdminError(error);
+      return { ...mapTeamJoinLinkRow(requiredRow(data, "teams.putTeamJoinLink")), created };
+    },
+
+    async revokeTeamJoinLink(teamId) {
+      const { error } = await supabase.rpc("revoke_team_join_link", { p_team_id: teamId });
+      if (error) mapJoinLinkAdminError(error);
     },
 
     async createTeamInvite(teamId, input) {

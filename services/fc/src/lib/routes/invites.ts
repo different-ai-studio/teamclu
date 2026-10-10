@@ -1,5 +1,5 @@
 import { requireString } from "../routing-utils.js";
-import { optionalBearerToken, extractBearerToken } from "../http-utils.js";
+import { optionalBearerToken, extractBearerToken, ApiError } from "../http-utils.js";
 
 export function registerInvites(router) {
   // The bearer is OPTIONAL on this route, and which path it serves depends on
@@ -43,5 +43,21 @@ export function registerInvites(router) {
     const inviteId = decodeURIComponent(ctx.params.inviteId);
     await ctx.repository.declinePendingInvite(inviteId, { accessToken });
     return { statusCode: 204 };
+  });
+
+  router.get("/v1/join-links/:token", { auth: "none" }, async (ctx) => {
+    const token = decodeURIComponent(ctx.params.token);
+    const result = await ctx.repository.previewJoinLink(token);
+    return { body: result, headers: { "Cache-Control": "no-store" } };
+  });
+
+  router.post("/v1/join-links/:token/join", { auth: "none" }, async (ctx) => {
+    const token = decodeURIComponent(ctx.params.token);
+    const accessToken = optionalBearerToken(ctx.headers) ?? undefined;
+    if (!accessToken) {
+      throw new ApiError(401, "missing_auth", "authenticated user required");
+    }
+    const result = await ctx.repository.joinTeamByLink(token, { accessToken });
+    return { body: result };
   });
 }

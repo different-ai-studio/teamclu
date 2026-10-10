@@ -10,6 +10,10 @@ import { makeDysmsSender } from "../sms.js";
 import { REALTIME_TRANSPORT_OPTS, requiredRow, requiredString, requiredInteger } from "./shared.js";
 import { assignSystemOrgRole } from "./org-roles.js";
 
+export function shouldAssignMemberRole(result: { alreadyMember: boolean }): boolean {
+  return result.alreadyMember === false;
+}
+
 // Both pending-invite RPCs guard by visibility: an invite not addressed to the
 // caller's verified contact raises 23503 exactly like a nonexistent id, so a
 // caller cannot distinguish "not yours" from "not there" — 404 for both.
@@ -143,6 +147,49 @@ export function createSupabaseAuthRepository(options) {
     // ctx.accessToken (optional): the joining user's bearer. Forwarded so the
     // `claim_team_invite` RPC resolves `auth.uid()` for member invites. Absent
     // for agent invites (daemon `amuxd init`), which the RPC self-provisions.
+    async previewJoinLink(token) {
+      const { data, error } = await anonClient.rpc("preview_team_join_link", { p_token: token });
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) throw new ApiError(404, "not_found", "link_not_found");
+      return {
+        teamName: row.team_name,
+        inviterDisplayName: row.inviter_display_name,
+        expiresAt: row.expires_at ?? null,
+        status: row.status,
+      };
+    },
+
+    async joinTeamByLink(token, ctx: { accessToken?: string } = {}) {
+      if (!ctx.accessToken) {
+        throw new ApiError(401, "missing_auth", "authenticated user required");
+      }
+      const client = clientForToken(ctx.accessToken);
+      const { data, error } = await client.rpc("join_team_by_link", { p_token: token });
+      if (error) {
+        const msg = error.message || "";
+        if (error.code === "P0002" || msg.includes("link_not_found")) throw new ApiError(404, "not_found", "link_not_found");
+        if (msg.includes("link_revoked")) throw new ApiError(410, "link_revoked", "link_revoked");
+        if (msg.includes("link_expired")) throw new ApiError(410, "link_expired", "link_expired");
+        if (msg.includes("link_exhausted")) throw new ApiError(410, "link_exhausted", "link_exhausted");
+        if (msg.includes("authenticated") || msg.includes("anonymous")) {
+          throw new ApiError(401, "missing_auth", msg);
+        }
+        throw new ApiError(400, "validation_failed", msg);
+      }
+      const row = requiredRow(data, "auth.joinTeamByLink");
+      const result = {
+        teamId: requiredString(row.team_id, "auth.joinTeamByLink", "team_id"),
+        actorId: requiredString(row.actor_id, "auth.joinTeamByLink", "actor_id"),
+        displayName: requiredString(row.display_name, "auth.joinTeamByLink", "display_name"),
+        alreadyMember: row.already_member === true,
+      };
+      if (shouldAssignMemberRole(result)) {
+        await assignMemberRoleOnClaim(client, { teamId: result.teamId, actorType: "member" }, ctx.accessToken);
+      }
+      return result;
+    },
+
     async claimInvite(token, ctx: { accessToken?: string } = {}) {
       const client = clientForToken(ctx.accessToken);
       const { data, error } = await client.rpc("claim_team_invite", { p_token: token });
