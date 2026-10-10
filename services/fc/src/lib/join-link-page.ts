@@ -22,6 +22,11 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+/** Safe to embed in an inline {@code <script>}: blocks {@code </script>} and HTML comments. */
+function jsonForInlineScript(value: unknown): string {
+  return JSON.stringify(value).replaceAll("<", "\\u003c");
+}
+
 function documentHtml(title: string, body: string): string {
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -56,8 +61,8 @@ function inactivePage(status: string): string {
 function activePage(preview: JoinLinkPageInput): string {
   const teamName = escapeHtml(preview.teamName);
   const inviter = escapeHtml(preview.inviterDisplayName);
-  const joinUrlJs = JSON.stringify(`/v1/join-links/${preview.token}/join`);
-  const teamNameJs = JSON.stringify(preview.teamName);
+  const joinUrlJs = jsonForInlineScript(`/v1/join-links/${preview.token}/join`);
+  const teamNameJs = jsonForInlineScript(preview.teamName);
   const body = `
     <h1>${teamName}</h1>
     <p>${inviter} 邀请你加入这个团队</p>

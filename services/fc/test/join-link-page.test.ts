@@ -23,6 +23,19 @@ test("active page names the team and posts the otp endpoints", () => {
   assert.doesNotMatch(html, /"sms"/);
 });
 
+test("active page escapes team name in inline script against script breakout", () => {
+  const malicious = "</script><img src=x onerror=alert(1)>";
+  const html = renderJoinLinkPage({
+    teamName: malicious,
+    inviterDisplayName: "林",
+    expiresAt: null,
+    status: "active",
+    token: "tok",
+  });
+  assert.match(html, /\\u003c/);
+  assert.doesNotMatch(html, /<img/);
+});
+
 test("revoked page explains and has no login form", () => {
   const html = renderJoinLinkPage({
     teamName: "示例团队",
