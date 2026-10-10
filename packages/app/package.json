@@ -118,7 +118,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.10.0",
     "eslint-plugin-react-hooks": "^5.1.0",
-    "globals": "^17.7.0",
+    "globals": "^17.12.0",
     "jsdom": "^30.0.1",
     "rollup-plugin-visualizer": "^7.1.1",
     "tailwindcss": "^4.3.3",
