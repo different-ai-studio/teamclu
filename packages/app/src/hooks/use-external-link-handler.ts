@@ -1,12 +1,10 @@
-/** Intercept in-document link clicks and route them through the app (Tauri only).
+/** Intercept in-document link clicks and open them outside the app (Tauri only).
  *
  * STR-11: split out of `hooks/useAppInit.ts`, which exported ten unrelated
  * hooks and one event-name constant from one 647-line file.
  */
 import { useEffect } from "react";
-import { isTauri } from "@/lib/utils";
-import { useTabsStore } from "@/stores/tabs";
-import { urlToLabel } from "@/lib/ui/webview-utils";
+import { isTauri, openExternalUrl } from "@/lib/utils";
 
 export function useExternalLinkHandler() {
   useEffect(() => {
@@ -18,8 +16,8 @@ export function useExternalLinkHandler() {
       // SEC-5: the one way a link gets an admin-console tab WITH the user's
       // session injected. Only first-party JSX can set a data attribute —
       // react-markdown drops raw HTML, so content (agent output, teammates'
-      // messages, files) can never carry it. Every other https link, wherever
-      // it came from, opens as a plain webview tab with no session.
+      // messages, files) can never carry it. Every other https link opens in
+      // the system browser and leaves the chat in place.
       if (anchor.hasAttribute("data-admin-console-entry")) {
         e.preventDefault();
         e.stopPropagation();
@@ -29,14 +27,12 @@ export function useExternalLinkHandler() {
         return;
       }
       const href = anchor.getAttribute("href");
+      // In-document http(s) links open in the system browser. The chat stays
+      // put; openExternalUrl refuses anything that is not http(s) or mailto.
       if (href && /^https?:\/\//.test(href)) {
         e.preventDefault();
         e.stopPropagation();
-        useTabsStore.getState().openTab({
-          type: "webview",
-          target: href,
-          label: urlToLabel(href),
-        });
+        void openExternalUrl(href);
       }
     };
 
