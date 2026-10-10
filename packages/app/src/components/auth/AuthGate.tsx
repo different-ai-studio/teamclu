@@ -302,6 +302,9 @@ export function AuthGate({ children }: AuthGateProps) {
   const joinRedeemPromise = useRef<Promise<unknown> | null>(null);
   const completeJoinBootstrap = () => {
     joinSkipsDaemonRefresh.current = true;
+    // Open the Tauri gate without refresh: refresh would rebind this machine's
+    // agent onto the joined team. Leave status as-is (`unknown` stays unknown).
+    useDaemonOnboardingStore.setState({ loaded: true });
     setMyTeams([]);
     setTeamChosen(true);
     setTeamChoiceResolved(true);
@@ -468,6 +471,7 @@ export function AuthGate({ children }: AuthGateProps) {
             markStartup("team-bootstrap:end");
             setRetrying(false);
             setBootstrapError(null);
+            if (await finishIfJoinSucceeded()) return;
             setBootstrap("no_team");
             return;
           }
@@ -495,6 +499,7 @@ export function AuthGate({ children }: AuthGateProps) {
           markStartup("team-bootstrap:end");
           setRetrying(false);
           setBootstrapError(null);
+          if (await finishIfJoinSucceeded()) return;
           setBootstrap("no_team");
           return;
         }
