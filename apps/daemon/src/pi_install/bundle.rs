@@ -142,22 +142,6 @@ fn unpack_to(bytes: &[u8], staging: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Move `from` to `to`, replacing whatever is there. A rename, so a live host
-/// holding files under the old tree keeps them (deleting is what fails).
-fn replace_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if to.exists() {
-        let old = to.with_extension("old");
-        let _ = std::fs::remove_dir_all(&old);
-        std::fs::rename(to, &old)?;
-        let _ = std::fs::remove_dir_all(&old);
-    }
-    std::fs::rename(from, to)?;
-    Ok(())
-}
-
 /// Try the bundle route. `Ok(true)` means the runtime is in place; `Ok(false)`
 /// means the caller should install the normal way (no bundle for this
 /// platform, bundle unavailable, or bundle for a different pin). Only a
@@ -230,9 +214,9 @@ pub(crate) fn try_install(force: bool) -> anyhow::Result<bool> {
         );
     }
 
-    replace_dir(&staged_node, &crate::node_install::install_dir())?;
+    crate::node_install::replace_dir(&staged_node, &crate::node_install::install_dir())?;
     let pi_dir = super::pi_dir();
-    replace_dir(
+    crate::node_install::replace_dir(
         &staged_pi.join("node_modules"),
         &pi_dir.join("node_modules"),
     )?;

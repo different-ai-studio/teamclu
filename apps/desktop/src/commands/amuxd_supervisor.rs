@@ -51,6 +51,12 @@ pub struct AmuxdSupervisor {
     shutdown_done: AtomicBool,
     /// True only after legacy background service is verified gone.
     migrated_legacy: AtomicBool,
+    /// Set while `amuxd install-pi` replaces the runtime with amuxd stopped
+    /// ([`AmuxdSupervisor::pause_for_pi_install`]); starts are refused.
+    paused_for_pi_install: AtomicBool,
+    /// amuxd was up when the install paused it, so the post-install
+    /// [`AmuxdSupervisor::restart_if_running`] must start it again.
+    restart_after_pi_install: AtomicBool,
 }
 
 impl Default for AmuxdSupervisor {
@@ -67,6 +73,8 @@ impl AmuxdSupervisor {
             app_exiting: AtomicBool::new(false),
             shutdown_done: AtomicBool::new(false),
             migrated_legacy: AtomicBool::new(false),
+            paused_for_pi_install: AtomicBool::new(false),
+            restart_after_pi_install: AtomicBool::new(false),
         }
     }
 }
@@ -689,6 +697,9 @@ impl AmuxdSupervisor {
         if state.app_exiting.load(Ordering::SeqCst) {
             return Err("amuxd supervisor is shutting down".into());
         }
+        if state.paused_for_pi_install.load(Ordering::SeqCst) {
+            return Err("amuxd is paused while the agent runtime installs".into());
+        }
 
         let mut inner = state.inner.lock().await;
         if state.app_exiting.load(Ordering::SeqCst) {
@@ -955,11 +966,12 @@ impl AmuxdSupervisor {
             return Err("amuxd supervisor is shutting down".into());
         }
         let _ensure = state.ensure_lock.lock().await;
+        let paused_by_install = state.restart_after_pi_install.swap(false, Ordering::SeqCst);
         let child_alive = {
             let mut inner = state.inner.lock().await;
             child_is_alive(&mut inner.child)
         };
-        if !child_alive && !daemon_healthz_ok().await {
+        if !paused_by_install && !child_alive && !daemon_healthz_ok().await {
             return Ok(false);
         }
         {
@@ -967,6 +979,50 @@ impl AmuxdSupervisor {
             stop_with_child_fallback_async(&mut inner, STOP_TIMEOUT).await;
         }
         Self::ensure_started_locked(&state).await.map(|()| true)
+    }
+
+    /// Stop amuxd for `amuxd install-pi` and refuse starts until
+    /// [`Self::resume_after_pi_install`]. Returns whether amuxd was up.
+    ///
+    /// Windows only, at the call site. A file a live process holds cannot be
+    /// deleted there, so the install cannot replace a tree amuxd's pi hosts
+    /// run from — and with amuxd up, a host it respawns mid-install would take
+    /// the files right back. On unix the install renames around live hosts
+    /// and the restart afterwards is enough.
+    pub async fn pause_for_pi_install<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
+        let state = app.state::<AmuxdSupervisor>();
+        if state.app_exiting.load(Ordering::SeqCst) {
+            return Err("amuxd supervisor is shutting down".into());
+        }
+        let _ensure = state.ensure_lock.lock().await;
+        state.paused_for_pi_install.store(true, Ordering::SeqCst);
+        let mut inner = state.inner.lock().await;
+        let was_running = child_is_alive(&mut inner.child) || daemon_healthz_ok().await;
+        if was_running {
+            stop_with_child_fallback_async(&mut inner, STOP_TIMEOUT).await;
+        }
+        Ok(was_running)
+    }
+
+    /// End [`Self::pause_for_pi_install`]. After a successful install the
+    /// caller's [`Self::restart_if_running`] starts amuxd on the new runtime;
+    /// after a failed one there is no such call, so amuxd is started here on
+    /// whatever runtime is left.
+    pub async fn resume_after_pi_install<R: Runtime>(
+        app: &AppHandle<R>,
+        was_running: bool,
+        installed: bool,
+    ) {
+        let state = app.state::<AmuxdSupervisor>();
+        state.paused_for_pi_install.store(false, Ordering::SeqCst);
+        if !was_running {
+            return;
+        }
+        if installed {
+            state.restart_after_pi_install.store(true, Ordering::SeqCst);
+        } else if let Err(e) = Self::ensure_started(app).await {
+            log::warn!("[amuxd-supervisor] restart after a failed pi install: {e}");
+        }
     }
 
     pub async fn status<R: Runtime>(app: &AppHandle<R>) -> DaemonSupervisorStatus {
