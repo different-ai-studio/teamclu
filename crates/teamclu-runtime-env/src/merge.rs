@@ -65,7 +65,6 @@ mod tests {
         SystemEnvContext {
             actor_id: actor_id.to_string(),
             display_name: display_name.to_string(),
-            cloud_token_file: None,
             gateway_token: None,
             ai_proxy_base: None,
         }
@@ -147,27 +146,15 @@ mod tests {
     }
 
     #[test]
-    fn injects_cloud_token_file_when_set() {
-        let mut ctx = ctx("actor-1", "host");
-        ctx.cloud_token_file = Some("/home/u/.amuxd/amuxd.cloud-token".to_string());
-
-        let out = merge_env_maps(HashMap::new(), HashMap::new(), &ctx);
-
-        assert_eq!(
-            out.get("TC_ACCESS_TOKEN_FILE").map(String::as_str),
-            Some("/home/u/.amuxd/amuxd.cloud-token")
-        );
-    }
-
-    #[test]
-    fn skips_cloud_token_file_when_none_or_empty() {
-        let out = merge_env_maps(HashMap::new(), HashMap::new(), &ctx("actor-1", ""));
+    fn never_names_a_cloud_token_file() {
+        // The daemon's cloud JWT used to sit in a `0600` file advertised as
+        // `TC_ACCESS_TOKEN_FILE` — readable by every process of this OS user,
+        // not just the hosts amuxd spawned. A host that needs the token now
+        // asks `/internal/runtime-context/cloud-token` with its own
+        // runtime-context token, so no spawn env names a token file.
+        let out = merge_env_maps(HashMap::new(), HashMap::new(), &ctx("actor-1", "host"));
         assert!(!out.contains_key("TC_ACCESS_TOKEN_FILE"));
-
-        let mut ctx = ctx("actor-1", "");
-        ctx.cloud_token_file = Some(String::new());
-        let out = merge_env_maps(HashMap::new(), HashMap::new(), &ctx);
-        assert!(!out.contains_key("TC_ACCESS_TOKEN_FILE"));
+        assert!(!out.contains_key("tc_access_token_file"));
     }
 
     #[test]

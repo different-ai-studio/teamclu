@@ -197,6 +197,13 @@ pub struct HttpConfig {
     /// uses port 0). Defaults to `<config_dir>/amuxd.http.port`.
     #[serde(default)]
     pub port_file: Option<PathBuf>,
+    /// Unix only: the socket on which agent hosts (and the skills they run)
+    /// draw the daemon's cloud access token, identified by process ancestry
+    /// rather than any token (`http::runtime_context_unix`). Defaults to
+    /// `<run dir>/runtime-context.sock`. Tests point it into a tempdir so
+    /// they never replace a live daemon's socket file.
+    #[serde(default)]
+    pub cloud_token_socket: Option<PathBuf>,
     /// Default scopes granted to session tokens minted via
     /// `POST /v1/auth/exchange` when the caller does not pass `scopes`.
     #[serde(default = "default_scopes")]
@@ -237,6 +244,7 @@ impl Default for HttpConfig {
             ai_rate_limit_burst: default_ai_rate_limit_burst(),
             token_file: None,
             port_file: None,
+            cloud_token_socket: None,
             default_scopes: default_scopes(),
         }
     }
@@ -907,18 +915,16 @@ impl DaemonConfig {
         super::layout::run_dir().join("amuxd.http.token")
     }
 
-    /// File the daemon keeps refreshed with the current cloud access token
-    /// (JWT), written `0600`. Injected into agent processes as
-    /// `TC_ACCESS_TOKEN_FILE` so long-running agents can re-read a fresh token.
-    ///
-    /// Refreshed from the active team's `backend.toml` and only valid for that
-    /// team, so it sits beside it.
-    pub fn cloud_token_path() -> PathBuf {
-        super::layout::active_state_dir().join("cloud-token")
-    }
-
     pub fn http_port_path() -> PathBuf {
         super::layout::run_dir().join("amuxd.http.port")
+    }
+
+    /// Unix: where `/internal/runtime-context/cloud-token` is served to the
+    /// daemon's own agent hosts (`TEAMCLU_RUNTIME_CONTEXT_SOCK`). Under `run/`
+    /// so the pi host sandbox, which already allows that directory, reaches
+    /// it.
+    pub fn runtime_context_sock_path() -> PathBuf {
+        super::layout::run_dir().join("runtime-context.sock")
     }
 
     /// Process-group id of the managed `opencode serve` tree (Unix). Written

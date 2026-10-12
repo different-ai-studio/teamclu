@@ -314,6 +314,8 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "humantime-serde",
+ "hyper 1.9.0",
+ "hyper-util",
  "ignore",
  "image",
  "include_dir",

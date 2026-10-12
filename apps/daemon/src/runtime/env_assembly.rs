@@ -18,7 +18,6 @@ pub fn assemble_spawn_runtime_env(
     team_id: Option<&str>,
     actor_id: &str,
     display_name: &str,
-    cloud_token_file: Option<&str>,
     managed_llm: &ManagedLlmState,
     gateway_token: Option<&str>,
     ai_proxy_base: Option<&str>,
@@ -29,7 +28,6 @@ pub fn assemble_spawn_runtime_env(
         team_id,
         actor_id,
         display_name,
-        cloud_token_file,
         managed_llm,
         gateway_token,
         ai_proxy_base,
@@ -45,7 +43,6 @@ pub fn assemble_spawn_runtime_env_for_execution(
     team_id: Option<&str>,
     actor_id: &str,
     display_name: &str,
-    cloud_token_file: Option<&str>,
     managed_llm: &ManagedLlmState,
     gateway_token: Option<&str>,
     ai_proxy_base: Option<&str>,
@@ -63,7 +60,6 @@ pub fn assemble_spawn_runtime_env_for_execution(
         teamclu_runtime_env::SystemEnvContext {
             actor_id: actor_id.to_string(),
             display_name: display_name.to_string(),
-            cloud_token_file: cloud_token_file.map(str::to_string),
             // Binds `tc_gateway_token`, which `TEAMCLU_TEAM_PROVIDER` names as
             // its `apiKeyEnv`.
             //
@@ -208,7 +204,6 @@ mod tests {
             None,
             "actor-for-env-test",
             "Env Test Agent",
-            None,
             &ManagedLlmState::Unknown,
             None,
             None,
@@ -293,7 +288,6 @@ mod tests {
             None,
             "cron-actor",
             "Cron Agent",
-            None,
             &managed,
             None,
             None,
@@ -372,7 +366,6 @@ mod tests {
             None,
             "actor-fp",
             "FP Agent",
-            None,
             &ManagedLlmState::Unknown,
             None,
             None,
@@ -383,7 +376,6 @@ mod tests {
             None,
             "actor-fp",
             "FP Agent",
-            None,
             &enabled,
             None,
             None,

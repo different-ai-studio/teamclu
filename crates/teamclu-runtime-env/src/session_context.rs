@@ -8,6 +8,12 @@ pub const TEAMCLU_RUNTIME_CONTEXT_URL_ENV: &str = "TEAMCLU_RUNTIME_CONTEXT_URL";
 pub const TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV: &str = "TEAMCLU_RUNTIME_CONTEXT_TOKEN";
 pub const TEAMCLU_HOST_GENERATION_ID_ENV: &str = "TEAMCLU_HOST_GENERATION_ID";
 pub const TEAMCLU_AGENT_BACKEND_ENV: &str = "TEAMCLU_AGENT_BACKEND";
+/// Unix only: the socket on which amuxd hands its cloud access token to the
+/// processes of the agent hosts it spawned. There is no token to present on
+/// it; the daemon identifies the caller by its process ancestry
+/// (`runtime::proc_tree`). Unset on Windows and on a daemon that could not
+/// bind the socket.
+pub const TEAMCLU_RUNTIME_CONTEXT_SOCK_ENV: &str = "TEAMCLU_RUNTIME_CONTEXT_SOCK";
 
 /// Headers the `teamclu-introspect` sidecar forwards to the desktop's introspect
 /// API, carrying the token, host generation and backend above exactly as amuxd

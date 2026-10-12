@@ -61,6 +61,7 @@ fn main() -> anyhow::Result<()> {
             ) {
                 config::layout::purge_v1_layout();
                 config::layout::ensure();
+                config::layout::scrub_team_state_credentials();
             }
             let url = match join_url {
                 Some(u) => u,
@@ -163,6 +164,7 @@ fn main() -> anyhow::Result<()> {
             cli::process::prepare_daemon_start()?;
             config::layout::purge_v1_layout();
             config::layout::ensure();
+            config::layout::scrub_team_state_credentials();
             // App checkouts moved out of `state/` and into `teams/<id>/apps`.
             // Done here, at boot, and never from the path accessor: the deploy
             // pipeline builds whatever sits at the new path, so a checkout left

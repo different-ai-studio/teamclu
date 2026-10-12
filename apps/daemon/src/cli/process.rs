@@ -300,6 +300,7 @@ pub fn cleanup_runtime_artifacts() {
     #[cfg(unix)]
     {
         let _ = fs::remove_file(DaemonConfig::sock_path());
+        let _ = fs::remove_file(DaemonConfig::runtime_context_sock_path());
     }
     let _ = fs::remove_file(DaemonConfig::http_port_path());
 }
