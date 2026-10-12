@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useAuthStore, type AuthClaimResult } from "@/stores/auth-store";
 import { useCurrentTeamStore, readCachedCurrentTeam } from "@/stores/current-team";
 import { getBackend } from "@/lib/backend";
@@ -25,6 +26,16 @@ import { NoTeamScreen } from "./NoTeamScreen";
 import { NameYourTeamScreen } from "./NameYourTeamScreen";
 import { IdentityPickerScreen } from "./IdentityPickerScreen";
 import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
+import { useJoinLinkConfirmation } from "@/lib/team/join-link-confirmation";
+import {
+  clearSuccessfulJoinLinkRedeem,
+  currentJoinLinkRedeem,
+  JoinLinkHttpError,
+  joinLinkGoneMessage,
+  redeemAcceptedJoinLinkOnce,
+  successfulJoinLinkRedeem,
+} from "@/lib/team/join-link";
+import { getFreshAccessToken } from "@/lib/auth/session-store";
 import type { MembershipTeam } from "@/lib/backend";
 import { useShallow } from "zustand/react/shallow";
 
@@ -141,11 +152,15 @@ export function AuthGate({ children }: AuthGateProps) {
   // before team-bootstrap can overwrite the cache, so the picker can badge it
   // "Last used". Null on a genuinely-first login (no history).
   const [lastUsedTeamId, setLastUsedTeamId] = useState<string | null>(null);
+  const [joinLinkNotice, setJoinLinkNotice] = useState<string | null>(null);
   // Team discovery must not race a link invite claim. The claim enters the
   // invited team and clears the token asynchronously; keeping the promise in
   // a ref lets the bootstrap effect await the exact in-flight operation even
   // when React re-runs effects in StrictMode.
   const inviteClaimPromise = useRef<Promise<AuthClaimResult | null> | null>(null);
+  // Set when a join finishes bootstrap via enterTeam. Cleared on sign-out so
+  // the next login still refreshes the daemon.
+  const joinSkipsDaemonRefresh = useRef(false);
 
   // Re-evaluate the picker on every login: clear the pick flag + cached list
   // whenever the signed-in user changes.
@@ -202,6 +217,21 @@ export function AuthGate({ children }: AuthGateProps) {
 
     const userId = session.user.id;
     void (async () => {
+      const pendingJoin = currentJoinLinkRedeem();
+      if (pendingJoin) {
+        try {
+          await pendingJoin;
+        } catch {
+          // A failed join still restores the membership this user already had.
+        }
+      }
+      if (successfulJoinLinkRedeem()) {
+        if (useAuthStore.getState().session?.user.id === userId) {
+          setTeamChosen(true);
+          setTeamChoiceResolved(true);
+        }
+        return;
+      }
       try {
         await useCurrentTeamStore.getState().switchToTeam(target.id);
         if (useAuthStore.getState().session?.user.id === userId) setTeamChosen(true);
@@ -230,6 +260,9 @@ export function AuthGate({ children }: AuthGateProps) {
   }, []);
 
   useEffect(() => {
+    // A join already called enterTeam. Refresh here rebinds the daemon, which
+    // is the switchToTeam side effect this path must not repeat.
+    if (joinSkipsDaemonRefresh.current) return;
     if (isTauri() && session && bootstrap === "ready") void refreshDaemonOnboarding()
   }, [session, bootstrap, refreshDaemonOnboarding]);
 
@@ -250,6 +283,61 @@ export function AuthGate({ children }: AuthGateProps) {
   // nothing. Attempted-once is the condition to stop waiting on — not
   // claimed-successfully.
   const inviteClaimAttempted = useRef<string | null>(null);
+  const confirmedJoin = useJoinLinkConfirmation((s) => s.confirmed);
+  const joinAttempted = useRef<string | null>(null);
+  const joinRedeemPromise = useRef<Promise<unknown> | null>(null);
+  const completeJoinBootstrap = () => {
+    joinSkipsDaemonRefresh.current = true;
+    // Open the Tauri gate without refresh: refresh would rebind this machine's
+    // agent onto the joined team. Leave status as-is (`unknown` stays unknown).
+    useDaemonOnboardingStore.setState({ loaded: true });
+    setMyTeams([]);
+    setTeamChosen(true);
+    setTeamChoiceResolved(true);
+    setBootstrapError(null);
+    setRetrying(false);
+    markStartup("team-bootstrap:end");
+    setBootstrap("ready");
+  };
+  const finishIfJoinSucceeded = async (): Promise<boolean> => {
+    const pending = currentJoinLinkRedeem();
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        // The join effect surfaces revoked, expired, and exhausted links.
+      }
+    }
+    if (!useAuthStore.getState().session) return false;
+    if (!successfulJoinLinkRedeem()) return false;
+    completeJoinBootstrap();
+    return true;
+  };
+  useEffect(() => {
+    if (!session) return;
+    if (!confirmedJoin) return;
+    if (joinAttempted.current === confirmedJoin.token) return;
+    joinAttempted.current = confirmedJoin.token;
+    // Register before getFreshAccessToken resolves and before the POST.
+    const redeemPromise = redeemAcceptedJoinLinkOnce(confirmedJoin, getFreshAccessToken());
+    joinRedeemPromise.current = redeemPromise;
+    void redeemPromise
+      .then((result) => {
+        if (result && useAuthStore.getState().session) completeJoinBootstrap();
+      })
+      .catch((error) => {
+        console.warn("[AuthGate] join link redeem failed", error);
+        const code = error instanceof JoinLinkHttpError ? error.code : null;
+        const message = joinLinkGoneMessage(code);
+        if (!message) return;
+        toast(message);
+        setJoinLinkNotice(message);
+      })
+      .finally(() => {
+        if (joinRedeemPromise.current === redeemPromise) joinRedeemPromise.current = null;
+      });
+  }, [session, confirmedJoin]);
+
   useEffect(() => {
     if (!session) return;
     if (!pendingInviteToken) return;
@@ -299,6 +387,9 @@ export function AuthGate({ children }: AuthGateProps) {
     if (loading) return;
     if (!session) {
       bootstrappedUserId.current = null;
+      joinSkipsDaemonRefresh.current = false;
+      clearSuccessfulJoinLinkRedeem();
+      setJoinLinkNotice(null);
       setBootstrap("idle");
       setBootstrapError(null);
       setRetrying(false);
@@ -315,6 +406,7 @@ export function AuthGate({ children }: AuthGateProps) {
     // accepted claim switches teams afterwards (same as a claim that finishes
     // while the gate is resolving).
     if (inviteConfirmed && inviteClaimAttempted.current !== pendingInviteToken) return;
+    if (confirmedJoin && joinAttempted.current !== confirmedJoin.token) return;
     if (identityChoices) return;
     // Browser runtime (Chrome extension / web build) is a real cloud client:
     // it still needs a current team for MQTT + team-scoped reads, so it must
@@ -347,8 +439,13 @@ export function AuthGate({ children }: AuthGateProps) {
             return;
           }
         }
+        // A join accepted while this bootstrap is already running must finish
+        // first. enterTeam is the only team switch; do not fall through to
+        // "Name your team" or switchToTeam.
+        if (await finishIfJoinSucceeded()) return;
         const allTeams = await getBackend().teams.listAllMyTeams();
         markStartup("team-list:end");
+        if (await finishIfJoinSucceeded()) return;
         if (allTeams.length > 0) {
           // Do not auto-select the first row: the chooser makes the org then
           // team decision explicit, including public teams that need joining.
@@ -361,6 +458,7 @@ export function AuthGate({ children }: AuthGateProps) {
             markStartup("team-bootstrap:end");
             setRetrying(false);
             setBootstrapError(null);
+            if (await finishIfJoinSucceeded()) return;
             setBootstrap("no_team");
             return;
           }
@@ -384,6 +482,7 @@ export function AuthGate({ children }: AuthGateProps) {
           markStartup("team-bootstrap:end");
           setRetrying(false);
           setBootstrapError(null);
+          if (await finishIfJoinSucceeded()) return;
           setBootstrap("no_team");
           return;
         }
@@ -406,6 +505,7 @@ export function AuthGate({ children }: AuthGateProps) {
         bootErr = err;
         console.warn("[AuthGate] team bootstrap failed", err);
       }
+      if (await finishIfJoinSucceeded()) return;
       markStartup("team-bootstrap:end");
       setRetrying(false);
       if (teamSet) {
@@ -420,7 +520,7 @@ export function AuthGate({ children }: AuthGateProps) {
         setBootstrap("error");
       }
     })();
-  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, signOut, identityChoices]);
+  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, confirmedJoin, signOut, identityChoices]);
 
   const retryBootstrap = () => {
     // Re-arm the per-user ref guard and bump the nonce so the bootstrap effect
@@ -569,12 +669,15 @@ export function AuthGate({ children }: AuthGateProps) {
   if (bootstrap === "error" || retrying) {
     removeStartupSkeleton();
     return (
-      <TeamBootstrapErrorScreen
-        error={bootstrapError}
-        busy={retrying}
-        onRetry={retryBootstrap}
-        onSignOut={() => void signOut("bootstrap_error_screen")}
-      />
+      <>
+        {joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null}
+        <TeamBootstrapErrorScreen
+          error={bootstrapError}
+          busy={retrying}
+          onRetry={retryBootstrap}
+          onSignOut={() => void signOut("bootstrap_error_screen")}
+        />
+      </>
     );
   }
 
@@ -584,7 +687,7 @@ export function AuthGate({ children }: AuthGateProps) {
       <>
         <NameYourTeamScreen
           busy={creatingFirstTeam}
-          error={bootstrapError}
+          error={bootstrapError ?? joinLinkNotice}
           onSubmit={createFirstTeam}
           onSignOut={() => void signOut("name_team_screen")}
         />
@@ -597,6 +700,7 @@ export function AuthGate({ children }: AuthGateProps) {
     removeStartupSkeleton();
     return (
       <>
+        {joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null}
         <NoTeamScreen
           messages={extensionTeamOnboarding.noTeamMessage}
           checking={checkingNoTeamInvites}
@@ -612,7 +716,7 @@ export function AuthGate({ children }: AuthGateProps) {
   // used to fall through here and paint children, then bounce back to null
   // while myTeams loaded — a white flash once the skeleton was already gone.
   if (bootstrap !== "ready") {
-    return null;
+    return joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null;
   }
 
   // Wait for the saved-team restoration decision before rendering the picker
@@ -635,11 +739,14 @@ export function AuthGate({ children }: AuthGateProps) {
     if (needsTeamPicker(teamChoices)) {
       removeStartupSkeleton();
       return (
-        <TeamPicker
-          teams={teamChoices}
-          lastUsedTeamId={lastUsedTeamId}
-          onDone={() => setTeamChosen(true)}
-        />
+        <>
+          {joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null}
+          <TeamPicker
+            teams={teamChoices}
+            lastUsedTeamId={lastUsedTeamId}
+            onDone={() => setTeamChosen(true)}
+          />
+        </>
       );
     }
   }
@@ -662,7 +769,12 @@ export function AuthGate({ children }: AuthGateProps) {
       daemonStatus === 'error'
     ) {
       removeStartupSkeleton();
-      return <DaemonOnboardingWizard onDone={() => setDaemonOnboardingAck(true)} />;
+      return (
+        <>
+          {joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null}
+          <DaemonOnboardingWizard onDone={() => setDaemonOnboardingAck(true)} />
+        </>
+      );
     }
   }
 
@@ -674,6 +786,7 @@ export function AuthGate({ children }: AuthGateProps) {
   // not a reason to withhold the workspace the user already has.
   return (
     <>
+      {joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null}
       {children}
       <PendingInvitesDialog />
     </>

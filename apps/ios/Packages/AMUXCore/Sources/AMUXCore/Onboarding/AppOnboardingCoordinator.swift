@@ -148,6 +148,8 @@ public protocol AppOnboardingStore: Sendable {
     /// inviter's team before the auto-create-team branch fires (otherwise they
     /// end up with an orphan team alongside the one they wanted to join).
     func claimInvite(token: String) async throws -> ClaimResult
+    /// Redeem a team join link. Defaulted so test fakes compile.
+    func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult
     /// Invites addressed to the caller's verified email/phone
     /// (`GET /v1/invites/pending`). Defaulted so non-cloud stores and test
     /// fakes report none.
@@ -277,6 +279,12 @@ public struct PendingInvite: Identifiable, Equatable, Sendable {
 /// have to know about pending invites: they report none, and accept/decline
 /// fail loudly rather than pretending to succeed.
 public extension AppOnboardingStore {
+    func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult {
+        throw NSError(
+            domain: "AppOnboardingStore", code: 0,
+            userInfo: [NSLocalizedDescriptionKey: String(localized: "Join links are not supported by this backend.")]
+        )
+    }
     func listPendingInvites() async throws -> [PendingInvite] { [] }
     func acceptPendingInvite(inviteID: String) async throws -> ClaimResult {
         throw NSError(
@@ -459,6 +467,22 @@ public final class AppOnboardingCoordinator {
     public func joinWithInvite(token: String) async {
         pendingInviteToken = token
         await bootstrap()
+    }
+
+    /// Redeem a join link, then switch to the returned team. Does not claim
+    /// a named invite and does not start daemon onboarding.
+    public func joinByLink(token: String, cloudAPIURL: URL?) async {
+        guard !isBusy else { return }
+        isBusy = true
+        errorMessage = nil
+        do {
+            let result = try await store.joinByLink(token: token, cloudAPIURL: cloudAPIURL)
+            isBusy = false
+            await selectTeam(teamID: result.teamID)
+        } catch {
+            errorMessage = error.localizedDescription
+            isBusy = false
+        }
     }
 
     /// No-team screen refresh (button, return to foreground). Checks quietly

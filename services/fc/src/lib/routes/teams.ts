@@ -1,5 +1,19 @@
 import { requireString, optionalStringOrNull } from "../routing-utils.js";
-import { optionalBearerToken } from "../http-utils.js";
+import { optionalBearerToken, ApiError } from "../http-utils.js";
+import { requestOrigin } from "../team-llm-defaults.js";
+
+function requireTtl(ttl) {
+  if (ttl !== "7d" && ttl !== "30d" && ttl !== "never") {
+    throw new ApiError(400, "validation_failed", "ttl must be 7d, 30d, or never");
+  }
+  return ttl;
+}
+
+function attachJoinUrl(ctx, row) {
+  const origin = requestOrigin((name) => ctx.getHeader(name));
+  if (!origin) throw new ApiError(500, "internal_error", "request origin is missing");
+  return { ...row, url: `${origin}/join/${encodeURIComponent(row.token)}` };
+}
 
 export function registerTeams(router) {
   router.get("/v1/teams", async (ctx) => {
@@ -108,6 +122,35 @@ export function registerTeams(router) {
   router.post("/v1/teams/:teamId/join", async (ctx) => {
     const team = await ctx.repository.joinPublicTeam(ctx.params.teamId);
     return { body: team };
+  });
+
+  router.get("/v1/teams/:teamId/join-link", async (ctx) => {
+    const row = await ctx.repository.getTeamJoinLink(ctx.params.teamId);
+    return { body: attachJoinUrl(ctx, row) };
+  });
+
+  router.put("/v1/teams/:teamId/join-link", async (ctx) => {
+    const body = ctx.json ?? {};
+    const ttl = requireTtl(body.ttl);
+    let maxUses = null;
+    if (body.maxUses != null) {
+      if (!Number.isInteger(body.maxUses) || body.maxUses < 1) {
+        throw new ApiError(400, "validation_failed", "maxUses must be null or an integer >= 1");
+      }
+      maxUses = body.maxUses;
+    }
+    const result = await ctx.repository.putTeamJoinLink(ctx.params.teamId, {
+      ttl,
+      maxUses,
+      rotate: body.rotate === true,
+    });
+    const { created, ...row } = result;
+    return { statusCode: created ? 201 : 200, body: attachJoinUrl(ctx, row) };
+  });
+
+  router.delete("/v1/teams/:teamId/join-link", async (ctx) => {
+    await ctx.repository.revokeTeamJoinLink(ctx.params.teamId);
+    return { statusCode: 204 };
   });
 
   router.post("/v1/teams/:teamId/invites", async (ctx) => {

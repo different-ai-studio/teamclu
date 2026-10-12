@@ -10,6 +10,7 @@ const {
   effectiveCloudApiUrl,
   defaultCloudApiUrl,
   confirmInviteLinkToken,
+  requestJoinLinkConfirmation,
   updaterState,
   checkForUpdates,
 } = vi.hoisted(() => ({
@@ -31,6 +32,7 @@ const {
   effectiveCloudApiUrl: { value: "https://teamclu-api.ucar.cc" as string | undefined },
   defaultCloudApiUrl: { value: "https://teamclu-api.ucar.cc" as string | undefined },
   confirmInviteLinkToken: vi.fn(),
+  requestJoinLinkConfirmation: vi.fn(),
   updaterState: { update: { state: "idle" as string, progress: undefined as number | undefined } },
   checkForUpdates: vi.fn(),
 }));
@@ -58,6 +60,7 @@ vi.mock("@/stores/auth-store", () => {
 });
 
 vi.mock("@/lib/team/invite-link-confirmation", () => ({ confirmInviteLinkToken }));
+vi.mock("@/lib/team/join-link-confirmation", () => ({ requestJoinLinkConfirmation }));
 
 vi.mock("@/stores/updater", () => {
   const state = () => ({ ...updaterState, checkForUpdates });
@@ -121,6 +124,7 @@ beforeEach(() => {
   authState.verifyOtp.mockReset();
   authState.resetOtp.mockReset();
   confirmInviteLinkToken.mockReset();
+  requestJoinLinkConfirmation.mockReset();
   checkForUpdates.mockReset();
   updaterState.update = { state: "idle", progress: undefined };
   hasConfig.value = true;
@@ -148,6 +152,21 @@ describe("DesktopOnboarding", () => {
     expect(screen.getByRole("button", { name: /i don't have an invite link/i })).toBeInTheDocument();
     // Nothing to sign in with yet: the server has not been settled.
     expect(screen.queryByRole("heading", { name: /sign in/i })).not.toBeInTheDocument();
+  });
+
+  it("routes a pasted https join link through join confirmation, not invite claim", async () => {
+    render(<DesktopOnboarding />);
+
+    submitInvite("https://api.acme.test/join/tok-1");
+
+    await waitFor(() =>
+      expect(requestJoinLinkConfirmation).toHaveBeenCalledWith({
+        token: "tok-1",
+        cloudApiUrl: "https://api.acme.test",
+      }),
+    );
+    expect(authState.setPendingInviteToken).not.toHaveBeenCalled();
+    expect(confirmInviteLinkToken).not.toHaveBeenCalled();
   });
 
   it("rejects input that is neither a link nor a token", () => {

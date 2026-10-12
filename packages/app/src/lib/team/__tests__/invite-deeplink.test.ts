@@ -55,6 +55,8 @@ describe('parseInviteInput', () => {
     expect(parseInviteInput('teamclu://team?token=tok-1')).toBeNull()
     expect(parseInviteInput('teamclu://invite?token=')).toBeNull()
     expect(parseInviteInput('   ')).toBeNull()
+    expect(parseInviteInput('teamclu://join?token=tok-1')).toBeNull()
+    expect(parseInviteInput('https://api.acme.test/join/tok-1')).toBeNull()
   })
 })
 
@@ -63,5 +65,6 @@ describe('parseInviteDeeplink', () => {
   it('takes the app scheme and nothing else', () => {
     expect(parseInviteDeeplink('teamclu://invite?token=tok-1')).toBe('tok-1')
     expect(parseInviteDeeplink('amux://invite?token=tok-1')).toBeNull()
+    expect(parseInviteDeeplink('teamclu://join?token=tok-1')).toBeNull()
   })
 })

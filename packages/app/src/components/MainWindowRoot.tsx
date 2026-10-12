@@ -3,6 +3,7 @@ import { AuthGate } from '@/components/auth/AuthGate'
 import { CloseToTrayHost } from '@/components/CloseToTrayDialog'
 import { SidePanelHostGateOverlay } from '@/components/extension/SidePanelHostGateOverlay'
 import { InviteLinkConfirmDialog } from '@/components/invite/InviteLinkConfirmDialog'
+import { JoinLinkConfirmDialog } from '@/components/invite/JoinLinkConfirmDialog'
 import { UpdateDialogContainer } from '@/components/updater/UpdateDialog'
 import { E2E_BUILD } from '@/lib/e2e/v2-control-active'
 
@@ -17,6 +18,7 @@ export function MainWindowRoot() {
         inside the shell. Only a token accepted here is ever claimed.
       */}
       <InviteLinkConfirmDialog />
+      <JoinLinkConfirmDialog />
       {/*
         Outside AuthGate for the same reason: updating needs nothing from
         the backend — `check_update` is a plain fetch of the release

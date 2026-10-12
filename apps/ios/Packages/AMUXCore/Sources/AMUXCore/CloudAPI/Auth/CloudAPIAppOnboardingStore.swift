@@ -429,6 +429,16 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
         )
     }
 
+    public func joinByLink(token: String, cloudAPIURL: URL?) async throws -> JoinByLinkResult {
+        await ensureStarted()
+        let target = cloudAPIURL.map { api.withBaseURL($0) } ?? api
+        let encoded = token.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? token
+        let row: CloudJoinByLinkResult = try await target.post(
+            "/v1/join-links/\(encoded)/join"
+        )
+        return JoinByLinkResult(teamID: row.teamId)
+    }
+
     // MARK: - Private
 
     /// Commit a GoTrue session body into the SessionStore. Requires both
@@ -673,4 +683,8 @@ private struct CloudClaimInviteResult: Decodable, Sendable {
     let actorType: String
     let displayName: String
     let refreshToken: String?
+}
+
+private struct CloudJoinByLinkResult: Decodable, Sendable {
+    let teamId: String
 }

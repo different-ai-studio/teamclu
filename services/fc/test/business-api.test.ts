@@ -1411,6 +1411,46 @@ test("PATCH /v1/teams/:teamId returns 400 without name", async () => {
   assert.equal(JSON.parse(response.body).error.code, "validation_failed");
 });
 
+test("PUT /v1/teams/:teamId/join-link creates", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PUT",
+    path: "/v1/teams/team-1/join-link",
+    headers: { Authorization: "Bearer token", Host: "api.example.test" },
+    body: JSON.stringify({ ttl: "7d", maxUses: null, rotate: false }),
+  }, { createRepository: () => repo });
+  assert.equal(response.statusCode, 201);
+  assert.equal(JSON.parse(response.body).token, "join-tok");
+  assert.equal(JSON.parse(response.body).created, undefined);
+  assert.deepEqual(repo.calls[0], {
+    method: "putTeamJoinLink",
+    teamId: "team-1",
+    input: { ttl: "7d", maxUses: null, rotate: false },
+  });
+});
+
+test("PUT /v1/teams/:teamId/join-link rejects a bad ttl", async () => {
+  const response = await handleBusinessApiRequest({
+    httpMethod: "PUT",
+    path: "/v1/teams/team-1/join-link",
+    headers: { Authorization: "Bearer token" },
+    body: JSON.stringify({ ttl: "1d" }),
+  }, { createRepository: () => fakeRepo() });
+  assert.equal(response.statusCode, 400);
+  assert.equal(JSON.parse(response.body).error.code, "validation_failed");
+});
+
+test("DELETE /v1/teams/:teamId/join-link revokes", async () => {
+  const repo = fakeRepo();
+  const response = await handleBusinessApiRequest({
+    httpMethod: "DELETE",
+    path: "/v1/teams/team-1/join-link",
+    headers: { Authorization: "Bearer token" },
+  }, { createRepository: () => repo });
+  assert.equal(response.statusCode, 204);
+  assert.deepEqual(repo.calls[0], { method: "revokeTeamJoinLink", teamId: "team-1" });
+});
+
 test("POST /v1/teams/:teamId/invites creates invite", async () => {
   const repo = fakeRepo();
   const response = await handleBusinessApiRequest({
@@ -2216,6 +2256,22 @@ function fakeRepo({ sessions = [], error = null, teamWorkspaceConfigs = {}, work
     async getTeamDirectory(teamId) { calls.push({ method: "getTeamDirectory", teamId }); if (error) throw error; return { actors: [{ id: "actor-1", teamId: "team-1", kind: "user", displayName: "Alice", avatarUrl: null, metadata: null }], members: [{ actorId: "actor-1", teamId: "team-1", role: "member", joinedAt: "2026-05-27T01:00:00Z" }] }; },
     async renameTeam(teamId, input) { calls.push({ method: "renameTeam", teamId, input }); if (error) throw error; return { id: teamId, name: input.name, slug: null, createdAt: null }; },
     async createTeamInvite(teamId, input) { calls.push({ method: "createTeamInvite", teamId, input }); if (error) throw error; return { token: "invite-token", inviteId: "invite-1", expiresAt: input.expiresAt ?? null }; },
+    // `created` is a repo-only flag so the route can choose 201 vs 200; it is
+    // stripped from the JSON body and is not part of TeamJoinLink.
+    async getTeamJoinLink(teamId) {
+      calls.push({ method: "getTeamJoinLink", teamId });
+      if (error) throw error;
+      return { token: "join-tok", url: "https://api.example.test/join/join-tok", expiresAt: null, maxUses: null, useCount: 0, status: "active", createdAt: "2026-10-10T00:00:00Z" };
+    },
+    async putTeamJoinLink(teamId, input) {
+      calls.push({ method: "putTeamJoinLink", teamId, input });
+      if (error) throw error;
+      return { token: input.rotate ? "join-new" : "join-tok", url: "https://api.example.test/join/join-tok", expiresAt: null, maxUses: input.maxUses ?? null, useCount: 0, status: "active", createdAt: "2026-10-10T00:00:00Z", created: true };
+    },
+    async revokeTeamJoinLink(teamId) {
+      calls.push({ method: "revokeTeamJoinLink", teamId });
+      if (error) throw error;
+    },
     async removeTeamActor(teamId, actorId) { calls.push({ method: "removeTeamActor", teamId, actorId }); if (error) throw error; },
     async getNotificationPrefs() { calls.push({ method: "getNotificationPrefs" }); if (error) throw error; return { userId: null, pushEnabled: true, emailEnabled: false, digestFrequency: "off" }; },
     async putNotificationPrefs(input) { calls.push({ method: "putNotificationPrefs", input }); if (error) throw error; return { userId: input.userId ?? "user-1", pushEnabled: input.pushEnabled ?? true, emailEnabled: input.emailEnabled ?? false, digestFrequency: input.digestFrequency ?? "off" }; },

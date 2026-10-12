@@ -45,4 +45,13 @@ final class InviteDeeplinkTests: XCTestCase {
         let already = "teamclu://invite?token=tok&cloud_api_url=https%3A%2F%2Fapi.old.test"
         XCTAssertEqual(deeplink(already, cloudAPIURL: URL(string: "https://api.acme.test")!), already)
     }
+
+    func testJoinLinkIsNotAnInviteToken() {
+        XCTAssertNil(InviteURL.parseInviteToken("teamclu://join?token=tok"))
+        XCTAssertEqual(InviteURL.parseJoinLink("https://api.acme.test/join/tok")?.token, "tok")
+        XCTAssertEqual(
+            InviteURL.parseJoinLink("https://api.acme.test/join/tok")?.cloudAPIURL,
+            URL(string: "https://api.acme.test")
+        )
+    }
 }
