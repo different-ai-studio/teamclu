@@ -3939,7 +3939,6 @@
   "invite": {
     "title": "Invite to team",
     "description": "Share the join link to add someone.",
-    "shareDescription": "Share this link so they can join the team.",
     "managersOnly": "Only a team owner or admin can invite people.",
     "nameLabel": "Name",
     "namePlaceholder": "Display name",
@@ -3970,6 +3969,16 @@
     "description": "Accepting joins the team this link belongs to, switches your active organization, and re-binds the local agent to that team. Continue only if you trust whoever sent it.",
     "tokenLabel": "Invite token",
     "signInFirst": "You'll sign in first; the invite is claimed right after.",
+    "cancel": "Not now",
+    "accept": "Join team"
+  },
+  "joinLink": {
+    "title": "Join this team?",
+    "description": "Accepting adds you as a member of this team. The local agent stays bound to the team it already has.",
+    "noServer": "Cloud API URL is not configured.",
+    "previewFailed": "Could not load this join link.",
+    "joinFailed": "Could not join this team.",
+    "signInFirst": "You'll sign in first; the team is joined right after.",
     "cancel": "Not now",
     "accept": "Join team"
   },

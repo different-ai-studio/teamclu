@@ -3939,7 +3939,6 @@
   "invite": {
     "title": "邀请加入团队",
     "description": "把加入链接发给对方即可加入。",
-    "shareDescription": "把这个链接分享给对方加入团队。",
     "managersOnly": "只有团队所有者或管理员可以邀请成员。",
     "nameLabel": "名称",
     "namePlaceholder": "显示名称",
@@ -3970,6 +3969,16 @@
     "description": "接受后会加入链接所属的团队、切换当前组织，并把本机 agent 重新绑定到该团队。只有信任发送者时才继续。",
     "tokenLabel": "邀请令牌",
     "signInFirst": "会先登录，登录后立即认领邀请。",
+    "cancel": "暂不",
+    "accept": "加入团队"
+  },
+  "joinLink": {
+    "title": "加入这个团队？",
+    "description": "接受后会以成员身份加入该团队，本机 agent 仍绑定当前已有的团队。",
+    "noServer": "尚未配置 Cloud API 地址。",
+    "previewFailed": "无法加载此加入链接。",
+    "joinFailed": "无法加入该团队。",
+    "signInFirst": "会先登录，登录后立即加入团队。",
     "cancel": "暂不",
     "accept": "加入团队"
   },
