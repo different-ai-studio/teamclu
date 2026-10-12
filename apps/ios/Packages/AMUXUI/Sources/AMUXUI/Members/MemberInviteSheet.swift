@@ -10,9 +10,7 @@ public struct MemberInviteSheet: View {
     let store: ActorStore
     let canManage: Bool
 
-    @State private var kind: InviteKind = .member
     @State private var name = ""
-    @State private var teamRole: TeamRole = .member
     @State private var agentKind: String = "daemon"
     @State private var isInviting = false
     @State private var errorMessage: String?
@@ -44,28 +42,15 @@ public struct MemberInviteSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Kind", selection: $kind) {
-                        Text("Teammate").tag(InviteKind.member)
-                        Text("Agent").tag(InviteKind.agent)
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(invite != nil)
-                    .accessibilityIdentifier("invite.kindPicker")
-
                     TextField("Name", text: $name)
                         .disabled(invite != nil)
                         .accessibilityIdentifier("invite.nameField")
 
-                    if kind == .member {
-                        Picker("Role", selection: $teamRole) {
-                            Text("Member").tag(TeamRole.member)
-                            Text("Admin").tag(TeamRole.admin)
-                        }.disabled(invite != nil)
-                    } else {
-                        Picker("Agent kind", selection: $agentKind) {
-                            Text("Daemon").tag("daemon")
-                        }.disabled(invite != nil)
-                    }
+                    Picker("Agent kind", selection: $agentKind) {
+                        Text("Daemon").tag("daemon")
+                    }.disabled(invite != nil)
+                } header: {
+                    Text("New agent")
                 } footer: {
                     if let errorMessage, !needsUpgrade {
                         Text(errorMessage).foregroundStyle(Color.amux.cinnabarDeep)
@@ -289,9 +274,8 @@ public struct MemberInviteSheet: View {
         isInviting = true
         Task {
             let input = InviteCreateInput(
-                kind: kind, displayName: trimmedName,
-                teamRole: kind == .member ? teamRole : nil,
-                agentKind: kind == .agent ? agentKind : nil
+                kind: .agent, displayName: trimmedName,
+                agentKind: agentKind
             )
             if let created = await store.createInvite(input) {
                 invite = created
@@ -325,7 +309,7 @@ public struct MemberInviteSheet: View {
     }
 
     private func reset() {
-        kind = .member; name = ""; teamRole = .member; agentKind = "daemon"
+        name = ""; agentKind = "daemon"
         isInviting = false; errorMessage = nil; invite = nil
         needsUpgrade = false; orgName = ""; contact = ""; isUpgrading = false
     }

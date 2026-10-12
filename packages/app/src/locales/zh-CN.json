@@ -3769,6 +3769,8 @@
     "searchPlaceholder": "搜索成员",
     "noMatches": "没有匹配的成员",
     "invite": "邀请成员",
+    "anotherComputer": "在另一台电脑上运行",
+    "anotherComputerHint": "在那台电脑上打开链接，它就会作为那台机器的 agent 加入团队。",
     "defaultAgent": "默认 Agent",
     "type": {
       "agent": "智能体",
@@ -3936,11 +3938,9 @@
   },
   "invite": {
     "title": "邀请加入团队",
-    "description": "为新成员或新 Agent 创建邀请链接。",
+    "description": "把加入链接发给对方即可加入。",
     "shareDescription": "把这个链接分享给对方加入团队。",
-    "kindLabel": "类型",
-    "kindMember": "成员",
-    "kindAgent": "智能体",
+    "managersOnly": "只有团队所有者或管理员可以邀请成员。",
     "nameLabel": "名称",
     "namePlaceholder": "显示名称",
     "linkLabel": "邀请链接",
@@ -3950,12 +3950,7 @@
     "copyFailed": "复制失败",
     "failed": "创建邀请失败：{{msg}}",
     "upgradeRequired": "当前团队还在公共组织下，只能自己使用。升级账号、创建你自己的团队后即可邀请成员。",
-    "upgradeButton": "升级账号",
-    "contactHint": "填写邮箱或手机号后，对方登录时会直接看到这个邀请，不用你再发链接。",
-    "emailLabel": "邮箱（选填）",
-    "emailPlaceholder": "name@example.com",
-    "phoneLabel": "手机号（选填）",
-    "phonePlaceholder": "13800138000"
+    "upgradeButton": "升级账号"
   },
   "pendingInvite": {
     "title": "你有团队邀请",

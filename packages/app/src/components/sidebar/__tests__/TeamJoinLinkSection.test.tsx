@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 const { getTeamJoinLink, putTeamJoinLink, revokeTeamJoinLink } = vi.hoisted(() => ({
   getTeamJoinLink: vi.fn(),
@@ -34,6 +35,10 @@ describe('TeamJoinLinkSection', () => {
     getTeamJoinLink.mockReset()
     putTeamJoinLink.mockReset()
     revokeTeamJoinLink.mockReset()
+    Element.prototype.hasPointerCapture = () => false
+    Element.prototype.setPointerCapture = () => {}
+    Element.prototype.releasePointerCapture = () => {}
+    Element.prototype.scrollIntoView = () => {}
   })
 
   it('does not put until the admin generates a link', async () => {
@@ -78,11 +83,13 @@ describe('TeamJoinLinkSection', () => {
     }))
     render(<TeamJoinLinkSection teamId="team-1" />)
     await screen.findByDisplayValue(ACTIVE.url)
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '30d' } })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('combobox', { name: '有效期' }))
+    await user.click(await screen.findByRole('option', { name: '30 天' }))
     await waitFor(() => expect(putTeamJoinLink).toHaveBeenCalledWith('team-1', {
       ttl: '30d', maxUses: null, rotate: false,
     }))
-    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText('人数上限（可选）'), { target: { value: '5' } })
     await waitFor(() => expect(putTeamJoinLink).toHaveBeenCalledWith('team-1', {
       ttl: '30d', maxUses: 5, rotate: false,
     }))
@@ -115,8 +122,8 @@ describe('TeamJoinLinkSection', () => {
     putTeamJoinLink.mockResolvedValueOnce({ ...ACTIVE, expiresAt: null, maxUses: 3 })
     render(<TeamJoinLinkSection teamId="team-1" />)
     await screen.findByDisplayValue(ACTIVE.url)
-    expect(screen.getByRole('combobox')).toHaveValue('never')
-    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '3' } })
+    expect(screen.getByRole('combobox', { name: '有效期' })).toHaveTextContent('不限期')
+    fireEvent.change(screen.getByLabelText('人数上限（可选）'), { target: { value: '3' } })
     await waitFor(() => expect(putTeamJoinLink).toHaveBeenCalledWith('team-1', {
       ttl: 'never', maxUses: 3, rotate: false,
     }))
@@ -133,7 +140,7 @@ describe('TeamJoinLinkSection', () => {
     putTeamJoinLink.mockResolvedValueOnce({ ...thirty, token: 'tok-2', url: 'https://api.example.test/join/tok-2' })
     render(<TeamJoinLinkSection teamId="team-1" />)
     await screen.findByDisplayValue(thirty.url)
-    expect(screen.getByRole('combobox')).toHaveValue('30d')
+    expect(screen.getByRole('combobox', { name: '有效期' })).toHaveTextContent('30 天')
     fireEvent.click(screen.getByRole('button', { name: '换一条新链接' }))
     await waitFor(() => expect(putTeamJoinLink).toHaveBeenCalledWith('team-1', {
       ttl: '30d', maxUses: 4, rotate: true,
@@ -144,7 +151,7 @@ describe('TeamJoinLinkSection', () => {
     getTeamJoinLink.mockResolvedValueOnce(ACTIVE)
     render(<TeamJoinLinkSection teamId="team-1" />)
     await screen.findByDisplayValue(ACTIVE.url)
-    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '0' } })
+    fireEvent.change(screen.getByLabelText('人数上限（可选）'), { target: { value: '0' } })
     expect(putTeamJoinLink).not.toHaveBeenCalled()
   })
 
