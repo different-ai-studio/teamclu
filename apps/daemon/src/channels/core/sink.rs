@@ -9,12 +9,23 @@ use std::time::Instant;
 
 use crate::channels::session_queue::{EnqueueResult, QueuedMessage, RejectReason, SessionQueue};
 use async_trait::async_trait;
+use futures::future::{BoxFuture, Shared};
+use futures::FutureExt;
 use teamclu_gateway::driver::{
-    ChannelDriver, Conversation, InboundMessage, InboundSink, OutboundMessage,
+    BufferedReply, ChannelDriver, Conversation, InboundMessage, InboundSink, OutboundMessage,
 };
 use teamclu_gateway::i18n::{self, MsgKey};
+use tokio::sync::{oneshot, Mutex};
 
 use super::{Core, Outcome};
+
+#[derive(Default)]
+struct PreparedReply {
+    has_placeholder: bool,
+    pending: Mutex<Option<Box<dyn BufferedReply>>>,
+}
+
+type PreparingReply = Shared<BoxFuture<'static, Arc<PreparedReply>>>;
 
 /// One channel's inbound edge: its driver plus the shared pipeline.
 pub struct CoreSink {
@@ -32,10 +43,22 @@ pub struct CoreSink {
 
 impl CoreSink {
     /// Run one message through the pipeline, reporting the outcome.
-    async fn process(core: Arc<Core>, driver: Arc<dyn ChannelDriver>, msg: InboundMessage) {
+    async fn process(
+        core: Arc<Core>,
+        driver: Arc<dyn ChannelDriver>,
+        msg: InboundMessage,
+        prepared: Option<PreparingReply>,
+    ) {
         let channel = msg.conversation.channel;
         let external_id = msg.external_message_id.clone();
-        match core.handle(driver.as_ref(), msg).await {
+        let result = match prepared {
+            Some(prepared) => {
+                let pending = prepared.await.pending.lock().await.take();
+                core.handle_prepared(driver.as_ref(), msg, pending).await
+            }
+            None => core.handle(driver.as_ref(), msg).await,
+        };
+        match result {
             Ok(Outcome::Handled {
                 session_id,
                 deliveries,
@@ -82,10 +105,46 @@ impl InboundSink for CoreSink {
         // a turn runs. A turn is minutes on a slow model; holding the websocket
         // loop for it would stall every other conversation on the connection.
         if is_command(&msg.text) {
-            tokio::spawn(Self::process(core, driver, msg));
+            tokio::spawn(Self::process(core, driver, msg, None));
             return;
         }
 
+        if let Some(outcome) = core.claim_message(&msg).await {
+            tracing::debug!(external_id = %msg.external_message_id, ?outcome, "gateway: message not a turn");
+            return;
+        }
+        // Start the placeholder at receipt, including for queued messages.
+        // The API runs separately so it cannot stall the transport loop or
+        // reorder messages in the session queue when one request is slow.
+        let (ready, waiting) = oneshot::channel();
+        let prepare_driver = driver.clone();
+        let to = msg.conversation.clone();
+        let context = msg.reply_context.clone();
+        tokio::spawn(async move {
+            let pending = if !prepare_driver.caps().streaming_edit {
+                match prepare_driver
+                    .prepare_buffered_reply(&to, context.as_deref())
+                    .await
+                {
+                    Ok(pending) => pending,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "gateway: placeholder unavailable; using ordinary delivery");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let _ = ready.send(Arc::new(PreparedReply {
+                has_placeholder: pending.is_some(),
+                pending: Mutex::new(pending),
+            }));
+        });
+        let prepared = async move { waiting.await.unwrap_or_default() }
+            .boxed()
+            .shared();
+        let reject_reply = prepared.clone();
+        let queued_reply = prepared.clone();
         let key = self.driver.binding(&msg.conversation);
         let conversation = msg.conversation.clone();
         let notify_conversation = conversation.clone();
@@ -96,7 +155,9 @@ impl InboundSink for CoreSink {
                 &key,
                 QueuedMessage {
                     enqueued_at: Instant::now(),
-                    process_fn: Box::new(move || Box::pin(Self::process(core, driver, msg))),
+                    process_fn: Box::new(move || {
+                        Box::pin(Self::process(core, driver, msg, Some(prepared)))
+                    }),
                     notify_fn: Some(Box::new(move |reason| {
                         Box::pin(async move {
                             let text = match reason {
@@ -110,6 +171,16 @@ impl InboundSink for CoreSink {
                                     i18n::t(MsgKey::GatewayShuttingDown, i18n::locale())
                                 }
                             };
+                            let pending = reject_reply.await.pending.lock().await.take();
+                            if let Some(mut pending) = pending {
+                                let out = OutboundMessage {
+                                    text: text.clone(),
+                                    ..Default::default()
+                                };
+                                if pending.finish(&out).await.is_ok() {
+                                    return;
+                                }
+                            }
                             Self::notify(notify_driver, notify_conversation, text).await;
                         })
                     })),
@@ -127,12 +198,19 @@ impl InboundSink for CoreSink {
                 );
                 // Silence here reads as "the bot ignored me", which is what
                 // sending again — and making the queue longer — comes from.
-                Self::notify(
-                    self.driver.clone(),
-                    conversation,
-                    i18n::t(MsgKey::QueuedBehind(position), i18n::locale()),
-                )
-                .await;
+                let queued_driver = self.driver.clone();
+                tokio::spawn(async move {
+                    // The placeholder acknowledges receipt while it waits.
+                    // Other channels keep their queue-position notice.
+                    if !queued_reply.await.has_placeholder {
+                        Self::notify(
+                            queued_driver,
+                            conversation,
+                            i18n::t(MsgKey::QueuedBehind(position), i18n::locale()),
+                        )
+                        .await;
+                    }
+                });
             }
             // The reject notice was already delivered by `notify_fn`.
             EnqueueResult::Full => {

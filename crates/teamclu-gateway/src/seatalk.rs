@@ -13,6 +13,9 @@ use crate::{
     AgentHandle, ChannelStore, FilterResult, ProcessedMessageTracker, MAX_PROCESSED_MESSAGES,
 };
 
+#[path = "seatalk_stream.rs"]
+mod stream;
+
 const SEATALK_API_BASE: &str = "https://openapi.seatalk.io";
 const SEATALK_WS_URL: &str = "wss://ws-openapi.haiserve.com/ws/bot";
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 600;
@@ -137,6 +140,26 @@ impl SeaTalkClient {
         Ok(data)
     }
 
+    async fn get_quoted_text(&self, message_id: &str) -> Result<String, String> {
+        let path = format!(
+            "/messaging/v2/get_message_by_message_id?message_id={}",
+            urlencoding::encode(message_id)
+        );
+        let message = self
+            .api_call(reqwest::Method::GET, &path, None, true)
+            .await?;
+        // The API returns the message fields at the top level. Keep mentions
+        // in the original quote: they are context, not an address to this bot.
+        if message["tag"].as_str() != Some("text") {
+            return Err("引用的消息不是文本；请直接发送需要处理的文字。".into());
+        }
+        let text = message["text"]["plain_text"]
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| "引用消息没有可读取的文字；请直接发送需要处理的文字。".to_string())?;
+        Ok(text.to_string())
+    }
+
     async fn send_group_text(
         &self,
         group_id: &str,
@@ -200,6 +223,25 @@ struct HandlerContext {
     client: Arc<SeaTalkClient>,
     processed_events: Arc<RwLock<ProcessedMessageTracker>>,
     inbound_sink: Option<Arc<dyn crate::driver::InboundSink>>,
+}
+
+struct SeaTalkQuoteFetch {
+    client: Arc<SeaTalkClient>,
+    message_id: String,
+}
+
+#[async_trait::async_trait]
+impl crate::driver::FetchQuotedText for SeaTalkQuoteFetch {
+    async fn fetch(&self) -> Result<String, crate::driver::DriverError> {
+        self.client
+            .get_quoted_text(&self.message_id)
+            .await
+            .map_err(|error| {
+                crate::driver::DriverError::Transport(format!(
+                    "无法读取 SeaTalk 引用消息，请直接发送原文。{error}"
+                ))
+            })
+    }
 }
 
 pub struct SeaTalkGateway {
@@ -680,8 +722,8 @@ fn decode_conv_id(id: &str) -> (&str, Option<&str>) {
 
 fn seatalk_caps() -> crate::driver::ChannelCaps {
     crate::driver::ChannelCaps {
-        // SeaTalk's OpenAPI posts messages; there is no edit endpoint, so a
-        // streamed reply would have to be N messages. The core buffers instead.
+        // Keep agent events buffered. prepare_buffered_reply presents only
+        // the completed reply through SeaTalk's native streaming API.
         streaming_edit: false,
         // `dispatch_send` has rejected SeaTalk file sends all along; saying so
         // here is what makes the core degrade an attachment into text rather
@@ -757,7 +799,7 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
             payload.clone(),
             true,
         ),
-        "new_mentioned_message_received_from_group_chat" | "new_message_received_from_thread" => {
+        "new_mentioned_message_received_from_group_chat" => {
             let group_id = payload["group_id"]
                 .as_str()
                 .or_else(|| payload["group"]["group_id"].as_str())
@@ -795,14 +837,6 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
         return None;
     }
     let text = extract_message_text(message);
-    // A bare `@Bot` with nothing after it: the inline path answered so the user
-    // could see the bot was alive. `Core::handle` returns `Empty` on blank
-    // text, so without this the mention gets silence.
-    let text = if text.is_empty() && matches!(kind, crate::driver::ConversationKind::Group) {
-        "你好，请直接说明需要我帮你做什么。".to_string()
-    } else {
-        text
-    };
 
     Some(crate::driver::InboundMessage {
         conversation: crate::driver::Conversation {
@@ -819,8 +853,8 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
         external_message_id: event_id.to_string(),
         text,
         attachments: Vec::new(),
-        // SeaTalk only delivers group messages the bot was mentioned in, and a
-        // DM is addressed by definition.
+        // Only explicit mention callbacks reach this group path. SeaTalk also
+        // sends generic thread callbacks, which we deliberately ignore.
         addressed_to_bot: true,
         quoted_text: None,
         reply_context: None,
@@ -830,7 +864,7 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
 /// SeaTalk as a transport driver.
 pub struct SeaTalkDriver {
     app_id: String,
-    client: SeaTalkClient,
+    client: Arc<SeaTalkClient>,
     /// Whether a thread splits the session, mirroring the inline path's config.
     dm_thread_session: bool,
     group_thread_session: bool,
@@ -839,7 +873,7 @@ pub struct SeaTalkDriver {
 impl SeaTalkDriver {
     pub fn new(app_id: String, app_secret: String) -> Self {
         Self {
-            client: SeaTalkClient::new(app_id.clone(), app_secret),
+            client: Arc::new(SeaTalkClient::new(app_id.clone(), app_secret)),
             app_id,
             dm_thread_session: false,
             group_thread_session: false,
@@ -914,6 +948,18 @@ impl crate::driver::ChannelDriver for SeaTalkDriver {
         }
     }
 
+    async fn prepare_buffered_reply(
+        &self,
+        to: &crate::driver::Conversation,
+        _reply_context: Option<&str>,
+    ) -> Result<Option<Box<dyn crate::driver::BufferedReply>>, crate::driver::DriverError> {
+        Ok(
+            stream::SeaTalkBufferedReply::start(self.client.clone(), to.clone())
+                .await
+                .map(|reply| Box::new(reply) as Box<dyn crate::driver::BufferedReply>),
+        )
+    }
+
     async fn deliver(
         &self,
         to: &crate::driver::Conversation,
@@ -953,6 +999,14 @@ async fn handle_callback_event(
         );
         return Ok(());
     }
+    // The explicit-mention callback also covers mentions inside threads and
+    // includes their thread_id. Generic follower callbacks must not start a
+    // turn, show Thinking, or send a policy rejection. Ignore them before
+    // dedup too, so they cannot consume the explicit mention's callback ID.
+    if event_type == "new_message_received_from_thread" {
+        println!("[SeaTalk] ignoring thread follower event_id={event_id}; explicit @ required");
+        return Ok(());
+    }
     {
         let mut tracker = ctx.processed_events.write().await;
         if tracker.is_duplicate(&event_id) {
@@ -965,15 +1019,13 @@ async fn handle_callback_event(
 
     // Lifecycle events never open a session; everything else is a message and
     // belongs to the core (dedup, routing, identity, commands, writing, turn).
-    // Only the three message types go further. Everything else — lifecycle,
+    // Only the two addressed message types go further. Everything else — lifecycle,
     // and anything SeaTalk adds later — returns here: the old `match` had an
     // `other =>` arm, and without it an unknown event fell into the *group*
     // allowlist check, where a missing `group_id` meant firing a rejection at
     // an empty chat id.
     match event_type.as_str() {
-        "message_from_bot_subscriber"
-        | "new_mentioned_message_received_from_group_chat"
-        | "new_message_received_from_thread" => {}
+        "message_from_bot_subscriber" | "new_mentioned_message_received_from_group_chat" => {}
         "bot_added_to_group_chat" | "bot_removed_from_group_chat" | "new_bot_subscriber" => {
             println!("[SeaTalk] lifecycle event type={event_type} (ignored)");
             return Ok(());
@@ -1027,22 +1079,17 @@ async fn handle_callback_event(
         return Ok(());
     }
 
-    if event_type == "new_message_received_from_thread" {
-        let payload = &event["event"];
-        let group_id = payload["group_id"]
-            .as_str()
-            .or_else(|| payload["group"]["group_id"].as_str())
-            .unwrap_or("");
-        if extract_thread_id(payload).is_none() {
-            println!(
-                "[SeaTalk] seatalk thread event missing thread_id event_type={event_type} event_id={event_id} group_id={group_id} thread_id_present=false"
-            );
-            return Ok(());
-        }
-    }
-
     match normalize_event(event) {
-        Some(inbound) => {
+        Some(mut inbound) => {
+            if let Some(message_id) = optional_id(payload["message"]["quoted_message_id"].as_str())
+            {
+                inbound.quoted_text = Some(crate::driver::QuotedText::Deferred(Arc::new(
+                    SeaTalkQuoteFetch {
+                        client: ctx.client.clone(),
+                        message_id: message_id.to_string(),
+                    },
+                )));
+            }
             let (chat, thread) = decode_conv_id(&inbound.conversation.id);
             let route_scope = if thread.is_some() { "thread" } else { "group" };
             println!(
@@ -1389,7 +1436,7 @@ mod tests {
         );
         let msg = normalize_event(&event).unwrap();
         assert_eq!(msg.conversation.id, "g1#t=root-message");
-        assert_eq!(msg.text, "你好，请直接说明需要我帮你做什么。");
+        assert_eq!(msg.text, "");
     }
 
     #[test]
@@ -1406,7 +1453,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_thread_event_with_thread_id() {
+    fn normalize_thread_follower_event_ignored() {
         let event = group_event(
             "new_message_received_from_thread",
             "ev3",
@@ -1414,8 +1461,7 @@ mod tests {
             "thread reply",
             json!({ "thread.thread_id": "t2" }),
         );
-        let msg = normalize_event(&event).unwrap();
-        assert_eq!(msg.conversation.id, "g1#t=t2");
+        assert!(normalize_event(&event).is_none());
     }
 
     #[test]
@@ -1461,23 +1507,15 @@ mod tests {
         let binding = driver.binding(&first.conversation);
         assert_eq!(binding, "seatalk://app001/group/g1/thread/root-message");
 
-        for (event_type, event_id, message_id) in [
-            (
-                "new_mentioned_message_received_from_group_chat",
-                "ev-mention",
-                "mention-message",
-            ),
-            (
-                "new_message_received_from_thread",
-                "ev-reply",
-                "reply-message",
-            ),
+        for (event_id, message_id) in [
+            ("ev-mention", "mention-message"),
+            ("ev-followup", "followup-message"),
         ] {
             let mut event = group_event(
-                event_type,
+                "new_mentioned_message_received_from_group_chat",
                 event_id,
                 "g1",
-                "continue",
+                "@Bot continue",
                 json!({ "message.message_id": message_id, "message.thread_id": "root-message" }),
             );
             // A different participant in the same thread shares its context.

@@ -616,7 +616,7 @@ async fn quoted_context_is_prepended_once_for_every_channel() {
     let f = plain("done");
     let d = driver(MAIL);
     let mut msg = inbound("yes");
-    msg.quoted_text = Some("pick one: a or b".into());
+    msg.quoted_text = Some(QuotedText::Ready("pick one: a or b".into()));
 
     f.core.handle(&d, msg).await.unwrap();
 

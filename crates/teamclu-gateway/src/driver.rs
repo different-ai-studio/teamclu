@@ -81,6 +81,19 @@ pub trait FetchAttachment: Send + Sync {
     async fn fetch(&self) -> Result<Vec<u8>, DriverError>;
 }
 
+/// Quoted context can arrive inline or require a lookup by message ID. Defer
+/// the lookup until after the message is queued and acknowledged, just as we
+/// do for attachments, so fetching cannot reorder turns in a conversation.
+pub enum QuotedText {
+    Ready(String),
+    Deferred(Arc<dyn FetchQuotedText>),
+}
+
+#[async_trait]
+pub trait FetchQuotedText: Send + Sync {
+    async fn fetch(&self) -> Result<String, DriverError>;
+}
+
 pub struct InboundMessage {
     pub conversation: Conversation,
     pub sender: ExternalSender,
@@ -98,7 +111,7 @@ pub struct InboundMessage {
     pub addressed_to_bot: bool,
     /// Text of the message being replied to, when the channel supports quoting.
     /// Used for context and for matching an answer back to a pending question.
-    pub quoted_text: Option<String>,
+    pub quoted_text: Option<QuotedText>,
     /// Opaque handle back to *this* request, for channels whose reply path is
     /// bound to the inbound one rather than to the conversation.
     ///
@@ -229,6 +242,14 @@ pub enum DriverError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryId(pub String);
 
+/// An output placeholder kept alive while the agent builds a complete reply.
+/// The driver presents the final message; no agent deltas or tool events are
+/// passed to this object. Dropping it must close an unfinished placeholder.
+#[async_trait]
+pub trait BufferedReply: Send {
+    async fn finish(&mut self, msg: &OutboundMessage) -> Result<(), DriverError>;
+}
+
 /// Where a driver hands a normalized message for the core to act on.
 ///
 /// The direction matters: this crate is a leaf, so it cannot call the daemon
@@ -256,6 +277,16 @@ pub trait ChannelDriver: Send + Sync {
 
     /// Human-readable session title on first contact ("WeCom group: …").
     fn session_title(&self, conversation: &Conversation, sender: &ExternalSender) -> String;
+
+    /// Prepare a placeholder for a buffered agent turn. Ordinary deliveries,
+    /// commands and live-streaming channels continue through `deliver`.
+    async fn prepare_buffered_reply(
+        &self,
+        _to: &Conversation,
+        _reply_context: Option<&str>,
+    ) -> Result<Option<Box<dyn BufferedReply>>, DriverError> {
+        Ok(None)
+    }
 
     /// Render one outbound message.
     ///

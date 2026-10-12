@@ -17,8 +17,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use teamclu_gateway::driver::{
-    AttachmentSource, ChannelDriver, Conversation, DeliveryId, ExternalSender, InboundMessage,
-    InteractiveChoice, InteractiveQuestion, OutboundMessage, SessionAttachment, TurnEnd,
+    AttachmentSource, BufferedReply, ChannelDriver, Conversation, DeliveryId, ExternalSender,
+    InboundMessage, InteractiveChoice, InteractiveQuestion, OutboundMessage, QuotedText,
+    SessionAttachment, TurnEnd,
 };
 use teamclu_gateway::i18n::{self, MsgKey};
 use teamclu_gateway::TurnUpdate;
@@ -256,6 +257,15 @@ impl Core {
         driver: &dyn ChannelDriver,
         msg: InboundMessage,
     ) -> Result<Outcome, CoreError> {
+        if let Some(outcome) = self.claim_message(&msg).await {
+            return Ok(outcome);
+        }
+        let prepared = self.prepare_buffered_reply(driver, &msg).await;
+        self.handle_prepared(driver, msg, prepared).await
+    }
+
+    /// Claim before creating any placeholder, including while a turn queues.
+    async fn claim_message(&self, msg: &InboundMessage) -> Option<Outcome> {
         // 1. Dedup first: everything below has side effects, and a redelivered
         //    webhook must not produce a second turn.
         if !self
@@ -263,15 +273,85 @@ impl Core {
             .claim(msg.conversation.channel, &msg.external_message_id)
             .await
         {
-            return Ok(Outcome::Duplicate);
+            return Some(Outcome::Duplicate);
         }
         if !msg.addressed_to_bot {
-            return Ok(Outcome::NotAddressed);
+            return Some(Outcome::NotAddressed);
         }
-        if msg.text.trim().is_empty() && msg.attachments.is_empty() {
-            return Ok(Outcome::Empty);
+        let has_quote = match &msg.quoted_text {
+            Some(QuotedText::Ready(text)) => !text.trim().is_empty(),
+            Some(QuotedText::Deferred(_)) => true,
+            None => false,
+        };
+        if msg.text.trim().is_empty() && msg.attachments.is_empty() && !has_quote {
+            return Some(Outcome::Empty);
         }
+        None
+    }
 
+    async fn prepare_buffered_reply(
+        &self,
+        driver: &dyn ChannelDriver,
+        msg: &InboundMessage,
+    ) -> Option<Box<dyn BufferedReply>> {
+        if !driver.caps().streaming_edit
+            && teamclu_gateway::commands::parse_slash(msg.text.trim()).is_none()
+        {
+            match driver
+                .prepare_buffered_reply(&msg.conversation, msg.reply_context.as_deref())
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    tracing::warn!(error = %error, "gateway: placeholder unavailable; using ordinary delivery");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Continue a validated message with the placeholder prepared at receipt.
+    async fn handle_prepared(
+        &self,
+        driver: &dyn ChannelDriver,
+        msg: InboundMessage,
+        mut prepared: Option<Box<dyn BufferedReply>>,
+    ) -> Result<Outcome, CoreError> {
+        let to = msg.conversation.clone();
+        let context = msg.reply_context.clone();
+        let result = self.handle_addressed(driver, msg, &mut prepared).await;
+        if let Err(error) = &result {
+            let notice = gateway_turn_failure_notice(error);
+            let shown = match prepared.as_mut() {
+                Some(pending) => pending
+                    .finish(&OutboundMessage {
+                        text: notice.clone(),
+                        ..Default::default()
+                    })
+                    .await
+                    .is_ok(),
+                None => false,
+            };
+            // Live-streaming turns already close their own progress message.
+            if !shown && !driver.caps().streaming_edit {
+                if let Err(delivery_error) =
+                    self.say(driver, &to, context.as_deref(), &notice).await
+                {
+                    tracing::warn!(error = %delivery_error, "gateway: failed to deliver failure notice");
+                }
+            }
+        }
+        result
+    }
+
+    async fn handle_addressed(
+        &self,
+        driver: &dyn ChannelDriver,
+        msg: InboundMessage,
+        prepared: &mut Option<Box<dyn BufferedReply>>,
+    ) -> Result<Outcome, CoreError> {
         let reply_ctx = msg.reply_context.clone();
 
         // 2. A command that needs no session is answered before one is made:
@@ -349,7 +429,20 @@ impl Core {
             return Ok(Outcome::Command { handled });
         }
 
-        // 5. Resolve attachments. Deferred by construction, so a text-only
+        // 5. Resolve quoted context after acknowledgement and queueing. A
+        // missing quote must not turn into an unrelated question to the agent.
+        let quoted_text = match &msg.quoted_text {
+            Some(QuotedText::Ready(text)) => Some(text.clone()),
+            Some(QuotedText::Deferred(fetch)) => Some(
+                fetch
+                    .fetch()
+                    .await
+                    .map_err(|e| CoreError::Write(format!("quoted message fetch: {e}")))?,
+            ),
+            None => None,
+        };
+
+        // Resolve attachments. Deferred by construction, so a text-only
         //    message spends nothing here — which is what keeps the common case
         //    starting its turn immediately.
         let mut uploads = Vec::new();
@@ -381,7 +474,7 @@ impl Core {
         // 6. Write BEFORE the turn, always. Writing after is what made a
         //    three-minute turn look like a frozen client everywhere else, then
         //    dropped both rows in 39ms apart.
-        let prompt = compose_prompt(&msg);
+        let prompt = compose_prompt(&msg, quoted_text.as_deref());
         let written = self
             .writer
             .write_inbound(
@@ -416,10 +509,10 @@ impl Core {
             self.run_streamed(driver, &msg, &session, &display, &prompt, urls)
                 .await
         } else {
-            self.run_buffered(driver, &msg, &session, &display, &prompt, urls)
+            self.run_buffered(driver, &msg, &session, &display, &prompt, urls, prepared)
                 .await
         };
-        if let Err(error) = &result {
+        if result.is_err() {
             let orphaned = turn_attachments::close(&session.session_id);
             if !orphaned.is_empty() {
                 tracing::warn!(
@@ -427,24 +520,6 @@ impl Core {
                     count = orphaned.len(),
                     "gateway: turn failed with files attached; they were not delivered"
                 );
-            }
-
-            // A streamed gateway has an in-place progress card, which
-            // `run_streamed` has already closed with this same message. Other
-            // gateways have no such card: explicitly return the real turn
-            // failure instead of silently leaving the sender with nothing.
-            if !driver.caps().streaming_edit {
-                let notice = gateway_turn_failure_notice(error);
-                if let Err(delivery_error) = self
-                    .say(driver, &msg.conversation, reply_ctx.as_deref(), &notice)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session.session_id,
-                        error = %delivery_error,
-                        "gateway: failed to deliver turn failure notice"
-                    );
-                }
             }
         }
 
@@ -695,7 +770,8 @@ impl Core {
             .map_err(|e| CoreError::Render(e.to_string()))
     }
 
-    /// Channels that cannot edit a sent message get one delivery, at the end.
+    /// Buffered channels get their complete reply at the end. A prepared
+    /// placeholder may present that final text progressively in the driver.
     /// The turn still streams internally — the session and every other client
     /// see the deltas; the channel just sees the result.
     async fn run_buffered(
@@ -706,6 +782,7 @@ impl Core {
         display: &str,
         prompt: &str,
         attachment_urls: &[String],
+        prepared: &mut Option<Box<dyn BufferedReply>>,
     ) -> Result<usize, CoreError> {
         let (mut asks, _watch) = self.watch_approvals(session);
         let turn = self.turns.run(
@@ -729,6 +806,14 @@ impl Core {
             .write_reply(&session.session_id, &reply, attachments.clone())
             .await?;
         let outbound = render(driver, &reply, attachments);
+        if let Some(pending) = prepared.as_mut() {
+            pending
+                .finish(&outbound)
+                .await
+                .map_err(|e| CoreError::Render(e.to_string()))?;
+            prepared.take();
+            return Ok(2);
+        }
         driver
             .deliver(&msg.conversation, msg.reply_context.as_deref(), &outbound)
             .await
@@ -980,8 +1065,8 @@ fn display_name(sender: &ExternalSender) -> String {
 ///
 /// Quoted context is prepended here — one rule for every channel, instead of
 /// each gateway inventing its own marker format.
-fn compose_prompt(msg: &InboundMessage) -> String {
-    match &msg.quoted_text {
+fn compose_prompt(msg: &InboundMessage, quoted_text: Option<&str>) -> String {
+    match quoted_text {
         Some(q) if !q.is_empty() => {
             format!(
                 "[Quoted message]\n{q}\n[End quoted message]\n\n{}",
