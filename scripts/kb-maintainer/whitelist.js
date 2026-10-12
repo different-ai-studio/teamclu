@@ -32,14 +32,16 @@ function classifySource(file, config) {
     }
   }
 
+  const source = matchingSource(path, config);
+  if (!source) {
+    // An unchecked folder is not a compile failure. Filename rules apply only
+    // to folders the maintainer actually selected.
+    return { status: "ignored", path, reason: "outside whitelist prefixes" };
+  }
+
   const base = path.split("/").pop() || "";
   if (SENSITIVE_NAME_RE.test(base)) {
     return { status: "denied", path, reason: "sensitive filename" };
-  }
-
-  const source = matchingSource(path, config);
-  if (!source) {
-    return { status: "ignored", path, reason: "outside whitelist prefixes" };
   }
 
   if (!ALLOWED_CLASSES.has(source.class)) {
