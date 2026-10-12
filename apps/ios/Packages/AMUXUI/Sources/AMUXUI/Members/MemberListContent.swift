@@ -526,15 +526,11 @@ struct ActorDetailView: View {
     }
 
     private var reinviteButtonTitle: String {
-        actor.isAgent
-            ? String(localized: "Regenerate Invite Link")
-            : String(localized: "Generate Re-invite Link")
+        String(localized: "Regenerate Invite Link")
     }
 
     private var reinviteFootnote: String {
-        actor.isAgent
-            ? String(localized: "Use this if the daemon was wiped and needs to re-pair.")
-            : String(localized: "Use this if the user signed out and lost access. Only available for anonymous accounts.")
+        String(localized: "Use this if the daemon was wiped and needs to re-pair.")
     }
 
     private var availableAuthorizedMemberCandidates: [CachedActor] {
@@ -719,6 +715,7 @@ struct ActorDetailView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
+            if actor.isAgent {
             Section {
                 Group {
                     Button {
@@ -741,6 +738,7 @@ struct ActorDetailView: View {
                 .listRowBackground(Color.amux.paper)
             } header: {
                 Text("Re-invite")
+            }
             }
             Section {
                 Button(role: .destructive) {
@@ -869,33 +867,17 @@ struct ActorDetailView: View {
     }
 
     private func createInvite() {
-        guard !isCreatingInvite else { return }
+        guard actor.isAgent, !isCreatingInvite else { return }
         isCreatingInvite = true
         inviteErrorMessage = nil
 
         Task {
-            let input: InviteCreateInput
-            if actor.isAgent {
-                input = InviteCreateInput(
-                    kind: .agent,
-                    displayName: actor.displayName,
-                    agentKind: "daemon",
-                    targetActorID: actor.actorId
-                )
-            } else {
-                // Same source as everything else on this screen: the org role
-                // assignment, with the legacy derived field only as a cold-cache
-                // fallback. `owner` has no InviteKind — it falls to `.member`,
-                // as it always has.
-                let roleCode = actor.roles.highestPrivilege?.code ?? actor.teamRole ?? "member"
-                let role = TeamRole(rawValue: roleCode) ?? .member
-                input = InviteCreateInput(
-                    kind: .member,
-                    displayName: actor.displayName,
-                    teamRole: role,
-                    targetActorID: actor.actorId
-                )
-            }
+            let input = InviteCreateInput(
+                kind: .agent,
+                displayName: actor.displayName,
+                agentKind: "daemon",
+                targetActorID: actor.actorId
+            )
             let invite = await store.createInvite(input)
             await MainActor.run {
                 isCreatingInvite = false

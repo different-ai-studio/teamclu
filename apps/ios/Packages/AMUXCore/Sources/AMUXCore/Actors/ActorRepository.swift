@@ -9,10 +9,8 @@ public struct InviteCreateInput: Equatable, Sendable {
     public let teamRole: TeamRole?
     public let agentKind: String?
     public let ttlSeconds: Int
-    /// When non-nil, the claim rotates credentials on this existing actor
-    /// instead of creating a new one — the "re-invite" flow from
-    /// ActorDetailView. Valid for `.agent`, and for `.member` when the
-    /// target user is anonymous (`auth.users.is_anonymous = true`).
+    /// When non-nil, the claim rotates credentials on this existing agent
+    /// instead of creating a new one. Member invites cannot name a target.
     public let targetActorID: String?
 
     public init(

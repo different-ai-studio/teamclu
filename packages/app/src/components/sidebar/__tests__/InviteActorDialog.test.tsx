@@ -38,6 +38,7 @@ vi.mock('@/lib/backend', () => ({
 }))
 
 const { InviteActorDialog } = await import('../InviteActorDialog')
+const { AnotherComputerAgentDialog } = await import('../AnotherComputerAgentDialog')
 
 describe('InviteActorDialog', () => {
   it('hides the section from a member', () => {
@@ -52,20 +53,28 @@ describe('InviteActorDialog', () => {
     expect(await screen.findByRole('button', { name: '生成链接' })).toBeInTheDocument()
   })
 
-  it('offers no role choice and invites members as member', async () => {
-    perms.canManageTeam = false
-
+  it('does not offer a one-time member or agent invite', () => {
+    perms.canManageTeam = true
     render(<InviteActorDialog open onOpenChange={() => {}} />)
+    expect(screen.queryByPlaceholderText('Display name')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Create invite' })).toBeNull()
+    expect(screen.queryByText('Only a team owner or admin can invite people.')).toBeNull()
+  })
+})
 
-    expect(screen.queryByText('Role')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Admin' })).toBeNull()
-
-    fireEvent.change(screen.getByPlaceholderText('Display name'), { target: { value: 'Alice' } })
+describe('AnotherComputerAgentDialog', () => {
+  it('creates a one-time agent invite', async () => {
+    createTeamInvite.mockClear()
+    render(<AnotherComputerAgentDialog open onOpenChange={() => {}} />)
+    fireEvent.change(screen.getByPlaceholderText('Display name'), { target: { value: 'Desk' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create invite' }))
-
-    await waitFor(() => expect(createTeamInvite).toHaveBeenCalledTimes(1))
-    expect(createTeamInvite).toHaveBeenCalledWith(
-      expect.objectContaining({ teamId: 'team-1', kind: 'member', teamRole: 'member' }),
-    )
+    await waitFor(() => expect(createTeamInvite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        teamId: 'team-1',
+        kind: 'agent',
+        displayName: 'Desk',
+        agentKind: 'daemon',
+      }),
+    ))
   })
 })

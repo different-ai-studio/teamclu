@@ -4,6 +4,13 @@ import { Copy } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { getBackend } from '@/lib/backend'
 import type { TeamJoinLink, TeamJoinLinkTtl } from '@/lib/backend/types'
 
@@ -19,6 +26,12 @@ function isNotFound(error: unknown): boolean {
 function isUpgradeRequired(error: unknown): boolean {
   return (error as { code?: unknown })?.code === 'upgrade_required'
 }
+
+const TTL_OPTIONS: { value: TeamJoinLinkTtl; label: string }[] = [
+  { value: '7d', label: '7 天' },
+  { value: '30d', label: '30 天' },
+  { value: 'never', label: '不限期' },
+]
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const SEVEN_DAYS_MS = 7 * DAY_MS
@@ -153,23 +166,25 @@ export function TeamJoinLinkSection({ teamId, onUpgradeRequired }: TeamJoinLinkS
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border p-3">
       <div className="flex flex-col gap-2">
-        <label className="block text-xs font-medium text-muted-foreground">有效期</label>
-        <select
-          className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
-          value={ttl}
-          disabled={busy}
-          onChange={(e) => onTtlChange(e.target.value as TeamJoinLinkTtl)}
-        >
-          <option value="7d">7 天</option>
-          <option value="30d">30 天</option>
-          <option value="never">不限期</option>
-        </select>
+        <label className="block text-xs font-medium text-muted-foreground" htmlFor="join-link-ttl">有效期</label>
+        <Select value={ttl} onValueChange={(next) => onTtlChange(next as TeamJoinLinkTtl)} disabled={busy}>
+          <SelectTrigger id="join-link-ttl" className="h-9">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TTL_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-muted-foreground">人数上限（可选）</label>
+        <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="join-link-cap">人数上限（可选）</label>
         <Input
-          type="number"
-          min={1}
+          id="join-link-cap"
+          inputMode="numeric"
           value={cap}
           disabled={busy}
           onChange={(e) => onCapChange(e.target.value)}

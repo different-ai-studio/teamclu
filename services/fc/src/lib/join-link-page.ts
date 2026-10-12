@@ -67,8 +67,8 @@ function activePage(preview: JoinLinkPageInput): string {
     <h1>${teamName}</h1>
     <p>${inviter} 邀请你加入这个团队</p>
     <form id="join-form">
-      <label for="contact">邮箱或手机号</label>
-      <input id="contact" name="contact" type="text" autocomplete="username" required>
+      <label for="contact">邮箱</label>
+      <input id="contact" name="contact" type="email" autocomplete="email" required>
       <label for="code">验证码</label>
       <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code">
       <button type="button" id="send-code">发送验证码</button>
@@ -82,11 +82,9 @@ function activePage(preview: JoinLinkPageInput): string {
       const contactEl = document.getElementById("contact");
       const codeEl = document.getElementById("code");
 
-      function parseContact(raw) {
-        const contact = String(raw ?? "").trim();
-        if (contact.includes("@")) return { email: contact };
-        if (contact.startsWith("+")) return { phone: contact };
-        if (/^1\\d{10}$/.test(contact)) return { phone: "+86" + contact };
+      function parseEmail(raw) {
+        const email = String(raw ?? "").trim();
+        if (email.includes("@")) return email;
         return null;
       }
 
@@ -95,19 +93,15 @@ function activePage(preview: JoinLinkPageInput): string {
       }
 
       async function sendOtp() {
-        const parsed = parseContact(contactEl.value);
-        if (!parsed) {
-          show("请输入邮箱，或 +开头的手机号");
+        const email = parseEmail(contactEl.value);
+        if (!email) {
+          show("请输入邮箱");
           return;
         }
-        const url = parsed.email ? "/v1/auth/signin-otp" : "/v1/auth/phone/send-code";
-        const body = parsed.email
-          ? { email: parsed.email }
-          : { phone: parsed.phone, captchaVerify: "desktop-captcha-pending" };
-        const res = await fetch(url, {
+        const res = await fetch("/v1/auth/signin-otp", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ email }),
         });
         if (!res.ok) {
           show("验证码发送失败");
@@ -117,42 +111,23 @@ function activePage(preview: JoinLinkPageInput): string {
       }
 
       async function redeem() {
-        const parsed = parseContact(contactEl.value);
-        if (!parsed) {
-          show("请输入邮箱，或 +开头的手机号");
+        const email = parseEmail(contactEl.value);
+        if (!email) {
+          show("请输入邮箱");
           return;
         }
         const code = String(codeEl.value ?? "").trim();
-        let access_token;
-        if (parsed.email) {
-          const verifyRes = await fetch("/v1/auth/verify-otp", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: parsed.email, token: code, type: "email" }),
-          });
-          const verifyJson = await verifyRes.json().catch(() => ({}));
-          if (!verifyRes.ok) {
-            show("验证失败");
-            return;
-          }
-          access_token = verifyJson.access_token;
-        } else {
-          const loginRes = await fetch("/v1/auth/phone/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ phone: parsed.phone, code }),
-          });
-          const loginJson = await loginRes.json().catch(() => ({}));
-          if (!loginRes.ok) {
-            show("验证失败");
-            return;
-          }
-          if (loginJson.multiUser === true) {
-            show("这个手机号对应多个账号，请改用邮箱加入。");
-            return;
-          }
-          access_token = loginJson.session && loginJson.session.access_token;
+        const verifyRes = await fetch("/v1/auth/verify-otp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, token: code, type: "email" }),
+        });
+        const verifyJson = await verifyRes.json().catch(() => ({}));
+        if (!verifyRes.ok) {
+          show("验证失败");
+          return;
         }
+        const access_token = verifyJson.access_token;
         const joinRes = await fetch(joinUrl, {
           method: "POST",
           headers: { Authorization: "Bearer " + access_token },
@@ -166,7 +141,7 @@ function activePage(preview: JoinLinkPageInput): string {
           show("你已经在这个团队里");
           return;
         }
-        show("已加入「" + teamName + "」。用同一手机号或邮箱打开 TeamClu 即可看到这个团队。");
+        show("已加入「" + teamName + "」。用同一邮箱打开 TeamClu 即可看到这个团队。");
       }
 
       document.getElementById("send-code").addEventListener("click", (event) => {

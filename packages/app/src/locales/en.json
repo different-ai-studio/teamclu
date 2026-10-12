@@ -3769,6 +3769,8 @@
     "searchPlaceholder": "Search actors",
     "noMatches": "No matching actors",
     "invite": "Invite actor",
+    "anotherComputer": "Run on another computer",
+    "anotherComputerHint": "Open the link on that computer and it joins this team as that machine's agent.",
     "defaultAgent": "Default agent",
     "type": {
       "agent": "Agent",
@@ -3936,11 +3938,9 @@
   },
   "invite": {
     "title": "Invite to team",
-    "description": "Create an invite link for a new teammate or agent.",
+    "description": "Share the join link to add someone.",
     "shareDescription": "Share this link so they can join the team.",
-    "kindLabel": "Kind",
-    "kindMember": "Teammate",
-    "kindAgent": "Agent",
+    "managersOnly": "Only a team owner or admin can invite people.",
     "nameLabel": "Name",
     "namePlaceholder": "Display name",
     "linkLabel": "Invite link",
@@ -3950,12 +3950,7 @@
     "copyFailed": "Failed to copy invite link",
     "failed": "Failed to create invite: {{msg}}",
     "upgradeRequired": "This team is still in the shared org and is solo-only. Upgrade your account and create your own team to invite members.",
-    "upgradeButton": "Upgrade account",
-    "contactHint": "Add an email or phone and they'll see this invite when they sign in — no link to send.",
-    "emailLabel": "Email (optional)",
-    "emailPlaceholder": "name@example.com",
-    "phoneLabel": "Phone (optional)",
-    "phonePlaceholder": "13800138000"
+    "upgradeButton": "Upgrade account"
   },
   "pendingInvite": {
     "title": "You have team invites",
