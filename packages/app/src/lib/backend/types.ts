@@ -83,6 +83,17 @@ export interface PendingInvite {
 
 export type Unsubscribe = () => void;
 
+/** One identity of the signed-in person — one per org (GET /v1/auth/identities). */
+export interface MyIdentity {
+  userId: string;
+  orgId: string | null;
+  orgName: string | null;
+  orgLogo: string | null;
+  adminType: number;
+  /** The identity the current session belongs to. */
+  isCurrent: boolean;
+}
+
 export interface AuthBackend {
   getSession(): Promise<AuthSession | null>;
   onAuthStateChange(listener: (session: AuthSession | null) => void): Unsubscribe;
@@ -108,6 +119,10 @@ export interface AuthBackend {
   /** Install a session minted server-side (e.g. by activateTeam) from its
    *  refresh token, so the client adopts a fresh JWT (new org_id). */
   adoptSession(refreshToken: string): Promise<AuthSession | null>;
+  /** The signed-in person's identities, one per org (login-time org picker). */
+  listMyIdentities(): Promise<MyIdentity[]>;
+  /** Become one of the caller's own identities: mints its session and adopts it. */
+  switchIdentity(userId: string): Promise<AuthSession | null>;
 }
 
 export interface SessionListEntry {
@@ -1247,7 +1262,16 @@ export type VerifyAppDomainResult =
   | { status: "pending"; message: string }
   | { status: "not_found" };
 
+export interface AppUndeployOperation {
+  id: string; appId: string; status: 'pending' | 'running' | 'failed' | 'succeeded';
+  startedAt: string; updatedAt: string; error: string | null;
+  steps: Partial<Record<'httpTrigger' | 'originDomain' | 'function' | 'artifact' | 'oauthClient', { status: 'succeeded' | 'failed' | 'skipped'; error?: string }>>;
+}
+export interface AppUndeployResult { app: AppRow; operation: AppUndeployOperation }
+
 export interface AppRow {
+  canManageDeployment?: boolean;
+  undeployOperation?: AppUndeployOperation;
   id: string;
   teamId: string;
   name: string;
@@ -1505,7 +1529,29 @@ export interface AppDataRowsQuery {
   filter?: { column: string; op: AppDataFilterOp; value?: string } | null;
 }
 
+export interface EffectiveAuthPolicy {
+  path: string;
+  kind: "public" | "any_authenticated" | "any_org_role" | "org_roles";
+  roleCodes: string[] | null;
+  inherited: boolean;
+  source: "auth_mode" | "roles" | "rule_audience" | "app_audience" | "scope_baseline";
+}
+export interface AppAuthInfo {
+  appId: string;
+  teamId: string;
+  organization: { id: string; name: string } | null;
+  roleScope: "organization";
+  roles: Array<{ id: string; code: string; name: string; status: string }>;
+  authMode: AppAuthMode;
+  authScope: AppAuthScope;
+  authAudience: AppAuthAudience;
+  authRules: AppAuthRule[];
+  effectivePolicies: EffectiveAuthPolicy[];
+  organizationStatus: "configured" | "unconfigured";
+}
+
 export interface AppsBackend {
+  getAppAuthInfo(appId: string): Promise<AppAuthInfo>;
   listApps(teamId: string): Promise<AppRow[]>;
   createApp(input: {
     teamId: string;
@@ -1599,6 +1645,7 @@ export interface AppsBackend {
   /** Revoke a member grant (creator or app admin only). False on 404. */
   removeAppAccess(appId: string, memberId: string): Promise<boolean>;
   /** Delete an app (admin required). False on 404. */
+  undeployApp(appId: string): Promise<AppUndeployResult>;
   deleteApp(appId: string): Promise<boolean>;
   /** Change auth mode (creator only). Returns null on 404. */
   /**
@@ -1808,7 +1855,6 @@ export interface TelemetryBackend {
   deleteFeedback(input: TelemetryFeedbackDeleteInput): Promise<void>;
   listFeedbacks(input: { teamId: string; sessionId: string }): Promise<Array<Record<string, unknown>>>;
   listFeedbackSummary(teamId: string): Promise<Array<Record<string, unknown>>>;
-  insertSessionReport(input: Record<string, unknown>): Promise<void>;
   insertSkillUsage(input: Record<string, unknown>): Promise<void>;
   listLeaderboard(teamId: string, period?: "day" | "week" | "month"): Promise<Array<Record<string, unknown>>>;
   reportClientVersion(teamId: string, payload: { clientType: string; version: string; deviceId: string; build: string | null }): Promise<void>;

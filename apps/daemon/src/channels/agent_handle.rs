@@ -337,12 +337,6 @@ impl AmuxdAgentHandle {
         } else {
             teamclu_runtime_env::ManagedLlmState::Unknown
         };
-        let cloud_token_file = self
-            .backend
-            .cloud_auth_health()
-            .map(|_| crate::config::DaemonConfig::cloud_token_path())
-            .map(|p| p.to_string_lossy().into_owned());
-
         // Suppress immediately before the sync disk writes, never before the
         // awaits above: the managed-LLM fetch can outlast the suppress window
         // and the `opencode.json` rewrite would leak as a Pending banner.
@@ -375,7 +369,6 @@ impl AmuxdAgentHandle {
             env_team_id,
             &self.spawn_env.actor_id,
             &self.spawn_env.actor_name,
-            cloud_token_file.as_deref(),
             &managed_llm,
             gateway_token.as_deref(),
             ai_proxy_base.as_deref(),

@@ -502,6 +502,71 @@ mod branded_amuxd_sidecar_tests {
         );
     }
 
+    /// Every caller of `run_amuxd_install_pi` must restart amuxd afterwards.
+    /// amuxd keeps its pooled pi hosts across an in-place install, so an entry
+    /// point that skips the restart leaves hosts on the replaced tree — after
+    /// the 0.84.2 → 1.1.0 upgrade that failed every model call until the app
+    /// was restarted.
+    #[test]
+    fn every_pi_install_entry_point_restarts_amuxd() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
+        let deps = std::fs::read_to_string(root.join("deps.rs")).unwrap();
+        let detached = function_body(&deps, "restart_amuxd_after_update")
+            .expect("restart_amuxd_after_update is missing");
+        assert!(
+            detached.contains("restart_if_running"),
+            "restart_amuxd_after_update must go through AmuxdSupervisor::restart_if_running"
+        );
+
+        let mut files = Vec::new();
+        walk_rs(&root, &mut files);
+        let mut callers = Vec::new();
+        let mut offenders = Vec::new();
+        for path in files {
+            let src = std::fs::read_to_string(&path).unwrap();
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            for (at, _) in src.match_indices("run_amuxd_install_pi(") {
+                let before = &src[..at];
+                // This test's own needle literal.
+                if before.ends_with('"') {
+                    continue;
+                }
+                let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+                if src[line_start..at].trim_start().starts_with("//") {
+                    continue;
+                }
+                let fn_at = before.rfind("fn ").expect("call outside a function");
+                let name: String = before[fn_at + 3..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if name == "run_amuxd_install_pi" {
+                    continue;
+                }
+                let body = function_body(&src, &name).unwrap();
+                callers.push(format!("{rel}::{name}"));
+                if !body.contains("restart_if_running")
+                    && !body.contains("restart_amuxd_after_update")
+                {
+                    offenders.push(format!("{rel}::{name}"));
+                }
+            }
+        }
+        assert!(
+            !callers.is_empty(),
+            "found no caller of run_amuxd_install_pi; the guard is scanning the wrong tree"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these run `amuxd install-pi` without restarting amuxd afterwards: {}",
+            offenders.join(", ")
+        );
+    }
+
     #[test]
     fn doctor_and_install_pi_share_branded_sidecar_constructor() {
         let setup = std::fs::read_to_string(

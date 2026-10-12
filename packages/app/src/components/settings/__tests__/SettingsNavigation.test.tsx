@@ -208,13 +208,13 @@ describe('Settings navigation', () => {
     const clientLabels = within(clientSubnav).getAllByRole('button').map((b) => b.textContent)
     expect(clientLabels).not.toContain('Billing')
     expect(clientLabels).not.toContain('Token Usage')
-    expect(clientLabels).not.toContain('团队角色')
+    expect(clientLabels).not.toContain('组织角色')
 
     fireEvent.click(teamMgmtButton)
     const teamSubnav = screen.getByTestId('team-management-subnav')
     expect(
       within(teamSubnav).getAllByRole('button').map((button) => button.textContent),
-    ).toEqual(['Billing', 'Token Usage', 'Leaderboard', '团队角色'])
+    ).toEqual(['Billing', 'Token Usage', 'Leaderboard', '组织角色'])
 
     vi.doUnmock('@/stores/ui')
   })

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
@@ -10,11 +10,11 @@ const MAX_NAME_LENGTH = 60
 /**
  * First-run naming, shown once a signed-in account turns out to have no team.
  *
- * The server can name the org and its default team by itself (nickname → OAuth
- * full name → email local part), and still does when this returns a blank —
- * but that derivation names a COMPANY's workspace after whoever happened to
- * sign up first. So the name is asked for, seeded with that same derivation so
- * a personal user can press Enter and move on.
+ * The name is required and starts empty: it names the new tenant (org and
+ * team alike), whose creator becomes its super admin
+ * (docs/plans/2026-10-08-staff-only-identity-model.md). A derived default named
+ * a company's workspace after whoever happened to sign up first. The server
+ * still derives one for older clients that send none.
  *
  * One field, two readings: a company name for a team that has one, the name of
  * your own small team if not. It sets the org and the team together, which is
@@ -22,32 +22,18 @@ const MAX_NAME_LENGTH = 60
  * (docs/plans/2026-08-17-login-org-team-redesign.md).
  */
 export function NameYourTeamScreen({
-  defaultName,
   busy,
   error,
   onSubmit,
   onSignOut,
 }: {
-  defaultName: string
   busy: boolean
   error: string | null
   onSubmit: (name: string) => void
   onSignOut: () => void
 }) {
   const { t } = useTranslation()
-  const [name, setName] = useState(defaultName)
-  const inputRef = useRef<HTMLInputElement>(null)
-  // `defaultName` resolves asynchronously; adopt it only while untouched so a
-  // late arrival cannot overwrite what the user is typing.
-  const touched = useRef(false)
-
-  useEffect(() => {
-    if (!touched.current) setName(defaultName)
-  }, [defaultName])
-
-  useEffect(() => {
-    inputRef.current?.select()
-  }, [])
+  const [name, setName] = useState('')
 
   const trimmed = name.trim()
   const canSubmit = trimmed.length > 0 && !busy
@@ -77,17 +63,13 @@ export function NameYourTeamScreen({
         </p>
 
         <Input
-          ref={inputRef}
           value={name}
           maxLength={MAX_NAME_LENGTH}
           disabled={busy}
           autoFocus
           aria-label={t('auth.nameYourTeam.title', '给你的团队起个名字')}
           placeholder={t('auth.nameYourTeam.placeholder', '例如：倍拓科技')}
-          onChange={(e) => {
-            touched.current = true
-            setName(e.target.value)
-          }}
+          onChange={(e) => setName(e.target.value)}
           className="mt-4 h-10 rounded-[10px]"
         />
 

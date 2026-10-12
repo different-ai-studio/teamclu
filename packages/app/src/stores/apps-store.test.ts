@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createApp: vi.fn(),
   deleteApp: vi.fn(),
   updateAppProvisionStatus: vi.fn(),
+  updateAppAuth: vi.fn(),
   updateAppDeployStatus: vi.fn(),
   deployApp: vi.fn(),
   preflightAppDeploy: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock("@/lib/backend", () => ({
   getBackend: () => ({
     apps: {
       listApps: mocks.listApps,
+      updateAppAuth: mocks.updateAppAuth,
       createApp: mocks.createApp,
       deleteApp: mocks.deleteApp,
       updateAppProvisionStatus: mocks.updateAppProvisionStatus,
@@ -1510,3 +1512,23 @@ describe("apps-store: private repo credentials", () => {
     expect(JSON.stringify(mocks.toastError.mock.calls)).toContain("尚未就绪");
   });
 });
+
+
+describe('auth policy save outcomes', () => {
+  it('keeps the original stored row after a rejected write', async () => {
+    const { useAppsStore } = await import('./apps-store')
+    const row = { id: 'auth-app', authScope: 'paths', authRules: [{ path: '/staff', auth: 'required', audience: 'org' }] } as never
+    useAppsStore.setState({ items: [row] })
+    mocks.updateAppAuth.mockRejectedValueOnce(new Error('unknown organization role'))
+    expect(await useAppsStore.getState().updateAuthPolicy('auth-app', { authRules: [{ path: '/staff', auth: 'required', roles: ['missing'] }] })).toBe(false)
+    expect(useAppsStore.getState().items).toEqual([row])
+  })
+  it('uses the returned server row rather than the submitted draft', async () => {
+    const { useAppsStore } = await import('./apps-store')
+    const server = { id: 'auth-app', authScope: 'paths', authRules: [{ path: '/staff', auth: 'required', audience: 'org' }] }
+    useAppsStore.setState({ items: [{ ...server, authRules: [] } as never] })
+    mocks.updateAppAuth.mockResolvedValueOnce(server)
+    expect(await useAppsStore.getState().updateAuthPolicy('auth-app', { authRules: [] })).toBe(true)
+    expect(useAppsStore.getState().items[0].authRules).toEqual(server.authRules)
+  })
+})

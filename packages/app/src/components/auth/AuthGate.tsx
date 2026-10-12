@@ -24,6 +24,7 @@ import { extensionTeamOnboarding } from "@/lib/config/build-config";
 import { isExtensionAutoCreateTeamEnabled } from "@/lib/config/extension-auto-create-team";
 import { NoTeamScreen } from "./NoTeamScreen";
 import { NameYourTeamScreen } from "./NameYourTeamScreen";
+import { IdentityPickerScreen } from "./IdentityPickerScreen";
 import { useInviteLinkConfirmation } from "@/lib/team/invite-link-confirmation";
 import { useJoinLinkConfirmation } from "@/lib/team/join-link-confirmation";
 import {
@@ -59,25 +60,6 @@ function memberTeams(teams: MembershipTeam[]): MembershipTeam[] {
 }
 
 /** True when the user must explicitly pick: several teams, or a joinable public one. */
-/**
- * Seed for the first-run name field.
- *
- * Mirrors the server's own derivation as far as the client can see it — OAuth
- * full name, then the email local part. The server's first arm,
- * `public.users.nickname`, is not reachable here and is empty for a fresh
- * account. An empty result is fine: the field is simply blank and the user
- * types their own.
- */
-export function suggestTeamName(user: { email?: string | null; userMetadata?: Record<string, unknown> | null } | null | undefined): string {
-  const meta = user?.userMetadata ?? null;
-  for (const key of ["full_name", "name"]) {
-    const value = meta?.[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  const local = (user?.email ?? "").split("@")[0]?.trim();
-  return local || "";
-}
-
 /**
  * The login chooser offers only the signed-in account's org. Membership comes
  * back phone-wide (every identity sharing the phone), so without this, picking
@@ -131,8 +113,12 @@ export function AuthGate({ children }: AuthGateProps) {
   const { session, loading, authFlow, hydrate, signOut } = useAuthStore(
     useShallow((s) => ({ session: s.session, loading: s.loading, authFlow: s.authFlow, hydrate: s.hydrate, signOut: s.signOut })),
   );
+  // Several identities (one per org) behind this sign-in: pick one first. The
+  // choice swaps the session, so bootstrap waits for it.
+  const { identityChoices, chooseIdentity, authError } = useAuthStore(
+    useShallow((s) => ({ identityChoices: s.identityChoices, chooseIdentity: s.chooseIdentity, authError: s.errorMessage })),
+  );
   const [bootstrap, setBootstrap] = useState<BootstrapState>("idle");
-  const [suggestedTeamName, setSuggestedTeamName] = useState("");
   const [creatingFirstTeam, setCreatingFirstTeam] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [bootstrapNonce, setBootstrapNonce] = useState(0);
@@ -421,6 +407,7 @@ export function AuthGate({ children }: AuthGateProps) {
     // while the gate is resolving).
     if (inviteConfirmed && inviteClaimAttempted.current !== pendingInviteToken) return;
     if (confirmedJoin && joinAttempted.current !== confirmedJoin.token) return;
+    if (identityChoices) return;
     // Browser runtime (Chrome extension / web build) is a real cloud client:
     // it still needs a current team for MQTT + team-scoped reads, so it must
     // run the same team-bootstrap as desktop. The bootstrap path below is
@@ -475,13 +462,9 @@ export function AuthGate({ children }: AuthGateProps) {
             setBootstrap("no_team");
             return;
           }
-          // Login onboarding. The server CAN name the org and its default team
-          // by itself, and still does when the field comes back blank — but
-          // that derivation names a company's workspace after whoever signed
-          // up first. Ask instead, seeded with the same derivation so a
-          // personal user just presses Enter. `createFirstTeam` below does the
-          // actual bootstrap once the name is in.
-          setSuggestedTeamName(suggestTeamName(session?.user));
+          // Login onboarding: a new tenant. The name is required (no
+          // prefill) — it names the org and its team, and this person becomes
+          // its super admin. `createFirstTeam` below does the bootstrap.
           setBootstrapError(null);
           setRetrying(false);
           markStartup("team-bootstrap:end");
@@ -537,7 +520,7 @@ export function AuthGate({ children }: AuthGateProps) {
         setBootstrap("error");
       }
     })();
-  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, confirmedJoin, signOut]);
+  }, [loading, session, bootstrapNonce, pendingInviteToken, inviteConfirmed, confirmedJoin, signOut, identityChoices]);
 
   const retryBootstrap = () => {
     // Re-arm the per-user ref guard and bump the nonce so the bootstrap effect
@@ -663,6 +646,19 @@ export function AuthGate({ children }: AuthGateProps) {
     return isTauri() ? <DesktopOnboarding /> : <LoginScreen />;
   }
 
+  if (identityChoices) {
+    removeStartupSkeleton();
+    return (
+      <IdentityPickerScreen
+        identities={identityChoices}
+        busy={loading}
+        error={authError}
+        onPick={(userId) => void chooseIdentity(userId)}
+        onSignOut={() => void signOut("identity_picker")}
+      />
+    );
+  }
+
   if (loading) {
     return null;
   }
@@ -690,7 +686,6 @@ export function AuthGate({ children }: AuthGateProps) {
     return (
       <>
         <NameYourTeamScreen
-          defaultName={suggestedTeamName}
           busy={creatingFirstTeam}
           error={bootstrapError ?? joinLinkNotice}
           onSubmit={createFirstTeam}

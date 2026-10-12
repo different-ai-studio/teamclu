@@ -29,3 +29,13 @@ test('starter templates point to the inherent skill and retain their own artifac
     assert.doesNotMatch(deploySection, /Nodejs20:3|pip install --platform|runtime_info|## 怎么上线/);
   }
 });
+
+test('uninstall guidance requires explicit intent, confirmation and verified completion in English', () => {
+  const skill = readFileSync(skillPath, 'utf8');
+  const section = skill.split('## Uninstalling a deployment')[1] ?? '';
+  assert.doesNotMatch(skill, /[\u4e00-\u9fff]/);
+  for (const contract of ['user explicitly requests', 'explicit app ID or name', 'native confirmation', 'uploaded files', 'manage_app status', 'operator reconciliation', 'real-account verification as pending']) {
+    assert.ok(section.includes(contract), `missing uninstall contract: ${contract}`);
+  }
+  assert.match(section, /accepted operation is not a completed uninstall/);
+});

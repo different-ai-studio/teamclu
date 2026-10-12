@@ -20,7 +20,6 @@ const {
   mockHydrateFromCache,
   mockLoadPersonal,
   mockLoadTeamForCurrentTeam,
-  mockTelemetryInit,
   mockWorkspaceCapable,
 } = vi.hoisted(() => ({
   mockSetWorkspace: vi.fn(),
@@ -35,7 +34,6 @@ const {
   mockHydrateFromCache: vi.fn(),
   mockLoadPersonal: vi.fn(),
   mockLoadTeamForCurrentTeam: vi.fn(),
-  mockTelemetryInit: vi.fn(),
   mockWorkspaceCapable: { value: true },
 }))
 
@@ -171,12 +169,6 @@ const uiState = {
   toggleLayoutMode: vi.fn(),
 }
 
-const telemetryState = {
-  consent: 'undecided' as 'undecided' | 'granted' | 'denied',
-  init: mockTelemetryInit,
-  isInitialized: false,
-}
-
 vi.mock('@/stores/ui', () => ({
   useUIStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector(uiState as unknown as Record<string, unknown>),
@@ -188,11 +180,6 @@ vi.mock('@/stores/deps', () => ({
     checked: false,
     checkDependencies: vi.fn().mockResolvedValue([]),
   }),
-}))
-
-vi.mock('@/stores/telemetry', () => ({
-  useTelemetryStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector(telemetryState as unknown as Record<string, unknown>),
 }))
 
 
@@ -217,8 +204,6 @@ beforeEach(() => {
   teamModeState.setState.mockClear()
   currentTeamState.team = null
   uiState.embedMode = false
-  telemetryState.consent = 'undecided'
-  telemetryState.isInitialized = false
   localStorage.clear()
 })
 
@@ -308,33 +293,6 @@ describe('useTauriBodyClass', () => {
     const { useTauriBodyClass } = await import('@/hooks/use-tauri-body-class')
     renderHook(() => useTauriBodyClass())
     expect(document.documentElement.classList.contains('tauri')).toBe(false)
-  })
-})
-
-describe('useTelemetryConsent', () => {
-  it('initializes telemetry on mount', async () => {
-    const { useTelemetryConsent } = await import('@/hooks/use-telemetry-consent')
-    renderHook(() => useTelemetryConsent(false))
-    expect(mockTelemetryInit).toHaveBeenCalled()
-  })
-
-  it('opens consent dialog on desktop when setup is done and consent is undecided', async () => {
-    telemetryState.isInitialized = true
-    const { useTelemetryConsent } = await import('@/hooks/use-telemetry-consent')
-    const { result } = renderHook(() => useTelemetryConsent(false))
-    await waitFor(() => {
-      expect(result.current.showConsentDialog).toBe(true)
-    })
-  })
-
-  it('skips consent dialog in embed mode', async () => {
-    uiState.embedMode = true
-    telemetryState.isInitialized = true
-    const { useTelemetryConsent } = await import('@/hooks/use-telemetry-consent')
-    const { result } = renderHook(() => useTelemetryConsent(false))
-    await waitFor(() => {
-      expect(result.current.showConsentDialog).toBe(false)
-    })
   })
 })
 

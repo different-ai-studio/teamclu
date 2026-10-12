@@ -1,8 +1,10 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Loader2, Shield, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, Loader2, Shield, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Select,
   SelectContent,
@@ -53,6 +55,7 @@ function AccessBody({ app }: { app: AppRow }) {
   const [canManage, setCanManage] = React.useState(false)
   const [grantMemberId, setGrantMemberId] = React.useState('')
   const [grantLevel, setGrantLevel] = React.useState<AppPermissionLevel>('prompt')
+  const [memberPickerOpen, setMemberPickerOpen] = React.useState(false)
   const invalidateAppSummary = useAppsStore((s) => s.invalidateAppSummary)
 
   const load = React.useCallback(async () => {
@@ -232,18 +235,48 @@ function AccessBody({ app }: { app: AppRow }) {
 
       {candidates.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-t border-border-soft pt-4">
-          <Select value={grantMemberId} onValueChange={setGrantMemberId} disabled={saving}>
-            <SelectTrigger className="h-9 min-w-[180px] flex-1 rounded-[7px] text-[13px]">
-              <SelectValue placeholder={t('apps.controlPanel.pickMember', '选择成员')} />
-            </SelectTrigger>
-            <SelectContent>
-              {candidates.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.displayName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Popover open={memberPickerOpen} onOpenChange={setMemberPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                role="combobox"
+                aria-expanded={memberPickerOpen}
+                data-testid="app-access-member-picker"
+                disabled={saving}
+                className="h-9 min-w-[180px] flex-1 justify-between rounded-[7px] px-3 text-[13px] font-normal"
+              >
+                <span className="truncate">
+                  {candidates.find((m) => m.id === grantMemberId)?.displayName ??
+                    t('apps.controlPanel.pickMember', '选择成员')}
+                </span>
+                <ChevronDown className="h-4 w-4 shrink-0 text-faint" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+              <Command>
+                <CommandInput placeholder={t('apps.controlPanel.searchMember', '搜索成员…')} />
+                <CommandList>
+                  <CommandEmpty>{t('apps.controlPanel.noMatchingMembers', '没有匹配的成员')}</CommandEmpty>
+                  {candidates.map((m) => (
+                    <CommandItem
+                      key={m.id}
+                      value={m.id}
+                      keywords={[m.displayName]}
+                      onSelect={() => {
+                        setGrantMemberId(m.id)
+                        setMemberPickerOpen(false)
+                      }}
+                      className="text-[13px]"
+                    >
+                      <Check className={m.id === grantMemberId ? 'opacity-100' : 'opacity-0'} />
+                      {m.displayName}
+                    </CommandItem>
+                  ))}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
           <Select
             value={grantLevel}
             onValueChange={(v) => setGrantLevel(v as AppPermissionLevel)}

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use teamclu_runtime_env::session_context::{
-    TEAMCLU_AGENT_BACKEND_ENV, TEAMCLU_HOST_GENERATION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV,
-    TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
+    TEAMCLU_AGENT_BACKEND_ENV, TEAMCLU_HOST_GENERATION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_SOCK_ENV,
+    TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV, TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -59,6 +59,9 @@ pub enum ResolveError {
     InvalidRuntimeContextToken,
     SessionContextUnavailable,
     StaleHostGeneration,
+    /// The connecting process is not a descendant of any agent host this
+    /// daemon spawned — the cloud-token socket's refusal.
+    CallerNotAgentHost,
 }
 
 impl ResolveError {
@@ -68,12 +71,13 @@ impl ResolveError {
             Self::InvalidRuntimeContextToken => "invalid_runtime_context_token",
             Self::SessionContextUnavailable => "session_context_unavailable",
             Self::StaleHostGeneration => "stale_host_generation",
+            Self::CallerNotAgentHost => "caller_not_an_agent_host",
         }
     }
 
     pub fn http_status(&self) -> u16 {
         match self {
-            Self::InvalidRuntimeContextToken => 401,
+            Self::InvalidRuntimeContextToken | Self::CallerNotAgentHost => 401,
             Self::SessionContextUnavailable => 404,
             Self::StaleHostGeneration => 409,
             Self::InvalidBackendSessionId => 422,
@@ -287,6 +291,77 @@ impl GenerationTokenStore {
     }
 }
 
+/// A live agent host, as the kernel identifies it: pid plus start time, so a
+/// pid handed to some later process does not inherit the registration.
+// Only the unix cloud-token socket consults this; Windows keeps the bearer route.
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostProcess {
+    pub pid: u32,
+    pub start_time: u64,
+}
+
+/// The host generation a process tree belongs to.
+// Only the unix cloud-token socket consults this; Windows keeps the bearer route.
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostCaller {
+    pub backend_kind: String,
+    pub host_generation_id: String,
+    pub host_pid: u32,
+}
+
+/// Which OS process each live host generation is (`runtime::proc_tree`). Fed
+/// by the spawn path, consulted by the cloud-token socket, cleared with the
+/// generation.
+// Only the unix cloud-token socket consults this; Windows keeps the bearer route.
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Default)]
+pub struct HostProcessRegistry {
+    by_pid: HashMap<u32, (String, String, HostProcess)>,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+impl HostProcessRegistry {
+    pub fn register(&mut self, backend_kind: &str, generation_id: &str, process: HostProcess) {
+        self.by_pid.insert(
+            process.pid,
+            (backend_kind.to_string(), generation_id.to_string(), process),
+        );
+    }
+
+    pub fn revoke_generation(&mut self, backend_kind: &str, generation_id: &str) {
+        self.by_pid.retain(|_, (kind, generation, _)| {
+            !(kind == backend_kind && generation == generation_id)
+        });
+    }
+
+    /// The first registered host in `chain` (a process and its ancestors,
+    /// nearest first) whose pid still belongs to the process that was
+    /// registered. `start_time_of` reads the live start time of a pid; a
+    /// pid that is gone or re-used does not match.
+    pub fn find_in_chain(
+        &self,
+        chain: &[u32],
+        start_time_of: impl Fn(u32) -> Option<u64>,
+    ) -> Option<HostCaller> {
+        for pid in chain {
+            let Some((backend_kind, generation_id, process)) = self.by_pid.get(pid) else {
+                continue;
+            };
+            if start_time_of(*pid) != Some(process.start_time) {
+                continue;
+            }
+            return Some(HostCaller {
+                backend_kind: backend_kind.clone(),
+                host_generation_id: generation_id.clone(),
+                host_pid: *pid,
+            });
+        }
+        None
+    }
+}
+
 pub fn backend_kind_for_agent_type(agent_type: crate::proto::amux::AgentType) -> &'static str {
     match agent_type {
         crate::proto::amux::AgentType::Pi => "pi",
@@ -304,8 +379,15 @@ pub fn generation_env(
     token: &str,
     backend_kind: &str,
     generation_id: &str,
+    socket_path: Option<&str>,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
+    if let Some(path) = socket_path.map(str::trim).filter(|p| !p.is_empty()) {
+        env.insert(
+            TEAMCLU_RUNTIME_CONTEXT_SOCK_ENV.to_string(),
+            path.to_string(),
+        );
+    }
     env.insert(
         TEAMCLU_RUNTIME_CONTEXT_URL_ENV.to_string(),
         base_url.trim_end_matches('/').to_string(),

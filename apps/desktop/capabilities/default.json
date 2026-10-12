@@ -107,7 +107,6 @@
     "core:window:allow-is-focused",
     "core:window:allow-is-visible",
     "process:allow-restart",
-    "aptabase:allow-track-event",
     "log:default",
     "window-state:default",
     "mcp:default",

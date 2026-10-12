@@ -42,14 +42,21 @@ const app = (over: Partial<AppRow> = {}): AppRow =>
     ...over,
   }) as AppRow
 
+const deployment = vi.hoisted(() => ({ getApp: vi.fn(), undeployApp: vi.fn(), refreshApp: vi.fn(), syncApp: vi.fn() }))
+vi.mock('@/lib/backend/provider', () => ({ getBackend: () => ({ apps: { getApp: deployment.getApp } }) }))
 const deploy = vi.fn()
 
 beforeEach(() => {
   vi.clearAllMocks()
+  deployment.getApp.mockResolvedValue(null)
+  deployment.undeployApp.mockResolvedValue(true)
   useAppsStore.setState({
     deployingIds: [],
     deployProgressByAppId: {},
     deploy,
+    undeployApp: deployment.undeployApp,
+    refreshApp: deployment.refreshApp,
+    syncApp: deployment.syncApp,
   } as never)
 })
 
@@ -99,4 +106,55 @@ describe('AppDeployFooter', () => {
     )
     expect(screen.getByTestId('app-deploy-footer-deploy')).toBeEnabled()
   })
+})
+
+it('requires confirmation for the footer uninstall and lets cancellation leave the app live', async () => {
+  const live = app({ fcStatus: 'live', canManageDeployment: true })
+  deployment.getApp.mockResolvedValue(live)
+  render(<AppDeployFooter app={live} />)
+  await userEvent.click(await screen.findByRole('button', { name: '卸载部署' }))
+  expect(deployment.undeployApp).not.toHaveBeenCalled()
+  await userEvent.click(screen.getByRole('button', { name: '取消' }))
+  expect(screen.queryByRole('alertdialog')).toBeNull()
+  expect(deployment.undeployApp).not.toHaveBeenCalled()
+  await userEvent.click(screen.getByRole('button', { name: '卸载部署' }))
+  await userEvent.click(screen.getByRole('button', { name: '确认卸载' }))
+  expect(deployment.undeployApp).toHaveBeenCalledWith('app-1')
+})
+it('does not offer a footer uninstall to a visitor', () => {
+  render(<AppDeployFooter app={app({ fcStatus: 'live', canManageDeployment: false })} />)
+  expect(screen.queryByRole('button', { name: '卸载部署' })).toBeNull()
+})
+
+it('blocks footer uninstall while a deploy has started but its live row is not yet updated', async () => {
+  const live = app({ fcStatus: 'live', canManageDeployment: true })
+  deployment.getApp.mockResolvedValue(live)
+  useAppsStore.setState({ deployingIds: ['app-1'] })
+  render(<AppDeployFooter app={live} />)
+  expect(await screen.findByRole('button', { name: '卸载部署' })).toBeDisabled()
+})
+
+it('loads server management permission before offering footer uninstall', async () => {
+  const live = app({ fcStatus: 'live' })
+  deployment.getApp.mockResolvedValue({ ...live, canManageDeployment: true })
+  render(<AppDeployFooter app={live} />)
+  expect(await screen.findByRole('button', { name: '卸载部署' })).toBeEnabled()
+})
+
+it('shows one uninstall progress state without an extra action or failure hint', async () => {
+  const running = app({ fcStatus: 'uninstalling', canManageDeployment: true })
+  deployment.getApp.mockResolvedValue(running)
+  render(<AppDeployFooter app={running} />)
+  expect(await screen.findByRole('status')).toHaveTextContent('卸载中…')
+  expect(screen.queryByRole('button', { name: '卸载部署' })).toBeNull()
+  expect(screen.getByTestId('app-deploy-footer')).not.toHaveTextContent('第三方登录尚未支持部署')
+})
+
+it('shows retry and one cleanup failure state', async () => {
+  const failed = app({ fcStatus: 'uninstall_failed', canManageDeployment: true })
+  deployment.getApp.mockResolvedValue(failed)
+  render(<AppDeployFooter app={failed} />)
+  expect(await screen.findByRole('button', { name: '重试清理' })).toBeEnabled()
+  expect(screen.getByRole('status')).toHaveTextContent('清理未完成')
+  expect(screen.getByTestId('app-deploy-footer')).not.toHaveTextContent('第三方登录尚未支持部署')
 })

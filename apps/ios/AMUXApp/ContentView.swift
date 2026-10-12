@@ -183,6 +183,8 @@ struct ContentView: View {
                 CreateTeamView(coordinator: onboarding)
             case .selectTeam:
                 OrgTeamPickerView(coordinator: onboarding)
+            case .selectIdentity:
+                IdentityPickerView(coordinator: onboarding)
             case .noTeam:
                 NoTeamView(coordinator: onboarding, onSignOut: { signOut() })
             case .ready:

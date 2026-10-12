@@ -53,8 +53,8 @@ pub use resolved_env::{
 pub use session_context::{
     is_session_scoped_mcp_tool, require_explicit_session_id_from_env, SESSION_SCOPED_MCP_TOOLS,
     TEAMCLU_AGENT_BACKEND_ENV, TEAMCLU_HOST_GENERATION_ID_ENV,
-    TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV,
-    TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
+    TEAMCLU_REQUIRE_EXPLICIT_SESSION_ID_ENV, TEAMCLU_RUNTIME_CONTEXT_SOCK_ENV,
+    TEAMCLU_RUNTIME_CONTEXT_TOKEN_ENV, TEAMCLU_RUNTIME_CONTEXT_URL_ENV,
 };
 pub use team_provider::{
     managed_llm_provider_from_disk_team, read_global_team_provider,
@@ -100,20 +100,15 @@ pub struct RuntimeEnvBundle {
 pub struct SystemEnvContext {
     pub actor_id: String,
     pub display_name: String,
-    /// Absolute path to a file the daemon keeps refreshed with the current
-    /// cloud access token (JWT). Injected as `TC_ACCESS_TOKEN_FILE` so a
-    /// long-running agent can re-read a *fresh* token whenever it needs one —
-    /// the token itself is never injected into the env, since env values are
-    /// frozen at spawn and the JWT expires (~1h) well before a multi-day
-    /// session ends. `None` when there is no cloud backend to source it from.
-    pub cloud_token_file: Option<String>,
     /// Daemon session token scoped to `ai:invoke`, bound as `tc_gateway_token`
     /// so `provider.team.options.apiKey` resolves to something the local AI
     /// proxy will accept. Supplied by the daemon: only it can mint one.
     ///
-    /// Unlike `cloud_token_file` this IS the value rather than a path, because
-    /// it is a daemon-lifetime credential — it dies with the process that
-    /// minted it, so it cannot go stale while a runtime is alive.
+    /// This IS the value, not a path: it is a daemon-lifetime credential — it
+    /// dies with the process that minted it, so it cannot go stale while a
+    /// runtime is alive. The cloud JWT, by contrast, is put neither in the env
+    /// nor on disk; a host fetches it from the daemon's runtime-context
+    /// listener (`/internal/runtime-context/cloud-token`) when it needs one.
     pub gateway_token: Option<String>,
     /// The daemon's own loopback AI proxy for this team
     /// (`http://127.0.0.1:<port>/v1/ai/teams/<id>`), written as the base URL
@@ -121,9 +116,9 @@ pub struct SystemEnvContext {
     ///
     /// It is NOT the cloud gateway. The credential above is a daemon token, and
     /// the gateway verifies GoTrue tokens — a runtime pointed straight at the
-    /// gateway gets `invalid_token` on every call. The hop also buys the same
-    /// thing `cloud_token_file` buys: the daemon refreshes the cloud token per
-    /// request, so a multi-day agent never meets its expiry.
+    /// gateway gets `invalid_token` on every call. The hop also means the
+    /// daemon refreshes the cloud token per request, so a multi-day agent
+    /// never meets its expiry.
     ///
     /// `None` leaves the cloud URL in place, for callers with no listener to
     /// offer.
@@ -184,7 +179,6 @@ mod tests {
             SystemEnvContext {
                 actor_id: "spawn-actor".to_string(),
                 display_name: String::new(),
-                cloud_token_file: None,
                 // Supplied by the daemon, which is the only thing that can mint
                 // one. There is no derivation from the actor id any more: the
                 // credential this replaced (a LiteLLM `sk-tc-*` virtual key)

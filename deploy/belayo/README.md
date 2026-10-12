@@ -30,6 +30,27 @@ select bundled versus external Supabase. Both targets are containers and expose
 Secrets remain in the self-host .env, GitHub environments, and Dokploy. Never
 add secret values to these manifests.
 
+## Protected FC origins
+
+Dev and prod gateway-to-FC origin traffic uses HTTP with FC custom-domain JWT.
+The public app hostname remains HTTPS at the edge. HTTP carries the origin JWT,
+business credentials and platform identity headers in plaintext on this hop;
+restrict and trust that network path. FC must reject direct requests without a
+valid app-specific JWT, and its default public Trigger URL must remain disabled.
+See the [Cloud API origin runbook](../../services/fc/README.md#protected-fc-app-origins).
+
+Configure `APPS_FC_ROUTE_DOMAIN` and the server-only `APPS_FC_ORIGIN_KEYRING` in
+Dokploy before rolling the compatible image. The keyring name appears in
+`cloud-api.env.keys` as an allowlist, not a secret injector. Do not print it in
+service-inspect output or shell tracing. `.github/scripts/belayo-rollout.sh`
+updates the image only; apply changed environment through an authorized Dokploy
+Cloud API deployment. Check the running container using the runbook's
+secret-safe `readAppsOriginAuthConfig` command, then deploy a chosen new app and
+verify FC readback before claiming protection. Existing apps are not repaired by
+the image rollout. Follow the two-version key rotation procedure in the runbook.
+The [new-app acceptance checklist](../../docs/testing/2026-10-04-fc-origin-lockdown.md)
+remains **尚未执行** until live FC and gateway behavior are measured.
+
 ## Cloud API release pipeline
 
 `.github/workflows/belayo-cloud-api.yml` builds `services/fc` as an immutable

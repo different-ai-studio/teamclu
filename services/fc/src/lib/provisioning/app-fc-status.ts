@@ -7,6 +7,7 @@ const ALLOWED: Record<string, string[]> = {
   building: ["deploying", "deploy_error"],
   deploying: ["live", "deploy_error"],
   live: ["awaiting_build", "deploy_error"],
+  uninstalled: ["awaiting_build", "deploy_error"],
   deploy_error: ["awaiting_build", "deploy_error"],
 };
 

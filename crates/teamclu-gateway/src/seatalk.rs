@@ -710,6 +710,19 @@ fn extract_thread_id(payload: &serde_json::Value) -> Option<&str> {
     None
 }
 
+/// A reply to a new group mention starts a SeaTalk thread by using the root
+/// message's ID. Resolve it before session routing so the first turn and later
+/// thread messages share the same binding and agent context.
+fn reply_thread_id<'a>(event_type: &str, payload: &'a serde_json::Value) -> Option<&'a str> {
+    extract_thread_id(payload).or_else(|| {
+        if event_type == "new_mentioned_message_received_from_group_chat" {
+            optional_id(payload["message"]["message_id"].as_str())
+        } else {
+            None
+        }
+    })
+}
+
 fn short_thread_id(thread_id: &str) -> String {
     thread_id.trim().chars().take(8).collect()
 }
@@ -777,8 +790,8 @@ pub(crate) fn normalize_event(event: &serde_json::Value) -> Option<crate::driver
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let thread_id = extract_thread_id(payload).map(str::to_string);
-    if event_type == "new_message_received_from_thread" && thread_id.is_none() {
+    let thread_id = reply_thread_id(event_type, payload).map(str::to_string);
+    if !is_dm && thread_id.is_none() {
         return None;
     }
     let text = extract_message_text(message);
@@ -994,14 +1007,16 @@ async fn handle_callback_event(
         match check_group_allowed(&cfg, group_id, &code, sender["email"].as_str()) {
             FilterResult::Allow => true,
             FilterResult::UserNotAllowed => {
-                let _ = ctx
-                    .client
-                    .send_group_text(
-                        group_id,
-                        "Sorry, you are not authorized to use this bot.",
-                        extract_thread_id(payload),
-                    )
-                    .await;
+                if let Some(thread_id) = reply_thread_id(&event_type, payload) {
+                    let _ = ctx
+                        .client
+                        .send_group_text(
+                            group_id,
+                            "Sorry, you are not authorized to use this bot.",
+                            Some(thread_id),
+                        )
+                        .await;
+                }
                 false
             }
             _ => false,
@@ -1029,11 +1044,7 @@ async fn handle_callback_event(
     match normalize_event(event) {
         Some(inbound) => {
             let (chat, thread) = decode_conv_id(&inbound.conversation.id);
-            let route_scope = if thread.is_some() {
-                "thread"
-            } else {
-                "group"
-            };
+            let route_scope = if thread.is_some() { "thread" } else { "group" };
             println!(
                 "[SeaTalk] seatalk inbound normalized event_type={event_type} event_id={event_id} group_id={chat} thread_id={} route_scope={route_scope}",
                 thread.unwrap_or("-")
@@ -1321,7 +1332,42 @@ mod tests {
     }
 
     #[test]
-    fn normalize_group_mention_without_thread() {
+    fn normalize_group_mention_starts_thread_on_message_id() {
+        let event = group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev1",
+            "g1",
+            "@Bot hello",
+            json!({ "message.message_id": "root-message" }),
+        );
+        let msg = normalize_event(&event).unwrap();
+        assert_eq!(msg.conversation.id, "g1#t=root-message");
+        // The callback event ID remains the dedup key; it is not a thread ID.
+        assert_eq!(msg.external_message_id, "ev1");
+        assert_eq!(msg.text, "hello");
+        let (group, thread) = decode_conv_id(&msg.conversation.id);
+        assert_eq!(group, "g1");
+        assert_eq!(
+            build_text_message("reply", thread)["thread_id"],
+            "root-message"
+        );
+    }
+
+    #[test]
+    fn normalize_group_mention_missing_message_id_fails_closed() {
+        for message_id in [json!(null), json!(""), json!("   "), json!(123)] {
+            let event = group_event(
+                "new_mentioned_message_received_from_group_chat",
+                "ev1",
+                "g1",
+                "@Bot hello",
+                json!({
+                    "message.message_id": message_id,
+                    "message.quoted_message_id": "quoted-message"
+                }),
+            );
+            assert!(normalize_event(&event).is_none());
+        }
         let event = group_event(
             "new_mentioned_message_received_from_group_chat",
             "ev1",
@@ -1329,9 +1375,21 @@ mod tests {
             "@Bot hello",
             json!({}),
         );
+        assert!(normalize_event(&event).is_none());
+    }
+
+    #[test]
+    fn normalize_group_mention_empty_thread_id_uses_message_id() {
+        let event = group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev1",
+            "g1",
+            "@Bot",
+            json!({ "message.message_id": " root-message ", "message.thread_id": "  " }),
+        );
         let msg = normalize_event(&event).unwrap();
-        assert_eq!(msg.conversation.id, "g1");
-        assert_eq!(msg.text, "hello");
+        assert_eq!(msg.conversation.id, "g1#t=root-message");
+        assert_eq!(msg.text, "你好，请直接说明需要我帮你做什么。");
     }
 
     #[test]
@@ -1341,7 +1399,7 @@ mod tests {
             "ev2",
             "g1",
             "@Bot hi thread",
-            json!({ "message.thread_id": "t1" }),
+            json!({ "message.message_id": "reply-message", "message.thread_id": "t1" }),
         );
         let msg = normalize_event(&event).unwrap();
         assert_eq!(msg.conversation.id, "g1#t=t1");
@@ -1367,17 +1425,103 @@ mod tests {
             "ev4",
             "g1",
             "no thread id",
-            json!({}),
+            json!({ "message.message_id": "reply-message" }),
         );
         assert!(normalize_event(&event).is_none());
     }
 
     #[test]
     fn normalize_dm_unaffected() {
-        let event = dm_event("ev5", "e99", "dm hello");
+        let mut event = dm_event("ev5", "e99", "dm hello");
+        event["event"]["message"]["message_id"] = json!("dm-message");
         let msg = normalize_event(&event).unwrap();
         assert_eq!(msg.conversation.id, "e99");
-        assert_eq!(msg.conversation.kind, crate::driver::ConversationKind::Direct);
+        assert_eq!(
+            msg.conversation.kind,
+            crate::driver::ConversationKind::Direct
+        );
+    }
+
+    #[test]
+    fn first_mention_and_thread_followups_share_session_binding() {
+        // Match the daemon's default SeaTalk configuration: each group thread
+        // gets one session. The queue and session router both use this binding.
+        let cfg = SeaTalkConfig::default();
+        assert!(cfg.group_thread_session);
+        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
+            .with_thread_sessions(cfg.dm_thread_session, cfg.group_thread_session);
+        let first = normalize_event(&group_event(
+            "new_mentioned_message_received_from_group_chat",
+            "ev-root",
+            "g1",
+            "@Bot remember this",
+            json!({ "message.message_id": "root-message" }),
+        ))
+        .unwrap();
+        let binding = driver.binding(&first.conversation);
+        assert_eq!(binding, "seatalk://app001/group/g1/thread/root-message");
+
+        for (event_type, event_id, message_id) in [
+            (
+                "new_mentioned_message_received_from_group_chat",
+                "ev-mention",
+                "mention-message",
+            ),
+            (
+                "new_message_received_from_thread",
+                "ev-reply",
+                "reply-message",
+            ),
+        ] {
+            let mut event = group_event(
+                event_type,
+                event_id,
+                "g1",
+                "continue",
+                json!({ "message.message_id": message_id, "message.thread_id": "root-message" }),
+            );
+            // A different participant in the same thread shares its context.
+            event["event"]["message"]["sender"] = json!({ "employee_code": "e2" });
+            let followup = normalize_event(&event).unwrap();
+            assert_eq!(followup.conversation, first.conversation);
+            assert_eq!(driver.binding(&followup.conversation), binding);
+            assert_ne!(followup.sender.external_id, first.sender.external_id);
+            assert_ne!(followup.external_message_id, first.external_message_id);
+            let (_, thread) = decode_conv_id(&followup.conversation.id);
+            assert_eq!(
+                build_text_message("reply", thread)["thread_id"],
+                "root-message"
+            );
+        }
+    }
+
+    #[test]
+    fn separate_group_mentions_get_separate_session_bindings() {
+        let cfg = SeaTalkConfig::default();
+        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
+            .with_thread_sessions(cfg.dm_thread_session, cfg.group_thread_session);
+        let bindings: Vec<_> = [("g1", "root-1"), ("g1", "root-2"), ("g2", "root-1")]
+            .into_iter()
+            .map(|(group, root)| {
+                let msg = normalize_event(&group_event(
+                    "new_mentioned_message_received_from_group_chat",
+                    &format!("ev-{group}-{root}"),
+                    group,
+                    "@Bot hello",
+                    json!({ "message.message_id": root }),
+                ))
+                .unwrap();
+                driver.binding(&msg.conversation)
+            })
+            .collect();
+        assert_eq!(
+            bindings,
+            vec![
+                "seatalk://app001/group/g1/thread/root-1",
+                "seatalk://app001/group/g1/thread/root-2",
+                "seatalk://app001/group/g2/thread/root-1"
+            ]
+        );
     }
 
     #[test]
@@ -1408,8 +1552,8 @@ mod tests {
 
     #[test]
     fn binding_group_without_thread() {
-        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
-            .with_thread_sessions(true, true);
+        let driver =
+            SeaTalkDriver::new("app001".into(), "secret".into()).with_thread_sessions(true, true);
         let conv = crate::driver::Conversation {
             channel: "seatalk",
             bot_id: None,
@@ -1421,8 +1565,8 @@ mod tests {
 
     #[test]
     fn binding_group_with_threads() {
-        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
-            .with_thread_sessions(true, true);
+        let driver =
+            SeaTalkDriver::new("app001".into(), "secret".into()).with_thread_sessions(true, true);
         let conv_t1 = crate::driver::Conversation {
             channel: "seatalk",
             bot_id: None,
@@ -1457,8 +1601,8 @@ mod tests {
 
     #[test]
     fn binding_thread_reply_preserved_when_thread_session_disabled() {
-        let driver = SeaTalkDriver::new("app001".into(), "secret".into())
-            .with_thread_sessions(false, false);
+        let driver =
+            SeaTalkDriver::new("app001".into(), "secret".into()).with_thread_sessions(false, false);
         let conv = crate::driver::Conversation {
             channel: "seatalk",
             bot_id: None,

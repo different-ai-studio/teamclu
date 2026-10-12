@@ -7,8 +7,9 @@ import { isRateLimited, resolveClientIp } from "./lib/rate-limit.js";
 import { handleSyncRequest } from "./lib/legacy-sync.js";
 import * as admin from "./lib/admin-handlers.js";
 import { httpsRedirect, isServable, proxyToApp, type LookupVanityApp } from "./lib/apps-vanity.js";
-import { parseAppPublicHost } from "./lib/apps-public-host.js";
-import { handleLoginRequest, isLoginHost, type LookupLoginApp } from "./lib/apps-login-service.js";
+import { appsFcRouteDomain, parseAppPublicHost } from "./lib/apps-public-host.js";
+import { handleLoginRequest, isLoginHost, type LookupLoginApp, type LoginServiceDeps } from "./lib/apps-login-service.js";
+import { classifyOriginEndpoint, readAppsOriginAuthConfig, type OriginAuthConfig } from "./lib/apps-origin-auth.js";
 import { applyAuthGate, type GateDeps } from "./lib/apps-auth-gate.js";
 import { makeTraefikDynamicEndpoint, type ListTraefikCustomDomains } from "./lib/apps-traefik-provider.js";
 import { renderJoinLinkPage } from "./lib/join-link-page.js";
@@ -29,7 +30,9 @@ export type AppDeps = {
    * opening — fail closed, because the alternative is serving a page that was
    * marked as staff-only to whoever asks.
    */
-  resolveTenantIdentity?: GateDeps["resolveTenantIdentity"];
+  resolveRoleIdentities?: GateDeps["resolveRoleIdentities"];
+  /** The visitor's identity in an app's org, for the login service. */
+  resolveTenantIdentity?: LoginServiceDeps["resolveTenantIdentity"];
   /**
    * Active role codes for a tenant identity. Absent, role / legacy-org checks
    * see an empty set (deny).
@@ -115,6 +118,7 @@ export function createApp(deps: AppDeps): Hono {
       const res = await handleLoginRequest(c.req.raw, {
         lookupApp,
         createAuthRepository: deps.createAuthRepository,
+        resolveTenantIdentity: deps.resolveTenantIdentity,
         secureCookies: forwardedProto(c) === "https",
       });
       return res ?? next();
@@ -183,6 +187,10 @@ export function createApp(deps: AppDeps): Hono {
       // An app that exists but has never deployed is a real app with nothing
       // to serve yet — say so, rather than proxying to null.
       if (!isServable(target)) {
+        if (["uninstalling", "uninstall_failed", "uninstalled"].includes(target.fcStatus ?? "")) {
+          c.header("Cache-Control", "no-store");
+          return c.text("应用尚未上线或已下线", 503);
+        }
         return c.text("app is not deployed yet", 404);
       }
       // After the lookup, so an HTTP link to a hostname that is not an app
@@ -198,13 +206,24 @@ export function createApp(deps: AppDeps): Hono {
       // on a plain-HTTP response, and the redirect is what guarantees the
       // login round trip happens over TLS.
       const gate = await applyAuthGate(c.req.raw, target, {
-        resolveTenantIdentity: deps.resolveTenantIdentity ?? (async () => null),
+        resolveRoleIdentities: deps.resolveRoleIdentities ?? (async () => []),
         resolveVisitorRoles: deps.resolveVisitorRoles ?? (async () => []),
         secureCookies: forwardedProto(c) === "https",
       });
       if (gate.response) return gate.response;
 
-      const res = await proxyToApp(c.req.raw, target.fcEndpoint, fetch, gate.identity);
+      const originTarget = { appId: target.id, slug: target.slug };
+      let origin: { target: typeof originTarget; config: OriginAuthConfig } | undefined;
+      try {
+        if (classifyOriginEndpoint(target.fcEndpoint, originTarget, appsFcRouteDomain()) === "protected") {
+          // Loaded only after authorization and only for managed HTTP/HTTPS origins.
+          // Missing keys fail closed for these origins without blocking API startup.
+          origin = { target: originTarget, config: readAppsOriginAuthConfig(process.env) };
+        }
+      } catch {
+        return c.text("app origin is unavailable", 503);
+      }
+      const res = await proxyToApp(c.req.raw, target.fcEndpoint, fetch, gate.identity, origin);
       // Sliding renewal rides along on whatever the app answered.
       if (gate.setCookie) res.headers.append("Set-Cookie", gate.setCookie);
       return res;

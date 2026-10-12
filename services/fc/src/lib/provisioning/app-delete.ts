@@ -109,6 +109,7 @@ export function makeTeardownAppDeps(profile: {
       ? {
           deleteHttpTrigger: profile.fcOps.deleteHttpTrigger?.bind(profile.fcOps),
           deleteFunction: profile.fcOps.deleteFunction.bind(profile.fcOps),
+          deleteCustomDomain: profile.fcOps.deleteCustomDomain?.bind(profile.fcOps),
         }
       : undefined,
     // ONE object: the build artifact at `apps/<appId>/code.zip`.

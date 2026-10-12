@@ -1,3 +1,5 @@
+import { buildAppAuthInfo } from "../src/lib/apps-auth-info.js";
+import { ApiError } from "../src/lib/http-utils.js";
 /** Contract gate — supabase-repo behaviour against a stub client. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -89,6 +91,11 @@ function contractRepo() {
   const reportStore = [];
   const skillStore = [];
   return {
+    async getAppAuthInfo(appId) {
+      if (appId === "missing") throw new ApiError(404, "not_found", "app not found");
+      if (appId === "catalog-denied") throw new ApiError(403, "forbidden", "catalog forbidden");
+      return buildAppAuthInfo({appId,teamId:"team-1",organization:{id:"org-1",name:"Org"},roles:[{id:"r",code:"reviewer",name:"Reviewer",status:"active"}],authMode:"platform",authScope:"paths",authAudience:"org",authRules:[{path:"/staff",auth:"required",audience:"org"}]});
+    },
     async enableShareMode(teamId, mode) {
       const row = {
         id: teamId,

@@ -32,13 +32,6 @@ struct AMUXApp: App {
             #endif
         }
 
-        // Product analytics (Aptabase). Anonymous, privacy-first — shares the
-        // same app key as desktop. See Analytics.swift. The AMUXCore seam lets
-        // domain-layer code emit events without depending on the vendor SDK.
-        Analytics.start()
-        AnalyticsSink.handler = { event, props in Analytics.track(event, props) }
-        Analytics.track("app_started")
-
         // Explicit VersionedSchema + migration plan so SwiftData never falls
         // back to destructive migration on a field-shape change. See
         // AMUXSchema.swift for the upgrade checklist when models evolve.
@@ -87,7 +80,6 @@ struct AMUXApp: App {
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .active:
-                Analytics.track("app_active")
                 PushBootstrap.shared.heartbeat?.enterForeground()
             case .background: PushBootstrap.shared.heartbeat?.enterBackground()
             default: break

@@ -198,10 +198,6 @@ public actor CloudAPISessionRepository: SessionRepository {
         // are not expressed by SessionCreate (participantActorIds is a flat
         // uuid[]) and are intentionally dropped.
         try await client.postVoid("/v1/sessions", body: body, idempotencyKey: input.id)
-        AnalyticsSink.track("session_created", [
-            "mode": input.mode,
-            "participantCount": String(input.participants.count),
-        ])
     }
 
     public func addParticipants(sessionID: String, actorIDs: [String]) async throws {

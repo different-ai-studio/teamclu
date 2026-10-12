@@ -65,6 +65,7 @@ function deps(
     calls,
     lookupApp: overrides.lookupApp ?? (async (id) => (id === APP_ID ? APP : null)),
     createAuthRepository: overrides.createAuthRepository,
+    resolveTenantIdentity: overrides.resolveTenantIdentity,
     rateLimited: overrides.rateLimited ?? (() => false),
     secureCookies: overrides.secureCookies ?? true,
     fetchImpl: (async (url: any, init: any) => {
@@ -174,6 +175,85 @@ test("an existing SSO session skips the form and bounces with a code", async () 
     });
     assert.equal(claims?.sub, "u-7");
     assert.equal(claims?.email, "sso@example.com");
+  });
+});
+
+// --- tenant identity (one identity per org) -----------------------------------
+
+test("an email sign-in lands as the person's identity in the app's org", async () => {
+  // Their identity in this org sits on a synthetic account; signing in as the
+  // real-email account would be refused by the gateway.
+  await withEnv({}, async () => {
+    const seen: any[] = [];
+    const d = deps({
+      gotrue: () => new Response(JSON.stringify({ user: { id: "u-own", email: "me@example.com" } }), { status: 200 }),
+      resolveTenantIdentity: async (visitor, orgId) => {
+        seen.push({ visitor, orgId });
+        return { user: { sub: "u-in-org", email: visitor.email }, inOrg: true };
+      },
+    });
+    const res = await handleLoginRequest(post("/verify", { ...flow, email: "me@example.com", code: "123456" }), d);
+    assert.equal(res?.status, 302);
+    assert.deepEqual(seen, [{ visitor: { sub: "u-own", email: "me@example.com" }, orgId: ORG_ID }]);
+    const location = new URL(res!.headers.get("location")!);
+    const claims = await consumeAuthCode(location.searchParams.get("code")!, { appId: APP_ID, redirect: ORIGIN });
+    assert.equal(claims?.sub, "u-in-org");
+    assert.equal(claims?.email, "me@example.com");
+  });
+});
+
+test("a failed tenant lookup keeps the account that signed in", async () => {
+  await withEnv({}, async () => {
+    const d = deps({
+      gotrue: () => new Response(JSON.stringify({ user: { id: "u-own", email: "me@example.com" } }), { status: 200 }),
+      resolveTenantIdentity: async () => { throw new Error("relation email_users_links does not exist"); },
+    });
+    const res = await handleLoginRequest(post("/verify", { ...flow, email: "me@example.com", code: "123456" }), d);
+    const location = new URL(res!.headers.get("location")!);
+    const claims = await consumeAuthCode(location.searchParams.get("code")!, { appId: APP_ID, redirect: ORIGIN });
+    assert.equal(claims?.sub, "u-own");
+  });
+});
+
+test("the SSO shortcut carries the visitor over to their identity in this org", async () => {
+  await withEnv({}, async () => {
+    const { token } = await mintSsoSession({ sub: "u-other-org", email: "sso@example.com" });
+    const res = await handleLoginRequest(
+      get(`/?app=${APP_ID}&next=%2Fdash`, { cookie: `${SSO_COOKIE}=${token}` }),
+      deps({ resolveTenantIdentity: async (v) => ({ user: { sub: "u-here", email: v.email }, inOrg: true }) }),
+    );
+    assert.equal(res?.status, 302);
+    const location = new URL(res!.headers.get("location")!);
+    const claims = await consumeAuthCode(location.searchParams.get("code")!, { appId: APP_ID, redirect: ORIGIN });
+    assert.equal(claims?.sub, "u-here");
+  });
+});
+
+test("the SSO shortcut stands down when the visitor has no identity in an org-only app", async () => {
+  // Bouncing them in would only land on the gateway's refusal; the form lets
+  // them sign in as someone who belongs here.
+  await withEnv({}, async () => {
+    const { token } = await mintSsoSession({ sub: "u-other-org", email: "sso@example.com" });
+    const res = await handleLoginRequest(
+      get(`/?app=${APP_ID}&next=%2Fdash`, { cookie: `${SSO_COOKIE}=${token}` }),
+      deps({ resolveTenantIdentity: async (v) => ({ user: v, inOrg: false }) }),
+    );
+    assert.equal(res?.status, 200);
+    assert.match(await res!.text(), /action="\/otp"/);
+  });
+});
+
+test("the SSO shortcut still admits a visitor from outside the org to an any-audience app", async () => {
+  await withEnv({}, async () => {
+    const { token } = await mintSsoSession({ sub: "u-outsider", email: "sso@example.com" });
+    const res = await handleLoginRequest(
+      get(`/?app=${APP_ID}&next=%2Fdash`, { cookie: `${SSO_COOKIE}=${token}` }),
+      deps({
+        lookupApp: async (id) => (id === APP_ID ? { ...APP, authAudience: "any" } : null),
+        resolveTenantIdentity: async (v) => ({ user: v, inOrg: false }),
+      }),
+    );
+    assert.equal(res?.status, 302);
   });
 });
 
@@ -676,21 +756,51 @@ test("Google login uses the central login host as a PKCE callback", async () => 
       assert.equal(start?.status, 302);
       const authorize = new URL(start!.headers.get("location")!);
       assert.equal(authorize.searchParams.get("provider"), "google");
-      assert.equal(authorize.searchParams.get("redirect_to"), "https://login.example.com/oauth/callback");
+      const returnTo = new URL(authorize.searchParams.get("redirect_to")!);
+      assert.equal(returnTo.origin + returnTo.pathname, "https://login.example.com/oauth/callback");
+      assert.equal(authorize.searchParams.has("state"), false, "GoTrue owns the provider state");
       assert.equal(authorize.searchParams.get("code_challenge_method"), "s256");
-      const state = authorize.searchParams.get("state")!;
+      const state = returnTo.searchParams.get("login_state")!;
+      assert.ok(state);
       const callback = await handleLoginRequest(
-        get(`/oauth/callback?code=provider-code&state=${encodeURIComponent(state)}`, {
+        get(`/oauth/callback?code=provider-code&login_state=${encodeURIComponent(state)}`, {
           cookie: `${LOGIN_STATE_COOKIE}=${cookieValue(start!, LOGIN_STATE_COOKIE)}`,
         }),
         d,
       );
       assert.equal(callback?.status, 302);
+      assert.match(d.calls[0].url, /grant_type=pkce/);
+      assert.equal(d.calls[0].body.auth_code, "provider-code");
+      assert.ok(d.calls[0].body.code_verifier);
       assert.match(callback!.headers.get("location")!, new RegExp(`^${ORIGIN}${APP_AUTH_CALLBACK_PATH}`));
       assert.match(callback!.headers.get("set-cookie")!, new RegExp(`${SSO_COOKIE}=`));
       assert.match(callback!.headers.get("set-cookie")!, new RegExp(`${LOGIN_STATE_COOKIE}=;`));
     },
   );
+});
+
+test("OAuth callbacks reject missing, tampered, legacy or mismatched login state before exchange", async () => {
+  await withEnv({ APP_FEATURES_JSON: JSON.stringify({ auth: { google: true } }) }, async () => {
+    const d = deps();
+    const start = await handleLoginRequest(get(`/oauth/google?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`), d);
+    const other = await handleLoginRequest(get(`/oauth/google?app=${APP_ID}&r=${encodeURIComponent(ORIGIN)}`), d);
+    const authorize = new URL(start!.headers.get("location")!);
+    const state = new URL(authorize.searchParams.get("redirect_to")!).searchParams.get("login_state")!;
+    assert.ok(state);
+    const cookie = `${LOGIN_STATE_COOKIE}=${cookieValue(start!, LOGIN_STATE_COOKIE)}`;
+    for (const [query, header] of [
+      ["code=provider-code", cookie],
+      ["code=provider-code&login_state=tampered", cookie],
+      [`code=provider-code&state=${state}`, cookie],
+      [`code=provider-code&login_state=${state}`, ""],
+      [`code=provider-code&login_state=${state}`, `${LOGIN_STATE_COOKIE}=${cookieValue(other!, LOGIN_STATE_COOKIE)}`],
+    ]) {
+      const result = await handleLoginRequest(get(`/oauth/callback?${query}`, { cookie: header }), d);
+      assert.equal(result?.status, 400);
+      assert.match(result!.headers.get("set-cookie")!, new RegExp(`${LOGIN_STATE_COOKIE}=;`));
+    }
+    assert.equal(d.calls.length, 0, "invalid callbacks must never exchange codes");
+  });
 });
 
 test("Web SSO is not part of app login, even where the deployment enables it", async () => {

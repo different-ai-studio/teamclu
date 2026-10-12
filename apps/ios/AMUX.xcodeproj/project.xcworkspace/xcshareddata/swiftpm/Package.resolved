@@ -2,15 +2,6 @@
   "originHash" : "44225453f1a28140518c16377c69901f8d0a81df03075b12870bd2140d6ff87f",
   "pins" : [
     {
-      "identity" : "aptabase-swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/aptabase/aptabase-swift",
-      "state" : {
-        "revision" : "cfd67fac2a228d448d9d2ac92ffc71589cc3ef00",
-        "version" : "0.3.11"
-      }
-    },
-    {
       "identity" : "cocoamqtt",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/emqx/CocoaMQTT.git",

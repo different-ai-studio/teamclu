@@ -509,6 +509,15 @@
       "continue": "继续",
       "creating": "正在创建…"
     },
+    "identityPicker": {
+      "title": "选择要进入的组织",
+      "subtitle": "你在多个组织中都有身份，选择这次要进入哪一个。",
+      "superAdmin": "超级管理员",
+      "admin": "管理员",
+      "unnamedOrg": "未命名组织",
+      "current": "当前账号",
+      "switching": "正在切换…"
+    },
     "signIn": "登录",
     "willEmailCode": "我们将向你的邮箱发送 6 位验证码。",
     "email": "邮箱",
@@ -1574,8 +1583,8 @@
       "baseline": "其余所有页面",
       "noRules": "还没有单独设置的页面 —— 全站都按上面这条。",
       "addPage": "添加一个页面",
-      "rolesHint": "需要登录且未选角色时，任意已登录用户都可进入；选了角色则仅持有其中任一角色的成员可进入。",
-      "rolesLoadFailed": "角色列表加载失败，暂时无法保存 —— 否则会把已设的角色限制清空。请重试。",
+      "rolesHint": "组织内任意有效角色动态包含未来角色；指定组织角色只允许所选角色之一。",
+      "rolesLoadFailed": "角色列表加载失败，原规则已保留，暂时无法修改或保存。请重试。",
       "nothingProtected": "其余页面设为公开时，至少要有一个页面需要登录 —— 否则这道墙什么也没挡。",
       "blankPath": "有一行还没填路径。",
       "col": {
@@ -1588,15 +1597,28 @@
         "required": "需要登录"
       },
       "roles": {
-        "any": "任意用户",
-        "empty": "还没有可分配的角色"
+        "empty": "还没有可分配的角色",
+        "choose": "选择至少一个角色",
+        "unavailable": "已停用或缺失"
       },
       "access": {
         "public": "不需要登录",
         "any": "需要登录 · 任意用户",
         "org": "需要登录 · 组织角色",
         "roles": "需要登录 · {{roles}}"
-      }
+      },
+      "audience": {
+        "any": "任意已登录用户",
+        "org": "组织内任意有效角色",
+        "roles": "指定组织角色之一",
+        "inherit": "继承应用默认"
+      },
+      "organization": "组织角色范围",
+      "organizationMissing": "应用未配置组织，无法配置组织受众。",
+      "saveFailed": "保存失败，草稿已保留。",
+      "readbackFailed": "保存已成功，确认读取失败。草稿已保留，请重新打开确认。",
+      "rolesRequired": "指定角色模式至少选择一个角色；任意用户请切换到任意已登录用户。",
+      "confirmDefault": "确认更改应用默认受众，以下继承规则也将改变："
     },
     "env": {
       "tabTitle": "变量与密钥",
@@ -1828,14 +1850,17 @@
       "permissionsReadOnly": "仅创建者或 admin 可管理成员权限。",
       "noAccessRows": "尚未授权其他成员",
       "pickMember": "选择成员",
+      "searchMember": "搜索成员…",
+      "noMatchingMembers": "没有匹配的成员",
       "grantAccess": "授权",
       "revokeAccess": "撤销",
       "accessGranted": "已授权",
       "accessRevoked": "已撤销",
       "accessError": "权限操作失败",
-      "deleteHint": "删除后线上站点会立刻下线；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
+      "uninstallBeforeDelete": "请先手动卸载线上部署，清理成功后才能删除应用。",
+      "deleteHint": "请先卸载线上部署；应用数据库和已上传的文件都会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
       "deleteTitle": "删除应用？",
-      "deleteConfirm": "线上站点会立刻下线，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
+      "deleteConfirm": "线上部署已卸载，应用数据库会保留。代码不会被删除，但删除后你将无法从 TeamClu 访问它；需要找回请联系管理员。",
       "permission": {
         "view": "view",
         "prompt": "prompt",
@@ -1876,6 +1901,29 @@
       "lockfileOutOfSync": "pnpm-lock.yaml 与 package.json 不一致，请提交 lockfile 后重试。",
       "buildOutputMissing": "构建未产出 .output/ 目录，请检查构建脚本。",
       "daemonNotConnected": "本机 amuxd 未连接，无法构建。请确认守护进程在运行后重试。"
+    },
+    "undeploy": {
+      "details": "查看清理详情",
+      "redeploy": "重新部署",
+      "section": "线上部署",
+      "title": "卸载部署",
+      "confirm": "卸载线上部署？",
+      "hint": "线上应用将停止服务。代码、会话、数据库和上传文件会保留，之后可重新部署。",
+      "running": "卸载中…",
+      "incomplete": "清理未完成",
+      "done": "已卸载",
+      "retry": "重试清理",
+      "failed": "卸载部署失败",
+      "checkFailed": "无法读取卸载状态，请刷新重试。",
+      "httpTrigger": "HTTP 入口",
+      "originDomain": "源站域名映射",
+      "function": "FC 函数",
+      "artifact": "部署产物",
+      "oauthClient": "遗留登录客户端",
+      "succeeded": "已清理",
+      "skipped": "无需清理",
+      "stepFailed": "清理失败",
+      "accept": "确认卸载"
     }
   },
   "knowledgeAcl": {
@@ -1997,7 +2045,6 @@
       "shortcuts": "快捷方式",
       "channels": "通道",
       "tokenUsage": "Token 用量",
-      "privacy": "隐私与遥测",
       "cache": "本地缓存",
       "diagnostics": "诊断与支持",
       "client": "客户端",
@@ -2013,7 +2060,7 @@
       "rolesSkills": "角色与技能",
       "deps": "依赖",
       "billing": "账单",
-      "teamRoles": "团队角色",
+      "teamRoles": "组织角色",
       "knowledgeAcl": "知识库权限",
       "providerKeys": "供应商 Key",
       "operatorOrgs": "组织",
@@ -3005,14 +3052,6 @@
       "overQuota": "已超额",
       "beforeStats": "{{date}} 之前没有统计数据。用量统计自新账单系统上线起开始记录；更早的记录停留在旧网关，口径不同，没有迁移。"
     },
-    "privacy": {
-      "title": "隐私与遥测",
-      "description": "控制匿名使用数据收集，以帮助改进 TeamClu。",
-      "analyticsTitle": "分析数据收集",
-      "analyticsDesc": "在本地存储匿名使用指标（Token、工具统计、评分等）。不包含代码、对话或个人数据，数据仅保存在您的设备上。",
-      "analyticsEnabled": "分析已启用",
-      "analyticsDisabled": "分析已禁用"
-    },
     "update": {
       "check": "检查更新",
       "checking": "检查中",
@@ -3481,7 +3520,7 @@
       }
     },
     "teamRoles": {
-      "title": "团队角色",
+      "title": "组织角色",
       "description": "组织级角色，同组织下各团队共用。系统角色不可编辑。",
       "noTeam": "加入或创建团队后才能管理角色。",
       "newRole": "新建角色",
@@ -3640,18 +3679,6 @@
     "confirmRestore": "确认恢复"
   },
   "telemetry": {
-    "consent": {
-      "title": "帮助改善 {{appName}}",
-      "description": "允许 {{appName}} 收集匿名使用数据，帮助我们改善 Agent 质量。",
-      "collectTitle": "收集内容",
-      "collectDescription": "会话时长、Token 消耗、工具调用统计、反馈评分、模型信息",
-      "neverCollectTitle": "绝不收集",
-      "neverCollectDescription": "对话内容、代码、文件路径、项目名称、个人信息",
-      "changeAnytimeTitle": "随时可改",
-      "changeAnytimeDescription": "可在设置 > 系统 > 隐私与遥测中随时关闭",
-      "deny": "暂不开启",
-      "allow": "允许分析"
-    },
     "rating": {
       "question": "这次结果怎么样？",
       "starLabel": "{{count}} 星",

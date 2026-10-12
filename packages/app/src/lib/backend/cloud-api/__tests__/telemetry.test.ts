@@ -16,14 +16,12 @@ describe("cloud-api telemetry paths", () => {
     const client = fakeClient();
     const t = createTelemetryModule(client as never);
     await t.insertFeedback({ messageId: "m", actorId: "a", teamId: "t", kind: "positive" });
-    await t.insertSessionReport({ actorId: "a", teamId: "t", sessionId: "s", tokensUsed: 1, costUsd: 0 });
     await t.insertSkillUsage({ actorId: "a", teamId: "t", skill: "foo" });
     await t.listLeaderboard("t");
     await t.listFeedbackSummary("t");
     await t.deleteFeedback({ messageId: "m" });
     const paths = client.calls.map((c) => `${c.method} ${c.path}`);
     expect(paths).toContain("POST /v1/feedback");
-    expect(paths).toContain("POST /v1/session-report");
     expect(paths).toContain("POST /v1/skill-usage");
     expect(paths).toContain("GET /v1/teams/t/leaderboard?period=week");
     expect(paths).toContain("GET /v1/feedback-summary?teamId=t");

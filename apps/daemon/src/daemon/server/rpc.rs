@@ -1828,6 +1828,21 @@ mod agent_management_tests {
         }
     }
 
+    #[test]
+    fn deploy_app_cannot_be_removed_as_a_personal_skill() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::test_brand_env::BrandEnvGuard::set_with_home("teamclu", home.path());
+        let dir = home.path().join(".agents/skills/deploy-app");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "bundled").unwrap();
+        let error = remove_personal_skill("personal:deploy-app", &Default::default()).unwrap_err();
+        assert_eq!(error.0, "builtin_read_only");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            "bundled"
+        );
+    }
+
     /// Only an *installed* row speaks for a slug. A skill the team publishes but
     /// this Agent never installed leaves any same-named directory on disk the
     /// Agent's own — the team branch skips that row, so the personal branch has

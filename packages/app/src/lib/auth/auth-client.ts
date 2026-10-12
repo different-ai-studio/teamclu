@@ -37,7 +37,6 @@ export type AuthClient = {
   /** Log in as a specific user when the phone is linked to multiple accounts. */
   loginWithPhoneUser(phone: string, token: string, userId: string): Promise<Session>;
   /** Bind a phone to the CURRENT account (partner-aligned identity upgrade). */
-  bindPhone(phone: string, code: string): Promise<Session>;
   signOut(): Promise<void>;
   updateUser(attrs: Record<string, unknown>): Promise<{ user?: unknown } | null>;
   refresh(): Promise<Session>;
@@ -260,13 +259,6 @@ export function createAuthClient(opts: AuthClientOptions): AuthClient {
       if (!res.session) throw new Error("phone login returned no session");
       setSession(res.session, "SIGNED_IN");
       return res.session;
-    },
-    async bindPhone(phone, code): Promise<Session> {
-      // Bind to the current account (writes public.users in the default org +
-      // flips is_anonymous), then refresh to adopt the upgraded session.
-      const bearer = currentToken();
-      await post("/v1/account/bind-phone", { phone, code }, bearer);
-      return await this.refresh();
     },
     async signOut() {
       const bearer = currentToken();

@@ -1,5 +1,7 @@
 import type {
   AppsBackend,
+  AppUndeployResult,
+  AppAuthInfo,
   AppFilesPage,
   AppFilesQuery,
   AppStorageUsage,
@@ -32,6 +34,10 @@ type Page<T> = { items: T[] };
 
 export function createAppsModule(client: CloudApiClient): AppsBackend {
   return {
+    async getAppAuthInfo(appId) {
+      return client.get<AppAuthInfo>(`/v1/apps/${encodeURIComponent(appId)}/auth-info`);
+    },
+
     async listApps(teamId) {
       const params = new URLSearchParams({ teamId, limit: "100" });
       const page = await client.get<Page<AppRow>>(`/v1/apps?${params}`);
@@ -187,6 +193,9 @@ export function createAppsModule(client: CloudApiClient): AppsBackend {
         if (e instanceof CloudApiError && e.status === 404) return false;
         throw e;
       }
+    },
+    async undeployApp(appId) {
+      return client.post<AppUndeployResult>(`/v1/apps/${encodeURIComponent(appId)}/undeploy`, {});
     },
     async deleteApp(appId) {
       try {

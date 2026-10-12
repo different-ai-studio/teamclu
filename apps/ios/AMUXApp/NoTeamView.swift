@@ -45,20 +45,17 @@ struct NoTeamView: View {
             .background(Color.amux.mist)
             .navigationDestination(isPresented: $showDesktopGuide) {
                 DesktopGuideView(mode: .signedIn) {
-                    trackExit("create")
                     Task { await coordinator.createTeamFromNoTeam() }
                 }
             }
             .sheet(isPresented: $showInviteSheet) {
                 InviteJoinSheet(coordinator: coordinator, onJoinSignedIn: { token in
-                    trackExit("paste_invite")
                     await coordinator.joinWithInvite(token: token)
                 })
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
             }
         }
-        .onAppear { Analytics.track("onboarding_no_team_shown") }
         .task { await coordinator.refreshPendingInvites() }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -105,7 +102,6 @@ struct NoTeamView: View {
                     }
                     Spacer(minLength: 8)
                     Button {
-                        trackExit("invite_accepted")
                         Task { _ = await coordinator.acceptPendingInvite(invite) }
                     } label: {
                         Text("Join")
@@ -155,7 +151,6 @@ struct NoTeamView: View {
                 caption: String(localized: "The invite went to a different email or phone."),
                 isPrimary: false
             ) {
-                trackExit("switch_account")
                 onSignOut()
             }
             .accessibilityIdentifier("noTeam.switchAccountButton")
@@ -178,9 +173,5 @@ struct NoTeamView: View {
         isRefreshing = true
         await coordinator.refreshNoTeam()
         isRefreshing = false
-    }
-
-    private func trackExit(_ exit: String) {
-        Analytics.track("onboarding_no_team_exit", ["exit": exit])
     }
 }

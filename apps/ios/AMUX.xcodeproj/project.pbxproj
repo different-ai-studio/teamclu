@@ -10,7 +10,6 @@
 		10E560BDB3C439BFC2808E85 /* AMUXUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07BD2A492D93FDCCB10637D /* AMUXUITests.swift */; };
 		15AE54E5F6CE826C9D3884B5 /* AMUXCore in Frameworks */ = {isa = PBXBuildFile; productRef = E240150FE27A7C45F36DE38D /* AMUXCore */; };
 		16C83AF390462FDDFA5ABAEE /* AMUXApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */; };
-		19E9D49C9A64097096B8CA17 /* Aptabase in Frameworks */ = {isa = PBXBuildFile; productRef = CF3A37EF081380EBD7AF51DA /* Aptabase */; };
 		2468D5A7710326FCAE98EED5 /* AMUXSessionMessageRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E532B070FBC309D7EB883CE /* AMUXSessionMessageRegressionTests.swift */; };
 		29502E986D717CDB6A9EE9FC /* AMUXSessionLiveCaptureTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 194E71B71F97908AD85A630C /* AMUXSessionLiveCaptureTest.swift */; };
 		29C3F045A406DBA4AD7D1F32 /* OnboardingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A57443CB6DA7A01B751BBA00 /* OnboardingViews.swift */; };
@@ -30,7 +29,6 @@
 		A5C58ED1E2D4F96A34494416 /* InviteJoinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */; };
 		A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */; };
 		B3373E2BF0AEBF0F52946F65 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */; };
-		BADAD9E3FCAD93B7FBAC2B28 /* Analytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537E64EAD78ACC7946325945 /* Analytics.swift */; };
 		E162A3FC8793994442C23372 /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5C333674232A156EF5A6D1 /* WelcomeView.swift */; };
 		EB09506708CCBE1B923FBFAE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */; };
 		EC3990515ABE38A90617C32E /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 514F7615E8C226A5F3660A5F /* LoginView.swift */; };
@@ -50,7 +48,6 @@
 		49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntroIllustrations.swift; sourceTree = "<group>"; };
 		4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		514F7615E8C226A5F3660A5F /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
-		537E64EAD78ACC7946325945 /* Analytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Analytics.swift; sourceTree = "<group>"; };
 		5A17336F2708FD5E2A0C62C8 /* AMUXSharedUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXSharedUI; path = Packages/AMUXSharedUI; sourceTree = SOURCE_ROOT; };
 		67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushAppDelegate.swift; sourceTree = "<group>"; };
 		7089CE9863C2F15703551691 /* AMUXSessionStreamingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionStreamingUITests.swift; sourceTree = "<group>"; };
@@ -81,7 +78,6 @@
 				48A4F0655EACAE64B0B0232B /* AMUXUI in Frameworks */,
 				989AF52819F1BFC91A3315B1 /* AMUXSharedUI in Frameworks */,
 				3203553BEAE4D5D79B881582 /* SentrySwiftUI in Frameworks */,
-				19E9D49C9A64097096B8CA17 /* Aptabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -126,7 +122,6 @@
 			children = (
 				AC8A7DFE566257A39578823C /* AMUX.entitlements */,
 				499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */,
-				537E64EAD78ACC7946325945 /* Analytics.swift */,
 				25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */,
 				F467BD534BE686B6EACBD702 /* ContentView.swift */,
 				B3E733A6BFCE193CA325C33B /* DesktopGuideView.swift */,
@@ -178,7 +173,6 @@
 				984FDD5CB983CACB65198166 /* AMUXUI */,
 				5400E9174EF5F9869349C3EF /* AMUXSharedUI */,
 				5821CF422126708735E13341 /* SentrySwiftUI */,
-				CF3A37EF081380EBD7AF51DA /* Aptabase */,
 			);
 			productName = AMUX;
 			productReference = 92EC5FA726FD730FCA929AD0 /* AMUX.app */;
@@ -230,7 +224,6 @@
 			mainGroup = 83793258F8E10835639EAA01;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				2D594BD53419E9A2BCA02AE2 /* XCRemoteSwiftPackageReference "aptabase-swift" */,
 				50F232FD09A259B871847F9E /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 				48FE25CCBE8D8352AEDA3987 /* XCLocalSwiftPackageReference "Packages/AMUXCore" */,
 				D3DBB7C1775118766EB22E25 /* XCLocalSwiftPackageReference "Packages/AMUXSharedUI" */,
@@ -265,7 +258,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				16C83AF390462FDDFA5ABAEE /* AMUXApp.swift in Sources */,
-				BADAD9E3FCAD93B7FBAC2B28 /* Analytics.swift in Sources */,
 				2C36DC72B69CF16E00B4ECB5 /* ContentView.swift in Sources */,
 				65085082F4465D5B43C99A9A /* DesktopGuideView.swift in Sources */,
 				5E27EDA155611636668E8AED /* IntroIllustrations.swift in Sources */,
@@ -546,14 +538,6 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		2D594BD53419E9A2BCA02AE2 /* XCRemoteSwiftPackageReference "aptabase-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/aptabase/aptabase-swift";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.3.0;
-			};
-		};
 		50F232FD09A259B871847F9E /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/getsentry/sentry-cocoa";
@@ -577,11 +561,6 @@
 		984FDD5CB983CACB65198166 /* AMUXUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AMUXUI;
-		};
-		CF3A37EF081380EBD7AF51DA /* Aptabase */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 2D594BD53419E9A2BCA02AE2 /* XCRemoteSwiftPackageReference "aptabase-swift" */;
-			productName = Aptabase;
 		};
 		E240150FE27A7C45F36DE38D /* AMUXCore */ = {
 			isa = XCSwiftPackageProductDependency;

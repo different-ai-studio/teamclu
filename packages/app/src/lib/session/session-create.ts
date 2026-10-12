@@ -15,7 +15,6 @@ import { resolveAgentSessionModel } from '@/lib/agent/resolve-agent-session-mode
 import { useAgentModelPickStore } from '@/stores/agent-model-pick-store'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { trackEvent } from '@/lib/telemetry/analytics'
 import { mqttPublish } from '@/lib/mqtt/mqtt-bridge'
 import {
   LiveEventEnvelopeSchema,
@@ -138,11 +137,6 @@ export async function createSessionShell(
     teamId: args.teamId,
     participantCount: participantActorIds.length,
   })
-  void trackEvent('session_created', {
-    participantCount: participantActorIds.length,
-    hasIdea: !!args.ideaId,
-  })
-
   // Mirror into local libsql immediately so the session-list-store + Actors
   // panel see the new session without waiting for a Supabase refetch.
   if (isTauri()) {
@@ -967,11 +961,6 @@ export async function startAgentRuntimesAsync(
     teamId: args.teamId,
     agentActorIds: args.agentActorIds,
     modelId: args.modelId,
-    failureCount: failures.length,
-  })
-  void trackEvent('agent_started', {
-    agentCount: args.agentActorIds.length,
-    agentType: args.agentType,
     failureCount: failures.length,
   })
   return { failures, runtimeIdsByAgent }

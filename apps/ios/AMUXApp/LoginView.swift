@@ -356,13 +356,11 @@ struct LoginView: View {
     private var socialButtons: some View {
         VStack(spacing: 10) {
             socialButton(title: "Sign in with Apple", icon: "applelogo") {
-                Analytics.track("sign_in_started", ["method": "apple"])
                 Task { await coordinator.signInWithApple() }
             }
 
             if authFlags.google {
                 socialButton(title: "Sign in with Google", icon: "globe") {
-                    Analytics.track("sign_in_started", ["method": "google"])
                     Task { await signInWithGoogleOAuth() }
                 }
             }

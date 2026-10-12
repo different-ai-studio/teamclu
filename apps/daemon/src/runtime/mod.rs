@@ -21,6 +21,8 @@ pub mod managed_llm;
 mod manager;
 mod native_skill_fallback_guard;
 pub mod pi_rpc;
+#[cfg(unix)]
+pub mod proc_tree;
 pub(crate) mod skills_bridge;
 pub mod spawn_path;
 pub(crate) use native_skill_fallback_guard::{

@@ -1,3 +1,5 @@
+import { readAppsOriginAuthConfig } from "./lib/apps-origin-auth.js";
+import { readAppOriginSecurity } from "./lib/provisioning/app-runtime-info.js";
 import { handle } from "hono/aws-lambda";
 import { createApp } from "./app.js";
 import {
@@ -42,8 +44,10 @@ import { readGiteaConfig, makeGiteaClient } from "./lib/provisioning/gitea.js";
 import { readGotrueOAuthConfig, makeGotrueOAuthClient } from "./lib/provisioning/gotrue-oauth.js";
 import { makeVanityLookup } from "./lib/apps-vanity.js";
 import { makeSupabaseLoginAppLookup } from "./lib/apps-login-service.js";
+import { findTenantIdentity } from "./lib/apps-tenant-identity.js";
 import { makeSupabaseTraefikDomainLookup } from "./lib/apps-traefik-provider.js";
 import { createServiceRoleClient } from "./lib/supabase.js";
+import { findAppOrgRoleIdentities } from "./lib/apps-org-role-identity.js";
 
 // ---------------------------------------------------------------------------
 // Environment (used only for /v1 business API). Read lazily inside the deps
@@ -190,7 +194,7 @@ function makeDeployDeps() {
       }
     : undefined;
 
-  const fcOps = makeFcOps(getFcClient(profile), {
+  const fcConfig = {
     bucket,
     role: process.env.ROLE_ARN,
     // What the deployed function logs into the registry with. Deployment-level
@@ -204,7 +208,8 @@ function makeDeployDeps() {
     region: profile.region,
     vpc: appsFcVpc,
     logs: () => appLogsProvisioner().config(),
-  });
+  };
+  const secureFcOps = () => makeFcOps(getFcClient(profile), { ...fcConfig, originAuth: readAppsOriginAuthConfig(process.env) });
   const appsAdminUrl = process.env.APPS_DB_ADMIN_URL?.trim() || undefined;
   const appsAppUrl = process.env.APPS_DB_APP_URL?.trim() || undefined;
   const s3 = getAppsS3Client(profile);
@@ -217,6 +222,7 @@ function makeDeployDeps() {
     // The caller's `region` is ignored: `fc_region` must record where the
     // function actually went, which is the apps region, not the deployment's
     // default REGION.
+    readAppOriginSecurity,
     startDeploy: (a: {
       appId: string;
       region: string;
@@ -240,7 +246,11 @@ function makeDeployDeps() {
         {
           appsAdminUrl,
           appsAppUrl,
-          fcOps,
+          fcOps: {
+            ensureFunction: (name, args) => secureFcOps().ensureFunction(name, args),
+            ensureHttpTrigger: name => secureFcOps().ensureHttpTrigger(name),
+            ensureCustomDomain: (name, domain, target) => secureFcOps().ensureCustomDomain(name, domain, target),
+          },
           ensureLogStore: () => appLogsProvisioner().ensure(),
           // Bound to this deployment's registry, so finalize can tell an image
           // this app's build pushed from any other the registry holds.
@@ -371,6 +381,16 @@ export function loginAppLookup() {
 }
 
 /**
+ * The visitor's identity in an app's org, for the login service (email /
+ * password / OAuth sign-ins and the SSO shortcut). Service role: the login
+ * service holds no Supabase JWT for the visitor.
+ */
+export function tenantIdentityLookup() {
+  return (visitor: { sub: string; email: string }, orgId: string) =>
+    findTenantIdentity(createServiceRoleClient(), visitor, orgId);
+}
+
+/**
  * Verified custom domains for Traefik's HTTP provider. Service role for the
  * same tokenless reason as {@link vanityLookup}: Traefik is the caller.
  */
@@ -378,60 +398,22 @@ export function traefikCustomDomainsLookup() {
   return makeSupabaseTraefikDomainLookup(createServiceRoleClient);
 }
 
-/**
- * Does this visitor hold an identity in the app's tenant org, and which row is it?
- *
- * One read, with the service role for the same tokenless reason as
- * {@link vanityLookup}: the request carries an app-session cookie, not a
- * Supabase JWT. The app's own org no longer needs a read at all — it comes off
- * `apps.org_id`, which the vanity lookup already loaded.
- *
- * `users` lives in `public` while everything else here is in `amux`, hence the
- * explicit schema.
- *
- * A visitor with no row in that org resolves to null and is refused by the org
- * audience. That is the intended meaning of "staff only", and it still holds
- * for someone who signed up through a different tenant's login page.
- *
- * Errors are thrown, not swallowed into a null: a database fault must not
- * masquerade as "this person does not belong here", which is a denial the
- * visitor cannot act on and an operator cannot diagnose.
- */
+/** Resolve the visitor's active role subject in the app's org. */
 const ORG_CACHE_TTL_MS = 60_000;
 const ORG_CACHE_MAX = 5_000;
-const identityCache = new Map<string, { value: string | null; expiresAt: number }>();
+const identityCache = new Map<string, { value: string[]; expiresAt: number }>();
 
-export function tenantIdentityLookup() {
-  return async (userId: string, orgId: string): Promise<string | null> => {
-    if (!UUID_RE.test(userId) || !UUID_RE.test(orgId)) return null;
+export function appOrgRoleIdentitiesLookup() {
+  return async (userId: string, orgId: string): Promise<string[]> => {
+    if (!UUID_RE.test(userId) || !UUID_RE.test(orgId)) return [];
 
     const key = `${userId}|${orgId}`;
     const now = Date.now();
     const hit = identityCache.get(key);
     if (hit && hit.expiresAt > now) return hit.value;
 
-    // `auth_user_id`, not `id`. They are equal for a primary row, but a person
-    // who holds an identity in several tenants has one row per tenant and only
-    // one of them can carry the auth user's own id — see the contract note on
-    // GateDeps.resolveTenantIdentity for why keying by `id` silently pinned
-    // every visitor to that single row.
-    //
-    // `limit(1)` rather than `maybeSingle()`: two rows for one person in one
-    // org is duplicate data (1,220 phone numbers have exactly that today), and
-    // `maybeSingle()` would turn it into a 500 that locks them out of an app
-    // they are entitled to enter. Either row grants the same admission.
     const admin = createServiceRoleClient();
-    const { data, error } = await admin
-      .schema("public")
-      .from("users")
-      .select("id")
-      .eq("auth_user_id", userId)
-      .eq("org_id", orgId)
-      .is("deleted_at", null)
-      .limit(1);
-    if (error) throw new Error(`tenant identity lookup failed: ${error.message}`);
-
-    const value: string | null = data?.[0]?.id ?? null;
+    const value = await findAppOrgRoleIdentities(admin, userId, orgId);
     if (identityCache.size >= ORG_CACHE_MAX) {
       for (const [k, v] of identityCache) if (v.expiresAt <= now) identityCache.delete(k);
       if (identityCache.size >= ORG_CACHE_MAX) identityCache.clear();
@@ -442,17 +424,14 @@ export function tenantIdentityLookup() {
 }
 
 /**
- * Active role codes for a tenant identity — gateway role admit + legacy
+ * Active role codes for this account's role-bearing identities — gateway role admit + legacy
  * `audience: org` (any `roles_users` row).
  *
- * `identityId` is a `public.users.id` from {@link tenantIdentityLookup}, NOT an
- * auth user id. `roles_users.user_id` references `public.users.id` (2,246 of
- * 2,246 rows resolve there), so for a person holding identities in several
- * tenants the auth uid would fetch their PRIMARY row's roles and grade them
- * against this tenant's door. The two are equal only for a primary row, which
- * is why the mistake is invisible until someone is cross-tenant.
+ * Each id is a `public.users.id` with an active role binding in this org,
+ * not necessarily a user row whose default org_id is this org. None is
+ * inferred from the auth uid without verifying the binding's org_id.
  *
- * Service-role for the same tokenless reason as {@link tenantIdentityLookup}:
+ * Service-role for the same tokenless reason as {@link appOrgRoleIdentitiesLookup}:
  * the request carries an app-session cookie, not a Supabase JWT.
  */
 const ROLE_CACHE_TTL_MS = 60_000;
@@ -460,10 +439,10 @@ const ROLE_CACHE_MAX = 5_000;
 const visitorRoleCache = new Map<string, { value: string[]; expiresAt: number }>();
 
 export function visitorRolesLookup() {
-  return async (identityId: string, orgId: string): Promise<string[]> => {
-    if (!UUID_RE.test(identityId) || !orgId) return [];
+  return async (identityIds: string[], orgId: string): Promise<string[]> => {
+    if (!orgId || identityIds.length === 0 || identityIds.some((id) => !UUID_RE.test(id))) return [];
 
-    const key = `${identityId}|${orgId}`;
+    const key = `${identityIds.join(",")}|${orgId}`;
     const now = Date.now();
     const hit = visitorRoleCache.get(key);
     if (hit && hit.expiresAt > now) return hit.value;
@@ -474,7 +453,7 @@ export function visitorRolesLookup() {
       .from("roles_users")
       .select("role_id")
       .eq("org_id", orgId)
-      .eq("user_id", identityId)
+      .in("user_id", identityIds)
       .eq("status", "active");
     if (bindErr) throw new Error(`visitor roles lookup failed: ${bindErr.message}`);
 
@@ -521,6 +500,9 @@ export function makeAuthRepoFactory() {
       phoneEmailDomain: process.env.PHONE_EMAIL_DOMAIN || undefined,
       phoneAuthEncryptionKey: process.env.PHONE_AUTH_ENCRYPTION_KEY || undefined,
       smsDebugMode: process.env.SMS_DEBUG_MODE === "1" || process.env.SMS_DEBUG_MODE === "true",
+      // Whose SMS account sends verification codes. Falls back to DEFAULT_ORG_ID,
+      // which is being retired (docs/plans/2026-10-08-staff-only-identity-model.md).
+      smsConfigOrgId: process.env.SMS_CONFIG_ORG_ID || undefined,
     });
 }
 
@@ -576,8 +558,9 @@ const app = createApp({
   createSystemRepository: makeSystemRepoFactory(),
   lookupVanityApp: vanityLookup(),
   lookupLoginApp: loginAppLookup(),
-  listTraefikCustomDomains: traefikCustomDomainsLookup(),
   resolveTenantIdentity: tenantIdentityLookup(),
+  listTraefikCustomDomains: traefikCustomDomainsLookup(),
+  resolveRoleIdentities: appOrgRoleIdentitiesLookup(),
   resolveVisitorRoles: visitorRolesLookup(),
 });
 

@@ -128,7 +128,6 @@ struct OnboardingChoiceView: View {
     private func choose(_ intent: OnboardingIntent) {
         coordinator.errorMessage = nil
         coordinator.onboardingIntent = intent
-        Analytics.track("onboarding_path_chosen", ["path": intent.rawValue])
     }
 }
 

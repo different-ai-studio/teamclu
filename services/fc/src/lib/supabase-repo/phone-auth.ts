@@ -8,8 +8,10 @@
 //     `<phone>@<phoneEmailDomain>`; `auth.users.phone` stays empty.
 //   - the phone↔user mapping lives in `public.users.mobile`, scoped by `org_id`.
 //   - LOGIN resolves by mobile alone; the org comes from the row that matches.
-//   - a brand-new sign-up still lands in DEFAULT_ORG (`defaultOrgId`) — giving
-//     it its own org belongs with the team-name onboarding step.
+//   - a brand-new platform sign-up (desktop / iOS) gets TeamClu's own
+//     `<phone>@teamclu.mobile` account and NO row: the team-name step creates
+//     its tenant (docs/plans/2026-10-08-staff-only-identity-model.md). Only
+//     the app login page still uses `<phone>@<phoneEmailDomain>`.
 //   - verification codes live in the shared `public.auth_verify_code` table.
 //   - sessions are minted via admin magiclink (`generateSessionByEmail`).
 //
@@ -69,6 +71,14 @@ export interface PhoneAuthOptions {
   verifyCaptcha?: (token: string) => Promise<{ verifyResult: boolean; message?: string }>;
   /** When true, skip real SMS and return the code in the response (dev only). */
   smsDebugMode?: boolean;
+  /** Org whose `ALIYUN_SMS_CONFIG` metadata sends the codes. Defaults to defaultOrgId. */
+  smsConfigOrgId?: string;
+  /**
+   * Overrides the database setting `amux.staff_only()` (tests only). When the
+   * setting is on, the platform-wide login (desktop / iOS, no `tenantOrgId`)
+   * offers only identities with admin_type >= 2; see isTeamCluIdentity.
+   */
+  staffOnly?: boolean;
   createClient: (url: string, key: string, opts?: any) => any;
   /** Injectable clock (ms) for tests. */
   nowMs?: () => number;
@@ -99,6 +109,8 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     sendSms,
     verifyCaptcha,
     smsDebugMode = false,
+    smsConfigOrgId,
+    staffOnly: staffOnlyOverride,
     createClient,
     nowMs = () => Date.now(),
     genCode = defaultGenCode,
@@ -150,6 +162,56 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     return kept.length > 0 ? kept : rows;
   }
 
+  // A row TeamClu may sign in as when staff-only is on: admin_type >= 2 — a
+  // partner employee record, a tenant creator (3) or an invited member (2).
+  // Keep in step with amux.is_teamclu_identity().
+  function isTeamCluIdentity(r: any): boolean {
+    return Number(r.admin_type ?? 0) >= 2;
+  }
+
+  // Staff-only is a database setting, shared with the team switch and the
+  // invite rules (20261008000000) so the three cannot disagree. Cached briefly;
+  // a failed read means "off" (a database without the setting predates it).
+  let staffOnlyCache: { value: boolean; at: number } | null = null;
+  async function staffOnlyEnabled(): Promise<boolean> {
+    if (staffOnlyOverride !== undefined) return staffOnlyOverride;
+    const now = nowMs();
+    if (staffOnlyCache && now - staffOnlyCache.at < 60_000) return staffOnlyCache.value;
+    let data: unknown;
+    try {
+      const res = await admin.schema("amux").rpc("staff_only");
+      if (res.error) throw new Error(res.error.message);
+      data = res.data;
+    } catch (e) {
+      console.error("phone login: amux.staff_only() unavailable, treating as off:", (e as Error)?.message ?? e);
+      return false;
+    }
+    staffOnlyCache = { value: data === true, at: now };
+    return data === true;
+  }
+
+  /**
+   * TeamClu's own phone account: `<phone>@teamclu.mobile`, with no identity row
+   * until the person creates a tenant (amux.ensure_personal_org) or accepts an
+   * invite (amux.ensure_member_identity). Never the partner's synthetic phone
+   * account (PHONE_EMAIL_DOMAIN): on belayo that is the partner app's own
+   * member anchor, which TeamClu does not sign in as.
+   */
+  function teamCluMobileEmail(phone: string): string {
+    return `${phone}@teamclu.mobile`;
+  }
+  async function ensureTeamCluMobileAccount(phone: string): Promise<void> {
+    const { data, error } = await admin.auth.admin.createUser({
+      email: teamCluMobileEmail(phone),
+      password: deterministicPassword(phone, encryptionKey),
+      email_confirm: true,
+    });
+    if (data?.user) return;
+    // Already there: the person signed up before and has not named a team yet.
+    if (error && /already|registered|exists/i.test(error.message ?? "")) return;
+    throw new ApiError(500, "internal", `createUser failed: ${error?.message ?? "no user"}`);
+  }
+
   function syntheticEmail(phone: string): string {
     return `${phone}@${phoneEmailDomain}`;
   }
@@ -170,7 +232,7 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
   async function findAuthUserIdForPhone(phone: string): Promise<string | null> {
     const { data, error } = await admin
       .from("users")
-      .select("auth_user_id")
+      .select("auth_user_id, admin_type")
       .eq("mobile", phone)
       .is("deleted_at", null);
     if (error) {
@@ -180,7 +242,15 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
     // handful of rows (the busiest number in production has eight), so the
     // predicate costs nothing to apply locally and the query stays a plain
     // equality that every caller of this module can reason about.
-    return (data ?? []).map((r: any) => r.auth_user_id).find((id: any) => !!id) ?? null;
+    //
+    // Member rows first. Since every TeamClu identity is its own account
+    // (docs/plans/2026-10-08-staff-only-identity-model.md), a staff row's
+    // account is that org's identity; an app sign-up must not hang a member
+    // row in another tenant off it.
+    const rows = [...(data ?? [])].sort(
+      (a: any, b: any) => Number(Number(a.admin_type ?? 1) !== 1) - Number(Number(b.admin_type ?? 1) !== 1),
+    );
+    return rows.map((r: any) => r.auth_user_id).find((id: any) => !!id) ?? null;
   }
 
   /**
@@ -339,7 +409,7 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       }
 
       try {
-        await sendSms({ phone, code, orgId: defaultOrgId });
+        await sendSms({ phone, code, orgId: smsConfigOrgId || defaultOrgId });
       } catch (e) {
         // Roll back the unsent code so the rate-limit window doesn't lock the user.
         await admin.from("auth_verify_code").delete().eq("phone", phone).eq("code", code);
@@ -446,11 +516,18 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
       // both a membership and a staff record with no way to sign in as a
       // member at all.
       const explicitPick = !!(userId && userId.trim() !== "");
+      // Staff-only governs TeamClu's own sign-in, never an app's login page.
+      const platformStaffOnly = !tenantOrgId && (await staffOnlyEnabled());
+      if (platformStaffOnly && explicitPick && !(matched ?? []).every(isTeamCluIdentity)) {
+        throw new ApiError(403, "forbidden", "会员账号不能登录，请使用员工账号");
+      }
       const users = explicitPick
         ? matched
         : tenantOrgId
           ? (matched ?? [])
-          : await accountsForPicker(matched ?? []);
+          : platformStaffOnly
+            ? (matched ?? []).filter(isTeamCluIdentity)
+            : await accountsForPicker(matched ?? []);
 
       // Ambiguous: let the client pick (org/account picker). Don't consume the code.
       if (users && users.length > 1) {
@@ -536,11 +613,19 @@ export function createPhoneAuthRepository(options: PhoneAuthOptions) {
         throw new ApiError(403, "forbidden", "该手机号在本租户没有账号，请联系管理员开通");
       }
 
-      // No identity here yet → create one.
-      //
-      // The org is the asking tenant when there is one, and DEFAULT_ORG on the
-      // platform-wide path exactly as before.
-      const signupOrgId = tenantOrgId ?? defaultOrgId;
+      // Platform-wide (desktop / iOS) with no identity: a TeamClu phone account
+      // and no row yet. The client finds no team, asks for a team name, and
+      // bootstrap creates the tenant with this person as its super admin.
+      // Nothing is written into DEFAULT_ORG any more.
+      if (!tenantOrgId) {
+        await ensureTeamCluMobileAccount(phone);
+        const session = await generateSessionByEmail(teamCluMobileEmail(phone));
+        await markUsed();
+        return { session: sessionPayload(session), user: null, created: true };
+      }
+
+      // App login page, no identity in its tenant yet → create one there.
+      const signupOrgId = tenantOrgId;
       const email = syntheticEmail(phone);
 
       // The auth user may already exist, and under tenant scoping it usually

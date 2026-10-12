@@ -38,6 +38,7 @@ import type {
 
 interface AppsState {
   items: AppRow[];
+  syncApp: (app: AppRow) => void;
   loaded: boolean;
   loading: boolean;
   error: string | null;
@@ -144,6 +145,7 @@ interface AppsState {
   bindCustomDomain: (appId: string, domain: string) => Promise<AppCustomDomain | null>;
   verifyCustomDomain: (appId: string) => Promise<VerifyAppDomainResult>;
   unbindCustomDomain: (appId: string) => Promise<AppCustomDomain | null>;
+  undeployApp: (appId: string) => Promise<boolean>;
   deleteApp: (appId: string) => Promise<boolean>;
 }
 
@@ -727,6 +729,7 @@ function appsCacheKey(teamId: string): string {
 
 export const useAppsStore = create<AppsState>((set, get) => ({
   items: [],
+  syncApp: (app) => set((state) => ({ items: state.items.map((row) => row.id === app.id ? { ...row, ...app } : row) })),
   loaded: false,
   loading: false,
   error: null,
@@ -1219,6 +1222,16 @@ export const useAppsStore = create<AppsState>((set, get) => ({
         e instanceof Error ? e.message : String(e),
       );
       return null;
+    }
+  },
+  undeployApp: async (appId) => {
+    try {
+      const result = await getBackend().apps.undeployApp(appId);
+      mergeRow(set, result.app);
+      return true; // Accepted; status polling, not this return value, proves completion.
+    } catch (e) {
+      await toastError(i18n.t('apps.undeploy.failed', '卸载部署失败'), e instanceof Error ? e.message : String(e));
+      return false;
     }
   },
   deleteApp: async (appId) => {

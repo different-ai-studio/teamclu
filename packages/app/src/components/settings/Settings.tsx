@@ -12,7 +12,6 @@ import {
   Clock,
   Coins,
   Wallet,
-  Shield,
   SlidersHorizontal,
   Bookmark,
   ChevronDown,
@@ -54,7 +53,6 @@ interface Section {
 const primarySections: Section[] = [
   { id: 'general', label: 'General', labelKey: 'settings.nav.general', icon: Settings2 },
   { id: 'shortcuts', label: 'Shortcuts', labelKey: 'settings.nav.shortcuts', icon: Bookmark },
-  { id: 'privacy', label: 'Privacy & Telemetry', labelKey: 'settings.nav.privacy', icon: Shield },
   { id: 'cache', label: 'Local Cache', labelKey: 'settings.nav.cache', icon: Database },
   { id: 'diagnostics', label: 'Diagnostics', labelKey: 'settings.nav.diagnostics', icon: LifeBuoy },
 ]
@@ -64,7 +62,7 @@ const teamManagementSections: Section[] = [
   { id: 'billing', label: 'Billing', labelKey: 'settings.nav.billing', icon: Wallet },
   { id: 'tokenUsage', label: 'Token Usage', labelKey: 'settings.nav.tokenUsage', icon: Coins },
   { id: 'leaderboard', label: 'Leaderboard', labelKey: 'settings.nav.leaderboard', icon: Trophy },
-  { id: 'teamRoles', label: '团队角色', labelKey: 'settings.nav.teamRoles', icon: Users },
+  { id: 'teamRoles', label: '组织角色', labelKey: 'settings.nav.teamRoles', icon: Users },
 ]
 
 // Platform operator sections. Shown only to an operator of this deployment,

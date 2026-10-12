@@ -509,6 +509,15 @@
       "continue": "Continue",
       "creating": "Creating…"
     },
+    "identityPicker": {
+      "title": "Choose an organization",
+      "subtitle": "You belong to more than one organization. Pick the one to enter this time.",
+      "superAdmin": "Super admin",
+      "admin": "Admin",
+      "unnamedOrg": "Unnamed organization",
+      "current": "Current account",
+      "switching": "Switching…"
+    },
     "signIn": "Sign in",
     "willEmailCode": "We'll email you a 6-digit code.",
     "email": "Email",
@@ -1574,8 +1583,8 @@
       "baseline": "Every other page",
       "noRules": "No page has its own setting yet — the whole site follows the line above.",
       "addPage": "Add a page",
-      "rolesHint": "With login required and no roles selected, any signed-in user may enter. Selected roles admit members who hold any one of them.",
-      "rolesLoadFailed": "Could not load the role list, so saving is blocked — otherwise it would clear the roles this app restricts to. Please retry.",
+      "rolesHint": "Any active organization role includes future roles. Selected organization roles allow only the specified roles.",
+      "rolesLoadFailed": "Could not load authorization information. Original rules are preserved; editing and saving are unavailable. Retry.",
       "nothingProtected": "When every other page is public, at least one page has to require a login — otherwise this wall stops nothing.",
       "blankPath": "One row still has no path.",
       "col": {
@@ -1588,15 +1597,28 @@
         "required": "Login required"
       },
       "roles": {
-        "any": "Anyone signed in",
-        "empty": "No roles to choose from yet"
+        "empty": "No roles to choose from yet",
+        "choose": "Select at least one role",
+        "unavailable": "Inactive or missing"
       },
       "access": {
         "public": "No login needed",
         "any": "Sign in · anyone",
         "org": "Sign in · org roles",
         "roles": "Sign in · {{roles}}"
-      }
+      },
+      "audience": {
+        "any": "Any signed-in user",
+        "org": "Any active organization role",
+        "roles": "One of the selected organization roles",
+        "inherit": "Inherit app default"
+      },
+      "organization": "Organization role scope",
+      "organizationMissing": "This app has no organization configured. Organization audiences are unavailable.",
+      "saveFailed": "Saving failed. Your draft is preserved.",
+      "readbackFailed": "Saved successfully, but the confirmation read failed. Your draft is preserved; reopen to confirm.",
+      "rolesRequired": "Select at least one role, or switch to Any signed-in user.",
+      "confirmDefault": "Confirm the app default audience change. These inherited rules will also change:"
     },
     "env": {
       "tabTitle": "Variables & secrets",
@@ -1828,14 +1850,17 @@
       "permissionsReadOnly": "Only the creator or an admin can manage member access.",
       "noAccessRows": "No other members granted yet",
       "pickMember": "Pick member",
+      "searchMember": "Search members…",
+      "noMatchingMembers": "No matching members",
       "grantAccess": "Grant",
       "revokeAccess": "Revoke",
       "accessGranted": "Access granted",
       "accessRevoked": "Access revoked",
       "accessError": "Permission update failed",
-      "deleteHint": "The live site goes offline immediately; the app's database and uploaded files are kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
+      "uninstallBeforeDelete": "Manually uninstall the deployment first. Delete becomes available after cleanup succeeds.",
+      "deleteHint": "Uninstall the deployment first; the app's database and uploaded files are kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
       "deleteTitle": "Delete this app?",
-      "deleteConfirm": "The live site goes offline immediately and the app database is kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
+      "deleteConfirm": "The deployment is already uninstalled and the app database is kept. Source code is not erased, but you will lose TeamClu access to it — contact an admin to recover.",
       "permission": {
         "view": "view",
         "prompt": "prompt",
@@ -1876,6 +1901,29 @@
       "lockfileOutOfSync": "pnpm-lock.yaml does not match package.json. Commit the lockfile, then retry.",
       "buildOutputMissing": "The build produced no .output/ directory. Check the build script.",
       "daemonNotConnected": "The local amuxd is not connected, so nothing can build. Make sure the daemon is running, then retry."
+    },
+    "undeploy": {
+      "details": "View cleanup details",
+      "redeploy": "Redeploy",
+      "section": "Live deployment",
+      "title": "Undeploy",
+      "confirm": "Uninstall this deployment?",
+      "hint": "The live app will stop serving. Code, sessions, database and uploaded files are retained. You can deploy it again.",
+      "running": "Uninstalling…",
+      "incomplete": "Cleanup incomplete",
+      "done": "Uninstalled",
+      "retry": "Retry cleanup",
+      "failed": "Could not uninstall deployment",
+      "checkFailed": "Could not read cleanup status. Refresh to retry.",
+      "httpTrigger": "HTTP trigger",
+      "originDomain": "Origin domain mapping",
+      "function": "FC function",
+      "artifact": "Build artifact",
+      "oauthClient": "Legacy login client",
+      "succeeded": "Cleaned",
+      "skipped": "Not needed",
+      "stepFailed": "Cleanup failed",
+      "accept": "Confirm uninstall"
     }
   },
   "knowledgeAcl": {
@@ -1997,7 +2045,6 @@
       "shortcuts": "Shortcuts",
       "channels": "Channels",
       "tokenUsage": "Token Usage",
-      "privacy": "Privacy & Telemetry",
       "cache": "Local Cache",
       "diagnostics": "Diagnostics & Support",
       "client": "Desktop",
@@ -2013,7 +2060,7 @@
       "rolesSkills": "Roles & Skills",
       "deps": "Dependencies",
       "billing": "Billing",
-      "teamRoles": "Team Roles",
+      "teamRoles": "Organization Roles",
       "knowledgeAcl": "Knowledge Access",
       "providerKeys": "Provider Keys",
       "operatorOrgs": "Orgs",
@@ -3005,14 +3052,6 @@
       "overQuota": "Over quota",
       "beforeStats": "No statistics before {{date}}. Usage recording began with the new billing system; earlier records stayed with the old gateway and measure a different thing, so they were not carried over."
     },
-    "privacy": {
-      "title": "Privacy & Telemetry",
-      "description": "Control anonymous usage data collection to help improve TeamClu.",
-      "analyticsTitle": "Analytics Data Collection",
-      "analyticsDesc": "Store anonymous usage metrics locally (tokens, tool stats, scores). No code, conversations, or personal data. Data stays on your device.",
-      "analyticsEnabled": "Analytics enabled",
-      "analyticsDisabled": "Analytics disabled"
-    },
     "update": {
       "check": "Check for updates",
       "checking": "Checking",
@@ -3481,7 +3520,7 @@
       }
     },
     "teamRoles": {
-      "title": "Team Roles",
+      "title": "Organization Roles",
       "description": "Org-scoped roles shared across teams in this organization. System roles cannot be edited.",
       "noTeam": "Join or create a team to manage roles.",
       "newRole": "New role",
@@ -3640,18 +3679,6 @@
     "confirmRestore": "Restore"
   },
   "telemetry": {
-    "consent": {
-      "title": "Help improve {{appName}}",
-      "description": "Allow {{appName}} to collect anonymous usage data to help us improve agent quality.",
-      "collectTitle": "Collected",
-      "collectDescription": "Session duration, token usage, tool call statistics, feedback ratings, and model information",
-      "neverCollectTitle": "Never collected",
-      "neverCollectDescription": "Conversation content, code, file paths, project names, or personal information",
-      "changeAnytimeTitle": "Change anytime",
-      "changeAnytimeDescription": "You can turn this off anytime in Settings > System > Privacy & Telemetry",
-      "deny": "Not now",
-      "allow": "Allow analytics"
-    },
     "rating": {
       "question": "How was this result?",
       "starLabel": "{{count}} star",

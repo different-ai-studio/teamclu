@@ -35,6 +35,60 @@ struct AppOnboardingCoordinatorTests {
     }
 
     @MainActor
+    @Test("a sign-in that names several identities stops at the org picker")
+    func signInWithSeveralIdentitiesShowsPicker() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let store = InMemoryOnboardingStore(bootstrap: AppBootstrap(memberActorID: "m1", teams: [team]))
+        await store.setIdentities([
+            MyIdentity(userID: "u-own", orgID: "o1", orgName: "Own", orgLogo: nil, adminType: 3, isCurrent: true),
+            MyIdentity(userID: "u-co", orgID: "o2", orgName: "Co", orgLogo: nil, adminType: 2, isCurrent: false),
+        ])
+        let coordinator = AppOnboardingCoordinator(store: store)
+
+        await coordinator.signIn(email: "a@b.test", password: "pw")
+
+        #expect(coordinator.route == .selectIdentity)
+        #expect(coordinator.identityChoices.map(\.userID) == ["u-own", "u-co"])
+        #expect(await store.recordedEnsureSessionCallCount() == 0, "bootstrap waits for the choice")
+
+        await coordinator.chooseIdentity(coordinator.identityChoices[1])
+
+        #expect(await store.recordedSwitchedIdentities() == ["u-co"])
+        #expect(coordinator.identityChoices.isEmpty)
+        #expect(coordinator.route == .ready)
+    }
+
+    @MainActor
+    @Test("picking the current identity bootstraps without switching")
+    func pickingCurrentIdentityDoesNotSwitch() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let store = InMemoryOnboardingStore(bootstrap: AppBootstrap(memberActorID: "m1", teams: [team]))
+        let coordinator = AppOnboardingCoordinator(store: store)
+        let current = MyIdentity(userID: "u-own", orgID: "o1", orgName: "Own", orgLogo: nil, adminType: 3, isCurrent: true)
+
+        await coordinator.chooseIdentity(current)
+
+        #expect(await store.recordedSwitchedIdentities().isEmpty)
+        #expect(coordinator.route == .ready)
+    }
+
+    @MainActor
+    @Test("a single identity that is not the signed-in account is entered directly")
+    func singleOtherIdentityIsEntered() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let store = InMemoryOnboardingStore(bootstrap: AppBootstrap(memberActorID: "m1", teams: [team]))
+        await store.setIdentities([
+            MyIdentity(userID: "u-co", orgID: "o2", orgName: "Co", orgLogo: nil, adminType: 2, isCurrent: false),
+        ])
+        let coordinator = AppOnboardingCoordinator(store: store)
+
+        await coordinator.signIn(email: "a@b.test", password: "pw")
+
+        #expect(await store.recordedSwitchedIdentities() == ["u-co"])
+        #expect(coordinator.route == .ready)
+    }
+
+    @MainActor
     @Test("a session ended by the server sends the user back to sign-in with a reason")
     func revokedSessionReturnsToSignIn() async throws {
         let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
@@ -772,6 +826,8 @@ private actor InMemoryOnboardingStore: AppOnboardingStore {
     var signOutCallCount = 0
     var didClaim = false
     var setSessionRefreshTokens: [String] = []
+    var identities: [MyIdentity] = []
+    var switchedIdentityIDs: [String] = []
 
     init(bootstrap: AppBootstrap,
          createdTeam: CreatedTeam? = nil,
@@ -821,6 +877,10 @@ private actor InMemoryOnboardingStore: AppOnboardingStore {
         throw InMemoryError.missingCreatedTeam
     }
     func listAllMyTeams() async throws -> [MembershipTeam] { [] }
+    func setIdentities(_ value: [MyIdentity]) { identities = value }
+    func listMyIdentities() async throws -> [MyIdentity] { identities }
+    func switchIdentity(userID: String) async throws { switchedIdentityIDs.append(userID) }
+    func recordedSwitchedIdentities() -> [String] { switchedIdentityIDs }
     func switchActiveTeam(teamID: String) async throws -> TeamSwitchResult {
         TeamSwitchResult(actorID: nil, teamID: teamID, refreshToken: "")
     }

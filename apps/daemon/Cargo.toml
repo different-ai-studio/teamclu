@@ -1,6 +1,6 @@
 [package]
 name = "amuxd"
-version = "0.4.1-beta.77"
+version = "0.4.1-beta.91"
 edition = "2021"
 
 [dependencies]
@@ -107,6 +107,11 @@ semver = "1"
 urlencoding = "2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# The cloud-token socket (`http::runtime_context_unix`): axum 0.7's `serve`
+# only takes a TcpListener, so the Unix-socket listener drives the router
+# through hyper directly. Both crates are already in the graph via axum.
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "service", "http1"] }
 # Mac → Linux cross-compile (cargo-zigbuild): teamclu-gateway pulls native-tls/openssl-sys;
 # vendored builds OpenSSL from source so no Linux sysroot/pkg-config is needed on the host.
 #

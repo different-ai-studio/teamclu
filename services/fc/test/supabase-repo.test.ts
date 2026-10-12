@@ -1,3 +1,5 @@
+import { ApiError } from "../src/lib/http-utils.js";
+import { installOriginEnv, ORIGIN_ENV } from "./fixtures/apps-origin-auth/config.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SignJWT } from "jose";
@@ -350,6 +352,51 @@ test("auth repo claimInvite forwards the caller bearer for member claims", async
   assert.ok(insert, "member roles_users must be inserted via service-role");
   assert.equal(insert.row.user_id, "joiner-user-1");
   assert.equal(insert.row.role_id, "role-member");
+});
+
+test("auth repo claimInvite grants the org role to the identity the actor joined as", async () => {
+  // claim_team_invite joins as the caller's identity IN the team's org, minting
+  // a new account when the caller already has one elsewhere. The role belongs
+  // to that identity, not to the account that sent the request.
+  const adminCalls: any[] = [];
+  const admin = fakeSupabase({
+    tableCalls: adminCalls,
+    tableData: {
+      actors: [{ id: "actor-9", user_id: "identity-in-org-9" }],
+      teams: [{ id: "team-9", oid: "org-9" }],
+      roles: [{ id: "role-member", org_id: "org-9", code: "member", is_system: true }],
+      roles_users: [],
+    },
+  });
+  const repo = createSupabaseAuthRepository({
+    supabaseUrl: "https://example.supabase.co",
+    publishableKey: "publishable-key",
+    createServiceRoleClient: () => admin,
+    createClient() {
+      return fakeSupabase({
+        auth: {
+          async getUser() {
+            return { data: { user: { id: "caller-account" } }, error: null };
+          },
+        },
+        rpcData: {
+          claim_team_invite: [{
+            actor_id: "actor-9",
+            team_id: "team-9",
+            actor_type: "member",
+            display_name: "Joiner",
+            refresh_token: "rt-for-identity",
+          }],
+        },
+      });
+    },
+  });
+
+  const result = await repo.claimInvite("invite-token", { accessToken: "member-jwt" });
+  assert.equal(result.refreshToken, "rt-for-identity");
+  const insert = adminCalls.find((c) => c.table === "roles_users" && c.op === "insert");
+  assert.ok(insert, "member roles_users must be inserted via service-role");
+  assert.equal(insert.row.user_id, "identity-in-org-9");
 });
 
 test("auth repo claimInvite fails loud when member claim has no authenticated user", async () => {
@@ -776,6 +823,7 @@ test("createTeam mints a personal org when the caller carries none — never DEF
 
     assert.equal(rpcCalls.length, 2);
     assert.equal(rpcCalls[0].name, "ensure_personal_org");
+    assert.equal(rpcCalls[0].args.p_name, "My Team", "the team name names the new org too");
     assert.equal(rpcCalls[1].name, "create_team");
     assert.equal(rpcCalls[1].args.p_oid, "org-mine");
     assert.equal(rpcCalls[1].args.p_name, "My Team");
@@ -1834,7 +1882,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
   return {
     auth: appsAuth(),
     from(table: string) {
-      const ctx: any = { table, op: null, filters: {}, isFilters: {}, inFilters: {}, limitCount: null };
+      const ctx: any = { table, op: null, filters: {}, isFilters: {}, neqFilters: {}, inFilters: {}, limitCount: null };
       // `resolveCurrentMemberActor` filters `actor_type = 'member'` and the
       // agent git-credential path filters `'agent'`. A seeded `actorRow` that
       // names its own type must answer only the matching lookup; one that does
@@ -1850,6 +1898,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         for (const [col, val] of Object.entries(ctx.filters)) {
           rows = rows.filter((r) => r[col as string] === val);
         }
+        for (const [col, val] of Object.entries(ctx.neqFilters)) rows = rows.filter(r => r[col] !== val);
         for (const [col, val] of Object.entries(ctx.isFilters)) {
           rows = rows.filter((r) => (val === null ? r[col as string] == null : r[col as string] === val));
         }
@@ -1860,6 +1909,7 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
         return rows;
       };
       const builder: any = {
+        neq(col: string, val: any) { ctx.neqFilters[col] = val; return builder; },
         select(columns: string) {
           calls.push({ table, op: ctx.op ? `${ctx.op}.select` : "select", columns });
           return builder;
@@ -1969,12 +2019,25 @@ function appsSupabase({ seed = {}, actorRow = { id: "actor-app-1" }, calls = [] 
           return Promise.resolve({ data: matchRows()[0] ?? null, error: null });
         },
         then(resolve: any, reject: any) {
+          if (ctx.op === "update") {
+            for (const row of matchRows()) Object.assign(row, ctx.update);
+          }
           return Promise.resolve({ data: matchRows(), error: null }).then(resolve, reject);
         },
       };
       return builder;
     },
-    async rpc() { return { data: [], error: null }; },
+    async rpc(name, args) {
+      state.app_lifecycle_operations ??= [];
+      const active=state.app_lifecycle_operations.find(r=>r.app_id===args.p_app_id && r.status!=='succeeded');
+      if (name==='begin_app_lifecycle') {
+        if(active) return {data:null,error:{code:'55000'}};
+        const op={id:'operation-'+(state.app_lifecycle_operations.length+1),app_id:args.p_app_id,kind:args.p_kind,token:args.p_token,status:'pending',in_flight:false,steps:{},snapshot:{}};
+        state.app_lifecycle_operations.push(op);return {data:op,error:null};
+      }
+      if(name==='finish_app_lifecycle') {const op=state.app_lifecycle_operations.find(r=>r.id===args.p_operation_id);if(op)op.status='succeeded';return {data:null,error:null};}
+      return { data: [], error: null };
+    },
   };
 }
 
@@ -2002,7 +2065,9 @@ function appsRepo(supabase: any, extra: any = {}) {
     publishableKey: "publishable-key",
     accessToken: "caller-token",
     createClient: () => supabase,
+    createServiceRoleClient: () => supabase,
     gitea: fakeGitea(),
+    validateAppOrigin: () => ({}),
     ...extra,
   });
 }
@@ -2800,7 +2865,7 @@ test("apps: a non-creator's authMode change destroys nothing before the 404", as
   assert.deepEqual(disabled, [], "the OAuth client must survive a 404'd PATCH");
 });
 
-test("apps: deleteApp tears down resources, archives workspace, and removes the row", async () => {
+test("apps: deleteApp requires completed uninstall, archives workspace, and removes the row", async () => {
   const deletedKeys: number[] = [];
   const fcDeleted: string[] = [];
   const ossDeleted: string[] = [];
@@ -2814,7 +2879,8 @@ test("apps: deleteApp tears down resources, archives workspace, and removes the 
         ...GITEA_MANAGED_APP,
         workspace_id: "ws-1",
         fc_function_name: "tc-app-app-1",
-        fc_status: "live",
+        fc_status: "uninstalled",
+        undeploy_operation: { status: "succeeded", id: "cleanup-1" },
         auth_mode: "platform",
         oauth_client_id: "oauth-cid",
       }],
@@ -2845,9 +2911,9 @@ test("apps: deleteApp tears down resources, archives workspace, and removes the 
   assert.equal(await repo.deleteApp("app-1"), true);
   assert.deepEqual(deletedKeys, [9]);
   assert.ok(archivedRepo);
-  assert.deepEqual(oauthDisabled, ["oauth-cid"]);
-  assert.ok(fcDeleted.includes("fn:tc-app-app-1"));
-  assert.deepEqual(ossDeleted, ["apps/app-1/code.zip"]);
+  assert.deepEqual(oauthDisabled, []);
+  assert.deepEqual(fcDeleted, []);
+  assert.deepEqual(ossDeleted, []);
   const wsUpdate = calls.find((c) => c.table === "workspaces" && c.op === "update");
   assert.equal(wsUpdate?.row.archived, true);
   assert.equal(wsUpdate?.row.path, "git@gitea.example:teamclaw-apps/deleted-tc-app-app-1.git");
@@ -5215,4 +5281,265 @@ test("getHomeOrgId keeps the shared tenant for its own employees", async () => {
 test("getHomeOrgId is null when there is no users row", async () => {
   const { repo } = homeOrgRepo(null);
   try { assert.equal(await repo.getHomeOrgId(), null); } finally { delete process.env.DEFAULT_ORG_ID; }
+});
+
+
+function authInfoRepo({appOrg="org-1", teamOrg="org-1", member=true, rolesError=null, appVisible=true, authRules: authRules = [{path:"/staff",auth:"required",audience:"org"}]}={}) {
+ const calls=[];
+ const repo=createRepo(fakeSupabase({tableCalls:calls, auth:{getUser:async()=>({data:{user:{id:"user"}},error:null})}, tableData:{apps:appVisible?[{id:"app",team_id:"team",org_id:appOrg,auth_mode:"platform",auth_scope:"paths",auth_audience:"org",auth_rules:authRules}]:[], teams:[{id:"team",oid:teamOrg}],actors:member?[{id:"actor",user_id:"user",team_id:"team"}]:[],orgs:[{id:"org-1",name:"Organization"}],roles:[{id:"review",org_id:"org-1",code:"reviewer",name:"Reviewer",status:"active"},{id:"old",code:"old",status:"inactive"}]}, tableErrors:{roles:rolesError}}));
+ return {repo,calls};
+}
+test("auth_info_checks_app_and_catalog_visibility",async()=>{
+ const {repo,calls}=authInfoRepo({member:false});
+ await assert.rejects(repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===403);
+ assert.equal(calls.some(c=>c.table==="roles"),false);
+ const hidden=authInfoRepo({appVisible:false});
+ await assert.rejects(hidden.repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===404);
+ assert.equal(hidden.calls.some(c=>c.table==="roles"),false);
+});
+test("auth info aggregates only the active application organization catalog",async()=>{
+ const {repo,calls}=authInfoRepo();
+ const info=await repo.getAppAuthInfo("app");
+ assert.deepEqual(info.organization,{id:"org-1",name:"Organization"});
+ assert.deepEqual(info.roles,[{id:"review",code:"reviewer",name:"Reviewer",status:"active"}]);
+ assert.deepEqual(info.authRules,[{path:"/staff",auth:"required",audience:"org"}]);
+ assert.equal(calls.some(c=>c.table==="roles_users"),false);
+ assert.ok(calls.some(c=>c.table==="roles" && c.op==="eq" && c.column==="org_id" && c.value==="org-1"));
+});
+test("auth info rejects organization mismatch and propagates directory failures",async()=>{
+ const mismatch=authInfoRepo({appOrg:"other"});
+ await assert.rejects(mismatch.repo.getAppAuthInfo("app"),(e: any)=>e.statusCode===403);
+ assert.equal(mismatch.calls.some(c=>c.table==="roles"),false);
+ const error=Object.assign(new Error("catalog unavailable"),{code:"upstream"});
+ await assert.rejects(authInfoRepo({rolesError:error}).repo.getAppAuthInfo("app"),e=>e===error);
+});
+test("auth info supports legacy team organization fallback and unconfigured teams",async()=>{
+ assert.equal((await authInfoRepo({appOrg:null}).repo.getAppAuthInfo("app")).organization.id,"org-1");
+ const {repo,calls}=authInfoRepo({appOrg:null,teamOrg:null});
+ const info=await repo.getAppAuthInfo("app");
+ assert.equal(info.organization,null);
+ assert.equal(info.organizationStatus,"unconfigured");
+ assert.deepEqual(info.roles,[]);
+ assert.equal(calls.some(c=>c.table==="roles"),false);
+});
+
+test("auth info never normalizes malformed stored rules into an empty rule list",async()=>{
+ const {repo}=authInfoRepo({authRules:{broken:true} as any});
+ await assert.rejects(repo.getAppAuthInfo("app"),(error:any)=>error.statusCode===503);
+});
+
+
+test("origin config failure prevents preflight, deploy and finalize database writes", async () => {
+  for (const phase of ["preflight", "deploy", "finalize"]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: phase === "finalize" ? "awaiting_build" : null, fc_function_name: "fn", deploy_token: APP_PREFLIGHT_TOKEN }] } }), {
+      readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+      validateAppOrigin: () => { throw Object.assign(new Error("origin security unavailable: originAuth"), { statusCode: 503, code: "origin_security_unavailable" }); },
+      startDeploy: async () => { throw new Error("must not mint"); },
+      finalizeDeploy: async () => { throw new Error("must not publish"); },
+    });
+    await assert.rejects(() => phase === "preflight" ? repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION })
+      : phase === "deploy" ? repo.deployApp("app-1", APP_DEPLOY) : repo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN)),
+      (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable");
+    assert.deepEqual(calls.filter(c => c.table === "apps" && c.op === "update"), [], phase);
+  }
+});
+
+test("app status adds readonly origin evidence without exposing auth config", async () => {
+  const calls: any[] = [];
+  const app = { ...APP_ROW, fc_endpoint: "http://old.origins.test", fc_function_name: "legacy-fn" };
+  const repo = appsRepo(appsSupabase({ calls, seed: { apps: [app] } }), {
+    readAppOriginSecurity: async (row: any) => {
+      assert.equal(row.slug, app.slug);
+      return { status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["extraHttpTriggers", "SECRET"], privateKey: "SECRET" };
+    },
+  });
+  const status = await repo.getApp("app-1");
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.deepEqual(status.originSecurity, { status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["extraHttpTriggers"] });
+  assert.deepEqual(info.originSecurity, status.originSecurity);
+  assert.equal(status.fcEndpoint, app.fc_endpoint);
+  assert.equal(JSON.stringify({ status, info }).includes("SECRET"), false);
+  assert.equal(calls.some(c => c.op === "update"), false);
+  assert.ok(calls.some(c => c.op === "select" && c.table === "apps" && c.columns.includes("fc_endpoint") && c.columns.includes("slug")));
+});
+
+
+test("extra HTTP triggers and unsafe aliases block preflight and deploy without state writes", async () => {
+  for (const field of ["extraHttpTriggers", "customDomainAliases"]) {
+    for (const phase of ["preflight", "deploy"]) {
+      const calls: any[] = [];
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+        readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+        readAppOriginSecurity: async () => ({ status: "legacy_unverified", driftFields: [field] }),
+        startDeploy: async () => { throw new Error("must not mint"); },
+      });
+      await assert.rejects(() => phase === "preflight" ? repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION }) : repo.deployApp("app-1", APP_DEPLOY),
+        (error: any) => error.statusCode === 409 && error.code === "origin_security_drift" && error.message.includes(field));
+      assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false);
+    }
+  }
+});
+
+test("legacy standard trigger and domain drift remains eligible for a normal redeploy", async () => {
+  const repo = appsRepo(appsSupabase({ seed: { apps: [{ ...APP_ROW, provision_status: "ready" }] } }), {
+    readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+    readAppOriginSecurity: async () => ({ status: "legacy_unverified", internetUrlDisabled: false, customDomainAuth: "none", httpsOnly: false, driftFields: ["disableURLInternet", "protocol", "authConfig.authType"] }),
+  });
+  const result = await repo.preflightAppDeploy("app-1", { revision: APP_REVISION, declaration: APP_DECLARATION });
+  assert.equal(result.preview.originSecurity.status, "legacy_unverified");
+  assert.equal(result.preview.originSecurity.internetUrlDisabled, false);
+});
+
+test("production config validator prevents token reservation for missing config and invalid target", async () => {
+  const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
+  for (const failure of [...Object.keys(ORIGIN_ENV), "hostname", "invalidRouteDomain", "keyring", "appId"]) {
+    const restore = installOriginEnv();
+    try {
+      if (failure in ORIGIN_ENV) delete process.env[failure];
+      if (failure === "invalidRouteDomain") process.env.APPS_FC_ROUTE_DOMAIN = "invalid..test";
+      if (failure === "keyring") process.env.APPS_FC_ORIGIN_KEYRING = "SECRET_INVALID_KEYRING";
+      const calls: any[] = [];
+      const appId = failure === "appId" ? "invalid-id" : id;
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id: appId, slug: failure === "hostname" ? "x".repeat(200) : "app-a", provision_status: "ready", deploy_token: null }] } }), { validateAppOrigin: undefined });
+      await assert.rejects(() => repo.preflightAppDeploy(appId, { revision: APP_REVISION, declaration: APP_DECLARATION }),
+        (error: any) => error.statusCode === 503 && error.code === "origin_security_unavailable" && !error.message.includes("SECRET"));
+      assert.equal(calls.some(c => c.table === "apps" && c.op === "update"), false, failure);
+    } finally { restore(); }
+  }
+});
+
+test("production deploy and finalize recheck origin configuration removed after successful preflight", async () => {
+  for (const phase of ["deploy", "finalize"]) {
+    const restore = installOriginEnv();
+    try {
+      const id = "76af539e-5341-4e96-bda7-6c8dacf2b092";
+      const calls: any[] = [];
+      const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, id, slug: "app-a", provision_status: "ready", deploy_token: null, fc_function_name: "fn" }] } }), {
+        validateAppOrigin: undefined,
+        readRuntimeCatalog: async () => ({ candidates: [{ arn: "acs:fc:cn-hangzhou:official:layers/Nodejs20/versions/3", region: "cn-hangzhou", compatibleRuntime: ["custom.debian10"], teamcluDeployable: "teamcluDeployable" }], sourceStatus: { officialLayers: { complete: true } } }),
+        startDeploy: async () => ({ fcFunctionName: "fn", fcRegion: "cn-hangzhou" }),
+        finalizeDeploy: async () => { throw new Error("must not publish"); },
+      });
+      const preflight = await repo.preflightAppDeploy(id, { revision: APP_REVISION, declaration: APP_DECLARATION });
+      assert.ok(preflight.token);
+      if (phase === "finalize") await repo.deployApp(id, { ...APP_DEPLOY, preflightToken: preflight.token });
+      const beforeWrites = calls.filter(c => c.table === "apps" && c.op === "update").length;
+      delete process.env.APPS_FC_ORIGIN_KEYRING;
+      await assert.rejects(() => phase === "deploy" ? repo.deployApp(id, { ...APP_DEPLOY, preflightToken: preflight.token })
+        : repo.finalizeDeploy(id, { ...appFinalize(preflight.token) }),
+        (error: any) => error.code === "origin_security_unavailable" && error.statusCode === 503);
+      assert.equal(calls.filter(c => c.table === "apps" && c.op === "update").length, beforeWrites);
+    } finally { restore(); }
+  }
+});
+
+
+test("origin verification failure never commits Live status, endpoint or revision and records a safe retryable error", async () => {
+  for (const code of ["origin_security_drift", "origin_security_unavailable"]) {
+    const calls: any[] = [];
+    const repo = appsRepo(appsSupabase({ calls, seed: { apps: [{ ...APP_ROW, provision_status: "ready", fc_status: "awaiting_build", fc_function_name: "fn", git_commit_sha: "old-revision" }] } }), {
+      finalizeDeploy: async () => { throw new ApiError(code === "origin_security_drift" ? 409 : 503, code, "origin security: routeConfig"); },
+    });
+    await assert.rejects(() => repo.finalizeDeploy("app-1", appFinalize(APP_PREFLIGHT_TOKEN)), (error: any) => error.code === code);
+    const writes = calls.filter(c => c.table === "apps" && c.op === "update").map(c => c.row);
+    assert.deepEqual(writes.map(row => row.fc_status), ["deploying", "deploy_error"]);
+    assert.equal(writes.some(row => "fc_endpoint" in row || "git_commit_sha" in row || "start_spec" in row), false);
+    const status = await repo.getApp("app-1");
+    assert.equal(status.gitCommitSha, "old-revision");
+    assert.equal(status.fcStatus, "deploy_error");
+    assert.equal(writes.at(-1).deploy_token, null);
+  }
+});
+
+test('undeploy rejects prompt collaborators before any service mutation', async () => {
+ const calls:any[]=[]; const service=()=>{throw new Error('must not create service client')};
+ const repo=appsRepo(appsSupabase({calls,seed:{apps:[{...APP_ROW,created_by_actor_id:'another',fc_status:'live'}],app_member_access:[{app_id:'app-1',member_id:'actor-app-1',permission_level:'prompt'}]}}),{createServiceRoleClient:service});
+ assert.equal(await repo.undeployApp('app-1'),null);
+ assert.equal(calls.filter(c=>['update','delete','insert'].includes(c.op)).length,0);
+});
+
+test('undeploy only queues lifecycle cleanup and preserves app data and workspace', async () => {
+ const calls:any[]=[];const supabase=appsSupabase({calls,seed:{apps:[{...APP_ROW,fc_status:'live',git_commit_sha:'last-live'}]}});
+ const repo=appsRepo(supabase);const result=await repo.undeployApp('app-1');
+ assert.equal(result.operation.status,'pending');assert.equal(result.app.gitCommitSha,'last-live');
+ assert.equal(result.app.workspaceId,'ws-1');
+ assert.equal(calls.filter(c=>['update','delete','insert'].includes(c.op)).length,0);
+});
+
+for (const fcStatus of ["live", "deploy_error", "uninstalling", "uninstall_failed"]) {
+ test(`apps: delete refuses ${fcStatus} until manual uninstall succeeds`, async () => {
+  const calls:any[]=[];
+  const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:fcStatus}]}});
+  const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+  await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+  assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+ });
+}
+
+for (const fcStatus of ["uninstalled", "awaiting_build", "building", "deploying", "deploy_error"]) {
+ test(`runtime info preserves completed uninstall evidence while ${fcStatus}`, async () => {
+  const repo = logsRepo({ ...LIVE_APP, fc_function_name: "tc-app-app-1", fc_status: fcStatus, runtime: "node", start_spec: APP_DECLARATION.start,
+    env_deployed_at: "2026-10-05T00:00:00Z",
+    undeploy_operation: { id: "cleanup-1", status: "succeeded", updatedAt: "2026-10-06T00:00:00Z" } }, {
+    readRuntimeCatalog: async () => ({ candidates: [], sourceStatus: {} }),
+    readAppFunction: async () => { throw Object.assign(new Error("removed provider"), { statusCode: 404 }); },
+  });
+  const info = await repo.getAppRuntimeInfo("app-1");
+  assert.equal(info.currentDeployment.uninstallOperationId, "cleanup-1");
+  assert.equal(info.currentDeployment.historical, true);
+  assert.equal(info.currentDeployment.serving, false);
+  assert.equal(info.currentDeployment.drift, false);
+ });
+}
+
+test("apps: delete requires cleanup success evidence even for uninstalled status", async () => {
+ const calls:any[]=[];
+ const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:"uninstalled"}]}});
+ const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+ await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+ assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+});
+
+test("apps: delete rechecks uninstall state after lifecycle lock acquisition", async () => {
+ const calls:any[]=[];
+ const admin=appsSupabase({calls,seed:{apps:[{...GITEA_MANAGED_APP,fc_status:"uninstalled",undeploy_operation:{status:"succeeded"}}]}});
+ const rpc=admin.rpc.bind(admin);
+ admin.rpc=async (...args:any[])=>{
+  const result=await rpc(...args);
+  if(args[0]==="begin_app_lifecycle") await admin.from("apps").update({fc_status:"live"}).eq("id","app-1");
+  return result;
+ };
+ const repo=appsRepo(admin,{createServiceRoleClient:()=>admin});
+ await assert.rejects(()=>repo.deleteApp("app-1"),(e:any)=>e.code==="app_uninstall_required");
+ assert.equal(calls.some(c=>c.table==="apps"&&c.op==="delete"),false);
+ assert.equal(calls.some(c=>c.table==="workspaces"&&c.op==="update"),false);
+});
+
+test("runtime info reads provider after a deployment supersedes old uninstall evidence", async () => {
+ let reads=0;
+ const repo=logsRepo({...LIVE_APP,fc_function_name:"tc-app-app-1",fc_status:"awaiting_build",runtime:"node",start_spec:APP_DECLARATION.start,
+   env_deployed_at:"2026-10-06T02:00:00Z",undeploy_operation:{id:"cleanup-1",status:"succeeded",updatedAt:"2026-10-06T01:00:00Z"}}, {
+   readRuntimeCatalog:async()=>({candidates:[],sourceStatus:{}}),
+   readAppFunction:async()=>{reads++;return {runtime:"custom.debian10",customRuntimeConfig:APP_DECLARATION.start,layers:[]};},
+ });
+ const info=await repo.getAppRuntimeInfo("app-1");
+ assert.equal(reads,1);
+ assert.equal(info.currentDeployment.uninstallOperationId,undefined);
+ assert.equal(info.currentDeployment.historical,undefined);
+ assert.ok(info.currentDeployment.provider);
+});
+
+test("runtime info does not hide FC recreated by a partially failed restoration", async () => {
+ let reads=0;
+ const repo=logsRepo({...LIVE_APP,fc_function_name:"tc-app-app-1",fc_status:"deploy_error",runtime:"node",start_spec:APP_DECLARATION.start,
+   env_deployed_at:"2026-10-05T00:00:00Z",undeploy_operation:{id:"cleanup-1",status:"succeeded",updatedAt:"2026-10-06T01:00:00Z"}}, {
+   readRuntimeCatalog:async()=>({candidates:[],sourceStatus:{}}),
+   readAppFunction:async()=>{reads++;return {runtime:"custom.debian11",customRuntimeConfig:APP_DECLARATION.start,layers:[]};},
+ });
+ const info=await repo.getAppRuntimeInfo("app-1");
+ assert.equal(reads,1);
+ assert.equal(info.currentDeployment.uninstallOperationId,undefined);
+ assert.equal(info.currentDeployment.historical,undefined);
+ assert.equal(info.currentDeployment.drift,true);
 });
