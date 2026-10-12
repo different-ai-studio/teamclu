@@ -196,7 +196,11 @@ export function createSupabaseAuthRepository(options) {
         alreadyMember: row.already_member === true,
       };
       if (shouldAssignMemberRole(result)) {
-        await assignMemberRoleOnClaim(client, { teamId: result.teamId, actorType: "member" }, ctx.accessToken);
+        await assignMemberRoleOnClaim(
+          client,
+          { teamId: result.teamId, actorId: result.actorId, actorType: "member" },
+          ctx.accessToken,
+        );
       }
       return result;
     },
