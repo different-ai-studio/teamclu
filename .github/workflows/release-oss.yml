@@ -303,6 +303,15 @@ jobs:
       - name: Prebuild teamclu desktop binary
         run: cargo build --release --locked -p teamclu --target ${{ matrix.target }}
 
+      - name: Build teamclu-support helper
+        run: |
+          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/support-helper/Cargo.toml | jq -r .target_directory)"
+          cargo build --release --locked --manifest-path apps/support-helper/Cargo.toml -p teamclu-support --target ${{ matrix.target }}
+          mkdir -p apps/desktop/binaries
+          cp "$TARGET_DIR/${{ matrix.target }}/release/teamclu-support" apps/desktop/binaries/teamclu-support
+          chmod +x apps/desktop/binaries/teamclu-support
+          test -x apps/desktop/binaries/teamclu-support
+
       # Build only — no tagName, so tauri-action does NOT create a GitHub Release.
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -373,6 +382,12 @@ jobs:
               return url
 
           downloads = []
+          helper = 'apps/desktop/binaries/teamclu-support'
+          if not os.path.isfile(helper):
+              print('::error::teamclu-support is missing; the macOS build must produce it')
+              sys.exit(1)
+          # Standalone binary for "the app will not open". Not a website download button.
+          upload(helper, f'teamclu-support-{target}')
           # dmg (user-facing installer); name already carries version+arch
           for dmg in glob.glob(f'{base}/dmg/*.dmg'):
               name = safe(os.path.basename(dmg))
@@ -616,6 +631,17 @@ jobs:
         shell: bash
         run: cargo build --release --locked -p teamclu --no-default-features
 
+      # After finalize so the helper bakes the release cloudApiUrl and version,
+      # and before tauri-action so the NSIS `File` finds the exe.
+      - name: Build teamclu-support helper
+        shell: bash
+        run: |
+          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/support-helper/Cargo.toml | jq -r .target_directory)"
+          cargo build --release --locked --manifest-path apps/support-helper/Cargo.toml -p teamclu-support
+          mkdir -p apps/desktop/windows
+          cp "$TARGET_DIR/release/teamclu-support.exe" apps/desktop/windows/teamclu-support.exe
+          test -f apps/desktop/windows/teamclu-support.exe
+
       # Build only — no tagName, so tauri-action does NOT create a GitHub Release.
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -680,6 +706,13 @@ jobs:
               return url
 
           downloads = []
+          helper = 'apps/desktop/windows/teamclu-support.exe'
+          if not os.path.isfile(helper):
+              print('::error::teamclu-support.exe is missing; the Windows build must produce it')
+              sys.exit(1)
+          # Standalone helper sits beside the installer. It is not a second
+          # Windows download button on the website.
+          upload(helper, 'teamclu-support.exe')
           # user-facing installer (.exe)
           for exe in glob.glob(f'{base}/nsis/*-setup.exe'):
               name = safe(os.path.basename(exe))

@@ -1,12 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TeamClu",
+  "productName": "TeamClaw",
   "version": "0.4.1-beta.91",
   "identifier": "com.teamclu.app",
   "build": {
     "beforeDevCommand": "pnpm --filter @teamclu/app dev",
     "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "pnpm --filter @teamclu/app build",
+    "beforeBundleCommand": "node ../../scripts/stage-macos-support-helper.mjs",
     "frontendDist": "../../packages/app/dist"
   },
   "app": {
@@ -14,7 +15,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "TeamClu",
+        "title": "TeamClaw",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
@@ -69,7 +70,10 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "macOS": {
-      "entitlements": "./Entitlements.plist"
+      "entitlements": "./Entitlements.plist",
+      "files": {
+        "MacOS/teamclu-support": "binaries/teamclu-support"
+      }
     },
     "windows": {
       "nsis": {

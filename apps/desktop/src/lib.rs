@@ -21,6 +21,7 @@ pub mod opencode_paths;
 pub mod process_util;
 pub mod proto;
 pub mod sentry_utils;
+mod support_journal;
 mod terminal;
 #[cfg(test)]
 pub mod test_home;

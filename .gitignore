@@ -56,6 +56,7 @@ apps/desktop/binaries/*
 !apps/desktop/binaries/build-autoui-mcp-server.sh
 apps/desktop/.tauri_private_key
 apps/desktop/.tauri_private_key.pub
+apps/desktop/windows/*.exe
 
 # Testing
 coverage/

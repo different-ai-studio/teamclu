@@ -16,7 +16,7 @@ type Deps = {
   createSystemRepository?: () => unknown | Promise<unknown>;
 };
 type RouteOptions = {
-  auth?: "bearer" | "none" | "marketplace-admin" | "app-token" | "cron-tick";
+  auth?: "bearer" | "none" | "marketplace-admin" | "app-token" | "cron-tick" | "system";
   rawBody?: boolean;
 };
 type LegacyCtx = Record<string, unknown>;
@@ -186,6 +186,14 @@ export function createHonoRouterAdapter(app: Hono, deps: Deps) {
           // but no service-role key, then failed further in with an unrelated
           // error.
           repository = undefined;
+        } else if (auth === "system") {
+          // Service-role repository with no shared secret. Used by support
+          // sessions: the helper is not signed in, and the route checks the
+          // short code (or a user bearer) itself.
+          if (!deps.createSystemRepository) {
+            throw new ApiError(503, "unavailable", "system repository not configured");
+          }
+          repository = await deps.createSystemRepository();
         } else if (auth === "app-token") {
           // The deployed app itself, not a person. It presents the per-app
           // token that finalizeDeploy sealed into app_secrets and wrote into

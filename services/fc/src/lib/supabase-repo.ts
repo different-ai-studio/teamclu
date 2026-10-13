@@ -25,6 +25,7 @@ import {
 } from "./session-attachments/aggregate-list.js";
 
 import { resolveFeatures } from "./routes/config.js";
+import { supportSessionMethods } from "./support-session-store.js";
 
 /**
  * Self-registration switch, resolved per request from the deployment's feature
@@ -1058,7 +1059,12 @@ export function createSupabaseBusinessRepository(options) {
     };
   }
 
+  const supportSessions = supportSessionMethods({
+    admin: () => serviceRoleClient("support session"),
+  });
+
   return {
+    ...supportSessions,
     async authorizeAgentManagement(agentActorId, teamId) {
       if (!teamId) throw new ApiError(400, "validation_failed", "teamId is required");
       // `list_connected_agents` rather than `actor_directory`: the view's agent

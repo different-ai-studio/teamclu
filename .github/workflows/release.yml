@@ -268,6 +268,18 @@ jobs:
               print(f'  - {e}')
           EOF
 
+      - name: Build teamclu-support helper
+        shell: bash
+        run: |
+          # Copied into the .app by bundle.macOS.files. The stage script signs
+          # it during beforeBundleCommand, after the sidecar sign step above.
+          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/support-helper/Cargo.toml | jq -r .target_directory)"
+          cargo build --release --locked --manifest-path apps/support-helper/Cargo.toml -p teamclu-support --target ${{ matrix.target }}
+          mkdir -p apps/desktop/binaries
+          cp "$TARGET_DIR/${{ matrix.target }}/release/teamclu-support" apps/desktop/binaries/teamclu-support
+          chmod +x apps/desktop/binaries/teamclu-support
+          test -x apps/desktop/binaries/teamclu-support
+
       - name: Render release notes
         id: release_notes
         run: |
@@ -304,6 +316,14 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: "--target ${{ matrix.target }}"
+
+      - name: Upload support helper to the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test -x apps/desktop/binaries/teamclu-support
+          gh release upload "${{ github.ref_name }}" "apps/desktop/binaries/teamclu-support#teamclu-support-${{ matrix.target }}" --clobber
 
   # Windows job uploads artifacts to the same GitHub Release created by macOS job
   release-windows:
@@ -456,6 +476,17 @@ jobs:
           for e in endpoints:
               print(f'  - {e}')
 
+      - name: Build teamclu-support helper
+        shell: bash
+        run: |
+          # The NSIS hook `File`s this exe from apps/desktop/windows. Missing
+          # here means the installer build fails closed.
+          TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path apps/support-helper/Cargo.toml | jq -r .target_directory)"
+          cargo build --release --locked --manifest-path apps/support-helper/Cargo.toml -p teamclu-support
+          mkdir -p apps/desktop/windows
+          cp "$TARGET_DIR/release/teamclu-support.exe" apps/desktop/windows/teamclu-support.exe
+          test -f apps/desktop/windows/teamclu-support.exe
+
       - name: Render release notes
         id: release_notes
         shell: bash
@@ -490,3 +521,11 @@ jobs:
           prerelease: false
           # Windows: NSIS installer, no p2p feature (avoids wmi/windows-core conflicts)
           args: "--bundles nsis -- --no-default-features"
+
+      - name: Upload support helper to the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test -f apps/desktop/windows/teamclu-support.exe
+          gh release upload "${{ github.ref_name }}" apps/desktop/windows/teamclu-support.exe --clobber

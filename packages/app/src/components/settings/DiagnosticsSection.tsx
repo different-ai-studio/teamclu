@@ -43,6 +43,7 @@ import { LiveDebugConsole } from './LiveDebugConsole'
 import { DaemonResetRemediationCard } from './DaemonResetRemediationCard'
 import { AuthSyncBanner, DiagnosticSymptomPanel } from './DiagnosticSymptomPanel'
 import { DaemonOnboardingWizard } from '@/components/auth/DaemonOnboardingWizard'
+import { SupportRedeemCard } from './SupportRedeemCard'
 import {
   findingsForSessionFocus,
   firstFailingTab,
@@ -286,6 +287,7 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
             '收集连接状态与日志，帮助快速定位问题',
           )}
         />
+        <SupportRedeemCard />
         <SettingCard>
           <p className="text-[13px] text-muted-foreground">
             {t(
@@ -319,6 +321,8 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
               )
         }
       />
+
+      <SupportRedeemCard />
 
       {!focusSessionId && <LiveDebugConsole />}
 

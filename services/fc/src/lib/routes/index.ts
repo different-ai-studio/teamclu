@@ -29,6 +29,7 @@ import { registerKnowledgeAcl } from "./knowledge-acl.js";
 import { registerOrgRoles } from "./org-roles.js";
 import { registerAdmin } from "./admin.js";
 import { registerWikiMaintainer } from "./wiki-maintainer.js";
+import { registerSupportSessions } from "./support-sessions.js";
 
 export function registerAllRoutes(router) {
   registerAuth(router);
@@ -39,6 +40,7 @@ export function registerAllRoutes(router) {
   registerMessages(router);
   registerSessionAttachments(router);
   registerInvites(router);
+  registerSupportSessions(router);
   // team-share routes must be registered BEFORE workspaces so the new merged
   // GET /v1/teams/:teamId/workspace-config wins over
   // the legacy default/pinned-workspace GET in workspaces.mjs. The legacy

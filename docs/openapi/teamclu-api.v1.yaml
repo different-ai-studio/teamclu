@@ -34,6 +34,8 @@ tags:
     description: Per-app repo provisioning and the deploy pipeline (FC function + Postgres schema).
   - name: Admin
     description: Platform operators of this deployment. Not a team or org role.
+  - name: Support
+    description: Short-lived Windows support sessions for the standalone helper.
 paths:
   /v1/auth/refresh:
     post:
@@ -1896,7 +1898,258 @@ paths:
           description: OK
         "401":
           $ref: "#/components/responses/Error"
-  /v1/invites/claim:
+  /v1/support-sessions:
+    post:
+      operationId: createSupportSession
+      summary: Open a support session and return a short code
+      tags: [Support]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phase]
+              properties:
+                phase:
+                  type: string
+                  enum: [install, webview, manual]
+      responses:
+        "201":
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId, code, expiresAt]
+                properties:
+                  sessionId: { type: string, format: uuid }
+                  code: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "400":
+          $ref: "#/components/responses/Error"
+  /v1/support-sessions/redeem:
+    post:
+      operationId: redeemSupportSession
+      summary: Bind the signed-in user to a support short code
+      tags: [Support]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: Redeemed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId, phase, status]
+                properties:
+                  sessionId: { type: string, format: uuid }
+                  phase: { type: string, enum: [install, webview, manual] }
+                  status: { type: string }
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
+  /v1/support-sessions/{id}:
+    get:
+      operationId: getSupportSession
+      summary: Read a support session
+      description: >-
+        With `code`, returns the helper view (status, display name, conclusion).
+        With a bearer token and no code, the redeemer receives the bundle as well.
+      tags: [Support]
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Session view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  phase: { type: string }
+                  sessionId: { type: string, format: uuid }
+                  supportDisplayName: { type: [string, "null"] }
+                  conclusion: { type: [string, "null"] }
+                  expiresAt: { type: string, format: date-time }
+                  bundle: {}
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/support-sessions/{id}/allow:
+    post:
+      operationId: allowSupportSession
+      summary: User allows the diagnostic bundle to be uploaded
+      tags: [Support]
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Allowed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string }
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
+  /v1/support-sessions/{id}/bundle:
+    post:
+      operationId: uploadSupportBundle
+      summary: Upload the one-shot diagnostic bundle
+      tags: [Support]
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string }
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "410":
+          $ref: "#/components/responses/Error"
+  /v1/support-sessions/{id}/conclusion:
+    post:
+      operationId: concludeSupportSession
+      summary: Write the conclusion the helper shows
+      tags: [Support]
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, maxLength: 4000 }
+      responses:
+        "200":
+          description: Concluded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/support-sessions/{id}/close:
+    post:
+      operationId: closeSupportSession
+      summary: Reject or end a support session
+      tags: [Support]
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  enum: [user_rejected, user_closed, support_closed]
+      responses:
+        "200":
+          description: Closed, rejected, or already terminal.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string }
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
     post:
       operationId: claimInvite
       summary: Claim invite

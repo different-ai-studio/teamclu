@@ -9835,6 +9835,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "teamclu-support"
+version = "0.4.1-beta.91"
+dependencies = [
+ "dirs 5.0.1",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
+ "ureq 2.12.1",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "teamclu-transport"
 version = "0.1.0"
 dependencies = [
@@ -10631,6 +10645,8 @@ dependencies = [
  "once_cell",
  "rustls 0.23.45",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]
