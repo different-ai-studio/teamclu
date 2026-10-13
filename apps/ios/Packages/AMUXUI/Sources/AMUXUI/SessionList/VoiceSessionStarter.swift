@@ -167,7 +167,7 @@ enum VoiceSessionStarter {
         ).create(input)
         switch outcome {
         case .created(let createdID, _):
-            viewModel.reloadSessions(modelContext: modelContext)
+            viewModel.adoptCreatedSession(createdID, modelContext: modelContext)
             return createdID
         case .failed(let failure):
             throw StartError.unavailable(failure.userFacingMessage)

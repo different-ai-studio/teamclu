@@ -679,6 +679,16 @@ public final class SessionListViewModel {
         sessions = (try? modelContext.fetch(FetchDescriptor<Session>(sortBy: [SortDescriptor(\.lastMessageAt, order: .reverse)]))) ?? []
     }
 
+    /// Reload after this device created `sessionID` locally. The id joins
+    /// `validSessionIDs` first: that set is the last cloud sync's, which
+    /// predates the session, so a plain `reloadSessions` deleted the row just
+    /// written, and the re-sync recreated it bare, losing `selectedAgentIds`
+    /// (the composer's lit @ agent).
+    public func adoptCreatedSession(_ sessionID: String, modelContext: ModelContext) {
+        validSessionIDs?.insert(sessionID)
+        reloadSessions(modelContext: modelContext)
+    }
+
     /// Upsert-only sync from Supabase `workspaces`. Does NOT delete missing
     /// entries — MQTT publishes the authoritative live set; Supabase here
     /// just provides offline-resilient name + path so rows can show a

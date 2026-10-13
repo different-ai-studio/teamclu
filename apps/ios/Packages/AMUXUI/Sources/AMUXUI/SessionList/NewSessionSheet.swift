@@ -575,7 +575,7 @@ public struct NewSessionSheet: View {
 
             switch outcome {
             case .created(let sessionID, _):
-                viewModel.reloadSessions(modelContext: modelContext)
+                viewModel.adoptCreatedSession(sessionID, modelContext: modelContext)
                 isSending = false
                 newSessionLogger.info(
                     "session created destination=session:\(sessionID, privacy: .public)"
@@ -622,7 +622,7 @@ public struct NewSessionSheet: View {
         modelContext.insert(session)
         modelContext.insert(message)
         try? modelContext.save()
-        viewModel.reloadSessions(modelContext: modelContext)
+        viewModel.adoptCreatedSession(sessionID, modelContext: modelContext)
         onSessionCreated?("session:\(sessionID)")
         dismiss()
     }
