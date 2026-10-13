@@ -147,6 +147,25 @@ pub trait AgentHandle: Send + Sync + 'static {
             .await
     }
 
+    /// Opaque generation of a gateway-owned live turn for this binding.
+    /// Used only by transports opting into mid-turn context submission.
+    async fn active_turn(&self, _binding: &str) -> Option<String> {
+        None
+    }
+
+    /// Submit context to the existing turn without taking its event receiver
+    /// or waiting for another reply. False means the turn already ended.
+    async fn append_to_active_turn(
+        &self,
+        _session: &AmuxSessionId,
+        _sender_display: &str,
+        _text: &str,
+        _attachment_urls: &[String],
+        _message_id: &str,
+    ) -> Result<bool, AgentError> {
+        Ok(false)
+    }
+
     /// Inject context without triggering a reply (v1 `noReply: true`).
     /// Kept on the trait for future use; not called by v1-of-port channels.
     async fn inject_context(

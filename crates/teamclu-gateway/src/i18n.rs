@@ -46,6 +46,10 @@ pub fn locale() -> Locale {
 
 /// All translatable message keys
 pub enum MsgKey<'a> {
+    // === Buffered reply placeholders ===
+    ReplyThinking,
+    ReplyFinishedNoText,
+
     // === Shared: /model command ===
     CurrentModelCustom(&'a str),
     CurrentModelDefault(&'a str),
@@ -219,6 +223,10 @@ pub fn t(key: MsgKey, locale: Locale) -> String {
     use Locale::*;
     use MsgKey::*;
     match (key, locale) {
+        (ReplyThinking, En) => "Thinking...".into(),
+        (ReplyThinking, ZhCN) => "思考中…".into(),
+        (ReplyFinishedNoText, En) => "Processing finished without a text reply.".into(),
+        (ReplyFinishedNoText, ZhCN) => "处理已结束，未生成文本回复。".into(),
         // === /model command ===
         (CurrentModelCustom(m), En) => format!("**Current Model:** `{}` (custom)\n\n", m),
         (CurrentModelCustom(m), ZhCN) => format!("**当前模型:** `{}` (自定义)\n\n", m),

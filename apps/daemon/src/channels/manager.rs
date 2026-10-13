@@ -152,6 +152,7 @@ impl ChannelManager {
                 ),
             ),
             driver,
+            append_gates: Default::default(),
         })
     }
 
