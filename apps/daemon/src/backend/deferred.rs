@@ -262,6 +262,17 @@ impl Backend for DeferredBackend {
             .await
     }
 
+    async fn set_session_participant_workspace(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        workspace_id: &str,
+    ) -> BackendResult<()> {
+        self.inner()?
+            .set_session_participant_workspace(session_id, actor_id, workspace_id)
+            .await
+    }
+
     async fn fetch_session_cursor(
         &self,
         session_id: &str,

@@ -920,6 +920,24 @@ impl Backend for CloudApiBackend {
             .filter(|w| !w.is_empty()))
     }
 
+    async fn set_session_participant_workspace(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        workspace_id: &str,
+    ) -> BackendResult<()> {
+        #[derive(serde::Serialize)]
+        struct Body<'a> {
+            #[serde(rename = "workspaceId")]
+            workspace_id: &'a str,
+        }
+        self.put_no_content(
+            &format!("/v1/sessions/{session_id}/participants/{actor_id}/workspace"),
+            &Body { workspace_id },
+        )
+        .await
+    }
+
     async fn ensure_agent_types(
         &self,
         supported_types: &[String],
@@ -2792,6 +2810,28 @@ mod tests {
         let backend = CloudApiBackend::new(config(&server));
         backend
             .upsert_session_participant("session-1", "actor-2")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_session_participant_workspace_puts_the_seat() {
+        let server = MockServer::start().await;
+        mount_refresh(&server).await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/v1/sessions/session-1/participants/agent-1/workspace",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "workspaceId": "ws-a"
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = CloudApiBackend::new(config(&server));
+        backend
+            .set_session_participant_workspace("session-1", "agent-1", "ws-a")
             .await
             .unwrap();
     }
