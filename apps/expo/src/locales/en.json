@@ -1075,5 +1075,13 @@
   "{{value}} hasn't posted anything to the board.": "{{value}} hasn't posted anything to the board.",
   "{{value}} — Plans": "{{value}} — Plans",
   "~/code/repo": "~/code/repo",
-  "… {{count}} more lines": "… {{count}} more lines"
+  "… {{count}} more lines": "… {{count}} more lines",
+  "Install": "Install",
+  "Update now": "Update now",
+  "Later": "Later",
+  "New version {{version}}": "New version {{version}}",
+  "Download size {{size}}": "Download size {{size}}",
+  "Downloading… {{percent}}%": "Downloading… {{percent}}%",
+  "Downloaded. Follow the system prompt to install.": "Downloaded. Follow the system prompt to install.",
+  "Update failed: {{message}}": "Update failed: {{message}}"
 }

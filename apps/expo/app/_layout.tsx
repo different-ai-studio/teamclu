@@ -72,6 +72,7 @@ import { getDb } from "../src/lib/db/sqlite";
 import { decodeActorPresence } from "../src/features/actors/actor-presence";
 import { setActiveUnreadTeam } from "../src/features/sessions/unread-store";
 import { useAppIconBadgeSync } from "../src/features/notifications/app-icon-badge-sync";
+import { AndroidUpdatePrompt } from "../src/features/updates/AndroidUpdatePrompt";
 import { useOfflineLaunchRevalidation } from "../src/features/onboarding/use-offline-launch-revalidation";
 
 const onboardingApi = createOnboardingApi(supabase);
@@ -552,6 +553,7 @@ function RootLayout() {
           <View style={styles.layout}>
             <Slot />
             <ToastHost />
+            <AndroidUpdatePrompt />
           </View>
         </SafeAreaView>
       </OnboardingProvider>
