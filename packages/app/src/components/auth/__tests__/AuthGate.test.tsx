@@ -84,9 +84,10 @@ vi.mock("@/stores/auth-store", () => {
 });
 
 vi.mock("@/stores/current-team", () => ({
-  useCurrentTeamStore: {
-    getState: () => currentTeamMock,
-  },
+  useCurrentTeamStore: Object.assign(
+    (selector: (state: typeof currentTeamMock) => unknown) => selector(currentTeamMock),
+    { getState: () => currentTeamMock },
+  ),
   setLocalCacheTeamGate: setLocalCacheTeamGateMock,
   readCachedCurrentTeam: () => cachedTeamMock.value,
 }));

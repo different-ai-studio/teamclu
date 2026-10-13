@@ -105,6 +105,15 @@ export function TeamChoiceList({
       // Public teams in the caller's own org that they haven't joined yet:
       // enroll as a plain member first so switchToTeam (and every team-scoped
       // RPC after it) has membership. Idempotent server-side.
+      // Switching rebinds this machine's agent onto the new team (#1678).
+      // When it is the current team's default, say so before moving it.
+      if (currentTeamId) {
+        const { confirmRebindAwayFromTeamDefault } = await import("@/lib/daemon/local-agent-gate");
+        if (!(await confirmRebindAwayFromTeamDefault(currentTeamId))) {
+          setBusyId(null);
+          return;
+        }
+      }
       if (team.isMember === false) {
         await getBackend().teams.joinTeam(team.id);
       }

@@ -30,6 +30,9 @@ const INTROSPECT_ENV: &str = "TEAMCLU_INTROSPECT_BIN";
 /// reads it, and only on macOS — without the gate this is dead code on
 /// every other platform, which the crate-level `allow(dead_code)` used to
 /// hide and Linux clippy now rejects.
+/// Returned by every start path while the local Agent is off. The frontend
+/// matches on it, so keep the wording stable.
+pub const LOCAL_AGENT_DISABLED_ERROR: &str = "local agent is not enabled";
 #[cfg(target_os = "macos")]
 const LAUNCHD_LABEL: &str = "cc.ucar.amuxd";
 
@@ -700,6 +703,11 @@ impl AmuxdSupervisor {
         if state.paused_for_pi_install.load(Ordering::SeqCst) {
             return Err("amuxd is paused while the agent runtime installs".into());
         }
+        // The one gate for every start path (launch, ensure, restart, heal,
+        // post-install restart): no local Agent, no resident amuxd (#1678).
+        if !crate::commands::local_agent::is_enabled() {
+            return Err(LOCAL_AGENT_DISABLED_ERROR.into());
+        }
 
         let mut inner = state.inner.lock().await;
         if state.app_exiting.load(Ordering::SeqCst) {
@@ -1023,6 +1031,22 @@ impl AmuxdSupervisor {
         } else if let Err(e) = Self::ensure_started(app).await {
             log::warn!("[amuxd-supervisor] restart after a failed pi install: {e}");
         }
+    }
+
+    /// Turn the local Agent off and stop amuxd. The switch is written before
+    /// the stop, under `ensure_lock`, so no ensure queued behind us can respawn
+    /// the daemon we are stopping.
+    pub async fn disable_and_stop<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+        let state = app.state::<AmuxdSupervisor>();
+        let _ensure = state.ensure_lock.lock().await;
+        crate::commands::local_agent::set_enabled(false)?;
+        state
+            .restart_after_pi_install
+            .store(false, Ordering::SeqCst);
+        let mut inner = state.inner.lock().await;
+        stop_with_child_fallback_async(&mut inner, STOP_TIMEOUT).await;
+        drop(inner);
+        wait_for_amuxd_stopped(STOP_TIMEOUT).await
     }
 
     pub async fn status<R: Runtime>(app: &AppHandle<R>) -> DaemonSupervisorStatus {
