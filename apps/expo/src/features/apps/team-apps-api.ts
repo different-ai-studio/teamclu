@@ -41,6 +41,7 @@ export type CloudTeamApp = {
   gitRemoteUrl?: string | null;
   gitAuthKind?: string | null;
   relationship?: string | null;
+  workspaceId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 };
@@ -91,6 +92,7 @@ export function toTeamApp(row: CloudTeamApp): TeamApp {
     gitRemoteUrl: row.gitRemoteUrl ?? null,
     gitAuthKind: row.gitAuthKind ?? null,
     relationship: parseTeamAppRelationship(row.relationship),
+    workspaceId: row.workspaceId ?? null,
     createdAt,
     updatedAt: row.updatedAt ?? createdAt,
   };

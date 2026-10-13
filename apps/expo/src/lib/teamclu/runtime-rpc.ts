@@ -3,6 +3,7 @@ import {
   AddWorkspaceRequestSchema,
   RpcRequestSchema,
   RpcResponseSchema,
+  RemoveParticipantRequestSchema,
   RemoveWorkspaceRequestSchema,
   RuntimeCommandRequestSchema,
   RuntimeStartRequestSchema,
@@ -55,6 +56,13 @@ export type RemoveWorkspaceArgs = {
   timeoutMs?: number;
 };
 
+export type RemoveParticipantArgs = {
+  targetActorId: string;
+  sessionId: string;
+  actorId: string;
+  timeoutMs?: number;
+};
+
 export type SetModelArgs = {
   targetActorId: string;
   runtimeId: string;
@@ -84,6 +92,13 @@ export type RuntimeRpcClient = {
    * retained runtime state topic, so there is no value to return here.
    */
   setModel: (args: SetModelArgs) => Promise<void>;
+  /**
+   * Drops a participant from the target daemon's in-memory session roster
+   * (and `sessions.toml`) and fans a notify event out so other clients re-pull.
+   * Cache invalidation only — the Cloud API delete is the source of truth.
+   * Resolves on the daemon's `{success}`; rejects with its error otherwise.
+   */
+  removeParticipant: (args: RemoveParticipantArgs) => Promise<void>;
   /**
    * An ACP command (cancel, permission reply, question answer, turn-history
    * request) addressed by (actor, session). Replaces publishing to
@@ -584,6 +599,69 @@ export function createRuntimeRpcClient(deps: RuntimeRpcClientDeps): RuntimeRpcCl
           );
         }, args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
+        deps.mqtt
+          .publish(requestTopic, toBinary(RpcRequestSchema, request), false)
+          .catch((err) => {
+            finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+          });
+      });
+    },
+
+    removeParticipant(args) {
+      const teamId = deps.teamId.trim();
+      const targetActorId = args.targetActorId.trim();
+      const sessionId = args.sessionId.trim();
+      const actorId = args.actorId.trim();
+      if (!teamId) return Promise.reject(new Error("team id is required"));
+      if (!targetActorId) return Promise.reject(new Error("target actor id is required"));
+      if (!sessionId) return Promise.reject(new Error("session id is required"));
+      if (!actorId) return Promise.reject(new Error("actor id is required"));
+
+      const requestId = deps.requestId?.() ?? uuidV4();
+      const request = create(RpcRequestSchema, {
+        requestId,
+        requesterClientId:
+          deps.requesterClientId?.(requestId) ??
+          defaultRequesterClientId(deps.requesterActorId, requestId),
+        requesterActorId: deps.requesterActorId,
+        method: {
+          case: "removeParticipant",
+          value: create(RemoveParticipantRequestSchema, { sessionId, actorId }),
+        },
+      });
+      const requestTopic = `amux/${teamId}/${targetActorId}/rpc/req`;
+      // Daemon replies on the requester's actor namespace (rpc.rs:50-53).
+      const responseTopic = `amux/${teamId}/${deps.requesterActorId.trim() || targetActorId}/rpc/res`;
+      const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        let unsubscribe = () => {};
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          unsubscribe();
+          fn();
+        };
+        unsubscribe = deps.mqtt.subscribe(responseTopic, (payload) => {
+          let response: RpcResponse;
+          try {
+            response = fromBinary(RpcResponseSchema, payload);
+          } catch {
+            return;
+          }
+          if (response.requestId !== requestId) return;
+          if (!response.success) {
+            finish(() => reject(new Error(response.error || "remove_participant rejected")));
+            return;
+          }
+          finish(() => resolve());
+        });
+        timer = setTimeout(() => {
+          finish(() => reject(new Error(`remove_participant timeout after ${timeoutMs}ms`)));
+        }, timeoutMs);
         deps.mqtt
           .publish(requestTopic, toBinary(RpcRequestSchema, request), false)
           .catch((err) => {

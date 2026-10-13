@@ -36,6 +36,7 @@ const WIRE_APP = {
   gitRemoteUrl: "ssh://git@gitea.example.com/t/weekly-board.git",
   gitAuthKind: "gitea_deploy_key",
   relationship: "owner",
+  workspaceId: "ws-app",
   createdAt: "2026-09-01T00:00:00Z",
   updatedAt: "2026-09-02T00:00:00Z",
   // Fields this client ignores must not break the mapping.
@@ -69,6 +70,7 @@ describe("createTeamAppsApi", () => {
         gitRemoteUrl: "ssh://git@gitea.example.com/t/weekly-board.git",
         gitAuthKind: "gitea_deploy_key",
         relationship: "owner",
+        workspaceId: "ws-app",
         createdAt: "2026-09-01T00:00:00Z",
         updatedAt: "2026-09-02T00:00:00Z",
       },

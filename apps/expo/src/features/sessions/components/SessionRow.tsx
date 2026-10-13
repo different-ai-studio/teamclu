@@ -9,6 +9,7 @@ import { UnreadDot } from "../../../ui/atoms/UnreadDot";
 import { colors, hai, iosType, spacing } from "../../../ui/theme";
 import { mentionPlainText } from "../mention-display";
 import type { SessionLiveActivity } from "../live-activity";
+import type { SessionContext } from "../session-context-names";
 import type { SessionSummary } from "../session-types";
 
 /**
@@ -49,8 +50,12 @@ type SessionRowProps = {
   /** Live runtime attachment for this session's agent, when known. */
   runtime?: SessionRowRuntime | null;
   session: SessionSummary;
-  /** Workspace/worktree name shown at the head of the meta strip. */
-  workspaceName?: string;
+  /**
+   * The app or idea this session belongs to, at the head of the meta strip
+   * (iOS #1597, which replaced the workspace name and status word there: the
+   * leading dot already says what the agent is doing).
+   */
+  context?: SessionContext | null;
   onLongPress?: (session: SessionSummary) => void;
   onPress?: (session: SessionSummary) => void;
   unreadCount?: number;
@@ -135,7 +140,7 @@ export function SessionRow({
   activity = "quiet",
   runtime,
   session,
-  workspaceName = "",
+  context = null,
   onLongPress,
   onPress,
   unreadCount = 0,
@@ -147,7 +152,6 @@ export function SessionRow({
   const isRunning = runtime?.status === STATUS_RUNNING;
   const isStopped = runtime?.status === STATUS_STOPPED;
   const badge = agentBadge(session, runtime, actorGlyphById);
-  const statusLabel = runtime?.status && runtime.status !== 0 ? runtime.statusLabel ?? "" : "";
 
   return (
     <Pressable
@@ -206,22 +210,17 @@ export function SessionRow({
       ) : null}
 
       <View style={styles.metaStrip}>
-        {workspaceName ? (
-          <Text numberOfLines={1} style={styles.workspace}>
-            {workspaceName}
-          </Text>
-        ) : null}
-        {workspaceName && statusLabel ? <View style={styles.metaSeparator} /> : null}
-        {statusLabel ? (
-          <Text
-            numberOfLines={1}
-            style={[
-              styles.statusLabel,
-              isRunning ? styles.statusLabelRunning : null,
-            ]}
-          >
-            {statusLabel}
-          </Text>
+        {context ? (
+          <View style={styles.context}>
+            <Ionicons
+              color={colors.slate}
+              name={context.kind === "app" ? "grid-outline" : "bulb-outline"}
+              size={10}
+            />
+            <Text numberOfLines={1} style={styles.contextName}>
+              {context.name}
+            </Text>
+          </View>
         ) : null}
         <View style={styles.metaSpacer} />
         <AvatarStack avatars={buildAvatars(session, actorGlyphById)} max={3} size={22} />
@@ -239,11 +238,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: spacing.sm,
   },
-  metaSeparator: {
-    backgroundColor: "rgba(166,163,156,0.5)",
-    borderRadius: 1.5,
-    height: 3,
-    width: 3,
+  context: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexShrink: 1,
+    gap: 4,
+  },
+  contextName: {
+    color: colors.slate,
+    flexShrink: 1,
+    ...iosType.caption,
   },
   metaSpacer: {
     flex: 1,
@@ -264,14 +268,6 @@ const styles = StyleSheet.create({
     // iOS uses `.padding(.vertical, 6)`; the List supplies the rest.
     paddingVertical: 6,
   },
-  statusLabel: {
-    color: colors.basalt,
-    ...iosType.caption,
-    fontWeight: "500",
-  },
-  statusLabelRunning: {
-    color: hai.sage,
-  },
   summary: {
     color: colors.basalt,
     paddingLeft: BADGE_INDENT,
@@ -289,9 +285,5 @@ const styles = StyleSheet.create({
   },
   titleStopped: {
     color: colors.basalt,
-  },
-  workspace: {
-    color: colors.slate,
-    ...iosType.captionMono,
   },
 });

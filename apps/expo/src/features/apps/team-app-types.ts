@@ -62,6 +62,12 @@ export type TeamApp = {
   gitRemoteUrl: string | null;
   gitAuthKind: string | null;
   relationship: TeamAppRelationship;
+  /**
+   * The app's own workspace (`apps.workspace_id`). Its path is filled in by
+   * the first desktop that opens the app and names that machine's checkout;
+   * null or path-less means no machine has claimed it yet.
+   */
+  workspaceId?: string | null;
   /** ISO timestamp, or "" when the server sent none. */
   createdAt: string;
   updatedAt: string;

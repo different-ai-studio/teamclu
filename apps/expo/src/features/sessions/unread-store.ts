@@ -2,7 +2,10 @@ type Listener = (count: number) => void;
 
 let count = 0;
 let activeTeamId: string | null = null;
+/** Whether the active team's list has reported a count since it became active. */
+let reported = false;
 const listeners = new Set<Listener>();
+const reportListeners = new Set<Listener>();
 
 function publish(next: number) {
   if (next === count) return;
@@ -24,7 +27,9 @@ function publish(next: number) {
  */
 export function setUnreadSessionCount(next: number, teamId?: string | null) {
   if (teamId != null && activeTeamId !== null && teamId !== activeTeamId) return;
+  reported = true;
   publish(next);
+  for (const listener of reportListeners) listener(count);
 }
 
 /**
@@ -35,11 +40,32 @@ export function setUnreadSessionCount(next: number, teamId?: string | null) {
 export function setActiveUnreadTeam(teamId: string | null) {
   if (teamId === activeTeamId) return;
   activeTeamId = teamId;
+  reported = false;
   publish(0);
 }
 
 export function getUnreadSessionCount(): number {
   return count;
+}
+
+/**
+ * True once the active team's list (cache or network) has reported. Before
+ * that the count's 0 means "not known yet", not "nothing unread" — the app
+ * icon badge must not act on it (it would clear Notification Center).
+ */
+export function hasUnreadSessionCountReport(): boolean {
+  return reported;
+}
+
+/**
+ * Called on every accepted report, even one that repeats the last count —
+ * unlike `subscribeUnreadSessionCount`, which only fires on a change.
+ */
+export function subscribeUnreadSessionCountReports(listener: Listener): () => void {
+  reportListeners.add(listener);
+  return () => {
+    reportListeners.delete(listener);
+  };
 }
 
 export function subscribeUnreadSessionCount(listener: Listener): () => void {

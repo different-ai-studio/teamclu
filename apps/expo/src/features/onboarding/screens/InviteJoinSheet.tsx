@@ -6,6 +6,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { colors, radii, spacing, typography } from "../../../ui/theme";
 import { parseInviteInput } from "../invite-api";
+import { parseJoinLink, type ParsedJoinLink } from "../join-link";
 
 /**
  * Paste a `teamclu://invite?token=…` link (or a bare token). iOS
@@ -14,12 +15,16 @@ import { parseInviteInput } from "../invite-api";
  *  - `signedOut` (the choice screen): the token is stashed and the user signs
  *    in; the claim runs as that account once signed in.
  *  - `signedIn` (the no-team screen): claims as the current account.
+ *
+ * A team join link (`https://…/join/<token>` or `teamclu://join?token=…`,
+ * #1672) goes to `onJoinLink` instead — never through the named-invite claim.
  */
 export function InviteJoinSheet({
   errorMessage,
   isBusy,
   mode,
   onCancel,
+  onJoinLink,
   onSubmit,
 }: {
   errorMessage: string | null;
@@ -27,6 +32,7 @@ export function InviteJoinSheet({
   mode: "signedOut" | "signedIn";
   onCancel: () => void;
   onSubmit: (token: string) => void | Promise<void>;
+  onJoinLink: (link: ParsedJoinLink) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const [raw, setRaw] = useState("");
@@ -37,6 +43,14 @@ export function InviteJoinSheet({
   const submit = () => {
     if (empty) {
       setLocalError(t("Paste an invite link or token first."));
+      return;
+    }
+    const joinLink = parseJoinLink(raw);
+    if (joinLink) {
+      setLocalError(null);
+      void Promise.resolve(onJoinLink(joinLink)).catch(() => {
+        // The caller surfaces the failure through `errorMessage`.
+      });
       return;
     }
     const token = parseInviteInput(raw);
