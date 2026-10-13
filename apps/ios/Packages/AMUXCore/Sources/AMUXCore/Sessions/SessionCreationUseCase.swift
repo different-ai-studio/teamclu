@@ -133,6 +133,23 @@ public struct SessionCreationInput: Sendable {
                 && !$0.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
+
+    /// The workspace a new session seats `agentID` on: the agent's
+    /// `default_workspace_id` when it is in `workspaces`, otherwise the
+    /// first workspace the agent owns. Never another agent's workspace.
+    ///
+    /// Every entry point must use this. The daemon keeps one pi host per
+    /// worktree and only prewarms the default workspace's, so seating a
+    /// session anywhere else pays a cold host spawn (~12s on a small ARM
+    /// box) before the agent sees the first prompt.
+    public static func defaultWorkspace(agentID: String, defaultWorkspaceID: String?,
+                                        workspaces: [WorkspaceRecord]) -> WorkspaceRecord? {
+        if let defaultWorkspaceID,
+           let workspace = workspaces.first(where: { $0.id == defaultWorkspaceID }) {
+            return workspace
+        }
+        return workspaces.first { $0.agentID == agentID }
+    }
 }
 
 public enum SessionCreationOutcome: Sendable {

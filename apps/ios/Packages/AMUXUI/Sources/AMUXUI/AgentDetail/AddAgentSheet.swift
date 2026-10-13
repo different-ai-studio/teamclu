@@ -124,22 +124,17 @@ public struct AddAgentSheet: View {
         let agentTypes = cached?.agentTypes.isEmpty == false ? (cached?.agentTypes ?? []) : agent.agentTypes
         let kindString = cached?.defaultAgentType ?? agent.defaultAgentType ?? agentTypes.first
 
-        let workspaceID: String? = {
-            if let id = defaultWorkspaceID,
-               workspaces.contains(where: { $0.id == id }) {
-                return id
-            }
-            return workspaces.first(where: { $0.agentID == agent.id })?.id
-        }()
-
-        guard let workspaceID,
-              let workspace = workspaces.first(where: { $0.id == workspaceID }) else {
+        guard let workspace = SessionCreationInput.defaultWorkspace(
+            agentID: agent.id,
+            defaultWorkspaceID: defaultWorkspaceID,
+            workspaces: workspaces
+        ) else {
             errorMessage = String(localized: "No workspaces available — add one to this agent first.")
             return
         }
         let allowedTypes = AgentConfigSheet.AgentType.supported(from: agentTypes)
         let defaultType = AgentConfigSheet.AgentType.fromStoredValue(kindString)
-        let agentType = allowedTypes.isEmpty || allowedTypes.contains(defaultType) ? defaultType : (allowedTypes.first ?? .claude)
+        let agentType = allowedTypes.isEmpty || allowedTypes.contains(defaultType) ? defaultType : (allowedTypes.first ?? .pi)
         onConfirm(agent.id, workspace.id, workspace.path, agentType)
         dismiss()
     }
