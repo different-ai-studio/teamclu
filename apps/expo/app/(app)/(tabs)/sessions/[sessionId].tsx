@@ -34,6 +34,7 @@ import type { OutboxSqliteDb } from "../../../../src/features/sessions/outbox-db
 import { publishOutboxRowViaOptionalMqtt } from "../../../../src/features/sessions/session-outbox-publish";
 import { resetOutbox, syncOutboxFromDao } from "../../../../src/features/sessions/outbox-store";
 import { createConfiguredSessionsApi } from "../../../../src/features/sessions/api-provider";
+import { removeSessionParticipant } from "../../../../src/features/sessions/remove-participant";
 import type { FeedbackKind } from "../../../../src/features/sessions/cloud-api";
 import { myFeedbackByMessageId, nextFeedback } from "../../../../src/features/sessions/message-feedback";
 import { noteLocalPrompt } from "../../../../src/features/sessions/live-activity-store";
@@ -74,6 +75,7 @@ import { TextPromptModal } from "../../../../src/ui/TextPromptModal";
 import { colors, spacing, typography } from "../../../../src/ui/theme";
 import type { SessionDetailControllerState } from "../../../../src/features/sessions/session-detail-controller";
 import { SheetModal } from "../../../../src/ui/SheetModal";
+import { clearDeliveredSessionNotifications } from "../../../../src/features/notifications/app-icon-badge-sync";
 
 // Module-scoped: one store for the app, not one per controller rebuild.
 const streamingSnapshotStore = createStreamingSnapshotStore();
@@ -204,6 +206,8 @@ export default function SessionDetailRoute() {
         null,
       );
     }
+    // Opening the session reads it: its pushes are stale (iOS #1608).
+    clearDeliveredSessionNotifications(sessionId);
 
     let cancelled = false;
     // Capture the shared team MQTT client for the outbox sender's send closure.
@@ -724,8 +728,34 @@ export default function SessionDetailRoute() {
           onPress: () => {
             void (async () => {
               try {
-                await createConfiguredSessionsApi(supabase).removeParticipant(sessionId, agentId);
-                await controller?.load({ preserveExisting: true });
+                // Cloud delete first (the permission gate), then stop the
+                // runtime and drop it from the daemon's roster — iOS #1600.
+                const runtime = runtimeInfoByAgentId.get(agentId);
+                const requesterActorId = state.currentMemberActorId;
+                await removeSessionParticipant(
+                  {
+                    removeFromCloud: (sid, aid) =>
+                      createConfiguredSessionsApi(supabase).removeParticipant(sid, aid),
+                    runtimeRpc:
+                      teamMqtt && currentTeam?.id && requesterActorId
+                        ? createRuntimeRpcClient({
+                            mqtt: teamMqtt,
+                            teamId: currentTeam.id,
+                            requesterActorId,
+                          })
+                        : null,
+                    onDaemonStepError: (step, error) => {
+                      console.warn(`[session-detail] remove ${step} failed`, error);
+                    },
+                  },
+                  {
+                    sessionId,
+                    actorId: agentId,
+                    isAgent: true,
+                    runtimeId: runtime?.runtimeId ?? null,
+                    workspaceId: runtime?.workspaceId ?? null,
+                  },
+                );
                 showToast("success", t("Removed from session"));
               } catch (err) {
                 showToast(
@@ -733,6 +763,8 @@ export default function SessionDetailRoute() {
                   err instanceof Error ? err.message : t("Couldn't remove participant"),
                 );
               }
+              // Re-read either way: a refused removal must show the agent back.
+              await controller?.load({ preserveExisting: true }).catch(() => {});
             })();
           },
         },

@@ -1,9 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActionSheetIOS,
   Alert,
+  Keyboard,
   Platform,
   Pressable,
   RefreshControl,
@@ -25,9 +26,9 @@ import { impactLight, selectionTick } from "../../../lib/haptics";
 import { t } from "../../../lib/i18n";
 import { colors, spacing, typography } from "../../../ui/theme";
 import { matchesAnyField } from "../../search/search-matcher";
-import { DaemonStatusBanner, type DaemonConnectionState } from "../components/DaemonStatusBanner";
 import { SessionRow, type SessionRowRuntime } from "../components/SessionRow";
 import type { SessionLiveActivity } from "../live-activity";
+import type { SessionContext } from "../session-context-names";
 import type { SessionGroup, SessionsListState } from "../session-types";
 
 type SessionsListScreenProps = {
@@ -51,14 +52,11 @@ type SessionsListScreenProps = {
   pinnedSessionIds?: ReadonlySet<string>;
   /** Live runtime attachment per session — drives the badge dot and status label. */
   runtimeBySessionId?: ReadonlyMap<string, SessionRowRuntime>;
-  /** Workspace/worktree name per session, shown at the head of the meta strip. */
-  workspaceBySessionId?: ReadonlyMap<string, string>;
+  /** App or idea per session, shown at the head of the meta strip (iOS #1597). */
+  contextBySessionId?: ReadonlyMap<string, SessionContext>;
   mutedSessionIds?: ReadonlySet<string>;
   /** "Agent working" / "waiting for you" per session (iOS #1567). */
   activityBySessionId?: ReadonlyMap<string, SessionLiveActivity>;
-  /** Daemon reachability, shown as a pill above the search field. */
-  daemonConnectionState?: DaemonConnectionState;
-  brokerHost?: string;
   onShortcuts?: () => void;
   selectedSessionId?: string | null;
   state: SessionsListState;
@@ -76,7 +74,7 @@ export function SessionGroupSection({
   selectedSessionId,
   selectionMode,
   selection,
-  workspaceBySessionId,
+  contextBySessionId,
 }: {
   actorGlyphById?: ReadonlyMap<string, string>;
   group: SessionGroup;
@@ -89,7 +87,7 @@ export function SessionGroupSection({
   selectedSessionId: string | null;
   selectionMode: boolean;
   selection: ReadonlySet<string>;
-  workspaceBySessionId?: ReadonlyMap<string, string>;
+  contextBySessionId?: ReadonlyMap<string, SessionContext>;
 }) {
   // `t()` here (not `useTranslation()`) deliberately: this component is
   // exercised in tests by calling it as a plain function outside of a React
@@ -121,7 +119,7 @@ export function SessionGroupSection({
                     activity={activityBySessionId?.get(session.sessionId) ?? "quiet"}
                     isPinned={pinnedSessionIds?.has(session.sessionId) ?? false}
                     runtime={runtimeBySessionId?.get(session.sessionId) ?? null}
-                    workspaceName={workspaceBySessionId?.get(session.sessionId) ?? ""}
+                    context={contextBySessionId?.get(session.sessionId) ?? null}
                     onLongPress={
                       onLongPressSession
                         ? () => onLongPressSession(session.sessionId)
@@ -171,8 +169,6 @@ function HeaderBar({
 export function SessionsListScreen({
   bottomInset = 0,
   actorGlyphById,
-  brokerHost,
-  daemonConnectionState,
   hasAgents = true,
   onArchiveBatch,
   onInviteAgent,
@@ -192,11 +188,18 @@ export function SessionsListScreen({
   runtimeBySessionId,
   selectedSessionId = null,
   state,
-  workspaceBySessionId,
+  contextBySessionId,
 }: SessionsListScreenProps) {
   const { t } = useTranslation();
   const [placeholderMessage, setPlaceholderMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // iOS #1603: the search keyboard goes away on scroll and on any tap outside
+  // the search box (row taps still go through), and when a session opens.
+  const searchInputRef = useRef<TextInput>(null);
+  const dismissSearchKeyboard = useCallback(() => {
+    searchInputRef.current?.blur();
+    Keyboard.dismiss();
+  }, []);
   const [selection, setSelection] = useState<ReadonlySet<string>>(new Set());
   const [isBatchBusy, setIsBatchBusy] = useState(false);
   const selectionMode = selection.size > 0;
@@ -415,8 +418,9 @@ export function SessionsListScreen({
     <View style={styles.screen}>
     <ScrollView
       contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
-      keyboardDismissMode="interactive"
+      keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
+      onScrollBeginDrag={dismissSearchKeyboard}
       refreshControl={
         <RefreshControl
           onRefresh={onRefresh}
@@ -426,22 +430,13 @@ export function SessionsListScreen({
       }
       style={{ flex: 1 }}
     >
-      {headerBar}
+      <View onTouchStart={dismissSearchKeyboard}>{headerBar}</View>
       {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
 
       {state.status === "error" && state.errorMessage ? (
         <AppCard compact style={styles.banner}>
           <Text style={styles.bannerText}>{state.errorMessage}</Text>
         </AppCard>
-      ) : null}
-
-      {daemonConnectionState ? (
-        <View style={styles.daemonBanner}>
-          <DaemonStatusBanner
-            brokerHost={brokerHost}
-            connectionState={daemonConnectionState}
-          />
-        </View>
       ) : null}
 
       <View style={styles.searchField}>
@@ -451,6 +446,7 @@ export function SessionsListScreen({
           autoCorrect={false}
           onChangeText={setQuery}
           placeholder={t("Search sessions")}
+          ref={searchInputRef}
           placeholderTextColor={colors.slate}
           selectionColor={colors.cinnabar}
           style={styles.searchInput}
@@ -469,7 +465,7 @@ export function SessionsListScreen({
       </View>
 
       {filteredGroups.length > 0 ? (
-        <View style={styles.groups}>
+        <View onTouchStart={dismissSearchKeyboard} style={styles.groups}>
           {filteredGroups.map((group) => (
             <SessionGroupSection
               actorGlyphById={actorGlyphById}
@@ -486,6 +482,7 @@ export function SessionsListScreen({
                 if (selectionMode) {
                   toggleSelection(id);
                 } else {
+                  dismissSearchKeyboard();
                   onSelectSession(id);
                 }
               }}
@@ -496,7 +493,7 @@ export function SessionsListScreen({
               selectedSessionId={selectedSessionId}
               selection={selection}
               selectionMode={selectionMode}
-              workspaceBySessionId={workspaceBySessionId}
+              contextBySessionId={contextBySessionId}
             />
           ))}
         </View>
@@ -714,10 +711,6 @@ const styles = StyleSheet.create({
   sessionRowInner: {
     alignItems: "center",
     flexDirection: "row",
-  },
-  daemonBanner: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
   },
   searchField: {
     alignItems: "center",

@@ -12,6 +12,12 @@ export interface SessionSummary {
   createdAt: string;
   createdBy: string;
   hasUnread?: boolean;
+  /** The idea this session belongs to; absent/empty for none. */
+  ideaId?: string;
+  /** The app this session was created from (`sessions.app_id`); absent/empty for none. */
+  appId?: string;
+  /** `user` | `cron` | `gateway` | `thread`; absent on older servers. */
+  source?: string;
 }
 
 export type MessageAttachment = {

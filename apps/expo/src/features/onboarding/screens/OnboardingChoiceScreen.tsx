@@ -5,6 +5,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { SheetModal } from "../../../ui/SheetModal";
 import { colors, iosType, spacing, typography } from "../../../ui/theme";
+import { formatJoinLink } from "../join-link";
 import { InviteJoinSheet } from "./InviteJoinSheet";
 import { APP_NAME, OnboardingErrorNote, OnboardingOptionRow } from "./OnboardingParts";
 import { ServerSettingsSheet } from "./ServerSettingsSheet";
@@ -16,7 +17,10 @@ export type OnboardingChoiceScreenProps = {
   onJoin: () => void;
   /** "Start a new team" → desktop guide. The caller records `create`. */
   onCreate: () => void;
-  /** A pasted invite: stash it and sign in; the claim runs afterwards. */
+  /**
+   * A pasted invite — or a team join link in its `teamclu://join?…` form:
+   * stash it and sign in; the claim / redeem runs afterwards.
+   */
   onInviteToken: (token: string) => void | Promise<void>;
   /** Rebuild the Cloud API stack after a custom-server save (mirrors iOS). */
   onServerChanged?: () => void | Promise<void>;
@@ -106,6 +110,12 @@ export function OnboardingChoiceScreen({
           isBusy={isBusy}
           mode="signedOut"
           onCancel={() => setInviteOpen(false)}
+          onJoinLink={async (link) => {
+            // A join link needs a signed-in account to redeem; it rides the
+            // same pending slot and is redeemed once signed in.
+            setInviteOpen(false);
+            await onInviteToken(formatJoinLink(link));
+          }}
           onSubmit={async (token) => {
             setInviteOpen(false);
             await onInviteToken(token);

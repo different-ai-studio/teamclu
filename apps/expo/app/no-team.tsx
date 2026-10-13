@@ -62,6 +62,7 @@ export default function NoTeamRoute() {
       }}
       onCreateInstead={() => router.push("/desktop-guide?mode=signedIn")}
       onJoinWithToken={(token) => controller.joinWithInvite(token)}
+      onJoinWithLink={(link) => controller.joinByLink(link.token, link.cloudApiUrl)}
       onRefresh={() => {
         void refresh();
       }}

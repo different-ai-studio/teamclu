@@ -17,6 +17,7 @@ import {
   resolveAgentRuntimeStartPlans,
 } from "../../src/features/sessions/runtime-start";
 import { createConfiguredSessionsApi } from "../../src/features/sessions/api-provider";
+import { removeSessionParticipant } from "../../src/features/sessions/remove-participant";
 import type { SessionParticipantRecord } from "../../src/features/sessions/cloud-api";
 import { createWorkspacesApi } from "../../src/features/workspaces/workspace-api";
 import { MemberPickerSheet } from "../../src/features/sessions/screens/MemberPickerSheet";
@@ -190,10 +191,43 @@ export default function SessionMembersRoute() {
     [agents, modelPickerActorId],
   );
 
+  // iOS `removeAgent` / `removeHuman` (#1600): cloud delete first — it is the
+  // permission gate — then, for an agent, stop its runtime and drop it from
+  // the daemon's roster. Either way the roster is re-read, so a refused
+  // removal puts the row back instead of only hiding it here.
   const handleRemove = async (actorId: string) => {
     if (!sessionId) return;
+    const participantRow = participants.find((row) => row.actorId === actorId);
+    const actor = actorById.get(actorId);
+    const isAgent =
+      participantRow?.actorType === "agent" || Boolean(actor && isAgentActor(actor));
+    const runtime = runtimeByAgentId.get(actorId);
+    const currentMemberActorId = state.currentMemberActorId;
     try {
-      await createConfiguredSessionsApi(supabase).removeParticipant(sessionId, actorId);
+      await removeSessionParticipant(
+        {
+          removeFromCloud: (sid, aid) =>
+            createConfiguredSessionsApi(supabase).removeParticipant(sid, aid),
+          runtimeRpc:
+            teamMqtt && teamId && currentMemberActorId
+              ? createRuntimeRpcClient({
+                  mqtt: teamMqtt,
+                  teamId,
+                  requesterActorId: currentMemberActorId,
+                })
+              : null,
+          onDaemonStepError: (step, error) => {
+            console.warn(`[session-members] remove ${step} failed`, error);
+          },
+        },
+        {
+          sessionId,
+          actorId,
+          isAgent,
+          runtimeId: runtime?.runtimeId ?? null,
+          workspaceId: participantRow?.workspaceId ?? runtime?.workspaceId ?? null,
+        },
+      );
       setParticipants((prev) => prev.filter((row) => row.actorId !== actorId));
       showToast("success", t("Removed from session"));
     } catch (err) {
@@ -202,6 +236,7 @@ export default function SessionMembersRoute() {
         err instanceof Error ? err.message : t("Couldn't remove participant"),
       );
     }
+    void loadParticipants();
   };
 
   const handleAdd = async (picked: string[]) => {

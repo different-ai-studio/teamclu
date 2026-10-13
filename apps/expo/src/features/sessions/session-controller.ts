@@ -1,5 +1,6 @@
 import type { SessionsCache } from "./session-cache";
 import { groupSessionsByRecency, type SessionGroup, type SessionSummary } from "./session-types";
+import { unreadBadgeCount } from "../notifications/app-icon-badge";
 import { setUnreadSessionCount } from "./unread-store";
 
 type SessionsApi = ReturnType<(typeof import("./cloud-api"))["createCloudSessionsApi"]>;
@@ -110,7 +111,7 @@ export function createSessionsController(
       // Don't clobber rows that arrived from the network while disk I/O
       // was in flight — the network is authoritative.
       if (state.sessions.length > 0) return;
-      setUnreadSessionCount(cached.filter((s) => s.hasUnread).length, teamId);
+      setUnreadSessionCount(unreadBadgeCount(cached, teamId), teamId);
       setState(buildDerivedState(cached));
     } catch {
       // best-effort
@@ -130,7 +131,7 @@ export function createSessionsController(
         return;
       }
 
-      setUnreadSessionCount(sessions.filter((s) => s.hasUnread).length, teamId);
+      setUnreadSessionCount(unreadBadgeCount(sessions, teamId), teamId);
       setState(buildDerivedState(sessions));
       void cache?.save(teamId, sessions);
     } catch (error) {
@@ -154,7 +155,7 @@ export function createSessionsController(
         return;
       }
 
-      setUnreadSessionCount(sessions.filter((s) => s.hasUnread).length, teamId);
+      setUnreadSessionCount(unreadBadgeCount(sessions, teamId), teamId);
       setState(buildDerivedState(sessions));
       void cache?.save(teamId, sessions);
     } catch (error) {

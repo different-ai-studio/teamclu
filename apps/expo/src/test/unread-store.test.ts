@@ -52,3 +52,31 @@ describe("unread-store team scoping", () => {
     expect(store.getUnreadSessionCount()).toBe(0);
   });
 });
+
+describe("unread-store reports (app icon badge)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("only counts as reported once the active team's list answers", async () => {
+    const store = await freshStore();
+    store.setActiveUnreadTeam("team-a");
+    expect(store.hasUnreadSessionCountReport()).toBe(false);
+    store.setUnreadSessionCount(0, "team-a");
+    expect(store.hasUnreadSessionCountReport()).toBe(true);
+    store.setActiveUnreadTeam("team-b");
+    expect(store.hasUnreadSessionCountReport()).toBe(false);
+  });
+
+  it("tells report listeners even when the count repeats", async () => {
+    const store = await freshStore();
+    store.setActiveUnreadTeam("team-a");
+    const listener = vi.fn();
+    store.subscribeUnreadSessionCountReports(listener);
+    store.setUnreadSessionCount(0, "team-a");
+    store.setUnreadSessionCount(0, "team-a");
+    store.setUnreadSessionCount(9, "team-x");
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenLastCalledWith(0);
+  });
+});

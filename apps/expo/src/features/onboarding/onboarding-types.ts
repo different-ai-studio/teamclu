@@ -15,6 +15,13 @@ export type OnboardingRoute =
    */
   | "selectTeam"
   /**
+   * The sign-in named a person with identities in more than one org (an email
+   * user's later identities sit on accounts nobody signs in to directly) —
+   * pick which org to enter (`identityChoices`). iOS `route == .selectIdentity`
+   * (#1659, docs/plans/2026-10-08-staff-only-identity-model.md).
+   */
+  | "selectIdentity"
+  /**
    * Signed in, in no team, and the user said at onboarding they are joining an
    * existing one — so nothing is created for them. iOS `route == .noTeam`.
    */
@@ -27,6 +34,17 @@ export type TeamSummary = {
   name: string;
   slug: string;
   role: string;
+};
+
+/** One identity of the signed-in person — one per org (`GET /v1/auth/identities`). */
+export type MyIdentity = {
+  userId: string;
+  orgId: string | null;
+  orgName: string | null;
+  orgLogo: string | null;
+  adminType: number;
+  /** The identity the current session belongs to. */
+  isCurrent: boolean;
 };
 
 export type BootstrapResult = {
@@ -45,6 +63,8 @@ export type OnboardingState = {
   route: OnboardingRoute;
   /** Populated while `route === "selectTeam"`, empty otherwise. */
   teamChoices: BootstrapTeam[];
+  /** Populated while `route === "selectIdentity"`, empty otherwise. */
+  identityChoices: MyIdentity[];
   isBusy: boolean;
   errorMessage: string | null;
   pendingEmailOTPEmail: string | null;
@@ -108,6 +128,16 @@ export type OnboardingAction =
   | {
       /** Activation failed — stay on the picker so another team can be tried. */
       type: "teamSelectionFailed";
+      message: string;
+    }
+  | {
+      /** Several identities — stop at the org picker before bootstrapping. */
+      type: "identitiesOffered";
+      identities: MyIdentity[];
+    }
+  | {
+      /** Switching identity failed — stay on the org picker with the error. */
+      type: "identitySelectionFailed";
       message: string;
     }
   | {

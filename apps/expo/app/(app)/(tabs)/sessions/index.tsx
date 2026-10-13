@@ -1,5 +1,5 @@
 import { Redirect, useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { routeToHref, useConnectedAgentsStore, useOnboarding, useTeamMqtt } from "../../../_layout";
 import { createActorsApi } from "../../../../src/features/actors/actor-api";
 import { supabaseAccessToken } from "../../../../src/lib/cloud-api/client";
@@ -35,17 +35,17 @@ import {
   openShortcutTarget,
 } from "../../../../src/features/shortcuts/ShortcutsDrawer";
 import { useAppsFeatureEnabled } from "../../../../src/features/apps/use-apps-feature";
+import { createTeamAppsApi } from "../../../../src/features/apps/team-apps-api";
+import { createIdeasApi } from "../../../../src/features/ideas/idea-api";
+import {
+  hasAppSessions,
+  ideaIdsMissingTitle,
+  mergeNames,
+  sessionContext,
+  type SessionContext,
+} from "../../../../src/features/sessions/session-context-names";
 import { supabase } from "../../../../src/lib/supabase/client";
-import { getKnownMqttUrl } from "../../../../src/lib/mqtt/config";
-import type { ConnectionState } from "../../../../src/lib/mqtt/team-mqtt";
 import { SheetModal } from "../../../../src/ui/SheetModal";
-
-/** Host portion of the broker URL — iOS shows `pairing.brokerHost`, not the URL. */
-function brokerHostLabel(url: string | null): string {
-  if (!url) return "";
-  const withoutScheme = url.replace(/^[a-z]+:\/\//i, "");
-  return withoutScheme.split("/")[0] ?? "";
-}
 
 /** Stable no-op store so `useSyncExternalStore` can run before MQTT connects. */
 const noopSubscribe = () => () => {};
@@ -58,6 +58,17 @@ const EMPTY_AGENTS_STATE: ConnectedAgentsStoreState = {
   errorMessage: null,
 };
 const emptyAgentsState = () => EMPTY_AGENTS_STATE;
+
+/**
+ * App names and idea titles for the rows' third line, per team, kept for the
+ * life of the process so a refresh or a tab switch doesn't blank them.
+ */
+type ContextNames = {
+  apps: ReadonlyMap<string, string>;
+  ideas: ReadonlyMap<string, string>;
+};
+const EMPTY_NAMES: ContextNames = { apps: new Map(), ideas: new Map() };
+const contextNamesByTeam = new Map<string, ContextNames>();
 
 export default function SessionsIndexRoute() {
   const router = useRouter();
@@ -210,17 +221,8 @@ export default function SessionsIndexRoute() {
 
   // Every hook sits above the redirects below: they used to follow them,
   // so the hook count changed between renders whenever the route flipped.
-  // Daemon reachability for the pill above the list. `useTeamMqtt` hands out the
-  // shared client, so this tracks the same connection the sessions stream uses.
+  // `useTeamMqtt` hands out the shared client the sessions stream uses.
   const teamMqtt = useTeamMqtt();
-  const [daemonState, setDaemonState] = useState<ConnectionState>("disconnected");
-  useEffect(() => {
-    if (!teamMqtt) {
-      setDaemonState("disconnected");
-      return;
-    }
-    return teamMqtt.onConnectionState(setDaemonState);
-  }, [teamMqtt]);
 
   // "Agent working / waiting for you" dots (iOS #1567), from each hot session's
   // live stream. One store per team; the detail screen reports local prompts.
@@ -286,6 +288,66 @@ export default function SessionsIndexRoute() {
     };
   }, [teamMqtt, activeTeamId, liveActivity]);
 
+  // Third line of each row: the session's app, else its idea (iOS #1597).
+  // Only reaches the network for what the cache can't answer — the apps list
+  // when any session has an app, the ideas list when an idea has no title.
+  const [contextNames, setContextNames] = useState<ContextNames>(
+    () => contextNamesByTeam.get(activeTeamId) ?? EMPTY_NAMES,
+  );
+  useEffect(() => {
+    setContextNames(contextNamesByTeam.get(activeTeamId) ?? EMPTY_NAMES);
+  }, [activeTeamId]);
+  useEffect(() => {
+    if (!activeTeamId || listState.sessions.length === 0) return;
+    let cancelled = false;
+    const getAccessToken = supabaseAccessToken(supabase);
+    const update = (patch: (prev: ContextNames) => ContextNames) => {
+      if (cancelled) return;
+      const prev = contextNamesByTeam.get(activeTeamId) ?? EMPTY_NAMES;
+      const next = patch(prev);
+      if (next === prev) return;
+      contextNamesByTeam.set(activeTeamId, next);
+      setContextNames(next);
+    };
+    if (appsEnabled && hasAppSessions(listState.sessions)) {
+      void createTeamAppsApi({ getAccessToken })
+        .listApps(activeTeamId)
+        .then((apps) => {
+          update((prev) => {
+            const apps2 = mergeNames(prev.apps, apps.map((app) => [app.id, app.name] as const));
+            return apps2 === prev.apps ? prev : { ...prev, apps: apps2 };
+          });
+        })
+        .catch(() => {});
+    }
+    const known = contextNamesByTeam.get(activeTeamId) ?? EMPTY_NAMES;
+    if (ideaIdsMissingTitle(listState.sessions, known.ideas).size > 0) {
+      void createIdeasApi({ getAccessToken })
+        .listIdeas(activeTeamId, { includeArchived: true })
+        .then((ideas) => {
+          update((prev) => {
+            const ideas2 = mergeNames(
+              prev.ideas,
+              ideas.map((idea) => [idea.ideaId, idea.title] as const),
+            );
+            return ideas2 === prev.ideas ? prev : { ...prev, ideas: ideas2 };
+          });
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTeamId, appsEnabled, listState.sessions]);
+  const contextBySessionId = useMemo(() => {
+    const map = new Map<string, SessionContext>();
+    for (const session of listState.sessions) {
+      const context = sessionContext(session, contextNames.apps, contextNames.ideas);
+      if (context) map.set(session.sessionId, context);
+    }
+    return map;
+  }, [listState.sessions, contextNames]);
+
   // Badge dot, status label and workspace name come off the live runtime, the
   // same three facts iOS reads from its per-session AgentAttachment.
   const agentsStore = useConnectedAgentsStore();
@@ -303,7 +365,7 @@ export default function SessionsIndexRoute() {
     return <Redirect href="/" />;
   }
 
-  const { runtimeBySessionId, workspaceBySessionId } = buildSessionRuntimeMaps({
+  const { runtimeBySessionId } = buildSessionRuntimeMaps({
     sessions: listState.sessions,
     presenceByAgentId: agentsState.presenceByAgentId,
     agentActorIds: new Set(agentsState.agents.map((agent) => agent.agentId)),
@@ -313,10 +375,8 @@ export default function SessionsIndexRoute() {
     <>
     <SessionsListScreen
       actorGlyphById={actorGlyphById}
-      brokerHost={brokerHostLabel(getKnownMqttUrl())}
-      daemonConnectionState={daemonState}
       runtimeBySessionId={runtimeBySessionId}
-      workspaceBySessionId={workspaceBySessionId}
+      contextBySessionId={contextBySessionId}
       hasAgents={hasAgents}
       onInviteAgent={() => router.push("/(app)/invite")}
       onArchiveBatch={async (sessionIds) => {

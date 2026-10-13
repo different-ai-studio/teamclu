@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_TYPE_ORDER,
+  agentConfigWorkspaceChoices,
   normalizeStoredAgentType,
   resolveInitialAgentType,
   supportedAgentTypes,
@@ -77,5 +78,28 @@ describe("resolveInitialAgentType", () => {
 
   it("leaves the preference alone when nothing is on offer", () => {
     expect(resolveInitialAgentType("codex", [])).toBe("codex");
+  });
+});
+
+describe("agentConfigWorkspaceChoices", () => {
+  const rows = [
+    { id: "root", agentId: "a1" },
+    { id: "theirs", agentId: "a2" },
+    { id: "default", agentId: "a1" },
+  ];
+
+  it("offers the agent's own rows, its default first", () => {
+    expect(agentConfigWorkspaceChoices("a1", "default", rows).map((r) => r.id)).toEqual([
+      "default",
+      "root",
+    ]);
+  });
+
+  it("offers nothing borrowed when the agent owns no rows", () => {
+    expect(agentConfigWorkspaceChoices("a3", null, rows)).toEqual([]);
+  });
+
+  it("offers everything before an agent is picked", () => {
+    expect(agentConfigWorkspaceChoices(null, null, rows)).toHaveLength(3);
   });
 });
