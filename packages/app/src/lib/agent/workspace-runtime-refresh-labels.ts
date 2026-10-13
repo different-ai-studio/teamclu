@@ -31,3 +31,13 @@ export function runtimeRefreshNeedsBanner(
 ): boolean {
   return status === 'failed'
 }
+
+/**
+ * Whether a daemon refresh error is the OS refusing a write in the workspace
+ * (EACCES / EPERM on unix, ERROR_ACCESS_DENIED on Windows). The daemon sends
+ * the raw `io::Error` text, so match its rendering rather than a code field.
+ */
+export function isRuntimeRefreshPermissionError(error: string | null | undefined): boolean {
+  if (!error) return false
+  return /permission denied|operation not permitted|access is denied|os error (13|1|5)\)/i.test(error)
+}
