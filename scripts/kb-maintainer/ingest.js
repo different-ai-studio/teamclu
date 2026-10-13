@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { dryRun } = require("./dry-run");
@@ -8,7 +9,7 @@ const { extractorCacheKey, rawRelativePath } = require("./extract-text");
 const { extractSource } = require("./extract");
 const { compile } = require("./agent-runner");
 const { validateSourceDiff, rebuildIndex, normalizeWikiLinks, dropDeadWikiLinks, listPageFiles } = require("./validator");
-const { normalizeCompiledPage, parseFrontmatter } = require("./frontmatter");
+const { normalizeCompiledPage, parseFrontmatter, serializeFrontmatter } = require("./frontmatter");
 const {
   ensureWikiRepo,
   headCommit,
@@ -180,20 +181,86 @@ function normalizeCompiledPages(wikiRoot, beforeCommit, defaults) {
   }
 }
 
+function readPage(wikiRoot, rel) {
+  const abs = path.join(wikiRoot, rel);
+  if (!fs.existsSync(abs)) return null;
+  try {
+    return parseFrontmatter(fs.readFileSync(abs, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function dropPagesOnlyCiting(wikiRoot, sourcePath) {
   for (const rel of listPageFiles(wikiRoot)) {
-    const abs = path.join(wikiRoot, rel);
-    let parsed;
-    try {
-      parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
-    } catch {
-      continue;
-    }
+    const parsed = readPage(wikiRoot, rel);
+    if (!parsed) continue;
     const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
     if (!cited.some((source) => source && source.path === sourcePath)) continue;
     const others = cited.filter((source) => source && source.path && source.path !== sourcePath);
     if (others.length > 0) continue;
-    fs.rmSync(abs);
+    fs.rmSync(path.join(wikiRoot, rel));
+  }
+}
+
+function snapshotPages(wikiRoot, rels) {
+  const snap = new Map();
+  for (const rel of rels) {
+    const abs = path.join(wikiRoot, rel);
+    snap.set(rel, fs.existsSync(abs) ? fs.readFileSync(abs) : null);
+  }
+  return snap;
+}
+
+function restorePages(wikiRoot, snap) {
+  for (const [rel, bytes] of snap) {
+    const abs = path.join(wikiRoot, rel);
+    if (bytes == null) {
+      if (fs.existsSync(abs)) fs.rmSync(abs);
+      continue;
+    }
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, bytes);
+  }
+}
+
+function fileExistedAt(wikiRoot, commit, rel) {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${commit}:${rel}`], {
+      cwd: wikiRoot,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function discardModelOnlyFiles(wikiRoot, beforeCommit, keep) {
+  for (const rel of changedRelPaths(wikiRoot, beforeCommit)) {
+    if (keep.has(rel)) continue;
+    const abs = path.join(wikiRoot, rel);
+    if (!fs.existsSync(abs) || fileExistedAt(wikiRoot, beforeCommit, rel)) continue;
+    fs.rmSync(abs, { force: true });
+  }
+}
+
+function detachDeletedSource(wikiRoot, sourcePath) {
+  for (const rel of listPageFiles(wikiRoot)) {
+    const parsed = readPage(wikiRoot, rel);
+    if (!parsed) continue;
+    const cited = Array.isArray(parsed.frontmatter.sources) ? parsed.frontmatter.sources : [];
+    if (!cited.some((source) => source && source.path === sourcePath)) continue;
+    const kept = cited.filter((source) => source && source.path && source.path !== sourcePath);
+    const abs = path.join(wikiRoot, rel);
+    if (kept.length === 0) {
+      fs.rmSync(abs);
+      continue;
+    }
+    fs.writeFileSync(
+      abs,
+      serializeFrontmatter({ ...parsed.frontmatter, sources: kept }, parsed.body || ""),
+    );
   }
 }
 
@@ -226,23 +293,41 @@ async function retractOne({ item, opts, config, state, wikiRoot, rawRoot }) {
   saveState(opts.statePath, state);
   try {
     dropPagesOnlyCiting(wikiRoot, item.path);
-    if (pagesStillCiting(wikiRoot, item.path).length > 0) {
+    const citingBeforeModel = pagesStillCiting(wikiRoot, item.path);
+    if (citingBeforeModel.length > 0) {
       rebuildIndex(wikiRoot);
-      const rawAbs = path.join(rawRoot, rawRelativePath(item.path));
-      await compile({
-        runner: opts.runner || "fake",
-        workRoot: opts.workRoot,
-        rawRoot,
-        action: "delete",
-        sourcePath: item.path,
-        sourceSha256: previous.sourceSha256,
-        rawMarkdown: fs.existsSync(rawAbs) ? fs.readFileSync(rawAbs, "utf8") : "",
-        affectedPages: previous.affectedPages,
-        schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
-        indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
-        compilerModel: opts.compilerModel,
-        createSession: opts.createSession,
-      });
+      const snap = snapshotPages(wikiRoot, [...citingBeforeModel, "index.md"]);
+      let modelRejected = false;
+      try {
+        const rawAbs = path.join(rawRoot, rawRelativePath(item.path));
+        await compile({
+          runner: opts.runner || "fake",
+          workRoot: opts.workRoot,
+          rawRoot,
+          action: "delete",
+          sourcePath: item.path,
+          sourceSha256: previous.sourceSha256,
+          rawMarkdown: fs.existsSync(rawAbs) ? fs.readFileSync(rawAbs, "utf8") : "",
+          affectedPages: previous.affectedPages,
+          schemaMarkdown: readOptional(path.join(opts.knowledgeRoot, "_schema.md")),
+          indexMarkdown: readOptional(path.join(wikiRoot, "index.md")),
+          compilerModel: opts.compilerModel,
+          createSession: opts.createSession,
+        });
+      } catch {
+        modelRejected = true;
+        restorePages(wikiRoot, snap);
+      }
+      const citingAfter = pagesStillCiting(wikiRoot, item.path);
+      const damaged = citingBeforeModel.filter((rel) => !readPage(wikiRoot, rel));
+      // A blank page or a page that still lists the deleted source is not a
+      // retract. Put the previous page back and drop only that source line, so
+      // the rest of this run can still be published.
+      if (modelRejected || citingAfter.length > 0 || damaged.length > 0) {
+        discardModelOnlyFiles(wikiRoot, beforeCommit, snap);
+        restorePages(wikiRoot, snap);
+        detachDeletedSource(wikiRoot, item.path);
+      }
     }
     rebuildIndex(wikiRoot);
     normalizeWikiLinks(wikiRoot);

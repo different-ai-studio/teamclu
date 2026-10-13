@@ -50,6 +50,15 @@ test("classifySource denies personnel paths even under a broader allow prefix", 
   assert.match(result.reason, /deny|personnel/i);
 });
 
+test("classifySource ignores a sensitive filename outside the selected folders", () => {
+  const result = classifySource(
+    { path: "documents/samples/03-入职清单-扫描件.pdf", size: 80 },
+    config(),
+  );
+  assert.equal(result.status, "ignored");
+  assert.equal(result.reason, "outside whitelist prefixes");
+});
+
 test("classifySource ignores files outside every whitelist prefix", () => {
   const result = classifySource(
     { path: "documents/other/notes.md", size: 10 },
