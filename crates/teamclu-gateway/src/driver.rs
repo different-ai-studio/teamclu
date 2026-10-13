@@ -278,6 +278,12 @@ pub trait ChannelDriver: Send + Sync {
     /// Human-readable session title on first contact ("WeCom group: …").
     fn session_title(&self, conversation: &Conversation, sender: &ExternalSender) -> String;
 
+    /// Accept additional user context during a running turn. Opt-in keeps
+    /// the existing session queue policy for every other transport.
+    fn append_during_turn(&self) -> bool {
+        false
+    }
+
     /// Prepare a placeholder for a buffered agent turn. Ordinary deliveries,
     /// commands and live-streaming channels continue through `deliver`.
     async fn prepare_buffered_reply(

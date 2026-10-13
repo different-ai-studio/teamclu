@@ -174,6 +174,21 @@ pub struct PendingUpload {
 /// intermediate text is decided by caps, not here.
 #[async_trait]
 pub trait TurnRunner: Send + Sync {
+    async fn active_turn(&self, _binding: &str) -> Option<String> {
+        None
+    }
+
+    async fn append_to_active_turn(
+        &self,
+        _acp_session_id: &str,
+        _sender_display: &str,
+        _prompt: &str,
+        _attachment_urls: &[String],
+        _message_id: &str,
+    ) -> Result<bool, CoreError> {
+        Ok(false)
+    }
+
     async fn run(
         &self,
         acp_session_id: &str,
@@ -211,6 +226,9 @@ pub enum Outcome {
     /// A slash command answered without running a turn.
     Command {
         handled: bool,
+    },
+    ContextAppended {
+        session_id: String,
     },
     Handled {
         session_id: String,
@@ -491,6 +509,32 @@ impl Core {
             Some(note) => format!("{prompt}\n\n{note}"),
             None => prompt,
         };
+
+        // SeaTalk supplements are persisted as real user messages, then sent
+        // through Pi's prompt/steer path. The original turn keeps collecting
+        // the reply and owns its one Thinking message.
+        if driver.append_during_turn() {
+            if self
+                .turns
+                .append_to_active_turn(
+                    &session.acp_session_id,
+                    &display,
+                    &prompt,
+                    &written.attachment_urls,
+                    &written.message_id,
+                )
+                .await?
+            {
+                return Ok(Outcome::ContextAppended {
+                    session_id: session.session_id,
+                });
+            }
+            // The turn may have ended while identity/quoted context was
+            // resolved. This message starts a normal turn in that case.
+            if prepared.is_none() {
+                *prepared = self.prepare_buffered_reply(driver, &msg).await;
+            }
+        }
 
         // 7. Drive the turn, streaming only where it can be seen.
         //

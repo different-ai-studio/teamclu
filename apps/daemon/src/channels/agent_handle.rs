@@ -18,7 +18,8 @@
 //! re-spawns; old conversation history stays in the cloud backend regardless.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -61,6 +62,31 @@ pub struct ResolvedSession {
     /// an outbound send needs it to write the file back into the session.
     remote_session_id: Option<String>,
     was_primed: bool,
+    active_turn: Option<Arc<ActiveGatewayTurn>>,
+}
+
+/// One collector continues to own the gateway reply when Pi receives steer
+/// prompts. The reply-to stamp also distinguishes a queued old Idle from the
+/// settlement after the latest supplement was accepted.
+struct ActiveGatewayTurn {
+    generation: String,
+    closed: AtomicBool,
+    reply_to: Mutex<GatewayTurnReplyState>,
+}
+
+#[derive(Default)]
+struct GatewayTurnReplyState {
+    expected: Option<String>,
+    latest_frame: Option<String>,
+    superseded: HashSet<Option<String>>,
+}
+
+struct ActiveGatewayTurnGuard(Arc<ActiveGatewayTurn>);
+
+impl Drop for ActiveGatewayTurnGuard {
+    fn drop(&mut self) {
+        self.0.closed.store(true, Ordering::Release);
+    }
 }
 
 /// Per-bot runtime defaults, keyed by WeCom `bot_id`. Seeded from
@@ -645,6 +671,7 @@ impl AmuxdAgentHandle {
                 binding: binding.clone(),
                 remote_session_id: remote_session_id.clone(),
                 was_primed: false,
+                active_turn: None,
             });
         let outcome = ResolveOutcome {
             real_acp_sid: entry.real_acp_sid.clone(),
@@ -954,6 +981,16 @@ impl AmuxdAgentHandle {
             (turn.agent_id, turn.event_rx)
         };
 
+        let active = Arc::new(ActiveGatewayTurn {
+            generation: uuid::Uuid::new_v4().to_string(),
+            closed: AtomicBool::new(false),
+            reply_to: Mutex::new(GatewayTurnReplyState::default()),
+        });
+        let _active_guard = ActiveGatewayTurnGuard(active.clone());
+        if let Some(resolved) = self.logical_to_acp.lock().await.get_mut(session) {
+            resolved.active_turn = Some(active.clone());
+        }
+
         // A turn is only over on Active -> Idle. The aggregator also emits an
         // `AgentReply` *mid-turn*, every time a tool call interrupts buffered
         // output (`turn_aggregator.rs` `flush_reply_into`), so returning on
@@ -1089,6 +1126,37 @@ impl AmuxdAgentHandle {
                 }
             }
 
+            // Serialize accepting a supplement with closing the collector.
+            // An old settlement already in event_rx cannot finish the reply
+            // before Pi has processed the newly accepted prompt.
+            let terminal = matches!(
+                &event.event.event,
+                Some(crate::proto::amux::acp_event::Event::Error(_))
+            ) || matches!(
+                &event.event.event,
+                Some(crate::proto::amux::acp_event::Event::StatusChange(sc))
+                    if sc.old_status == amux::AgentStatus::Active as i32
+                        && sc.new_status == amux::AgentStatus::Idle as i32
+            );
+            let mut state = active.reply_to.lock().await;
+            let current_completion = !state.superseded.contains(&event.turn_reply_to_message_id);
+            if current_completion {
+                state.latest_frame = event.turn_reply_to_message_id.clone();
+            }
+            // A later prompt from the desktop may supersede the SeaTalk
+            // supplement too. Accept its settlement; only known older stamps
+            // are stale, so mixing desktop and channel input cannot hang.
+            let completion = if terminal {
+                Some(state)
+            } else {
+                drop(state);
+                None
+            };
+            if matches!(&event.event.event, Some(amux::acp_event::Event::Error(_)))
+                && !current_completion
+            {
+                continue;
+            }
             if let Some(crate::proto::amux::acp_event::Event::Error(err)) = &event.event.event {
                 match crate::runtime::turn_reply::gateway_error_action(err, &segments, &live) {
                     crate::runtime::turn_reply::GatewayErrorAction::Continue => {
@@ -1138,9 +1206,11 @@ impl AmuxdAgentHandle {
             let flushed =
                 crate::runtime::turn_reply::absorb_emitted(emitted, &mut segments, &mut live);
 
-            if turn_ended {
+            if turn_ended && current_completion {
+                active.closed.store(true, Ordering::Release);
                 break Ok(crate::runtime::turn_reply::compose_reply(&segments, &live));
             }
+            drop(completion);
 
             // Best-effort progress updates: coalesced by interval, skipped
             // when nothing changed, and never allowed to fail the turn.
@@ -1161,6 +1231,7 @@ impl AmuxdAgentHandle {
             }
         };
 
+        active.closed.store(true, Ordering::Release);
         {
             let mut mgr = self.manager.lock().await;
             mgr.checkin_turn(crate::runtime::CheckedOutTurn {
@@ -1199,6 +1270,63 @@ impl AmuxdAgentHandle {
 
 #[async_trait]
 impl AgentHandle for AmuxdAgentHandle {
+    async fn active_turn(&self, binding: &str) -> Option<String> {
+        self.logical_to_acp
+            .lock()
+            .await
+            .values()
+            .filter(|resolved| resolved.binding == binding)
+            .filter_map(|resolved| resolved.active_turn.as_ref())
+            .find(|turn| !turn.closed.load(Ordering::Acquire))
+            .map(|turn| turn.generation.clone())
+    }
+
+    async fn append_to_active_turn(
+        &self,
+        session: &AmuxSessionId,
+        sender_display: &str,
+        text: &str,
+        attachment_urls: &[String],
+        message_id: &str,
+    ) -> Result<bool, AgentError> {
+        let resolved = self.logical_to_acp.lock().await.get(session).cloned();
+        let Some(resolved) = resolved else {
+            return Ok(false);
+        };
+        let Some(active) = resolved.active_turn else {
+            return Ok(false);
+        };
+        let mut state = active.reply_to.lock().await;
+        if active.closed.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let mut manager = self.manager.lock().await;
+        let Some(agent_id) = manager.agent_id_by_acp_session(&resolved.real_acp_sid) else {
+            return Ok(false);
+        };
+        let reply_to = if message_id.is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            message_id.to_string()
+        };
+        manager
+            .send_prompt_raw(
+                &agent_id,
+                &format!("[{sender_display}] {text}"),
+                attachment_urls.to_vec(),
+                None,
+                Some(reply_to.clone()),
+            )
+            .await
+            .map_err(|e| AgentError::Send(e.to_string()))?;
+        let previous = state.expected.clone();
+        let latest = state.latest_frame.clone();
+        state.superseded.insert(previous);
+        state.superseded.insert(latest);
+        state.expected = Some(reply_to);
+        Ok(true)
+    }
+
     async fn create_session(
         &self,
         _team_id: &str,
@@ -2610,6 +2738,7 @@ pub(crate) mod tests {
                 binding: "wecom://botA/botA/single/u".to_string(),
                 remote_session_id: None,
                 was_primed: true,
+                active_turn: None,
             },
         );
 

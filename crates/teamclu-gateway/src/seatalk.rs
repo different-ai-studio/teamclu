@@ -948,6 +948,10 @@ impl crate::driver::ChannelDriver for SeaTalkDriver {
         }
     }
 
+    fn append_during_turn(&self) -> bool {
+        true
+    }
+
     async fn prepare_buffered_reply(
         &self,
         to: &crate::driver::Conversation,

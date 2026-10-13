@@ -4,7 +4,8 @@
 //! the desktop depend on), so the daemon implements
 //! [`teamclu_gateway::driver::InboundSink`] and injects it at boot.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::Instant;
 
 use crate::channels::session_queue::{EnqueueResult, QueuedMessage, RejectReason, SessionQueue};
@@ -15,9 +16,9 @@ use teamclu_gateway::driver::{
     BufferedReply, ChannelDriver, Conversation, InboundMessage, InboundSink, OutboundMessage,
 };
 use teamclu_gateway::i18n::{self, MsgKey};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, OwnedMutexGuard};
 
-use super::{Core, Outcome};
+use super::{Core, CoreError, Outcome};
 
 #[derive(Default)]
 struct PreparedReply {
@@ -39,6 +40,10 @@ pub struct CoreSink {
     /// their child for the turn's duration. Serialising is also what the sender
     /// expects — a chat is a conversation, not a thread pool.
     pub queue: Arc<SessionQueue>,
+    /// Serializes only admission/startup of appendable turns. Once Pi is
+    /// accepting context the running turn releases the gate, so later input
+    /// never waits for its completed reply. Weak entries do not retain chats.
+    pub(crate) append_gates: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
 impl CoreSink {
@@ -58,12 +63,24 @@ impl CoreSink {
             }
             None => core.handle(driver.as_ref(), msg).await,
         };
+        Self::report(channel, &external_id, result);
+    }
+
+    fn report(channel: &str, external_id: &str, result: Result<Outcome, CoreError>) {
         match result {
             Ok(Outcome::Handled {
                 session_id,
                 deliveries,
             }) => {
                 tracing::info!(channel, session_id, deliveries, "gateway: turn complete");
+            }
+            Ok(Outcome::ContextAppended { session_id }) => {
+                tracing::info!(
+                    channel,
+                    session_id,
+                    external_id,
+                    "gateway: context appended to live turn"
+                );
             }
             Ok(other) => {
                 tracing::debug!(channel, external_id, ?other, "gateway: message not a turn");
@@ -73,6 +90,53 @@ impl CoreSink {
                 tracing::error!(channel, external_id, error = %e, "gateway: message failed");
             }
         }
+    }
+
+    fn append_gate(&self, binding: &str) -> Arc<Mutex<()>> {
+        let mut gates = self.append_gates.lock().unwrap();
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = gates.get(binding).and_then(Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(Mutex::new(()));
+        gates.insert(binding.to_string(), Arc::downgrade(&gate));
+        gate
+    }
+
+    async fn process_appendable(
+        core: Arc<Core>,
+        driver: Arc<dyn ChannelDriver>,
+        msg: InboundMessage,
+        guard: OwnedMutexGuard<()>,
+    ) {
+        let binding = driver.binding(&msg.conversation);
+        let initial_turn = core.turns.active_turn(&binding).await;
+        let pending = if initial_turn.is_none() {
+            core.prepare_buffered_reply(driver.as_ref(), &msg).await
+        } else {
+            None
+        };
+        let channel = msg.conversation.channel;
+        let external_id = msg.external_message_id.clone();
+        let work = core.handle_prepared(driver.as_ref(), msg, pending);
+        tokio::pin!(work);
+        let mut guard = Some(guard);
+        let result = loop {
+            tokio::select! {
+                biased;
+                result = &mut work => break result,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(25)), if guard.is_some() => {
+                    let current = core.turns.active_turn(&binding).await;
+                    if current.is_some() && current != initial_turn {
+                        // Keep input ordered through cold startup and context
+                        // preparation; release as soon as the new turn can be
+                        // steered. The original collector keeps running here.
+                        guard.take();
+                    }
+                }
+            }
+        };
+        Self::report(channel, &external_id, result);
     }
 
     /// Tell the chat its message is not being answered, and why.
@@ -111,6 +175,12 @@ impl InboundSink for CoreSink {
 
         if let Some(outcome) = core.claim_message(&msg).await {
             tracing::debug!(external_id = %msg.external_message_id, ?outcome, "gateway: message not a turn");
+            return;
+        }
+        if driver.append_during_turn() {
+            let gate = self.append_gate(&driver.binding(&msg.conversation));
+            let guard = gate.lock_owned().await;
+            tokio::spawn(Self::process_appendable(core, driver, msg, guard));
             return;
         }
         // Start the placeholder at receipt, including for queued messages.
