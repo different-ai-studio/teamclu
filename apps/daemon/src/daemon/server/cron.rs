@@ -279,9 +279,10 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
         context: crate::runtime::execution_context::ExecutionContext,
         agent_type_override: Option<crate::proto::amux::AgentType>,
     ) -> anyhow::Result<String> {
-        self.agents
-            .lock()
-            .await
+        let workspace_id = context.workspace.as_ref().map(|w| w.workspace_id.clone());
+        let mut agents = self.agents.lock().await;
+        let agent_type = agents.default_agent_type();
+        let acp_sid = agents
             .create_gateway_session_with_model(
                 team_id,
                 session_key,
@@ -293,7 +294,20 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
                 agent_type_override,
             )
             .await
-            .map_err(|e| anyhow::anyhow!("spawn failed: {e}"))
+            .map_err(|e| anyhow::anyhow!("spawn failed: {e}"))?;
+        drop(agents);
+
+        // The idle sweep stops this runtime once the job goes quiet, and
+        // whoever writes in the session afterwards — `session/live` resume or a
+        // desktop RuntimeStart — can only reattach a pi session recorded in
+        // `runtimes.toml`. Record it under the workspace the job actually ran
+        // in (not the `gateway:cron://` spawn id), which is the workspace
+        // those paths resolve; without a row they open a blank session that
+        // never saw the job.
+        if let Some(workspace_id) = workspace_id {
+            self.upsert_session_binding(remote_session_id, &workspace_id, agent_type, &acp_sid);
+        }
+        Ok(acp_sid)
     }
 
     #[cfg(test)]
@@ -1391,6 +1405,161 @@ mod tests {
         assert!(
             already_seen,
             "cron prompt id should be spent so re-ingestion is a no-op"
+        );
+    }
+
+    /// A cron run, then someone writes in its session after the idle sweep
+    /// stopped the runtime. Whoever brings the session back — the
+    /// `session/live` resume or a desktop RuntimeStart — must land on the pi
+    /// session the job ran in, not a blank one that never saw the job.
+    async fn cron_session_after_idle_eviction() -> (
+        crate::daemon::server::tests::TestServer,
+        Arc<std::sync::Mutex<Vec<crate::runtime::test_support::CapturedAttach>>>,
+        tempfile::TempDir,
+        String,
+    ) {
+        let workspace = tempfile::tempdir().unwrap();
+        let mock = MockBackend::with_identity("team-test", "agent-actor");
+        {
+            let mut state = mock.state();
+            state.agent_defaults.insert(
+                "agent-actor".to_string(),
+                AgentDefaults {
+                    default_agent_type: None,
+                    default_workspace_id: Some("ws-default".to_string()),
+                },
+            );
+            state.workspaces_by_id.insert(
+                "ws-default".into(),
+                WorkspaceRow {
+                    id: "ws-default".into(),
+                    team_id: "team-test".into(),
+                    path: Some(workspace.path().to_string_lossy().into_owned()),
+                    archived: false,
+                    agent_id: None,
+                },
+            );
+            state.sessions.insert(
+                "cron-session".into(),
+                crate::backend::BackendSessionAndParticipants {
+                    session: crate::backend::BackendSessionRow {
+                        id: "cron-session".into(),
+                        team_id: "team-test".into(),
+                        created_by_actor_id: Some("agent-actor".into()),
+                        primary_agent_id: Some("agent-actor".into()),
+                        mode: "chat".into(),
+                        title: "Cron: PPS alert detail dispatch daily".into(),
+                        summary: String::new(),
+                        idea_id: None,
+                        parent_session_id: None,
+                        thread_root_message_id: None,
+                        created_at: chrono::Utc::now(),
+                    },
+                    participants: Vec::new(),
+                },
+            );
+        }
+        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let mut fixture = test_server_with_cloud_api(backend);
+        let captures = {
+            let mut manager = fixture.server.agents.lock().await;
+            crate::runtime::test_support::install_capturing_backend(&mut manager)
+        };
+
+        let context = fixture
+            .server
+            .assemble_execution_context(
+                workspace.path().to_string_lossy().as_ref(),
+                Some(workspace.path().to_string_lossy().as_ref()),
+                None,
+                true,
+                Some(PermissionPolicy::Full),
+            )
+            .await
+            .unwrap();
+        let cron_acp = fixture
+            .server
+            .create_cron_gateway_session(
+                "team-test",
+                "cron/job-pps/run-1",
+                "cron-session",
+                None,
+                context,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The idle sweep detaches the runtime once the job has been quiet.
+        fixture
+            .server
+            .agents
+            .lock()
+            .await
+            .stop_runtime("cron-session")
+            .await;
+
+        (fixture, captures, workspace, cron_acp)
+    }
+
+    #[tokio::test]
+    async fn a_message_after_idle_eviction_resumes_the_cron_runs_pi_session() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, _workspace, cron_acp) =
+            cron_session_after_idle_eviction().await;
+
+        let resumed = fixture
+            .server
+            .resume_historical_runtimes_for_session("cron-session", Some("human-actor"))
+            .await;
+
+        assert!(
+            resumed,
+            "session/live found nothing to resume for the cron session; the message is dropped"
+        );
+        let captures = captures.lock().unwrap();
+        assert_eq!(
+            captures.last().unwrap().resume_acp_session_id.as_deref(),
+            Some(cron_acp.as_str()),
+            "the follow-up must reattach the pi session the cron job ran in"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_desktop_start_after_idle_eviction_resumes_the_cron_runs_pi_session() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (mut fixture, captures, workspace, cron_acp) = cron_session_after_idle_eviction().await;
+        let agent_type = fixture.server.agents.lock().await.default_agent_type();
+
+        fixture
+            .server
+            .apply_start_runtime(
+                agent_type,
+                "ws-default",
+                workspace.path().to_string_lossy().as_ref(),
+                "cron-session",
+                "",
+                None,
+                "human-actor",
+                false,
+                None,
+                "",
+            )
+            .await
+            .unwrap_or_else(|e| panic!("start failed: {}", e.error_message));
+
+        let captures = captures.lock().unwrap();
+        assert_eq!(
+            captures.len(),
+            2,
+            "one attach for the cron run, one for the follow-up"
+        );
+        assert_eq!(
+            captures[1].resume_acp_session_id.as_deref(),
+            Some(cron_acp.as_str()),
+            "the desktop start opened a blank pi session instead of the cron job's"
         );
     }
 }
