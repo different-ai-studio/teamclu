@@ -1,0 +1,147 @@
+name: Android Beta Release
+
+# Builds the Expo app as an APK and publishes it next to the desktop beta:
+#   <CDN>/beta/android/<versionName>-<versionCode>/TeamClu_<…>.apk
+#   <CDN>/beta/android/latest.json   ← the release page's Android tab reads this
+#
+# Runs on every push to main that touches apps/expo, and on manual dispatch.
+# A newer push cancels the in-flight run, so a burst of merges ships one APK.
+#
+# The build is `eas build --local` on this runner, not on EAS's queue, but it
+# still talks to EAS for two things:
+#   - the Android keystore (EAS-managed; every APK must carry the same signature
+#     or users can't install over the previous one);
+#   - the versionCode (eas.json: appVersionSource "remote" + autoIncrement).
+# Hence the EXPO_TOKEN secret: a robot token for the `teamklo-team` account
+# (expo.dev → Account settings → Access tokens).
+#
+# The APK talks to the API baked in by the `beta-apk` profile in
+# apps/expo/eas.json (inherits `production`).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/expo/**"
+      - ".github/workflows/release-android.yml"
+      - "scripts/publish-android-apk.py"
+  workflow_dispatch:
+
+concurrency:
+  group: release-android
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+  OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+  OSS_PREFIX: beta
+  CDN_BASE: ${{ vars.OSS_CDN_BASE || 'https://teamclaw.ucar.cc' }}
+  CDN_REFRESH_REGION: ${{ vars.OSS_CDN_REFRESH_REGION || '' }}
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check secrets
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+        run: |
+          missing=""
+          [ -n "$EXPO_TOKEN" ] || missing="$missing EXPO_TOKEN"
+          [ -n "$OSS_ACCESS_KEY_ID" ] || missing="$missing OSS_ACCESS_KEY_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repo secrets:$missing"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'apps/expo/app.json') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter @teamclu/expo...
+
+      - name: Build APK
+        working-directory: apps/expo
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          npx --yes eas-cli@latest build \
+            --platform android --profile beta-apk \
+            --local --non-interactive \
+            --output "$GITHUB_WORKSPACE/app.apk"
+
+      - name: Read version from APK
+        id: version
+        run: |
+          AAPT="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)aapt"
+          BADGING="$("$AAPT" dump badging app.apk | head -1)"
+          NAME="$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          CODE="$(echo "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
+          if [ -z "$NAME" ] || [ -z "$CODE" ]; then
+            echo "::error::Could not read versionName/versionCode: $BADGING"
+            exit 1
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "APK $NAME ($CODE)"
+
+      - name: Publish to OSS
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          python3 -m pip install oss2 --quiet --break-system-packages 2>/dev/null || pip3 install oss2 --quiet --break-system-packages
+          python3 scripts/publish-android-apk.py app.apk \
+            --version "${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}" \
+            --version-code "${{ steps.version.outputs.code }}" \
+            --notes "$(git log -1 --format=%s)"
+
+      - name: Refresh CDN cache for android/latest.json
+        # Same reason as release-oss.yml: the CDN edge ignores max-age on the
+        # mutable manifest, so the page would keep showing the previous APK.
+        if: env.CDN_REFRESH_REGION != ''
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          curl -fsSL https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz -o /tmp/aliyun.tgz
+          tar xzf /tmp/aliyun.tgz -C /tmp
+          sudo mv /tmp/aliyun /usr/local/bin/aliyun
+          aliyun configure set --profile cdn --mode AK \
+            --access-key-id "$OSS_ACCESS_KEY_ID" \
+            --access-key-secret "$OSS_ACCESS_KEY_SECRET" \
+            --region "$CDN_REFRESH_REGION"
+          aliyun cdn RefreshObjectCaches --profile cdn --ObjectType File \
+            --ObjectPath "${CDN_BASE%/}/${OSS_PREFIX}/android/latest.json"
+
+      - name: Summary
+        run: |
+          echo "Android ${{ steps.version.outputs.name }} (${{ steps.version.outputs.code }}) → ${CDN_BASE%/}/${OSS_PREFIX}/index.html" >> "$GITHUB_STEP_SUMMARY"
