@@ -469,6 +469,16 @@ pub trait Backend: Send + Sync {
         actor_id: &str,
     ) -> BackendResult<Option<String>>;
 
+    /// Move `actor_id`'s seat in `session_id` to `workspace_id` — the value
+    /// [`Backend::fetch_session_workspace`] reads back and the desktop opens
+    /// the session's files pane and runtime in.
+    async fn set_session_participant_workspace(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        workspace_id: &str,
+    ) -> BackendResult<()>;
+
     /// How far `actor_id` has read in `session_id`, from its participant row.
     /// `None` when there is no participant row or no cursor recorded yet.
     async fn fetch_session_cursor(

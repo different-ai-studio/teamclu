@@ -371,6 +371,19 @@ impl Backend for MockBackend {
             .cloned())
     }
 
+    async fn set_session_participant_workspace(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        workspace_id: &str,
+    ) -> BackendResult<()> {
+        self.state.lock().unwrap().session_workspaces.insert(
+            (session_id.to_string(), actor_id.to_string()),
+            workspace_id.to_string(),
+        );
+        Ok(())
+    }
+
     async fn ensure_agent_types(
         &self,
         supported_types: &[String],

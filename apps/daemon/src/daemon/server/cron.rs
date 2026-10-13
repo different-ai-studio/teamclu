@@ -297,14 +297,31 @@ Pass it as `reply_token` to the `send_channel_message` tool, together with an ex
             .map_err(|e| anyhow::anyhow!("spawn failed: {e}"))?;
         drop(agents);
 
-        // The idle sweep stops this runtime once the job goes quiet, and
-        // whoever writes in the session afterwards — `session/live` resume or a
-        // desktop RuntimeStart — can only reattach a pi session recorded in
-        // `runtimes.toml`. Record it under the workspace the job actually ran
-        // in (not the `gateway:cron://` spawn id), which is the workspace
-        // those paths resolve; without a row they open a blank session that
-        // never saw the job.
+        // A session's workspace is this agent's seat on it: the desktop opens
+        // the files pane and starts the runtime there, and `session/live`
+        // resume reads it too. Cron seats the agent on its default workspace
+        // when it creates the session — or on nothing, without one — so point
+        // the seat at the workspace the job actually ran in, and record the
+        // pi session under that same workspace in `runtimes.toml`. The idle
+        // sweep stops this runtime once the job goes quiet; whoever writes in
+        // the session afterwards can then resume it, instead of opening a
+        // blank pi session that never saw the job.
         if let Some(workspace_id) = workspace_id {
+            if let Err(e) = self
+                .backend
+                .set_session_participant_workspace(
+                    remote_session_id,
+                    self.backend.actor_id(),
+                    &workspace_id,
+                )
+                .await
+            {
+                warn!(
+                    session_id = %remote_session_id,
+                    workspace_id = %workspace_id,
+                    "cron: seating the agent on the job's workspace failed: {e}"
+                );
+            }
             self.upsert_session_binding(remote_session_id, &workspace_id, agent_type, &acp_sid);
         }
         Ok(acp_sid)
@@ -1412,13 +1429,19 @@ mod tests {
     /// stopped the runtime. Whoever brings the session back — the
     /// `session/live` resume or a desktop RuntimeStart — must land on the pi
     /// session the job ran in, not a blank one that never saw the job.
+    ///
+    /// The agent's default workspace (`ws-default`, where cloud seats the
+    /// agent when it creates a cron session) is not where this job runs
+    /// (`ws-cron`), so the session's seat has to follow the job.
     async fn cron_session_after_idle_eviction() -> (
         crate::daemon::server::tests::TestServer,
+        MockBackend,
         Arc<std::sync::Mutex<Vec<crate::runtime::test_support::CapturedAttach>>>,
-        tempfile::TempDir,
+        (tempfile::TempDir, tempfile::TempDir),
         String,
     ) {
-        let workspace = tempfile::tempdir().unwrap();
+        let default_ws = tempfile::tempdir().unwrap();
+        let cron_ws = tempfile::tempdir().unwrap();
         let mock = MockBackend::with_identity("team-test", "agent-actor");
         {
             let mut state = mock.state();
@@ -1429,16 +1452,18 @@ mod tests {
                     default_workspace_id: Some("ws-default".to_string()),
                 },
             );
-            state.workspaces_by_id.insert(
-                "ws-default".into(),
-                WorkspaceRow {
-                    id: "ws-default".into(),
-                    team_id: "team-test".into(),
-                    path: Some(workspace.path().to_string_lossy().into_owned()),
-                    archived: false,
-                    agent_id: None,
-                },
-            );
+            for (id, dir) in [("ws-default", &default_ws), ("ws-cron", &cron_ws)] {
+                state.workspaces_by_id.insert(
+                    id.into(),
+                    WorkspaceRow {
+                        id: id.into(),
+                        team_id: "team-test".into(),
+                        path: Some(dir.path().to_string_lossy().into_owned()),
+                        archived: false,
+                        agent_id: None,
+                    },
+                );
+            }
             state.sessions.insert(
                 "cron-session".into(),
                 crate::backend::BackendSessionAndParticipants {
@@ -1447,7 +1472,7 @@ mod tests {
                         team_id: "team-test".into(),
                         created_by_actor_id: Some("agent-actor".into()),
                         primary_agent_id: Some("agent-actor".into()),
-                        mode: "chat".into(),
+                        mode: "collab".into(),
                         title: "Cron: PPS alert detail dispatch daily".into(),
                         summary: String::new(),
                         idea_id: None,
@@ -1458,8 +1483,12 @@ mod tests {
                     participants: Vec::new(),
                 },
             );
+            state.session_workspaces.insert(
+                ("cron-session".into(), "agent-actor".into()),
+                "ws-default".into(),
+            );
         }
-        let backend: Arc<dyn Backend> = Arc::new(mock);
+        let backend: Arc<dyn Backend> = Arc::new(mock.clone());
         let mut fixture = test_server_with_cloud_api(backend);
         let captures = {
             let mut manager = fixture.server.agents.lock().await;
@@ -1469,8 +1498,8 @@ mod tests {
         let context = fixture
             .server
             .assemble_execution_context(
-                workspace.path().to_string_lossy().as_ref(),
-                Some(workspace.path().to_string_lossy().as_ref()),
+                cron_ws.path().to_string_lossy().as_ref(),
+                Some(cron_ws.path().to_string_lossy().as_ref()),
                 None,
                 true,
                 Some(PermissionPolicy::Full),
@@ -1499,14 +1528,31 @@ mod tests {
             .stop_runtime("cron-session")
             .await;
 
-        (fixture, captures, workspace, cron_acp)
+        (fixture, mock, captures, (cron_ws, default_ws), cron_acp)
+    }
+
+    #[tokio::test]
+    async fn a_cron_run_seats_the_agent_on_the_jobs_workspace() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
+        let (_fixture, mock, _captures, _workspaces, _cron_acp) =
+            cron_session_after_idle_eviction().await;
+
+        assert_eq!(
+            mock.fetch_session_workspace("cron-session", "agent-actor")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("ws-cron"),
+            "the files pane and the next runtime start read the seat"
+        );
     }
 
     #[tokio::test]
     async fn a_message_after_idle_eviction_resumes_the_cron_runs_pi_session() {
         let home = tempfile::tempdir().unwrap();
         let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
-        let (mut fixture, captures, _workspace, cron_acp) =
+        let (mut fixture, _mock, captures, (cron_ws, _default_ws), cron_acp) =
             cron_session_after_idle_eviction().await;
 
         let resumed = fixture
@@ -1519,26 +1565,36 @@ mod tests {
             "session/live found nothing to resume for the cron session; the message is dropped"
         );
         let captures = captures.lock().unwrap();
+        let resume = captures.last().unwrap();
         assert_eq!(
-            captures.last().unwrap().resume_acp_session_id.as_deref(),
+            resume.resume_acp_session_id.as_deref(),
             Some(cron_acp.as_str()),
             "the follow-up must reattach the pi session the cron job ran in"
         );
+        assert_eq!(resume.working_directory, cron_ws.path());
     }
 
     #[tokio::test]
     async fn a_desktop_start_after_idle_eviction_resumes_the_cron_runs_pi_session() {
         let home = tempfile::tempdir().unwrap();
         let _home = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(home.path());
-        let (mut fixture, captures, workspace, cron_acp) = cron_session_after_idle_eviction().await;
+        let (mut fixture, mock, captures, _workspaces, cron_acp) =
+            cron_session_after_idle_eviction().await;
         let agent_type = fixture.server.agents.lock().await.default_agent_type();
 
+        // The desktop starts the runtime in the workspace the seat names.
+        let seat = mock
+            .fetch_session_workspace("cron-session", "agent-actor")
+            .await
+            .unwrap()
+            .expect("cron session has a seat workspace");
+        let seat_path = mock.state().workspaces_by_id[&seat].path.clone().unwrap();
         fixture
             .server
             .apply_start_runtime(
                 agent_type,
-                "ws-default",
-                workspace.path().to_string_lossy().as_ref(),
+                &seat,
+                &seat_path,
                 "cron-session",
                 "",
                 None,
