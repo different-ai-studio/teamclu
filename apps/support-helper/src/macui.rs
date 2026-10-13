@@ -13,7 +13,7 @@ use objc2_foundation::{
     NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSTimer,
 };
 
-use crate::flow::{Screen, Session};
+use crate::flow::{Screen, Session, CONNECTING_TEXT};
 
 struct Ui {
     label: usize,
@@ -107,8 +107,8 @@ pub fn run(phase: &str, api: &str, journal: PathBuf) {
     let regen = button("重新生成", &actions, sel!(onRegen:), mtm);
     let folder = button("打开记录文件夹", &actions, sel!(onFolder:), mtm);
 
-    label.setStringValue(&NSString::from_str("正在连接…"));
-    label.setFrame(rect(20.0, 110.0, 480.0, 160.0));
+    label.setStringValue(&NSString::from_str(CONNECTING_TEXT));
+    label.setFrame(rect(20.0, 112.0, 480.0, 320.0));
     allow.setFrame(rect(20.0, 24.0, 90.0, 32.0));
     reject.setFrame(rect(120.0, 24.0, 90.0, 32.0));
     end.setFrame(rect(220.0, 24.0, 90.0, 32.0));
@@ -125,7 +125,7 @@ pub fn run(phase: &str, api: &str, journal: PathBuf) {
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
-            rect(240.0, 180.0, 520.0, 300.0),
+            rect(240.0, 120.0, 520.0, 460.0),
             style,
             NSBackingStoreType::Buffered,
             false,
@@ -279,7 +279,9 @@ fn handle_regen() {
 fn handle_folder() {
     let dir = {
         let guard = STATE.lock().expect("support window state");
-        guard.as_ref().map(|state| state.session.journal_dir())
+        guard
+            .as_ref()
+            .map(|state| state.session.prepare_journal_dir())
     };
     let Some(dir) = dir else { return };
     let _ = Command::new("open").arg(dir).spawn();

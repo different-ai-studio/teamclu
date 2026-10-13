@@ -24,6 +24,13 @@ fn screen(text: String, allow: bool, reject: bool, end: bool, regen: bool, folde
     }
 }
 
+pub const CONNECTING_TEXT: &str =
+    "这个窗口是在 TeamClu 打不开时用的。\n\n正在连接。连上之后会显示一个短码，你把它告诉支持人员。";
+
+fn purpose() -> &'static str {
+    "这个窗口是在 TeamClu 打不开时用的。连上之后会显示一个短码，告诉支持人员。点「允许」之后，对方才能看到这台电脑的日志。"
+}
+
 pub fn view_for_status(
     status: &str,
     code: &str,
@@ -32,7 +39,10 @@ pub fn view_for_status(
 ) -> Screen {
     match status {
         "waiting" => screen(
-            format!("短码 {code}\n\n等待支持人员"),
+            format!(
+                "{}\n\n短码\n{code}\n\n下一步：把短码告诉支持人员，并留在这个窗口。对方接入后，这里会请你点「允许」。点允许之前，不会上传日志。",
+                purpose()
+            ),
             false,
             false,
             true,
@@ -42,7 +52,9 @@ pub fn view_for_status(
         "redeemed" => {
             let name = name.filter(|value| !value.is_empty()).unwrap_or("支持人员");
             screen(
-                format!("{name} 想查看诊断信息。\n点允许后才会上传。"),
+                format!(
+                    "{name} 已接入，想查看这台电脑的日志，用来查 TeamClu 为什么打不开。\n\n下一步：点「允许」才会上传。点「拒绝」则什么都不传。"
+                ),
                 true,
                 true,
                 false,
@@ -50,18 +62,47 @@ pub fn view_for_status(
                 false,
             )
         }
-        "allowed" => screen("正在发送".into(), false, false, true, false, false),
-        "concluded" => screen(
-            conclusion.unwrap_or("").to_string(),
+        "allowed" => screen(
+            "正在把日志发给支持人员。\n\n下一步：留在这个窗口，等结论出现。".into(),
             false,
             false,
             true,
             false,
             false,
         ),
-        "expired" => screen("短码已过期".into(), false, false, true, true, false),
-        "rejected" | "closed" => screen("已结束".into(), false, false, true, false, false),
-        other => screen(other.to_string(), false, false, true, false, false),
+        "concluded" => {
+            let body = conclusion.unwrap_or("").trim();
+            let text = if body.is_empty() {
+                "支持人员还没有写下结论。\n\n下一步：可以点「结束」关掉这个窗口。".to_string()
+            } else {
+                format!("{body}\n\n这是支持人员看完日志后的结论。下一步：看完后点「结束」。")
+            };
+            screen(text, false, false, true, false, false)
+        }
+        "expired" => screen(
+            "这个短码已经过期，支持人员用不了。\n\n下一步：点「重新生成」，把新的短码再告诉支持人员。".into(),
+            false,
+            false,
+            true,
+            true,
+            false,
+        ),
+        "rejected" | "closed" => screen(
+            "这次支持已经结束。\n\n下一步：TeamClu 还是打不开的话，重新打开这个窗口，会得到一个新短码。".into(),
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        other => screen(
+            format!("{other}\n\n下一步：点「结束」。需要的话，重新打开这个窗口再要一个短码。"),
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
     }
 }
 
@@ -98,7 +139,7 @@ impl Session {
         self.session_id = None;
         self.code = None;
         if self.api.is_empty() {
-            return self.offline("未配置 Cloud API 地址。");
+            return self.offline("还没有配置服务器地址，短码出不来。");
         }
         match http::create_session(&self.api, &self.phase) {
             Ok(opened) => {
@@ -107,7 +148,7 @@ impl Session {
                 self.code = Some(opened.code);
                 view_for_status("waiting", &code, None, None)
             }
-            Err(err) => self.offline(&format!("连不上。\n{err}")),
+            Err(err) => self.offline(&format!("现在连不上，短码出不来。\n\n详情：{err}")),
         }
     }
 
@@ -138,7 +179,7 @@ impl Session {
         if let Err(err) = http::allow_session(&self.api, &id, &code) {
             self.uploaded = false;
             return screen(
-                format!("允许失败。\n{err}"),
+                format!("刚才没有传出去。\n\n下一步：再点一次「允许」。还是不行就点「拒绝」，把短码重新告诉支持人员。\n\n详情：{err}"),
                 true,
                 true,
                 false,
@@ -177,8 +218,12 @@ impl Session {
             Err(err) if err.contains("409") => view_for_status("allowed", &code, None, None),
             Err(err) => {
                 self.uploaded = false;
+                let record = self.save_local_record();
                 screen(
-                    format!("发送失败。\n{err}\n\n记录在\n{}", self.journal.display()),
+                    format!(
+                        "日志没有传出去。\n\n下一步：点「打开记录文件夹」，把里面的「诊断记录.json」发给支持人员。\n\n记录文件\n{record}\n\n详情：{err}",
+                        record = record.display()
+                    ),
                     false,
                     false,
                     true,
@@ -199,9 +244,36 @@ impl Session {
         self.code = None;
     }
 
+    pub fn record_path(&self) -> PathBuf {
+        self.journal_dir().join("诊断记录.json")
+    }
+
+    /// Writes the same bundle the upload would have sent, so the folder has a file to hand over.
+    pub fn save_local_record(&self) -> PathBuf {
+        let path = self.record_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let bundle = crate::gather::bundle(&self.phase);
+        if let Ok(text) = serde_json::to_string_pretty(&bundle) {
+            let _ = std::fs::write(&path, text);
+        }
+        path
+    }
+
+    pub fn prepare_journal_dir(&self) -> PathBuf {
+        let _ = self.save_local_record();
+        self.journal_dir()
+    }
+
     fn offline(&self, message: &str) -> Screen {
+        let record = self.save_local_record();
         screen(
-            format!("{message}\n\n记录在\n{}", self.journal.display()),
+            format!(
+                "{}\n\n{message}\n\n下一步：点「打开记录文件夹」，把里面的「诊断记录.json」发给支持人员。那是这台电脑的日志。\n\n记录文件\n{}",
+                purpose(),
+                record.display()
+            ),
             false,
             false,
             true,
@@ -234,7 +306,35 @@ mod tests {
     #[test]
     fn concluded_shows_the_text() {
         let screen = view_for_status("concluded", "ABCD-EFGH", None, Some("看 journal"));
-        assert_eq!(screen.text, "看 journal");
+        assert!(screen.text.contains("看 journal"));
+        assert!(screen.text.contains("下一步"));
+        assert!(screen.end);
+        assert!(!screen.allow);
+    }
+
+    #[test]
+    fn offline_writes_a_record_file_into_the_folder() {
+        let dir =
+            std::env::temp_dir().join(format!("teamclu-support-record-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let journal = dir.join("journal.jsonl");
+        let mut session = super::Session::new("manual", "", journal);
+        let screen = session.start();
+        let record = dir.join("诊断记录.json");
+        let text = std::fs::read_to_string(&record).expect("record file");
+        assert!(text.contains("\"snapshot\""));
+        assert!(screen.text.contains("诊断记录.json"));
+        assert!(screen.folder);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn waiting_says_who_it_is_for_and_the_next_step() {
+        let screen = view_for_status("waiting", "ABCD-EFGH", None, None);
+        assert!(screen.text.contains("TeamClu 打不开"));
+        assert!(screen.text.contains("ABCD-EFGH"));
+        assert!(screen.text.contains("下一步"));
+        assert!(screen.text.contains("允许"));
         assert!(screen.end);
         assert!(!screen.allow);
     }

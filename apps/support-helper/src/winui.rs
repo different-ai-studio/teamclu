@@ -53,8 +53,8 @@ pub fn run(phase: &str, api: &str, journal: PathBuf) {
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            520,
-            320,
+            560,
+            480,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             instance,
@@ -63,12 +63,12 @@ pub fn run(phase: &str, api: &str, journal: PathBuf) {
         if hwnd.is_null() {
             return;
         }
-        let label = child(hwnd, "STATIC", "", 16, 16, 470, 160, 0);
-        let allow = child(hwnd, "BUTTON", "允许", 16, 200, 90, 32, ALLOW);
-        let reject = child(hwnd, "BUTTON", "拒绝", 116, 200, 90, 32, REJECT);
-        let end = child(hwnd, "BUTTON", "结束", 216, 200, 90, 32, END);
-        let regen = child(hwnd, "BUTTON", "重新生成", 316, 200, 110, 32, REGEN);
-        let folder = child(hwnd, "BUTTON", "打开记录文件夹", 16, 240, 160, 32, FOLDER);
+        let label = child(hwnd, "STATIC", "", 16, 16, 510, 320, 0);
+        let allow = child(hwnd, "BUTTON", "允许", 16, 352, 90, 32, ALLOW);
+        let reject = child(hwnd, "BUTTON", "拒绝", 116, 352, 90, 32, REJECT);
+        let end = child(hwnd, "BUTTON", "结束", 216, 352, 90, 32, END);
+        let regen = child(hwnd, "BUTTON", "重新生成", 316, 352, 110, 32, REGEN);
+        let folder = child(hwnd, "BUTTON", "打开记录文件夹", 16, 392, 160, 32, FOLDER);
         {
             let mut guard = APP.lock().expect("support window state");
             *guard = Some(App {
@@ -160,7 +160,7 @@ fn on_regen() {
 fn on_folder() {
     let path = {
         let guard = APP.lock().expect("support window state");
-        guard.as_ref().map(|app| app.session.journal_dir())
+        guard.as_ref().map(|app| app.session.prepare_journal_dir())
     };
     let Some(path) = path else { return };
     let _ = Command::new("explorer").arg(path).spawn();
