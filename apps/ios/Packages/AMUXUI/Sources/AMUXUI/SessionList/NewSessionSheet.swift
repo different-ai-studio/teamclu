@@ -443,18 +443,14 @@ public struct NewSessionSheet: View {
     /// any workspace owned by the agent. Never borrow another agent's path.
     /// Returns nil if no workspace exists for this agent.
     private func resolveAgentDefaults(for actor: CachedActor) -> AgentConfigSheet.Selection? {
-        let owned = workspaces.filter { $0.agentID == actor.actorId }
-        let workspaceID: String? = {
-            if let id = actor.defaultWorkspaceId,
-               workspaces.contains(where: { $0.id == id }) {
-                return id
-            }
-            return owned.first?.id
-        }()
-        guard let workspaceID else { return nil }
+        guard let workspaceID = SessionCreationInput.defaultWorkspace(
+            agentID: actor.actorId,
+            defaultWorkspaceID: actor.defaultWorkspaceId,
+            workspaces: workspaces
+        )?.id else { return nil }
         let allowedTypes = AgentConfigSheet.AgentType.supported(from: actor.agentTypes)
         let defaultType = AgentConfigSheet.AgentType.fromStoredValue(actor.defaultAgentType ?? actor.agentTypes.first)
-        let type = allowedTypes.isEmpty || allowedTypes.contains(defaultType) ? defaultType : (allowedTypes.first ?? .claude)
+        let type = allowedTypes.isEmpty || allowedTypes.contains(defaultType) ? defaultType : (allowedTypes.first ?? .pi)
         return AgentConfigSheet.Selection(workspaceID: workspaceID, agentType: type)
     }
 
