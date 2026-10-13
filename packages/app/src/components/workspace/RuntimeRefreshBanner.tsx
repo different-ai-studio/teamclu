@@ -3,7 +3,11 @@ import { AlertCircle, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { formatRuntimeRefreshChangeKinds, runtimeRefreshNeedsBanner } from '@/lib/agent/workspace-runtime-refresh-labels'
+import {
+  formatRuntimeRefreshChangeKinds,
+  isRuntimeRefreshPermissionError,
+  runtimeRefreshNeedsBanner,
+} from '@/lib/agent/workspace-runtime-refresh-labels'
 import { useWorkspaceRuntimeRefreshStore } from '@/stores/workspace-runtime-refresh'
 
 export function RuntimeRefreshWorkspaceBanner() {
@@ -17,6 +21,7 @@ export function RuntimeRefreshWorkspaceBanner() {
   }
 
   const failed = refresh?.status === 'failed'
+  const notWritable = failed && isRuntimeRefreshPermissionError(refresh?.last_error)
   const isDismissed =
     !failed &&
     refresh?.status === 'pending' &&
@@ -44,7 +49,9 @@ export function RuntimeRefreshWorkspaceBanner() {
       />
       <div className="min-w-0 flex-1">
         <p className="font-medium text-foreground">
-          {failed
+          {notWritable
+            ? t('workspace.runtimeRefresh.notWritableTitle', 'Workspace directory is not writable')
+            : failed
             ? t('workspace.runtimeRefresh.failedTitle', 'Runtime refresh failed')
             : t(
                 'workspace.runtimeRefresh.pendingTitle',

@@ -1146,6 +1146,7 @@
     "runtimeRefresh": {
       "pendingTitle": "Workspace configuration updated",
       "failedTitle": "Runtime refresh failed",
+      "notWritableTitle": "Workspace directory is not writable",
       "pendingKinds": "Updated: {{kinds}}",
       "pendingBody": "Running sessions keep their current configuration; the latest configuration loads the next time their runtime starts.",
       "failedGeneric": "Could not read the updated workspace configuration.",

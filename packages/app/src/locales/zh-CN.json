@@ -1146,6 +1146,7 @@
     "runtimeRefresh": {
       "pendingTitle": "工作区配置已更新",
       "failedTitle": "运行时配置读取失败",
+      "notWritableTitle": "工作目录不可写",
       "pendingKinds": "已更新：{{kinds}}",
       "pendingBody": "运行中的会话保持当前配置，运行环境下次启动时自动加载最新配置。",
       "failedGeneric": "无法读取更新后的工作区配置。",
