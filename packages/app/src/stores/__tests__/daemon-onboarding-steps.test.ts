@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // `refresh` (machine already known to the team) and `nameDeviceAgent` (the one
 // path that still asks the user something) rather than a wizard action.
 const h = vi.hoisted(() => ({
+  refreshAfterInstall: vi.fn(async () => {}),
   currentTeam: { id: 'team-1' } as { id: string } | null,
   daemonTeam: null as string | null,
   deviceId: 'device-1' as string | null,
@@ -18,6 +19,9 @@ const h = vi.hoisted(() => ({
   invokeCalls: [] as string[],
 }))
 
+vi.mock('@/lib/daemon/local-agent-install', () => ({
+  refreshAfterLocalAgentInstall: (teamId: string) => h.refreshAfterInstall(teamId),
+}))
 vi.mock('@/lib/utils', () => ({ isTauri: () => true }))
 vi.mock('@/lib/backend', () => ({
   getBackend: () => ({
@@ -124,6 +128,7 @@ beforeEach(() => {
   h.initShouldThrow = false
   h.registerShouldThrow = false
   h.invokeCalls = []
+  h.refreshAfterInstall.mockClear()
   localStorage.clear()
   useDaemonOnboardingStore.setState({
     status: 'unknown',
@@ -192,11 +197,13 @@ describe('daemon-onboarding step model', () => {
       deviceId: 'device-1',
     })
 
+    h.refreshAfterInstall.mockClear()
     await useDaemonOnboardingStore.getState().nameDeviceAgent('Mac mini')
     expect(useDaemonOnboardingStore.getState().completedAgent).toEqual({
       agentId: 'agent-for-device-1-in-team-1',
       displayName: 'Mac mini',
     })
+    expect(h.refreshAfterInstall).toHaveBeenCalledWith('team-1')
   })
 
   // A rebind is silent, so there is no screen to confirm anything to — leaving

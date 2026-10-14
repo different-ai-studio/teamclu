@@ -80,6 +80,7 @@ vi.mock("@/stores/auth-store", () => {
   const useAuthStore = (selector?: (s: typeof authState) => unknown) =>
     selector ? selector(authState) : authState;
   useAuthStore.getState = () => authState;
+  useAuthStore.subscribe = () => () => {};
   return { useAuthStore };
 });
 

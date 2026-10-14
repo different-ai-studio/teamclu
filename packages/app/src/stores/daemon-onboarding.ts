@@ -655,6 +655,17 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       // Recorded before refresh so the naming screen can confirm what was set up
       // rather than simply disappearing once status flips to 'ready'.
       set({ completedAgent: { agentId: bound.agentId, displayName } })
+      // The login gate unmounts this wizard as soon as status becomes ready, so
+      // its onDone never runs. Reclassify before that refresh, or the sidebar
+      // keeps the pre-install "not installed" card.
+      const teamId = pending.teamId
+      try {
+        const install = await import('@/lib/daemon/local-agent-install')
+        await install.refreshAfterLocalAgentInstall(teamId)
+      } catch {
+        // The agent is already bound. A missed reclassify leaves the card
+        // stale; opening install again still finds this machine's agent.
+      }
     } catch (e) {
       // Put the prompt back: the name the user typed was never applied, so
       // dropping it would leave the retry button creating an unnamed agent.
