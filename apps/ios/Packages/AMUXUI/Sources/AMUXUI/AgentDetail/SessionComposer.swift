@@ -339,6 +339,7 @@ struct SessionComposer: View {
         switch rightButton {
         case .stopRecording:
             Button {
+                Haptics.tap()
                 voiceRecorder.stopRecording()
             } label: {
                 Image(systemName: "mic.fill")
@@ -363,6 +364,7 @@ struct SessionComposer: View {
                     // goes away and the IME commits any marked text, so the
                     // host's `promptText = ""` empties the field for real.
                     inputFocused = false
+                    Haptics.tap()
                     onSend(storageURLs)
                     hasPendingSlashCommand = false
                     // The host clears the `attachments` tray; these are the
@@ -390,6 +392,7 @@ struct SessionComposer: View {
 
         case .mic:
             Button {
+                Haptics.tap()
                 voiceRecorder.startRecording()
             } label: {
                 Image(systemName: "mic")

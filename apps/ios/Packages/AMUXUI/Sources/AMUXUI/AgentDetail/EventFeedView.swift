@@ -1363,6 +1363,7 @@ struct MessageContextMenu: View {
     var body: some View {
         Button {
             UIPasteboard.general.string = text
+            Haptics.success()
         } label: {
             Label("Copy", systemImage: "doc.on.doc")
         }

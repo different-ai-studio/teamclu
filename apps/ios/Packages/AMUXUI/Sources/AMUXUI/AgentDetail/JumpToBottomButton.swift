@@ -8,7 +8,10 @@ struct JumpToBottomButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            Haptics.selection()
+            action()
+        } label: {
             HStack(spacing: 6) {
                 if unseenCount > 0 {
                     Text(unseenCount > 99 ? "99+" : "\(unseenCount)")

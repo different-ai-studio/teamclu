@@ -521,6 +521,7 @@ public struct SessionDetailView: View {
     private var unreadJumpOverlay: some View {
         if let jump = unreadJump, isInitialFeedVisible {
             Button {
+                Haptics.selection()
                 withAnimation(AMUXAnimation.fast) {
                     scrollProxy?.scrollTo(jump.id, anchor: .top)
                 }
