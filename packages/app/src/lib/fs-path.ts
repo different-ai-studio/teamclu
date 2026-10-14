@@ -82,6 +82,21 @@ export function basenameOf(path: string): string {
   return cut === -1 ? trimmed : trimmed.slice(cut + 1)
 }
 
+/**
+ * Everything above the last segment of a path, whichever separator it is
+ * written with, and in the spelling the caller passed in.
+ *
+ * The counterpart of `basenameOf`: `lastIndexOf('/')` finds no cut in a Windows
+ * path, so `substring(0, -1)` returns an empty string. An empty string is also
+ * what a path with no parent segment gives, which is what callers already
+ * handled with `substring`.
+ */
+export function dirnameOf(path: string): string {
+  const trimmed = path.replace(/[/\\]+$/, '')
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return cut === -1 ? '' : trimmed.slice(0, cut)
+}
+
 export function joinPathLike(parent: string, child: string): string {
   const separator = parent.includes('\\') ? '\\' : '/'
   return `${parent.replace(/[/\\]+$/, '')}${separator}${child.replace(/^[/\\]+/, '')}`

@@ -108,6 +108,18 @@ describe('file-tree-operations', () => {
       expect(mockRename).toHaveBeenCalledWith('/workspace/old.ts', '/workspace/new.ts');
     });
 
+    it('moves a file given a Windows path, keeping the file name only', async () => {
+      const result = await moveItem('C:\\ws\\a.ts', 'C:\\ws\\sub');
+      expect(result).toBe(true);
+      expect(mockRename).toHaveBeenCalledWith('C:\\ws\\a.ts', 'C:\\ws\\sub\\a.ts');
+    });
+
+    it('treats a Windows path as the same destination whichever separator spells it', async () => {
+      const result = await moveItem('C:\\ws\\sub\\a.ts', 'C:\\ws/sub');
+      expect(result).toBe(false);
+      expect(mockRename).not.toHaveBeenCalled();
+    });
+
     it('returns false on error', async () => {
       mockRename.mockRejectedValueOnce(new Error('conflict'));
       const result = await renameItem('/a', '/b');
@@ -169,6 +181,35 @@ describe('file-tree-operations', () => {
       expect(mockReadFile).toHaveBeenCalledWith('/workspace/hello.ts');
       expect(mockWriteFile).toHaveBeenCalledWith(
         '/workspace/dest/hello.ts',
+        expect.any(Uint8Array),
+      );
+    });
+
+    it('copies a file picked with a Windows path under its own name, not the whole path', async () => {
+      // The Tauri file dialog hands back `C:\\…` paths. Taking the name with
+      // lastIndexOf('/') used the entire path as the name, so the destination
+      // held a colon and the write failed ("1 item could not be added").
+      const result = await copyItem(
+        'C:\\Users\\me\\Downloads\\报告.pdf',
+        'C:\\Users\\me\\TeamClu\\资料库',
+      );
+      expect(result).toBe(true);
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        'C:\\Users\\me\\TeamClu\\资料库\\报告.pdf',
+        expect.any(Uint8Array),
+      );
+    });
+
+    it('copies a Windows directory recursively with Windows child paths', async () => {
+      mockReadDir
+        .mockResolvedValueOnce([{ name: 'a.txt' }])
+        .mockRejectedValueOnce(new Error('not a dir'));
+      const result = await copyItem('C:\\src\\folder', 'C:\\dest');
+      expect(result).toBe(true);
+      expect(mockMkdir).toHaveBeenCalledWith('C:\\dest\\folder');
+      expect(mockReadFile).toHaveBeenCalledWith('C:\\src\\folder\\a.txt');
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        'C:\\dest\\folder\\a.txt',
         expect.any(Uint8Array),
       );
     });
@@ -248,6 +289,15 @@ describe('file-tree-operations', () => {
       // copyItem is called with the same parent directory
       // Since mockExists returns false, dest = /workspace/hello.ts (but copyItem
       // internally handles the naming via exists check)
+    });
+
+    it('duplicates a Windows file next to the original with a " copy" suffix', async () => {
+      mockExists
+        .mockResolvedValueOnce(true)   // C:\\ws\\hello.ts is already there
+        .mockResolvedValueOnce(false); // C:\\ws\\hello copy.ts is free
+      const result = await duplicateItem('C:\\ws\\hello.ts');
+      expect(result).toBe(true);
+      expect(mockWriteFile).toHaveBeenCalledWith('C:\\ws\\hello copy.ts', expect.any(Uint8Array));
     });
 
     it('returns false when copy fails', async () => {
