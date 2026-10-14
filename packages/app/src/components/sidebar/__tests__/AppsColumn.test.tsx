@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { AppsColumn } from '../AppsColumn'
 import { useAppsStore } from '@/stores/apps-store'
+import { useCurrentTeamStore } from '@/stores/current-team'
+import { useLocalAgentInstallStore } from '@/stores/local-agent-install'
 import type { AppRow } from '@/lib/backend/types'
 
 vi.mock('@/components/sidebar/AppListColumn', () => ({
@@ -77,5 +79,18 @@ describe('AppsColumn', () => {
     useAppsStore.setState({ selectedAppId: 'gone' })
     render(<AppsColumn />)
     expect(screen.getByTestId('app-list')).toBeInTheDocument()
+  })
+
+  it('stays on the list when a local agent is not installed', () => {
+    useCurrentTeamStore.setState({ team: { id: 'team-1', name: 'Team', slug: 'team' } })
+    useLocalAgentInstallStore.setState({
+      byTeam: { 'team-1': { status: 'absent', agentId: null, displayName: null } },
+    })
+    useAppsStore.setState({ selectedAppId: 'app-1', localAppIds: ['app-1'] })
+    render(<AppsColumn />)
+    expect(screen.getByTestId('app-list')).toBeInTheDocument()
+    expect(screen.queryByTestId('app-sessions')).not.toBeInTheDocument()
+    useCurrentTeamStore.setState({ team: null })
+    useLocalAgentInstallStore.setState({ byTeam: {} })
   })
 })

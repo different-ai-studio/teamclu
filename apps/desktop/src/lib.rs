@@ -501,6 +501,7 @@ pub fn run() {
             commands::cron::cron_any_job_running,
             commands::cron::cron_set_restart_imminent,
             commands::daemon_onboarding::daemon_init,
+            commands::stable_device_id::read_stable_device_id,
             commands::daemon_onboarding::daemon_clear,
             commands::amuxd_supervisor::daemon_ensure_running,
             commands::amuxd_supervisor::daemon_restart_managed,

@@ -24,6 +24,8 @@ import { useCurrentTeamStore } from '@/stores/current-team'
 import { toast } from 'sonner'
 import { listen } from '@tauri-apps/api/event'
 import { useShallow } from 'zustand/react/shallow'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 
 // ─── Unified type for the combined list ─────────────────────────────────
 
@@ -59,6 +61,7 @@ interface EnvVarDialogProps {
 
 function EnvVarDialog({ open, onOpenChange, editingEntry, teamSecretMissing, onSave }: EnvVarDialogProps) {
   const { t } = useTranslation()
+  const absent = useLocalAgentAbsent()
   const { role } = useTeamPermissions()
   const teamAvailable = role !== null
   const [key, setKey] = React.useState('')
@@ -168,6 +171,9 @@ function EnvVarDialog({ open, onOpenChange, editingEntry, teamSecretMissing, onS
           </DialogDescription>
         </DialogHeader>
 
+        {absent && shared ? (
+          <LocalAgentRequiredCard />
+        ) : (
         <div className="space-y-4 py-2">
           <div className="space-y-2">
             <label className="text-[13px] font-medium">
@@ -264,16 +270,19 @@ function EnvVarDialog({ open, onOpenChange, editingEntry, teamSecretMissing, onS
             <p className="text-[13px] text-destructive">{error}</p>
           )}
         </div>
+        )}
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             {t('common.cancel', 'Cancel')}
           </Button>
+          {!(absent && shared) && (
           <Button onClick={handleSave} disabled={saving}>
             {saving
               ? t('common.saving', 'Saving...')
               : t('common.save', 'Save')}
           </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

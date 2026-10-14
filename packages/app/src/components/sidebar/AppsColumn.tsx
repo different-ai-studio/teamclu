@@ -2,6 +2,7 @@ import * as React from 'react'
 import { useAppsStore } from '@/stores/apps-store'
 import { AppListColumn } from '@/components/sidebar/AppListColumn'
 import { AppSessionsColumn } from '@/components/sidebar/AppSessionsColumn'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { resolveAppLocality } from '@/lib/apps/app-locality'
 
 /**
@@ -17,6 +18,7 @@ export function AppsColumn() {
   const selectedAppId = useAppsStore((s) => s.selectedAppId)
   const items = useAppsStore((s) => s.items)
   const localAppIds = useAppsStore((s) => s.localAppIds)
+  const absent = useLocalAgentAbsent()
 
   const app = React.useMemo(
     () => (selectedAppId ? items.find((a) => a.id === selectedAppId) ?? null : null),
@@ -25,7 +27,7 @@ export function AppsColumn() {
 
   // An id that resolves to nothing is a stale selection (deleted elsewhere, or
   // a team switch): show the list rather than an empty app.
-  if (!app) return <AppListColumn />
+  if (absent || !app) return <AppListColumn />
   // Neither is an app whose checkout is not on this machine — its sessions
   // exist in the cloud but there is nothing here for an agent to run in, so
   // the list (which offers the download) is the only useful thing to show.

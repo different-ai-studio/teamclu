@@ -603,9 +603,10 @@ function ServerAddressCard() {
     setEffective(await getEffectiveServerConfig())
   }, [])
 
+  const mqttNonce = useMqttReconnectStore((s) => s.nonce)
   React.useEffect(() => {
     void reload()
-  }, [reload])
+  }, [reload, mqttNonce])
 
   const mqttConnected = useMqttConnected()
   const mqttLastError = useMqttReconnectStore((s) => s.lastError)

@@ -10,10 +10,15 @@ const deps = vi.hoisted(() => ({
   actorDisplayName: 'MACPRO',
   localThrows: false,
   effectiveThrows: false,
+  install: { status: 'unknown' as 'unknown' | 'absent' | 'installed', agentId: null as string | null, displayName: null as string | null },
 }))
 
 vi.mock('@/lib/utils', () => ({
   isTauri: () => deps.isTauri,
+}))
+
+vi.mock('@/lib/daemon/local-agent-install', () => ({
+  resolveLocalAgentInstall: vi.fn(async () => deps.install),
 }))
 
 vi.mock('@/lib/daemon/daemon-agent-admin', () => ({
@@ -50,6 +55,7 @@ describe('resolveQuickChatTarget', () => {
     deps.actorDisplayName = 'MACPRO'
     deps.localThrows = false
     deps.effectiveThrows = false
+    deps.install = { status: 'unknown', agentId: null, displayName: null }
   })
 
   it('returns local when tauri + workspace + local agent bound', async () => {
@@ -102,8 +108,28 @@ describe('resolveQuickChatTarget', () => {
     expect(result?.source).toBe('team_default')
   })
 
-  it('falls through to effective when local lookup throws', async () => {
+  it('falls through to effective when local lookup throws and install state is unknown', async () => {
     deps.localThrows = true
+    deps.effectiveDefault = 'agent-team'
+    const result = await resolveQuickChatTarget('team-1', { workspacePath: '/ws' })
+    expect(result?.source).toBe('team_default')
+    expect(result?.agentId).toBe('agent-team')
+  })
+
+  it('stays on the installed agent when the local daemon does not answer', async () => {
+    deps.localThrows = true
+    deps.effectiveDefault = 'agent-team'
+    deps.install = { status: 'installed', agentId: 'agent-local', displayName: 'This machine' }
+    const result = await resolveQuickChatTarget('team-1', { workspacePath: '/ws' })
+    expect(result).toEqual({
+      agentId: 'agent-local',
+      displayName: 'This machine',
+      source: 'local',
+    })
+  })
+
+  it('falls through when this machine has never installed a local agent', async () => {
+    deps.install = { status: 'absent', agentId: null, displayName: null }
     deps.effectiveDefault = 'agent-team'
     const result = await resolveQuickChatTarget('team-1', { workspacePath: '/ws' })
     expect(result?.source).toBe('team_default')

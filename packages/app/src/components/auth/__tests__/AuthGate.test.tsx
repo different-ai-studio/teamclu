@@ -83,13 +83,16 @@ vi.mock("@/stores/auth-store", () => {
   return { useAuthStore };
 });
 
-vi.mock("@/stores/current-team", () => ({
-  useCurrentTeamStore: {
-    getState: () => currentTeamMock,
-  },
-  setLocalCacheTeamGate: setLocalCacheTeamGateMock,
-  readCachedCurrentTeam: () => cachedTeamMock.value,
-}));
+vi.mock("@/stores/current-team", () => {
+  const useCurrentTeamStore = (selector?: (s: typeof currentTeamMock) => unknown) =>
+    selector ? selector(currentTeamMock) : currentTeamMock;
+  useCurrentTeamStore.getState = () => currentTeamMock;
+  return {
+    useCurrentTeamStore,
+    setLocalCacheTeamGate: setLocalCacheTeamGateMock,
+    readCachedCurrentTeam: () => cachedTeamMock.value,
+  };
+});
 
 vi.mock("@/lib/backend", () => ({
   getBackend: () => backendMock,
@@ -839,6 +842,12 @@ describe("AuthGate", () => {
   });
 
   it("marks daemon onboarding loaded after a join without calling refresh", async () => {
+    const install = await import("@/lib/daemon/local-agent-install");
+    const resolveInstall = vi.spyOn(install, "resolveLocalAgentInstall").mockResolvedValue({
+      status: "absent",
+      agentId: null,
+      displayName: null,
+    });
     useDaemonOnboardingStore.setState({ status: "unknown", loaded: false });
     authState.session = null;
     backendMock.teams.listAllMyTeams.mockResolvedValue([]);
@@ -872,9 +881,42 @@ describe("AuthGate", () => {
       await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
       expect(useDaemonOnboardingStore.getState().loaded).toBe(true);
       expect(daemonRefreshMock).not.toHaveBeenCalled();
+      await waitFor(() => expect(resolveInstall).toHaveBeenCalledWith("team-join"));
       expect(screen.queryByText("Daemon onboarding wizard")).not.toBeInTheDocument();
     } finally {
+      resolveInstall.mockRestore();
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("re-reads the cloud after the login install wizard finishes", async () => {
+    const install = await import("@/lib/daemon/local-agent-install");
+    const refreshInstall = vi.spyOn(install, "refreshAfterLocalAgentInstall").mockResolvedValue(undefined);
+    currentTeamMock.team = { id: "team-cached" };
+    currentTeamMock.teamUserId = "user-1";
+    backendMock.teams.listAllMyTeams.mockResolvedValueOnce([
+      { id: "team-cached", name: "Cached", slug: "cached", orgId: "org-1", orgName: "Org" },
+    ]);
+    useDaemonOnboardingStore.setState({
+      status: "needs-onboard",
+      loaded: true,
+      pendingName: null,
+      refresh: daemonRefreshMock,
+    });
+
+    try {
+      render(
+        <AuthGate>
+          <div>App shell</div>
+        </AuthGate>,
+      );
+
+      await waitFor(() => expect(screen.getByText("Daemon onboarding wizard")).toBeInTheDocument());
+      fireEvent.click(screen.getByText("Daemon onboarding wizard"));
+      await waitFor(() => expect(refreshInstall).toHaveBeenCalledWith("team-cached"));
+      await waitFor(() => expect(screen.getByText("App shell")).toBeInTheDocument());
+    } finally {
+      refreshInstall.mockRestore();
     }
   });
 

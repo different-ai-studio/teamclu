@@ -1,5 +1,6 @@
 import { getBackend } from '@/lib/backend'
 import { getLocalDaemonAgent } from '@/lib/daemon/daemon-agent-admin'
+import { resolveLocalAgentInstall } from '@/lib/daemon/local-agent-install'
 import { isTauri } from '@/lib/utils'
 
 type QuickChatSource = 'local' | 'member_default' | 'team_default'
@@ -29,17 +30,32 @@ export async function resolveQuickChatTarget(
   // which wrongly fell through to the team default). Only when there is no
   // local daemon agent at all do we fall back to the team/member default.
   if (isTauri()) {
+    let local: { id: string; displayName: string } | null = null
     try {
-      const local = await getLocalDaemonAgent(trimmedTeam)
-      if (local?.id) {
+      local = await getLocalDaemonAgent(trimmedTeam)
+    } catch {
+      local = null
+    }
+    if (local?.id) {
+      return {
+        agentId: local.id,
+        displayName: local.displayName || local.id,
+        source: 'local',
+      }
+    }
+    // Installed but the daemon HTTP is down: stay on this machine's agent.
+    // Absent and unknown keep the member → team cascade below.
+    try {
+      const install = await resolveLocalAgentInstall(trimmedTeam)
+      if (install.status === 'installed' && install.agentId) {
         return {
-          agentId: local.id,
-          displayName: local.displayName || local.id,
+          agentId: install.agentId,
+          displayName: install.displayName || install.agentId,
           source: 'local',
         }
       }
     } catch {
-      // Fall through to effective default.
+      // Unknown install state keeps the cascade.
     }
   }
 

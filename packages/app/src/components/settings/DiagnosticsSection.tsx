@@ -43,6 +43,8 @@ import { LiveDebugConsole } from './LiveDebugConsole'
 import { DaemonResetRemediationCard } from './DaemonResetRemediationCard'
 import { AuthSyncBanner, DiagnosticSymptomPanel } from './DiagnosticSymptomPanel'
 import { DaemonOnboardingWizard } from '@/components/auth/DaemonOnboardingWizard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
+import { useLocalAgentInstallStore } from '@/stores/local-agent-install'
 import {
   findingsForSessionFocus,
   firstFailingTab,
@@ -116,6 +118,8 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
   const preferredTab = useDiagnosticsStore((s) => s.preferredTab ?? null)
   const signOut = useAuthStore((s) => s.signOut)
   const forceReset = useDaemonOnboardingStore((s) => s.forceReset)
+  const absent = useLocalAgentAbsent()
+  const openInstallWizard = useLocalAgentInstallStore((s) => s.openWizard)
 
   const [running, setRunning] = React.useState(false)
   const [exporting, setExporting] = React.useState(false)
@@ -262,6 +266,10 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
       return
     }
     if (action === 'reset_daemon') {
+      if (absent) {
+        openInstallWizard()
+        return
+      }
       try {
         await forceReset()
         if (useDaemonOnboardingStore.getState().error) {
@@ -273,7 +281,7 @@ export const DiagnosticsSection = React.memo(function DiagnosticsSection() {
         toast.error(err instanceof Error ? err.message : String(err))
       }
     }
-  }, [closeSettings, confirmAction, forceReset, signOut])
+  }, [absent, closeSettings, confirmAction, forceReset, openInstallWizard, signOut])
 
   if (!isTauri()) {
     return (

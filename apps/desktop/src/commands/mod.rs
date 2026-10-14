@@ -8,6 +8,7 @@ pub mod cron;
 pub mod daemon_http;
 pub mod daemon_live;
 pub mod daemon_onboarding;
+pub mod stable_device_id;
 pub mod deps;
 pub mod diagnostics;
 pub mod env_vars;

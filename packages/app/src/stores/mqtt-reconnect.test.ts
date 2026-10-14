@@ -10,6 +10,7 @@ import {
   __markAuthRecoveryForTests,
   BROWSER_RECONNECT_GRACE_MS,
   daemonMqttNeedsRecovery,
+  daemonMqttSnapshotOwnsConnection,
 } from './mqtt-reconnect'
 
 vi.mock('@/lib/auth/session-store', () => ({
@@ -153,6 +154,19 @@ describe('shouldAutoRecoverMqttAfterVisibility', () => {
         hiddenMs: MQTT_SLEEP_WAKE_HIDDEN_MS - 1,
       }),
     ).toBe(false)
+  })
+})
+
+describe('daemonMqttSnapshotOwnsConnection', () => {
+  it('keeps the daemon snapshot when a local agent is installed or not yet classified', () => {
+    expect(daemonMqttSnapshotOwnsConnection('installed')).toBe(true)
+    expect(daemonMqttSnapshotOwnsConnection('pending')).toBe(true)
+    expect(daemonMqttSnapshotOwnsConnection('unknown')).toBe(true)
+    expect(daemonMqttSnapshotOwnsConnection(undefined)).toBe(true)
+  })
+
+  it('lets the desktop client own MQTT only after classification says no local agent', () => {
+    expect(daemonMqttSnapshotOwnsConnection('absent')).toBe(false)
   })
 })
 

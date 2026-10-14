@@ -7,6 +7,8 @@ import { cn } from '@/lib/utils'
 import { useEnvVarsStore } from '@/stores/env-vars'
 import { useTeamMembersStore } from '@/stores/team-members'
 import { useTeamShareBrowserStore } from '@/stores/team-share-browser'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -96,6 +98,7 @@ export function EnvCreateForm({
   onScopeChange?: (scope: 'team' | 'personal') => void
 }) {
   const { t } = useTranslation()
+  const absent = useLocalAgentAbsent()
   const setCatalogEntry = useEnvVarsStore((s) => s.setCatalogEntry)
   // Team-scope writes are node-attributed; the Rust command rejects the call
   // outright without it (env_vars.rs: "nodeId is required for team env vars").
@@ -181,6 +184,10 @@ export function EnvCreateForm({
               )}
         </p>
       </div>
+      {scope === 'team' && absent ? (
+        <LocalAgentRequiredCard />
+      ) : (
+      <>
       <div>
         <label className="mb-1 block text-[12px] font-medium uppercase tracking-wide text-faint">
           {t('teamShare.envDetail.key', 'Key')}
@@ -254,6 +261,8 @@ export function EnvCreateForm({
           {t('common.cancel', 'Cancel')}
         </Button>
       </div>
+      </>
+      )}
     </div>
   )
 }
@@ -268,6 +277,7 @@ function parseEnvSelection(id: string): { scope: 'team' | 'personal'; key: strin
 
 export function EnvDetail({ keyId: selectionId }: { keyId: string }) {
   const { t } = useTranslation()
+  const absent = useLocalAgentAbsent()
   const { scope, key: keyId } = parseEnvSelection(selectionId)
   const isTeam = scope === 'team'
   const teamItem = useEnvVarsStore((s) => s.teamSecrets.find((x) => x.keyId === keyId))
@@ -352,6 +362,7 @@ export function EnvDetail({ keyId: selectionId }: { keyId: string }) {
     }
   }, [busy, deleteCatalogEntry, scope, isTeam, keyId, currentNodeId, select, loadCounts, t])
 
+  if (isTeam && absent) return <LocalAgentRequiredCard />
   if (!item) return null
 
   return (

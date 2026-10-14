@@ -6,6 +6,7 @@ import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useTabsStore } from '@/stores/tabs'
 import { useAppRelationshipFilterStore } from '@/stores/app-relationship-filter'
+import { useLocalAgentInstallStore } from '@/stores/local-agent-install'
 import type { AppRow } from '@/lib/backend/types'
 
 vi.mock('react-i18next', () => ({
@@ -54,6 +55,7 @@ describe('AppListColumn', () => {
     useCurrentTeamStore.setState({ team: { id: 'team-1' } as never })
     useTabsStore.setState({ tabs: [], activeTabId: null })
     useAppRelationshipFilterStore.setState({ byTeam: {} })
+    useLocalAgentInstallStore.setState({ byTeam: {} })
     useAppsStore.setState({
       items: [mkApp('app-1', 'Alpha'), mkApp('app-2', 'Beta')],
       loading: false,
@@ -169,6 +171,29 @@ describe('AppListColumn', () => {
     // header icon and the empty state's own button).
     expect(screen.getAllByRole('button', { name: '新建' })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: '所有应用' })).toHaveLength(2)
+  })
+
+  it('keeps names visible and does not download or open when no local agent is installed', () => {
+    useLocalAgentInstallStore.setState({
+      byTeam: { 'team-1': { status: 'absent', agentId: null, displayName: null } },
+    })
+    const download = vi.fn().mockResolvedValue(undefined)
+    useAppsStore.setState({ download })
+    render(<AppListColumn />)
+
+    expect(screen.getByText('Alpha')).toBeInTheDocument()
+    expect(screen.getByText('Beta')).toBeInTheDocument()
+    expect(
+      screen.getByText('A local agent is not installed, so apps cannot be downloaded, opened, or created yet.'),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Alpha/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Beta/ }))
+    expect(useAppsStore.getState().selectedAppId).toBeNull()
+    expect(download).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '所有应用' }))
+    expect(useTabsStore.getState().tabs).toHaveLength(0)
   })
 
   describe('relationship', () => {

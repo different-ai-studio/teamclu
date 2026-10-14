@@ -13,6 +13,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useUIStore } from '@/stores/ui'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { resolveCurrentMemberActorId } from '@/lib/actor/current-actor'
@@ -49,6 +51,7 @@ type Candidate = {
 
 export function NewSessionDialog() {
   const { t } = useTranslation()
+  const localAgentAbsent = useLocalAgentAbsent()
   const open = useUIStore((s) => s.newSessionDialogOpen)
   const initialMessage = useUIStore((s) => s.newSessionDialogInitialMessage)
   const closeDialog = useUIStore((s) => s.closeNewSessionDialog)
@@ -75,6 +78,9 @@ export function NewSessionDialog() {
   // display name (three rows reading `liziliudeMacBook-Air` is the normal
   // case), so the badge and the workspace picker cannot be driven by name.
   const [localAgentId, setLocalAgentId] = React.useState<string | null>(null)
+  // True when the id came from the for-device record because daemon HTTP is down.
+  // Prefill then stays on that agent and does not also pick the effective default.
+  const [preferInstalledAgent, setPreferInstalledAgent] = React.useState(false)
   const [localAgentResolved, setLocalAgentResolved] = React.useState(() => !isTauri())
   const [workspaces, setWorkspaces] = React.useState<DaemonWorkspace[]>([])
   const [workspacesLoading, setWorkspacesLoading] = React.useState(false)
@@ -89,29 +95,60 @@ export function NewSessionDialog() {
   React.useEffect(() => {
     if (!open) {
       setLocalAgentId(null)
+      setPreferInstalledAgent(false)
       setLocalAgentResolved(!isTauri())
       return
     }
     if (!isTauri()) {
       setLocalAgentId(null)
+      setPreferInstalledAgent(false)
       setLocalAgentResolved(true)
       return
     }
     let cancelled = false
     setLocalAgentResolved(false)
     void (async () => {
+      let httpId: string | null
       try {
         const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
-        const id = await getLocalDaemonActorId()
-        if (!cancelled) setLocalAgentId(id?.trim() || null)
+        httpId = (await getLocalDaemonActorId())?.trim() || null
       } catch {
-        if (!cancelled) setLocalAgentId(null)
-      } finally {
-        if (!cancelled) setLocalAgentResolved(true)
+        httpId = null
       }
+      if (cancelled) return
+      if (httpId) {
+        setLocalAgentId(httpId)
+        setPreferInstalledAgent(false)
+        setLocalAgentResolved(true)
+        return
+      }
+      if (!teamId) {
+        setLocalAgentId(null)
+        setPreferInstalledAgent(false)
+        setLocalAgentResolved(true)
+        return
+      }
+      try {
+        const { resolveLocalAgentInstall } = await import('@/lib/daemon/local-agent-install')
+        const install = await resolveLocalAgentInstall(teamId)
+        if (cancelled) return
+        if (install.status === 'installed' && install.agentId) {
+          setLocalAgentId(install.agentId)
+          setPreferInstalledAgent(true)
+          setLocalAgentResolved(true)
+          return
+        }
+      } catch {
+        // Unknown install state keeps today's cascade.
+      }
+      if (!cancelled) {
+        setLocalAgentId(null)
+        setPreferInstalledAgent(false)
+      }
+      if (!cancelled) setLocalAgentResolved(true)
     })()
     return () => { cancelled = true }
-  }, [open])
+  }, [open, teamId])
 
   // On open: reset the picker, pull a fresh reconcile, kick a full background
   // sync, and trigger a load of the effective default agent.
@@ -301,8 +338,12 @@ export function NewSessionDialog() {
     if (!localAgentResolved) return
     prefillAppliedRef.current = true
     const candidateIds = new Set(candidates.map((c) => c.id))
-    setPicked(computeInitialSelection(effectiveDefaultAgentId, candidateIds, localAgentId))
-  }, [open, effectiveDefaultAgentId, effectiveDefaultTeamId, effectiveDefaultLoading, candidates, teamId, localAgentId, localAgentResolved])
+    setPicked(computeInitialSelection(
+      preferInstalledAgent ? null : effectiveDefaultAgentId,
+      candidateIds,
+      localAgentId,
+    ))
+  }, [open, effectiveDefaultAgentId, effectiveDefaultTeamId, effectiveDefaultLoading, candidates, teamId, localAgentId, localAgentResolved, preferInstalledAgent])
 
   const togglePick = (id: string) =>
     setPicked((prev) => {
@@ -533,7 +574,11 @@ export function NewSessionDialog() {
         {/* Workspace — shown as soon as this machine's agent is known, not
             only after the user ticks it. Duplicate display names otherwise
             hide the picker behind the remote twin. */}
-        {!!localAgentId && (
+        {localAgentAbsent ? (
+          <div className="border-b border-border px-5 py-4">
+            <LocalAgentRequiredCard />
+          </div>
+        ) : !!localAgentId && (
           <div
             data-testid="new-session-workspace"
             className="border-b border-border px-5 pt-4 pb-3"

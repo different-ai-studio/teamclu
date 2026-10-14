@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { getBackend } from "@/lib/backend";
+import { isTauri } from "@/lib/utils";
+import { markLocalAgentInstallPending } from "./local-agent-install";
 import { useAuthStore } from "./auth-store";
 
 export async function setLocalCacheTeamGate(teamId: string | null): Promise<void> {
@@ -292,11 +294,11 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
     //    换 team 不需要传标记——refresh 看到 mismatch 就会换绑。只有「同一个 team
     //    但换了 linked account」需要显式要求，因为那种情况 daemon 指向的 team 没变。
     try {
-      const { isTauri } = await import("@/lib/utils");
       if (isTauri()) {
-        const { useDaemonOnboardingStore } = await import("./daemon-onboarding");
+        markLocalAgentInstallPending(teamId);
+        const { refreshDaemonUnlessSkipped } = await import("@/lib/daemon/local-agent-install");
         const currentUserId = useAuthStore.getState().session?.user?.id ?? null;
-        await useDaemonOnboardingStore.getState().refresh({
+        await refreshDaemonUnlessSkipped({
           forceIdentityRebind: !!previousUserId && !!currentUserId && previousUserId !== currentUserId,
         });
       }

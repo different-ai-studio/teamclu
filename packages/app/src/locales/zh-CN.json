@@ -1459,6 +1459,7 @@
     "sourceLocalDaemonOffline": "本机 amuxd 未连接，无法检查这个目录。",
     "libraryTitle": "所有应用",
     "libraryDescription": "本人与团队的全部应用，可下载到本机。",
+    "localAgentBlocked": "未安装本机 Agent，暂时不能下载、打开或新建应用。",
     "libraryDownload": "下载",
     "libraryDownloaded": "已在本机",
     "libraryNotHere": "未在本机",
@@ -4006,6 +4007,12 @@
     "builtinLabel": "内置",
     "builtinPath": "~/.agents/skills/（{{app}} 内置）",
     "roleManagedLabel": "角色"
+  },
+  "localAgent": {
+    "notInstalled": "本机 Agent 未安装",
+    "install": "安装",
+    "confirmTitle": "安装本机 Agent？",
+    "confirmBody": "将在这台电脑上安装并初始化本机 Agent。"
   },
   "daemon": {
     "agentRuntime": {

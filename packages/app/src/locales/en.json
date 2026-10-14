@@ -1459,6 +1459,7 @@
     "sourceLocalDaemonOffline": "amuxd is not connected, so this directory cannot be checked.",
     "libraryTitle": "All apps",
     "libraryDescription": "Every app of yours and your team's. Download one to work on it here.",
+    "localAgentBlocked": "A local agent is not installed, so apps cannot be downloaded, opened, or created yet.",
     "libraryDownload": "Download",
     "libraryDownloaded": "On this machine",
     "libraryNotHere": "Not on this machine",
@@ -4006,6 +4007,12 @@
     "builtinLabel": "Built-in",
     "builtinPath": "~/.agents/skills/ ({{app}} built-in)",
     "roleManagedLabel": "Role"
+  },
+  "localAgent": {
+    "notInstalled": "Local agent is not installed",
+    "install": "Install",
+    "confirmTitle": "Install the local agent?",
+    "confirmBody": "This installs and sets up a local agent on this computer."
   },
   "daemon": {
     "agentRuntime": {

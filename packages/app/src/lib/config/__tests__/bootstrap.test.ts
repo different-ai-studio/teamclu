@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { savedConfigRef, effectiveConfigRef, saveSpy, getSavedSpy, getEffectiveSpy } = vi.hoisted(() => {
+const { savedConfigRef, effectiveConfigRef, saveSpy, getSavedSpy, getEffectiveSpy, reconnectSpy } = vi.hoisted(() => {
   const savedConfigRef = { value: {} as Record<string, unknown> };
   const effectiveConfigRef = { value: {} as Record<string, unknown> };
   return {
@@ -12,8 +12,13 @@ const { savedConfigRef, effectiveConfigRef, saveSpy, getSavedSpy, getEffectiveSp
     }),
     getSavedSpy: vi.fn(async () => savedConfigRef.value),
     getEffectiveSpy: vi.fn(async () => effectiveConfigRef.value),
+    reconnectSpy: vi.fn(async () => {}),
   };
 });
+
+vi.mock("@/stores/mqtt-reconnect", () => ({
+  reconnectDesktopMqttWhenLocalAgentAbsent: reconnectSpy,
+}));
 
 vi.mock("@/lib/config/server-config", () => ({
   getSavedServerConfig: getSavedSpy,
@@ -29,6 +34,7 @@ beforeEach(() => {
   saveSpy.mockClear();
   getSavedSpy.mockClear();
   getEffectiveSpy.mockClear();
+  reconnectSpy.mockClear();
 });
 
 afterEach(() => {
@@ -117,6 +123,7 @@ describe("fetchAndApplyBootstrap", () => {
     });
     expect(outcome).toBe("applied");
     expect(saveSpy.mock.calls[0][0]).toMatchObject({ mqttSource: "bootstrap" });
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
   });
 
   it("does not touch saved config when the payload is empty and nothing is cached", async () => {
@@ -127,6 +134,7 @@ describe("fetchAndApplyBootstrap", () => {
     });
     expect(outcome).toBe("cloud-empty");
     expect(saveSpy).not.toHaveBeenCalled();
+    expect(reconnectSpy).not.toHaveBeenCalled();
   });
 
   // The issue #634 shape: FC answers 200 with no `mqtt` block. The address we

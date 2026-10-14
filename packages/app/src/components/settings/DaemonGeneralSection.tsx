@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DaemonOnboardingWizard } from '@/components/auth/DaemonOnboardingWizard'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentSectionGate } from '@/hooks/use-local-agent-install'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import {
@@ -65,6 +67,13 @@ function formatRelative(value: string | null): string {
 }
 
 export function DaemonGeneralSection() {
+  const gate = useLocalAgentSectionGate()
+  if (gate === 'wait') return null
+  if (gate === 'card') return <LocalAgentRequiredCard />
+  return <DaemonGeneralSectionBody />
+}
+
+function DaemonGeneralSectionBody() {
   const { t } = useTranslation()
   const team = useCurrentTeamStore((s) => s.team)
   const currentMember = useCurrentTeamStore((s) => s.currentMember)
