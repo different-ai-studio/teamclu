@@ -1208,6 +1208,7 @@ export function createSessionDetailController(
             kind: MessageKind.TEXT,
             content,
             createdAt: createdAtSeconds,
+            replyToMessageId: replyTo ?? "",
           });
           const sessionMessage = create(SessionMessageEnvelopeSchema, {
             message: protoMessage,

@@ -411,6 +411,11 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
     if (!state.currentTeam || !state.currentMemberActorId) return;
 
     let disposed = false;
+    // Back in the foreground: a client dropped while backgrounded reconnects
+    // now rather than at the end of its backoff wait.
+    const foregroundSubscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") teamMqttRef.current?.resume();
+    });
 
     void (async () => {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -440,7 +445,8 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       try {
         await mqtt.start();
       } catch {
-        return;
+        // Keep the client: it retries with backoff (and on foreground), so a
+        // launch without network comes online once the network does.
       }
       if (disposed) {
         void mqtt.dispose();
@@ -478,6 +484,7 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
 
     return () => {
       disposed = true;
+      foregroundSubscription.remove();
       void connectedAgentsStoreRef.current?.dispose();
       void teamMqttRef.current?.dispose();
       connectedAgentsStoreRef.current = null;

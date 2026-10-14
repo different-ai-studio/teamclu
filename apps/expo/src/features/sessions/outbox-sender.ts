@@ -54,16 +54,43 @@ export function createOutboxSender(deps: Deps): OutboxSender {
     deps.onChange();
   }
 
+  // One pass at a time: a wake that lands mid-pass asks for another pass
+  // instead of starting a second one, which could send the same row twice.
+  let passing = false;
+  let passRequested = false;
+
+  async function runPass() {
+    if (passing) {
+      passRequested = true;
+      return;
+    }
+    passing = true;
+    try {
+      do {
+        passRequested = false;
+        try {
+          await pass();
+        } catch {
+          // Per-row failures are already recorded on the row (last_error,
+          // attempt_count) and retried with backoff. This guard is only so one
+          // bad pass can't kill the scheduling loop and strand the whole outbox.
+        }
+      } while (passRequested && running);
+    } finally {
+      passing = false;
+    }
+  }
+
+  // A new or retried row goes out now, not on the next idle tick (iOS P6:
+  // waiting for the tick was ~1s of a send's latency).
+  function wake() {
+    if (running) void runPass();
+  }
+
   function scheduleNext() {
     if (!running) return;
     timer = setTimeout(async () => {
-      try {
-        await pass();
-      } catch {
-        // Per-row failures are already recorded on the row (last_error,
-        // attempt_count) and retried with backoff. This guard is only so one
-        // bad pass can't kill the scheduling loop and strand the whole outbox.
-      }
+      await runPass();
       scheduleNext();
     }, tickMs);
   }
@@ -81,10 +108,12 @@ export function createOutboxSender(deps: Deps): OutboxSender {
     async enqueue(row) {
       await deps.dao.enqueue(row);
       deps.onChange();
+      wake();
     },
     async retry(messageId) {
       await deps.dao.retry(messageId);
       deps.onChange();
+      wake();
     },
   };
 }
