@@ -79,8 +79,18 @@ public final class SessionDetailViewModel {
     /// completed-turn bubbles. Source for the main chat list. Detail view
     /// reads `runtimeEvents` off each item to render the full turn.
     public private(set) var feedItems: [FeedItem] = [] {
-        didSet { reportTurnActivity() }
+        didSet {
+            rebuildFeedLookups()
+            reportTurnActivity()
+        }
     }
+    /// Per-row questions a bubble asks while it renders — "what prompt
+    /// started this turn", "what does this reply quote" — answered from
+    /// tables built once per feed change. Scanning the feed from a row's
+    /// body instead read hundreds of `@Model` properties per row and made
+    /// every row observe all of them.
+    @ObservationIgnored private var promptByTurnItemID: [String: AgentEvent] = [:]
+    @ObservationIgnored private var feedEventBySupabaseID: [String: AgentEvent] = [:]
     /// Day / time labels to draw above feed rows, by row id. Rebuilt with
     /// `feedItems`, so the view does no date math while scrolling.
     public private(set) var feedTimeMarkers: [String: FeedTimeMarker] = [:]
@@ -3554,7 +3564,9 @@ public final class SessionDetailViewModel {
     /// the message row itself was found (a not-yet-synced row can still
     /// resolve later); replyTo links are immutable, so no per-row
     /// invalidation is needed — content edits clear the whole map.
-    private var replyQuoteCache: [String: ReplyQuote?] = [:]
+    /// Memo only: written while rows render, so it must not be observed —
+    /// each write would invalidate every row that had read it.
+    @ObservationIgnored private var replyQuoteCache: [String: ReplyQuote?] = [:]
 
     /// Drops all memoized quotes; call when message content changes so a
     /// quoted snippet can't go stale.
@@ -3562,12 +3574,6 @@ public final class SessionDetailViewModel {
         replyQuoteCache = [:]
     }
 
-    /// The message this event replies to, resolved from the SwiftData
-    /// `SessionMessage` mirror — both the live and seed paths persist
-    /// `replyToMessageId` there, so no timeline plumbing is needed. nil when
-    /// the event isn't a reply. A reply whose quoted row isn't cached still
-    /// returns (with empty content) so the chip can say "message unavailable"
-    /// instead of vanishing.
     /// Posts `text` into another session as an ordinary message from the
     /// signed-in user. It mentions no one, so agents there take it in as
     /// context without answering. Persisted before publishing: the target
@@ -3581,14 +3587,31 @@ public final class SessionDetailViewModel {
     /// the nearest chat message above it. Nil when there is none, or when
     /// it carried files — a text-only resend would ask a different question.
     public func promptForRegeneration(turnItemID: String) -> AgentEvent? {
-        guard let index = feedItems.firstIndex(where: { $0.id == turnItemID }) else { return nil }
-        for item in feedItems[..<index].reversed() {
-            guard case .userMessage(let prompt) = item else { continue }
-            guard prompt.attachments.isEmpty,
-                  let text = prompt.text, !text.isEmpty else { return nil }
-            return prompt
+        guard let prompt = promptByTurnItemID[turnItemID],
+              prompt.attachments.isEmpty,
+              let text = prompt.text, !text.isEmpty
+        else { return nil }
+        return prompt
+    }
+
+    private func rebuildFeedLookups() {
+        var prompts: [String: AgentEvent] = [:]
+        var bySupabaseID: [String: AgentEvent] = [:]
+        var lastPrompt: AgentEvent?
+        for item in feedItems {
+            switch item {
+            case .userMessage(let event):
+                lastPrompt = event
+                if let id = event.supabaseMessageId { bySupabaseID[id] = event }
+            case .completedTurn(let id, _, let finalEvent, _):
+                if let lastPrompt { prompts[id] = lastPrompt }
+                if let messageID = finalEvent.supabaseMessageId { bySupabaseID[messageID] = finalEvent }
+            case .activeStream, .permission, .todo, .error:
+                break
+            }
         }
-        return nil
+        promptByTurnItemID = prompts
+        feedEventBySupabaseID = bySupabaseID
     }
 
     /// Asks `agentID` the turn's prompt again. This is not a true
@@ -3606,7 +3629,7 @@ public final class SessionDetailViewModel {
     /// messages from others only have it on their `SessionMessage` row.
     public func replyQuote(for event: AgentEvent) -> ReplyQuote? {
         if let target = event.replyToMessageID, !target.isEmpty {
-            let quoted = events.first { $0.supabaseMessageId == target || $0.id == target }
+            let quoted = feedEventBySupabaseID[target]
             return ReplyQuote(
                 messageID: target,
                 senderActorID: quoted?.senderActorID ?? "",
@@ -3616,6 +3639,12 @@ public final class SessionDetailViewModel {
         return replyQuote(forSupabaseMessageID: event.supabaseMessageId)
     }
 
+    /// The message this event replies to, resolved from the SwiftData
+    /// `SessionMessage` mirror — both the live and seed paths persist
+    /// `replyToMessageId` there, so no timeline plumbing is needed. nil when
+    /// the event isn't a reply. A reply whose quoted row isn't cached still
+    /// returns (with empty content) so the chip can say "message unavailable"
+    /// instead of vanishing.
     public func replyQuote(forSupabaseMessageID id: String?) -> ReplyQuote? {
         guard let id, !id.isEmpty, let ctx = startModelContext else { return nil }
         if let cached = replyQuoteCache[id] { return cached }
