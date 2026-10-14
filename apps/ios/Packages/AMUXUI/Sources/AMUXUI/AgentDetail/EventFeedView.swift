@@ -249,18 +249,7 @@ public struct EventBubbleView: View {
                             }
                         }
                         ForEach(Array(parsed.imageURLs.enumerated()), id: \.offset) { _, url in
-                            AsyncImage(url: url) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image.resizable().scaledToFit()
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                                default:
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color.amux.pebble)
-                                        .overlay(ProgressView())
-                                        .frame(height: 150)
-                                }
-                            }
+                            ChatURLImage(url: url)
                         }
                         ForEach(Array(parsed.fileURLs.enumerated()), id: \.offset) { _, url in
                             AttachmentFileCard(url: url)
@@ -1075,18 +1064,8 @@ private struct SentAttachmentsView: View {
     var body: some View {
         ForEach(Array(attachmentURLs.enumerated()), id: \.offset) { _, url in
             if ParsedMessageContent.imageExtensions.contains(url.pathExtension.lowercased()) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    default:
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.amux.pebble)
-                            .frame(height: 150)
-                    }
-                }
-                .onTapGesture { onTap?(url, sessionID) }
+                ChatURLImage(url: url)
+                    .onTapGesture { onTap?(url, sessionID) }
             } else {
                 // Non-image uploads used to render through the AsyncImage
                 // failure branch — a bare grey block with the filename
@@ -1135,6 +1114,7 @@ struct AttachmentImageView: View {
     let attachment: MessageAttachment
     var maxHeight: CGFloat = 220
 
+    @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
     @State private var failed = false
 
@@ -1163,19 +1143,17 @@ struct AttachmentImageView: View {
             if attachment.bucketPath == nil { failed = true }
             return
         }
-        // M7, Instruments only. UIImage(data:) defers the real decode to
-        // first draw, so this covers fetch + header parse; the size in the
-        // detail is what to look for when a scroll hitches on an image.
+        // M7, Instruments only: fetch (or disk hit) + the downsampling
+        // decode, all off the main thread; a memory hit is near zero.
         let signpost = ChatMetrics.beginSignpost("image_load", attachment.filename)
-        var bytes = 0
-        defer { ChatMetrics.endSignpost("image_load", signpost, "bytes=\(bytes)") }
+        defer { ChatMetrics.endSignpost("image_load", signpost, "") }
         do {
-            let data = try await AttachmentContentLoader.shared.data(
-                bucketPath: path, fileName: attachment.filename
+            // Decoded at what the bubble can show — the height cap on the
+            // longest edge — not at the photo's own size.
+            image = try await ChatImageLoader.shared.attachment(
+                bucketPath: path, fileName: attachment.filename,
+                maxPixel: Int(max(maxHeight, 260) * displayScale)
             )
-            bytes = data.count
-            guard let decoded = UIImage(data: data) else { failed = true; return }
-            image = decoded
         } catch {
             failed = true
         }
