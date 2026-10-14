@@ -36,6 +36,46 @@ interface KnowledgeAclHost {
   resolveCallerActorForTeam: (teamId: string) => Promise<{ id: string } | null>;
 }
 
+/**
+ * Put every file under `pathPrefix` back into manifest range for everyone.
+ *
+ * A newly granted actor would otherwise never receive the directory's existing
+ * files: the client advances `last_server_seq` past rows it was not shown, and
+ * asks for the manifest by `afterSeq`. Bumping `change_seq` — NOT `version` —
+ * makes those rows visible again while staying a no-op for teammates who
+ * already hold them, because the client only downloads when the server version
+ * is strictly greater than its own.
+ *
+ * The team counter is bumped first, matching the waterline invariant every
+ * other writer follows.
+ *
+ * Best effort by design: a team that has never synced has no
+ * `team_workspace_config` row, and that must not stop an admin from writing
+ * rules ahead of first sync.
+ */
+export async function resurfaceAclPrefix(admin: any, teamId: string, pathPrefix: string): Promise<void> {
+  const { data: wc, error: wcErr } = await admin
+    .from("team_workspace_config")
+    .select("oss_change_seq")
+    .eq("team_id", teamId)
+    .maybeSingle();
+  if (wcErr || !wc) return;
+
+  const nextSeq = Number(wc.oss_change_seq) + 1;
+  const { error: bumpErr } = await admin
+    .from("team_workspace_config")
+    .update({ oss_change_seq: nextSeq })
+    .eq("team_id", teamId);
+  if (bumpErr) throw bumpErr;
+
+  const { error: filesErr } = await admin
+    .from("amuxc_files")
+    .update({ change_seq: nextSeq })
+    .eq("team_id", teamId)
+    .like("path", `${pathPrefix}%`);
+  if (filesErr) throw filesErr;
+}
+
 export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
   async function requireTeamAdmin(teamId: string): Promise<string> {
     const actor = await host.resolveCallerActorForTeam(teamId);
@@ -90,46 +130,6 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
       affectedFiles: typeof count === "number" ? count : 0,
       affectedMembers: (members ?? []).filter((m: any) => !keep.has(m.id)).length,
     };
-  }
-
-  /**
-   * Put every file under `pathPrefix` back into manifest range for everyone.
-   *
-   * A newly granted actor would otherwise never receive the directory's existing
-   * files: the client advances `last_server_seq` past rows it was not shown, and
-   * asks for the manifest by `afterSeq`. Bumping `change_seq` — NOT `version` —
-   * makes those rows visible again while staying a no-op for teammates who
-   * already hold them, because the client only downloads when the server version
-   * is strictly greater than its own.
-   *
-   * The team counter is bumped first, matching the waterline invariant every
-   * other writer follows.
-   *
-   * Best effort by design: a team that has never synced has no
-   * `team_workspace_config` row, and that must not stop an admin from writing
-   * rules ahead of first sync.
-   */
-  async function resurfacePrefix(admin: any, teamId: string, pathPrefix: string): Promise<void> {
-    const { data: wc, error: wcErr } = await admin
-      .from("team_workspace_config")
-      .select("oss_change_seq")
-      .eq("team_id", teamId)
-      .maybeSingle();
-    if (wcErr || !wc) return;
-
-    const nextSeq = Number(wc.oss_change_seq) + 1;
-    const { error: bumpErr } = await admin
-      .from("team_workspace_config")
-      .update({ oss_change_seq: nextSeq })
-      .eq("team_id", teamId);
-    if (bumpErr) throw bumpErr;
-
-    const { error: filesErr } = await admin
-      .from("amuxc_files")
-      .update({ change_seq: nextSeq })
-      .eq("team_id", teamId)
-      .like("path", `${pathPrefix}%`);
-    if (filesErr) throw filesErr;
   }
 
   function mapRule(row: any, actorIds: string[]) {
@@ -245,7 +245,7 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
       }
 
       // Granted actors may be missing files that predate this rule.
-      await resurfacePrefix(admin, teamId, pathPrefix);
+      await resurfaceAclPrefix(admin, teamId, pathPrefix);
       invalidateTeamAcl(teamId);
       return { ...mapRule(rule, actorIds), ...impact };
     },
@@ -280,7 +280,7 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
         if (error) throw error;
         // Only a grant needs files put back in range; a revocation is the client
         // noticing they stopped arriving.
-        await resurfacePrefix(admin, teamId, rule.path_prefix);
+        await resurfaceAclPrefix(admin, teamId, rule.path_prefix);
       }
 
       await admin
@@ -301,7 +301,7 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
       const { error } = await admin.from("amuxc_path_acl").delete().eq("id", aclId);
       if (error) throw error;
       // Everyone gains the directory at once, and none of them hold its files.
-      await resurfacePrefix(admin, teamId, rule.path_prefix);
+      await resurfaceAclPrefix(admin, teamId, rule.path_prefix);
       invalidateTeamAcl(teamId);
     },
   };
