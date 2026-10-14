@@ -40,7 +40,10 @@ export function replyRequestFromResponse(response: unknown): NotificationReplyRe
   const notification = isRecord(response.notification) ? response.notification : null;
   const request = notification && isRecord(notification.request) ? notification.request : null;
   const content = request && isRecord(request.content) ? request.content : null;
-  const data = content && isRecord(content.data) ? content.data : null;
+  const outer = content && isRecord(content.data) ? content.data : null;
+  // FC puts its fields under `data` in the APNs payload, and expo-notifications
+  // hands over everything outside `aps` — so they arrive one level down.
+  const data = outer && isRecord(outer.data) ? outer.data : outer;
   if (!data) return null;
   const sessionId = str(data.session_id);
   const teamId = str(data.team_id);

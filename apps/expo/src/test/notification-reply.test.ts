@@ -36,6 +36,10 @@ describe("replyRequestFromResponse", () => {
     });
   });
 
+  it("reads FC's payload, where the fields sit under data", () => {
+    expect(replyRequestFromResponse(response({ data }))?.messageId).toBe("m1");
+  });
+
   it("ignores taps, empty replies and payloads without a team", () => {
     expect(replyRequestFromResponse(response(data, { actionIdentifier: "expo.modules.notifications.actions.DEFAULT" }))).toBeNull();
     expect(replyRequestFromResponse(response(data, { userText: "  " }))).toBeNull();

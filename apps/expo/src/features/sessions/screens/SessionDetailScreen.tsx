@@ -765,6 +765,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
   );
   const openedOnTarget = useRef(pendingTarget.current !== null);
   const shouldStickToFeedBottom = useRef(!openedOnTarget.current);
+  const targetSettleUntil = useRef(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [newBelowCount, setNewBelowCount] = useState(0);
   const [highlightKey, setHighlightKey] = useState<string | null>(null);
@@ -856,6 +857,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
 
   const handleFeedScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    // While landing on a target the list is still growing and jumping; a
+    // momentary "near the bottom" here would hand control back to the
+    // follow-the-tail logic and snap the feed to the end.
+    if (pendingTarget.current || Date.now() < targetSettleUntil.current) return;
     const nearBottom = isFeedNearBottom({
       contentHeight: contentSize.height,
       offsetY: contentOffset.y,
@@ -915,6 +920,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
           : null;
     if (key) {
       pendingTarget.current = null;
+      targetSettleUntil.current = Date.now() + 1500;
+      // Scroll events are ignored while settling, so say "not at the bottom"
+      // here; the reader's next scroll corrects it if the target was the end.
+      setIsAtBottom(false);
       const index = feedItems.findIndex((item) => item.key === key);
       requestAnimationFrame(() =>
         scrollToFeedIndex(index, target.mode === "focus" ? 0.5 : 0),
@@ -1130,6 +1139,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             onScrollBeginDrag={() => {
               // The reader took over; stop steering toward the saved spot.
               if (pendingTarget.current?.mode === "anchor") pendingTarget.current = null;
+              targetSettleUntil.current = 0;
             }}
             onScrollToIndexFailed={handleScrollToIndexFailed}
             onViewableItemsChanged={onViewableItemsChanged}
