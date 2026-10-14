@@ -209,12 +209,19 @@ public protocol AppOnboardingStore: Sendable {
     /// this every authenticated call fails, so the app must return to
     /// sign-in. Defaulted to a stream that never emits.
     nonisolated func sessionRevocations() -> AsyncStream<Void>
+
+    /// A stored session that will stay valid for a while yet — enough to
+    /// open the app on the cached team and check memberships behind it.
+    /// Defaulted to false, which keeps the full bootstrap.
+    func hasFreshSession() async -> Bool
 }
 
 public extension AppOnboardingStore {
     func sessionRevocations() -> AsyncStream<Void> {
         AsyncStream { $0.finish() }
     }
+
+    func hasFreshSession() async -> Bool { false }
 }
 
 /// One identity of the signed-in person — one per org (`GET /v1/auth/identities`).
@@ -319,10 +326,11 @@ public final class AppOnboardingCoordinator {
     /// True iff the current session is an anonymous Supabase user. UI uses
     /// this to surface the "upgrade your account" affordance.
     public var isAnonymous: Bool = false
-    /// True when bootstrap could not reach the server and entered the app on
-    /// the last team this device was in (`lastContextKey`). Memberships were
-    /// not checked; `revalidateAfterOfflineLaunch` does that once the network
-    /// is back.
+    /// True when bootstrap entered the app on the last team this device was
+    /// in (`lastContextKey`) without checking memberships first — because
+    /// the server could not be reached, or, on an ordinary relaunch, so the
+    /// first screen does not wait on two round trips.
+    /// `revalidateAfterOfflineLaunch` does the check.
     public private(set) var isOfflineLaunch = false
     /// Invite token captured pre-auth (e.g. user pasted a link on the
     /// onboarding screen). Stashed here so it can replay through the
@@ -786,6 +794,13 @@ public final class AppOnboardingCoordinator {
     }
 
     public func bootstrap(preferringTeamID: String? = nil) async {
+        await bootstrap(preferringTeamID: preferringTeamID, allowCachedEntry: true)
+    }
+
+    /// `allowCachedEntry` is false when the memberships check behind a
+    /// cached entry found the team gone: entering from the cache again
+    /// would land on that same team and start the check over, forever.
+    private func bootstrap(preferringTeamID: String?, allowCachedEntry: Bool) async {
         guard !isBusy else { return }
         isBusy = true
         route = .loading
@@ -799,6 +814,20 @@ public final class AppOnboardingCoordinator {
             onboardingSignposter.endInterval("bootstrap", bootInterval)
             let ms = Int(Date().timeIntervalSince(bootStart) * 1000)
             onboardingLogger.info("bootstrap total: \(ms) ms")
+        }
+
+        if allowCachedEntry, await canEnterFromCache(preferring: preferringTeamID), let cached = lastContext {
+            // The common relaunch: same team as last time, a session that is
+            // still good. Show it now; the memberships check runs behind it
+            // and only moves the user if the team is gone.
+            isAnonymous = await store.isAnonymous()
+            currentUserEmail = await store.currentUserEmail()
+            setCurrentContext(cached)
+            isOfflineLaunch = true
+            route = .ready
+            onboardingLogger.info("bootstrap from cache; checking memberships in the background")
+            Task { [weak self] in await self?.revalidateAfterOfflineLaunch() }
+            return
         }
 
         do {
@@ -997,6 +1026,20 @@ public final class AppOnboardingCoordinator {
         }
     }
 
+    /// Whether this launch can open on the cached team. Not when anything
+    /// asks for a specific place — a team switch, an invite to claim (it may
+    /// target another team, and the claim must run before any team pick) —
+    /// and not without a session that will outlive the check.
+    private func canEnterFromCache(preferring preferredTeamID: String?) async -> Bool {
+        guard preferredTeamID == nil,
+              (pendingInviteToken ?? "").isEmpty,
+              (defaults.string(forKey: InviteDeepLink.pendingTokenDefaultsKey) ?? "").isEmpty,
+              let cached = lastContext,
+              cached.team.id == persistedActiveTeamID
+        else { return false }
+        return await store.hasFreshSession()
+    }
+
     /// After an offline launch, check the team is still one of the user's
     /// memberships. Quiet: no splash, no route change while it still is. Gone
     /// (removed while offline) → a full bootstrap picks the right place.
@@ -1007,11 +1050,11 @@ public final class AppOnboardingCoordinator {
             let bootstrap = try await store.loadBootstrap()
             isOfflineLaunch = false
             if !bootstrap.teams.contains(where: { $0.id == context.team.id }) {
-                await self.bootstrap()
+                await self.bootstrap(preferringTeamID: nil, allowCachedEntry: false)
             }
         } catch is AuthRequired {
             isOfflineLaunch = false
-            await self.bootstrap()
+            await self.bootstrap(preferringTeamID: nil, allowCachedEntry: false)
         } catch {
             if !NetworkErrorClassifier.isUnreachable(error) {
                 onboardingLogger.error("offline revalidation failed: \(error.localizedDescription, privacy: .public)")
