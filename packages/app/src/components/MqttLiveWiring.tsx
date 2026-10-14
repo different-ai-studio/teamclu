@@ -27,7 +27,7 @@ import { listenForEnvelopes } from "@/lib/mqtt/mqtt-bridge";
 import { connectMqttWithFreshAuth } from "@/lib/mqtt/mqtt-connect-with-fresh-auth";
 import { mqttConnectionKey } from "@/lib/mqtt/mqtt-connection-key";
 import { describeJwt, recordMqttDiag } from "@/lib/mqtt/mqtt-diagnostics";
-import { useMqttReconnectStore } from "@/stores/mqtt-reconnect";
+import { ensureIssuedMqttBroker, useMqttReconnectStore } from "@/stores/mqtt-reconnect";
 import { getEffectiveServerConfig } from "@/lib/config/server-config";
 import { acquireTeamcluRpcBroker, acquireTeamcluRpcIdentity } from "@/lib/daemon/teamclu-rpc";
 import { acquireRemoteToolsRpcServer, registerPlatformExecutors } from "@/lib/remote-tools";
@@ -581,10 +581,24 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
         // broker. The broker lease further down still adds the MQTT response
         // subscription for remote agents.
         identityLease = acquireTeamcluRpcIdentity(mqttTeamId, actorId, wiringId);
-        const serverConfig = await getEffectiveServerConfig();
+        let serverConfig = await getEffectiveServerConfig();
         if (cancelled) {
           recordMqttDiag("app-mqtt", "wiring:cancelled-after-server-config", { wiringId });
           return;
+        }
+        // No cached address: ask the server for the one it issues before
+        // giving up. Sign-in may have missed this, and nothing else retries
+        // until the user opens Settings and clicks Retry.
+        if (!serverConfig.mqttHost) {
+          const issued = await ensureIssuedMqttBroker(mqttAccessToken);
+          if (cancelled) {
+            recordMqttDiag("app-mqtt", "wiring:cancelled-after-broker-fetch", { wiringId });
+            return;
+          }
+          if (issued === "ready") {
+            serverConfig = await getEffectiveServerConfig();
+            if (cancelled) return;
+          }
         }
         const brokerHost = serverConfig.mqttHost;
         const brokerPort = serverConfig.mqttPort ?? 1883;

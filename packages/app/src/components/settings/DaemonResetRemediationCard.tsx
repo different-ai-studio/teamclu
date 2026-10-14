@@ -14,6 +14,8 @@ import {
 } from '@/components/ui/alert-dialog'
 import { SettingCard } from './shared'
 import { DaemonOnboardingWizard } from '@/components/auth/DaemonOnboardingWizard'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
 import { daemonTeamsDisplayPath } from '@/lib/daemon/daemon-paths'
 import {
@@ -28,6 +30,7 @@ export function DaemonResetRemediationCard({
   report: DiagnosticReport
 }) {
   const { t } = useTranslation()
+  const absent = useLocalAgentAbsent()
   const forceReset = useDaemonOnboardingStore((s) => s.forceReset)
   const onboardingBusy = useDaemonOnboardingStore((s) => s.busy)
   const onboardingStatus = useDaemonOnboardingStore((s) => s.status)
@@ -61,6 +64,7 @@ export function DaemonResetRemediationCard({
   }, [forceReset])
 
   if (!remediation.suggest) return null
+  if (absent) return <LocalAgentRequiredCard />
 
   return (
     <>

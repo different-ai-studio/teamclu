@@ -9,7 +9,6 @@ import {
   Settings,
   Star,
   LifeBuoy,
-  PowerOff,
 } from 'lucide-react'
 import { PiAgentMark } from '@/components/icons/agent-brand-icons'
 import { toast } from 'sonner'
@@ -330,41 +329,6 @@ export function LocalDaemonRow({
     openSettings('general')
   }
 
-  const [disabling, setDisabling] = React.useState(false)
-  const handleDisable = async () => {
-    if (disabling) return
-    setSheetOpen(false)
-    setDisabling(true)
-    try {
-      const { disableLocalAgentWithConfirm } = await import('@/lib/daemon/local-agent-gate')
-      if (await disableLocalAgentWithConfirm()) {
-        toast.success(t('localAgent.disabledToast', 'Local Agent disabled'))
-      }
-    } catch (err) {
-      console.error('[LocalDaemonRow] disable local agent failed', err)
-      toast.error(
-        t('localAgent.disableFailed', "Couldn't disable the local Agent: {{msg}}", {
-          msg: err instanceof Error ? err.message : String(err),
-        }),
-      )
-    } finally {
-      setDisabling(false)
-    }
-  }
-
-  const disableItem = (
-    <SheetMenuItem
-      icon={disabling
-        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        : <PowerOff className="h-3.5 w-3.5" />}
-      destructive
-      disabled={disabling || daemonBusy}
-      onClick={() => void handleDisable()}
-    >
-      {t('localAgent.disableAction', 'Disable local Agent')}
-    </SheetMenuItem>
-  )
-
   const handleOpenAutomation = () => {
     setSheetOpen(false)
     openAutomationPanel()
@@ -472,7 +436,6 @@ export function LocalDaemonRow({
                   >
                     {t('settings.diagnostics.openFromSidebar', 'Run diagnostics')}
                   </SheetMenuItem>
-                  {disableItem}
                 </SheetGroup>
               ) : (
                 <>
@@ -490,7 +453,6 @@ export function LocalDaemonRow({
                     >
                       {t('sidebar.localDaemonDaemonSettings', 'Daemon settings')}
                     </SheetMenuItem>
-                    {disableItem}
                   </SheetGroup>
                 </>
               )}

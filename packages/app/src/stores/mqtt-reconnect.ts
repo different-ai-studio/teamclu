@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { LocalAgentInstallStatus } from '@/stores/local-agent-install'
 
 function logMqttNetworkDiag(event: string, data?: Record<string, unknown>): void {
   void import('@/lib/mqtt/mqtt-diagnostics')
@@ -49,6 +50,31 @@ export function daemonMqttNeedsRecovery(
 ): boolean {
   if (snapshot) return !snapshot.connected && snapshot.phase !== 'Stopped'
   return fallbackConnected !== true
+}
+
+/**
+ * The extension has no local daemon, so its MQTT flag is the page's own
+ * client. Desktop follows that only after this machine is classified as
+ * having no local agent. Installed, pending, and unknown keep the daemon
+ * snapshot: a classification that has not finished must not change a
+ * machine that already has an agent.
+ */
+export function daemonMqttSnapshotOwnsConnection(
+  status: LocalAgentInstallStatus | undefined,
+): boolean {
+  return status !== 'absent'
+}
+
+async function currentTeamLocalAgentAbsent(): Promise<boolean> {
+  const [{ useCurrentTeamStore }, { useLocalAgentInstallStore }] = await Promise.all([
+    import('@/stores/current-team'),
+    import('@/stores/local-agent-install'),
+  ])
+  const teamId = useCurrentTeamStore.getState().team?.id?.trim() ?? ''
+  if (!teamId) return false
+  return !daemonMqttSnapshotOwnsConnection(
+    useLocalAgentInstallStore.getState().byTeam[teamId]?.status,
+  )
 }
 
 /** True when the broker rejected MQTT credentials (expired JWT after sleep, etc.). */
@@ -105,7 +131,15 @@ async function runMqttRecovery(
 ): Promise<void> {
   if (generation !== recoveryGeneration) return
   const utils = await import('@/lib/utils')
-  if (utils.isTauri() && reason !== 'user_requested' && reason !== 'credential_rejected') {
+  // No local agent: the desktop client's own MQTT is the connection, same as
+  // the extension. Do not adopt or restart the unclaimed daemon's broker.
+  const localAgentAbsent = utils.isTauri() && (await currentTeamLocalAgentAbsent())
+  if (
+    utils.isTauri() &&
+    !localAgentAbsent &&
+    reason !== 'user_requested' &&
+    reason !== 'credential_rejected'
+  ) {
     const { getDaemonMqttSnapshot } = await import('@/lib/daemon/daemon-local-client')
     const snapshot = await getDaemonMqttSnapshot()
     if (snapshot?.connected) {
@@ -117,7 +151,7 @@ async function runMqttRecovery(
     }
   }
   const tasks: Promise<unknown>[] = []
-  if (utils.isTauri()) {
+  if (utils.isTauri() && !localAgentAbsent) {
     tasks.push(
       import('@/lib/daemon/daemon-local-client')
         .then(({ recoverDaemonMqtt }) => recoverDaemonMqtt(reason))
@@ -159,6 +193,40 @@ async function recoverMqttCredentials(
     authRecoveryInFlight = null
   })
   return authRecoveryInFlight
+}
+
+/**
+ * Start the desktop MQTT client once this machine is known to have no local
+ * agent. The client reads the broker address at connect time; a sign-in often
+ * tries before bootstrap has saved that address, and nothing retries.
+ * Installed, pending, and unknown keep the daemon connection and do not bump.
+ */
+export async function reconnectDesktopMqttWhenLocalAgentAbsent(): Promise<void> {
+  const utils = await import('@/lib/utils')
+  if (utils.isTauri() && !(await currentTeamLocalAgentAbsent())) return
+  if (useMqttReconnectStore.getState().connected === true) return
+  useMqttReconnectStore.getState().bump()
+}
+
+/**
+ * Ask the server for the MQTT address it issues, when this desktop client is
+ * about to connect and has none cached. A sign-in fetch can miss that window;
+ * the settings Retry button was the only later ask. Installed, pending, and
+ * unknown do not ask — they keep the daemon's connection.
+ */
+export async function ensureIssuedMqttBroker(
+  accessToken: string | null | undefined,
+): Promise<'ready' | 'missing' | 'skipped'> {
+  const utils = await import('@/lib/utils')
+  if (utils.isTauri() && !(await currentTeamLocalAgentAbsent())) return 'skipped'
+  const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
+  const current = await getEffectiveServerConfig()
+  if (current.mqttHost) return 'ready'
+  const { fetchAndApplyBootstrap } = await import('@/lib/config/bootstrap')
+  const outcome = await fetchAndApplyBootstrap({ accessToken })
+  if (outcome !== 'applied') return 'missing'
+  const next = await getEffectiveServerConfig()
+  return next.mqttHost ? 'ready' : 'missing'
 }
 
 /** Refresh session credentials and trigger a Desktop MQTT reconnect (user-initiated). */
@@ -257,10 +325,16 @@ export const useMqttReconnectStore = create<MqttReconnectState>((set, get) => ({
       const setConnected = get().setConnected
       const setError = get().setError
       const probe = async () => {
-        const daemonSnapshot = await getDaemonMqttSnapshot()
-        if (daemonSnapshot) {
-          setConnected(daemonSnapshot.connected)
-          return daemonSnapshot
+        const localAgentAbsent = await currentTeamLocalAgentAbsent()
+        // Installed (and not-yet-classified) machines keep the daemon snapshot.
+        // Absent machines ignore it: an unclaimed daemon reports MQTT down
+        // because it has no broker, which is not the desktop client's state.
+        if (!localAgentAbsent) {
+          const daemonSnapshot = await getDaemonMqttSnapshot()
+          if (daemonSnapshot) {
+            setConnected(daemonSnapshot.connected)
+            return daemonSnapshot
+          }
         }
         try {
           const status = await mqttStatus()

@@ -14,6 +14,7 @@ import { useOnboardingStore } from "@/stores/onboarding";
 import { DaemonOnboardingWizard } from "@/components/auth/DaemonOnboardingWizard";
 import { TeamBootstrapErrorScreen } from "@/components/auth/TeamBootstrapErrorScreen";
 import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
+import { markLocalAgentInstallPending, useLocalAgentInstallStore } from "@/stores/local-agent-install";
 import { refreshSession } from "@/lib/auth";
 import { CloudApiError } from "@/lib/backend/cloud-api/http";
 import { humanizeFcError } from "@/lib/team/fc-error";
@@ -139,27 +140,11 @@ export function AuthGate({ children }: AuthGateProps) {
   // The one remaining question in onboarding: name a brand-new agent for this
   // machine. It must hold the gate, or the shell would render behind the prompt.
   const daemonAwaitingName = useDaemonOnboardingStore((s) => !!s.pendingName);
-  const refreshDaemonOnboarding = useDaemonOnboardingStore((s) => s.refresh);
-  const [daemonOnboardingAck, setDaemonOnboardingAck] = useState(() => devSkipDaemonOnboarding());
   const currentTeamId = useCurrentTeamStore((s) => s.team?.id ?? null);
-  // Entering another team with the local Agent off is "entering a team" again
-  // (#1678): if that team has no default either, the enable it triggers must
-  // hold the gate just like at launch. With the agent on, a switch only
-  // rebinds and keeps the old non-blocking behaviour.
-  const lastGateTeamId = useRef<string | null>(null);
-  useEffect(() => {
-    const previous = lastGateTeamId.current;
-    lastGateTeamId.current = currentTeamId;
-    if (!previous || !currentTeamId || previous === currentTeamId) return;
-    if (devSkipDaemonOnboarding()) return;
-    if (useDaemonOnboardingStore.getState().enabled === false) setDaemonOnboardingAck(false);
-  }, [currentTeamId]);
-  // Passing on 'disabled' is a decision, not a moment in transit: acknowledge
-  // it, so an enable started later by a feature (which runs in its own dialog)
-  // does not pull the whole window back into the full-screen setup.
-  useEffect(() => {
-    if (daemonStatus === "disabled") setDaemonOnboardingAck(true);
-  }, [daemonStatus]);
+  const installGateSkipped = useLocalAgentInstallStore(
+    (s) => !!currentTeamId && s.gateSkippedTeamId === currentTeamId,
+  );
+  const [daemonOnboardingAck, setDaemonOnboardingAck] = useState(() => devSkipDaemonOnboarding());
 
   // Multi-team (cross-org) picker. Match iOS onboarding: restore the last team
   // the user entered when it is still a membership, activate it to mint an
@@ -282,8 +267,13 @@ export function AuthGate({ children }: AuthGateProps) {
     // A join already called enterTeam. Refresh here rebinds the daemon, which
     // is the switchToTeam side effect this path must not repeat.
     if (joinSkipsDaemonRefresh.current) return;
-    if (isTauri() && session && bootstrap === "ready") void refreshDaemonOnboarding()
-  }, [session, bootstrap, refreshDaemonOnboarding]);
+    if (!(isTauri() && session && bootstrap === "ready")) return;
+    const teamId = useCurrentTeamStore.getState().team?.id;
+    if (teamId) markLocalAgentInstallPending(teamId);
+    void import("@/lib/daemon/local-agent-install").then((m) =>
+      m.refreshDaemonUnlessSkipped(),
+    );
+  }, [session, bootstrap]);
 
   // Claim a stashed invite once the user signs in with a REAL (non-anonymous)
   // account. Member invites can't be claimed anonymously (enforced server-side
@@ -308,7 +298,8 @@ export function AuthGate({ children }: AuthGateProps) {
   const completeJoinBootstrap = () => {
     joinSkipsDaemonRefresh.current = true;
     // Open the Tauri gate without refresh: refresh would rebind this machine's
-    // agent onto the joined team. Leave status as-is (`unknown` stays unknown).
+    // agent onto the joined team. Classification is a read of for-device, so
+    // the install card still learns whether this machine has an agent here.
     useDaemonOnboardingStore.setState({ loaded: true });
     setMyTeams([]);
     setTeamChosen(true);
@@ -317,6 +308,14 @@ export function AuthGate({ children }: AuthGateProps) {
     setRetrying(false);
     markStartup("team-bootstrap:end");
     setBootstrap("ready");
+    const teamId = successfulJoinLinkRedeem()?.teamId?.trim()
+      || useCurrentTeamStore.getState().team?.id?.trim()
+      || "";
+    if (teamId && isTauri()) {
+      void import("@/lib/daemon/local-agent-install").then((m) => {
+        void m.resolveLocalAgentInstall(teamId);
+      });
+    }
   };
   const finishIfJoinSucceeded = async (): Promise<boolean> => {
     const pending = currentJoinLinkRedeem();
@@ -775,10 +774,8 @@ export function AuthGate({ children }: AuthGateProps) {
   // valid token. None of these states prompt for input any more — needs-onboard
   // and mismatch are resolved by binding (team, device id) server-side, and the
   // screen below is progress plus a retry on failure. 'ready'/'unknown' fall
-  // through, and so does 'disabled': the local Agent is off and the team has a
-  // default agent to talk to (#1678). 'defaults-error' holds the gate — a
-  // failed defaults lookup is never read as "no default".
-  if (isTauri() && !daemonOnboardingAck) {
+  // through.
+  if (isTauri() && !daemonOnboardingAck && !installGateSkipped) {
     if (!daemonLoaded) {
       return null;
     }
@@ -787,18 +784,21 @@ export function AuthGate({ children }: AuthGateProps) {
       daemonStatus === 'needs-onboard' ||
       daemonStatus === 'mismatch' ||
       daemonStatus === 'starting' ||
-      daemonStatus === 'error' ||
-      daemonStatus === 'defaults-error'
+      daemonStatus === 'error'
     ) {
       removeStartupSkeleton();
-      const canSwitchTeam = !!myTeams && memberTeams(narrowToHomeOrg(myTeams)).length > 1;
       return (
         <>
           {joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null}
           <DaemonOnboardingWizard
-            onDone={() => setDaemonOnboardingAck(true)}
-            onSwitchTeam={canSwitchTeam ? () => setTeamChosen(false) : undefined}
-            onSignOut={() => void signOut("local_agent_setup")}
+            onDone={() => {
+              setDaemonOnboardingAck(true);
+              const id = useCurrentTeamStore.getState().team?.id?.trim();
+              if (!id) return;
+              void import("@/lib/daemon/local-agent-install").then((m) => {
+                void m.refreshAfterLocalAgentInstall(id);
+              });
+            }}
           />
         </>
       );

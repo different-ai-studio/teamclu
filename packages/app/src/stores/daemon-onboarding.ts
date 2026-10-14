@@ -21,58 +21,26 @@ import { daemonManagedLogDisplayPath } from '@/lib/daemon/daemon-paths'
 import { useAuthStore } from '@/stores/auth-store'
 
 /**
- * Make this machine's agent the member's default — only for an enable that ran
- * because the team offered no default at all (#1678).
+ * Adopt the machine's freshly bound agent as the user's default.
  *
- * Binding no longer writes the member default by itself. Enabling for a feature,
- * from the sidebar, or rebinding after a team switch leaves whatever default the
- * member chose alone; only "nothing to talk to otherwise" earns a write.
+ * Unconditional, unlike the old "only if unset": binding is no longer something
+ * the user did, so there is no explicit choice to protect. Leaving a stale
+ * default in place would point every new message at whichever agent the member
+ * last had — including one that this machine has just stopped being.
  *
- * Best-effort: failures here must not fail the enable.
+ * Best-effort: failures here must not fail the binding.
  */
-async function adoptDeviceAgentAsDefault(teamId: string): Promise<void> {
+async function adoptDeviceAgentAsDefault(teamId: string, agentId: string): Promise<void> {
   try {
-    const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
-    const agentId = await getLocalDaemonActorId()
-    if (!agentId) return
     const prefs = useMemberPreferencesStore.getState()
     await prefs.ensureLoaded(teamId)
     if (useMemberPreferencesStore.getState().defaultAgentId !== agentId) {
       await useMemberPreferencesStore.getState().setDefaultAgent(teamId, agentId)
     }
-    void useMemberPreferencesStore.getState().loadEffectiveDefaultAgent(teamId)
   } catch (e) {
     console.warn('[daemon-onboarding] could not set local daemon as default agent', e)
   }
 }
-
-/**
- * Is the local Agent switched on for this machine? The Rust side's switch is
- * authoritative — it refuses to start amuxd while off — so anything but an
- * explicit `false` (an older host without the command, say) reads as on, the
- * behaviour before the switch existed.
- */
-async function readLocalAgentEnabled(): Promise<boolean> {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    return (await invoke<boolean>('local_agent_enabled')) !== false
-  } catch (e) {
-    console.warn('[daemon-onboarding] local_agent_enabled failed; assuming enabled', e)
-    return true
-  }
-}
-
-/**
- * The enable currently in progress, if any.
- *
- * `adopt`: write the local agent as the member default once ready (the
- * no-default-anywhere path only). `rollback`: the machine was off before this
- * run, so a failure switches it back off — otherwise a failed enable would keep
- * amuxd starting on every launch, and a team switch to a team that does have a
- * default would still be blocked on it.
- */
-type EnableRun = { teamId: string | null; adopt: boolean; rollback: boolean }
-let enableRun: EnableRun | null = null
 
 /**
  * Is any required row of the managed runtime missing, as the daemon's doctor
@@ -172,9 +140,6 @@ async function ensureRuntimeReady(): Promise<boolean> {
   }
 }
 
-// 'disabled'       — local Agent is off and the team has a default to talk to
-// 'defaults-error' — local Agent is off and the defaults could not be read;
-//                    blocks with a retry, never read as "no default"
 // 'unknown'        — no current team yet (don't block)
 // 'needs-onboard'  — daemon bound to no team -> bind silently
 // 'mismatch'       — daemon bound to a different team -> re-bind silently
@@ -186,15 +151,7 @@ async function ensureRuntimeReady(): Promise<boolean> {
 // that make `refresh` bind this machine's agent, and the user sees 'starting'
 // while it happens. They stay in the type because they are still the honest
 // description of what the daemon's config says.
-type OnboardingStatus =
-  | 'unknown'
-  | 'disabled'
-  | 'defaults-error'
-  | 'needs-onboard'
-  | 'mismatch'
-  | 'starting'
-  | 'ready'
-  | 'error'
+type OnboardingStatus = 'unknown' | 'needs-onboard' | 'mismatch' | 'starting' | 'ready' | 'error'
 
 /**
  * The distinct operations hiding behind `status === 'starting'` (#881).
@@ -240,11 +197,6 @@ export function computeOnboardingStatus(
 
 type DaemonOnboardingState = {
   status: OnboardingStatus
-  /** The local Agent switch (#1678). Null until the first `refresh` reads it. */
-  enabled: boolean | null
-  /** The last failed run was an enable; Retry should enable again rather than
-   * just refresh (which, with the machine switched back off, would do nothing). */
-  retryEnable: { adopt: boolean } | null
   loaded: boolean
   busy: boolean
   error: string | null
@@ -295,22 +247,7 @@ type DaemonOnboardingState = {
    * current team — used after a linked-account switch, where the team is the same
    * but the authority behind the daemon's credentials is not. A team *change*
    * needs no flag: a mismatch always re-binds now. */
-  refresh: (opts?: { forceIdentityRebind?: boolean; fresh?: boolean }) => Promise<void>
-  /**
-   * Switch the local Agent on and run the whole setup: start amuxd, bind this
-   * machine's agent in the current team, install the runtime. `adoptAsDefault`
-   * writes the agent as the member default once ready — pass it only when the
-   * team had no default at all.
-   */
-  enable: (opts?: { adoptAsDefault?: boolean }) => Promise<void>
-  /** Read the switch without running a refresh (for consumers that only need
-   * to know, before any refresh has run). */
-  loadEnabled: () => Promise<boolean>
-  /** Switch the local Agent off: stop amuxd, clear the member default when it
-   * pointed here. Callers confirm a team default pointing here first. */
-  disable: () => Promise<void>
-  /** Retry after a failure: re-runs an enable that failed, else refreshes. */
-  retry: () => Promise<void>
+  refresh: (opts?: { forceIdentityRebind?: boolean }) => Promise<void>
   /** Wipe local daemon state. Settings-only (DaemonManualResetCard); the next
    * `refresh` re-binds this machine silently. */
   forceReset: () => Promise<void>
@@ -488,6 +425,9 @@ async function bindDeviceAgent(
   await runStep('restart-daemon', () => invoke('daemon_restart_managed'))
   rememberDaemonIdentity(teamId)
   invalidateDaemonConnection()
+  // The machine's agent is now this member's default recipient. Unconditional:
+  // see adoptDeviceAgentAsDefault.
+  await adoptDeviceAgentAsDefault(teamId, invite.agentId)
   if (result.actorId !== invite.agentId) {
     // The daemon reports which actor it claimed; if that disagrees with what the
     // server bound, later calls would address the wrong agent. Loud, because the
@@ -661,99 +601,7 @@ async function maybeRegisterDefaultWorkspace(teamId: string | null): Promise<voi
   }
 }
 
-/** The `refresh` in flight, so a second caller (the wizard's mount, a sidebar
- * retry) joins it instead of binding the machine a second time alongside it. */
-let refreshInFlight: { teamId: string | null; promise: Promise<void> } | null = null
-
 export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get) => {
-  /** End the enable run on failure: a machine that was off before it is
-   * switched back off, and Retry is armed to enable again. */
-  const failEnableRun = async (): Promise<void> => {
-    const run = enableRun
-    enableRun = null
-    if (!run) return
-    set({ retryEnable: { adopt: run.adopt } })
-    if (!run.rollback) return
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('local_agent_disable')
-      invalidateDaemonConnection()
-      set({ enabled: false })
-    } catch (e) {
-      console.warn('[daemon-onboarding] rolling back a failed enable failed', e)
-    }
-  }
-
-  /** End the enable run on success, adopting the default when it asked to. */
-  const finishEnableRun = async (teamId: string | null): Promise<void> => {
-    const run = enableRun
-    enableRun = null
-    set({ retryEnable: null })
-    if (run?.adopt && teamId) await adoptDeviceAgentAsDefault(teamId)
-  }
-
-  /** `status: 'error'` plus the enable-run bookkeeping that goes with it. */
-  const fail = async (patch: Partial<DaemonOnboardingState>): Promise<void> => {
-    set({ ...patch, status: 'error', loaded: true })
-    await failEnableRun()
-  }
-
-  const beginEnable = async (opts: { adopt: boolean }): Promise<void> => {
-    const wasEnabled = get().enabled === true
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('local_agent_enable')
-    enableRun = {
-      teamId: useCurrentTeamStore.getState().team?.id ?? null,
-      adopt: opts.adopt || !!enableRun?.adopt,
-      rollback: enableRun?.rollback ?? !wasEnabled,
-    }
-    set({ enabled: true, retryEnable: null })
-  }
-
-  /**
-   * The local Agent is off: decide from the team's defaults whether entering
-   * the team needs it (#1678). Returns true when an enable was started and the
-   * caller should carry on into the enabled path.
-   */
-  const decideWhileDisabled = async (teamId: string): Promise<boolean> => {
-    // Undecided while the lookup runs. At launch `loaded` is still false and
-    // the gate holds the skeleton; on an in-app team switch 'unknown' keeps the
-    // shell up without acknowledging anything — leaving the previous team's
-    // 'disabled' in place would wave this team in before its defaults were read.
-    set({ status: 'unknown', error: null })
-    let effective: string | null
-    try {
-      effective = (await getBackend().actors.getEffectiveDefaultAgent(teamId))?.trim() || null
-    } catch (e) {
-      // Never read a failed lookup as "no default": that would install a
-      // runtime on a machine whose user only lost the network for a moment.
-      set({
-        status: 'defaults-error',
-        loaded: true,
-        error: i18n.t(
-          'settings.daemonOnboarding.defaultsCheckFailed',
-          "Couldn't check this team's default agent: {{detail}}",
-          { detail: e instanceof Error ? e.message : String(e) },
-        ),
-      })
-      return false
-    }
-    if (effective) {
-      set({ status: 'disabled', loaded: true, error: null })
-      return false
-    }
-    // Neither the member nor the team has a default: without this machine's
-    // agent there is nobody to talk to. Enable, and make it the default.
-    try {
-      await beginEnable({ adopt: true })
-    } catch (e) {
-      set({ retryEnable: { adopt: true } })
-      set({ status: 'error', loaded: true, error: bindErrorMessage(e) })
-      return false
-    }
-    return true
-  }
-
   /**
    * Look this machine up in `teamId`, then either bind it silently or park a name
    * prompt. Returns 'bound' | 'prompting'; throws on failure so each caller
@@ -780,35 +628,62 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
     return 'bound'
   }
 
-  const refreshOnce = async (opts?: { forceIdentityRebind?: boolean }): Promise<void> => {
+  return {
+  status: 'unknown',
+  loaded: false,
+  busy: false,
+  error: null,
+  cloudAuthExpired: false,
+  healing: false,
+  healError: null,
+  step: null,
+  completedSteps: [],
+  failedStep: null,
+  daemonOutdated: false,
+  runStartedAt: null,
+  completedAgent: null,
+  pendingName: null,
+
+  nameDeviceAgent: async (name) => {
+    const pending = get().pendingName
+    if (!pending) return
+    const displayName = name.trim() || pending.suggested
+    beginRun()
+    set({ status: 'starting', busy: true, error: null, pendingName: null, completedAgent: null })
+    try {
+      const bound = await bindDeviceAgent(pending.teamId, pending.deviceId, displayName)
+      // Recorded before refresh so the naming screen can confirm what was set up
+      // rather than simply disappearing once status flips to 'ready'.
+      set({ completedAgent: { agentId: bound.agentId, displayName } })
+      // The login gate unmounts this wizard as soon as status becomes ready, so
+      // its onDone never runs. Reclassify before that refresh, or the sidebar
+      // keeps the pre-install "not installed" card.
+      const teamId = pending.teamId
+      try {
+        const install = await import('@/lib/daemon/local-agent-install')
+        await install.refreshAfterLocalAgentInstall(teamId)
+      } catch {
+        // The agent is already bound. A missed reclassify leaves the card
+        // stale; opening install again still finds this machine's agent.
+      }
+    } catch (e) {
+      // Put the prompt back: the name the user typed was never applied, so
+      // dropping it would leave the retry button creating an unnamed agent.
+      set({ status: 'error', error: bindErrorMessage(e), pendingName: pending })
+      return
+    } finally {
+      set({ busy: false })
+    }
+    await get().refresh()
+  },
+
+  refresh: async (opts) => {
     if (!isTauri()) {
       set({ status: 'ready', loaded: true })
       return
     }
     markStartup('daemon-refresh:start')
     const currentTeamId = useCurrentTeamStore.getState().team?.id ?? null
-    // An enable started for another team (the user switched away from the
-    // setup screen) is abandoned, not carried over: the new team decides for
-    // itself whether it needs this machine's agent.
-    if (enableRun && enableRun.teamId !== currentTeamId) {
-      set({ pendingName: null })
-      await failEnableRun()
-      set({ retryEnable: null })
-    }
-    const enabled = enableRun ? true : await readLocalAgentEnabled()
-    set({ enabled })
-    if (!enabled) {
-      if (!currentTeamId) {
-        set({ status: 'unknown', loaded: true })
-        markStartup('daemon-refresh:end')
-        return
-      }
-      const started = await decideWhileDisabled(currentTeamId)
-      if (!started) {
-        markStartup('daemon-refresh:end')
-        return
-      }
-    }
     const dTeam = await daemonTeamId()
     markStartup('daemon-teamid:end')
     const base = computeOnboardingStatus(dTeam, currentTeamId)
@@ -835,7 +710,7 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       try {
         outcome = await bindOrPrompt(currentTeamId)
       } catch (e) {
-        await fail({ error: bindErrorMessage(e) })
+        set({ status: 'error', loaded: true, error: bindErrorMessage(e) })
         return
       } finally {
         set({ busy: false })
@@ -845,9 +720,8 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
         return
       }
       // Re-read daemon.toml and health after init/restart before releasing the
-      // auth gate to the chat UI. Not `get().refresh()`: that would join the
-      // run in flight — this one — and wait on itself.
-      await refreshOnce()
+      // auth gate to the chat UI.
+      await get().refresh()
       return
     }
     const currentUserId = currentAuthUserId()
@@ -872,7 +746,7 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       try {
         outcome = await bindOrPrompt(currentTeamId!)
       } catch (e) {
-        await fail({ error: bindErrorMessage(e) })
+        set({ status: 'error', loaded: true, error: bindErrorMessage(e) })
         return
       } finally {
         set({ busy: false })
@@ -889,12 +763,8 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
     markStartup('daemon-refresh:end')
     if (first.ok) {
       // The gate must not open onto a machine that cannot run an agent.
-      if (!(await ensureRuntimeReady())) {
-        await failEnableRun()
-        return
-      }
+      if (!(await ensureRuntimeReady())) return
       set({ status: 'ready', loaded: true })
-      await finishEnableRun(currentTeamId)
       // Heal the daemon's cloud session before workspace upsert — otherwise
       // `POST /v1/workspaces` fails with 500 while the refresh token is dead.
       await get().checkCloudSession()
@@ -905,153 +775,22 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
     set({ status: 'starting', loaded: true, error: null })
     let ok = await ensureHealthy()
     if (!ok) ok = await ensureHealthy()
-    if (ok && !(await ensureRuntimeReady())) {
-      await failEnableRun()
-      return
-    }
-    if (!ok) {
-      await fail({
-        error: i18n.t(
-          'settings.daemonOnboarding.startFailed',
-          'Failed to start the local daemon. Make sure it can run on this machine, then retry.',
-        ),
-      })
-      return
-    }
-    set({ status: 'ready', loaded: true, error: null })
-    await finishEnableRun(currentTeamId)
-    await get().checkCloudSession()
-    await maybeRegisterDefaultWorkspace(currentTeamId)
-  }
-
-  return {
-  status: 'unknown',
-  enabled: null,
-  retryEnable: null,
-  loaded: false,
-  busy: false,
-  error: null,
-  cloudAuthExpired: false,
-  healing: false,
-  healError: null,
-  step: null,
-  completedSteps: [],
-  failedStep: null,
-  daemonOutdated: false,
-  runStartedAt: null,
-  completedAgent: null,
-  pendingName: null,
-
-  nameDeviceAgent: async (name) => {
-    const pending = get().pendingName
-    if (!pending) return
-    const displayName = name.trim() || pending.suggested
-    beginRun()
-    set({ status: 'starting', busy: true, error: null, pendingName: null, completedAgent: null })
-    try {
-      const bound = await bindDeviceAgent(pending.teamId, pending.deviceId, displayName)
-      // Recorded before refresh so the naming screen can confirm what was set up
-      // rather than simply disappearing once status flips to 'ready'.
-      set({ completedAgent: { agentId: bound.agentId, displayName } })
-    } catch (e) {
-      // Put the prompt back: the name the user typed was never applied, so
-      // dropping it would leave the retry button creating an unnamed agent.
-      set({ status: 'error', error: bindErrorMessage(e), pendingName: pending })
-      return
-    } finally {
-      set({ busy: false })
-    }
-    await get().refresh({ fresh: true })
-  },
-
-  refresh: async (opts) => {
-    const teamId = useCurrentTeamStore.getState().team?.id ?? null
-    const running = refreshInFlight
-    // Same team, nothing extra asked: the run in flight answers this call too.
-    // `fresh` callers changed something the running one has not seen (the
-    // switch was just turned on, a name was just applied) and queue behind it.
-    if (running && running.teamId === teamId && !opts?.forceIdentityRebind && !opts?.fresh) {
-      return running.promise
-    }
-    const promise = (async () => {
-      if (running) await running.promise.catch(() => {})
-      await refreshOnce(opts)
-    })()
-    refreshInFlight = { teamId, promise }
-    try {
-      await promise
-    } finally {
-      if (refreshInFlight?.promise === promise) refreshInFlight = null
+    if (ok && !(await ensureRuntimeReady())) return
+    set({
+      status: ok ? 'ready' : 'error',
+      loaded: true,
+      error: ok
+        ? null
+        : i18n.t(
+            'settings.daemonOnboarding.startFailed',
+            'Failed to start the local daemon. Make sure it can run on this machine, then retry.',
+          ),
+    })
+    if (ok) {
+      await get().checkCloudSession()
+      await maybeRegisterDefaultWorkspace(currentTeamId)
     }
   },
-
-  loadEnabled: async () => {
-    if (!isTauri()) return false
-    const enabled = enableRun ? true : await readLocalAgentEnabled()
-    set({ enabled })
-    return enabled
-  },
-
-  enable: async (opts) => {
-    if (!isTauri()) return
-    beginRun()
-    set({ status: 'starting', loaded: true, error: null })
-    try {
-      await beginEnable({ adopt: !!opts?.adoptAsDefault })
-    } catch (e) {
-      set({ retryEnable: { adopt: !!opts?.adoptAsDefault } })
-      set({ status: 'error', loaded: true, error: bindErrorMessage(e) })
-      return
-    }
-    await get().refresh({ fresh: true })
-  },
-
-  disable: async () => {
-    if (!isTauri()) return
-    set({ busy: true, error: null })
-    try {
-      const teamId = useCurrentTeamStore.getState().team?.id ?? null
-      // Read the id before amuxd stops — afterwards nothing answers /v1/info.
-      const { getLocalDaemonActorId } = await import('@/lib/daemon/daemon-agent-admin')
-      const { getKnownLocalDaemonActorId } = await import('@/lib/daemon/local-daemon-identity')
-      const localAgentId = (await getLocalDaemonActorId()) ?? getKnownLocalDaemonActorId()
-      const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('local_agent_disable')
-      enableRun = null
-      invalidateDaemonConnection()
-      set({ enabled: false, retryEnable: null, cloudAuthExpired: false, healError: null })
-      if (teamId && localAgentId) {
-        try {
-          const prefs = useMemberPreferencesStore.getState()
-          await prefs.ensureLoaded(teamId)
-          if (useMemberPreferencesStore.getState().defaultAgentId === localAgentId) {
-            await useMemberPreferencesStore.getState().setDefaultAgent(teamId, null)
-          }
-        } catch (e) {
-          console.warn('[daemon-onboarding] clearing the member default after disable failed', e)
-        }
-        void useMemberPreferencesStore.getState().loadEffectiveDefaultAgent(teamId)
-      }
-      const { useWorkspaceStore } = await import('@/stores/workspace')
-      useWorkspaceStore.getState().setDaemonHttpReady(false)
-      set({ status: 'disabled', loaded: true })
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) })
-      throw e
-    } finally {
-      set({ busy: false })
-    }
-  },
-
-  retry: async () => {
-    const pending = get().retryEnable
-    if (pending) {
-      await get().enable({ adoptAsDefault: pending.adopt })
-      return
-    }
-    await get().refresh({ fresh: true })
-  },
-
 
   forceReset: async () => {
     if (!isTauri()) return
@@ -1079,7 +818,7 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       }
       // Optimistically clear the mismatch screen while refresh re-resolves.
       set({ status: 'unknown' })
-      await get().refresh({ fresh: true })
+      await get().refresh()
     } catch (e) {
       set({ error: String(e) })
     } finally {
@@ -1125,9 +864,7 @@ export const useDaemonOnboardingStore = create<DaemonOnboardingState>((set, get)
       }
       const authOk = await waitForDaemonCloudAuthOk()
       set({ cloudAuthExpired: !authOk })
-      // Inside a refresh (its cloud-auth step lands here) that refresh carries
-      // on by itself; calling it again would join it and wait on itself.
-      if (!refreshInFlight) await get().refresh()
+      await get().refresh()
     } catch (e) {
       set({ healError: bindErrorMessage(e) })
     } finally {

@@ -204,8 +204,10 @@ async function enterClaimedTeam(teamId: string): Promise<void> {
   try {
     const { isTauri } = await import("@/lib/utils");
     if (isTauri()) {
-      const { useDaemonOnboardingStore } = await import("@/stores/daemon-onboarding");
-      await useDaemonOnboardingStore.getState().refresh();
+      const { markLocalAgentInstallPending } = await import("@/stores/local-agent-install");
+      markLocalAgentInstallPending(teamId);
+      const { refreshDaemonUnlessSkipped } = await import("@/lib/daemon/local-agent-install");
+      await refreshDaemonUnlessSkipped();
     }
   } catch (e) {
     console.warn("[invite] daemon refresh after claim failed", e);

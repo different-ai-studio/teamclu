@@ -664,10 +664,6 @@ export function FileTree({
       : [...knownDocs.keys()].filter((k) => k.startsWith(`${key}/`));
     if (targets.length === 0) return false;
 
-    // Downloads come through this machine's daemon; enable it first (#1678).
-    const { ensureLocalAgentEnabled } = await import('@/lib/daemon/local-agent-gate');
-    if (!(await ensureLocalAgentEnabled())) return false;
-
     const { fetchDocuments } = await import('@/lib/daemon/daemon-local-client');
 
     // One file needs no progress reporting; the row's own state is enough.

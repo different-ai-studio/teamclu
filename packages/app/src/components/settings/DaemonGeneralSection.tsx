@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DaemonOnboardingWizard } from '@/components/auth/DaemonOnboardingWizard'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentSectionGate } from '@/hooks/use-local-agent-install'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import {
@@ -65,6 +67,13 @@ function formatRelative(value: string | null): string {
 }
 
 export function DaemonGeneralSection() {
+  const gate = useLocalAgentSectionGate()
+  if (gate === 'wait') return null
+  if (gate === 'card') return <LocalAgentRequiredCard />
+  return <DaemonGeneralSectionBody />
+}
+
+function DaemonGeneralSectionBody() {
   const { t } = useTranslation()
   const team = useCurrentTeamStore((s) => s.team)
   const currentMember = useCurrentTeamStore((s) => s.currentMember)
@@ -102,7 +111,6 @@ export function DaemonGeneralSection() {
   // Surfaced so the overlay can offer a safe cancel *before* the daemon binding
   // is cleared (status 'mismatch'); once re-init starts there's no going back.
   const onboardingStatus = useDaemonOnboardingStore((s) => s.status)
-  const localAgentEnabled = useDaemonOnboardingStore((s) => s.enabled)
   const onboardingBusy = useDaemonOnboardingStore((s) => s.busy)
   // Cloud-session auto-heal: when the daemon's refresh token is terminally
   // rejected it can't advertise its backends — detect it here and re-onboard.
@@ -279,42 +287,6 @@ export function DaemonGeneralSection() {
           <p className="text-[13px] text-muted-foreground">
             {t('settings.daemonGeneral.noTeam', 'Join or create a team before configuring daemon agent settings.')}
           </p>
-        </SettingCard>
-      </div>
-    )
-  }
-
-  // Off by choice (#1678): nothing below can be read without the daemon, and
-  // none of it is broken — offer to enable instead of a page of errors.
-  if (isTauri() && localAgentEnabled === false) {
-    return (
-      <div className="space-y-6">
-        <SectionHeader
-          icon={Bot}
-          title={t('settings.daemonGeneral.title', 'General')}
-          description={t('settings.daemonGeneral.description', 'Maintain this machine daemon agent and access')}
-          iconColor="text-slate-500"
-        />
-        <SettingCard>
-          <div className="flex flex-col gap-3">
-            <p className="text-[13px] text-muted-foreground">
-              {t(
-                'localAgent.cardHint',
-                'Run an agent on this computer for local files, team file sync and local apps.',
-              )}
-            </p>
-            <Button
-              size="sm"
-              className="w-fit bg-coral text-coral-foreground hover:opacity-90"
-              onClick={() => {
-                void import('@/lib/daemon/local-agent-gate').then(({ ensureLocalAgentEnabled }) =>
-                  ensureLocalAgentEnabled({ skipIntro: true }),
-                )
-              }}
-            >
-              {t('localAgent.enableTitle', 'Enable the local Agent')}
-            </Button>
-          </div>
         </SettingCard>
       </div>
     )

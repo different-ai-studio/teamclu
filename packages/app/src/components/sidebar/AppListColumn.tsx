@@ -8,6 +8,8 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { useAppsStore } from '@/stores/apps-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { openAppLibrary, openCreateApp } from '@/lib/tabs/app-tabs'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 import { resolveAppType } from '@/lib/apps/app-types'
 import { appTypeIcon } from '@/lib/apps/app-type-icon'
 import { appStatusMeta, showsPublicBadge } from '@/lib/apps/app-list-helpers'
@@ -187,6 +189,7 @@ export function AppListColumn() {
   const [filter, setFilter] = useAppRelationshipFilter(teamId)
   const myActorId = useMyMemberActorId()
   const relationLabelFor = useAppRelationshipLabel()
+  const absent = useLocalAgentAbsent()
 
   const counts = React.useMemo(() => countAppsByRelationship(items, myActorId), [items, myActorId])
   const visibleItems = React.useMemo(
@@ -217,7 +220,7 @@ export function AppListColumn() {
    */
   const handleDownload = React.useCallback(
     async (app: AppRow) => {
-      if (downloadingId) return
+      if (absent || downloadingId) return
       setDownloadingId(app.id)
       try {
         await download(app)
@@ -226,7 +229,7 @@ export function AppListColumn() {
         setDownloadingId(null)
       }
     },
-    [download, downloadingId, selectApp],
+    [download, downloadingId, selectApp, absent],
   )
 
   return (
@@ -257,8 +260,11 @@ export function AppListColumn() {
         <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
-            onClick={() => openAppLibrary(libraryLabel)}
-            disabled={!teamId}
+            onClick={() => {
+              if (absent) return
+              openAppLibrary(libraryLabel)
+            }}
+            disabled={absent || !teamId}
             title={libraryLabel}
             aria-label={libraryLabel}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-selected/40 hover:text-foreground disabled:opacity-40"
@@ -277,7 +283,18 @@ export function AppListColumn() {
         />
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      {absent && (
+        <div className="px-3 pt-2">
+          <LocalAgentRequiredCard
+            label={t(
+              'apps.localAgentBlocked',
+              'A local agent is not installed, so apps cannot be downloaded, opened, or created yet.',
+            )}
+          />
+        </div>
+      )}
+
+      <div className={cn('min-h-0 flex-1 overflow-y-auto overflow-x-hidden', absent && items.length > 0 && 'pointer-events-none opacity-40')}>
         {loading && items.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -289,16 +306,22 @@ export function AppListColumn() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => openCreateApp(createLabel)}
-                disabled={!teamId}
+                onClick={() => {
+                  if (absent) return
+                  openCreateApp(createLabel)
+                }}
+                disabled={absent || !teamId}
                 className="rounded-[8px] bg-coral px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-coral/90 disabled:opacity-40"
               >
                 {t('apps.create', '新建')}
               </button>
               <button
                 type="button"
-                onClick={() => openAppLibrary(libraryLabel)}
-                disabled={!teamId}
+                onClick={() => {
+                  if (absent) return
+                  openAppLibrary(libraryLabel)
+                }}
+                disabled={absent || !teamId}
                 className="rounded-[8px] border border-border px-3 py-1.5 text-[13px] text-foreground hover:bg-selected/40 disabled:opacity-40"
               >
                 {t('apps.libraryTitle', '所有应用')}
@@ -326,7 +349,10 @@ export function AppListColumn() {
               relationLabel={filter === 'all' ? relationLabelFor(app) : null}
               local={resolveAppLocality(localAppIds, app.id)}
               downloading={downloadingId === app.id}
-              onSelect={() => selectApp(app.id)}
+              onSelect={() => {
+                if (absent) return
+                selectApp(app.id)
+              }}
               onDownload={() => void handleDownload(app)}
             />
           ))

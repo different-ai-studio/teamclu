@@ -13,9 +13,18 @@ import { WeChatChannel } from './channels/Wechat'
 import { SeaTalkChannel } from './channels/Seatalk'
 import { useFeatures } from '@/lib/config/remote-features'
 import { useShallow } from 'zustand/react/shallow'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentSectionGate } from '@/hooks/use-local-agent-install'
 
 // Main Channels Section Component
 export function ChannelsSection() {
+  const gate = useLocalAgentSectionGate()
+  if (gate === 'wait') return null
+  if (gate === 'card') return <LocalAgentRequiredCard />
+  return <ChannelsSectionBody />
+}
+
+function ChannelsSectionBody() {
   const { t } = useTranslation()
   // Resolved per render, not once at module scope: these flags now arrive
   // from the Cloud API and can change mid-session.

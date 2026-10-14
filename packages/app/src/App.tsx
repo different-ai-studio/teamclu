@@ -36,13 +36,12 @@ import { NarrowChatHeader } from "@/components/responsive/NarrowChatHeader";
 import { useLayoutBreakpoint } from "@/hooks/use-layout-breakpoint";
 import { SessionThreadsHeaderButton } from "@/components/chat/SessionThreadsHeaderButton";
 import { NewSessionDialog } from "@/components/chat/NewSessionDialog";
+import { LocalAgentInstallWizardHost } from "@/components/daemon/LocalAgentInstallWizardHost";
 import { MqttLiveWiring } from "@/components/MqttLiveWiring";
 import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { ThreadHistoryLoader } from "@/components/ThreadHistoryLoader";
 import { AppDeployConfirmDialog } from "@/components/apps/AppDeployConfirmDialog";
-import { LocalAgentEnableDialog } from "@/components/daemon/LocalAgentEnableDialog";
-import { LocalAgentNoDefaultPrompt } from "@/components/daemon/LocalAgentNoDefaultPrompt";
 import { resolveControlPanelAppId } from "@/lib/apps/app-control-panel";
 import { lazyNamed } from "@/lib/lazy-component";
 import { useEverTrue } from "@/hooks/use-ever-true";
@@ -78,6 +77,7 @@ import { parseJoinLink } from "@/lib/team/join-link";
 import { requestJoinLinkConfirmation } from "@/lib/team/join-link-confirmation";
 import { completePendingSessionDeeplink, openSessionFromDeeplink, readPendingSessionDeeplink, stashPendingSessionDeeplink } from "@/lib/session/open-session-deeplink";
 import { useCurrentTeamStore } from "@/stores/current-team";
+import { useLocalAgentInstallStore } from "@/stores/local-agent-install";
 import { useAppsStore } from "@/stores/apps-store";
 import { E2E_BUILD, isV2E2EControlActive } from "@/lib/e2e/v2-control-active";
 import { TrafficLights } from "@/components/ui/traffic-lights";
@@ -257,13 +257,19 @@ function AppContent() {
   // Extracted hooks — initialization, panel state, keyboard shortcuts
   const { initialWorkspaceResolved, openCodeError } = useWorkspaceInit();
   const daemonHttpReady = useWorkspaceStore((s) => s.daemonHttpReady);
+  const installTeamId = useCurrentTeamStore((s) => s.team?.id ?? null);
+  const localAgentInstallStatus = useLocalAgentInstallStore((s) =>
+    installTeamId ? s.byTeam[installTeamId]?.status : undefined,
+  );
 
   // Surface a local amuxd daemon connection failure as a persistent toast
   // instead of taking over the whole window. The rest of the UI stays usable;
   // the toast auto-dismisses once the daemon becomes reachable.
   useEffect(() => {
     const DAEMON_TOAST_ID = "amuxd-daemon-unavailable";
-    if (isTauri() && workspacePath && !daemonHttpReady && openCodeError) {
+    const suppressDaemonToast =
+      localAgentInstallStatus === "absent" || localAgentInstallStatus === "pending";
+    if (isTauri() && workspacePath && !daemonHttpReady && openCodeError && !suppressDaemonToast) {
       toast.error(openCodeError, {
         id: DAEMON_TOAST_ID,
         duration: Infinity,
@@ -280,7 +286,7 @@ function AppContent() {
     } else {
       toast.dismiss(DAEMON_TOAST_ID);
     }
-  }, [workspacePath, daemonHttpReady, openCodeError, t]);
+  }, [workspacePath, daemonHttpReady, openCodeError, localAgentInstallStatus, t]);
 
   useChannelGatewayInit();
   useGitReposInit();
@@ -767,6 +773,7 @@ function AppContent() {
       </SidebarInset>
       {settingsModal}
       {automationPanelDialog}
+      <LocalAgentInstallWizardHost />
     </>
   );
 }
@@ -924,8 +931,6 @@ function App() {
         }}
       />
       <AppDeployConfirmDialog />
-      <LocalAgentEnableDialog />
-      <LocalAgentNoDefaultPrompt />
       <NewSessionDialog />
     </>
   )

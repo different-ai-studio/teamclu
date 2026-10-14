@@ -31,7 +31,6 @@ vi.mock('@/stores/ui', () => ({
 
 vi.mock('@/lib/session/resolve-quick-chat-target', () => ({
   resolveQuickChatTarget: vi.fn(async () => mocks.target),
-  LocalAgentUnavailableError: class LocalAgentUnavailableError extends Error {},
 }))
 
 describe('createQuickSession', () => {
@@ -57,16 +56,6 @@ describe('createQuickSession', () => {
     vi.mocked(resolveQuickChatTarget).mockRejectedValueOnce(boom)
     const result = await createQuickSession()
     expect(result).toEqual({ ok: false, reason: 'server_error', error: boom })
-  })
-
-  it('fails with local_unavailable when the enabled local agent did not answer', async () => {
-    const { resolveQuickChatTarget, LocalAgentUnavailableError } = await import(
-      '@/lib/session/resolve-quick-chat-target'
-    )
-    const unavailable = new LocalAgentUnavailableError()
-    vi.mocked(resolveQuickChatTarget).mockRejectedValueOnce(unavailable)
-    const result = await createQuickSession()
-    expect(result).toEqual({ ok: false, reason: 'local_unavailable', error: unavailable })
   })
 
   it('enters actor draft without creating a session', async () => {

@@ -126,9 +126,6 @@ export function CreateAppView() {
     setPicking(true)
     setError(null)
     try {
-      // The folder is inspected (and later bound) by this machine's daemon.
-      const { ensureLocalAgentEnabled } = await import('@/lib/daemon/local-agent-gate')
-      if (!(await ensureLocalAgentEnabled())) return
       const { open: openDialog } = await import('@tauri-apps/plugin-dialog')
       const selected = await openDialog({
         directory: true,

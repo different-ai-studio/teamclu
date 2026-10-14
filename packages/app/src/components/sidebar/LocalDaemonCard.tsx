@@ -10,9 +10,8 @@ import { useLocalDaemonTokenUsage } from '@/hooks/use-local-daemon-token-usage'
 import { cn } from '@/lib/utils'
 import { ActorDetailDialog } from '@/components/sidebar/ActorDetailDialog'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
-import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
-import { LocalAgentEnableCard } from '@/components/sidebar/LocalAgentEnableCard'
-import { isTauri } from '@/lib/utils'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
 
 /**
  * The local daemon agent, pinned to the BOTTOM of the sidebar (just above the
@@ -25,15 +24,15 @@ import { isTauri } from '@/lib/utils'
  */
 export function LocalDaemonCard() {
   const { t } = useTranslation()
+  const absent = useLocalAgentAbsent()
   const { actors, refetch, teamId } = useActorDirectory()
   const defaultAgentId = useMemberPreferencesStore((s) => s.defaultAgentId)
-  const localAgentEnabled = useDaemonOnboardingStore((s) => s.enabled)
 
   const [detailFor, setDetailFor] = React.useState<ActorRow | null>(null)
 
   const [localDaemonAgentId, setLocalDaemonAgentId] = React.useState<string | null>(null)
   React.useEffect(() => {
-    if (!teamId || localAgentEnabled === false) {
+    if (!teamId) {
       setLocalDaemonAgentId(null)
       return
     }
@@ -50,7 +49,7 @@ export function LocalDaemonCard() {
       noteLocalDaemonActorId(a.id)
     })
     return () => { cancelled = true }
-  }, [teamId, actors, localAgentEnabled])
+  }, [teamId, actors])
 
   const localDaemonActor = React.useMemo(
     () => actors.find((a) => a.id === localDaemonAgentId) ?? null,
@@ -79,9 +78,7 @@ export function LocalDaemonCard() {
     }
   }
 
-  // The card keeps its place with the local Agent off (#1678): it is where a
-  // user who has only used remote agents finds out this computer can run one.
-  if (isTauri() && localAgentEnabled === false) return <LocalAgentEnableCard />
+  if (absent) return <LocalAgentRequiredCard />
   if (!localDaemonActor) return null
 
   return (

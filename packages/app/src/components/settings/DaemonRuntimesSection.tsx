@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useRuntimeStateStore } from '@/stores/runtime-state-store'
 import { cn } from '@/lib/utils'
+import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
+import { useLocalAgentSectionGate } from '@/hooks/use-local-agent-install'
 import { SectionHeader, SettingCard } from './shared'
 
 function formatRelative(value: string | null): string {
@@ -104,6 +106,13 @@ function RuntimeCard({ runtime, liveState }: { runtime: DaemonRuntime; liveState
 }
 
 export function DaemonRuntimesSection() {
+  const gate = useLocalAgentSectionGate()
+  if (gate === 'wait') return null
+  if (gate === 'card') return <LocalAgentRequiredCard />
+  return <DaemonRuntimesSectionBody />
+}
+
+function DaemonRuntimesSectionBody() {
   const { t } = useTranslation()
   const team = useCurrentTeamStore((s) => s.team)
   const runtimeStates = useRuntimeStateStore((s) => s.byRuntimeId)

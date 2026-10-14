@@ -1,14 +1,10 @@
 import * as React from 'react'
-import {
-  LocalAgentUnavailableError,
-  resolveQuickChatTarget,
-  type QuickChatTarget,
-} from '@/lib/session/resolve-quick-chat-target'
+import { resolveQuickChatTarget, type QuickChatTarget } from '@/lib/session/resolve-quick-chat-target'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { useMqttReconnectStore } from '@/stores/mqtt-reconnect'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
+import { useLocalAgentInstallStore } from '@/stores/local-agent-install'
 
 /** Retry while stuck in no_agent (e.g. API recovered without MQTT/network signal). */
 export const QUICK_CHAT_STUCK_RETRY_MS = 30_000
@@ -17,8 +13,6 @@ export type QuickChatState =
   | { kind: 'loading' }
   | { kind: 'no_team' }
   | { kind: 'no_agent' }
-  /** The local Agent is enabled but did not answer in time (#1678). */
-  | { kind: 'local_unavailable' }
   | { kind: 'ready'; target: QuickChatTarget }
 
 type QuickChatWelcomeAgent = {
@@ -62,9 +56,9 @@ export function useQuickChatReadiness(): QuickChatState {
 
   const [target, setTarget] = React.useState<QuickChatTarget | null>(null)
   const [resolving, setResolving] = React.useState(() => Boolean(teamId))
-  const [localUnavailable, setLocalUnavailable] = React.useState(false)
-  const localAgentEnabled = useDaemonOnboardingStore((s) => s.enabled)
-  const daemonReady = useDaemonOnboardingStore((s) => s.status === 'ready')
+  const localAgentInstallStatus = useLocalAgentInstallStore((s) =>
+    teamId ? (s.byTeam[teamId]?.status ?? null) : null,
+  )
   const [recoveryPass, setRecoveryPass] = React.useState(0)
   const targetRef = React.useRef(target)
   const resolvingRef = React.useRef(resolving)
@@ -176,14 +170,12 @@ export function useQuickChatReadiness(): QuickChatState {
       .then((resolved) => {
         if (!cancelled) {
           setTarget(resolved)
-          setLocalUnavailable(false)
           setResolving(false)
         }
       })
-      .catch((error) => {
+      .catch(() => {
         if (!cancelled) {
           setTarget(null)
-          setLocalUnavailable(error instanceof LocalAgentUnavailableError)
           setResolving(false)
         }
       })
@@ -201,16 +193,15 @@ export function useQuickChatReadiness(): QuickChatState {
     effectiveDefaultAgentId,
     effectiveDefaultTeamId,
     recoveryPass,
-    // Enabling or disabling the local Agent changes who a new chat goes to;
-    // the daemon reaching 'ready' is when a waiting local target can resolve.
-    localAgentEnabled,
-    daemonReady,
+    // A finished install reclassifies absent → installed after the daemon is
+    // already up; without this the team default chosen mid-install sticks.
+    localAgentInstallStatus,
   ])
 
   return React.useMemo((): QuickChatState => {
     if (!teamId) return { kind: 'no_team' }
     if (resolving) return { kind: 'loading' }
-    if (!target) return localUnavailable ? { kind: 'local_unavailable' } : { kind: 'no_agent' }
+    if (!target) return { kind: 'no_agent' }
     return { kind: 'ready', target }
-  }, [teamId, resolving, target, localUnavailable])
+  }, [teamId, resolving, target])
 }
