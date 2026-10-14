@@ -40,7 +40,12 @@ function toWorkspace(row: CloudWorkspace): Workspace {
 }
 
 export type WorkspacesApi = {
-  list: (teamId: string) => Promise<Workspace[]>;
+  /**
+   * One page (200) of the team's workspaces. Pass `agentId` to list only that
+   * agent's rows — a large team's single page can miss the one you need
+   * (iOS `listWorkspaces(teamID:agentID:)`).
+   */
+  list: (teamId: string, options?: { agentId?: string | null }) => Promise<Workspace[]>;
   create: (input: {
     teamId: string;
     name: string;
@@ -63,10 +68,12 @@ export function createWorkspacesApi(args: {
   });
 
   return {
-    async list(teamId) {
+    async list(teamId, options) {
       if (!teamId) return [];
+      const agentId = options?.agentId?.trim();
+      const agentQuery = agentId ? `&agentId=${encodeURIComponent(agentId)}` : "";
       const result = await client.get<{ items: CloudWorkspace[] }>(
-        `/v1/workspaces?teamId=${encodeURIComponent(teamId)}&limit=200`,
+        `/v1/workspaces?teamId=${encodeURIComponent(teamId)}&limit=200${agentQuery}`,
       );
       return (result.items ?? []).map(toWorkspace);
     },

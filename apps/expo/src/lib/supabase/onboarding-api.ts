@@ -1,5 +1,14 @@
 import type { CloudAuthClient } from "../auth/cloud-auth";
-import type { BootstrapResult, TeamSummary } from "../../features/onboarding/onboarding-types";
+import type {
+  BootstrapResult,
+  MyIdentity,
+  TeamSummary,
+} from "../../features/onboarding/onboarding-types";
+import { createCloudApiClient, supabaseAccessToken } from "../cloud-api/client";
+import {
+  redeemJoinLink,
+  type JoinByLinkResult,
+} from "../../features/onboarding/join-link";
 import {
   parseOAuthCallbackUrl,
   type OAuthProvider,
@@ -29,13 +38,43 @@ type InviteClaimBody = {
 type CloudTeam = { id: string; name: string; slug?: string | null };
 type MembershipTeam = CloudTeam & { role?: string | null; isMember?: boolean };
 type TeamActivation = { actorId?: string | null; refreshToken: string };
+type WireIdentity = {
+  userId?: string | null;
+  orgId?: string | null;
+  orgName?: string | null;
+  orgLogo?: string | null;
+  adminType?: number | null;
+  isCurrent?: boolean | null;
+};
+
+/** Wire → domain; rows without a user id cannot be switched to and are dropped. */
+export function toMyIdentities(
+  items: ReadonlyArray<WireIdentity | null> | null | undefined,
+): MyIdentity[] {
+  const result: MyIdentity[] = [];
+  for (const item of items ?? []) {
+    if (!item?.userId) continue;
+    result.push({
+      userId: item.userId,
+      orgId: item.orgId ?? null,
+      orgName: item.orgName?.trim() ? item.orgName : null,
+      orgLogo: item.orgLogo ?? null,
+      adminType: typeof item.adminType === "number" ? item.adminType : 1,
+      isCurrent: Boolean(item.isCurrent),
+    });
+  }
+  return result;
+}
 
 import {
   resolveBootstrapDecision,
   type BootstrapTeam,
 } from "../../features/onboarding/bootstrap-route";
 
-export function createOnboardingApi(client: CloudAuthClient) {
+export function createOnboardingApi(
+  client: CloudAuthClient,
+  deps: { fetchImpl?: typeof fetch } = {},
+) {
   return {
     async getCurrentSession() {
       const { data } = await client.auth.getSession();
@@ -243,6 +282,46 @@ export function createOnboardingApi(client: CloudAuthClient) {
         throw new Error("Invite claim returned no actor/team — token may be expired.");
       }
       return adoptClaim(row);
+    },
+
+    /**
+     * The signed-in person's identities, one per org (#1659). iOS
+     * `listMyIdentities`.
+     */
+    async listMyIdentities(): Promise<MyIdentity[]> {
+      const page = await client.api.get<{ items?: WireIdentity[] } | null>("/v1/auth/identities");
+      return toMyIdentities(page?.items);
+    },
+
+    /**
+     * Become one of the caller's own identities: mint its session and install
+     * it silently (like activation), so no auth-listener bootstrap races the
+     * caller's own.
+     */
+    async switchIdentity(userId: string): Promise<void> {
+      const res = await client.api.post<{ refreshToken?: string | null } | null>(
+        `/v1/auth/identities/${encodeURIComponent(userId)}/session`,
+        {},
+      );
+      if (!res?.refreshToken) throw new Error("Identity switch returned no session.");
+      const result = await client.auth.setRefreshSession(res.refreshToken);
+      if (result.error) throw new Error(result.error.message);
+    },
+
+    /**
+     * Redeem a team join link (#1672) as the signed-in user. A link minted by
+     * another Cloud API is redeemed there with the same bearer, as iOS does.
+     * Never claims a named invite and never touches the daemon.
+     */
+    async joinByLink(token: string, cloudApiUrl: string | null): Promise<JoinByLinkResult> {
+      const target = cloudApiUrl
+        ? createCloudApiClient({
+            baseUrl: cloudApiUrl,
+            getAccessToken: supabaseAccessToken(client),
+            fetchImpl: deps.fetchImpl,
+          })
+        : client.api;
+      return redeemJoinLink(target, token);
     },
 
     async signOut() {

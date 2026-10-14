@@ -27,6 +27,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ToastHost, showToast } from "../src/ui/Toast";
 import { createConfiguredInviteApi, parseInviteToken } from "../src/features/onboarding/invite-api";
+import { formatJoinLink, parseJoinLink } from "../src/features/onboarding/join-link";
+import { t } from "../src/lib/i18n";
 import { isOAuthCallbackUrl } from "../src/features/onboarding/onboarding-oauth";
 import { createOnboardingController } from "../src/features/onboarding/onboarding-store";
 import { createIntroFlagStore } from "../src/features/onboarding/onboarding-intent";
@@ -69,6 +71,9 @@ import { registerNativePushToken } from "../src/features/notifications/push-regi
 import { getDb } from "../src/lib/db/sqlite";
 import { decodeActorPresence } from "../src/features/actors/actor-presence";
 import { setActiveUnreadTeam } from "../src/features/sessions/unread-store";
+import { useAppIconBadgeSync } from "../src/features/notifications/app-icon-badge-sync";
+import { AndroidUpdatePrompt } from "../src/features/updates/AndroidUpdatePrompt";
+import { useOfflineLaunchRevalidation } from "../src/features/onboarding/use-offline-launch-revalidation";
 
 const onboardingApi = createOnboardingApi(supabase);
 const introFlagStore = createIntroFlagStore();
@@ -123,6 +128,8 @@ export function routeToHref(route: OnboardingRoute): string | null {
       return "/create-team";
     case "selectTeam":
       return "/select-team";
+    case "selectIdentity":
+      return "/select-identity";
     case "noTeam":
       return "/no-team";
     case "ready":
@@ -203,7 +210,10 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const token = parseInviteToken(url);
+      // A team join link (#1672) rides the same pending slot in its
+      // `teamclu://join?…` form; the replay below tells the two apart.
+      const joinLink = parseJoinLink(url);
+      const token = joinLink ? formatJoinLink(joinLink) : parseInviteToken(url);
       if (!token) return;
       void savePendingInviteToken(token).then(() => {
         void controller.bootstrap();
@@ -237,6 +247,23 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
       if (!token || cancelled) return;
       if (token === lastClaimedTokenRef.current) return;
       lastClaimedTokenRef.current = token;
+      const joinLink = parseJoinLink(token);
+      if (joinLink) {
+        // Redeemed through the controller, which lands on the joined team —
+        // and so changes the route, cancelling this effect; report regardless.
+        try {
+          await controller.joinByLink(joinLink.token, joinLink.cloudApiUrl);
+          showToast("success", t("Joined team via link"));
+        } catch (err) {
+          showToast(
+            "error",
+            err instanceof Error ? err.message : t("Couldn't redeem invite link."),
+          );
+        } finally {
+          await clearPendingInviteToken();
+        }
+        return;
+      }
       try {
         const result = await createConfiguredInviteApi(supabase).claim(token);
         if (cancelled) return;
@@ -372,6 +399,10 @@ function OnboardingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setActiveUnreadTeam(activeTeamId);
   }, [activeTeamId]);
+  // App icon badge = unread sessions; cleared on the sign-in screen (iOS #1608).
+  useAppIconBadgeSync(state.route === "needsAuth");
+  // Entered on the cached team without network: recheck once it is back (iOS #1606).
+  useOfflineLaunchRevalidation(controller, state.route);
 
   // Wire up team-scoped MQTT + ConnectedAgentsStore when the user is ready.
   // Tears down and recreates automatically when the team or actor changes.
@@ -522,6 +553,7 @@ function RootLayout() {
           <View style={styles.layout}>
             <Slot />
             <ToastHost />
+            <AndroidUpdatePrompt />
           </View>
         </SafeAreaView>
       </OnboardingProvider>

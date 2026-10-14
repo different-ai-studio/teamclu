@@ -4359,8 +4359,14 @@ pub(crate) mod tests {
         // Each entry point assembles env from the same workspace root. Pin the
         // amuxd home so concurrent tests cannot move `HOME` mid-run and make
         // two captures disagree — see `daemon::server` race `test_brand_env`.
+        // `HOME` too: the spawns reach `prepare_workspace`, which seeds the
+        // bundled skills into `~/.agents/skills`.
         let amuxd_home = TempDir::new().unwrap();
-        let _home_guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home(amuxd_home.path());
+        let user_home = TempDir::new().unwrap();
+        let _home_guard = crate::test_brand_env::BrandEnvGuard::set_amuxd_home_with_home(
+            amuxd_home.path(),
+            user_home.path(),
+        );
 
         let workspace = TempDir::new().unwrap();
         let backend = Arc::new(crate::backend::mock::MockBackend::with_identity(

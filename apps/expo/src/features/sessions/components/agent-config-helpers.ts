@@ -55,6 +55,29 @@ export function normalizeStoredAgentType(
   }
 }
 
+/**
+ * The workspaces the config sheet offers for one agent, its default first so
+ * the sheet opens on it (`initialWorkspaceId` takes the first row) — the
+ * same seat `defaultWorkspaceFor` picks when the sheet is never opened
+ * (iOS #1681). Rows bound to another agent are left out: a session must never
+ * borrow another agent's path, so an agent that owns nothing gets an empty
+ * list. With no agent picked yet the list is returned unfiltered.
+ */
+export function agentConfigWorkspaceChoices<W extends { id: string; agentId?: string | null }>(
+  agentId: string | null | undefined,
+  defaultWorkspaceId: string | null | undefined,
+  workspaces: ReadonlyArray<W>,
+): W[] {
+  const rows = agentId
+    ? workspaces.filter(
+        (workspace) => workspace.agentId === agentId || workspace.id === defaultWorkspaceId,
+      )
+    : [...workspaces];
+  const preferred = rows.findIndex((workspace) => workspace.id === defaultWorkspaceId);
+  if (preferred <= 0) return rows;
+  return [rows[preferred], ...rows.slice(0, preferred), ...rows.slice(preferred + 1)];
+}
+
 /** Returns the id of the first workspace, or an empty string if the list is empty. */
 export function initialWorkspaceId(workspaces: { id: string }[]): string {
   return workspaces[0]?.id ?? "";

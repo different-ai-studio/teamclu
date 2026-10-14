@@ -4,6 +4,7 @@ import {
   onboardingReducer,
 } from "./onboarding-reducer";
 import type {
+  MyIdentity,
   OnboardingAction,
   OnboardingState,
 } from "./onboarding-types";
@@ -11,6 +12,11 @@ import {
   createRememberedTeamStore,
   type RememberedTeamStore,
 } from "./remembered-team";
+import {
+  createLastAppContextStore,
+  isNetworkUnreachableError,
+  type LastAppContextStore,
+} from "./offline-launch";
 import {
   createOnboardingIntentStore,
   type OnboardingIntent,
@@ -48,10 +54,17 @@ export function createOnboardingController(
   api: OnboardingApi,
   rememberedTeam: RememberedTeamStore = createRememberedTeamStore(),
   intentStore: OnboardingIntentStore = createOnboardingIntentStore(),
+  lastContext: LastAppContextStore = createLastAppContextStore(),
 ) {
   let state: OnboardingState = initialOnboardingState;
   let activeOperationToken = 0;
   const listeners = new Set<OnboardingListener>();
+  /**
+   * True when bootstrap could not reach the server and entered the app on the
+   * last team this device was in. Memberships were not checked;
+   * `revalidateAfterOfflineLaunch` does that once the network is back.
+   */
+  let offlineLaunch = false;
 
   const notify = () => {
     for (const listener of listeners) {
@@ -60,8 +73,37 @@ export function createOnboardingController(
   };
 
   const setState = (nextState: OnboardingState) => {
+    const previous = state;
     state = nextState;
+    rememberLastContext(previous, nextState);
     notify();
+  };
+
+  /**
+   * Keep the offline fallback (iOS #1606) in step with every way of entering a
+   * team, and drop it on every way of forgetting one — watched here rather
+   * than at each call site, so a new path is covered for free.
+   */
+  const rememberLastContext = (previous: OnboardingState, next: OnboardingState) => {
+    if (next.route === "needsAuth") {
+      offlineLaunch = false;
+      if (previous.route !== "needsAuth") void lastContext.clear();
+      return;
+    }
+    if (next.route !== "ready" || !next.currentTeam || !next.currentMemberActorId) return;
+    if (
+      previous.route === "ready" &&
+      previous.currentTeam === next.currentTeam &&
+      previous.currentMemberActorId === next.currentMemberActorId &&
+      previous.isAnonymous === next.isAnonymous
+    ) {
+      return;
+    }
+    void lastContext.save({
+      team: next.currentTeam,
+      memberActorId: next.currentMemberActorId,
+      isAnonymous: next.isAnonymous,
+    });
   };
 
   const dispatch = (action: OnboardingAction) => {
@@ -95,6 +137,7 @@ export function createOnboardingController(
 
   const bootstrap = async (existingToken?: number) => {
     const token = existingToken ?? beginOperation();
+    offlineLaunch = false;
     dispatchIfCurrent(token, { type: "beginBusy" });
 
     try {
@@ -114,6 +157,26 @@ export function createOnboardingController(
       }
       dispatchIfCurrent(token, { type: "bootstrapResolved", payload, intent });
     } catch (error) {
+      // No network: open the app on the last team this device was in rather
+      // than dead-ending on "Setup failed" (iOS #1606). The local session and
+      // the cache hold what the screens show; memberships are rechecked when
+      // the network returns. A server that answered with an error still fails.
+      if (isActiveOperation(token) && isNetworkUnreachableError(error)) {
+        const cached = await lastContext.load();
+        if (cached && isActiveOperation(token)) {
+          offlineLaunch = true;
+          dispatch({
+            type: "bootstrapResolved",
+            payload: {
+              isAnonymous: cached.isAnonymous,
+              team: cached.team,
+              memberActorId: cached.memberActorId,
+              teamChoices: [],
+            },
+          });
+          return;
+        }
+      }
       dispatchIfCurrent(token, {
         type: "bootstrapFailed",
         message: SAFE_BOOTSTRAP_ERROR,
@@ -122,6 +185,66 @@ export function createOnboardingController(
         throw error;
       }
       throw new BootstrapFailureError(error);
+    }
+  };
+
+  /**
+   * After a sign-in that names a person (email code, password, OAuth): several
+   * identities → stop at the org picker and return true; exactly one that is
+   * not this account → become it. Best effort, like iOS `offerIdentityChoice`
+   * — a failed lookup keeps the signed-in account. Phone sign-in has its own
+   * account picker and does not come through here (iOS likewise).
+   */
+  const offerIdentityChoice = async (token: number): Promise<boolean> => {
+    try {
+      const identities = await api.listMyIdentities();
+      if (!isActiveOperation(token)) return true;
+      if (identities.length > 1) {
+        dispatch({ type: "identitiesOffered", identities });
+        return true;
+      }
+      const only = identities[0];
+      if (identities.length === 1 && only && !only.isCurrent) {
+        await api.switchIdentity(only.userId);
+      }
+    } catch {
+      // Keep the signed-in account.
+    }
+    return false;
+  };
+
+  /** Sign-in finished: offer the org picker, else bootstrap. */
+  const afterSignIn = async (token: number) => {
+    if (await offerIdentityChoice(token)) return;
+    await bootstrap(token);
+  };
+
+  /**
+   * The org picker's choice (iOS `chooseIdentity`): swap to that identity's
+   * session unless it is the current one, then the normal team bootstrap. On
+   * failure the picker stays up with the error so another can be tried.
+   */
+  const chooseIdentity = async (identity: MyIdentity) => {
+    const token = beginOperation();
+    dispatchIfCurrent(token, { type: "beginBusy" });
+    try {
+      if (!identity.isCurrent) {
+        await api.switchIdentity(identity.userId);
+        // A different account: whatever team the last one remembered is not
+        // this identity's choice to inherit.
+        await rememberedTeam.clear();
+      }
+    } catch (error) {
+      dispatchIfCurrent(token, {
+        type: "identitySelectionFailed",
+        message: toErrorMessage(error),
+      });
+      return;
+    }
+    try {
+      await bootstrap(token);
+    } catch {
+      // Rendered from controller state (`route: "failed"`).
     }
   };
 
@@ -149,7 +272,7 @@ export function createOnboardingController(
 
     try {
       await api.verifyOTP(email, token);
-      await bootstrap(operationToken);
+      await afterSignIn(operationToken);
     } catch (error) {
       if (!(error instanceof BootstrapFailureError)) {
         finishWithError(operationToken, toErrorMessage(error));
@@ -169,7 +292,7 @@ export function createOnboardingController(
 
     try {
       await api.signInWithPassword(email.trim(), password);
-      await bootstrap(operationToken);
+      await afterSignIn(operationToken);
     } catch (error) {
       if (!(error instanceof BootstrapFailureError)) {
         finishWithError(operationToken, toErrorMessage(error));
@@ -209,7 +332,7 @@ export function createOnboardingController(
 
     try {
       await api.completeOAuthCallback(url);
-      await bootstrap(token);
+      await afterSignIn(token);
       return true;
     } catch (error) {
       if (!(error instanceof BootstrapFailureError)) {
@@ -542,6 +665,18 @@ export function createOnboardingController(
     }
   };
 
+  /**
+   * Redeem a team join link (#1672), then land on the joined team. Unlike a
+   * named invite it claims nothing and does not touch the daemon (iOS
+   * `joinByLink`). Rethrows so the paste sheet can stay open with the error.
+   */
+  const joinByLink = async (linkToken: string, cloudApiUrl: string | null) => {
+    await runThenBootstrap(async () => {
+      const result = await api.joinByLink(linkToken, cloudApiUrl);
+      await rememberedTeam.save(result.teamId);
+    });
+  };
+
   /** No-team screen → paste an invite: claim as the signed-in account. */
   const joinWithInvite = async (inviteToken: string) => {
     await runThenBootstrap(async () => {
@@ -578,10 +713,53 @@ export function createOnboardingController(
     dispatch({ type: "resetPendingEmail" });
   };
 
+  /**
+   * After an offline launch, check the team is still one of the user's
+   * memberships (iOS `revalidateAfterOfflineLaunch`). Quiet: no splash, and no
+   * route change while it still is. Gone (removed while offline) → the
+   * bootstrap result lands wherever a fresh launch would. Still offline →
+   * stays flagged for the next attempt.
+   */
+  const revalidateAfterOfflineLaunch = async () => {
+    if (!offlineLaunch || state.isBusy || state.route !== "ready") return;
+    const token = beginOperation();
+    try {
+      const session = await api.getCurrentSession();
+      if (!isActiveOperation(token)) return;
+      if (session === null) {
+        offlineLaunch = false;
+        dispatch({ type: "signedOut" });
+        return;
+      }
+      const remembered = (await rememberedTeam.load()) ?? state.currentTeam?.id ?? null;
+      const payload = await api.loadBootstrap(remembered);
+      const intent = await intentStore.load();
+      if (!isActiveOperation(token)) return;
+      offlineLaunch = false;
+      const current = state;
+      if (
+        payload.team?.id === current.currentTeam?.id &&
+        payload.memberActorId === current.currentMemberActorId
+      ) {
+        // Still a member: only the flag changes.
+        notify();
+        return;
+      }
+      dispatch({ type: "bootstrapResolved", payload, intent });
+    } catch {
+      // Still unreachable, or the server refused: stay on the cached team and
+      // try again on the next signal.
+    }
+  };
+
   return {
     getState() {
       return state;
     },
+    isOfflineLaunch() {
+      return offlineLaunch;
+    },
+    revalidateAfterOfflineLaunch,
     subscribe(listener: OnboardingListener) {
       listeners.add(listener);
       return () => {
@@ -590,6 +768,8 @@ export function createOnboardingController(
     },
     bootstrap,
     selectTeam,
+    chooseIdentity,
+    joinByLink,
     switchTeam,
     joinedTeam,
     requestOtp,

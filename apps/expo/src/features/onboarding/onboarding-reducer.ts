@@ -4,6 +4,7 @@ import type { OnboardingAction, OnboardingState } from "./onboarding-types";
 export const initialOnboardingState: OnboardingState = {
   route: "loading",
   teamChoices: [],
+  identityChoices: [],
   isBusy: false,
   errorMessage: null,
   pendingEmailOTPEmail: null,
@@ -87,6 +88,7 @@ export function onboardingReducer(
           intent: action.intent,
         }),
         teamChoices: action.payload.teamChoices,
+        identityChoices: [],
         isBusy: false,
         errorMessage: null,
         pendingEmailOTPEmail: null,
@@ -101,6 +103,7 @@ export function onboardingReducer(
         ...state,
         route: "failed",
         teamChoices: [],
+        identityChoices: [],
         isBusy: false,
         errorMessage: action.message,
         pendingEmailOTPEmail: null,
@@ -117,11 +120,31 @@ export function onboardingReducer(
         isBusy: false,
         errorMessage: action.message,
       };
+    case "identitiesOffered":
+      return {
+        ...state,
+        route: "selectIdentity",
+        identityChoices: action.identities,
+        teamChoices: [],
+        isBusy: false,
+        errorMessage: null,
+        pendingEmailOTPEmail: null,
+        pendingPhoneOTPPhone: null,
+        phoneAccounts: [],
+      };
+    case "identitySelectionFailed":
+      return {
+        ...state,
+        route: "selectIdentity",
+        isBusy: false,
+        errorMessage: action.message,
+      };
     case "signedOut":
       return {
         ...state,
         route: "needsAuth",
         teamChoices: [],
+        identityChoices: [],
         isBusy: false,
         errorMessage: null,
         pendingEmailOTPEmail: null,

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   effectiveDefaultTeamId: null as string | null,
   resolvedTarget: null as { agentId: string; displayName: string; source: 'team_default' } | null,
   resolveThrows: false,
+  resolveUnavailable: false,
   mqttConnected: null as boolean | null,
   mqttReconnectNonce: 0,
 }))
@@ -45,12 +46,17 @@ vi.mock('@/stores/member-preferences-store', () => ({
     }),
 }))
 
-vi.mock('@/lib/session/resolve-quick-chat-target', () => ({
-  resolveQuickChatTarget: vi.fn(async () => {
-    if (mocks.resolveThrows) throw new Error('resolve failed')
-    return mocks.resolvedTarget
-  }),
-}))
+vi.mock('@/lib/session/resolve-quick-chat-target', () => {
+  class LocalAgentUnavailableError extends Error {}
+  return {
+    resolveQuickChatTarget: vi.fn(async () => {
+      if (mocks.resolveUnavailable) throw new LocalAgentUnavailableError()
+      if (mocks.resolveThrows) throw new Error('resolve failed')
+      return mocks.resolvedTarget
+    }),
+    LocalAgentUnavailableError,
+  }
+})
 
 const readyTarget = {
   agentId: 'agent-1',
@@ -63,6 +69,7 @@ describe('useQuickChatReadiness', () => {
     vi.clearAllMocks()
     mocks.teamId = 'team-1'
     mocks.workspacePath = '/ws'
+    mocks.resolveUnavailable = false
     mocks.defaultAgentId = null
     mocks.effectiveDefaultAgentId = null
     mocks.effectiveDefaultTeamId = 'team-1'
@@ -105,6 +112,14 @@ describe('useQuickChatReadiness', () => {
     const { result } = renderHook(() => useQuickChatReadiness())
     await waitFor(() => {
       expect(result.current).toEqual({ kind: 'no_agent' })
+    })
+  })
+
+  it('returns local_unavailable when the enabled local agent did not answer', async () => {
+    mocks.resolveUnavailable = true
+    const { result } = renderHook(() => useQuickChatReadiness())
+    await waitFor(() => {
+      expect(result.current).toEqual({ kind: 'local_unavailable' })
     })
   })
 

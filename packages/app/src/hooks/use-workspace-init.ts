@@ -57,6 +57,7 @@ export function useWorkspaceInit() {
   const setOpenCodeReady = useWorkspaceStore((s) => s.setOpenCodeReady);
   const setDaemonHttpReady = useWorkspaceStore((s) => s.setDaemonHttpReady);
   const daemonOnboardingStatus = useDaemonOnboardingStore((s) => s.status);
+  const localAgentEnabled = useDaemonOnboardingStore((s) => s.enabled);
   const [openCodeError, setOpenCodeError] = useState<string | null>(null);
   const [initialWorkspaceResolved, setInitialWorkspaceResolved] = useState(false);
 
@@ -133,7 +134,10 @@ export function useWorkspaceInit() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Probe daemon HTTP — required on desktop; no OpenCode sidecar fallback.
+  // Probe daemon HTTP — required on desktop while the local Agent is on; no
+  // OpenCode sidecar fallback. With it off (#1678) there is no daemon to wait
+  // for and nothing is wrong: the shell opens, and the daemon-backed hooks
+  // stay idle on `daemonHttpReady === false`.
   useEffect(() => {
     if (!workspacePath) {
       setDaemonHttpReady(false);
@@ -146,6 +150,19 @@ export function useWorkspaceInit() {
       setOpenCodeBootstrapped(true);
       setOpenCodeReady(true);
       setDaemonHttpReady(true);
+      return;
+    }
+
+    // Not read yet: probing now would report a daemon that is off by design
+    // as a failure.
+    if (localAgentEnabled === null) {
+      void useDaemonOnboardingStore.getState().loadEnabled();
+      return;
+    }
+    if (!localAgentEnabled) {
+      setDaemonHttpReady(false);
+      setOpenCodeBootstrapped(true);
+      setOpenCodeReady(true);
       return;
     }
 
@@ -180,7 +197,7 @@ export function useWorkspaceInit() {
     return () => {
       cancelled = true;
     };
-  }, [workspacePath, setOpenCodeBootstrapped, setOpenCodeReady, setDaemonHttpReady]);
+  }, [workspacePath, localAgentEnabled, setOpenCodeBootstrapped, setOpenCodeReady, setDaemonHttpReady]);
 
   // daemon-onboarding may finish recovering after the first workspace probe;
   // re-probe once it reports ready so the shell clears the stale error toast.

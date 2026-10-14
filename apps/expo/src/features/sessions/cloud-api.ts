@@ -47,6 +47,10 @@ type CloudSessionFull = {
   hasUnread: boolean;
   createdAt: string | null;
   updatedAt: string | null;
+  /** The app the session belongs to; absent on older servers. */
+  appId?: string | null;
+  /** `user` | `cron` | `gateway` | `thread`; absent on older servers. */
+  source?: string | null;
 };
 
 type CloudMessage = {
@@ -139,6 +143,9 @@ function mapSession(row: CloudSessionFull): SessionSummary {
     createdAt: row.createdAt ?? "",
     createdBy: row.createdByActorId ?? "",
     hasUnread: row.hasUnread ?? false,
+    ideaId: row.ideaId ?? "",
+    appId: row.appId ?? "",
+    source: row.source ?? "",
   };
 }
 
@@ -377,6 +384,14 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
        * and nobody to answer. iOS sends the same list.
        */
       participantActorIds?: ReadonlyArray<string>;
+      /** The app this session belongs to (`sessions.app_id`); settable only here. */
+      appId?: string | null;
+      /**
+       * Seat workspace per agent actor. Omitted leaves each seat on the
+       * agent's default workspace; every entry must name a workspace with a
+       * path, or the create is refused.
+       */
+      workspaceByActorId?: Readonly<Record<string, string>>;
     }): Promise<string> {
       const response = await client.post<{ sessionId?: string; id?: string }>("/v1/sessions", {
         teamId: input.teamId,
@@ -385,6 +400,10 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
         primaryAgentId: input.primaryAgentId ?? null,
         ideaId: input.ideaId ?? null,
         participantActorIds: [...(input.participantActorIds ?? [])],
+        ...(input.appId ? { appId: input.appId } : {}),
+        ...(input.workspaceByActorId && Object.keys(input.workspaceByActorId).length > 0
+          ? { workspaceByActorId: { ...input.workspaceByActorId } }
+          : {}),
       });
       const sessionId = response?.sessionId ?? response?.id;
       if (!sessionId || typeof sessionId !== "string") {

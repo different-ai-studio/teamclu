@@ -1164,7 +1164,7 @@ public final class SessionDetailViewModel {
         case "claude": return .claudeCode
         case "opencode": return .opencode
         case "codex": return .codex
-        default: return .claudeCode
+        default: return .pi
         }
     }
 

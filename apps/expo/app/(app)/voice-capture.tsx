@@ -123,7 +123,17 @@ export default function VoiceCaptureRoute() {
       if (!teamId || !memberActorId || !agentsStore) {
         throw new VoiceSessionError({ kind: "notReady" });
       }
-      const { actors, workspaces } = await loadDirectory();
+      const { actors, workspaces: teamWorkspaces } = await loadDirectory();
+      // The agent's own rows, as iOS reloads them per agent: the team-wide
+      // list is one capped page, and missing the default row there would seat
+      // the take on some other workspace with no warm pi host (iOS #1681).
+      const agentWorkspaces = await workspacesApi
+        .list(teamId, { agentId: agent.agentId })
+        .catch(() => [] as Workspace[]);
+      const workspaces = [
+        ...agentWorkspaces,
+        ...teamWorkspaces.filter((row) => !agentWorkspaces.some((own) => own.id === row.id)),
+      ];
       const sessionId = await startVoiceSession(
         {
           sessionsApi: createConfiguredSessionsApi(supabase),
@@ -162,7 +172,7 @@ export default function VoiceCaptureRoute() {
       dispatch({ type: "sessionStarted", sessionId });
       router.replace(`/(app)/sessions/${sessionId}`);
     },
-    [agentsStore, loadDirectory, memberActorId, router, t, teamId, teamMqtt],
+    [agentsStore, loadDirectory, memberActorId, router, t, teamId, teamMqtt, workspacesApi],
   );
 
   const onDone = useCallback(async () => {

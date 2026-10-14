@@ -16,6 +16,7 @@ import {
   type RuntimeStartWorkspace,
 } from "./runtime-start";
 import {
+  autoMentionAgentIds,
   deriveSessionTitle,
   startSessionWithAgents,
   type StartSessionDeps,
@@ -198,7 +199,10 @@ export async function startVoiceSession(
   if (!prompt) throw new VoiceSessionError({ kind: "emptyTranscript" });
   if (!deps.runtimeRpc) throw new VoiceSessionError({ kind: "notReady" });
 
-  // Throws (offline daemon, no workspace) before anything is created.
+  // Throws (offline daemon, no workspace) before anything is created. The
+  // seat is the agent's default workspace (`defaultWorkspaceFor`), the same
+  // one the New Session sheet picks and the one the daemon keeps a warm pi
+  // host for — never just the first row of the list (iOS #1681).
   const runtimePlans = resolveAgentRuntimeStartPlans({
     agents: [input.agent],
     connectedAgents: input.connectedAgentIds.map((agentId) => ({ agentId })),
@@ -216,7 +220,10 @@ export async function startVoiceSession(
       primaryAgentActorId: agentId,
       ideaId: null,
       collaboratorActorIds: [agentId],
-      mentionActorIds: [agentId],
+      // Same rule as the New Session sheet (iOS #1601). The take's agent comes
+      // from the connected roster, so in practice this is always [agentId].
+      mentionActorIds: autoMentionAgentIds([agentId], input.connectedAgentIds),
+      mentionDisplayNameById: { [agentId]: input.agent.displayName },
       runtimePlans,
     },
   );

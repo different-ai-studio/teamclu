@@ -19,6 +19,8 @@ export type SignOutReason =
   | "no_team_screen"
   /** The same button on the name-your-team screen. */
   | "name_team_screen"
+  /** The sign-out link on the local Agent setup screen (#1678). */
+  | "local_agent_setup"
   /** "Sign out and use another account" on the post-sign-in org picker. */
   | "identity_picker"
   /** Settings → Diagnostics → sign in again. */

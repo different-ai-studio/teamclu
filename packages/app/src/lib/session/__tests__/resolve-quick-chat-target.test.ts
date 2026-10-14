@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { resolveQuickChatTarget } from '@/lib/session/resolve-quick-chat-target'
+import {
+  LocalAgentUnavailableError,
+  resolveQuickChatTarget,
+} from '@/lib/session/resolve-quick-chat-target'
 
 const deps = vi.hoisted(() => ({
   isTauri: true,
@@ -11,6 +14,27 @@ const deps = vi.hoisted(() => ({
   localThrows: false,
   effectiveThrows: false,
   install: { status: 'unknown' as 'unknown' | 'absent' | 'installed', agentId: null as string | null, displayName: null as string | null },
+  localAgentEnabled: true,
+  rememberedTeamId: null as string | null,
+  rememberedActorId: null as string | null,
+}))
+
+vi.mock('@/stores/daemon-onboarding', () => ({
+  useDaemonOnboardingStore: {
+    getState: () => ({
+      enabled: deps.localAgentEnabled,
+      loadEnabled: async () => deps.localAgentEnabled,
+    }),
+  },
+}))
+
+vi.mock('@/lib/daemon/daemon-onboarding-identity', () => ({
+  readDaemonOnboardingIdentity: () =>
+    deps.rememberedTeamId ? { teamId: deps.rememberedTeamId, userId: 'u1' } : null,
+}))
+
+vi.mock('@/lib/daemon/local-daemon-identity', () => ({
+  getKnownLocalDaemonActorId: () => deps.rememberedActorId,
 }))
 
 vi.mock('@/lib/utils', () => ({
@@ -56,6 +80,9 @@ describe('resolveQuickChatTarget', () => {
     deps.localThrows = false
     deps.effectiveThrows = false
     deps.install = { status: 'unknown', agentId: null, displayName: null }
+    deps.localAgentEnabled = true
+    deps.rememberedTeamId = null
+    deps.rememberedActorId = null
   })
 
   it('returns local when tauri + workspace + local agent bound', async () => {
@@ -79,24 +106,89 @@ describe('resolveQuickChatTarget', () => {
     expect(result?.agentId).toBe('agent-local')
   })
 
-  it('returns member_default when no local agent', async () => {
-    deps.memberDefault = 'agent-member'
-    deps.effectiveDefault = 'agent-member'
-    const result = await resolveQuickChatTarget('team-1', { workspacePath: deps.workspacePath })
-    expect(result?.source).toBe('member_default')
+  it('uses the local agent even over a member default naming another agent', async () => {
+    deps.localAgent = { id: 'agent-local', displayName: 'My Daemon' }
+    deps.memberDefault = 'agent-other'
+    deps.effectiveDefault = 'agent-other'
+    const result = await resolveQuickChatTarget('team-1')
+    expect(result).toMatchObject({ agentId: 'agent-local', source: 'local' })
   })
 
-  it('returns team_default when only team default set', async () => {
-    deps.memberDefault = null
+  it('opens on the remembered local agent while the daemon is down', async () => {
+    deps.rememberedTeamId = 'team-1'
+    deps.rememberedActorId = 'agent-remembered'
     deps.effectiveDefault = 'agent-team'
-    const result = await resolveQuickChatTarget('team-1', { workspacePath: null })
-    expect(result?.source).toBe('team_default')
-    expect(result?.agentId).toBe('agent-team')
+    const result = await resolveQuickChatTarget('team-1', { waitMs: 0 })
+    expect(result).toEqual({ agentId: 'agent-remembered', displayName: 'MACPRO', source: 'local' })
   })
 
-  it('returns null when nothing available', async () => {
-    const result = await resolveQuickChatTarget('team-1', { workspacePath: null })
-    expect(result).toBeNull()
+  it('does not trust a remembered agent from another team', async () => {
+    deps.rememberedTeamId = 'team-other'
+    deps.rememberedActorId = 'agent-remembered'
+    deps.effectiveDefault = 'agent-team'
+    await expect(resolveQuickChatTarget('team-1', { waitMs: 0 })).rejects.toBeInstanceOf(
+      LocalAgentUnavailableError,
+    )
+  })
+
+  it('never falls back to a remote default while enabled, even when the lookup throws', async () => {
+    deps.localThrows = true
+    deps.effectiveDefault = 'agent-team'
+    await expect(resolveQuickChatTarget('team-1', { waitMs: 0 })).rejects.toBeInstanceOf(
+      LocalAgentUnavailableError,
+    )
+  })
+
+  it('waits for the daemon and takes the local agent once it answers', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = resolveQuickChatTarget('team-1', { waitMs: 5_000 })
+      await vi.advanceTimersByTimeAsync(1_000)
+      deps.localAgent = { id: 'agent-local', displayName: 'My Daemon' }
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(pending).resolves.toMatchObject({ agentId: 'agent-local', source: 'local' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives up after the wait and reports the local agent unavailable', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = resolveQuickChatTarget('team-1', { waitMs: 3_000 })
+      const assertion = expect(pending).rejects.toBeInstanceOf(LocalAgentUnavailableError)
+      await vi.advanceTimersByTimeAsync(4_000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  describe('with the local agent disabled', () => {
+    beforeEach(() => {
+      deps.localAgentEnabled = false
+      // A daemon that still answers must not be used once disabled.
+      deps.localAgent = { id: 'agent-local', displayName: 'My Daemon' }
+    })
+
+    it('returns member_default', async () => {
+      deps.memberDefault = 'agent-member'
+      deps.effectiveDefault = 'agent-member'
+      const result = await resolveQuickChatTarget('team-1')
+      expect(result?.source).toBe('member_default')
+    })
+
+    it('returns team_default when only team default set', async () => {
+      deps.effectiveDefault = 'agent-team'
+      const result = await resolveQuickChatTarget('team-1')
+      expect(result?.source).toBe('team_default')
+      expect(result?.agentId).toBe('agent-team')
+    })
+
+    it('returns null when nothing available', async () => {
+      const result = await resolveQuickChatTarget('team-1')
+      expect(result).toBeNull()
+    })
   })
 
   it('never uses local on non-tauri even if local agent mock set', async () => {
@@ -108,27 +200,8 @@ describe('resolveQuickChatTarget', () => {
     expect(result?.source).toBe('team_default')
   })
 
-  it('falls through to effective when local lookup throws and install state is unknown', async () => {
-    deps.localThrows = true
-    deps.effectiveDefault = 'agent-team'
-    const result = await resolveQuickChatTarget('team-1', { workspacePath: '/ws' })
-    expect(result?.source).toBe('team_default')
-    expect(result?.agentId).toBe('agent-team')
-  })
-
-  it('stays on the installed agent when the local daemon does not answer', async () => {
-    deps.localThrows = true
-    deps.effectiveDefault = 'agent-team'
-    deps.install = { status: 'installed', agentId: 'agent-local', displayName: 'This machine' }
-    const result = await resolveQuickChatTarget('team-1', { workspacePath: '/ws' })
-    expect(result).toEqual({
-      agentId: 'agent-local',
-      displayName: 'This machine',
-      source: 'local',
-    })
-  })
-
-  it('falls through when this machine has never installed a local agent', async () => {
+  it('falls through to the team default when this machine has never installed a local agent', async () => {
+    deps.localAgentEnabled = true
     deps.install = { status: 'absent', agentId: null, displayName: null }
     deps.effectiveDefault = 'agent-team'
     const result = await resolveQuickChatTarget('team-1', { workspacePath: '/ws' })

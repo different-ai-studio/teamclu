@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  daemonStatusLabel,
   normalizeMeteringLevel,
   waveformBarHeight,
   dictationLanguage,
@@ -59,15 +58,6 @@ describe("waveformBarHeight", () => {
     expect(waveformBarHeight({ ...args, level: -3 })).toBe(
       waveformBarHeight({ ...args, level: 0 }),
     );
-  });
-});
-
-describe("daemonStatusLabel", () => {
-  it("matches the iOS DaemonStatusBanner copy", () => {
-    expect(daemonStatusLabel("connected")).toBe("daemon online");
-    expect(daemonStatusLabel("connecting")).toBe("daemon connecting");
-    expect(daemonStatusLabel("reconnecting")).toBe("daemon connecting");
-    expect(daemonStatusLabel("disconnected")).toBe("daemon offline");
   });
 });
 

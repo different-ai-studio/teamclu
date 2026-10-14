@@ -2,6 +2,7 @@ import { AgentType } from "@teamclu/app/proto/amux_pb";
 import { describe, expect, it } from "vitest";
 
 import {
+  defaultWorkspaceFor,
   resolveAgentRuntimeRestartPlan,
   resolveAgentRuntimeStartPlans,
   resolveExpoAgentType,
@@ -244,5 +245,25 @@ describe("per-agent selection", () => {
       ],
     });
     expect(plans.map((p) => p.workspaceId)).toEqual(["ws-1", "ws-2"]);
+  });
+});
+
+describe("defaultWorkspaceFor (iOS #1681)", () => {
+  const ws = (id: string, agentId: string | null) => ({ id, agentId });
+
+  it("prefers the agent's default over list order", () => {
+    expect(defaultWorkspaceFor("a1", "default", [ws("root", "a1"), ws("default", "a1")])?.id).toBe(
+      "default",
+    );
+  });
+
+  it("falls back to the agent's own workspace when the default is missing", () => {
+    const rows = [ws("other", "a2"), ws("mine", "a1")];
+    expect(defaultWorkspaceFor("a1", "gone", rows)?.id).toBe("mine");
+    expect(defaultWorkspaceFor("a1", null, rows)?.id).toBe("mine");
+  });
+
+  it("never borrows another agent's workspace", () => {
+    expect(defaultWorkspaceFor("a1", null, [ws("other", "a2")])).toBeNull();
   });
 });

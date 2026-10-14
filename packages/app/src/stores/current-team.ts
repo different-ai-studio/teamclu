@@ -293,6 +293,8 @@ export const useCurrentTeamStore = create<State>((set, get) => ({
     // 4) Tauri：daemon 换绑到新 team 的本机 agent（按 device id 找回或新建）。
     //    换 team 不需要传标记——refresh 看到 mismatch 就会换绑。只有「同一个 team
     //    但换了 linked account」需要显式要求，因为那种情况 daemon 指向的 team 没变。
+    //    本机 Agent 未启用时（#1678）refresh 不碰 daemon，只按新 team 的两级默认
+    //    决定是否需要启用。
     try {
       if (isTauri()) {
         markLocalAgentInstallPending(teamId);

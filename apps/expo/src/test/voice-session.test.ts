@@ -187,7 +187,8 @@ describe("startVoiceSession", () => {
     expect(sessionsApi.addParticipants).not.toHaveBeenCalled();
     expect(sessionsApi.insertOutgoingMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: "帮我看一下部署\n为什么失败",
+        // Addressed to the agent, as the in-session composer would (iOS #1601).
+        content: "@a1 帮我看一下部署\n为什么失败",
         metadata: { mention_actor_ids: ["a1"] },
       }),
     );
@@ -199,6 +200,23 @@ describe("startVoiceSession", () => {
         sessionId: "session-9",
         agentType: AgentType.PI,
       }),
+    );
+  });
+
+  // The list order put another row first; the take must still land on the
+  // agent's default workspace, the one the daemon keeps a warm pi host for
+  // (iOS #1681).
+  it("seats the take on the agent's default workspace, not the first row", async () => {
+    const { deps: d, runtimeRpc } = deps();
+    await startVoiceSession(d, {
+      ...input,
+      workspaces: [
+        { id: "ws-root", path: "/", agentId: "a1" },
+        { id: "ws-default", path: "/default", agentId: "a1" },
+      ],
+    });
+    expect(runtimeRpc.runtimeStart).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: "ws-default", worktree: "/default" }),
     );
   });
 

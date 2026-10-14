@@ -5,6 +5,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SheetModal } from "../../../ui/SheetModal";
 import { colors, iosType, spacing, typography } from "../../../ui/theme";
 import type { PendingInvite } from "../pending-invites";
+import type { ParsedJoinLink } from "../join-link";
 import { InviteJoinSheet } from "./InviteJoinSheet";
 import { APP_NAME, OnboardingErrorNote, OnboardingOptionRow } from "./OnboardingParts";
 
@@ -23,6 +24,7 @@ export function NoTeamScreen({
   onAcceptInvite,
   onCreateInstead,
   onJoinWithToken,
+  onJoinWithLink,
   onRefresh,
   onSwitchAccount,
 }: {
@@ -35,6 +37,8 @@ export function NoTeamScreen({
   /** → desktop guide (signed-in mode), whose continue creates the team. */
   onCreateInstead: () => void;
   onJoinWithToken: (token: string) => Promise<void>;
+  /** A pasted team join link (#1672): redeem as this account. */
+  onJoinWithLink: (link: ParsedJoinLink) => Promise<void>;
   onRefresh: () => void;
   onSwitchAccount: () => void;
 }) {
@@ -130,6 +134,14 @@ export function NoTeamScreen({
           isBusy={isBusy}
           mode="signedIn"
           onCancel={() => setInviteOpen(false)}
+          onJoinLink={async (link) => {
+            try {
+              await onJoinWithLink(link);
+              setInviteOpen(false);
+            } catch {
+              // Stays open with the error inline so another link can be tried.
+            }
+          }}
           onSubmit={async (token) => {
             try {
               await onJoinWithToken(token);

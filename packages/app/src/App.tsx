@@ -42,6 +42,8 @@ import { TeamSkillAutoFollow } from "@/components/TeamSkillAutoFollow";
 import { SessionHistoryLoader } from "@/components/SessionHistoryLoader";
 import { ThreadHistoryLoader } from "@/components/ThreadHistoryLoader";
 import { AppDeployConfirmDialog } from "@/components/apps/AppDeployConfirmDialog";
+import { LocalAgentEnableDialog } from "@/components/daemon/LocalAgentEnableDialog";
+import { LocalAgentNoDefaultPrompt } from "@/components/daemon/LocalAgentNoDefaultPrompt";
 import { resolveControlPanelAppId } from "@/lib/apps/app-control-panel";
 import { lazyNamed } from "@/lib/lazy-component";
 import { useEverTrue } from "@/hooks/use-ever-true";
@@ -931,6 +933,8 @@ function App() {
         }}
       />
       <AppDeployConfirmDialog />
+      <LocalAgentEnableDialog />
+      <LocalAgentNoDefaultPrompt />
       <NewSessionDialog />
     </>
   )
