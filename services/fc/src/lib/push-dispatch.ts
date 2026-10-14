@@ -125,6 +125,13 @@ export async function dispatchPush(msg, deps) {
     }
   }
 
+  let profile = null;
+  if (jobs.length > 0 && sender_actor_id && typeof sb.actorProfile === 'function') {
+    try { profile = await sb.actorProfile(sender_actor_id); } catch (err) {
+      console.error('[push] sender profile lookup failed', { messageId, error: String(err) });
+    }
+  }
+
   const payload = buildApnsPayload({
     title: ctx.sender_display_name || 'Someone',
     body: truncate(content, 80),
@@ -132,6 +139,9 @@ export async function dispatchPush(msg, deps) {
     messageId,
     teamId: msg.team_id ?? null,
     senderActorId: sender_actor_id ?? null,
+    preview: truncate(content, 400),
+    senderKind: profile?.kind ?? null,
+    senderAvatarUrl: profile?.avatarUrl ?? null,
   });
 
   // Inbox fan-out: every non-muted recipient gets a lightweight ping on their
@@ -196,12 +206,21 @@ export async function dispatchPush(msg, deps) {
  * `sender_actor_id` are what that reply needs to post into the session and
  * address an agent sender — the app may be woken with nothing loaded.
  */
-export function buildApnsPayload({ title, body, sessionId, messageId, teamId = null, senderActorId = null }) {
+export function buildApnsPayload({
+  title, body, sessionId, messageId, teamId = null, senderActorId = null,
+  preview = null, senderKind = null, senderAvatarUrl = null,
+}) {
   return {
     aps: {
       alert: { title, body },
       'thread-id': sessionId,
       category: 'SESSION_MESSAGE',
+      // The iOS notification service extension rewrites the body from
+      // `preview` (Markdown and mention tokens removed) and adds an avatar.
+      'mutable-content': 1,
+      // Wakes the app in the background so an agent's reply can close that
+      // session's Live Activity. Ignored by clients that don't use it.
+      'content-available': 1,
       sound: 'default',
       badge: 1,
     },
@@ -211,6 +230,9 @@ export function buildApnsPayload({ title, body, sessionId, messageId, teamId = n
       kind: 'message',
       team_id: teamId,
       sender_actor_id: senderActorId,
+      preview,
+      sender_kind: senderKind,
+      sender_avatar_url: senderAvatarUrl,
     },
   };
 }

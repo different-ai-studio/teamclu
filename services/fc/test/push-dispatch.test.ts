@@ -22,6 +22,7 @@ function makeDeps({ recipients, claim = true, mqtt = null }) {
         throw new Error(`unexpected rpc ${name}`);
       },
       revokeToken: (t) => { revoked.push(t); },
+      actorProfile: async (id) => (id === 'agent-a' ? { kind: 'agent', avatarUrl: null } : null),
     },
     apns: {
       send: async (token, payload) => {
@@ -188,4 +189,35 @@ test('payload without team still builds (older callers)', () => {
   const p = buildApnsPayload({ title: 'A', body: 'b', sessionId: 's', messageId: 'm' });
   assert.equal(p.data.team_id, null);
   assert.equal(p.aps.category, 'SESSION_MESSAGE');
+});
+
+test('message push asks for the service extension and a background wake', async () => {
+  const d = makeDeps({ recipients: [{
+    user_id: 'u1', muted: false, prefs: { enabled: true },
+    tokens: [{ provider: 'apns', token: 'GOOD1', device_id: 'D1' }],
+    presence: [],
+  }] });
+  const long = 'x'.repeat(500);
+  await dispatchPush({ id: 'm1', team_id: 't1', session_id: 's', sender_actor_id: 'agent-a',
+                       kind: 'text', content: long }, d);
+  const { payload } = d.sent[0];
+  assert.equal(payload.aps['mutable-content'], 1);
+  assert.equal(payload.aps['content-available'], 1);
+  assert.equal(payload.data.sender_kind, 'agent');
+  assert.equal(payload.data.sender_avatar_url, null);
+  assert.ok(payload.data.preview.length > payload.aps.alert.body.length, 'preview is the longer text');
+  assert.ok(payload.data.preview.length <= 401);
+});
+
+test('a failing profile lookup still sends the push', async () => {
+  const d = makeDeps({ recipients: [{
+    user_id: 'u1', muted: false, prefs: { enabled: true },
+    tokens: [{ provider: 'apns', token: 'GOOD1', device_id: 'D1' }],
+    presence: [],
+  }] });
+  d.sb.actorProfile = async () => { throw new Error('db down'); };
+  const r = await dispatchPush({ id: 'm1', team_id: 't1', session_id: 's', sender_actor_id: 'a',
+                                  kind: 'text', content: 'hi' }, d);
+  assert.equal(r.sent, 1);
+  assert.equal(d.sent[0].payload.data.sender_kind, null);
 });
