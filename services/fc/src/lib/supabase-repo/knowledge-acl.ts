@@ -27,6 +27,22 @@ export interface AclImpact {
   affectedMembers: number;
 }
 
+export function assertLegacyDocumentCreate(pathPrefix: string): void {
+  if (pathPrefix.startsWith("documents/")) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      "document folders are restricted via /v1/teams/{teamId}/document-libraries",
+    );
+  }
+}
+
+export function assertLegacyDocumentUpdate(roleGrantCount: number): void {
+  if (roleGrantCount > 0) {
+    throw new ApiError(409, "conflict", "this folder is granted by role");
+  }
+}
+
 interface KnowledgeAclHost {
   /** Caller-token client; RLS applies. */
   supabase: any;
@@ -132,11 +148,12 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
     };
   }
 
-  function mapRule(row: any, actorIds: string[]) {
+  function mapRule(row: any, actorIds: string[], roleGrantCount = 0) {
     return {
       id: row.id,
       pathPrefix: row.path_prefix,
       actorIds,
+      audience: roleGrantCount > 0 ? ("roles" as const) : ("actors" as const),
       createdBy: row.created_by,
       createdAt: row.created_at ?? null,
       updatedAt: row.updated_at ?? null,
@@ -171,6 +188,20 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
     return byAcl;
   }
 
+  async function roleGrantCountsFor(admin: any, aclIds: string[]): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    if (aclIds.length === 0) return counts;
+    const { data, error } = await admin
+      .from("amuxc_path_acl_role_grants")
+      .select("acl_id")
+      .in("acl_id", aclIds);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      counts.set(row.acl_id, (counts.get(row.acl_id) ?? 0) + 1);
+    }
+    return counts;
+  }
+
   return {
     async listKnowledgeAcl(teamId: string) {
       await requireTeamAdmin(teamId);
@@ -182,8 +213,14 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
         .order("path_prefix", { ascending: true });
       if (error) throw error;
       const rules = data ?? [];
-      const byAcl = await grantsFor(admin, rules.map((r: any) => r.id));
-      return { items: rules.map((r: any) => mapRule(r, byAcl.get(r.id) ?? [])) };
+      const aclIds = rules.map((r: any) => r.id);
+      const byAcl = await grantsFor(admin, aclIds);
+      const roleCounts = await roleGrantCountsFor(admin, aclIds);
+      return {
+        items: rules.map((r: any) =>
+          mapRule(r, byAcl.get(r.id) ?? [], roleCounts.get(r.id) ?? 0),
+        ),
+      };
     },
 
     /** Dry run for the confirmation screen. Reads only. */
@@ -198,6 +235,7 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
     async createKnowledgeAcl(teamId: string, body: any = {}) {
       const callerActorId = await requireTeamAdmin(teamId);
       const pathPrefix = assertPrefix(body.pathPrefix);
+      assertLegacyDocumentCreate(pathPrefix);
       const actorIds: string[] = Array.isArray(body.actorIds) ? body.actorIds : [];
       const admin = await host.serviceRoleClient("create a knowledge ACL rule");
 
@@ -258,6 +296,15 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
       const add: string[] = Array.isArray(body.addActorIds) ? body.addActorIds : [];
       const remove: string[] = Array.isArray(body.removeActorIds) ? body.removeActorIds : [];
 
+      if (add.length > 0 || remove.length > 0) {
+        const { count: roleGrantCount, error: roleCountErr } = await admin
+          .from("amuxc_path_acl_role_grants")
+          .select("acl_id", { count: "exact", head: true })
+          .eq("acl_id", aclId);
+        if (roleCountErr) throw roleCountErr;
+        assertLegacyDocumentUpdate(roleGrantCount ?? 0);
+      }
+
       if (remove.length > 0) {
         const { error } = await admin
           .from("amuxc_path_acl_grants")
@@ -290,7 +337,8 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
 
       invalidateTeamAcl(teamId);
       const byAcl = await grantsFor(admin, [aclId]);
-      return mapRule(rule, byAcl.get(aclId) ?? []);
+      const roleCounts = await roleGrantCountsFor(admin, [aclId]);
+      return mapRule(rule, byAcl.get(aclId) ?? [], roleCounts.get(aclId) ?? 0);
     },
 
     /** Remove the rule, reopening the prefix to the whole team. */

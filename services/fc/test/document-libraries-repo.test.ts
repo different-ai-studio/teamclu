@@ -5,6 +5,10 @@ import {
   needsRevokeConfirm,
   prepareRoleIds,
 } from "../src/lib/supabase-repo/document-libraries.js";
+import {
+  assertLegacyDocumentCreate,
+  assertLegacyDocumentUpdate,
+} from "../src/lib/supabase-repo/knowledge-acl.js";
 
 test("owner is stored even when the client omits it", () => {
   const out = prepareRoleIds(
@@ -59,4 +63,15 @@ test("confirm is required only when files exist and someone loses access", () =>
   assert.equal(needsRevokeConfirm({ affectedFiles: 2, affectedMembers: 0, confirm: false }), false);
   assert.equal(needsRevokeConfirm({ affectedFiles: 0, affectedMembers: 3, confirm: false }), false);
   assert.equal(needsRevokeConfirm({ affectedFiles: 2, affectedMembers: 1, confirm: true }), false);
+});
+
+test("legacy create refuses every documents prefix", () => {
+  assert.throws(() => assertLegacyDocumentCreate("documents/财务/"), (err: any) => err.statusCode === 400);
+  assert.throws(() => assertLegacyDocumentCreate("documents/财务/工资/"), (err: any) => err.statusCode === 400);
+  assert.doesNotThrow(() => assertLegacyDocumentCreate("knowledge/hr/"));
+});
+
+test("legacy update refuses a rule that already has role grants", () => {
+  assert.throws(() => assertLegacyDocumentUpdate(1), (err: any) => err.statusCode === 409);
+  assert.doesNotThrow(() => assertLegacyDocumentUpdate(0));
 });
