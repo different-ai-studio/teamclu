@@ -332,3 +332,26 @@ public func buildFeedItems(_ events: [AgentEvent],
 
     return result
 }
+
+extension Array where Element == FeedItem {
+    /// The row showing the persisted message `serverMessageID` (a push's
+    /// `message_id`): a chat message itself, or the turn whose reply or
+    /// process holds it. Ids compare case-insensitively — iOS used to mint
+    /// uppercase ids that the server stores lowercase.
+    public func feedItemID(containingServerMessageID serverMessageID: String) -> String? {
+        let target = serverMessageID.lowercased()
+        func matches(_ event: AgentEvent) -> Bool {
+            event.supabaseMessageId?.lowercased() == target
+        }
+        return first { item in
+            switch item {
+            case .userMessage(let e), .permission(let e), .todo(let e), .error(let e):
+                return matches(e)
+            case .completedTurn(_, _, let finalEvent, let runtimeEvents):
+                return matches(finalEvent) || runtimeEvents.contains(where: matches)
+            case .activeStream(_, _, let runtimeEvents):
+                return runtimeEvents.contains(where: matches)
+            }
+        }?.id
+    }
+}

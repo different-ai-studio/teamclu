@@ -9,6 +9,7 @@ import AMUXSharedUI
 public struct SessionDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(NavigationRouter.self) private var navigationRouter: NavigationRouter?
     @State private var viewModel: SessionDetailViewModel
     /// Single actor-directory query shared by all EventBubbleView instances
     /// in this session, replacing per-row @Query registrations.
@@ -56,6 +57,8 @@ public struct SessionDetailView: View {
     @State private var visibleFeedIDs: Set<String> = []
     /// "N unread ↑": the first row that arrived since the reader last left.
     @State private var unreadJump: (id: String, count: Int)?
+    /// Row briefly tinted after a push brought the reader to it.
+    @State private var highlightedFeedID: String?
     /// A finger is on the transcript. Content growth never re-pins the
     /// bottom while this is set, so a drag isn't fought mid-gesture.
     @State private var isUserScrolling: Bool = false
@@ -203,6 +206,7 @@ public struct SessionDetailView: View {
                             FeedTimeMarkerLabel(marker: marker)
                         }
                         feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
+                            .background(highlightedFeedID == item.id ? Color.amux.cinnabar.opacity(0.10) : .clear)
                             .id(item.id)
                     }
 
@@ -248,6 +252,7 @@ public struct SessionDetailView: View {
                 let metricKey = viewModel.session?.sessionId ?? ""
                 ChatMetrics.shared.mark(.openSession, key: metricKey, "first_frame")
                 ChatMetrics.shared.endWhenMarked(.openSession, key: metricKey, SessionDetailViewModel.openSessionEndPhases)
+                await focusMessageFromPush()
             }
             // Store the proxy so the composer's onSend callback (inside
             // safeAreaInset, outside this ScrollViewReader scope) can
@@ -576,6 +581,44 @@ public struct SessionDetailView: View {
         guard let anchor else { return }
         await Task.yield()
         scrollProxy?.scrollTo(anchor, anchor: .top)
+    }
+
+    /// A push names a message; bring it into view. It may not be on screen
+    /// yet: wait for the history seed, then page back (a few pages at most)
+    /// until the row holding it is loaded.
+    private func focusMessageFromPush() async {
+        guard let sessionID = viewModel.session?.sessionId,
+              let messageID = navigationRouter?.takeFocusMessage(for: sessionID) else { return }
+        for _ in 0..<20 {
+            if let rowID = viewModel.feedItems.feedItemID(containingServerMessageID: messageID) {
+                unreadJump = nil
+                isAtBottom = false
+                await scrollUntilVisible(rowID, anchor: .center)
+                highlightedFeedID = rowID
+                try? await Task.sleep(for: .seconds(2))
+                withAnimation(AMUXAnimation.fast) { highlightedFeedID = nil }
+                return
+            }
+            // The top-of-feed loader may already be fetching the page before;
+            // a second call would return at once, so wait for it instead.
+            if !viewModel.hasFinishedInitialSeed || viewModel.isLoadingOlderHistory {
+                try? await Task.sleep(for: .milliseconds(300))
+            } else if viewModel.hasOlderHistory {
+                await viewModel.loadOlderHistory(modelContext: modelContext)
+            } else {
+                return
+            }
+        }
+    }
+
+    /// Lazy rows far from the viewport have estimated heights, so one jump
+    /// can land short; repeat until the row is on screen.
+    private func scrollUntilVisible(_ id: String, anchor: UnitPoint) async {
+        for _ in 0..<6 {
+            scrollProxy?.scrollTo(id, anchor: anchor)
+            try? await Task.sleep(for: .milliseconds(40))
+            if visibleFeedIDs.contains(id) { return }
+        }
     }
 
     private func topVisibleFeedID() -> String? {

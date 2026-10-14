@@ -306,7 +306,9 @@ struct ContentView: View {
             // consumes any already-pending intent when it first mounts, so the
             // deep link survives the launch-time onboarding gap.
             logger.info("Open-session deep link received; routing to \(sid, privacy: .public)")
-            navigationRouter.openSession(sid)
+            // A push names the message it is about; the session screen
+            // scrolls to it once its feed is up.
+            navigationRouter.openSession(sid, focusMessageID: note.userInfo?["message_id"] as? String)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active && pairing.isPaired && onboarding.route == .ready {
