@@ -17,11 +17,11 @@ import { cn } from '@/lib/utils'
 import { workspacePathsMatch } from '@/stores/session-utils'
 import { toast } from 'sonner'
 import { SectionHeader, SettingCard } from './shared'
+import { basenameOf } from '@/lib/fs-path'
 
 function workspaceNameFromPath(path: string | null): string {
   if (!path) return ''
-  const trimmed = path.replace(/\/+$/, '')
-  return trimmed.split('/').pop() || trimmed
+  return basenameOf(path) || path
 }
 
 function WorkspaceCard({

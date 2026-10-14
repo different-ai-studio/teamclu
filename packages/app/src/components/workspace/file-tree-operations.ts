@@ -9,7 +9,7 @@ export async function createNewFile(
   if (!isTauri()) return false;
   try {
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    const fullPath = `${dirPath}/${fileName}`;
+    const fullPath = joinPathLike(dirPath, fileName);
     await writeTextFile(fullPath, "");
     return true;
   } catch (error) {
@@ -25,7 +25,7 @@ export async function createNewFolder(
   if (!isTauri()) return false;
   try {
     const { mkdir } = await import("@tauri-apps/plugin-fs");
-    const fullPath = `${dirPath}/${folderName}`;
+    const fullPath = joinPathLike(dirPath, folderName);
     await mkdir(fullPath);
     return true;
   } catch (error) {

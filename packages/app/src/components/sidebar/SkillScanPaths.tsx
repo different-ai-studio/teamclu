@@ -4,6 +4,7 @@ import { FolderSearch } from 'lucide-react'
 import { homeDir } from '@tauri-apps/api/path'
 import { getSkillDirectories } from '@/lib/skills/loader'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { relativePathUnder } from '@/lib/fs-path'
 
 /**
  * How many roots the pinned footer shows before the rest move into the
@@ -29,8 +30,10 @@ export function shortenScanPath(
 ): string {
   const home = opts.home ? trimTrailingSlash(opts.home) : ''
   const workspace = opts.workspacePath ? trimTrailingSlash(opts.workspacePath) : ''
-  if (workspace && dir.startsWith(`${workspace}/`)) return dir.slice(workspace.length + 1)
-  if (home && dir.startsWith(`${home}/`)) return `~/${dir.slice(home.length + 1)}`
+  const underWorkspace = workspace ? relativePathUnder(dir, workspace) : null
+  if (underWorkspace) return underWorkspace
+  const underHome = home ? relativePathUnder(dir, home) : null
+  if (underHome) return `~/${underHome}`
   return dir
 }
 

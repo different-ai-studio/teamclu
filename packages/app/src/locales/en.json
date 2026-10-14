@@ -1211,6 +1211,11 @@
     "confirmDeleteDirDesc": "This will permanently delete this folder and all its contents.",
     "confirmBatchDeleteDesc": "This will permanently delete all selected items. This action cannot be undone for directories.",
     "duplicateFailed": "Duplicate failed",
+    "renameFailed": "Rename failed",
+    "createFailed": "Could not create \"{{name}}\"",
+    "invalidFileNameChars": "A name can't contain {{chars}}",
+    "invalidFileNameReserved": "\"{{name}}\" is a reserved name on Windows",
+    "invalidFileNameTrailing": "A name can't end with a space or a period",
     "undo": "Undo: {{desc}}"
   },
   "sessions": {
