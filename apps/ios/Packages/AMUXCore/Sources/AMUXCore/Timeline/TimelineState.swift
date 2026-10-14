@@ -115,6 +115,11 @@ public struct TimelineEntry: Identifiable, Equatable, Sendable {
 public struct TimelineState: Equatable, Sendable {
     public var entries: [TimelineEntry] = []
 
+    /// Persisted-reply ids that arrived before the output they belong to
+    /// completed (they ride a different topic, so order is not given).
+    /// Claimed when that output completes; bounded.
+    public var pendingPersistedReplies: [PersistedReplyInput] = []
+
     /// Per-agent open-turn streaming text, accumulated across delta
     /// arrivals until `.output(isComplete: true)` or an idle status
     /// change for that runtime flushes it.

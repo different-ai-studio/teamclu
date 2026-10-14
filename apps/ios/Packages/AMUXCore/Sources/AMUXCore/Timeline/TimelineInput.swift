@@ -47,6 +47,25 @@ public enum TimelineInput: Sendable {
     case historyMessage(HistoryInput)
     case localPrompt(LocalPromptInput)
     case permissionResolution(PermissionResolutionInput)
+    case persistedReply(PersistedReplyInput)
+}
+
+/// The daemon's `message.created` for an agent reply it just persisted. It
+/// is never drawn — the ACP output already is — but it carries the row id
+/// that quoting, feedback and jump-to need, which a live-rendered reply
+/// otherwise only gets from the next history load.
+public struct PersistedReplyInput: Equatable, Sendable {
+    public let messageID: String
+    public let senderActorID: String
+    public let content: String
+    public let turnID: String?
+
+    public init(messageID: String, senderActorID: String, content: String, turnID: String?) {
+        self.messageID = messageID
+        self.senderActorID = senderActorID
+        self.content = content
+        self.turnID = turnID
+    }
 }
 
 // MARK: - Per-variant payloads

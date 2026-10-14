@@ -1936,6 +1936,22 @@ public final class SessionDetailViewModel {
         // loopbacks + content-equal duplicates before feeding the
         // reducer so its identity-dedup doesn't conflate a fresh
         // message with a re-arrival under a different messageID.
+        if message.kind == .agentReply {
+            // Not drawn (the ACP output is the bubble); only its row id is
+            // taken, so the reply can be quoted and rated without a reload.
+            guard !message.messageID.isEmpty, !message.senderActorID.isEmpty else { return }
+            let dirty = applyTimelineInput(
+                .persistedReply(PersistedReplyInput(
+                    messageID: message.messageID,
+                    senderActorID: message.senderActorID,
+                    content: message.content,
+                    turnID: message.turnID.isEmpty ? nil : message.turnID
+                )),
+                modelContext: modelContext
+            )
+            if dirty { recomputeGroups() }
+            return
+        }
         guard message.kind == .text else { return }
         let myActorID = teamcluService?.currentHumanActorId ?? ""
         if !myActorID.isEmpty, message.senderActorID == myActorID { return }

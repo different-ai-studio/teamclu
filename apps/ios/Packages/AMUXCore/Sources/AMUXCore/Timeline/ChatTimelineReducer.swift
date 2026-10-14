@@ -26,13 +26,22 @@ public enum ChatTimelineReducer {
     @discardableResult
     public static func apply(_ input: TimelineInput,
                              to state: inout TimelineState) -> TimelineReducerEffect {
+        let effect: TimelineReducerEffect
         switch input {
-        case .acp(let a): return applyAcp(a, to: &state)
-        case .liveMessage(let m): return applyLive(m, to: &state)
-        case .historyMessage(let h): return applyHistory(h, to: &state)
-        case .localPrompt(let p): return applyLocal(p, to: &state)
-        case .permissionResolution(let r): return applyPermission(r, to: &state)
+        case .acp(let a): effect = applyAcp(a, to: &state)
+        case .liveMessage(let m): effect = applyLive(m, to: &state)
+        case .historyMessage(let h): effect = applyHistory(h, to: &state)
+        case .localPrompt(let p): effect = applyLocal(p, to: &state)
+        case .permissionResolution(let r): effect = applyPermission(r, to: &state)
+        case .persistedReply(let r): return applyPersistedReply(r, to: &state)
         }
+        // A reply's row id can beat its output into existence: the output
+        // is finalised by an `isComplete` delta or by the idle flush, on
+        // another topic. Whichever path just added it, give it the id.
+        if effect == .entriesChanged, !state.pendingPersistedReplies.isEmpty {
+            claimPendingPersistedReplies(in: &state)
+        }
+        return effect
     }
 
     // MARK: - .acp
@@ -413,6 +422,54 @@ public enum ChatTimelineReducer {
     // MARK: - .liveMessage
 
     @discardableResult
+    /// Stamps a persisted reply's id onto the completed output it belongs
+    /// to — same agent, same text, else same turn. Never adds an entry; if
+    /// the output hasn't completed yet the id waits in
+    /// `pendingPersistedReplies`.
+    static func applyPersistedReply(_ input: PersistedReplyInput, to state: inout TimelineState) -> TimelineReducerEffect {
+        if state.entries.contains(where: { $0.supabaseMessageID == input.messageID }) { return .noop }
+        if let idx = persistedReplyTarget(for: input, in: state) {
+            adopt(input, at: idx, in: &state)
+            return .entriesChanged
+        }
+        state.pendingPersistedReplies.removeAll { $0.messageID == input.messageID }
+        state.pendingPersistedReplies.append(input)
+        if state.pendingPersistedReplies.count > 16 { state.pendingPersistedReplies.removeFirst() }
+        return .noop
+    }
+
+    private static func persistedReplyTarget(for input: PersistedReplyInput, in state: TimelineState) -> Int? {
+        func candidate(_ e: TimelineEntry) -> Bool {
+            e.eventType == "output" && e.isComplete && e.supabaseMessageID == nil
+                && (e.senderActorID ?? "") == input.senderActorID
+        }
+        if let idx = state.entries.lastIndex(where: { candidate($0) && $0.text == input.content }) { return idx }
+        // A turn split by tool calls persists one row per segment; the text
+        // match above picks the right one, this only covers whitespace or
+        // formatting drift between the stream and the stored row.
+        if let turnID = input.turnID, !turnID.isEmpty {
+            return state.entries.lastIndex(where: { candidate($0) && $0.turnID == turnID })
+        }
+        return nil
+    }
+
+    private static func adopt(_ input: PersistedReplyInput, at idx: Int, in state: inout TimelineState) {
+        state.entries[idx].supabaseMessageID = input.messageID
+        if state.entries[idx].turnID == nil, let turnID = input.turnID, !turnID.isEmpty {
+            state.entries[idx].turnID = turnID
+        }
+    }
+
+    private static func claimPendingPersistedReplies(in state: inout TimelineState) {
+        let pending = state.pendingPersistedReplies
+        state.pendingPersistedReplies = pending.filter { reply in
+            if state.entries.contains(where: { $0.supabaseMessageID == reply.messageID }) { return false }
+            guard let idx = persistedReplyTarget(for: reply, in: state) else { return true }
+            adopt(reply, at: idx, in: &state)
+            return false
+        }
+    }
+
     static func applyLive(_ input: LiveMessageInput, to state: inout TimelineState) -> TimelineReducerEffect {
         // Identity dedupe: messageID already present → no-op.
         if state.entries.contains(where: { $0.id == input.messageID }) { return .noop }
