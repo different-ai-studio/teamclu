@@ -465,6 +465,13 @@ struct AgentRowView: View {
     /// same as the bubble — the raw scaffolding would fill the one line.
     private var lastMessage: String { MentionDisplayText.plainText(session.lastMessagePreview) }
 
+    /// This device's unsent composer text for the session, on one line.
+    private var draft: String? {
+        let text = SessionDraftStore.shared.draft(for: session.sessionId)
+        guard !text.isEmpty else { return nil }
+        return text.split(whereSeparator: \.isNewline).joined(separator: " ")
+    }
+
     // Server-computed: `list_current_actor_sessions` derives it from
     // session_read_markers + sessions.last_message_at. The old client-side
     // signal rode on `lastOutputSummary`/`toolUseCount` deltas, which the
@@ -540,7 +547,15 @@ struct AgentRowView: View {
                     .foregroundStyle(Color.amux.slate)
             }
 
-            if !lastMessage.isEmpty {
+            if let draft {
+                // An unsent draft outranks the last message, as in IM apps:
+                // it is what the user was in the middle of.
+                (Text("Draft: ").foregroundStyle(Color.amux.cinnabar)
+                    + Text(draft).foregroundStyle(Color.amux.basalt))
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .padding(.leading, badgeIndent)
+            } else if !lastMessage.isEmpty {
                 Text(lastMessage)
                     .font(.subheadline)
                     .foregroundStyle(Color.amux.basalt)

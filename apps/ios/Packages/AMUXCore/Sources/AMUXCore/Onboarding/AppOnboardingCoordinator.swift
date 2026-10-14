@@ -764,6 +764,7 @@ public final class AppOnboardingCoordinator {
     /// Delete every cached row and downloaded trace that belongs to the
     /// signed-in account. See `signOutAndWipeCache`.
     public func wipeLocalCache(modelContext: ModelContext) async {
+        SessionDraftStore.shared.removeAll()
         do {
             try modelContext.delete(model: AgentAttachment.self)
             try modelContext.delete(model: AgentEvent.self)

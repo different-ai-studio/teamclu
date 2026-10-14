@@ -644,6 +644,11 @@ public struct SessionDetailView: View {
             }
             await viewModel.outboxSender?.start()
             viewModel.start(modelContext: modelContext)
+            // Pick up where the user left off; never clobber what they have
+            // already typed since the view appeared.
+            if promptText.isEmpty, let sessionID = viewModel.session?.sessionId {
+                promptText = SessionDraftStore.shared.draft(for: sessionID)
+            }
             if let sessionID = viewModel.session?.sessionId {
                 hitchMonitor.start(key: sessionID)
             }
@@ -698,6 +703,13 @@ public struct SessionDetailView: View {
         .onChange(of: viewModel.isAgentWorking) { _, newValue in
             if newValue {
                 Task { await viewModel.refreshMemberSheet() }
+            }
+        }
+        .onChange(of: promptText) { _, text in
+            // Every keystroke, so a kill or crash keeps it too. Sending
+            // empties the composer, which clears the draft.
+            if let sessionID = viewModel.session?.sessionId {
+                SessionDraftStore.shared.setDraft(text, for: sessionID)
             }
         }
         .onChange(of: scenePhase) { _, phase in

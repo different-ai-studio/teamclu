@@ -1284,6 +1284,16 @@
         }
       }
     },
+    "Draft: ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿："
+          }
+        }
+      }
+    },
     "Edit": {
       "localizations": {
         "zh-Hans": {
