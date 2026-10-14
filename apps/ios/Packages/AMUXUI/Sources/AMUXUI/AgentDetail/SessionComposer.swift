@@ -48,6 +48,10 @@ struct SessionComposer: View {
     @State private var hasPendingSlashCommand = false
     @State private var mentionCandidates: [MentionTarget] = []
     @State private var uploadingAttachments: [String: AttachmentUpload] = [:]
+    /// The pasteboard holds an image. Read through `hasImages`, which does
+    /// not trigger the system paste prompt; the bytes are only read by the
+    /// `PasteButton`, which the user taps.
+    @State private var pasteboardHasImage = false
     /// Lazily created on first sheet present; nil before the modelContext is
     /// available or when the SupabaseProjectConfiguration lookup fails (in
     /// which case the drawer falls back to no-op upload behavior).
@@ -135,6 +139,24 @@ struct SessionComposer: View {
                 .animation(AMUXAnimation.fast, value: mentionCandidates)
             }
 
+            // SwiftUI's TextField pastes text only. While typing with an image
+            // on the pasteboard, offer to attach it — as IM apps do.
+            if pasteboardHasImage && inputFocused {
+                HStack {
+                    PasteButton(supportedContentTypes: [.image]) { providers in
+                        pasteImages(from: providers)
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.small)
+                    .tint(Color.amux.onyx)
+                    .accessibilityIdentifier("composer.pasteImageButton")
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .transition(.opacity)
+            }
+
             // Attachment thumbnails pre-send tray (agent chips have moved
             // into the Row-2 agent button label — no longer shown here).
             if !attachments.isEmpty {
@@ -146,6 +168,7 @@ struct SessionComposer: View {
                                 upload: uploadingAttachments[url.absoluteString],
                                 onRemove: { discardAttachment(url) }
                             )
+                            .accessibilityIdentifier("composer.attachmentTile")
                         }
                     }
                     .padding(.horizontal, 16)
@@ -165,6 +188,15 @@ struct SessionComposer: View {
             recomputeMentionCandidates()
         }
         .onChange(of: availableCommands) { _, _ in recomputeSlashCandidates() }
+        .onChange(of: inputFocused) { _, _ in refreshPasteboardImageFlag() }
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            refreshPasteboardImageFlag()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            // Copied in another app: `changedNotification` only fires for
+            // changes made while this app is running.
+            refreshPasteboardImageFlag()
+        }
         .onChange(of: availableMentions) { _, _ in recomputeMentionCandidates() }
         .onChange(of: voiceRecorder.state) { _, newState in
             if newState == .done {
@@ -384,6 +416,41 @@ struct SessionComposer: View {
         }
         uploadManager = mgr
         return mgr
+    }
+
+    private func refreshPasteboardImageFlag() {
+        pasteboardHasImage = UIPasteboard.general.hasImages
+    }
+
+    /// Pasted images go the same way as library photos: downscaled and
+    /// re-encoded, into the tray, uploading right away.
+    private func pasteImages(from providers: [NSItemProvider]) {
+        for provider in providers {
+            _ = provider.loadDataRepresentation(for: .image) { data, _ in
+                guard let data else { return }
+                Task { @MainActor in addImageAttachment(data) }
+            }
+        }
+    }
+
+    private func addImageAttachment(_ data: Data) {
+        let compressed = AttachmentDrawerSheet.compressedJPEGData(from: data)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pasted-\(UUID().uuidString).jpg")
+        guard (try? compressed.write(to: url)) != nil else { return }
+        attachments.append(url)
+        guard let uploadManager = ensureUploadManager() else { return }
+        Task {
+            guard let upload = try? await uploadManager.startUpload(
+                filePath: url,
+                messageID: UUID().uuidString.lowercased(),
+                sessionID: sessionID,
+                teamID: teamID
+            ) else { return }
+            // Removed from the tray while the upload was starting: drop it.
+            guard attachments.contains(url) else { return }
+            uploadingAttachments[url.absoluteString] = upload
+        }
     }
 
     /// Forget an attachment the user pulled out of the tray. The tray binding

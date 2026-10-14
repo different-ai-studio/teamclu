@@ -19,6 +19,7 @@
 		4422C0DDF33A846C04684D00 /* ChatMetricsReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */; };
 		4553E608B533CD245A887A39 /* AMUXSessionStreamingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7089CE9863C2F15703551691 /* AMUXSessionStreamingUITests.swift */; };
 		48A4F0655EACAE64B0B0232B /* AMUXUI in Frameworks */ = {isa = PBXBuildFile; productRef = 984FDD5CB983CACB65198166 /* AMUXUI */; };
+		58B8846DEB1FDD5E294CC24E /* AMUXComposerPasteImageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47F9430BAAF43D984352CC80 /* AMUXComposerPasteImageTests.swift */; };
 		5D9C7760A6A171683819C4A0 /* PushAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */; };
 		5E27EDA155611636668E8AED /* IntroIllustrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */; };
 		65085082F4465D5B43C99A9A /* DesktopGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E733A6BFCE193CA325C33B /* DesktopGuideView.swift */; };
@@ -60,6 +61,7 @@
 		33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXChatPerformanceTests.swift; sourceTree = "<group>"; };
 		36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteJoinSheet.swift; sourceTree = "<group>"; };
 		37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrgTeamPickerView.swift; sourceTree = "<group>"; };
+		47F9430BAAF43D984352CC80 /* AMUXComposerPasteImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXComposerPasteImageTests.swift; sourceTree = "<group>"; };
 		499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXApp.swift; sourceTree = "<group>"; };
 		49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntroIllustrations.swift; sourceTree = "<group>"; };
 		49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMetricsReporting.swift; sourceTree = "<group>"; };
@@ -107,6 +109,7 @@
 			children = (
 				E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */,
 				33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */,
+				47F9430BAAF43D984352CC80 /* AMUXComposerPasteImageTests.swift */,
 				194E71B71F97908AD85A630C /* AMUXSessionLiveCaptureTest.swift */,
 				2304BE28BB84D7C798F28A65 /* AMUXSessionLiveDiagTest.swift */,
 				9E532B070FBC309D7EB883CE /* AMUXSessionMessageRegressionTests.swift */,
@@ -305,6 +308,7 @@
 			files = (
 				A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */,
 				CE55C1FE43C2565BA380AB1B /* AMUXChatPerformanceTests.swift in Sources */,
+				58B8846DEB1FDD5E294CC24E /* AMUXComposerPasteImageTests.swift in Sources */,
 				29502E986D717CDB6A9EE9FC /* AMUXSessionLiveCaptureTest.swift in Sources */,
 				F4C758D14EA8FC4DFFD453E8 /* AMUXSessionLiveDiagTest.swift in Sources */,
 				2468D5A7710326FCAE98EED5 /* AMUXSessionMessageRegressionTests.swift in Sources */,
