@@ -52,6 +52,10 @@ public struct SessionDetailView: View {
     @State private var isAtBottom: Bool = true
     /// Feed rows added while the reader was scrolled up — the jump button's count.
     @State private var unseenCount = 0
+    /// Feed rows at least partly on screen, for saving where the reader left.
+    @State private var visibleFeedIDs: Set<String> = []
+    /// "N unread ↑": the first row that arrived since the reader last left.
+    @State private var unreadJump: (id: String, count: Int)?
     /// A finger is on the transcript. Content growth never re-pins the
     /// bottom while this is set, so a drag isn't fought mid-gesture.
     @State private var isUserScrolling: Bool = false
@@ -203,15 +207,38 @@ public struct SessionDetailView: View {
                         .frame(height: 1)
                         .id("session-detail-bottom")
                 }
+                .scrollTargetLayout()
                 .padding(.top, 8)
             }
             .id(viewModel.hasLoadedInitialFeed)
             .opacity(isInitialFeedVisible ? 1 : 0)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.3) { ids in
+                visibleFeedIDs = Set(ids)
+                if let jump = unreadJump, visibleFeedIDs.contains(jump.id) { unreadJump = nil }
+            }
             .task(id: viewModel.hasLoadedInitialFeed) {
                 guard viewModel.hasLoadedInitialFeed, !isInitialFeedVisible else { return }
                 await Task.yield()
-                proxy.scrollTo("session-detail-bottom", anchor: .bottom)
+                let target = initialScrollTarget()
+                if let anchorID = target.anchorID {
+                    // Not at the bottom, before scrolling: the at-bottom
+                    // re-pin would otherwise drag the view back down as the
+                    // lazy rows settle their heights.
+                    isAtBottom = false
+                    // A jump into rows the lazy stack has never laid out
+                    // lands on estimated heights, short of the anchor. Each
+                    // retry measures the rows it passes, so repeat until
+                    // the anchor is the top visible row.
+                    for _ in 0..<6 {
+                        proxy.scrollTo(anchorID, anchor: .top)
+                        try? await Task.sleep(for: .milliseconds(40))
+                        if topVisibleFeedID() == anchorID { break }
+                    }
+                } else {
+                    proxy.scrollTo("session-detail-bottom", anchor: .bottom)
+                }
+                unreadJump = target.unread
                 await Task.yield()
                 isInitialFeedVisible = true
                 // M1's headline number: the cached feed is now on screen.
@@ -468,6 +495,7 @@ public struct SessionDetailView: View {
             sendErrorBanner
             transcript
                 .overlay(alignment: .bottomTrailing) { jumpToBottomOverlay }
+                .overlay(alignment: .top) { unreadJumpOverlay }
         }
         // Mist canvas — matches `agent-session.jsx`. Without an explicit
         // background, plain ScrollView falls back to systemBackground (stark
@@ -479,6 +507,69 @@ public struct SessionDetailView: View {
         .toolbarBackground(Color.amux.mist.opacity(0.85), for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar { sessionToolbar }
+    }
+
+    @ViewBuilder
+    private var unreadJumpOverlay: some View {
+        if let jump = unreadJump, isInitialFeedVisible {
+            Button {
+                withAnimation(AMUXAnimation.fast) {
+                    scrollProxy?.scrollTo(jump.id, anchor: .top)
+                }
+                unreadJump = nil
+            } label: {
+                Label(String(localized: "\(jump.count) unread"), systemImage: "arrow.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.amux.cinnabar)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.amux.paper, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.amux.slate.opacity(0.2)))
+                    .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("session.unreadJump")
+            .padding(.top, 8)
+            .transition(.opacity)
+        }
+    }
+
+    /// A handful of new rows land in view at the bottom anyway; the jump is
+    /// for when they don't fit on one screen.
+    private static let unreadJumpThreshold = 5
+
+    /// Where to open: the row the reader had at the top when they left
+    /// mid-history (nil = the bottom), and the first unread row if there are
+    /// enough of them to need a jump.
+    private func initialScrollTarget() -> (anchorID: String?, unread: (id: String, count: Int)?) {
+        guard let sessionID = viewModel.session?.sessionId,
+              let saved = SessionReadPositionStore.shared.position(for: sessionID)
+        else { return (nil, nil) }
+        let items = viewModel.feedItems
+        let anchor = saved.anchorItemID.flatMap { id in items.contains { $0.id == id } ? id : nil }
+        let unread = firstUnread(in: items, after: saved.lastSeenAt, excludingSender: viewModel.currentHumanActorIDRef)
+        return (anchor, (unread?.count ?? 0) >= Self.unreadJumpThreshold ? unread : nil)
+    }
+
+    private func topVisibleFeedID() -> String? {
+        viewModel.feedItems.first { visibleFeedIDs.contains($0.id) }?.id
+    }
+
+    /// Records how far the reader got, and the top row if they are parked
+    /// in history. Called whenever the screen goes away.
+    private func saveReadPosition() {
+        guard isInitialFeedVisible, let sessionID = viewModel.session?.sessionId else { return }
+        let items = viewModel.feedItems
+        let visible = items.filter { visibleFeedIDs.contains($0.id) }
+        let seen = (isAtBottom ? items : visible).compactMap(\.markerDate).max()
+        guard let seen else { return }
+        let store = SessionReadPositionStore.shared
+        // Scrolling back up to reread must not un-read what came after.
+        let lastSeenAt = max(seen, store.position(for: sessionID)?.lastSeenAt ?? seen)
+        store.save(
+            SessionReadPosition(lastSeenAt: lastSeenAt, anchorItemID: isAtBottom ? nil : visible.first?.id),
+            for: sessionID
+        )
     }
 
     @ViewBuilder
@@ -767,6 +858,7 @@ public struct SessionDetailView: View {
             // Covered or gone: its frames are no longer this screen's.
             // `.task` restarts it when the view shows again.
             hitchMonitor.stop()
+            saveReadPosition()
             // Do NOT call viewModel.stop() here. SwiftUI fires this hook
             // both when this view is being popped out of the nav stack
             // (true exit) AND when a destination is pushed on top of it

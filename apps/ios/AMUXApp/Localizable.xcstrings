@@ -11,6 +11,16 @@
         }
       }
     },
+    "%lld unread": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 条未读"
+          }
+        }
+      }
+    },
     "\"%@\" is currently responding. Stopping will interrupt the reply mid-stream.": {
       "localizations": {
         "zh-Hans": {
