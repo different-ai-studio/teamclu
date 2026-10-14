@@ -365,6 +365,17 @@ export function makeDocumentLibrariesRepo(host: DocumentLibrariesHost) {
         pathPrefix,
         existingId,
       );
+    } else if (mode === "put") {
+      const { data: rules, error } = await admin
+        .from("amuxc_path_acl")
+        .select("id, path_prefix")
+        .eq("team_id", teamId);
+      if (error) throw error;
+      assertNoDocumentOverlap(
+        (rules ?? []).map((row: any) => ({ id: row.id, pathPrefix: row.path_prefix })),
+        pathPrefix,
+        putRowId,
+      );
     } else if (mode === "preview") {
       const { data, error } = await admin
         .from("amuxc_path_acl")
