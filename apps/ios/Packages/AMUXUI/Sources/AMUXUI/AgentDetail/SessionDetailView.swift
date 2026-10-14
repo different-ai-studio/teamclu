@@ -1125,7 +1125,7 @@ public struct SessionDetailView: View {
             // and the member sheet row's "loading" turns into the
             // current model picker.
             if newValue {
-                Task { await viewModel.refreshMemberSheet() }
+                Task { await viewModel.refreshMemberSheetForTurnStart() }
             }
         }
         .onChange(of: viewModel.isActive) { _, newValue in
@@ -1134,14 +1134,11 @@ public struct SessionDetailView: View {
             // chip's stop icon appears as soon as the agent starts
             // working, not only when text begins streaming.
             if newValue {
-                Task { await viewModel.refreshMemberSheet() }
+                Task { await viewModel.refreshMemberSheetForTurnStart() }
             }
         }
-        .onChange(of: viewModel.isAgentWorking) { _, newValue in
-            if newValue {
-                Task { await viewModel.refreshMemberSheet() }
-            }
-        }
+        // Not on `isAgentWorking`: it rises at the send tap, before the
+        // agent is up, so its refresh showed nothing the next one wouldn't.
         .onChange(of: promptText) { _, text in
             // Every keystroke, so a kill or crash keeps it too. Sending
             // empties the composer, which clears the draft.

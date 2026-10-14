@@ -73,13 +73,24 @@ struct SessionListContent: View {
         viewModel.groupedSessions.flatMap(\.items)
     }
 
-    private var actorByID: [String: CachedActor] {
-        Dictionary(allActors.map { ($0.actorId, $0) }, uniquingKeysWith: { a, _ in a })
+    /// What every row's participant cluster reads, built once per body.
+    /// These used to be computed properties read from inside the per-row
+    /// call, so each visible row rebuilt both maps — every actor, the last
+    /// 500 messages — and re-read all their model properties.
+    private struct ParticipantLookup {
+        let directory: [String: CachedActor]
+        let sendersBySession: [String: [String]]
+    }
+
+    private func makeParticipantLookup() -> ParticipantLookup {
+        ParticipantLookup(
+            directory: Dictionary(allActors.map { ($0.actorId, $0) }, uniquingKeysWith: { a, _ in a }),
+            sendersBySession: sendersBySession
+        )
     }
 
     /// Distinct senderActorIds per session, ordered by most-recent message
-    /// first. Built once per body evaluation so each row gets a synchronous
-    /// lookup instead of a per-row SwiftData fetch.
+    /// first.
     private var sendersBySession: [String: [String]] {
         var ordered: [String: [String]] = [:]
         var seen: [String: Set<String>] = [:]
@@ -94,9 +105,9 @@ struct SessionListContent: View {
         return ordered
     }
 
-    private func participantPreviews(for session: Session) -> [ParticipantPreview] {
-        let directory = actorByID
-        let senders = sendersBySession[session.sessionId] ?? []
+    private func participantPreviews(for session: Session, lookup: ParticipantLookup) -> [ParticipantPreview] {
+        let directory = lookup.directory
+        let senders = lookup.sendersBySession[session.sessionId] ?? []
 
         var ids: [String] = []
         var seen = Set<String>()
@@ -148,8 +159,9 @@ struct SessionListContent: View {
                 // sessions-list.jsx, which uses only hairline separators
                 // inset under the title (handled by AgentRowView's
                 // alignmentGuide(.listRowSeparatorLeading)).
+                let lookup = makeParticipantLookup()
                 ForEach(flatSessions, id: \.sessionId) { session in
-                    sessionRow(session)
+                    sessionRow(session, lookup: lookup)
                 }
             }
         }
@@ -300,7 +312,7 @@ struct SessionListContent: View {
     }
 
     @ViewBuilder
-    private func sessionRow(_ session: Session) -> some View {
+    private func sessionRow(_ session: Session, lookup: ParticipantLookup) -> some View {
         let runtime = liveAttachment(for: session)
         HStack(spacing: 10) {
             if isEditing {
@@ -312,7 +324,7 @@ struct SessionListContent: View {
             AgentRowView(
                 session: session,
                 runtime: runtime,
-                participants: participantPreviews(for: session),
+                participants: participantPreviews(for: session, lookup: lookup),
                 isMuted: notificationPrefsStore?.isMuted(session.sessionId) ?? false,
                 activity: liveActivityStore?.activity(for: session.sessionId) ?? .quiet
             )

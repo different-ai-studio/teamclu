@@ -742,6 +742,16 @@ public final class SessionDetailViewModel {
     /// Loading / shaping logic lives in `SessionMemberSheetLoader`;
     /// this method binds the snapshot to the VM and runs the chip-bar
     /// auto-light cross-cutting rule.
+    /// One member-sheet refresh per turn start. `isActive` and `isStreaming`
+    /// both rise within a second or two of each other on every turn, and
+    /// each used to cost its own `GET /participants`.
+    public func refreshMemberSheetForTurnStart() async {
+        if let last = lastTurnStartMemberRefresh, Date.now.timeIntervalSince(last) < 3 { return }
+        lastTurnStartMemberRefresh = .now
+        await refreshMemberSheet()
+    }
+    @ObservationIgnored private var lastTurnStartMemberRefresh: Date?
+
     public func refreshMemberSheet() async {
         guard let session, !session.sessionId.isEmpty else { return }
         let loader = SessionMemberSheetLoader(
