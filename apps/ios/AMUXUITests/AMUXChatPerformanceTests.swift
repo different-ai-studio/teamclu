@@ -77,6 +77,9 @@ final class AMUXChatPerformanceTests: XCTestCase {
         measure(metrics: [signpost("open_session")], options: options) {
             open(row, in: app)
             XCTAssertTrue(element(containing: detailOnlyText, in: app).waitForExistence(timeout: 15))
+            // The accessibility tree can show the row a moment before the
+            // first frame is marked; leaving then cuts the interval off.
+            Thread.sleep(forTimeInterval: 0.5)
             goBack(in: app)
             XCTAssertTrue(row.waitForExistence(timeout: 10))
         }

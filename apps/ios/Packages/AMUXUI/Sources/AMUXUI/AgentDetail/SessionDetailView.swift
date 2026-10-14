@@ -54,7 +54,7 @@ public struct SessionDetailView: View {
     /// Feed rows added while the reader was scrolled up — the jump button's count.
     @State private var unseenCount = 0
     /// Feed rows at least partly on screen, for saving where the reader left.
-    @State private var visibleFeedIDs: Set<String> = []
+    @State private var visibleRows = VisibleRows()
     /// "N unread ↑": the first row that arrived since the reader last left.
     @State private var unreadJump: (id: String, count: Int)?
     /// Row briefly tinted after a push brought the reader to it.
@@ -202,12 +202,17 @@ public struct SessionDetailView: View {
                     }
 
                     ForEach(viewModel.feedItems) { item in
-                        if let marker = viewModel.feedTimeMarkers[item.id] {
-                            FeedTimeMarkerLabel(marker: marker)
+                        // Exactly one view per item: an optional sibling (the
+                        // time marker) made the element count vary, and the
+                        // lazy stack then built all 220 rows on open.
+                        VStack(spacing: 0) {
+                            if let marker = viewModel.feedTimeMarkers[item.id] {
+                                FeedTimeMarkerLabel(marker: marker)
+                            }
+                            feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
+                                .background(highlightedFeedID == item.id ? Color.amux.cinnabar.opacity(0.10) : .clear)
                         }
-                        feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
-                            .background(highlightedFeedID == item.id ? Color.amux.cinnabar.opacity(0.10) : .clear)
-                            .id(item.id)
+                        .id(item.id)
                     }
 
                     Color.clear
@@ -220,9 +225,25 @@ public struct SessionDetailView: View {
             .id(viewModel.hasLoadedInitialFeed)
             .opacity(isInitialFeedVisible ? 1 : 0)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onChange(of: viewModel.feedItems.last?.id) { oldLastID, _ in
+                // Here, inside the ScrollViewReader, not on the screen's body:
+                // a body-level read of `feedItems` re-rendered the whole
+                // screen on every streamed delta (each one rebuilds the feed).
+                // Only rows appended after the old last one, and only while the
+                // reader is away from the bottom (there they scroll into view).
+                // Counting by total would also count older history paged in
+                // above the reader.
+                guard !isAtBottom, isInitialFeedVisible else { return }
+                let items = viewModel.feedItems
+                if let oldLastID, let index = items.firstIndex(where: { $0.id == oldLastID }) {
+                    unseenCount += items.count - index - 1
+                } else {
+                    unseenCount += 1
+                }
+            }
             .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.3) { ids in
-                visibleFeedIDs = Set(ids)
-                if let jump = unreadJump, visibleFeedIDs.contains(jump.id) { unreadJump = nil }
+                visibleRows.ids = Set(ids)
+                if let jump = unreadJump, visibleRows.ids.contains(jump.id) { unreadJump = nil }
             }
             .task(id: viewModel.hasLoadedInitialFeed) {
                 guard viewModel.hasLoadedInitialFeed, !isInitialFeedVisible else { return }
@@ -502,7 +523,13 @@ public struct SessionDetailView: View {
             daemonOfflineBanner
             sendErrorBanner
             transcript
-                .overlay(alignment: .bottomTrailing) { jumpToBottomOverlay }
+                .overlay(alignment: .bottomTrailing) {
+                    // Animated here, not on the screen: `isAtBottom` flips
+                    // while a session opens, and a screen-wide animation
+                    // dragged the whole feed's first layout into it.
+                    jumpToBottomOverlay
+                        .animation(AMUXAnimation.fast, value: isAtBottom)
+                }
                 .overlay(alignment: .top) { unreadJumpOverlay }
         }
         // Mist canvas — matches `agent-session.jsx`. Without an explicit
@@ -618,12 +645,12 @@ public struct SessionDetailView: View {
         for _ in 0..<6 {
             scrollProxy?.scrollTo(id, anchor: anchor)
             try? await Task.sleep(for: .milliseconds(40))
-            if visibleFeedIDs.contains(id) { return }
+            if visibleRows.ids.contains(id) { return }
         }
     }
 
     private func topVisibleFeedID() -> String? {
-        viewModel.feedItems.first { visibleFeedIDs.contains($0.id) }?.id
+        viewModel.feedItems.first { visibleRows.ids.contains($0.id) }?.id
     }
 
     /// Records how far the reader got, and the top row if they are parked
@@ -631,7 +658,7 @@ public struct SessionDetailView: View {
     private func saveReadPosition() {
         guard isInitialFeedVisible, let sessionID = viewModel.session?.sessionId else { return }
         let items = viewModel.feedItems
-        let visible = items.filter { visibleFeedIDs.contains($0.id) }
+        let visible = items.filter { visibleRows.ids.contains($0.id) }
         let seen = (isAtBottom ? items : visible).compactMap(\.markerDate).max()
         guard let seen else { return }
         let store = SessionReadPositionStore.shared
@@ -659,20 +686,6 @@ public struct SessionDetailView: View {
     /// …plus everything that reacts to the view or the session changing.
     private var liveSessionSurface: some View {
         sessionSurface
-        .animation(AMUXAnimation.fast, value: isAtBottom)
-        .onChange(of: viewModel.feedItems.last?.id) { oldLastID, _ in
-            // Only rows appended after the old last one, and only while the
-            // reader is away from the bottom (there they scroll into view).
-            // Counting by total would also count older history paged in
-            // above the reader.
-            guard !isAtBottom, isInitialFeedVisible else { return }
-            let items = viewModel.feedItems
-            if let oldLastID, let index = items.firstIndex(where: { $0.id == oldLastID }) {
-                unseenCount += items.count - index - 1
-            } else {
-                unseenCount += 1
-            }
-        }
         .onChange(of: isAtBottom) { _, atBottom in
             if atBottom { unseenCount = 0 }
         }
@@ -1513,4 +1526,13 @@ private struct ScrollBottomMetrics: Equatable {
     let viewportHeight: CGFloat
     let bottomInset: CGFloat
     let contentHeight: CGFloat
+}
+
+/// Feed rows at least partly on screen, for saving where the reader left
+/// and for scroll-until-visible. A plain reference, deliberately not
+/// observed: it changes on every scroll — including the auto-scroll that
+/// follows each streamed delta — and storing it in view state re-rendered
+/// the whole session screen per envelope.
+private final class VisibleRows {
+    var ids: Set<String> = []
 }
