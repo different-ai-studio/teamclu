@@ -50,6 +50,8 @@ public struct SessionDetailView: View {
     @State private var isInitialFeedVisible: Bool = false
     @State private var hitchMonitor = FrameHitchMonitor()
     @State private var isAtBottom: Bool = true
+    /// Feed rows added while the reader was scrolled up — the jump button's count.
+    @State private var unseenCount = 0
     /// A finger is on the transcript. Content growth never re-pins the
     /// bottom while this is set, so a drag isn't fought mid-gesture.
     @State private var isUserScrolling: Bool = false
@@ -465,6 +467,7 @@ public struct SessionDetailView: View {
             daemonOfflineBanner
             sendErrorBanner
             transcript
+                .overlay(alignment: .bottomTrailing) { jumpToBottomOverlay }
         }
         // Mist canvas — matches `agent-session.jsx`. Without an explicit
         // background, plain ScrollView falls back to systemBackground (stark
@@ -478,9 +481,32 @@ public struct SessionDetailView: View {
         .toolbar { sessionToolbar }
     }
 
+    @ViewBuilder
+    private var jumpToBottomOverlay: some View {
+        if !isAtBottom, isInitialFeedVisible {
+            JumpToBottomButton(unseenCount: unseenCount) {
+                unseenCount = 0
+                scrollToBottom()
+            }
+            .padding(.trailing, 16)
+            .padding(.bottom, 12)
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+        }
+    }
+
     /// …plus everything that reacts to the view or the session changing.
     private var liveSessionSurface: some View {
         sessionSurface
+        .animation(AMUXAnimation.fast, value: isAtBottom)
+        .onChange(of: viewModel.feedItems.count) { old, new in
+            // Only what lands while the reader is away from the bottom; at
+            // the bottom it scrolls into view on its own.
+            guard !isAtBottom, isInitialFeedVisible, new > old else { return }
+            unseenCount += new - old
+        }
+        .onChange(of: isAtBottom) { _, atBottom in
+            if atBottom { unseenCount = 0 }
+        }
         .onAppear {
             if let sid = viewModel.session?.sessionId {
                 CurrentSessionFocus.sessionID = sid

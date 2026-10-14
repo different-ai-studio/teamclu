@@ -1,6 +1,16 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%lld new messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 条新消息"
+          }
+        }
+      }
+    },
     "\"%@\" is currently responding. Stopping will interrupt the reply mid-stream.": {
       "localizations": {
         "zh-Hans": {
@@ -1891,6 +1901,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在加入…"
+          }
+        }
+      }
+    },
+    "Jump to latest": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回到最新"
           }
         }
       }
