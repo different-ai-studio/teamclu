@@ -29,6 +29,7 @@
 		989AF52819F1BFC91A3315B1 /* AMUXSharedUI in Frameworks */ = {isa = PBXBuildFile; productRef = 5400E9174EF5F9869349C3EF /* AMUXSharedUI */; };
 		9A510474DD8EEC00FCB010E0 /* NotificationReplySender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B2A590C829AFEEB80853960 /* NotificationReplySender.swift */; };
 		9F1C704FA9F8243CDB69EC7D /* OrgTeamPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */; };
+		9F32D085EC1CF0F0C2FDBE17 /* AMUXConversationActionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FD4F80146E6A943C761E16E /* AMUXConversationActionsUITests.swift */; };
 		A5C58ED1E2D4F96A34494416 /* InviteJoinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */; };
 		A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */; };
 		B3373E2BF0AEBF0F52946F65 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */; };
@@ -68,6 +69,7 @@
 		49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntroIllustrations.swift; sourceTree = "<group>"; };
 		49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMetricsReporting.swift; sourceTree = "<group>"; };
 		4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		4FD4F80146E6A943C761E16E /* AMUXConversationActionsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXConversationActionsUITests.swift; sourceTree = "<group>"; };
 		514F7615E8C226A5F3660A5F /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		5A17336F2708FD5E2A0C62C8 /* AMUXSharedUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXSharedUI; path = Packages/AMUXSharedUI; sourceTree = SOURCE_ROOT; };
 		67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushAppDelegate.swift; sourceTree = "<group>"; };
@@ -112,6 +114,7 @@
 				E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */,
 				33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */,
 				47F9430BAAF43D984352CC80 /* AMUXComposerPasteImageTests.swift */,
+				4FD4F80146E6A943C761E16E /* AMUXConversationActionsUITests.swift */,
 				194E71B71F97908AD85A630C /* AMUXSessionLiveCaptureTest.swift */,
 				2304BE28BB84D7C798F28A65 /* AMUXSessionLiveDiagTest.swift */,
 				9E532B070FBC309D7EB883CE /* AMUXSessionMessageRegressionTests.swift */,
@@ -313,6 +316,7 @@
 				A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */,
 				CE55C1FE43C2565BA380AB1B /* AMUXChatPerformanceTests.swift in Sources */,
 				58B8846DEB1FDD5E294CC24E /* AMUXComposerPasteImageTests.swift in Sources */,
+				9F32D085EC1CF0F0C2FDBE17 /* AMUXConversationActionsUITests.swift in Sources */,
 				29502E986D717CDB6A9EE9FC /* AMUXSessionLiveCaptureTest.swift in Sources */,
 				F4C758D14EA8FC4DFFD453E8 /* AMUXSessionLiveDiagTest.swift in Sources */,
 				2468D5A7710326FCAE98EED5 /* AMUXSessionMessageRegressionTests.swift in Sources */,
