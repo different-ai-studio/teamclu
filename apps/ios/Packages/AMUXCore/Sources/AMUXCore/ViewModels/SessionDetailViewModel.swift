@@ -2448,7 +2448,8 @@ public final class SessionDetailViewModel {
     /// existing content-equal entry, so a row seen before is a no-op. Returns
     /// whether anything changed; callers project (`recomputeGroups`) once.
     private func applyHistoryRecords(_ records: [MessageRecord], modelContext: ModelContext) -> Bool {
-        var anyChange = false
+        var inputs: [TimelineInput] = []
+        inputs.reserveCapacity(records.count)
         for record in records {
             let kind: HistoryKind
             switch record.kind {
@@ -2464,7 +2465,7 @@ public final class SessionDetailViewModel {
                let turnID = record.turnID, !turnID.isEmpty {
                 tracedTurns[turnID] = TracedTurn(pointer: trace, senderActorID: record.senderActorID)
             }
-            let dirty = applyTimelineInput(
+            inputs.append(
                 .historyMessage(HistoryInput(
                     supabaseMessageID: record.id,
                     kind: kind,
@@ -2477,12 +2478,13 @@ public final class SessionDetailViewModel {
                     closesTurn: kind == .output && record.trace != nil,
                     attachments: record.attachments,
                     replyToMessageID: record.replyToMessageID
-                )),
-                modelContext: modelContext
+                ))
             )
-            if dirty { anyChange = true }
         }
-        return anyChange
+        // One sort and one SwiftData diff for the page, not one per row: a
+        // 200-row seed used to sort and diff the whole feed 200 times, on
+        // the main actor, on every open and every reconnect.
+        return applyTimelineInputs(inputs, modelContext: modelContext)
     }
 
     /// Whether the server holds rows older than the oldest page loaded.
@@ -3275,9 +3277,23 @@ public final class SessionDetailViewModel {
     /// diff entirely, saving the main-thread work that dominated Time
     /// Profiler samples during streaming (dozens of frames per second).
     @discardableResult
+    /// `applyTimelineInput` for a batch: every input goes through the
+    /// reducer, then the feed is sorted and projected to SwiftData once.
+    private func applyTimelineInputs(_ inputs: [TimelineInput], modelContext: ModelContext) -> Bool {
+        var entriesChanged = false
+        for input in inputs where ChatTimelineReducer.apply(input, to: &timelineState) == .entriesChanged {
+            entriesChanged = true
+        }
+        return finishTimelineApply(entriesChanged ? .entriesChanged : .noop, modelContext: modelContext)
+    }
+
     private func applyTimelineInput(_ input: TimelineInput,
                                     modelContext: ModelContext) -> Bool {
-        let effect = ChatTimelineReducer.apply(input, to: &timelineState)
+        finishTimelineApply(ChatTimelineReducer.apply(input, to: &timelineState), modelContext: modelContext)
+    }
+
+    private func finishTimelineApply(_ effect: TimelineReducerEffect,
+                                     modelContext: ModelContext) -> Bool {
 
         if !timelineState.availableCommands.isEmpty {
             dynamicAvailableCommands = timelineState.availableCommands
