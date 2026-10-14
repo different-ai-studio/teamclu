@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 import { getBackend } from '@/lib/backend'
 import { isTauri } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
 import {
@@ -13,6 +14,45 @@ import {
 
 const installInflight = new Map<string, Promise<LocalAgentInstallRecord>>()
 const skipInflight = new Map<string, Promise<boolean>>()
+
+/**
+ * User the maps and the published store belong to. `undefined` means no auth
+ * event has been seen yet, so the first session must not wipe a classification
+ * that has not happened. A later user id — including signed-out `null` — drops
+ * the cache. A new access token for the same user does not.
+ */
+let cachedUserId: string | null | undefined = undefined
+
+function signedInUserId(): string | null {
+  const id = useAuthStore.getState().session?.user?.id?.trim() ?? ''
+  return id || null
+}
+
+function dropLocalAgentInstallCache(): void {
+  installInflight.clear()
+  skipInflight.clear()
+  useLocalAgentInstallStore.setState({
+    byTeam: {},
+    gateSkippedTeamId: null,
+    wizardOpen: false,
+  })
+}
+
+function adoptSignedInUser(userId: string | null): void {
+  if (cachedUserId === undefined || cachedUserId === userId) {
+    cachedUserId = userId
+    return
+  }
+  cachedUserId = userId
+  dropLocalAgentInstallCache()
+}
+
+// Runs inside the auth store's setState, before the next render. AuthGate
+// reads gateSkippedTeamId during that render, so a sign-out or account switch
+// must clear it here rather than in a later effect.
+useAuthStore.subscribe((state) => {
+  adoptSignedInUser(state.session?.user?.id?.trim() || null)
+})
 
 const UNKNOWN: LocalAgentInstallRecord = {
   status: 'unknown',
@@ -30,20 +70,26 @@ const UNKNOWN: LocalAgentInstallRecord = {
  * skip the install gate.
  *
  * One in-flight promise per team so AuthGate and switchToTeam share it
- * before either calls daemon refresh.
+ * before either calls daemon refresh. The settled promise stays for this
+ * signed-in user; a different user drops it (see adoptSignedInUser).
  */
 export function resolveLocalAgentInstall(teamId: string): Promise<LocalAgentInstallRecord> {
   const id = teamId.trim()
   if (!id) return Promise.resolve(UNKNOWN)
   const existing = installInflight.get(id)
   if (existing) return existing
+  const userId = signedInUserId()
   markLocalAgentInstallPending(id)
   const promise = classify(id)
     .then((record) => {
+      // A sign-out, account switch, or invalidate removed this promise. Publishing
+      // now would write the previous user's agent over the new classification.
+      if (installInflight.get(id) !== promise || signedInUserId() !== userId) return record
       publishLocalAgentInstall(id, record)
       return record
     })
     .catch(() => {
+      if (installInflight.get(id) !== promise || signedInUserId() !== userId) return UNKNOWN
       publishLocalAgentInstall(id, UNKNOWN)
       return UNKNOWN
     })
@@ -76,6 +122,7 @@ export async function refreshAfterLocalAgentInstall(teamId: string): Promise<voi
 export function resetLocalAgentInstallForTests(): void {
   installInflight.clear()
   skipInflight.clear()
+  cachedUserId = signedInUserId()
 }
 
 async function classify(teamId: string): Promise<LocalAgentInstallRecord> {
@@ -139,7 +186,11 @@ export async function refreshDaemonUnlessSkipped(opts?: {
   forceIdentityRebind?: boolean
 }): Promise<void> {
   const teamId = useCurrentTeamStore.getState().team?.id?.trim() || ''
+  const userId = signedInUserId()
   if (teamId && (await shouldSkipLocalAgentInstall(teamId))) {
+    // The account changed while this lookup was in flight. The new user's own
+    // call decides the gate; this one must not skip daemon rebind for them.
+    if (signedInUserId() !== userId) return
     useLocalAgentInstallStore.setState({ gateSkippedTeamId: teamId })
     useDaemonOnboardingStore.setState({
       loaded: true,
@@ -150,6 +201,7 @@ export async function refreshDaemonUnlessSkipped(opts?: {
     })
     return
   }
+  if (signedInUserId() !== userId) return
   useLocalAgentInstallStore.setState({ gateSkippedTeamId: null })
   await useDaemonOnboardingStore.getState().refresh(opts)
 }

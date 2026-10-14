@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
   displayName: null as string | null,
   findThrows: false,
   findCalls: 0,
+  findWait: null as Promise<void> | null,
   teamDefault: null as string | null,
   teamDefaultThrows: false,
   directoryCalls: 0,
@@ -26,6 +27,7 @@ vi.mock('@/lib/backend', () => ({
     actors: {
       findAgentForDevice: vi.fn(async () => {
         h.findCalls += 1
+        if (h.findWait) await h.findWait
         if (h.findThrows) throw new Error('for-device failed')
         return { agentId: h.agentId, displayName: h.displayName }
       }),
@@ -50,9 +52,17 @@ import {
   shouldSkipLocalAgentInstall,
 } from '@/lib/daemon/local-agent-install'
 import { useActorDirectoryStore } from '@/stores/actor-directory-store'
+import { useAuthStore } from '@/stores/auth-store'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
-import { useLocalAgentInstallStore } from '@/stores/local-agent-install'
+import {
+  markLocalAgentInstallPending,
+  useLocalAgentInstallStore,
+} from '@/stores/local-agent-install'
+
+function sessionFor(userId: string) {
+  return { user: { id: userId }, accessToken: userId, refreshToken: userId, expiresAt: 1 }
+}
 
 describe('local agent install classification', () => {
   beforeEach(() => {
@@ -62,10 +72,12 @@ describe('local agent install classification', () => {
     h.displayName = null
     h.findThrows = false
     h.findCalls = 0
+    h.findWait = null
     h.teamDefault = null
     h.teamDefaultThrows = false
     h.directoryCalls = 0
     h.directory = []
+    useAuthStore.setState({ session: null })
     resetLocalAgentInstallForTests()
     useLocalAgentInstallStore.setState({ byTeam: {}, wizardOpen: false, gateSkippedTeamId: null })
     ;(window as unknown as { __TAURI__: unknown }).__TAURI__ = {}
@@ -173,5 +185,109 @@ describe('local agent install classification', () => {
     useDaemonOnboardingStore.setState({ refresh })
     await refreshDaemonUnlessSkipped({ forceIdentityRebind: true })
     expect(refresh).toHaveBeenCalledWith({ forceIdentityRebind: true })
+  })
+
+  it('reuses the settled classification for the same signed-in user', async () => {
+    useAuthStore.setState({ session: sessionFor('user-a') })
+    h.agentId = 'agent-a'
+    h.displayName = 'A'
+    await resolveLocalAgentInstall('team-1')
+    useAuthStore.setState({
+      session: { ...sessionFor('user-a'), accessToken: 'refreshed-token' },
+    })
+    const again = await resolveLocalAgentInstall('team-1')
+    expect(h.findCalls).toBe(1)
+    expect(again).toEqual({ status: 'installed', agentId: 'agent-a', displayName: 'A' })
+    expect(useLocalAgentInstallStore.getState().byTeam['team-1']?.agentId).toBe('agent-a')
+  })
+
+  it('does not let a second pending mark wipe a finished classification for the same user', async () => {
+    useAuthStore.setState({ session: sessionFor('user-a') })
+    h.agentId = 'agent-a'
+    h.displayName = 'A'
+    await resolveLocalAgentInstall('team-1')
+    markLocalAgentInstallPending('team-1')
+    expect(useLocalAgentInstallStore.getState().byTeam['team-1']).toEqual({
+      status: 'installed',
+      agentId: 'agent-a',
+      displayName: 'A',
+    })
+  })
+
+  it('drops the previous user classification on sign-out before the next render', async () => {
+    useAuthStore.setState({ session: sessionFor('user-a') })
+    h.teamDefault = 'agent-team'
+    await refreshDaemonUnlessSkipped()
+    expect(useLocalAgentInstallStore.getState().gateSkippedTeamId).toBe('team-1')
+    useLocalAgentInstallStore.getState().openWizard()
+    expect(useLocalAgentInstallStore.getState().wizardOpen).toBe(true)
+
+    useAuthStore.setState({ session: null })
+
+    expect(useLocalAgentInstallStore.getState().gateSkippedTeamId).toBeNull()
+    expect(useLocalAgentInstallStore.getState().byTeam).toEqual({})
+    expect(useLocalAgentInstallStore.getState().wizardOpen).toBe(false)
+  })
+
+  it('classifies the new account instead of reusing the previous one', async () => {
+    useAuthStore.setState({ session: sessionFor('user-a') })
+    h.agentId = 'agent-a'
+    h.displayName = 'A'
+    await resolveLocalAgentInstall('team-1')
+
+    useAuthStore.setState({ session: sessionFor('user-b') })
+    expect(useLocalAgentInstallStore.getState().byTeam).toEqual({})
+    h.agentId = 'agent-b'
+    h.displayName = 'B'
+    const record = await resolveLocalAgentInstall('team-1')
+
+    expect(h.findCalls).toBe(2)
+    expect(record).toEqual({ status: 'installed', agentId: 'agent-b', displayName: 'B' })
+    expect(useLocalAgentInstallStore.getState().byTeam['team-1']?.agentId).toBe('agent-b')
+  })
+
+  it('lets a pending mark start again after the account changes', async () => {
+    useAuthStore.setState({ session: sessionFor('user-a') })
+    await resolveLocalAgentInstall('team-1')
+    expect(useLocalAgentInstallStore.getState().byTeam['team-1']?.status).toBe('absent')
+
+    useAuthStore.setState({ session: sessionFor('user-b') })
+    markLocalAgentInstallPending('team-1')
+    expect(useLocalAgentInstallStore.getState().byTeam['team-1']?.status).toBe('pending')
+  })
+
+  it('rebinds the daemon when the new account has a local agent and the old one did not', async () => {
+    useAuthStore.setState({ session: sessionFor('user-a') })
+    h.teamDefault = 'agent-team'
+    const refresh = vi.fn(async () => {})
+    useDaemonOnboardingStore.setState({ refresh })
+    await refreshDaemonUnlessSkipped()
+    expect(refresh).not.toHaveBeenCalled()
+
+    useAuthStore.setState({ session: sessionFor('user-b') })
+    h.agentId = 'agent-b'
+    h.displayName = 'B'
+    await refreshDaemonUnlessSkipped({ forceIdentityRebind: true })
+    expect(refresh).toHaveBeenCalledWith({ forceIdentityRebind: true })
+    expect(useLocalAgentInstallStore.getState().gateSkippedTeamId).toBeNull()
+  })
+
+  it('does not publish an in-flight classification after the account changes', async () => {
+    let release: () => void = () => {}
+    h.findWait = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    useAuthStore.setState({ session: sessionFor('user-a') })
+    h.agentId = 'agent-a'
+    h.displayName = 'A'
+    const pending = resolveLocalAgentInstall('team-1')
+    await vi.waitFor(() => expect(h.findCalls).toBe(1))
+
+    useAuthStore.setState({ session: sessionFor('user-b') })
+    release()
+    const stale = await pending
+
+    expect(stale.agentId).toBe('agent-a')
+    expect(useLocalAgentInstallStore.getState().byTeam['team-1']).toBeUndefined()
   })
 })
