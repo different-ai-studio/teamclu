@@ -108,7 +108,7 @@ export async function resolveQuickChatTarget(
   if (isTauri() && (await localAgentEnabled())) {
     // Never installed: talk to the member or team default. Enabled-but-down
     // still waits and then asks the user to pick, instead of switching quietly.
-    let installStatus: string | null = null
+    let installStatus: string | null
     try {
       installStatus = (await resolveLocalAgentInstall(trimmedTeam)).status
     } catch {

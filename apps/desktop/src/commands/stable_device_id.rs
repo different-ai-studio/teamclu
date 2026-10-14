@@ -156,7 +156,11 @@ mod tests {
 
     #[test]
     fn env_override_wins_and_does_not_require_a_file() {
-        let id = peek(Some("  from-env  ".into()), Path::new("/no/such/device-id"), None);
+        let id = peek(
+            Some("  from-env  ".into()),
+            Path::new("/no/such/device-id"),
+            None,
+        );
         assert_eq!(id.as_deref(), Some("from-env"));
     }
 
@@ -180,7 +184,10 @@ mod tests {
             peek(None, &path, Some(("macos", "STABLE".into()))).as_deref(),
             Some("legacy-random-id")
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "legacy-random-id\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "legacy-random-id\n"
+        );
     }
 
     #[test]
