@@ -3491,6 +3491,15 @@ public final class SessionDetailViewModel {
     /// the event isn't a reply. A reply whose quoted row isn't cached still
     /// returns (with empty content) so the chip can say "message unavailable"
     /// instead of vanishing.
+    /// Posts `text` into another session as an ordinary message from the
+    /// signed-in user. It mentions no one, so agents there take it in as
+    /// context without answering. Persisted before publishing: the target
+    /// session is not open here and nothing would retry a lost publish.
+    public func forward(_ text: String, toSessionID sessionID: String) async throws {
+        guard let teamcluService else { throw TeamcluService.SendMessageError.mqttUnavailable }
+        try await teamcluService.sendMessage(sessionId: sessionID, content: text, persistFirst: true)
+    }
+
     /// The prompt that started the turn shown as feed item `turnItemID`:
     /// the nearest chat message above it. Nil when there is none, or when
     /// it carried files — a text-only resend would ask a different question.

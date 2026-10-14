@@ -59,6 +59,8 @@ public struct EventBubbleView: View {
     /// Starts a quoted reply to this message; nil when it has no persisted
     /// id yet to point at.
     let onReply: (() -> Void)?
+    /// Enters multi-select with this message selected.
+    let onSelect: (() -> Void)?
 
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var fullscreenImageContext: FullscreenImageContext?
@@ -80,7 +82,8 @@ public struct EventBubbleView: View {
                 onDelete: (() -> Void)? = nil,
                 replyQuote: SessionDetailViewModel.ReplyQuote? = nil,
                 onTapQuote: (() -> Void)? = nil,
-                onReply: (() -> Void)? = nil) {
+                onReply: (() -> Void)? = nil,
+                onSelect: (() -> Void)? = nil) {
         self.event = event
         self.runtime = runtime
         self.onGrant = onGrant
@@ -96,6 +99,7 @@ public struct EventBubbleView: View {
         self.replyQuote = replyQuote
         self.onTapQuote = onTapQuote
         self.onReply = onReply
+        self.onSelect = onSelect
     }
 
     /// True when this event was produced by an actor other than the
@@ -278,6 +282,11 @@ public struct EventBubbleView: View {
                                         }
                                     }
                                     MessageContextMenu(text: MentionDisplayText.plainText(event.text ?? ""))
+                                    if let onSelect {
+                                        Button { onSelect() } label: {
+                                            Label("Select", systemImage: "checkmark.circle")
+                                        }
+                                    }
                                     if onEdit != nil || onDelete != nil {
                                         Divider()
                                     }
@@ -340,6 +349,11 @@ public struct EventBubbleView: View {
                                 }
                             }
                             MessageContextMenu(text: MentionDisplayText.plainText(event.text ?? ""))
+                            if let onSelect {
+                                Button { onSelect() } label: {
+                                    Label("Select", systemImage: "checkmark.circle")
+                                }
+                            }
                         }
                 }
                 .frame(maxWidth: sizeClass == .regular ? 500 : 260, alignment: .trailing)
@@ -598,6 +612,8 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
     /// Resends the turn's prompt to the agent as a new message (not an
     /// in-place regenerate); nil when there is no text-only prompt above.
     public let onRegenerate: (() -> Void)?
+    /// Enters multi-select with this reply selected.
+    public let onSelect: (() -> Void)?
 
     public init(finalEvent: AgentEvent,
                 runtime: AgentAttachment?,
@@ -606,6 +622,7 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                 onFeedback: ((String) -> Void)? = nil,
                 onReply: (() -> Void)? = nil,
                 onRegenerate: (() -> Void)? = nil,
+                onSelect: (() -> Void)? = nil,
                 attachments: [MessageAttachment] = [],
                 @ViewBuilder detailIcon: @escaping () -> DetailIcon = { EmptyView() }) {
         self.finalEvent = finalEvent
@@ -615,6 +632,7 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
         self.onFeedback = onFeedback
         self.onReply = onReply
         self.onRegenerate = onRegenerate
+        self.onSelect = onSelect
         self.detailIcon = detailIcon
         self.attachments = attachments
     }
@@ -652,6 +670,11 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                     if let onRegenerate {
                         Button { onRegenerate() } label: {
                             Label("Ask Again", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    if let onSelect {
+                        Button { onSelect() } label: {
+                            Label("Select", systemImage: "checkmark.circle")
                         }
                     }
                     if let onFeedback {

@@ -1472,7 +1472,8 @@ public final class TeamcluService {
         teamId: String,
         peerId: String,
         modelContainer: ModelContainer,
-        connectedAgentsStore: ConnectedAgentsStore? = nil
+        connectedAgentsStore: ConnectedAgentsStore? = nil,
+        messagesRepository: (any MessagesRepository)? = nil
     ) {
         configureRuntime(
             mqtt: mqtt,
@@ -1480,7 +1481,8 @@ public final class TeamcluService {
             teamId: teamId,
             peerId: peerId,
             modelContainer: modelContainer,
-            connectedAgentsStore: connectedAgentsStore
+            connectedAgentsStore: connectedAgentsStore,
+            messagesRepository: messagesRepository
         )
         isTestingForegroundLifecycle = true
     }

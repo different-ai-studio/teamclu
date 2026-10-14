@@ -63,6 +63,13 @@ public struct SessionDetailView: View {
     @State private var searchQuery = ""
     @State private var searchMatches: [String] = []
     @State private var searchIndex = 0
+    /// Multi-select: on, which feed rows are picked, and the sheets and
+    /// prompts its actions open.
+    @State private var isSelecting = false
+    @State private var selectedFeedIDs: Set<String> = []
+    @State private var isForwardPickerPresented = false
+    @State private var isBatchDeleteConfirming = false
+    @State private var forwardError: String?
     /// The message the composer is replying to, shown as a bar above it.
     @State private var replyTarget: AgentEvent?
     /// Row briefly tinted after a push brought the reader to it.
@@ -217,8 +224,10 @@ public struct SessionDetailView: View {
                             if let marker = viewModel.feedTimeMarkers[item.id] {
                                 FeedTimeMarkerLabel(marker: marker)
                             }
-                            feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
-                                .background(highlightedFeedID == item.id ? Color.amux.cinnabar.opacity(0.10) : .clear)
+                            selectableRow(item) {
+                                feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
+                            }
+                            .background(highlightedFeedID == item.id ? Color.amux.cinnabar.opacity(0.10) : .clear)
                         }
                         .id(item.id)
                     }
@@ -455,7 +464,16 @@ public struct SessionDetailView: View {
     @ViewBuilder
     private var bottomBar: some View {
             VStack(spacing: 0) {
-                if let question = viewModel.pendingQuestions.first {
+                if isSelecting {
+                    SelectionActionBar(
+                        count: selectedFeedIDs.count,
+                        canDelete: canDeleteSelection,
+                        onCopy: copySelection,
+                        onForward: { isForwardPickerPresented = true },
+                        onDelete: { isBatchDeleteConfirming = true },
+                        onCancel: endSelection
+                    )
+                } else if let question = viewModel.pendingQuestions.first {
                     AcpQuestionCard(
                         pending: question,
                         onSubmit: { answers in
@@ -732,6 +750,96 @@ public struct SessionDetailView: View {
         return cachedActorMap.displayName(for: sender) ?? agentDisplayName(for: sender)
     }
 
+    // MARK: - Multi-select
+
+    @ViewBuilder
+    private func selectableRow<Row: View>(_ item: FeedItem, @ViewBuilder row: () -> Row) -> some View {
+        if isSelecting, item.selectableEvent != nil {
+            HStack(spacing: 0) {
+                SelectionCheck(isSelected: selectedFeedIDs.contains(item.id))
+                row().allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { toggleSelection(item.id) }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("selection.row")
+        } else {
+            row()
+        }
+    }
+
+    private func beginSelection(with id: String) {
+        Haptics.selection()
+        composerFocused = false
+        replyTarget = nil
+        selectedFeedIDs = [id]
+        isSelecting = true
+    }
+
+    private func toggleSelection(_ id: String) {
+        Haptics.selection()
+        if selectedFeedIDs.contains(id) { selectedFeedIDs.remove(id) } else { selectedFeedIDs.insert(id) }
+    }
+
+    private func endSelection() {
+        isSelecting = false
+        selectedFeedIDs = []
+    }
+
+    /// Selected messages in transcript order, each with who sent it.
+    private var selectedMessages: [(sender: String, text: String, event: AgentEvent)] {
+        viewModel.feedItems.compactMap { item in
+            guard selectedFeedIDs.contains(item.id), let event = item.selectableEvent else { return nil }
+            let sender: String
+            if case .completedTurn(_, let agentID, _, _) = item {
+                sender = agentDisplayName(for: agentID)
+            } else if let id = event.senderActorID, !id.isEmpty, id != viewModel.currentHumanActorIDRef {
+                sender = cachedActorMap.displayName(for: id) ?? String(id.prefix(8))
+            } else {
+                // Named, not "Me": a forwarded transcript is read by others.
+                sender = viewModel.currentHumanActorIDRef.flatMap { cachedActorMap.displayName(for: $0) }
+                    ?? String(localized: "Me")
+            }
+            return (sender, event.text ?? "", event)
+        }
+    }
+
+    private var canDeleteSelection: Bool {
+        let messages = selectedMessages
+        return !messages.isEmpty && messages.allSatisfy { canModifyMessage($0.event) }
+    }
+
+    private func copySelection() {
+        UIPasteboard.general.string = MessageTranscript.compose(selectedMessages.map { ($0.sender, $0.text) })
+        Haptics.success()
+        endSelection()
+    }
+
+    private func forwardSelection(to target: Session) {
+        let title = viewModel.session?.title ?? ""
+        let text = MessageTranscript.compose(
+            selectedMessages.map { ($0.sender, $0.text) },
+            header: title.isEmpty ? String(localized: "Forwarded messages") : String(localized: "Forwarded from \(title)")
+        )
+        endSelection()
+        Task {
+            do {
+                try await viewModel.forward(text, toSessionID: target.sessionId)
+                Haptics.success()
+            } catch {
+                forwardError = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteSelection() {
+        let ids = selectedMessages.compactMap { $0.event.supabaseMessageId }
+        endSelection()
+        Task {
+            for id in ids { await viewModel.deleteUserMessage(supabaseMessageID: id) }
+        }
+    }
+
     /// Quoting needs the message's persisted id; a bubble still in the
     /// outbox has none yet, so it offers no Reply.
     private func replyAction(for event: AgentEvent) -> (() -> Void)? {
@@ -916,6 +1024,30 @@ public struct SessionDetailView: View {
                 }
             }
         }
+        .confirmationDialog(
+            "Delete \(selectedFeedIDs.count) messages?",
+            isPresented: $isBatchDeleteConfirming,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { deleteSelection() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The messages are removed for everyone in this session.")
+        }
+        .sheet(isPresented: $isForwardPickerPresented) {
+            ForwardSessionPicker(
+                teamID: viewModel.teamIDRef,
+                excludingSessionID: viewModel.session?.sessionId ?? "",
+                onPick: forwardSelection(to:)
+            )
+        }
+        .alert(
+            "Couldn't forward",
+            isPresented: Binding(get: { forwardError != nil }, set: { if !$0 { forwardError = nil } }),
+            presenting: forwardError
+        ) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { Text($0) }
         .confirmationDialog(
             "Delete this message?",
             isPresented: Binding(
@@ -1179,7 +1311,8 @@ public struct SessionDetailView: View {
                     else { return }
                     withAnimation { scrollProxy?.scrollTo(targetID, anchor: .center) }
                 },
-                onReply: replyAction(for: event)
+                onReply: replyAction(for: event),
+                onSelect: { beginSelection(with: item.id) }
             )
         case .activeStream(_, let agentID, let runtimeEvents):
             // NavigationLink(destination:) instead of value-based push
@@ -1229,6 +1362,7 @@ public struct SessionDetailView: View {
                     }
                     Task { try? await viewModel.regenerate(turnItemID: id, agentID: agentID, modelContext: modelContext) }
                 },
+                onSelect: { beginSelection(with: id) },
                 attachments: turnAttachments(final: final, runtimeEvents: runtimeEvents),
                 detailIcon: {
                     // Always offer the detail entry point — even text-only

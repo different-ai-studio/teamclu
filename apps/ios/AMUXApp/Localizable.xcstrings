@@ -21,6 +21,16 @@
         }
       }
     },
+    "%lld selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %lld 条"
+          }
+        }
+      }
+    },
     "%lld unread": {
       "localizations": {
         "zh-Hans": {
@@ -1033,6 +1043,16 @@
         }
       }
     },
+    "Couldn't forward": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发失败"
+          }
+        }
+      }
+    },
     "Couldn't read a token from that link.": {
       "localizations": {
         "zh-Hans": {
@@ -1149,6 +1169,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "自定义服务器"
+          }
+        }
+      }
+    },
+    "Delete %lld messages?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除 %lld 条消息？"
           }
         }
       }
@@ -1590,6 +1620,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "财务"
+          }
+        }
+      }
+    },
+    "Forward": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发"
+          }
+        }
+      }
+    },
+    "Forward to": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发到"
+          }
+        }
+      }
+    },
+    "Forwarded from %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发自「%@」"
+          }
+        }
+      }
+    },
+    "Forwarded messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发的消息"
           }
         }
       }
@@ -2092,6 +2162,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "稍后再说"
+          }
+        }
+      }
+    },
+    "Me": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "我"
           }
         }
       }
@@ -2622,6 +2702,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "未连接——请检查网络后重试。"
+          }
+        }
+      }
+    },
+    "Not selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未选中"
           }
         }
       }
@@ -3416,6 +3506,26 @@
         }
       }
     },
+    "Select": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择"
+          }
+        }
+      }
+    },
+    "Selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选中"
+          }
+        }
+      }
+    },
     "SESSIONS": {
       "localizations": {
         "zh-Hans": {
@@ -4156,6 +4266,16 @@
         }
       }
     },
+    "The messages are removed for everyone in this session.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些消息会对会话中的所有人删除。"
+          }
+        }
+      }
+    },
     "The starred directory is this agent's default — pre-selected when it joins a new session. Tap another to move the star.": {
       "localizations": {
         "zh-Hans": {
@@ -4603,6 +4723,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "取消置顶"
+          }
+        }
+      }
+    },
+    "Untitled": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未命名"
           }
         }
       }

@@ -376,3 +376,30 @@ extension Array where Element == FeedItem {
         }
     }
 }
+
+extension FeedItem {
+    /// What multi-select can copy or forward from this row: a chat message
+    /// or a finished agent reply, as displayed. Nil for everything else.
+    public var selectableEvent: AgentEvent? {
+        switch self {
+        case .userMessage(let e): e
+        case .completedTurn(_, _, let finalEvent, _): finalEvent
+        case .activeStream, .permission, .todo, .error: nil
+        }
+    }
+}
+
+/// Plain-text rendering of selected messages, for the clipboard and for
+/// forwarding. Forwarded text is an ordinary message, so it reads the same
+/// on every client without any of them knowing it was forwarded.
+public enum MessageTranscript {
+    /// One "Sender: text" line per message, blank line between, preceded by
+    /// `header` when given (e.g. "Forwarded from <session>").
+    public static func compose(_ messages: [(sender: String, text: String)], header: String? = nil) -> String {
+        let body = messages
+            .map { "\($0.sender): \(MentionDisplayText.plainText($0.text))" }
+            .joined(separator: "\n\n")
+        guard let header, !header.isEmpty else { return body }
+        return "\(header)\n\n\(body)"
+    }
+}
