@@ -7,6 +7,7 @@ import { AgentBadge } from "../../../ui/atoms/AgentBadge";
 import { AvatarStack, type AvatarEntry } from "../../../ui/atoms/AvatarStack";
 import { UnreadDot } from "../../../ui/atoms/UnreadDot";
 import { colors, hai, iosType, spacing } from "../../../ui/theme";
+import { t } from "../../../lib/i18n";
 import { mentionPlainText } from "../mention-display";
 import type { SessionLiveActivity } from "../live-activity";
 import type { SessionContext } from "../session-context-names";
@@ -56,6 +57,8 @@ type SessionRowProps = {
    * leading dot already says what the agent is doing).
    */
   context?: SessionContext | null;
+  /** Unsent composer text: shown as "Draft: …" in place of the last message. */
+  draft?: string | null;
   onLongPress?: (session: SessionSummary) => void;
   onPress?: (session: SessionSummary) => void;
   unreadCount?: number;
@@ -141,12 +144,14 @@ export function SessionRow({
   runtime,
   session,
   context = null,
+  draft = null,
   onLongPress,
   onPress,
   unreadCount = 0,
 }: SessionRowProps) {
   const title = session.title.trim() || "Untitled session";
   const lastMessage = mentionPlainText(session.lastMessagePreview).trim();
+  const draftPreview = draft ? mentionPlainText(draft).replace(/\s+/g, " ").trim() : "";
   const timeLabel = formatRelativeTime(session.lastMessageAt || session.createdAt);
   const isUnread = unreadCount > 0 || Boolean(session.hasUnread);
   const isRunning = runtime?.status === STATUS_RUNNING;
@@ -203,7 +208,12 @@ export function SessionRow({
         <Text style={styles.time}>{timeLabel}</Text>
       </View>
 
-      {lastMessage ? (
+      {draftPreview ? (
+        <Text numberOfLines={1} style={styles.summary}>
+          <Text style={styles.draftLabel}>{t("Draft:")}</Text>
+          {draftPreview}
+        </Text>
+      ) : lastMessage ? (
         <Text numberOfLines={1} style={styles.summary}>
           {lastMessage}
         </Text>
@@ -267,6 +277,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     // iOS uses `.padding(.vertical, 6)`; the List supplies the rest.
     paddingVertical: 6,
+  },
+  draftLabel: {
+    color: hai.cinnabar,
   },
   summary: {
     color: colors.basalt,

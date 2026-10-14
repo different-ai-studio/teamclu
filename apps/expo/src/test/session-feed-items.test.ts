@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSessionFeedSources } from "../features/sessions/session-feed-items";
+import {
+  buildSessionFeedSources,
+  feedKeyContainingMessageId,
+} from "../features/sessions/session-feed-items";
 import type { SessionMessage, StreamingBuffer } from "../features/sessions/session-types";
 
 function message(
@@ -191,5 +194,30 @@ describe("buildSessionFeedSources", () => {
       new Map(),
     );
     expect(sources[0]).toMatchObject({ turn: { daemonTurnId: "turn-8", isActive: true } });
+  });
+});
+
+describe("feedKeyContainingMessageId", () => {
+  const sources = buildSessionFeedSources(
+    [
+      message("user-1", "text", "Please inspect this", "2026-05-20T10:00:00.000Z", "me"),
+      message("tool-1", "agent_tool_call", "rg query", "2026-05-20T10:00:02.000Z"),
+      message("reply-1", "agent_reply", "Done.", "2026-05-20T10:00:05.000Z"),
+    ],
+    new Map(),
+    { ownActorId: "me" },
+  );
+
+  it("finds a message row, and the turn holding an agent reply or a step of it", () => {
+    const userKey = feedKeyContainingMessageId(sources, "user-1");
+    const turnKey = feedKeyContainingMessageId(sources, "reply-1");
+    expect(userKey).toBe(sources[0]!.key);
+    expect(turnKey).toBe(sources[1]!.key);
+    expect(feedKeyContainingMessageId(sources, "tool-1")).toBe(turnKey);
+  });
+
+  it("ignores case and reports a miss as null", () => {
+    expect(feedKeyContainingMessageId(sources, "USER-1")).toBe(sources[0]!.key);
+    expect(feedKeyContainingMessageId(sources, "nope")).toBeNull();
   });
 });

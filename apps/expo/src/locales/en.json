@@ -1083,5 +1083,9 @@
   "Download size {{size}}": "Download size {{size}}",
   "Downloading… {{percent}}%": "Downloading… {{percent}}%",
   "Downloaded. Follow the system prompt to install.": "Downloaded. Follow the system prompt to install.",
-  "Update failed: {{message}}": "Update failed: {{message}}"
+  "Update failed: {{message}}": "Update failed: {{message}}",
+  "Draft:": "Draft: ",
+  "{{value}} unread": "{{value}} unread",
+  "{{value}} new messages": "{{value}} new messages",
+  "Jump to latest": "Jump to latest"
 }

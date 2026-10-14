@@ -73,6 +73,12 @@ export type SessionDetailControllerState = {
   canLoadOlder: boolean;
   /** A back-scroll fetch is in flight. */
   isLoadingOlder: boolean;
+  /**
+   * The newest page from the network has been folded in (or failed). Until
+   * then the feed may be cache-only, so a row the screen is looking for —
+   * a restored read position, a message a push pointed at — may still arrive.
+   */
+  historySettled: boolean;
 };
 
 type SessionsApi = ReturnType<typeof createCloudSessionsApi>;
@@ -155,6 +161,7 @@ const initialState: SessionDetailControllerState = {
   pendingQuestions: [],
   canLoadOlder: false,
   isLoadingOlder: false,
+  historySettled: false,
 };
 
 function toIsoFromSeconds(value: bigint): string {
@@ -848,6 +855,7 @@ export function createSessionDetailController(
           streamingByAgent: timeline.streamingByAgent,
           canLoadOlder: false,
           isLoadingOlder: false,
+          historySettled: false,
         });
       }
 
@@ -921,6 +929,7 @@ export function createSessionDetailController(
             status: "error",
             errorMessage: toErrorMessage(sessionResult.reason, "加载会话失败。"),
             isRefreshing: false,
+            historySettled: true,
           });
           // `load()` dropped the realtime listener on entry; returning without
           // putting it back left a refresh that failed (flaky network right
@@ -932,6 +941,7 @@ export function createSessionDetailController(
             status: "error",
             errorMessage: toErrorMessage(sessionResult.reason, "加载会话失败。"),
             isRefreshing: false,
+            historySettled: true,
           });
         }
         return;
@@ -947,6 +957,7 @@ export function createSessionDetailController(
           messages: [],
           isRefreshing: false,
           streamingByAgent: timeline.streamingByAgent,
+          historySettled: true,
         });
         return;
       }
@@ -959,6 +970,7 @@ export function createSessionDetailController(
           messages: state.messages,
           errorMessage: toErrorMessage(messagesResult.reason, "加载消息失败。"),
           isRefreshing: false,
+          historySettled: true,
         });
         await connectRealtime(session, currentToken);
         return;
@@ -984,6 +996,7 @@ export function createSessionDetailController(
         isRefreshing: preserveExisting,
         streamingByAgent: timeline.streamingByAgent,
         canLoadOlder: olderCursor !== null,
+        historySettled: true,
       });
 
       // Persist authoritative network state for the next cold start.

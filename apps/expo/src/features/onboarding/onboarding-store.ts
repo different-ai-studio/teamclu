@@ -1,4 +1,6 @@
 import { clearCachedMqttUrl } from "../../lib/mqtt/config";
+import { clearComposerDrafts } from "../sessions/composer-drafts";
+import { clearReadPositions } from "../sessions/session-read-position";
 import {
   initialOnboardingState,
   onboardingReducer,
@@ -705,6 +707,8 @@ export function createOnboardingController(
     // clears the same state from its own signOut, via
     // clearBootstrapAppliedFields.
     await clearCachedMqttUrl();
+    // Unsent drafts and read positions belong to the account that made them.
+    await Promise.all([clearComposerDrafts(), clearReadPositions()]);
     dispatchIfCurrent(token, { type: "signedOut" });
   };
 

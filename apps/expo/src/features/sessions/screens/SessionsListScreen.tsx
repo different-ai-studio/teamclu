@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActionSheetIOS,
@@ -27,6 +27,11 @@ import { t } from "../../../lib/i18n";
 import { colors, spacing, typography } from "../../../ui/theme";
 import { matchesAnyField } from "../../search/search-matcher";
 import { SessionRow, type SessionRowRuntime } from "../components/SessionRow";
+import {
+  getComposerDraftsSnapshot,
+  hydrateComposerDrafts,
+  subscribeComposerDrafts,
+} from "../composer-drafts";
 import type { SessionLiveActivity } from "../live-activity";
 import type { SessionContext } from "../session-context-names";
 import type { SessionGroup, SessionsListState } from "../session-types";
@@ -75,8 +80,11 @@ export function SessionGroupSection({
   selectionMode,
   selection,
   contextBySessionId,
+  draftBySessionId,
 }: {
   actorGlyphById?: ReadonlyMap<string, string>;
+  /** Unsent composer text per session; the row previews it as "Draft: …". */
+  draftBySessionId?: ReadonlyMap<string, string>;
   group: SessionGroup;
   mutedSessionIds?: ReadonlySet<string>;
   activityBySessionId?: ReadonlyMap<string, SessionLiveActivity>;
@@ -120,6 +128,7 @@ export function SessionGroupSection({
                     isPinned={pinnedSessionIds?.has(session.sessionId) ?? false}
                     runtime={runtimeBySessionId?.get(session.sessionId) ?? null}
                     context={contextBySessionId?.get(session.sessionId) ?? null}
+                    draft={draftBySessionId?.get(session.sessionId) ?? null}
                     onLongPress={
                       onLongPressSession
                         ? () => onLongPressSession(session.sessionId)
@@ -191,6 +200,14 @@ export function SessionsListScreen({
   contextBySessionId,
 }: SessionsListScreenProps) {
   const { t } = useTranslation();
+  const draftBySessionId = useSyncExternalStore(
+    subscribeComposerDrafts,
+    getComposerDraftsSnapshot,
+    getComposerDraftsSnapshot,
+  );
+  useEffect(() => {
+    void hydrateComposerDrafts();
+  }, []);
   const [placeholderMessage, setPlaceholderMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   // iOS #1603: the search keyboard goes away on scroll and on any tap outside
@@ -494,6 +511,7 @@ export function SessionsListScreen({
               selection={selection}
               selectionMode={selectionMode}
               contextBySessionId={contextBySessionId}
+              draftBySessionId={draftBySessionId}
             />
           ))}
         </View>

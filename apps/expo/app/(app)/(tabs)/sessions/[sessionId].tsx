@@ -28,6 +28,7 @@ import {
   saveComposerDraft,
 } from "../../../../src/features/sessions/composer-drafts";
 import type { AgentChip } from "../../../../src/features/sessions/components/AgentChipBar";
+import { hydrateReadPositions } from "../../../../src/features/sessions/session-read-position";
 import { createOutboxDao } from "../../../../src/features/sessions/outbox-db";
 import { createOutboxSender } from "../../../../src/features/sessions/outbox-sender";
 import type { OutboxSqliteDb } from "../../../../src/features/sessions/outbox-db";
@@ -56,7 +57,7 @@ import {
   agentBackendDisplayName,
   runtimeStatusName,
 } from "../../../../src/features/sessions/agent-runtime-state";
-import { impactLight, selectionTick, successTone } from "../../../../src/lib/haptics";
+import { impactLight, selectionTick, successTone, warningTone } from "../../../../src/lib/haptics";
 import { androidTabBarStyle } from "../../../../src/ui/tab-bar";
 import { showToast } from "../../../../src/ui/Toast";
 import { supabase } from "../../../../src/lib/supabase/client";
@@ -95,6 +96,7 @@ const fallbackDetailState: SessionDetailControllerState = {
   pendingQuestions: [],
   canLoadOlder: false,
   isLoadingOlder: false,
+  historySettled: false,
 };
 
 type RouteRuntimeInfo = {
@@ -133,9 +135,13 @@ export default function SessionDetailRoute() {
   const { t } = useTranslation();
   const router = useRouter();
   const navigation = useNavigation();
-  const { sessionId: rawSessionId } = useLocalSearchParams<{
+  const { sessionId: rawSessionId, focusMessageId: rawFocusMessageId } = useLocalSearchParams<{
     sessionId?: string | string[];
+    focusMessageId?: string | string[];
   }>();
+  // Set when a push opened this screen: the message to scroll to.
+  const focusMessageId =
+    (Array.isArray(rawFocusMessageId) ? rawFocusMessageId[0] : rawFocusMessageId) || undefined;
 
   // Hide the parent tab bar while a session detail is on screen. Restore on
   // unmount so the bar comes back on pop.
@@ -267,6 +273,12 @@ export default function SessionDetailRoute() {
         return;
       }
 
+      // The screen reads the saved read position synchronously on mount.
+      await hydrateReadPositions();
+      if (cancelled) {
+        void nextController.dispose();
+        return;
+      }
       setController(nextController);
       await nextController.load();
 
@@ -633,7 +645,8 @@ export default function SessionDetailRoute() {
         next.set(requestId, granted);
         return next;
       });
-      selectionTick();
+      if (granted) successTone();
+      else warningTone();
       showToast("success", granted ? t("Permission allowed") : t("Permission denied"));
     } catch (err) {
       showToast(
@@ -964,6 +977,7 @@ export default function SessionDetailRoute() {
 
       {canRenderSessionDetail(detailState) ? (
         <SessionDetailScreen
+          focusMessageId={focusMessageId}
           agentChips={agentChips}
           composerText={detailState.composerText}
           connectionState={detailState.connectionState}

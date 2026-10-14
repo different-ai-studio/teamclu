@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -70,6 +71,7 @@ import type {
 } from "../session-detail-controller";
 import {
   buildSessionFeedSources,
+  feedKeyContainingMessageId,
   type AgentTurnFeedItem,
   type SessionFeedSource,
 } from "../session-feed-items";
@@ -82,7 +84,17 @@ import {
   shouldAutoScrollFeed,
   shouldLoadOlderOnStartReached,
 } from "../session-feed-scroll";
+import {
+  FIRST_UNREAD_THRESHOLD,
+  formatNewMessageCount,
+  getReadPosition,
+  positionOnLeave,
+  saveReadPosition,
+  unreadSince,
+  type ReadPositionRow,
+} from "../session-read-position";
 import type { SessionMessage, SessionSummary } from "../session-types";
+import { selectionTick } from "../../../lib/haptics";
 import type { PendingAcpQuestion } from "../pending-questions";
 import { AcpQuestionCard } from "../components/AcpQuestionCard";
 import { SheetModal } from "../../../ui/SheetModal";
@@ -111,6 +123,11 @@ type SessionDetailScreenProps = {
   onAttach?: () => void;
   onBack: () => void;
   onChangeComposerText: (value: string) => void;
+  /**
+   * A message to scroll to and highlight on open — the one a tapped push was
+   * about. Older pages are pulled until it turns up.
+   */
+  focusMessageId?: string;
   isRefreshing?: boolean;
   onClearReply?: () => void;
   onDeleteMessage?: (messageId: string) => void;
@@ -615,6 +632,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     onBack,
     onChangeComposerText,
     onChangeRuntimeModel,
+    focusMessageId,
     onClearReply,
     onDeleteMessage,
     onEditMessage,
@@ -728,7 +746,31 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
   const feedKeys = feedSources.map((source) => source.key);
   const previousFeedKeys = useRef<string[]>(feedKeys);
   const hasMeasuredFeedLayout = useRef(false);
-  const shouldStickToFeedBottom = useRef(true);
+  // The row to land on when the session opens, instead of the bottom: the
+  // message a push pointed at, else where the reader left off last time
+  // (iOS #1709). Cleared once reached, given up on, or the reader scrolls.
+  const sessionKey = session.sessionId;
+  const [openedReadPosition] = useState(() => getReadPosition(sessionKey));
+  const pendingTarget = useRef<
+    | { mode: "focus"; messageId: string; pagesPulled: number }
+    | { mode: "anchor"; key: string }
+    | null
+  >(
+    focusMessageId
+      ? { mode: "focus", messageId: focusMessageId, pagesPulled: 0 }
+      : openedReadPosition?.anchorKey
+        ? { mode: "anchor", key: openedReadPosition.anchorKey }
+        : null,
+  );
+  const openedOnTarget = useRef(pendingTarget.current !== null);
+  const shouldStickToFeedBottom = useRef(!openedOnTarget.current);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [newBelowCount, setNewBelowCount] = useState(0);
+  const [highlightKey, setHighlightKey] = useState<string | null>(null);
+  const [unreadPill, setUnreadPill] = useState<{ count: number; firstKey: string } | null>(null);
+  const unreadPillKeyRef = useRef<string | null>(null);
+  unreadPillKeyRef.current = unreadPill?.firstKey ?? null;
+  const visibleKeysRef = useRef<string[]>([]);
 
   const outboxByMessageId = useSyncExternalStore(
     subscribeOutbox,
@@ -802,6 +844,9 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
       requestAnimationFrame(() => {
         messageListRef.current?.scrollToEnd({ animated: true });
       });
+    } else {
+      // Reading history: count what arrived below for the jump button.
+      setNewBelowCount((count) => count + appended.length);
     }
     // feedKeys is rebuilt every render; the ref comparison above is what makes
     // this idempotent, not the dependency list.
@@ -810,11 +855,146 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
 
   const handleFeedScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    shouldStickToFeedBottom.current = isFeedNearBottom({
+    const nearBottom = isFeedNearBottom({
       contentHeight: contentSize.height,
       offsetY: contentOffset.y,
       viewportHeight: layoutMeasurement.height,
     });
+    shouldStickToFeedBottom.current = nearBottom;
+    setIsAtBottom(nearBottom);
+    if (nearBottom) setNewBelowCount(0);
+  };
+
+  // Rows far off screen have estimated heights, so a jump can miss; measure
+  // toward it and try again (a few times) until the row is actually laid out.
+  const scrollRetry = useRef({ attempts: 0, viewPosition: 0 });
+  const scrollToFeedIndex = (index: number, viewPosition: number, isRetry = false) => {
+    if (index < 0) return;
+    if (!isRetry) scrollRetry.current = { attempts: 0, viewPosition };
+    try {
+      messageListRef.current?.scrollToIndex({ animated: false, index, viewPosition });
+    } catch {
+      // onScrollToIndexFailed handles the retry
+    }
+  };
+  const handleScrollToIndexFailed = (info: {
+    index: number;
+    averageItemLength: number;
+  }) => {
+    messageListRef.current?.scrollToOffset({
+      animated: false,
+      offset: info.averageItemLength * info.index,
+    });
+    if (scrollRetry.current.attempts >= 4) return;
+    scrollRetry.current.attempts += 1;
+    setTimeout(() => scrollToFeedIndex(info.index, scrollRetry.current.viewPosition, true), 80);
+  };
+
+  const readRows = useMemo<ReadPositionRow[]>(
+    () =>
+      feedSources.map((source) => ({
+        key: source.key,
+        createdAt: source.createdAt,
+        isOwn: isOwnOutgoingFeedSource(source, ownActorId),
+      })),
+    [feedSources, ownActorId],
+  );
+
+  // Land on the pending target once its row is in the feed. A pushed message
+  // older than the loaded page pulls older pages (bounded); anything still
+  // missing once history settles falls back to the bottom.
+  useEffect(() => {
+    const target = pendingTarget.current;
+    if (!target || !hasMessages) return;
+    const key =
+      target.mode === "focus"
+        ? feedKeyContainingMessageId(feedSources, target.messageId)
+        : feedSources.some((source) => source.key === target.key)
+          ? target.key
+          : null;
+    if (key) {
+      pendingTarget.current = null;
+      const index = feedItems.findIndex((item) => item.key === key);
+      requestAnimationFrame(() =>
+        scrollToFeedIndex(index, target.mode === "focus" ? 0.5 : 0),
+      );
+      if (target.mode === "focus") {
+        setHighlightKey(key);
+        setTimeout(() => setHighlightKey((current) => (current === key ? null : current)), 2000);
+      }
+      return;
+    }
+    if (!state.historySettled || state.isLoadingOlder) return;
+    if (target.mode === "focus" && state.canLoadOlder && onLoadOlder && target.pagesPulled < 10) {
+      target.pagesPulled += 1;
+      onLoadOlder();
+      return;
+    }
+    pendingTarget.current = null;
+    shouldStickToFeedBottom.current = true;
+    requestAnimationFrame(() => messageListRef.current?.scrollToEnd({ animated: false }));
+    // feedItems is rebuilt from feedSources every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedSources, hasMessages, state.historySettled, state.isLoadingOlder, state.canLoadOlder]);
+
+  // "N unread ↑": once the network page is in, count what others posted since
+  // the reader was last here. Shown from FIRST_UNREAD_THRESHOLD rows, until
+  // the first unread row is seen or the pill is tapped.
+  const unreadComputed = useRef(false);
+  useEffect(() => {
+    if (unreadComputed.current || !state.historySettled) return;
+    unreadComputed.current = true;
+    const { count, firstKey } = unreadSince(readRows, openedReadPosition?.readAt ?? null);
+    if (firstKey && count >= FIRST_UNREAD_THRESHOLD && !visibleKeysRef.current.includes(firstKey)) {
+      setUnreadPill({ count, firstKey });
+    }
+  }, [openedReadPosition, readRows, state.historySettled]);
+
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ReadonlyArray<{ key: string }> }) => {
+      visibleKeysRef.current = viewableItems.map((item) => item.key);
+      const pillKey = unreadPillKeyRef.current;
+      if (pillKey && visibleKeysRef.current.includes(pillKey)) setUnreadPill(null);
+    },
+  ).current;
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
+
+  // Remember where the reader is on the way out (and when backgrounded, in
+  // case the app is killed there).
+  const readRowsRef = useRef(readRows);
+  readRowsRef.current = readRows;
+  useEffect(() => {
+    const persist = () => {
+      if (readRowsRef.current.length === 0) return;
+      const next = positionOnLeave({
+        previous: getReadPosition(sessionKey),
+        rows: readRowsRef.current,
+        visibleKeys: visibleKeysRef.current,
+        isAtBottom: shouldStickToFeedBottom.current,
+      });
+      if (next) void saveReadPosition(sessionKey, next);
+    };
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next !== "active") persist();
+    });
+    return () => {
+      subscription.remove();
+      persist();
+    };
+  }, [sessionKey]);
+
+  const jumpToBottom = () => {
+    selectionTick();
+    shouldStickToFeedBottom.current = true;
+    setNewBelowCount(0);
+    messageListRef.current?.scrollToEnd({ animated: true });
+  };
+  const jumpToFirstUnread = () => {
+    if (!unreadPill) return;
+    selectionTick();
+    const index = feedItems.findIndex((item) => item.key === unreadPill.firstKey);
+    setUnreadPill(null);
+    scrollToFeedIndex(index, 0);
   };
 
   return (
@@ -923,8 +1103,12 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             }}
             onStartReachedThreshold={0.3}
             onContentSizeChange={() => {
-              const isInitialLayout = !hasMeasuredFeedLayout.current;
+              // Opening on a target already positioned the feed; the first
+              // layout must not snap it back to the end.
+              const isInitialLayout = !hasMeasuredFeedLayout.current && !openedOnTarget.current;
               hasMeasuredFeedLayout.current = true;
+              // Opening on a pushed message or a saved position, not the end.
+              if (pendingTarget.current) return;
               if (
                 shouldAutoScrollFeed({
                   isInitialLayout,
@@ -935,6 +1119,13 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               }
             }}
             onScroll={handleFeedScroll}
+            onScrollBeginDrag={() => {
+              // The reader took over; stop steering toward the saved spot.
+              if (pendingTarget.current?.mode === "anchor") pendingTarget.current = null;
+            }}
+            onScrollToIndexFailed={handleScrollToIndexFailed}
+            onViewableItemsChanged={onViewableItemsChanged}
+            viewabilityConfig={viewabilityConfig}
             refreshControl={
               onRefresh ? (
                 <RefreshControl
@@ -953,6 +1144,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               }
               if (item.kind === "agentTurn") {
                 return (
+                  <View style={item.key === highlightKey ? styles.highlightRow : undefined}>
                   <AgentTurnCard
                     onOpenDetail={() => setSelectedTurnKey(item.key)}
                     onInterrupt={onAgentInterrupt}
@@ -969,6 +1161,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                     senderName={senderNames?.get(item.turn.agentId) ?? undefined}
                     turn={item.turn}
                   />
+                  </View>
                 );
               }
               const msg = item.message;
@@ -979,6 +1172,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                     null
                   : null;
               return (
+                <View style={item.key === highlightKey ? styles.highlightRow : undefined}>
                 <SessionMessageRow
                   isOwnMessage={isOwn}
                   message={msg}
@@ -1045,6 +1239,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                     !isOwn ? senderNames?.get(msg.senderActorId) ?? undefined : undefined
                   }
                 />
+                </View>
               );
             }}
           />
@@ -1061,6 +1256,40 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             </Text>
           </View>
         )}
+        {hasMessages && unreadPill ? (
+          <Pressable
+            accessibilityLabel={tHook("{{value}} unread", { value: unreadPill.count })}
+            accessibilityRole="button"
+            onPress={jumpToFirstUnread}
+            style={({ pressed }) => [styles.unreadPill, pressed ? styles.floatingPressed : null]}
+            testID="session.firstUnread"
+          >
+            <Text style={styles.unreadPillText}>
+              {tHook("{{value}} unread", { value: formatNewMessageCount(unreadPill.count) })}
+            </Text>
+            <Ionicons color={hai.cinnabar} name="arrow-up" size={12} />
+          </Pressable>
+        ) : null}
+        {hasMessages && !isAtBottom ? (
+          <Pressable
+            accessibilityLabel={
+              newBelowCount > 0
+                ? tHook("{{value}} new messages", { value: newBelowCount })
+                : tHook("Jump to latest")
+            }
+            accessibilityRole="button"
+            onPress={jumpToBottom}
+            style={({ pressed }) => [styles.jumpToBottom, pressed ? styles.floatingPressed : null]}
+            testID="session.jumpToBottom"
+          >
+            <Ionicons color={hai.onyx} name="chevron-down" size={18} />
+            {newBelowCount > 0 ? (
+              <View style={styles.jumpBadge}>
+                <Text style={styles.jumpBadgeText}>{formatNewMessageCount(newBelowCount)}</Text>
+              </View>
+            ) : null}
+          </Pressable>
+        ) : null}
       </View>
 
       {replyTarget ? (
@@ -1220,6 +1449,67 @@ const styles = StyleSheet.create({
   },
   feed: {
     flex: 1,
+  },
+  floatingPressed: {
+    opacity: 0.7,
+  },
+  highlightRow: {
+    backgroundColor: colors.paper,
+  },
+  jumpBadge: {
+    alignItems: "center",
+    backgroundColor: hai.cinnabar,
+    borderRadius: 9,
+    height: 18,
+    justifyContent: "center",
+    minWidth: 18,
+    paddingHorizontal: 4,
+    position: "absolute",
+    right: -4,
+    top: -6,
+  },
+  jumpBadgeText: {
+    color: colors.background,
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  jumpToBottom: {
+    alignItems: "center",
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    bottom: spacing.md,
+    height: 36,
+    justifyContent: "center",
+    position: "absolute",
+    right: spacing.lg,
+    shadowColor: "#000",
+    shadowOffset: { height: 1, width: 0 },
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    width: 36,
+    elevation: 3,
+  },
+  unreadPill: {
+    alignItems: "center",
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    gap: 4,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    position: "absolute",
+    right: spacing.lg,
+    top: GLASS_HEADER_HEIGHT + spacing.sm,
+    elevation: 2,
+  },
+  unreadPillText: {
+    color: hai.cinnabar,
+    fontSize: 12,
+    fontWeight: "500",
   },
   feedContent: {
     paddingBottom: spacing.sm,

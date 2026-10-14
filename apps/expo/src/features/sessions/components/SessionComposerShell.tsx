@@ -17,6 +17,7 @@ import {
 import { useVoiceRecorder } from "./voice-recorder";
 import type { UploadedAttachment } from "../attachment-upload";
 import type { SessionDetailConnectionState } from "../session-detail-controller";
+import { impactLight } from "../../../lib/haptics";
 
 type SessionComposerShellProps = {
   composerText: string;
@@ -69,6 +70,7 @@ export function SessionComposerShell({
   const handleMicToggle = async () => {
     setRecordError(null);
     try {
+      impactLight();
       if (recorder.isRecording) {
         const text = await recorder.stop();
         if (text) {
