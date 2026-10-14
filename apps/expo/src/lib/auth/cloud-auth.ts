@@ -53,6 +53,8 @@ type RefreshedSessionBody = {
 type SupabaseShapedSession = {
   access_token: string;
   refresh_token: string;
+  /** Epoch seconds. Launch checks it before entering on the cached team. */
+  expires_at: number;
   user: { id: string | null; is_anonymous: boolean; email: string | null };
 };
 
@@ -197,6 +199,7 @@ function toSupabaseSession(s: StoredSession | null): SupabaseShapedSession | nul
   return {
     access_token: s.accessToken,
     refresh_token: s.refreshToken,
+    expires_at: s.expiresAt,
     user: { id: s.userId, is_anonymous: s.isAnonymous, email: s.email },
   };
 }
