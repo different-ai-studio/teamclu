@@ -1,5 +1,6 @@
 import { Clock, Search, FileText, FilePen, Terminal, Globe, Zap, Loader2, Check, X, Brain, Trash2, MoveRight } from "lucide-react";
 import type { ToolCall } from "@/stores/session-types";
+import { basenameOf } from "@/lib/fs-path";
 
 type ToolCallLike = Pick<ToolCall, "name" | "toolKind" | "arguments">;
 
@@ -285,7 +286,7 @@ export function formatToolName(t: TranslateFn, name: string): string {
 
 // Get filename from path
 export function getFileName(path: string): string {
-  return path.split("/").pop() || path;
+  return basenameOf(path) || path;
 }
 
 // Extract file path from tool call arguments, trying multiple possible field names

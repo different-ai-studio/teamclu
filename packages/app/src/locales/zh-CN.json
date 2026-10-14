@@ -1211,6 +1211,11 @@
     "confirmDeleteDirDesc": "此操作将永久删除该文件夹及其所有内容。",
     "confirmBatchDeleteDesc": "此操作将永久删除所有选中项。文件夹删除后无法撤销。",
     "duplicateFailed": "创建副本失败",
+    "renameFailed": "重命名失败",
+    "createFailed": "无法创建「{{name}}」",
+    "invalidFileNameChars": "名称不能包含 {{chars}}",
+    "invalidFileNameReserved": "「{{name}}」是 Windows 的保留名称",
+    "invalidFileNameTrailing": "名称不能以空格或句点结尾",
     "undo": "撤销：{{desc}}"
   },
   "sessions": {

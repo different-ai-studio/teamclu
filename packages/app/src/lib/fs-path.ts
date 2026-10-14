@@ -62,15 +62,6 @@ export function isSamePath(a: string, b: string): boolean {
 }
 
 /**
- * Append `child` to `parent` using the separator `parent` is already written
- * with.
- *
- * A path built for the UI has to come out spelled the way Rust spells it: these
- * strings are compared literally against listed nodes and against
- * `expandedPaths`, and a `/` joined onto a Windows path produces something that
- * opens fine but matches nothing.
- */
-/**
  * The last segment of a path, whichever separator it is written with.
  *
  * `lastIndexOf('/')` returns -1 for a Windows path, which hands back the whole
@@ -97,6 +88,15 @@ export function dirnameOf(path: string): string {
   return cut === -1 ? '' : trimmed.slice(0, cut)
 }
 
+/**
+ * Append `child` to `parent` using the separator `parent` is already written
+ * with.
+ *
+ * A path built for the UI has to come out spelled the way Rust spells it: these
+ * strings are compared literally against listed nodes and against
+ * `expandedPaths`, and a `/` joined onto a Windows path produces something that
+ * opens fine but matches nothing.
+ */
 export function joinPathLike(parent: string, child: string): string {
   const separator = parent.includes('\\') ? '\\' : '/'
   return `${parent.replace(/[/\\]+$/, '')}${separator}${child.replace(/^[/\\]+/, '')}`

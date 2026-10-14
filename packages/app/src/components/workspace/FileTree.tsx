@@ -26,7 +26,8 @@ import { useOssSyncStore } from "@/stores/oss-sync";
 import { buildBadgeMap, badgeForDirectory } from "@/lib/team/team-sync-badges";
 import { teamSyncKeyForPath } from "@/lib/team/team-skill-paths";
 import { isLlmWikiSyncKey } from "@/lib/knowledge/wiki-vault";
-import { basenameOf, isPathAtOrUnder, isPathUnder, isSamePath } from "@/lib/fs-path";
+import { basenameOf, dirnameOf, isPathAtOrUnder, isPathUnder, isSamePath, joinPathLike } from "@/lib/fs-path";
+import { fileNameError } from "@/lib/file-name";
 import { proposeDocumentToKnowledge } from "@/lib/knowledge/propose-from-document";
 import {
   hasSystemClipboardFiles,
@@ -393,6 +394,12 @@ export function FileTree({
         type === "file" && defaultFileExtension
           ? withDefaultExtension(rawName, defaultFileExtension)
           : rawName;
+      const nameError = fileNameError(t, name);
+      if (nameError) {
+        toast.error(nameError);
+        setCreatingIn(null);
+        return;
+      }
       const success =
         type === "file"
           ? await createNewFile(dirPath, name)
@@ -402,12 +409,14 @@ export function FileTree({
         await refreshFileTree();
         await expandDirectory(dirPath);
         if (type === "file") {
-          selectFile(`${dirPath}/${name}`);
+          selectFile(joinPathLike(dirPath, name));
         }
+      } else {
+        toast.error(t('fileExplorer.createFailed', { name, defaultValue: 'Could not create "{{name}}"' }));
       }
       setCreatingIn(null);
     },
-    [creatingIn, refreshFileTree, expandDirectory, selectFile, defaultFileExtension],
+    [creatingIn, refreshFileTree, expandDirectory, selectFile, defaultFileExtension, t],
   );
 
   const handleRename = useCallback((path: string) => {
@@ -416,15 +425,23 @@ export function FileTree({
 
   const handleRenameConfirm = useCallback(
     async (oldPath: string, newName: string) => {
-      const parentDir = oldPath.substring(0, oldPath.lastIndexOf("/"));
-      const newPath = `${parentDir}/${newName}`;
+      const nameError = fileNameError(t, newName);
+      if (nameError) {
+        toast.error(nameError);
+        setRenamingPath(null);
+        return;
+      }
+      const parentDir = dirnameOf(oldPath);
+      const newPath = joinPathLike(parentDir, newName);
 
       if (newPath !== oldPath) {
         const success = await renameItem(oldPath, newPath);
-        if (success) {
+        if (!success) {
+          toast.error(t('fileExplorer.renameFailed', 'Rename failed'));
+        } else {
           pushUndo({
             type: 'rename',
-            description: `Rename ${oldPath.substring(oldPath.lastIndexOf("/") + 1)} → ${newName}`,
+            description: `Rename ${basenameOf(oldPath)} → ${newName}`,
             originalPath: oldPath,
             newPath,
             isDirectory: false, // approximate, fine for undo
@@ -435,7 +452,7 @@ export function FileTree({
       }
       setRenamingPath(null);
     },
-    [refreshFileTree, expandDirectory, pushUndo],
+    [refreshFileTree, expandDirectory, pushUndo, t],
   );
 
   const handleRenameCancel = useCallback(() => {
@@ -461,7 +478,7 @@ export function FileTree({
           count: currentSelectedFiles.length,
         });
       } else {
-        const name = path.substring(path.lastIndexOf("/") + 1);
+        const name = basenameOf(path);
         setDeleteConfirm({
           path,
           name,
@@ -503,7 +520,7 @@ export function FileTree({
           if (content !== undefined) {
             pushUndo({
               type: 'delete',
-              description: `Delete ${filePath.substring(filePath.lastIndexOf("/") + 1)}`,
+              description: `Delete ${basenameOf(filePath)}`,
               originalPath: filePath,
               isDirectory: false,
               content,
@@ -929,12 +946,12 @@ export function FileTree({
           await expandDirectory(targetDirPath);
         }
       } else {
-        const newPath = `${targetDirPath}/${fileName}`;
+        const newPath = joinPathLike(targetDirPath, fileName);
         const success = await moveItem(sourcePath, targetDirPath);
         if (success) {
           pushUndo({
             type: 'move',
-            description: `Move ${fileName} to ${targetDirPath.substring(targetDirPath.lastIndexOf("/") + 1)}`,
+            description: `Move ${fileName} to ${basenameOf(targetDirPath)}`,
             originalPath: sourcePath,
             newPath,
             isDirectory: false,

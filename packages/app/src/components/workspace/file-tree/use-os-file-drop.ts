@@ -8,6 +8,7 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { basenameOf, dirnameOf, isPathUnder, isSamePath, joinPathLike } from "@/lib/fs-path";
 import { isChatInputDropTarget, isPointOverElement } from "@/lib/ui/chat-file-drop";
 import { isTauri } from "@/lib/utils";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -74,7 +75,7 @@ export function useOsFileDrop({
                 if (path) {
                   const node = flatNodesRef.current.find(fn => fn.node.path === path);
                   if (node && node.node.type === 'file') {
-                    targetDir = path.substring(0, path.lastIndexOf('/')) || treeRoot;
+                    targetDir = dirnameOf(path) || treeRoot;
                   } else {
                     targetDir = path;
                   }
@@ -83,15 +84,15 @@ export function useOsFileDrop({
             }
 
             // Drop landed on a directory in the file tree → move
-            if (targetDir && targetDir !== sourcePath && !targetDir.startsWith(sourcePath + '/')) {
-              const fileName = sourcePath.substring(sourcePath.lastIndexOf('/') + 1);
-              const newPath = `${targetDir}/${fileName}`;
+            if (targetDir && !isSamePath(targetDir, sourcePath) && !isPathUnder(targetDir, sourcePath)) {
+              const fileName = basenameOf(sourcePath);
+              const newPath = joinPathLike(targetDir, fileName);
               const { moveItem } = await import('../file-tree-operations');
               const success = await moveItem(sourcePath, targetDir);
               if (success) {
                 pushUndoRef.current({
                   type: 'move',
-                  description: `Move ${fileName} to ${targetDir.substring(targetDir.lastIndexOf('/') + 1)}`,
+                  description: `Move ${fileName} to ${basenameOf(targetDir)}`,
                   originalPath: sourcePath,
                   newPath,
                   isDirectory: false,
@@ -158,7 +159,7 @@ export function useOsFileDrop({
               // Resolve to parent directory if hovering over a file
               const node = flatNodesRef.current.find(fn => fn.node.path === path);
               if (node && node.node.type === 'file') {
-                const parentDir = path.substring(0, path.lastIndexOf('/'));
+                const parentDir = dirnameOf(path);
                 setDragOverPath(parentDir || treeRoot);
               } else {
                 setDragOverPath(path);

@@ -21,6 +21,7 @@ import { FindInPageBar } from "@/components/tab-bar/FindInPageBar";
 import { urlToLabel } from "@/lib/ui/webview-utils";
 import { ResizeHandle } from "@/app/chrome";
 import { useWebviewUIStore } from "@/app/webview-ui-store";
+import { basenameOf } from "@/lib/fs-path";
 
 const TeamShareDetailContent = lazyNamed(
   () => import("@/components/teamshare/TeamShareTabContent"),
@@ -91,7 +92,7 @@ export function MainContent() {
   // Sync file selections to tab store (file opened from chat links, file tree, etc.)
   useEffect(() => {
     if (selectedFile) {
-      const filename = selectedFile.split("/").pop() || selectedFile;
+      const filename = basenameOf(selectedFile) || selectedFile;
       useTabsStore.getState().openTab({
         type: "file",
         target: selectedFile,
