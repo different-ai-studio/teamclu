@@ -48,6 +48,7 @@ struct AMUXApp: App {
         do {
             modelContainer = try AMUXModelContainerFactory.make()
             NotificationReplySender.modelContainer = modelContainer
+            TurnActivityCenter.sink = AgentTurnActivityController.shared
         } catch {
             fatalError("Failed to initialise ModelContainer: \(error)")
         }

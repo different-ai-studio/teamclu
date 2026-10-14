@@ -71,17 +71,32 @@ platform :ios do
 
     match(type: "appstore", readonly: true, api_key: api_key) unless manual_signing
 
-    profile_name = ENV["IOS_PROVISIONING_PROFILE_NAME"] ||
-      ENV["sigh_com.teamclu.mobile_appstore_profile-name"]
+    # Target → bundle id. Every target is signed with its own profile; a
+    # call without `targets:` would stamp the app's bundle id onto the
+    # extensions too.
+    signed_targets = {
+      "AMUX" => "com.teamclu.mobile",
+      "AMUXLiveActivity" => "com.teamclu.mobile.LiveActivity",
+      "AMUXNotificationService" => "com.teamclu.mobile.NotificationService",
+    }
+    profiles = signed_targets.values.to_h do |bundle_id|
+      name = ENV["sigh_#{bundle_id}_appstore_profile-name"]
+      name = ENV["IOS_PROVISIONING_PROFILE_NAME"] if bundle_id == "com.teamclu.mobile" && ENV["IOS_PROVISIONING_PROFILE_NAME"]
+      UI.user_error!("No App Store profile for #{bundle_id} — run ios-match.yml for it") if name.to_s.empty?
+      [bundle_id, name]
+    end
 
-    update_code_signing_settings(
-      use_automatic_signing: false,
-      path: "AMUX.xcodeproj",
-      team_id: ENV["TEAM_ID"] || "43G5A6G9QV",
-      bundle_identifier: "com.teamclu.mobile",
-      code_sign_identity: "Apple Distribution",
-      profile_name: profile_name,
-    )
+    signed_targets.each do |target, bundle_id|
+      update_code_signing_settings(
+        use_automatic_signing: false,
+        path: "AMUX.xcodeproj",
+        targets: [target],
+        team_id: ENV["TEAM_ID"] || "43G5A6G9QV",
+        bundle_identifier: bundle_id,
+        code_sign_identity: "Apple Distribution",
+        profile_name: profiles[bundle_id],
+      )
+    end
 
     # GITHUB_RUN_NUMBER resets per-repo, so it collides with build numbers
     # already uploaded to App Store Connect from the old teamclu-next CI.
@@ -102,9 +117,7 @@ platform :ios do
       destination: "generic/platform=iOS",
       export_method: "app-store",
       export_options: {
-        provisioningProfiles: {
-          "com.teamclu.mobile" => profile_name,
-        },
+        provisioningProfiles: profiles,
       },
     )
 

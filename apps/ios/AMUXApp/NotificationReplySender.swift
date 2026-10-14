@@ -51,7 +51,7 @@ enum NotificationReplySender {
         }
     }
 
-    private static func isAgent(_ actorID: String?) -> Bool {
+    static func isAgent(_ actorID: String?) -> Bool {
         guard let actorID, let container = modelContainer else { return false }
         var descriptor = FetchDescriptor<CachedActor>(predicate: #Predicate { $0.actorId == actorID })
         descriptor.fetchLimit = 1

@@ -44,6 +44,24 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         )
     }
 
+    /// Message pushes carry `content-available`, so an agent's reply wakes
+    /// the app in the background long enough to close that session's Live
+    /// Activity with the answer — the session view that would normally do
+    /// it is not running.
+    func application(_ application: UIApplication,
+                     didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        guard let sessionID = userInfo["session_id"] as? String,
+              NotificationReplySender.isAgent(userInfo["sender_actor_id"] as? String)
+        else { return .noData }
+        let preview = (userInfo["preview"] as? String)
+            ?? ((userInfo["aps"] as? [String: Any])?["alert"] as? [String: Any])?["body"] as? String
+        AgentTurnActivityController.shared.finish(
+            sessionID: sessionID,
+            finalLine: TurnActivityCenter.summary(of: preview)
+        )
+        return .newData
+    }
+
     func application(_ application: UIApplication,
                      didFailToRegisterForRemoteNotificationsWithError error: Error) {
         NSLog("[push] APNs registration failed: \(error.localizedDescription)")

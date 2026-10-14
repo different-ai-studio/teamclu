@@ -78,7 +78,9 @@ public final class SessionDetailViewModel {
     /// (thinking / tool_use / tool_result) behind active-stream cards or
     /// completed-turn bubbles. Source for the main chat list. Detail view
     /// reads `runtimeEvents` off each item to render the full turn.
-    public private(set) var feedItems: [FeedItem] = []
+    public private(set) var feedItems: [FeedItem] = [] {
+        didSet { reportTurnActivity() }
+    }
     /// Day / time labels to draw above feed rows, by row id. Rebuilt with
     /// `feedItems`, so the view does no date math while scrolling.
     public private(set) var feedTimeMarkers: [String: FeedTimeMarker] = [:]
@@ -100,7 +102,9 @@ public final class SessionDetailViewModel {
     /// buffer. Read for the active-stream card's last-line preview and the
     /// streaming detail view's full text. Empty string for "no active
     /// stream for this agent."
-    public private(set) var streamingTextByAgent: [String: String] = [:]
+    public private(set) var streamingTextByAgent: [String: String] = [:] {
+        didSet { reportTurnActivity() }
+    }
     /// Per-agent model id stamped by the daemon on the most recent streaming
     /// `output` delta. Used so the synthesized event in stop()/idle flush
     /// carries the model that produced the partial text.
@@ -277,7 +281,12 @@ public final class SessionDetailViewModel {
     /// covers raw text deltas and misses the thinking + tool_use phases.
     /// This flag flips on any ACP event arrival or sendPrompt, and
     /// clears on `statusChange:.idle` or after 10s of silence.
-    public private(set) var isAgentWorking: Bool = false
+    public private(set) var isAgentWorking: Bool = false {
+        didSet { if isAgentWorking != oldValue { reportTurnActivity() } }
+    }
+    /// Whether the Live Activity sink was told about a turn that has not
+    /// been finished yet.
+    private var turnActivityOpen = false
     private var agentWorkingResetTask: Task<Void, Never>?
     private var inFlightPermissionRequestIDs: Set<String> = []
     /// ACP option lists per pending permission request, captured off the
@@ -3084,6 +3093,42 @@ public final class SessionDetailViewModel {
     /// layer switches the label to a "请耐心等候" variant after ~15s so
     /// the user knows we're still waiting rather than the indicator
     /// silently dropping.
+    /// Tells the Live Activity what the agent is doing: running (with its
+    /// latest line), waiting on an approval, or — on the working → idle
+    /// edge — done with its final answer. Cheap when nothing changed; the
+    /// sink throttles its own updates.
+    private func reportTurnActivity() {
+        guard let sink = TurnActivityCenter.sink, let session else { return }
+        let working = isAgentWorking || !streamingAgentSet.isEmpty
+        if working {
+            let waiting = feedItems.contains {
+                if case .permission(let e) = $0 { return !e.isComplete }
+                return false
+            }
+            let bucket = streamingAgentSet.sorted().first ?? agentChipSelection.sorted().first
+            let name = bucket.flatMap { id in memberSheetAgents.first { $0.id == id }?.displayName }
+                ?? memberSheetAgents.first?.displayName ?? String(localized: "Agent")
+            sink.update(TurnActivitySnapshot(
+                sessionID: session.sessionId,
+                sessionTitle: session.title,
+                agentName: name,
+                phase: waiting ? .waitingApproval : .running,
+                latestLine: TurnActivityCenter.lastLine(of: bucket.flatMap { streamingTextByAgent[$0] })
+            ))
+            turnActivityOpen = true
+        } else if turnActivityOpen {
+            turnActivityOpen = false
+            // From the reducer, not `feedItems`: on the working → idle edge
+            // the final output is already an entry, but the feed is rebuilt
+            // after this runs and would still end on the previous answer.
+            let final = timelineState.entries.last { $0.eventType == "output" && $0.isComplete }
+            sink.finish(
+                sessionID: session.sessionId,
+                finalLine: TurnActivityCenter.summary(of: final?.text)
+            )
+        }
+    }
+
     private func markAgentWorking() {
         isAgentWorking = true
         recomputeGroups()
