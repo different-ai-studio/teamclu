@@ -57,6 +57,18 @@ public final class MQTTService: NSObject, @unchecked Sendable {
     /// without a matching unsubscribe, so a counter would climb forever and
     /// the topic could never be released.
     private var topicOwners: [String: Set<String>] = [:]
+    /// Waiters for the PINGRESP that answers `probeAlive`'s PINGREQ.
+    private var pongContinuations: [CheckedContinuation<Bool, Never>] = []
+    /// Set by `disconnect()` so the drop it causes reads as `.disconnected`
+    /// rather than `.reconnecting`.
+    private var isExplicitDisconnect = false
+    /// Set when the broker refused the CONNACK (e.g. an expired JWT).
+    /// CocoaMQTT does not auto-reconnect after a refusal, so the drop that
+    /// follows is final too.
+    private var lastConnectRefused = false
+    /// Listeners for `connectionAccepted()`. Unlike `continuations`, these
+    /// survive `disconnect()`: they announce every connection, not one.
+    private var acceptedContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     public override init() {
         subscribeHook = nil
@@ -87,6 +99,8 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         clientId: String, useTLS: Bool
     ) async throws {
         connectionState = .connecting
+        isExplicitDisconnect = false
+        lastConnectRefused = false
 
         let mqtt = CocoaMQTT(clientID: clientId, host: host, port: UInt16(port))
         mqtt.username = username
@@ -94,6 +108,13 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         mqtt.keepAlive = 90
         mqtt.enableSSL = useTLS
         mqtt.allowUntrustCACertificate = true
+        // A dropped socket redials on its own (1 s, doubling, capped at 30 s)
+        // instead of staying down until the app is foregrounded again. The
+        // broker forgets every subscription on a clean-start reconnect, so
+        // the CONNACK handler replays them (`restoreSubscriptions`).
+        mqtt.autoReconnect = true
+        mqtt.autoReconnectTimeInterval = 1
+        mqtt.maxAutoReconnectTimeInterval = 30
         mqtt.delegate = self
         self.mqtt = mqtt
 
@@ -151,9 +172,15 @@ public final class MQTTService: NSObject, @unchecked Sendable {
     }
 
     public func disconnect() async {
+        isExplicitDisconnect = true
+        // Stop the old client from redialling: it shares our client id, so a
+        // late reconnect would make the broker kick the connection replacing
+        // it. A timer already scheduled is suspended when the client deinits.
+        mqtt?.autoReconnect = false
         mqtt?.disconnect()
         mqtt = nil
         connectionState = .disconnected
+        resumeAllPongWaiters(alive: false)
         // Snapshot + drain OUTSIDE the critical section; each `finish()`
         // triggers `onTermination`, which itself dispatches back to the
         // queue — we must not be in the queue when that happens.
@@ -251,6 +278,109 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         if recordTopicOperations {
             unsubscribedTopics.append(topic)
         }
+    }
+
+    /// Forgets every claimed topic. For sign-out and server switches, where
+    /// the next connection belongs to a different account and must not
+    /// inherit this one's subscriptions on its first CONNACK.
+    public func resetSubscriptions() {
+        stateQueue.sync { topicOwners.removeAll() }
+    }
+
+    /// Topics some owner still wants — what a fresh connection must carry.
+    internal func claimedTopics() -> [String] {
+        stateQueue.sync { topicOwners.keys.sorted() }
+    }
+
+    /// Re-issues SUBSCRIBE for every claimed topic. Runs on every accepted
+    /// CONNACK: the connection is clean-start, so the broker has forgotten
+    /// them all — after an auto-reconnect and after a forced reconnect alike.
+    /// Consumers subscribe once and never learn that a reconnect happened
+    /// (the hub keeps their streams open across it), so this is the only
+    /// place the subscriptions come back.
+    internal func restoreSubscriptions() async {
+        let topics = claimedTopics()
+        guard !topics.isEmpty else { return }
+        if let subscribeHook {
+            for topic in topics {
+                try? await subscribeHook(topic)
+                if recordTopicOperations {
+                    subscribedTopics.append(topic)
+                }
+            }
+            return
+        }
+        // Fire-and-forget: a SUBACK with no waiting continuation is ignored by
+        // `didSubscribeTopics`. Batched so one packet carries many topics.
+        let chunkSize = 32
+        for start in stride(from: 0, to: topics.count, by: chunkSize) {
+            let chunk = topics[start..<min(start + chunkSize, topics.count)]
+            mqtt?.subscribe(chunk.map { ($0, CocoaMQTTQoS.qos1) })
+        }
+    }
+
+    /// Yields once per accepted CONNACK — first connect, forced reconnect
+    /// and auto-reconnect alike. Subscriptions come back on their own
+    /// (`restoreSubscriptions`), but whatever was published while the socket
+    /// was down did not: a screen showing live data listens here to refetch
+    /// what it missed.
+    public func connectionAccepted() -> AsyncStream<Void> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        stateQueue.sync { acceptedContinuations[id] = continuation }
+        continuation.onTermination = { [weak self] _ in
+            self?.stateQueue.async { self?.acceptedContinuations.removeValue(forKey: id) }
+        }
+        return stream
+    }
+
+    private func announceConnectionAccepted() {
+        let listeners: [AsyncStream<Void>.Continuation] = stateQueue.sync {
+            Array(acceptedContinuations.values)
+        }
+        for listener in listeners { listener.yield() }
+    }
+
+    /// Test-only: what an accepted CONNACK does after a reconnect — replay
+    /// the claimed subscriptions, then announce the connection.
+    internal func simulateReconnectForTesting() async {
+        await restoreSubscriptions()
+        announceConnectionAccepted()
+    }
+
+    /// True when the broker answers a PINGREQ within `timeout`. A socket iOS
+    /// froze in the background can still report `.connected`; this tells a
+    /// live connection from that zombie without tearing a good one down.
+    public func probeAlive(timeout: Duration = .seconds(3)) async -> Bool {
+        guard mqtt != nil, connectionState == .connected else { return false }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                    self.stateQueue.sync { self.pongContinuations.append(continuation) }
+                    // Read `self.mqtt` here rather than capturing the
+                    // non-Sendable client (Swift 6 `sending` closure). Gone
+                    // meanwhile → no pong; the timeout arm answers false.
+                    self.mqtt?.ping()
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                self.resumeAllPongWaiters(alive: false)
+                return false
+            }
+            let alive = await group.next() ?? false
+            group.cancelAll()
+            return alive
+        }
+    }
+
+    fileprivate func resumeAllPongWaiters(alive: Bool) {
+        let waiters: [CheckedContinuation<Bool, Never>] = stateQueue.sync {
+            let snapshot = pongContinuations
+            pongContinuations.removeAll()
+            return snapshot
+        }
+        for waiter in waiters { waiter.resume(returning: alive) }
     }
 
     public func publish(topic: String, payload: Data, retain: Bool = false) async throws {
@@ -391,11 +521,19 @@ public final class MQTTService: NSObject, @unchecked Sendable {
 
 extension MQTTService: CocoaMQTTDelegate {
     public func mqtt(_ mqtt: CocoaMQTT, didConnectAck ack: CocoaMQTTConnAck) {
+        // A client `disconnect()` already replaced can still call back late;
+        // it must not flip the state of the connection that took its place.
+        guard mqtt === self.mqtt else { return }
         let pending = takeConnectContinuation()
         if ack == .accept {
             connectionState = .connected
             pending?.resume()
+            Task {
+                await self.restoreSubscriptions()
+                self.announceConnectionAccepted()
+            }
         } else {
+            lastConnectRefused = true
             connectionState = .disconnected
             pending?.resume(throwing: MQTTConnectionError.connectFailed)
         }
@@ -429,10 +567,17 @@ extension MQTTService: CocoaMQTTDelegate {
     public func mqtt(_ mqtt: CocoaMQTT, didUnsubscribeTopics topics: [String]) {}
 
     public func mqttDidPing(_ mqtt: CocoaMQTT) {}
-    public func mqttDidReceivePong(_ mqtt: CocoaMQTT) {}
+    public func mqttDidReceivePong(_ mqtt: CocoaMQTT) {
+        guard mqtt === self.mqtt else { return }
+        resumeAllPongWaiters(alive: true)
+    }
 
     public func mqttDidDisconnect(_ mqtt: CocoaMQTT, withError err: (any Error)?) {
-        connectionState = .disconnected
+        guard mqtt === self.mqtt else { return }
+        // An unexpected drop is redialled by CocoaMQTT's auto-reconnect; only
+        // a drop we asked for is final.
+        connectionState = (isExplicitDisconnect || lastConnectRefused) ? .disconnected : .reconnecting
+        resumeAllPongWaiters(alive: false)
         if let pending = takeConnectContinuation() {
             pending.resume(throwing: err ?? MQTTConnectionError.connectFailed)
         }

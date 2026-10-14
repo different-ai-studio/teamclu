@@ -192,6 +192,9 @@ public final class SessionDetailViewModel {
     /// The Cloud API history fetch `start` fires before the MQTT loop. Holds
     /// `self` weakly, so the deinit doesn't need to reach it; `stop` cancels.
     @ObservationIgnored private var initialSeedTask: Task<Void, Never>?
+    /// Refetches after every MQTT reconnect. The live stream stays open
+    /// across a reconnect, so the subscribe loop never sees one.
+    nonisolated(unsafe) private var reconnectCatchUpTask: Task<Void, Never>?
     /// Actor IDs for which this session-detail view has added an MQTT
     /// runtime-state subscription (beyond what SessionListViewModel manages
     /// for ConnectedAgentsStore agents). Tracked so we can unsubscribe on stop().
@@ -1631,6 +1634,16 @@ public final class SessionDetailViewModel {
         let subscribeTopic = MQTTTopics.sessionLive(teamID: teamID, sessionID: session.sessionId)
         let mqtt = self.mqtt
         let hub = self.hub
+        // Whatever the broker published while the socket was down is gone;
+        // fetch it the same two ways the subscribe loop below seeds.
+        reconnectCatchUpTask?.cancel()
+        reconnectCatchUpTask = Task { @MainActor [weak self, mqtt, modelContext] in
+            for await _ in mqtt.connectionAccepted() {
+                guard let self, !Task.isCancelled else { return }
+                await self.seedFromSupabaseMessages(modelContext: modelContext)
+                await self.replayStreamingTurnsAfterReconnect(modelContext: modelContext)
+            }
+        }
         task = Task { @MainActor [weak self, mqtt, hub, subscribeTopic, modelContext] in
             // Outer loop: each iteration represents a fresh MQTT connection lifecycle.
             // When the inner stream finishes (e.g. after disconnect clears continuations),
@@ -1713,11 +1726,13 @@ public final class SessionDetailViewModel {
     /// keeps spinning and the MQTT subscription leaks.
     deinit {
         task?.cancel()
+        reconnectCatchUpTask?.cancel()
         spawningPollTask?.cancel()
     }
 
     public func stop() {
         task?.cancel(); task = nil
+        reconnectCatchUpTask?.cancel(); reconnectCatchUpTask = nil
         initialSeedTask?.cancel(); initialSeedTask = nil
         spawningPollTask?.cancel(); spawningPollTask = nil
         streamingMirrorFlushTask?.cancel(); streamingMirrorFlushTask = nil

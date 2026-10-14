@@ -92,6 +92,7 @@ struct ContentView: View {
             isConnecting = false
             Task {
                 await mqtt.disconnect()
+                mqtt.resetSubscriptions()
                 // Best-effort remote revoke; always clears the shared
                 // keychain locally even when server A is unreachable.
                 try? await oldStore.signOut()
@@ -245,6 +246,7 @@ struct ContentView: View {
                 connectTask?.cancel()
                 isConnecting = false
                 await mqtt.disconnect()
+                mqtt.resetSubscriptions()
                 await onboarding.wipeLocalCache(modelContext: modelContext)
             }
         }
@@ -300,15 +302,8 @@ struct ContentView: View {
             navigationRouter.openSession(sid)
         }
         .onChange(of: scenePhase) { _, phase in
-            // iOS freezes sockets when backgrounded but rarely delivers a
-            // clean disconnect callback, so `connectionState` can stay
-            // `.connected` on a dead socket ("zombie"). On foreground we
-            // force a full reconnect regardless of reported state; the
-            // SessionDetailViewModel loop will resubscribe and trigger an
-            // incremental history sync once MQTT is back up.
             if phase == .active && pairing.isPaired && onboarding.route == .ready {
-                logger.info("App became active, forcing MQTT reconnect…")
-                forceReconnect()
+                Task { await reconnectIfStale() }
             }
         }
     }
@@ -318,8 +313,28 @@ struct ContentView: View {
         isConnecting = false
         Task {
             await mqtt.disconnect()
+            mqtt.resetSubscriptions()
             await onboarding.signOutAndWipeCache(modelContext: modelContext)
         }
+    }
+
+    /// Foreground check. iOS freezes sockets in the background but rarely
+    /// delivers a clean disconnect, so `connectionState` can read `.connected`
+    /// on a dead socket ("zombie"). A PINGREQ tells the two apart: a live
+    /// connection is kept as is, anything else is rebuilt. Rebuilding a live
+    /// one used to cost a full re-seed in every open screen.
+    private func reconnectIfStale() async {
+        switch mqtt.connectionState {
+        case .connected:
+            if await mqtt.probeAlive() { return }
+            logger.info("App became active and MQTT did not answer a ping; reconnecting…")
+        case .connecting:
+            return
+        case .reconnecting, .disconnected:
+            // Don't wait out CocoaMQTT's back-off: the user is looking now.
+            logger.info("App became active while MQTT was down; reconnecting…")
+        }
+        forceReconnect()
     }
 
     /// User-initiated reconnect: cancels any in-flight connect Task (so a
