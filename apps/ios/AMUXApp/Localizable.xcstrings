@@ -5766,6 +5766,96 @@
           }
         }
       }
+    },
+    "Current Team": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前团队"
+          }
+        }
+      }
+    },
+    "Team Info": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "团队信息"
+          }
+        }
+      }
+    },
+    "Default Agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认 Agent"
+          }
+        }
+      }
+    },
+    "Personal Default Agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "个人默认 Agent"
+          }
+        }
+      }
+    },
+    "Follow team default": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跟随团队默认"
+          }
+        }
+      }
+    },
+    "In effect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "生效中"
+          }
+        }
+      }
+    },
+    "Unavailable agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不可用的 Agent"
+          }
+        }
+      }
+    },
+    "New sessions go to %@. Your personal default overrides the team default.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新会话将交给 %@。个人默认 Agent 优先于团队默认 Agent。"
+          }
+        }
+      }
+    },
+    "No default agent yet. Pick a personal default, or ask a team admin to set one for the team.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有默认 Agent。请设置个人默认 Agent，或联系团队管理员设置团队默认 Agent。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
