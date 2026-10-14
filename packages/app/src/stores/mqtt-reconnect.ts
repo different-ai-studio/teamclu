@@ -65,13 +65,22 @@ export function daemonMqttSnapshotOwnsConnection(
   return status !== 'absent'
 }
 
-async function currentTeamLocalAgentAbsent(): Promise<boolean> {
-  const [{ useCurrentTeamStore }, { useLocalAgentInstallStore }] = await Promise.all([
-    import('@/stores/current-team'),
-    import('@/stores/local-agent-install'),
-  ])
+/**
+ * The desktop page owns MQTT when this machine has no local agent, or the
+ * local agent is switched off. Cloud can still list an agent for the device
+ * after the switch is off; that must not keep the dead daemon snapshot.
+ * `enabled === null` is still loading and stays on the daemon path.
+ */
+async function desktopClientOwnsMqtt(): Promise<boolean> {
+  const [{ useCurrentTeamStore }, { useLocalAgentInstallStore }, { useDaemonOnboardingStore }] =
+    await Promise.all([
+      import('@/stores/current-team'),
+      import('@/stores/local-agent-install'),
+      import('@/stores/daemon-onboarding'),
+    ])
   const teamId = useCurrentTeamStore.getState().team?.id?.trim() ?? ''
   if (!teamId) return false
+  if (useDaemonOnboardingStore.getState().enabled === false) return true
   return !daemonMqttSnapshotOwnsConnection(
     useLocalAgentInstallStore.getState().byTeam[teamId]?.status,
   )
@@ -133,7 +142,7 @@ async function runMqttRecovery(
   const utils = await import('@/lib/utils')
   // No local agent: the desktop client's own MQTT is the connection, same as
   // the extension. Do not adopt or restart the unclaimed daemon's broker.
-  const localAgentAbsent = utils.isTauri() && (await currentTeamLocalAgentAbsent())
+  const localAgentAbsent = utils.isTauri() && (await desktopClientOwnsMqtt())
   if (
     utils.isTauri() &&
     !localAgentAbsent &&
@@ -199,11 +208,12 @@ async function recoverMqttCredentials(
  * Start the desktop MQTT client once this machine is known to have no local
  * agent. The client reads the broker address at connect time; a sign-in often
  * tries before bootstrap has saved that address, and nothing retries.
- * Installed, pending, and unknown keep the daemon connection and do not bump.
+ * Installed and still on, pending, and unknown keep the daemon connection.
+ * A switched-off local agent is the desktop client's connection.
  */
 export async function reconnectDesktopMqttWhenLocalAgentAbsent(): Promise<void> {
   const utils = await import('@/lib/utils')
-  if (utils.isTauri() && !(await currentTeamLocalAgentAbsent())) return
+  if (utils.isTauri() && !(await desktopClientOwnsMqtt())) return
   if (useMqttReconnectStore.getState().connected === true) return
   useMqttReconnectStore.getState().bump()
 }
@@ -212,13 +222,13 @@ export async function reconnectDesktopMqttWhenLocalAgentAbsent(): Promise<void> 
  * Ask the server for the MQTT address it issues, when this desktop client is
  * about to connect and has none cached. A sign-in fetch can miss that window;
  * the settings Retry button was the only later ask. Installed, pending, and
- * unknown do not ask — they keep the daemon's connection.
+ * unknown do not ask while the local agent is on. Switched off still asks.
  */
 export async function ensureIssuedMqttBroker(
   accessToken: string | null | undefined,
 ): Promise<'ready' | 'missing' | 'skipped'> {
   const utils = await import('@/lib/utils')
-  if (utils.isTauri() && !(await currentTeamLocalAgentAbsent())) return 'skipped'
+  if (utils.isTauri() && !(await desktopClientOwnsMqtt())) return 'skipped'
   const { getEffectiveServerConfig } = await import('@/lib/config/server-config')
   const current = await getEffectiveServerConfig()
   if (current.mqttHost) return 'ready'
@@ -325,7 +335,7 @@ export const useMqttReconnectStore = create<MqttReconnectState>((set, get) => ({
       const setConnected = get().setConnected
       const setError = get().setError
       const probe = async () => {
-        const localAgentAbsent = await currentTeamLocalAgentAbsent()
+        const localAgentAbsent = await desktopClientOwnsMqtt()
         // Installed (and not-yet-classified) machines keep the daemon snapshot.
         // Absent machines ignore it: an unclaimed daemon reports MQTT down
         // because it has no broker, which is not the desktop client's state.

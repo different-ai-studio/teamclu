@@ -28,6 +28,7 @@ import { connectMqttWithFreshAuth } from "@/lib/mqtt/mqtt-connect-with-fresh-aut
 import { mqttConnectionKey } from "@/lib/mqtt/mqtt-connection-key";
 import { describeJwt, recordMqttDiag } from "@/lib/mqtt/mqtt-diagnostics";
 import { ensureIssuedMqttBroker, useMqttReconnectStore } from "@/stores/mqtt-reconnect";
+import { useDaemonOnboardingStore } from "@/stores/daemon-onboarding";
 import { getEffectiveServerConfig } from "@/lib/config/server-config";
 import { acquireTeamcluRpcBroker, acquireTeamcluRpcIdentity } from "@/lib/daemon/teamclu-rpc";
 import { acquireRemoteToolsRpcServer, registerPlatformExecutors } from "@/lib/remote-tools";
@@ -95,6 +96,9 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
   const mqttTeamId = teamId;
   const mqttAccessToken = useAuthStore((s) => s.session?.access_token ?? null);
   const mqttReconnectNonce = useMqttReconnectStore((s) => s.nonce);
+  // Flips only when the local agent is switched off, so wiring retries the
+  // server address then. Loading (`null` → `true`) does not restart it.
+  const localAgentOff = useDaemonOnboardingStore((s) => s.enabled === false);
   const mqttAuthKey = mqttConnectionKey({
     userId,
     teamId: mqttTeamId,
@@ -996,7 +1000,7 @@ export function MqttLiveWiring({ userId, teamId, onMyActorId }: MqttLiveWiringPr
       moduleLeaseGroup?.release();
       identityLease?.release();
     };
-  }, [mqttAuthKey, userId, mqttTeamId, mqttAccessToken, mqttReconnectNonce]);
+  }, [mqttAuthKey, userId, mqttTeamId, mqttAccessToken, mqttReconnectNonce, localAgentOff]);
 
   // Foreground session/live: active TeamClu session + background streaming/approval.
   const activeSessionIdForSubscribe = useSessionSelectionStore((s) => s.activeSessionId);
