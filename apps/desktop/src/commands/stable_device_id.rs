@@ -19,7 +19,7 @@
 //! The namespace and the `{platform}:{raw}` input are copied from the daemon.
 //! `derives_the_daemon_golden_vector` fails if they drift.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::commands::amuxd_home_dir;
 
@@ -71,7 +71,8 @@ fn read_nonempty(path: &Path) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-fn device_id_path() -> PathBuf {
+#[cfg(test)]
+fn device_id_path() -> std::path::PathBuf {
     amuxd_home_dir().join("device-id")
 }
 
