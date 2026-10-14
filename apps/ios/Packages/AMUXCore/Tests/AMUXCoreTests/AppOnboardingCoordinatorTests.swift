@@ -810,6 +810,100 @@ struct AppOnboardingCoordinatorTests {
         #expect(!coordinator.isOfflineLaunch)
         #expect(coordinator.currentContext?.team.id == "team-2")
     }
+
+    // MARK: - Relaunch from cache
+
+    /// A device that has been in `team` once, relaunching with a good session.
+    @MainActor
+    private func relaunch(
+        cached team: TeamSummary
+    ) async -> (AppOnboardingCoordinator, InMemoryOnboardingStore, UserDefaults) {
+        let defaults = ephemeralDefaults()
+        let store = InMemoryOnboardingStore(bootstrap: AppBootstrap(memberActorID: "member-1", teams: [team]))
+        let first = AppOnboardingCoordinator(store: store, defaults: defaults)
+        await first.bootstrap()
+        #expect(first.route == .ready)
+        await store.setFreshSession(true)
+        return (AppOnboardingCoordinator(store: store, defaults: defaults), store, defaults)
+    }
+
+    @MainActor
+    @Test("relaunch with a fresh session opens the cached team without waiting on the server")
+    func relaunchEntersFromCache() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let (coordinator, store, _) = await relaunch(cached: team)
+        // The server is unreachable: a full bootstrap could not get anywhere,
+        // yet the cached team opens and stays flagged for the check.
+        await store.setLoadBootstrapError(Self.offline)
+
+        await coordinator.bootstrap()
+
+        #expect(coordinator.route == .ready)
+        #expect(coordinator.currentContext == AppContext(team: team, memberActorID: "member-1"))
+        #expect(coordinator.isOfflineLaunch)
+    }
+
+    @MainActor
+    @Test("the check behind a cached relaunch clears the flag when the team is still there")
+    func relaunchCheckKeepsTeam() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let (coordinator, _, _) = await relaunch(cached: team)
+
+        await coordinator.bootstrap()
+        await coordinator.revalidateAfterOfflineLaunch()
+
+        #expect(!coordinator.isOfflineLaunch)
+        #expect(coordinator.currentContext?.team.id == "team-1")
+    }
+
+    @MainActor
+    @Test("the check behind a cached relaunch moves on when the team is gone")
+    func relaunchCheckMovesOn() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let other = TeamSummary(id: "team-2", name: "Beta", slug: "beta", role: "member")
+        let (coordinator, store, _) = await relaunch(cached: team)
+        // Removed from the team since the last launch.
+        await store.setBootstrap(AppBootstrap(memberActorID: "member-2", teams: [other]))
+
+        await coordinator.bootstrap()
+        #expect(coordinator.currentContext?.team.id == "team-1", "opens on the cache first")
+        // The check runs behind the open; give it its turn.
+        for _ in 0..<50 where coordinator.currentContext?.team.id != "team-2" {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(coordinator.currentContext?.team.id == "team-2")
+        #expect(!coordinator.isOfflineLaunch)
+    }
+
+    @MainActor
+    @Test("a pending invite takes the full bootstrap, never the cache")
+    func relaunchWithInviteSkipsCache() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let (coordinator, store, defaults) = await relaunch(cached: team)
+        defaults.set("invite-token", forKey: InviteDeepLink.pendingTokenDefaultsKey)
+        _ = store
+
+        await coordinator.bootstrap()
+
+        // The full bootstrap read (and consumed) the token; the cache path
+        // would have left it sitting there.
+        #expect(defaults.string(forKey: InviteDeepLink.pendingTokenDefaultsKey) == nil)
+        #expect(!coordinator.isOfflineLaunch)
+    }
+
+    @MainActor
+    @Test("an explicit team request takes the full bootstrap")
+    func relaunchPreferringTeamSkipsCache() async throws {
+        let team = TeamSummary(id: "team-1", name: "Alpha", slug: "alpha", role: "owner")
+        let (coordinator, store, _) = await relaunch(cached: team)
+        let before = await store.bootstrapCallCount
+
+        await coordinator.bootstrap(preferringTeamID: "team-1")
+
+        #expect(!coordinator.isOfflineLaunch)
+        #expect(await store.bootstrapCallCount > before || coordinator.route == .ready)
+    }
 }
 
 private actor InMemoryOnboardingStore: AppOnboardingStore {
@@ -860,6 +954,10 @@ private actor InMemoryOnboardingStore: AppOnboardingStore {
     func setBootstrap(_ bootstrap: AppBootstrap) { bootstrapResult = bootstrap }
 
     func setLoadBootstrapError(_ error: Error?) { loadBootstrapError = error }
+
+    var freshSession = false
+    func setFreshSession(_ value: Bool) { freshSession = value }
+    func hasFreshSession() async -> Bool { freshSession }
 
     func createTeam(named name: String) async throws -> CreatedTeam {
         createdTeamNames.append(name)

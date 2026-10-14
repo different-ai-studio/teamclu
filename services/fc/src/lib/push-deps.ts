@@ -90,6 +90,17 @@ function buildPushDeps() {
       if (actorsError) throw actorsError;
       return (actors ?? []).map((row: { id: string }) => row.id);
     },
+    // Sender's kind and avatar, for the notification service extension's
+    // avatar thumbnail. Best-effort: a miss just means a lettered avatar.
+    actorProfile: async (actorId: string) => {
+      const { data, error } = await sbClient.schema("amux")
+        .from('actors')
+        .select('actor_type, avatar_url')
+        .eq('id', actorId)
+        .maybeSingle();
+      if (error) throw error;
+      return data ? { kind: data.actor_type as string, avatarUrl: (data.avatar_url as string | null) ?? null } : null;
+    },
   };
   return { sb, apns: buildApns(), mqtt: buildMqtt() };
 }

@@ -19,6 +19,11 @@ name: iOS Signing (match)
 # Sign In with Apple and Push Notifications enabled (they mirror
 # apps/ios/AMUXApp/AMUX.entitlements). match does NOT create App IDs — it exits
 # with "Could not find App with App Identifier".
+#
+# The app's two extensions are separate App IDs with their own profiles —
+# com.teamclu.mobile.LiveActivity and com.teamclu.mobile.NotificationService.
+# They need no capabilities; create each App ID, then run this once per id.
+# `beta` refuses to build until all three profiles exist.
 on:
   workflow_dispatch:
     inputs:

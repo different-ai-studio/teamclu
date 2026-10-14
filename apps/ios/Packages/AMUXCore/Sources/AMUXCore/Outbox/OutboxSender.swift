@@ -26,7 +26,8 @@ private actor OutboxAttemptLeases {
 ///
 /// Lifecycle: scoped to a chat detail view today. `start()` spawns a
 /// loop task; `stop()` cancels it. The loop wakes once per second when
-/// idle and drains all due rows in a single pass.
+/// idle — or at once when a row is enqueued or re-armed — and drains all
+/// due rows in a single pass.
 ///
 /// Concurrency model: this is an `actor` so all SwiftData mutations
 /// (insert, save, fetch) happen on a single isolation domain. Each
@@ -45,6 +46,8 @@ public actor OutboxSender {
     private weak var teamclu: TeamcluService?
     private let modelContainer: ModelContainer
     private var task: Task<Void, Never>?
+    /// The idle loop's current nap; cancelled to wake it early.
+    private var nap: Task<Void, Never>?
     private var onDelivered: (@Sendable (String) async -> Void)?
 
     public init(teamclu: TeamcluService, modelContainer: ModelContainer) {
@@ -74,15 +77,20 @@ public actor OutboxSender {
     public func stop() {
         task?.cancel()
         task = nil
+        nap?.cancel()
     }
 
-    /// Insert a fresh `OutboxMessage` row. The next loop tick (at most
-    /// 1 second later) picks it up. Idempotent on `messageID` — if a
+    private func wake() {
+        nap?.cancel()
+    }
+
+    /// Insert a fresh `OutboxMessage` row and wake the loop, which picks
+    /// it up straight away. Idempotent on `messageID` — if a
     /// row with the same id already exists this is a no-op so callers
     /// can safely re-enqueue without double-sending.
     public func enqueue(messageID: String, sessionID: String, senderActorID: String,
                         content: String, mentionActorIDs: [String], modelID: String?,
-                        attachmentURLs: [URL] = []) async {
+                        attachmentURLs: [URL] = [], replyToMessageID: String? = nil) async {
         let ctx = ModelContext(modelContainer)
         if let existing = fetchRow(messageID: messageID, in: ctx) {
             outboxLogger.notice("outbox enqueue skipped (already exists) msgId=\(String(messageID.prefix(8)), privacy: .public) state=\(existing.stateRaw, privacy: .public)")
@@ -91,10 +99,14 @@ public actor OutboxSender {
         let row = OutboxMessage(messageID: messageID, sessionID: sessionID,
                                 senderActorID: senderActorID, content: content,
                                 mentionActorIDs: mentionActorIDs, modelID: modelID,
-                                attachmentURLs: attachmentURLs)
+                                attachmentURLs: attachmentURLs, replyToMessageID: replyToMessageID)
         ctx.insert(row)
         do {
             try ctx.save()
+            ChatMetrics.shared.mark(.send, key: messageID, "enqueued")
+            // An idle loop naps for up to a second; the user is watching
+            // this message's dot, so don't make it wait for the tick.
+            wake()
             outboxLogger.notice("outbox enqueued msgId=\(String(messageID.prefix(8)), privacy: .public) sid=\(String(sessionID.prefix(8)), privacy: .public)")
         } catch {
             outboxLogger.error("outbox enqueue save FAILED msgId=\(String(messageID.prefix(8)), privacy: .public) err=\(String(describing: error), privacy: .public)")
@@ -119,6 +131,7 @@ public actor OutboxSender {
         row.nextAttemptAt = nil
         row.lastError = nil
         try? ctx.save()
+        wake()
         outboxLogger.notice("outbox retry: msgId=\(String(messageID.prefix(8)), privacy: .public) re-armed")
     }
 
@@ -134,7 +147,10 @@ public actor OutboxSender {
                 await attempt(rowID: row.persistentModelID, messageID: row.messageID)
             }
             if due.isEmpty {
-                try? await Task.sleep(for: .seconds(1))
+                let nap = Task<Void, Never> { try? await Task.sleep(for: .seconds(1)) }
+                self.nap = nap
+                await nap.value
+                self.nap = nil
             }
         }
     }
@@ -278,6 +294,9 @@ public actor OutboxSender {
         row.state = .inFlight
         row.lastAttemptAt = .now
         try? ctx.save()
+        // M3: the gap from "enqueued" to here is the poll wait (P6).
+        ChatMetrics.shared.mark(.send, key: messageID, "attempt_started")
+        ChatMetrics.shared.add(.send, key: messageID, "attempts", 1)
 
         // 1.5. Wait for attachments to complete before sending
         if row.attachmentIDs.count > 0 {
@@ -287,6 +306,7 @@ public actor OutboxSender {
                 row.state = .failed
                 row.lastError = "Attachment upload failed or timed out"
                 try? ctx.save()
+                ChatMetrics.shared.end(.send, key: messageID, outcome: .failed)
                 outboxLogger.error("outbox FAILED (attachments) msgId=\(msgPrefix, privacy: .public) err=Attachment upload failed or timed out")
                 return
             }
@@ -307,12 +327,14 @@ public actor OutboxSender {
                 attachmentURLs: row.attachmentURLs,
                 attachments: attachmentRefs(for: row, in: ctx),
                 persistFirst: true,
-                messageID: row.messageID
+                messageID: row.messageID,
+                replyToMessageID: row.replyToMessageID
             )
             row.state = .delivered
             row.lastError = nil
             try? ctx.save()
             outboxLogger.notice("outbox delivered msgId=\(msgPrefix, privacy: .public) attempts=\(row.attemptCount + 1, privacy: .public)")
+            ChatMetrics.shared.end(.send, key: messageID)
             await onDelivered?(row.messageID)
         } catch {
             // 409 Conflict: the server already persisted this message (idempotent
@@ -322,6 +344,8 @@ public actor OutboxSender {
                 row.lastError = nil
                 try? ctx.save()
                 outboxLogger.notice("outbox delivered (409 conflict, idempotent) msgId=\(msgPrefix, privacy: .public)")
+                ChatMetrics.shared.tag(.send, key: messageID, "conflict", "true")
+                ChatMetrics.shared.end(.send, key: messageID)
                 await onDelivered?(row.messageID)
                 return
             }
@@ -330,6 +354,7 @@ public actor OutboxSender {
             if row.attemptCount >= Self.maxAttempts {
                 row.state = .failed
                 row.nextAttemptAt = nil
+                ChatMetrics.shared.end(.send, key: messageID, outcome: .failed)
                 outboxLogger.error("outbox FAILED (budget exhausted) msgId=\(msgPrefix, privacy: .public) attempts=\(row.attemptCount, privacy: .public) err=\(row.lastError ?? "", privacy: .public)")
             } else {
                 let delay = Self.backoff(forAttempt: row.attemptCount)

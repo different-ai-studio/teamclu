@@ -66,6 +66,12 @@ public actor CloudAPIAppOnboardingStore: AppOnboardingStore {
         }
     }
 
+    public func hasFreshSession() async -> Bool {
+        await ensureStarted()
+        guard let session = await sessionStore.currentSession() else { return false }
+        return session.expiresAt.timeIntervalSinceNow > 120
+    }
+
     public func isAnonymous() async -> Bool {
         await ensureStarted()
         return await sessionStore.currentSession()?.isAnonymous ?? false

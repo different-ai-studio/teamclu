@@ -73,13 +73,24 @@ struct SessionListContent: View {
         viewModel.groupedSessions.flatMap(\.items)
     }
 
-    private var actorByID: [String: CachedActor] {
-        Dictionary(allActors.map { ($0.actorId, $0) }, uniquingKeysWith: { a, _ in a })
+    /// What every row's participant cluster reads, built once per body.
+    /// These used to be computed properties read from inside the per-row
+    /// call, so each visible row rebuilt both maps — every actor, the last
+    /// 500 messages — and re-read all their model properties.
+    private struct ParticipantLookup {
+        let directory: [String: CachedActor]
+        let sendersBySession: [String: [String]]
+    }
+
+    private func makeParticipantLookup() -> ParticipantLookup {
+        ParticipantLookup(
+            directory: Dictionary(allActors.map { ($0.actorId, $0) }, uniquingKeysWith: { a, _ in a }),
+            sendersBySession: sendersBySession
+        )
     }
 
     /// Distinct senderActorIds per session, ordered by most-recent message
-    /// first. Built once per body evaluation so each row gets a synchronous
-    /// lookup instead of a per-row SwiftData fetch.
+    /// first.
     private var sendersBySession: [String: [String]] {
         var ordered: [String: [String]] = [:]
         var seen: [String: Set<String>] = [:]
@@ -94,9 +105,9 @@ struct SessionListContent: View {
         return ordered
     }
 
-    private func participantPreviews(for session: Session) -> [ParticipantPreview] {
-        let directory = actorByID
-        let senders = sendersBySession[session.sessionId] ?? []
+    private func participantPreviews(for session: Session, lookup: ParticipantLookup) -> [ParticipantPreview] {
+        let directory = lookup.directory
+        let senders = lookup.sendersBySession[session.sessionId] ?? []
 
         var ids: [String] = []
         var seen = Set<String>()
@@ -148,8 +159,9 @@ struct SessionListContent: View {
                 // sessions-list.jsx, which uses only hairline separators
                 // inset under the title (handled by AgentRowView's
                 // alignmentGuide(.listRowSeparatorLeading)).
+                let lookup = makeParticipantLookup()
                 ForEach(flatSessions, id: \.sessionId) { session in
-                    sessionRow(session)
+                    sessionRow(session, lookup: lookup)
                 }
             }
         }
@@ -208,6 +220,13 @@ struct SessionListContent: View {
                 SessionListSearchField(text: $viewModel.searchText, isFocused: $searchFocused)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
                         searchFieldFrame = $0
+                    }
+                    // Search message text too, once typing pauses: the scan
+                    // walks every cached message.
+                    .task(id: viewModel.searchText) {
+                        try? await Task.sleep(for: .milliseconds(250))
+                        guard !Task.isCancelled else { return }
+                        viewModel.updateContentSearch(modelContext: modelContext)
                     }
                 // Clock view: show ONLY scheduled (cron) sessions — they are
                 // hidden from the default list, mirroring the desktop.
@@ -293,7 +312,7 @@ struct SessionListContent: View {
     }
 
     @ViewBuilder
-    private func sessionRow(_ session: Session) -> some View {
+    private func sessionRow(_ session: Session, lookup: ParticipantLookup) -> some View {
         let runtime = liveAttachment(for: session)
         HStack(spacing: 10) {
             if isEditing {
@@ -305,7 +324,7 @@ struct SessionListContent: View {
             AgentRowView(
                 session: session,
                 runtime: runtime,
-                participants: participantPreviews(for: session),
+                participants: participantPreviews(for: session, lookup: lookup),
                 isMuted: notificationPrefsStore?.isMuted(session.sessionId) ?? false,
                 activity: liveActivityStore?.activity(for: session.sessionId) ?? .quiet
             )
@@ -465,6 +484,13 @@ struct AgentRowView: View {
     /// same as the bubble — the raw scaffolding would fill the one line.
     private var lastMessage: String { MentionDisplayText.plainText(session.lastMessagePreview) }
 
+    /// This device's unsent composer text for the session, on one line.
+    private var draft: String? {
+        let text = SessionDraftStore.shared.draft(for: session.sessionId)
+        guard !text.isEmpty else { return nil }
+        return text.split(whereSeparator: \.isNewline).joined(separator: " ")
+    }
+
     // Server-computed: `list_current_actor_sessions` derives it from
     // session_read_markers + sessions.last_message_at. The old client-side
     // signal rode on `lastOutputSummary`/`toolUseCount` deltas, which the
@@ -540,7 +566,15 @@ struct AgentRowView: View {
                     .foregroundStyle(Color.amux.slate)
             }
 
-            if !lastMessage.isEmpty {
+            if let draft {
+                // An unsent draft outranks the last message, as in IM apps:
+                // it is what the user was in the middle of.
+                (Text("Draft: ").foregroundStyle(Color.amux.cinnabar)
+                    + Text(draft).foregroundStyle(Color.amux.basalt))
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .padding(.leading, badgeIndent)
+            } else if !lastMessage.isEmpty {
                 Text(lastMessage)
                     .font(.subheadline)
                     .foregroundStyle(Color.amux.basalt)

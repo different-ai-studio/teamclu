@@ -1,7 +1,6 @@
 import Foundation
 
-/// A row in the main chat feed. Higher-level than `GroupedEvent`: hides
-/// in-turn runtime detail (thinking, tool_use, tool_result) behind an
+/// A row in the main chat feed. Hides in-turn runtime detail (thinking, tool_use, tool_result) behind an
 /// active-stream card or a completed-turn bubble, so multi-agent sessions
 /// don't drown the user in interleaved runtime events from concurrent
 /// agents.
@@ -331,4 +330,75 @@ public func buildFeedItems(_ events: [AgentEvent],
     }
 
     return result
+}
+
+extension Array where Element == FeedItem {
+    /// The row showing the persisted message `serverMessageID` (a push's
+    /// `message_id`): a chat message itself, or the turn whose reply or
+    /// process holds it. Ids compare case-insensitively — iOS used to mint
+    /// uppercase ids that the server stores lowercase.
+    public func feedItemID(containingServerMessageID serverMessageID: String) -> String? {
+        let target = serverMessageID.lowercased()
+        func matches(_ event: AgentEvent) -> Bool {
+            event.supabaseMessageId?.lowercased() == target
+        }
+        return first { item in
+            switch item {
+            case .userMessage(let e), .permission(let e), .todo(let e), .error(let e):
+                return matches(e)
+            case .completedTurn(_, _, let finalEvent, let runtimeEvents):
+                return matches(finalEvent) || runtimeEvents.contains(where: matches)
+            case .activeStream(_, _, let runtimeEvents):
+                return runtimeEvents.contains(where: matches)
+            }
+        }?.id
+    }
+}
+
+extension Array where Element == FeedItem {
+    /// Rows whose visible text contains `query` (case- and diacritic-
+    /// insensitive), in feed order: chat messages and finished agent
+    /// replies. Mention tokens are matched as displayed (`@Name`), not as
+    /// their wire form. Searches only what is loaded on this device.
+    public func feedItemIDs(matching query: String) -> [String] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        return compactMap { item in
+            let text: String?
+            switch item {
+            case .userMessage(let e): text = e.text
+            case .completedTurn(_, _, let finalEvent, _): text = finalEvent.text
+            case .activeStream, .permission, .todo, .error: text = nil
+            }
+            guard let text, MentionDisplayText.plainText(text).localizedStandardContains(needle) else { return nil }
+            return item.id
+        }
+    }
+}
+
+extension FeedItem {
+    /// What multi-select can copy or forward from this row: a chat message
+    /// or a finished agent reply, as displayed. Nil for everything else.
+    public var selectableEvent: AgentEvent? {
+        switch self {
+        case .userMessage(let e): e
+        case .completedTurn(_, _, let finalEvent, _): finalEvent
+        case .activeStream, .permission, .todo, .error: nil
+        }
+    }
+}
+
+/// Plain-text rendering of selected messages, for the clipboard and for
+/// forwarding. Forwarded text is an ordinary message, so it reads the same
+/// on every client without any of them knowing it was forwarded.
+public enum MessageTranscript {
+    /// One "Sender: text" line per message, blank line between, preceded by
+    /// `header` when given (e.g. "Forwarded from <session>").
+    public static func compose(_ messages: [(sender: String, text: String)], header: String? = nil) -> String {
+        let body = messages
+            .map { "\($0.sender): \(MentionDisplayText.plainText($0.text))" }
+            .joined(separator: "\n\n")
+        guard let header, !header.isEmpty else { return body }
+        return "\(header)\n\n\(body)"
+    }
 }

@@ -92,6 +92,7 @@ struct ContentView: View {
             isConnecting = false
             Task {
                 await mqtt.disconnect()
+                mqtt.resetSubscriptions()
                 // Best-effort remote revoke; always clears the shared
                 // keychain locally even when server A is unreachable.
                 try? await oldStore.signOut()
@@ -245,6 +246,7 @@ struct ContentView: View {
                 connectTask?.cancel()
                 isConnecting = false
                 await mqtt.disconnect()
+                mqtt.resetSubscriptions()
                 await onboarding.wipeLocalCache(modelContext: modelContext)
             }
         }
@@ -252,6 +254,13 @@ struct ContentView: View {
             // Anyone who has made it into the app — including people upgrading
             // from a build without the intro — never needs the intro cards.
             if route == .ready {
+                ChatMetrics.shared.mark(.coldStart, "route_ready")
+                #if DEBUG
+                PerfFixtureInstaller.installIfEnabled(
+                    teamID: onboarding.currentContext?.team.id,
+                    modelContext: modelContext
+                )
+                #endif
                 UserDefaults.standard.set(true, forKey: OnboardingFlags.hasSeenIntroKey)
             }
             // Signed out, by hand or by a dead session: nothing of that
@@ -297,18 +306,13 @@ struct ContentView: View {
             // consumes any already-pending intent when it first mounts, so the
             // deep link survives the launch-time onboarding gap.
             logger.info("Open-session deep link received; routing to \(sid, privacy: .public)")
-            navigationRouter.openSession(sid)
+            // A push names the message it is about; the session screen
+            // scrolls to it once its feed is up.
+            navigationRouter.openSession(sid, focusMessageID: note.userInfo?["message_id"] as? String)
         }
         .onChange(of: scenePhase) { _, phase in
-            // iOS freezes sockets when backgrounded but rarely delivers a
-            // clean disconnect callback, so `connectionState` can stay
-            // `.connected` on a dead socket ("zombie"). On foreground we
-            // force a full reconnect regardless of reported state; the
-            // SessionDetailViewModel loop will resubscribe and trigger an
-            // incremental history sync once MQTT is back up.
             if phase == .active && pairing.isPaired && onboarding.route == .ready {
-                logger.info("App became active, forcing MQTT reconnect…")
-                forceReconnect()
+                Task { await reconnectIfStale() }
             }
         }
     }
@@ -318,8 +322,41 @@ struct ContentView: View {
         isConnecting = false
         Task {
             await mqtt.disconnect()
+            mqtt.resetSubscriptions()
             await onboarding.signOutAndWipeCache(modelContext: modelContext)
         }
+    }
+
+    /// Foreground check. iOS freezes sockets in the background but rarely
+    /// delivers a clean disconnect, so `connectionState` can read `.connected`
+    /// on a dead socket ("zombie"). A PINGREQ tells the two apart: a live
+    /// connection is kept as is, anything else is rebuilt. Rebuilding a live
+    /// one used to cost a full re-seed in every open screen.
+    private func reconnectIfStale() async {
+        // M5: ends when the connection is known good — the ping answered
+        // here, or `connectMQTT` succeeding after a rebuild.
+        let metrics = ChatMetrics.shared
+        metrics.begin(.foregroundResume, restart: true)
+        metrics.tag(.foregroundResume, "state", mqtt.connectionState.rawValue)
+        switch mqtt.connectionState {
+        case .connected:
+            if await mqtt.probeAlive() {
+                metrics.tag(.foregroundResume, "path", "ping")
+                metrics.end(.foregroundResume)
+                return
+            }
+            metrics.mark(.foregroundResume, "ping_failed")
+            logger.info("App became active and MQTT did not answer a ping; reconnecting…")
+        case .connecting:
+            // Someone else's connect is in flight; it ends the interval.
+            metrics.tag(.foregroundResume, "path", "connecting")
+            return
+        case .reconnecting, .disconnected:
+            // Don't wait out CocoaMQTT's back-off: the user is looking now.
+            logger.info("App became active while MQTT was down; reconnecting…")
+        }
+        metrics.tag(.foregroundResume, "path", "reconnect")
+        forceReconnect()
     }
 
     /// User-initiated reconnect: cancels any in-flight connect Task (so a
@@ -411,6 +448,8 @@ struct ContentView: View {
                 clientId: clientId, useTLS: pairing.useTLS
             )
             logger.info("MQTT connected")
+            ChatMetrics.shared.mark(.coldStart, "mqtt_connected")
+            ChatMetrics.shared.end(.foregroundResume)
             // Hub consumes MQTTService.messages() once and fans out per
             // topic-filter to every downstream consumer. Restart on every
             // (re)connect so the listener picks up the fresh upstream
@@ -429,6 +468,7 @@ struct ContentView: View {
             // RootTabView's .task; TeamcluService start follows from
             // the onChange(teamRuntimeContext) hook above.
         } catch {
+            ChatMetrics.shared.end(.foregroundResume, outcome: .failed)
             logger.error("MQTT connect failed: \(error)")
         }
     }

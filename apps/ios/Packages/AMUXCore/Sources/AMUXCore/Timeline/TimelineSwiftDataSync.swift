@@ -98,6 +98,9 @@ public enum TimelineSwiftDataSync {
         if event.diffNewText != entry.diffNewText { event.diffNewText = entry.diffNewText; changed = true }
         // Compared as the decoded value, not the JSON: re-encoding can reorder
         // keys and would mark every row dirty on every sync.
+        if event.replyToMessageID != entry.replyToMessageID {
+            event.replyToMessageID = entry.replyToMessageID; changed = true
+        }
         if event.attachments != entry.attachments {
             event.attachments = entry.attachments; changed = true
         }
@@ -123,6 +126,7 @@ public enum TimelineSwiftDataSync {
         event.diffOldText = entry.diffOldText
         event.diffNewText = entry.diffNewText
         event.attachments = entry.attachments
+        event.replyToMessageID = entry.replyToMessageID
         return event
     }
 
@@ -150,7 +154,8 @@ public enum TimelineSwiftDataSync {
             diffPath: event.diffPath,
             diffOldText: event.diffOldText,
             diffNewText: event.diffNewText,
-            attachments: event.attachments
+            attachments: event.attachments,
+            replyToMessageID: event.replyToMessageID
         )
     }
 }

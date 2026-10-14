@@ -9,6 +9,7 @@ import AMUXSharedUI
 public struct SessionDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(NavigationRouter.self) private var navigationRouter: NavigationRouter?
     @State private var viewModel: SessionDetailViewModel
     /// Single actor-directory query shared by all EventBubbleView instances
     /// in this session, replacing per-row @Query registrations.
@@ -48,7 +49,31 @@ public struct SessionDetailView: View {
     @State private var plansPageIndex: Int = 0
     @State private var hasAutoOpenedPlans: Bool = false
     @State private var isInitialFeedVisible: Bool = false
+    @State private var hitchMonitor = FrameHitchMonitor()
     @State private var isAtBottom: Bool = true
+    /// Feed rows added while the reader was scrolled up — the jump button's count.
+    @State private var unseenCount = 0
+    /// Feed rows at least partly on screen, for saving where the reader left.
+    @State private var visibleRows = VisibleRows()
+    /// "N unread ↑": the first row that arrived since the reader last left.
+    @State private var unreadJump: (id: String, count: Int)?
+    /// Find-in-conversation: open, its query, the matching rows (feed order)
+    /// and which one is current.
+    @State private var isSearching = false
+    @State private var searchQuery = ""
+    @State private var searchMatches: [String] = []
+    @State private var searchIndex = 0
+    /// Multi-select: on, which feed rows are picked, and the sheets and
+    /// prompts its actions open.
+    @State private var isSelecting = false
+    @State private var selectedFeedIDs: Set<String> = []
+    @State private var isForwardPickerPresented = false
+    @State private var isBatchDeleteConfirming = false
+    @State private var forwardError: String?
+    /// The message the composer is replying to, shown as a bar above it.
+    @State private var replyTarget: AgentEvent?
+    /// Row briefly tinted after a push brought the reader to it.
+    @State private var highlightedFeedID: String?
     /// A finger is on the transcript. Content growth never re-pins the
     /// bottom while this is set, so a drag isn't fought mid-gesture.
     @State private var isUserScrolling: Bool = false
@@ -168,6 +193,9 @@ public struct SessionDetailView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    if viewModel.hasOlderHistory {
+                        olderHistoryRow
+                    }
                     if viewModel.events.isEmpty && viewModel.streamingAgentSet.isEmpty
                         && !viewModel.hasFinishedInitialSeed {
                         // No local cache and the history fetch hasn't come
@@ -189,25 +217,80 @@ public struct SessionDetailView: View {
                     }
 
                     ForEach(viewModel.feedItems) { item in
-                        feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
-                            .id(item.id)
+                        // Exactly one view per item: an optional sibling (the
+                        // time marker) made the element count vary, and the
+                        // lazy stack then built all 220 rows on open.
+                        VStack(spacing: 0) {
+                            if let marker = viewModel.feedTimeMarkers[item.id] {
+                                FeedTimeMarkerLabel(marker: marker)
+                            }
+                            selectableRow(item) {
+                                feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
+                            }
+                            .background(highlightedFeedID == item.id ? Color.amux.cinnabar.opacity(0.10) : .clear)
+                        }
+                        .id(item.id)
                     }
 
                     Color.clear
                         .frame(height: 1)
                         .id("session-detail-bottom")
                 }
+                .scrollTargetLayout()
                 .padding(.top, 8)
             }
             .id(viewModel.hasLoadedInitialFeed)
             .opacity(isInitialFeedVisible ? 1 : 0)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onChange(of: viewModel.feedItems.last?.id) { oldLastID, _ in
+                // Here, inside the ScrollViewReader, not on the screen's body:
+                // a body-level read of `feedItems` re-rendered the whole
+                // screen on every streamed delta (each one rebuilds the feed).
+                // Only rows appended after the old last one, and only while the
+                // reader is away from the bottom (there they scroll into view).
+                // Counting by total would also count older history paged in
+                // above the reader.
+                guard !isAtBottom, isInitialFeedVisible else { return }
+                let items = viewModel.feedItems
+                if let oldLastID, let index = items.firstIndex(where: { $0.id == oldLastID }) {
+                    unseenCount += items.count - index - 1
+                } else {
+                    unseenCount += 1
+                }
+            }
+            .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.3) { ids in
+                visibleRows.ids = Set(ids)
+                if let jump = unreadJump, visibleRows.ids.contains(jump.id) { unreadJump = nil }
+            }
             .task(id: viewModel.hasLoadedInitialFeed) {
                 guard viewModel.hasLoadedInitialFeed, !isInitialFeedVisible else { return }
                 await Task.yield()
-                proxy.scrollTo("session-detail-bottom", anchor: .bottom)
+                let target = initialScrollTarget()
+                if let anchorID = target.anchorID {
+                    // Not at the bottom, before scrolling: the at-bottom
+                    // re-pin would otherwise drag the view back down as the
+                    // lazy rows settle their heights.
+                    isAtBottom = false
+                    // A jump into rows the lazy stack has never laid out
+                    // lands on estimated heights, short of the anchor. Each
+                    // retry measures the rows it passes, so repeat until
+                    // the anchor is the top visible row.
+                    for _ in 0..<6 {
+                        proxy.scrollTo(anchorID, anchor: .top)
+                        try? await Task.sleep(for: .milliseconds(40))
+                        if topVisibleFeedID() == anchorID { break }
+                    }
+                } else {
+                    proxy.scrollTo("session-detail-bottom", anchor: .bottom)
+                }
+                unreadJump = target.unread
                 await Task.yield()
                 isInitialFeedVisible = true
+                // M1's headline number: the cached feed is now on screen.
+                let metricKey = viewModel.session?.sessionId ?? ""
+                ChatMetrics.shared.mark(.openSession, key: metricKey, "first_frame")
+                ChatMetrics.shared.endWhenMarked(.openSession, key: metricKey, SessionDetailViewModel.openSessionEndPhases)
+                await focusMessageFromPush()
             }
             // Store the proxy so the composer's onSend callback (inside
             // safeAreaInset, outside this ScrollViewReader scope) can
@@ -311,6 +394,13 @@ public struct SessionDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
+                        unreadJump = nil
+                        isSearching = true
+                    } label: {
+                        Label("Search in Conversation", systemImage: "magnifyingglass")
+                    }
+                    .accessibilityIdentifier("session.searchMenuItem")
+                    Button {
                         isMemberSheetPresented = true
                     } label: {
                         Label("Members", systemImage: "person.2")
@@ -374,7 +464,16 @@ public struct SessionDetailView: View {
     @ViewBuilder
     private var bottomBar: some View {
             VStack(spacing: 0) {
-                if let question = viewModel.pendingQuestions.first {
+                if isSelecting {
+                    SelectionActionBar(
+                        count: selectedFeedIDs.count,
+                        canDelete: canDeleteSelection,
+                        onCopy: copySelection,
+                        onForward: { isForwardPickerPresented = true },
+                        onDelete: { isBatchDeleteConfirming = true },
+                        onCancel: endSelection
+                    )
+                } else if let question = viewModel.pendingQuestions.first {
                     AcpQuestionCard(
                         pending: question,
                         onSubmit: { answers in
@@ -386,6 +485,8 @@ public struct SessionDetailView: View {
                     )
                     .id(question.id)
                 } else {
+                    VStack(spacing: 6) {
+                    replyBar
                     SessionComposer(
                     promptText: $promptText,
                     attachments: $attachments,
@@ -417,6 +518,8 @@ public struct SessionDetailView: View {
                     onSend: { attachmentURLs in
                         let text = promptText
                         let modelId = resolvedModelId
+                        let replyTo = replyTarget?.supabaseMessageId
+                        replyTarget = nil
                         promptText = ""
                         attachments = []
                         // Snap to bottom when the user sends so the outbox
@@ -427,7 +530,8 @@ public struct SessionDetailView: View {
                             scrollProxy?.scrollTo("session-detail-bottom", anchor: .bottom)
                         }
                         Task {
-                            try? await viewModel.sendPrompt(text, modelId: modelId, attachmentURLs: attachmentURLs, modelContext: modelContext)
+                            try? await viewModel.sendPrompt(text, modelId: modelId, attachmentURLs: attachmentURLs,
+                                                            replyTo: replyTo, modelContext: modelContext)
                         }
                     },
                     onAgentMention: { target in
@@ -435,6 +539,7 @@ public struct SessionDetailView: View {
                     },
                     inputFocused: $composerFocused
                     )
+                    }
                 }
             }
             // The gap under the composer card lives here rather than inside
@@ -457,6 +562,16 @@ public struct SessionDetailView: View {
             daemonOfflineBanner
             sendErrorBanner
             transcript
+                .overlay(alignment: .bottomTrailing) {
+                    // Animated here, not on the screen: `isAtBottom` flips
+                    // while a session opens, and a screen-wide animation
+                    // dragged the whole feed's first layout into it.
+                    jumpToBottomOverlay
+                        .animation(AMUXAnimation.fast, value: isAtBottom)
+                }
+                .overlay(alignment: .top) {
+                    if isSearching { searchOverlay } else { unreadJumpOverlay }
+                }
         }
         // Mist canvas — matches `agent-session.jsx`. Without an explicit
         // background, plain ScrollView falls back to systemBackground (stark
@@ -470,9 +585,312 @@ public struct SessionDetailView: View {
         .toolbar { sessionToolbar }
     }
 
+    private var searchOverlay: some View {
+        SessionSearchBar(
+            query: $searchQuery,
+            position: searchMatches.isEmpty ? 0 : searchIndex + 1,
+            total: searchMatches.count,
+            onPrevious: { stepSearch(by: -1) },
+            onNext: { stepSearch(by: 1) },
+            onDone: {
+                isSearching = false
+                searchQuery = ""
+                searchMatches = []
+                highlightedFeedID = nil
+            }
+        )
+        .onChange(of: searchQuery) { _, query in
+            searchMatches = viewModel.feedItems.feedItemIDs(matching: query)
+            // Newest first, as in IM apps: the latest mention is usually
+            // the one being looked for.
+            searchIndex = max(searchMatches.count - 1, 0)
+            showCurrentMatch()
+        }
+    }
+
+    private func stepSearch(by delta: Int) {
+        guard !searchMatches.isEmpty else { return }
+        searchIndex = (searchIndex + delta + searchMatches.count) % searchMatches.count
+        Haptics.selection()
+        showCurrentMatch()
+    }
+
+    private func showCurrentMatch() {
+        guard searchMatches.indices.contains(searchIndex) else {
+            highlightedFeedID = nil
+            return
+        }
+        let id = searchMatches[searchIndex]
+        highlightedFeedID = id
+        isAtBottom = false
+        Task { await scrollUntilVisible(id, anchor: .center) }
+    }
+
+    @ViewBuilder
+    private var unreadJumpOverlay: some View {
+        if let jump = unreadJump, isInitialFeedVisible {
+            Button {
+                Haptics.selection()
+                withAnimation(AMUXAnimation.fast) {
+                    scrollProxy?.scrollTo(jump.id, anchor: .top)
+                }
+                unreadJump = nil
+            } label: {
+                Label(String(localized: "\(jump.count) unread"), systemImage: "arrow.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.amux.cinnabar)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.amux.paper, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.amux.slate.opacity(0.2)))
+                    .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("session.unreadJump")
+            .padding(.top, 8)
+            .transition(.opacity)
+        }
+    }
+
+    /// A handful of new rows land in view at the bottom anyway; the jump is
+    /// for when they don't fit on one screen.
+    private static let unreadJumpThreshold = 5
+
+    /// Where to open: the row the reader had at the top when they left
+    /// mid-history (nil = the bottom), and the first unread row if there are
+    /// enough of them to need a jump.
+    private func initialScrollTarget() -> (anchorID: String?, unread: (id: String, count: Int)?) {
+        guard let sessionID = viewModel.session?.sessionId,
+              let saved = SessionReadPositionStore.shared.position(for: sessionID)
+        else { return (nil, nil) }
+        let items = viewModel.feedItems
+        let anchor = saved.anchorItemID.flatMap { id in items.contains { $0.id == id } ? id : nil }
+        let unread = firstUnread(in: items, after: saved.lastSeenAt, excludingSender: viewModel.currentHumanActorIDRef)
+        return (anchor, (unread?.count ?? 0) >= Self.unreadJumpThreshold ? unread : nil)
+    }
+
+    /// Sits above the oldest loaded row while the server has more; reaching
+    /// it loads the page before. `.task` also runs when the first frame
+    /// shows, so a session too short to scroll still fills in.
+    private var olderHistoryRow: some View {
+        ProgressView()
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .accessibilityIdentifier("session.olderHistoryLoader")
+            .task(id: isInitialFeedVisible) {
+                guard isInitialFeedVisible else { return }
+                await loadOlderHistoryKeepingPosition()
+            }
+    }
+
+    /// Older rows go in above the reader; without re-anchoring, the content
+    /// they were reading would slide down out of view.
+    private func loadOlderHistoryKeepingPosition() async {
+        let anchor = topVisibleFeedID()
+        await viewModel.loadOlderHistory(modelContext: modelContext)
+        guard let anchor else { return }
+        await Task.yield()
+        scrollProxy?.scrollTo(anchor, anchor: .top)
+    }
+
+    /// A push names a message; bring it into view. It may not be on screen
+    /// yet: wait for the history seed, then page back (a few pages at most)
+    /// until the row holding it is loaded.
+    private func focusMessageFromPush() async {
+        guard let sessionID = viewModel.session?.sessionId,
+              let messageID = navigationRouter?.takeFocusMessage(for: sessionID) else { return }
+        for _ in 0..<20 {
+            if let rowID = viewModel.feedItems.feedItemID(containingServerMessageID: messageID) {
+                unreadJump = nil
+                isAtBottom = false
+                await scrollUntilVisible(rowID, anchor: .center)
+                highlightedFeedID = rowID
+                try? await Task.sleep(for: .seconds(2))
+                withAnimation(AMUXAnimation.fast) { highlightedFeedID = nil }
+                return
+            }
+            // The top-of-feed loader may already be fetching the page before;
+            // a second call would return at once, so wait for it instead.
+            if !viewModel.hasFinishedInitialSeed || viewModel.isLoadingOlderHistory {
+                try? await Task.sleep(for: .milliseconds(300))
+            } else if viewModel.hasOlderHistory {
+                await viewModel.loadOlderHistory(modelContext: modelContext)
+            } else {
+                return
+            }
+        }
+    }
+
+    /// Lazy rows far from the viewport have estimated heights, so one jump
+    /// can land short; repeat until the row is on screen.
+    private func scrollUntilVisible(_ id: String, anchor: UnitPoint) async {
+        for _ in 0..<6 {
+            scrollProxy?.scrollTo(id, anchor: anchor)
+            try? await Task.sleep(for: .milliseconds(40))
+            if visibleRows.ids.contains(id) { return }
+        }
+    }
+
+    @ViewBuilder
+    private var replyBar: some View {
+        if let replyTarget {
+            ReplyComposerBar(
+                senderName: replySenderName(replyTarget),
+                text: replyTarget.text ?? "",
+                onCancel: { self.replyTarget = nil }
+            )
+        }
+    }
+
+    private func replySenderName(_ event: AgentEvent) -> String {
+        guard let sender = event.senderActorID, !sender.isEmpty else {
+            return String(localized: "Agent")
+        }
+        if sender == viewModel.currentHumanActorIDRef { return String(localized: "yourself") }
+        return cachedActorMap.displayName(for: sender) ?? agentDisplayName(for: sender)
+    }
+
+    // MARK: - Multi-select
+
+    @ViewBuilder
+    private func selectableRow<Row: View>(_ item: FeedItem, @ViewBuilder row: () -> Row) -> some View {
+        if isSelecting, item.selectableEvent != nil {
+            HStack(spacing: 0) {
+                SelectionCheck(isSelected: selectedFeedIDs.contains(item.id))
+                row().allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { toggleSelection(item.id) }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("selection.row")
+        } else {
+            row()
+        }
+    }
+
+    private func beginSelection(with id: String) {
+        Haptics.selection()
+        composerFocused = false
+        replyTarget = nil
+        selectedFeedIDs = [id]
+        isSelecting = true
+    }
+
+    private func toggleSelection(_ id: String) {
+        Haptics.selection()
+        if selectedFeedIDs.contains(id) { selectedFeedIDs.remove(id) } else { selectedFeedIDs.insert(id) }
+    }
+
+    private func endSelection() {
+        isSelecting = false
+        selectedFeedIDs = []
+    }
+
+    /// Selected messages in transcript order, each with who sent it.
+    private var selectedMessages: [(sender: String, text: String, event: AgentEvent)] {
+        viewModel.feedItems.compactMap { item in
+            guard selectedFeedIDs.contains(item.id), let event = item.selectableEvent else { return nil }
+            let sender: String
+            if case .completedTurn(_, let agentID, _, _) = item {
+                sender = agentDisplayName(for: agentID)
+            } else if let id = event.senderActorID, !id.isEmpty, id != viewModel.currentHumanActorIDRef {
+                sender = cachedActorMap.displayName(for: id) ?? String(id.prefix(8))
+            } else {
+                // Named, not "Me": a forwarded transcript is read by others.
+                sender = viewModel.currentHumanActorIDRef.flatMap { cachedActorMap.displayName(for: $0) }
+                    ?? String(localized: "Me")
+            }
+            return (sender, event.text ?? "", event)
+        }
+    }
+
+    private var canDeleteSelection: Bool {
+        let messages = selectedMessages
+        return !messages.isEmpty && messages.allSatisfy { canModifyMessage($0.event) }
+    }
+
+    private func copySelection() {
+        UIPasteboard.general.string = MessageTranscript.compose(selectedMessages.map { ($0.sender, $0.text) })
+        Haptics.success()
+        endSelection()
+    }
+
+    private func forwardSelection(to target: Session) {
+        let title = viewModel.session?.title ?? ""
+        let text = MessageTranscript.compose(
+            selectedMessages.map { ($0.sender, $0.text) },
+            header: title.isEmpty ? String(localized: "Forwarded messages") : String(localized: "Forwarded from \(title)")
+        )
+        endSelection()
+        Task {
+            do {
+                try await viewModel.forward(text, toSessionID: target.sessionId)
+                Haptics.success()
+            } catch {
+                forwardError = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteSelection() {
+        let ids = selectedMessages.compactMap { $0.event.supabaseMessageId }
+        endSelection()
+        Task {
+            for id in ids { await viewModel.deleteUserMessage(supabaseMessageID: id) }
+        }
+    }
+
+    /// Quoting needs the message's persisted id; a bubble still in the
+    /// outbox has none yet, so it offers no Reply.
+    private func replyAction(for event: AgentEvent) -> (() -> Void)? {
+        guard let id = event.supabaseMessageId, !id.isEmpty else { return nil }
+        return {
+            Haptics.selection()
+            replyTarget = event
+            composerFocused = true
+        }
+    }
+
+    private func topVisibleFeedID() -> String? {
+        viewModel.feedItems.first { visibleRows.ids.contains($0.id) }?.id
+    }
+
+    /// Records how far the reader got, and the top row if they are parked
+    /// in history. Called whenever the screen goes away.
+    private func saveReadPosition() {
+        guard isInitialFeedVisible, let sessionID = viewModel.session?.sessionId else { return }
+        let items = viewModel.feedItems
+        let visible = items.filter { visibleRows.ids.contains($0.id) }
+        let seen = (isAtBottom ? items : visible).compactMap(\.markerDate).max()
+        guard let seen else { return }
+        let store = SessionReadPositionStore.shared
+        // Scrolling back up to reread must not un-read what came after.
+        let lastSeenAt = max(seen, store.position(for: sessionID)?.lastSeenAt ?? seen)
+        store.save(
+            SessionReadPosition(lastSeenAt: lastSeenAt, anchorItemID: isAtBottom ? nil : visible.first?.id),
+            for: sessionID
+        )
+    }
+
+    @ViewBuilder
+    private var jumpToBottomOverlay: some View {
+        if !isAtBottom, isInitialFeedVisible {
+            JumpToBottomButton(unseenCount: unseenCount) {
+                unseenCount = 0
+                scrollToBottom()
+            }
+            .padding(.trailing, 16)
+            .padding(.bottom, 12)
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+        }
+    }
+
     /// …plus everything that reacts to the view or the session changing.
     private var liveSessionSurface: some View {
         sessionSurface
+        .onChange(of: isAtBottom) { _, atBottom in
+            if atBottom { unseenCount = 0 }
+        }
         .onAppear {
             if let sid = viewModel.session?.sessionId {
                 CurrentSessionFocus.sessionID = sid
@@ -519,7 +937,15 @@ public struct SessionDetailView: View {
         }
     }
 
+    /// M2: how often the whole screen's body runs. Each run during a turn is
+    /// counted against it; between turns only the signpost fires.
+    private func recordBodyEvaluation() {
+        ChatMetrics.event("session_detail_body")
+        ChatMetrics.shared.add(.turnRender, key: viewModel.session?.sessionId ?? "", "body_evals", 1)
+    }
+
     public var body: some View {
+        let _ = recordBodyEvaluation()
         liveSessionSurface
         .sheet(isPresented: $isMemberSheetPresented) {
             SessionMemberSheet(
@@ -599,6 +1025,30 @@ public struct SessionDetailView: View {
             }
         }
         .confirmationDialog(
+            "Delete \(selectedFeedIDs.count) messages?",
+            isPresented: $isBatchDeleteConfirming,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { deleteSelection() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The messages are removed for everyone in this session.")
+        }
+        .sheet(isPresented: $isForwardPickerPresented) {
+            ForwardSessionPicker(
+                teamID: viewModel.teamIDRef,
+                excludingSessionID: viewModel.session?.sessionId ?? "",
+                onPick: forwardSelection(to:)
+            )
+        }
+        .alert(
+            "Couldn't forward",
+            isPresented: Binding(get: { forwardError != nil }, set: { if !$0 { forwardError = nil } }),
+            presenting: forwardError
+        ) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { Text($0) }
+        .confirmationDialog(
             "Delete this message?",
             isPresented: Binding(
                 get: { pendingDeleteEvent != nil },
@@ -631,10 +1081,32 @@ public struct SessionDetailView: View {
             }
             await viewModel.outboxSender?.start()
             viewModel.start(modelContext: modelContext)
+            // Pick up where the user left off; never clobber what they have
+            // already typed since the view appeared.
+            if promptText.isEmpty, let sessionID = viewModel.session?.sessionId {
+                promptText = SessionDraftStore.shared.draft(for: sessionID)
+            }
+            if let sessionID = viewModel.session?.sessionId {
+                hitchMonitor.start(key: sessionID)
+            }
             if let sessionID = viewModel.session?.sessionId {
                 // start() just marked the session read; its pushes are stale.
                 Task { await AppIconBadge.clearDeliveredNotifications(forSession: sessionID) }
             }
+            #if DEBUG
+            // Perf UI tests: stream a scripted turn into a fixture session
+            // once its feed is up, to measure M2 without a daemon. Not behind
+            // the member / feedback fetches below: for a local-only fixture
+            // those fail, and how long that takes must not gate the replay.
+            if UserDefaults.standard.bool(forKey: "AMUXPerfReplay"),
+               let sessionID = viewModel.session?.sessionId,
+               PerfFixtures.isFixture(sessionID) {
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    await viewModel._replayPerfTurn()
+                }
+            }
+            #endif
             await viewModel.refreshMemberSheet()
             await viewModel.loadFeedback()
         }
@@ -653,7 +1125,7 @@ public struct SessionDetailView: View {
             // and the member sheet row's "loading" turns into the
             // current model picker.
             if newValue {
-                Task { await viewModel.refreshMemberSheet() }
+                Task { await viewModel.refreshMemberSheetForTurnStart() }
             }
         }
         .onChange(of: viewModel.isActive) { _, newValue in
@@ -662,12 +1134,16 @@ public struct SessionDetailView: View {
             // chip's stop icon appears as soon as the agent starts
             // working, not only when text begins streaming.
             if newValue {
-                Task { await viewModel.refreshMemberSheet() }
+                Task { await viewModel.refreshMemberSheetForTurnStart() }
             }
         }
-        .onChange(of: viewModel.isAgentWorking) { _, newValue in
-            if newValue {
-                Task { await viewModel.refreshMemberSheet() }
+        // Not on `isAgentWorking`: it rises at the send tap, before the
+        // agent is up, so its refresh showed nothing the next one wouldn't.
+        .onChange(of: promptText) { _, text in
+            // Every keystroke, so a kill or crash keeps it too. Sending
+            // empties the composer, which clears the draft.
+            if let sessionID = viewModel.session?.sessionId {
+                SessionDraftStore.shared.setDraft(text, for: sessionID)
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -693,6 +1169,10 @@ public struct SessionDetailView: View {
             }
         }
         .onDisappear {
+            // Covered or gone: its frames are no longer this screen's.
+            // `.task` restarts it when the view shows again.
+            hitchMonitor.stop()
+            saveReadPosition()
             // Do NOT call viewModel.stop() here. SwiftUI fires this hook
             // both when this view is being popped out of the nav stack
             // (true exit) AND when a destination is pushed on top of it
@@ -821,13 +1301,15 @@ public struct SessionDetailView: View {
                 actorMap: actorMap,
                 onEdit: canModifyMessage(event) ? { editingEvent = event } : nil,
                 onDelete: canModifyMessage(event) ? { pendingDeleteEvent = event } : nil,
-                replyQuote: viewModel.replyQuote(forSupabaseMessageID: event.supabaseMessageId),
+                replyQuote: viewModel.replyQuote(for: event),
                 onTapQuote: {
-                    guard let quote = viewModel.replyQuote(forSupabaseMessageID: event.supabaseMessageId),
+                    guard let quote = viewModel.replyQuote(for: event),
                           let targetID = viewModel.feedItemID(forSupabaseMessageID: quote.messageID)
                     else { return }
                     withAnimation { scrollProxy?.scrollTo(targetID, anchor: .center) }
-                }
+                },
+                onReply: replyAction(for: event),
+                onSelect: { beginSelection(with: item.id) }
             )
         case .activeStream(_, let agentID, let runtimeEvents):
             // NavigationLink(destination:) instead of value-based push
@@ -868,6 +1350,16 @@ public struct SessionDetailView: View {
                 onFeedback: final.supabaseMessageId.map { messageID in
                     { kind in Task { await viewModel.setFeedback(messageID: messageID, kind: kind) } }
                 },
+                onReply: replyAction(for: final),
+                onRegenerate: viewModel.promptForRegeneration(turnItemID: id) == nil ? nil : {
+                    Haptics.tap()
+                    isAtBottom = true
+                    withAnimation(AMUXAnimation.fast) {
+                        scrollProxy?.scrollTo("session-detail-bottom", anchor: .bottom)
+                    }
+                    Task { try? await viewModel.regenerate(turnItemID: id, agentID: agentID, modelContext: modelContext) }
+                },
+                onSelect: { beginSelection(with: id) },
                 attachments: turnAttachments(final: final, runtimeEvents: runtimeEvents),
                 detailIcon: {
                     // Always offer the detail entry point — even text-only
@@ -1269,4 +1761,13 @@ private struct ScrollBottomMetrics: Equatable {
     let viewportHeight: CGFloat
     let bottomInset: CGFloat
     let contentHeight: CGFloat
+}
+
+/// Feed rows at least partly on screen, for saving where the reader left
+/// and for scroll-until-visible. A plain reference, deliberately not
+/// observed: it changes on every scroll — including the auto-scroll that
+/// follows each streamed delta — and storing it in view state re-rendered
+/// the whole session screen per envelope.
+private final class VisibleRows {
+    var ids: Set<String> = []
 }

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		00C46D24ECCAC12B127496CF /* NotificationPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657D4CAAA0B1D13860E2BF66 /* NotificationPreview.swift */; };
 		10E560BDB3C439BFC2808E85 /* AMUXUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07BD2A492D93FDCCB10637D /* AMUXUITests.swift */; };
 		15AE54E5F6CE826C9D3884B5 /* AMUXCore in Frameworks */ = {isa = PBXBuildFile; productRef = E240150FE27A7C45F36DE38D /* AMUXCore */; };
 		16C83AF390462FDDFA5ABAEE /* AMUXApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */; };
@@ -16,60 +17,150 @@
 		2C36DC72B69CF16E00B4ECB5 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F467BD534BE686B6EACBD702 /* ContentView.swift */; };
 		3203553BEAE4D5D79B881582 /* SentrySwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = 5821CF422126708735E13341 /* SentrySwiftUI */; };
 		373E86A34B6908422880D2D7 /* OnboardingChoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E150614525CD79BA72BBC06D /* OnboardingChoiceView.swift */; };
+		4422C0DDF33A846C04684D00 /* ChatMetricsReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */; };
 		4553E608B533CD245A887A39 /* AMUXSessionStreamingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7089CE9863C2F15703551691 /* AMUXSessionStreamingUITests.swift */; };
+		46E3922D1525F0049E20C082 /* MentionDisplayText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 232E74DA528A8AB5EC13F164 /* MentionDisplayText.swift */; };
 		48A4F0655EACAE64B0B0232B /* AMUXUI in Frameworks */ = {isa = PBXBuildFile; productRef = 984FDD5CB983CACB65198166 /* AMUXUI */; };
+		4F01CDE6CFDECCE72EDE5A24 /* AMUXSharedUI in Frameworks */ = {isa = PBXBuildFile; productRef = 1E3C1ECBFC893FB5EFE65E5B /* AMUXSharedUI */; };
+		58B8846DEB1FDD5E294CC24E /* AMUXComposerPasteImageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47F9430BAAF43D984352CC80 /* AMUXComposerPasteImageTests.swift */; };
+		5AD8D4B0BE3F2F67F43EBB3F /* AMUXLiveActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 18D7520F0C07A3AA16A18D47 /* AMUXLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		5B5890F8B5977C6CEC995985 /* AgentTurnLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD79F1939A7F05551F215F9F /* AgentTurnLiveActivity.swift */; };
 		5D9C7760A6A171683819C4A0 /* PushAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */; };
 		5E27EDA155611636668E8AED /* IntroIllustrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */; };
 		65085082F4465D5B43C99A9A /* DesktopGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E733A6BFCE193CA325C33B /* DesktopGuideView.swift */; };
 		6D7C607A8E4F961DF0CEE0ED /* OnboardingNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93B9C49BF75FC26DA4EBA5C5 /* OnboardingNavigation.swift */; };
 		70245B4A62E76BFBC234FE03 /* PushBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 933101253D0E0056ED286BFB /* PushBootstrap.swift */; };
 		770B07D7DCA6D5A3D19E114E /* ServerSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B1DDBE39CD8A28D7D0F9354 /* ServerSettingsSheet.swift */; };
+		78A1361E560B51F7D82BF469 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D334C7B4938B68897BDF0D95 /* WidgetKit.framework */; };
+		7F0F4EEF70AA892BCD0E3A95 /* AMUXLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4983C2F57F55AD1B1CA1A31 /* AMUXLiveActivityBundle.swift */; };
+		8E5688662310CB19A74579C6 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FF2EC5EB32FDCED44A827FF /* NotificationService.swift */; };
 		989AF52819F1BFC91A3315B1 /* AMUXSharedUI in Frameworks */ = {isa = PBXBuildFile; productRef = 5400E9174EF5F9869349C3EF /* AMUXSharedUI */; };
+		9A510474DD8EEC00FCB010E0 /* NotificationReplySender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B2A590C829AFEEB80853960 /* NotificationReplySender.swift */; };
+		9B142E2E72E2404CFBD4BBA4 /* AMUXNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 07B2595C25F3247ACAB4EF3C /* AMUXNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		9F1C704FA9F8243CDB69EC7D /* OrgTeamPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */; };
+		9F32D085EC1CF0F0C2FDBE17 /* AMUXConversationActionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FD4F80146E6A943C761E16E /* AMUXConversationActionsUITests.swift */; };
 		A5C58ED1E2D4F96A34494416 /* InviteJoinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */; };
+		A755E6F2D7B29542BE692742 /* AgentTurnAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775BC2B1E88E2BAED078EB1D /* AgentTurnAttributes.swift */; };
 		A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */; };
 		B3373E2BF0AEBF0F52946F65 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */; };
+		C0B9FB003A3C0A981FB71165 /* AgentTurnActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 992534E3FF4B11BA0B70C34B /* AgentTurnActivityController.swift */; };
+		C4CE309F01410A12CEF25700 /* E2EFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28AEFDFA205B837CEDC3BDB3 /* E2EFlows.swift */; };
+		C8AB0C05E7BD1757BB987144 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6CDB9C84E657B8FC8EADBAF /* SwiftUI.framework */; };
+		CA24785455F00588EBD8ED47 /* PerfFixtureInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88DAD62047B1D395BAAA1110 /* PerfFixtureInstaller.swift */; };
+		CE55C1FE43C2565BA380AB1B /* AMUXChatPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */; };
 		E162A3FC8793994442C23372 /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5C333674232A156EF5A6D1 /* WelcomeView.swift */; };
+		EAC4DF75A0CB335D0E545D6A /* AgentTurnAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775BC2B1E88E2BAED078EB1D /* AgentTurnAttributes.swift */; };
 		EB09506708CCBE1B923FBFAE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */; };
 		EC3990515ABE38A90617C32E /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 514F7615E8C226A5F3660A5F /* LoginView.swift */; };
 		F4C758D14EA8FC4DFFD453E8 /* AMUXSessionLiveDiagTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2304BE28BB84D7C798F28A65 /* AMUXSessionLiveDiagTest.swift */; };
 		F7495A3C8805D7956FA5B578 /* NoTeamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E22D691967D8CFCEC9C7CECF /* NoTeamView.swift */; };
+		FA1295448256619B7910B983 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F057D3FFE11C88B9CF11D13A /* Localizable.xcstrings */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		D52E4713B04E7B639C3436FE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B5450DF3EE729297DB2BFD31 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 15E0A2525D48D73AB6191BBE;
+			remoteInfo = AMUXLiveActivity;
+		};
+		ECAD942BB3E54FD949E54B9A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B5450DF3EE729297DB2BFD31 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 88EBDC80E588A3914F746958;
+			remoteInfo = AMUX;
+		};
+		F411553DCA241B711C51A7CC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B5450DF3EE729297DB2BFD31 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 273C909E4497AC913C8BB2C5;
+			remoteInfo = AMUXNotificationService;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		EBAB6B40866FF8C34330E9AE /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				5AD8D4B0BE3F2F67F43EBB3F /* AMUXLiveActivity.appex in Embed Foundation Extensions */,
+				9B142E2E72E2404CFBD4BBA4 /* AMUXNotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		07B2595C25F3247ACAB4EF3C /* AMUXNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = AMUXNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		18D7520F0C07A3AA16A18D47 /* AMUXLiveActivity.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = AMUXLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		194E71B71F97908AD85A630C /* AMUXSessionLiveCaptureTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionLiveCaptureTest.swift; sourceTree = "<group>"; };
 		1B1DDBE39CD8A28D7D0F9354 /* ServerSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettingsSheet.swift; sourceTree = "<group>"; };
+		1B2A590C829AFEEB80853960 /* NotificationReplySender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationReplySender.swift; sourceTree = "<group>"; };
+		1FF2EC5EB32FDCED44A827FF /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		2304BE28BB84D7C798F28A65 /* AMUXSessionLiveDiagTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionLiveDiagTest.swift; sourceTree = "<group>"; };
+		232E74DA528A8AB5EC13F164 /* MentionDisplayText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MentionDisplayText.swift; sourceTree = "<group>"; };
+		25346F79CE19EF05C745408F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		278531282E6CC92737596EAF /* AMUXCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXCore; path = Packages/AMUXCore; sourceTree = SOURCE_ROOT; };
+		28AEFDFA205B837CEDC3BDB3 /* E2EFlows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2EFlows.swift; sourceTree = "<group>"; };
+		33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXChatPerformanceTests.swift; sourceTree = "<group>"; };
 		36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteJoinSheet.swift; sourceTree = "<group>"; };
 		37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrgTeamPickerView.swift; sourceTree = "<group>"; };
+		47F9430BAAF43D984352CC80 /* AMUXComposerPasteImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXComposerPasteImageTests.swift; sourceTree = "<group>"; };
 		499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXApp.swift; sourceTree = "<group>"; };
 		49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntroIllustrations.swift; sourceTree = "<group>"; };
+		49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMetricsReporting.swift; sourceTree = "<group>"; };
 		4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		4FD4F80146E6A943C761E16E /* AMUXConversationActionsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXConversationActionsUITests.swift; sourceTree = "<group>"; };
 		514F7615E8C226A5F3660A5F /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		5A17336F2708FD5E2A0C62C8 /* AMUXSharedUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXSharedUI; path = Packages/AMUXSharedUI; sourceTree = SOURCE_ROOT; };
+		657D4CAAA0B1D13860E2BF66 /* NotificationPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPreview.swift; sourceTree = "<group>"; };
 		67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushAppDelegate.swift; sourceTree = "<group>"; };
 		7089CE9863C2F15703551691 /* AMUXSessionStreamingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionStreamingUITests.swift; sourceTree = "<group>"; };
+		775BC2B1E88E2BAED078EB1D /* AgentTurnAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTurnAttributes.swift; sourceTree = "<group>"; };
+		88DAD62047B1D395BAAA1110 /* PerfFixtureInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerfFixtureInstaller.swift; sourceTree = "<group>"; };
 		913DCF0E3CEDD1823F52E8D6 /* AMUXUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXUI; path = Packages/AMUXUI; sourceTree = SOURCE_ROOT; };
 		92EC5FA726FD730FCA929AD0 /* AMUX.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AMUX.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		933101253D0E0056ED286BFB /* PushBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushBootstrap.swift; sourceTree = "<group>"; };
 		93B9C49BF75FC26DA4EBA5C5 /* OnboardingNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingNavigation.swift; sourceTree = "<group>"; };
+		992534E3FF4B11BA0B70C34B /* AgentTurnActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTurnActivityController.swift; sourceTree = "<group>"; };
 		9E532B070FBC309D7EB883CE /* AMUXSessionMessageRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionMessageRegressionTests.swift; sourceTree = "<group>"; };
 		A57443CB6DA7A01B751BBA00 /* OnboardingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViews.swift; sourceTree = "<group>"; };
+		A6CDB9C84E657B8FC8EADBAF /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		AA5C333674232A156EF5A6D1 /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
 		AC8A7DFE566257A39578823C /* AMUX.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AMUX.entitlements; sourceTree = "<group>"; };
 		B26E4EC39A79E60BACC23B33 /* AMUXUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AMUXUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B3E733A6BFCE193CA325C33B /* DesktopGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopGuideView.swift; sourceTree = "<group>"; };
+		B4983C2F57F55AD1B1CA1A31 /* AMUXLiveActivityBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXLiveActivityBundle.swift; sourceTree = "<group>"; };
+		BDB32AE75FD37BAC23B76023 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C07BD2A492D93FDCCB10637D /* AMUXUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXUITests.swift; sourceTree = "<group>"; };
+		D334C7B4938B68897BDF0D95 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		DD79F1939A7F05551F215F9F /* AgentTurnLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTurnLiveActivity.swift; sourceTree = "<group>"; };
 		E150614525CD79BA72BBC06D /* OnboardingChoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingChoiceView.swift; sourceTree = "<group>"; };
 		E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXAuthUITests.swift; sourceTree = "<group>"; };
 		E22D691967D8CFCEC9C7CECF /* NoTeamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoTeamView.swift; sourceTree = "<group>"; };
+		F057D3FFE11C88B9CF11D13A /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		F467BD534BE686B6EACBD702 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		FDEFC0BF7C8A215582AF7257 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		B45B384B6C6E4CE6F33F3752 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4F01CDE6CFDECCE72EDE5A24 /* AMUXSharedUI in Frameworks */,
+				78A1361E560B51F7D82BF469 /* WidgetKit.framework in Frameworks */,
+				C8AB0C05E7BD1757BB987144 /* SwiftUI.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		ECADCD32155644B8EFA9179C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -84,26 +175,73 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0E6B7C6BAA5329CAD39443C1 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				775BC2B1E88E2BAED078EB1D /* AgentTurnAttributes.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		298DEA6CBDBC6058FD218E78 /* Notifications */ = {
+			isa = PBXGroup;
+			children = (
+				657D4CAAA0B1D13860E2BF66 /* NotificationPreview.swift */,
+			);
+			name = Notifications;
+			path = Packages/AMUXCore/Sources/AMUXCore/Notifications;
+			sourceTree = "<group>";
+		};
 		334DCAF382DCB0E595087C5F /* AMUXUITests */ = {
 			isa = PBXGroup;
 			children = (
 				E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */,
+				33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */,
+				47F9430BAAF43D984352CC80 /* AMUXComposerPasteImageTests.swift */,
+				4FD4F80146E6A943C761E16E /* AMUXConversationActionsUITests.swift */,
 				194E71B71F97908AD85A630C /* AMUXSessionLiveCaptureTest.swift */,
 				2304BE28BB84D7C798F28A65 /* AMUXSessionLiveDiagTest.swift */,
 				9E532B070FBC309D7EB883CE /* AMUXSessionMessageRegressionTests.swift */,
 				7089CE9863C2F15703551691 /* AMUXSessionStreamingUITests.swift */,
 				C07BD2A492D93FDCCB10637D /* AMUXUITests.swift */,
+				28AEFDFA205B837CEDC3BDB3 /* E2EFlows.swift */,
 				93B9C49BF75FC26DA4EBA5C5 /* OnboardingNavigation.swift */,
 			);
 			path = AMUXUITests;
+			sourceTree = "<group>";
+		};
+		46CC426E771F595FB93025B6 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A6CDB9C84E657B8FC8EADBAF /* SwiftUI.framework */,
+				D334C7B4938B68897BDF0D95 /* WidgetKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		734C80C3FF47423106314FD5 /* AMUXLiveActivity */ = {
+			isa = PBXGroup;
+			children = (
+				DD79F1939A7F05551F215F9F /* AgentTurnLiveActivity.swift */,
+				B4983C2F57F55AD1B1CA1A31 /* AMUXLiveActivityBundle.swift */,
+				BDB32AE75FD37BAC23B76023 /* Info.plist */,
+				F057D3FFE11C88B9CF11D13A /* Localizable.xcstrings */,
+			);
+			path = AMUXLiveActivity;
 			sourceTree = "<group>";
 		};
 		83793258F8E10835639EAA01 = {
 			isa = PBXGroup;
 			children = (
 				DE118744A87DC657033FEE83 /* AMUXApp */,
+				734C80C3FF47423106314FD5 /* AMUXLiveActivity */,
+				D32E6D9F2E9651701D56BBD0 /* AMUXNotificationService */,
 				334DCAF382DCB0E595087C5F /* AMUXUITests */,
+				EFDE0E57DB00995C3EA11071 /* Mentions */,
+				298DEA6CBDBC6058FD218E78 /* Notifications */,
 				F3F3AE62103A736D5640947B /* Packages */,
+				0E6B7C6BAA5329CAD39443C1 /* Shared */,
+				46CC426E771F595FB93025B6 /* Frameworks */,
 				963A4419258D8363CB0E797F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -112,17 +250,30 @@
 			isa = PBXGroup;
 			children = (
 				92EC5FA726FD730FCA929AD0 /* AMUX.app */,
+				18D7520F0C07A3AA16A18D47 /* AMUXLiveActivity.appex */,
+				07B2595C25F3247ACAB4EF3C /* AMUXNotificationService.appex */,
 				B26E4EC39A79E60BACC23B33 /* AMUXUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
+		D32E6D9F2E9651701D56BBD0 /* AMUXNotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				25346F79CE19EF05C745408F /* Info.plist */,
+				1FF2EC5EB32FDCED44A827FF /* NotificationService.swift */,
+			);
+			path = AMUXNotificationService;
+			sourceTree = "<group>";
+		};
 		DE118744A87DC657033FEE83 /* AMUXApp */ = {
 			isa = PBXGroup;
 			children = (
+				992534E3FF4B11BA0B70C34B /* AgentTurnActivityController.swift */,
 				AC8A7DFE566257A39578823C /* AMUX.entitlements */,
 				499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */,
 				25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */,
+				49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */,
 				F467BD534BE686B6EACBD702 /* ContentView.swift */,
 				B3E733A6BFCE193CA325C33B /* DesktopGuideView.swift */,
 				FDEFC0BF7C8A215582AF7257 /* Info.plist */,
@@ -131,15 +282,26 @@
 				4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */,
 				514F7615E8C226A5F3660A5F /* LoginView.swift */,
 				E22D691967D8CFCEC9C7CECF /* NoTeamView.swift */,
+				1B2A590C829AFEEB80853960 /* NotificationReplySender.swift */,
 				E150614525CD79BA72BBC06D /* OnboardingChoiceView.swift */,
 				A57443CB6DA7A01B751BBA00 /* OnboardingViews.swift */,
 				37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */,
+				88DAD62047B1D395BAAA1110 /* PerfFixtureInstaller.swift */,
 				67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */,
 				933101253D0E0056ED286BFB /* PushBootstrap.swift */,
 				1B1DDBE39CD8A28D7D0F9354 /* ServerSettingsSheet.swift */,
 				AA5C333674232A156EF5A6D1 /* WelcomeView.swift */,
 			);
 			path = AMUXApp;
+			sourceTree = "<group>";
+		};
+		EFDE0E57DB00995C3EA11071 /* Mentions */ = {
+			isa = PBXGroup;
+			children = (
+				232E74DA528A8AB5EC13F164 /* MentionDisplayText.swift */,
+			);
+			name = Mentions;
+			path = Packages/AMUXCore/Sources/AMUXCore/Mentions;
 			sourceTree = "<group>";
 		};
 		F3F3AE62103A736D5640947B /* Packages */ = {
@@ -155,6 +317,43 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		15E0A2525D48D73AB6191BBE /* AMUXLiveActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8EF34BEE359893273D71FD0D /* Build configuration list for PBXNativeTarget "AMUXLiveActivity" */;
+			buildPhases = (
+				C1CEBC818659D469BA01C124 /* Sources */,
+				19FF5CEA37BBB7511E13D889 /* Resources */,
+				B45B384B6C6E4CE6F33F3752 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AMUXLiveActivity;
+			packageProductDependencies = (
+				1E3C1ECBFC893FB5EFE65E5B /* AMUXSharedUI */,
+			);
+			productName = AMUXLiveActivity;
+			productReference = 18D7520F0C07A3AA16A18D47 /* AMUXLiveActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		273C909E4497AC913C8BB2C5 /* AMUXNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2BD1B0FD2A3960B36E7054D0 /* Build configuration list for PBXNativeTarget "AMUXNotificationService" */;
+			buildPhases = (
+				975F9D6E767D7D2C367F7E9F /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AMUXNotificationService;
+			packageProductDependencies = (
+			);
+			productName = AMUXNotificationService;
+			productReference = 07B2595C25F3247ACAB4EF3C /* AMUXNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		88EBDC80E588A3914F746958 /* AMUX */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 48EFA33B3A56F1288E6D1CE0 /* Build configuration list for PBXNativeTarget "AMUX" */;
@@ -162,10 +361,13 @@
 				2D7B8313BF40FD4C5B202734 /* Sources */,
 				ADA3050110CD6C8004F1D672 /* Resources */,
 				ECADCD32155644B8EFA9179C /* Frameworks */,
+				EBAB6B40866FF8C34330E9AE /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				FF17893C4AD984FCA674C0D0 /* PBXTargetDependency */,
+				D106DF483C7757C0314A95AE /* PBXTargetDependency */,
 			);
 			name = AMUX;
 			packageProductDependencies = (
@@ -187,6 +389,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				7A219B90C99E5FA3772A952D /* PBXTargetDependency */,
 			);
 			name = AMUXUITests;
 			packageProductDependencies = (
@@ -204,6 +407,12 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
+					15E0A2525D48D73AB6191BBE = {
+						DevelopmentTeam = 43G5A6G9QV;
+					};
+					273C909E4497AC913C8BB2C5 = {
+						DevelopmentTeam = 43G5A6G9QV;
+					};
 					88EBDC80E588A3914F746958 = {
 						DevelopmentTeam = 43G5A6G9QV;
 					};
@@ -235,12 +444,22 @@
 			projectRoot = "";
 			targets = (
 				88EBDC80E588A3914F746958 /* AMUX */,
+				15E0A2525D48D73AB6191BBE /* AMUXLiveActivity */,
+				273C909E4497AC913C8BB2C5 /* AMUXNotificationService */,
 				95B89C84C28FD2B5C770C9CD /* AMUXUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		19FF5CEA37BBB7511E13D889 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FA1295448256619B7910B983 /* Localizable.xcstrings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		ADA3050110CD6C8004F1D672 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -258,15 +477,20 @@
 			buildActionMask = 2147483647;
 			files = (
 				16C83AF390462FDDFA5ABAEE /* AMUXApp.swift in Sources */,
+				C0B9FB003A3C0A981FB71165 /* AgentTurnActivityController.swift in Sources */,
+				EAC4DF75A0CB335D0E545D6A /* AgentTurnAttributes.swift in Sources */,
+				4422C0DDF33A846C04684D00 /* ChatMetricsReporting.swift in Sources */,
 				2C36DC72B69CF16E00B4ECB5 /* ContentView.swift in Sources */,
 				65085082F4465D5B43C99A9A /* DesktopGuideView.swift in Sources */,
 				5E27EDA155611636668E8AED /* IntroIllustrations.swift in Sources */,
 				A5C58ED1E2D4F96A34494416 /* InviteJoinSheet.swift in Sources */,
 				EC3990515ABE38A90617C32E /* LoginView.swift in Sources */,
 				F7495A3C8805D7956FA5B578 /* NoTeamView.swift in Sources */,
+				9A510474DD8EEC00FCB010E0 /* NotificationReplySender.swift in Sources */,
 				373E86A34B6908422880D2D7 /* OnboardingChoiceView.swift in Sources */,
 				29C3F045A406DBA4AD7D1F32 /* OnboardingViews.swift in Sources */,
 				9F1C704FA9F8243CDB69EC7D /* OrgTeamPickerView.swift in Sources */,
+				CA24785455F00588EBD8ED47 /* PerfFixtureInstaller.swift in Sources */,
 				5D9C7760A6A171683819C4A0 /* PushAppDelegate.swift in Sources */,
 				70245B4A62E76BFBC234FE03 /* PushBootstrap.swift in Sources */,
 				770B07D7DCA6D5A3D19E114E /* ServerSettingsSheet.swift in Sources */,
@@ -279,16 +503,58 @@
 			buildActionMask = 2147483647;
 			files = (
 				A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */,
+				CE55C1FE43C2565BA380AB1B /* AMUXChatPerformanceTests.swift in Sources */,
+				58B8846DEB1FDD5E294CC24E /* AMUXComposerPasteImageTests.swift in Sources */,
+				9F32D085EC1CF0F0C2FDBE17 /* AMUXConversationActionsUITests.swift in Sources */,
 				29502E986D717CDB6A9EE9FC /* AMUXSessionLiveCaptureTest.swift in Sources */,
 				F4C758D14EA8FC4DFFD453E8 /* AMUXSessionLiveDiagTest.swift in Sources */,
 				2468D5A7710326FCAE98EED5 /* AMUXSessionMessageRegressionTests.swift in Sources */,
 				4553E608B533CD245A887A39 /* AMUXSessionStreamingUITests.swift in Sources */,
 				10E560BDB3C439BFC2808E85 /* AMUXUITests.swift in Sources */,
+				C4CE309F01410A12CEF25700 /* E2EFlows.swift in Sources */,
 				6D7C607A8E4F961DF0CEE0ED /* OnboardingNavigation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		975F9D6E767D7D2C367F7E9F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				46E3922D1525F0049E20C082 /* MentionDisplayText.swift in Sources */,
+				00C46D24ECCAC12B127496CF /* NotificationPreview.swift in Sources */,
+				8E5688662310CB19A74579C6 /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C1CEBC818659D469BA01C124 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7F0F4EEF70AA892BCD0E3A95 /* AMUXLiveActivityBundle.swift in Sources */,
+				A755E6F2D7B29542BE692742 /* AgentTurnAttributes.swift in Sources */,
+				5B5890F8B5977C6CEC995985 /* AgentTurnLiveActivity.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7A219B90C99E5FA3772A952D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 88EBDC80E588A3914F746958 /* AMUX */;
+			targetProxy = ECAD942BB3E54FD949E54B9A /* PBXContainerItemProxy */;
+		};
+		D106DF483C7757C0314A95AE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 273C909E4497AC913C8BB2C5 /* AMUXNotificationService */;
+			targetProxy = F411553DCA241B711C51A7CC /* PBXContainerItemProxy */;
+		};
+		FF17893C4AD984FCA674C0D0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 15E0A2525D48D73AB6191BBE /* AMUXLiveActivity */;
+			targetProxy = D52E4713B04E7B639C3436FE /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1C850D8FBC08BD5B2CFA0C42 /* Release */ = {
@@ -325,6 +591,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 27;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -337,6 +604,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.2;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -353,14 +621,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = AMUXApp/AMUX.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = 43G5A6G9QV;
 				INFOPLIST_FILE = AMUXApp/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.teamclu.mobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
@@ -368,26 +634,60 @@
 			};
 			name = Release;
 		};
+		5E156D9FBB802C20C3D8F558 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEVELOPMENT_TEAM = 43G5A6G9QV;
+				INFOPLIST_FILE = AMUXNotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.teamclu.mobile.NotificationService;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		695700892E6C371673F78B5E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = AMUXApp/AMUX.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 27;
 				DEVELOPMENT_TEAM = 43G5A6G9QV;
 				INFOPLIST_FILE = AMUXApp/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.teamclu.mobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
+		};
+		A49C7FA6211BDCEFD635C541 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEVELOPMENT_TEAM = 43G5A6G9QV;
+				INFOPLIST_FILE = AMUXNotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.teamclu.mobile.NotificationService;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
 		};
 		AF5BBA59AEF13AF33DF324DD /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -405,6 +705,24 @@
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = AMUX;
+			};
+			name = Release;
+		};
+		CF21491662D0C7A9EF180605 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEVELOPMENT_TEAM = 43G5A6G9QV;
+				INFOPLIST_FILE = AMUXLiveActivity/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.teamclu.mobile.LiveActivity;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -461,6 +779,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 27;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -479,6 +798,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.2;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -490,14 +810,50 @@
 			};
 			name = Debug;
 		};
+		FCB0B7D8A203E2AE704D05A1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEVELOPMENT_TEAM = 43G5A6G9QV;
+				INFOPLIST_FILE = AMUXLiveActivity/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.teamclu.mobile.LiveActivity;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		2BD1B0FD2A3960B36E7054D0 /* Build configuration list for PBXNativeTarget "AMUXNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5E156D9FBB802C20C3D8F558 /* Debug */,
+				A49C7FA6211BDCEFD635C541 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		48EFA33B3A56F1288E6D1CE0 /* Build configuration list for PBXNativeTarget "AMUX" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				695700892E6C371673F78B5E /* Debug */,
 				53CB5489784828B4A38F152A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		8EF34BEE359893273D71FD0D /* Build configuration list for PBXNativeTarget "AMUXLiveActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FCB0B7D8A203E2AE704D05A1 /* Debug */,
+				CF21491662D0C7A9EF180605 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -549,6 +905,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		1E3C1ECBFC893FB5EFE65E5B /* AMUXSharedUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AMUXSharedUI;
+		};
 		5400E9174EF5F9869349C3EF /* AMUXSharedUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AMUXSharedUI;

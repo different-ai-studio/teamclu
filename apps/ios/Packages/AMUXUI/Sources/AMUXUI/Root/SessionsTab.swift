@@ -125,6 +125,13 @@ public struct SessionsTab: View {
                 )
                 .navigationTitle("Sessions")
                 .navigationBarTitleDisplayMode(.large)
+                .onChange(of: viewModel.sessions.isEmpty, initial: true) { _, isEmpty in
+                    // M4 ends when the list first shows rows. No-op once
+                    // ended, and on every later launch-less change.
+                    guard !isEmpty else { return }
+                    ChatMetrics.shared.set(.coldStart, "sessions", Double(viewModel.sessions.count))
+                    ChatMetrics.shared.end(.coldStart)
+                }
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button { showShortcuts = true } label: {
@@ -258,6 +265,13 @@ public struct SessionsTab: View {
         // ~86% width + full height; the tab bar peeking out underneath
         // competes with the drawer's right-side rounded corner and
         // adds nothing the user can act on in that state.
+        .onChange(of: navigationPath) { old, new in
+            // M1 starts at the push itself — list tap, push notification
+            // and new session all land here — so it includes building the
+            // destination, not just what the view model does.
+            guard new.count > old.count, let pushed = new.last, pushed.hasPrefix("session:") else { return }
+            ChatMetrics.shared.begin(.openSession, key: String(pushed.dropFirst("session:".count)), restart: true)
+        }
         .toolbarVisibility(
             (navigationPath.isEmpty && !showShortcuts) ? .visible : .hidden,
             for: .tabBar

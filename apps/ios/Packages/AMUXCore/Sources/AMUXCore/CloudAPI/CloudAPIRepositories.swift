@@ -368,7 +368,7 @@ public actor CloudAPIMessagesRepository: MessagesRepository {
             kind: input.kind,
             metadata: metadata,
             turnId: nil,
-            replyToMessageId: nil,
+            replyToMessageId: input.replyToMessageID,
             model: nil,
             createdAt: nil
         )

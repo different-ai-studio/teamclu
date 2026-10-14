@@ -24,6 +24,9 @@ public final class SessionListViewModel {
     public var sessions: [Session] = []
     public var isLoading = true
     public var searchText = ""
+    /// Sessions whose cached messages contain `searchText`, refreshed by
+    /// `updateContentSearch`. Local only: what this device has loaded.
+    public private(set) var contentMatchSessionIDs: Set<String> = []
     private var task: Task<Void, Never>?
     private var inboxTask: Task<Void, Never>?
     // Retained so markAsRead() can mutate the same context the ingest uses.
@@ -670,7 +673,8 @@ public final class SessionListViewModel {
         if let validIDs = validSessionIDs {
             let all = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
             var didDelete = false
-            for row in all where !validIDs.contains(row.sessionId) {
+            // Perf fixtures are local by design (DEBUG only), never on the server.
+            for row in all where !validIDs.contains(row.sessionId) && !PerfFixtures.isFixture(row.sessionId) {
                 modelContext.delete(row)
                 didDelete = true
             }
@@ -749,7 +753,7 @@ public final class SessionListViewModel {
             }
         }
 
-        for stale in byID.values {
+        for stale in byID.values where !PerfFixtures.isFixture(stale.sessionId) {
             modelContext.delete(stale)
         }
 
@@ -805,6 +809,26 @@ public final class SessionListViewModel {
         if changed { try? modelContext.save() }
     }
 
+    /// Looks `searchText` up in the cached messages of every session, so a
+    /// list search finds conversations by what was said in them, not only
+    /// by title. Two characters minimum: one matches nearly everything.
+    public func updateContentSearch(modelContext: ModelContext) {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= 2 else {
+            if !contentMatchSessionIDs.isEmpty { contentMatchSessionIDs = [] }
+            return
+        }
+        let prompt = "user_prompt", output = "output"
+        let descriptor = FetchDescriptor<AgentEvent>(
+            predicate: #Predicate { $0.eventType == prompt || $0.eventType == output }
+        )
+        let rows = (try? modelContext.fetch(descriptor)) ?? []
+        contentMatchSessionIDs = Set(rows.compactMap { row in
+            guard let text = row.text, MentionDisplayText.plainText(text).localizedStandardContains(query) else { return nil }
+            return row.agentId
+        })
+    }
+
     // MARK: - Time Grouping
 
     /// When true the list shows ONLY scheduled (cron-created) sessions —
@@ -817,7 +841,12 @@ public final class SessionListViewModel {
         let visible = sessions
             .filter { !$0.isArchived }
             .filter { ($0.source == "cron") == showCronSessions }
-            .filter { q.isEmpty || $0.title.lowercased().contains(q) }
+            .filter {
+                q.isEmpty
+                    || $0.title.lowercased().contains(q)
+                    || $0.lastMessagePreview.lowercased().contains(q)
+                    || contentMatchSessionIDs.contains($0.sessionId)
+            }
             .sorted { $0.listDate > $1.listDate }
 
         let pinned = visible.filter { $0.isPinned }

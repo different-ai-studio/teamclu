@@ -56,6 +56,11 @@ public struct EventBubbleView: View {
     /// tapping invokes `onTapQuote` (jump to the quoted message).
     let replyQuote: SessionDetailViewModel.ReplyQuote?
     let onTapQuote: (() -> Void)?
+    /// Starts a quoted reply to this message; nil when it has no persisted
+    /// id yet to point at.
+    let onReply: (() -> Void)?
+    /// Enters multi-select with this message selected.
+    let onSelect: (() -> Void)?
 
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var fullscreenImageContext: FullscreenImageContext?
@@ -76,7 +81,9 @@ public struct EventBubbleView: View {
                 onEdit: (() -> Void)? = nil,
                 onDelete: (() -> Void)? = nil,
                 replyQuote: SessionDetailViewModel.ReplyQuote? = nil,
-                onTapQuote: (() -> Void)? = nil) {
+                onTapQuote: (() -> Void)? = nil,
+                onReply: (() -> Void)? = nil,
+                onSelect: (() -> Void)? = nil) {
         self.event = event
         self.runtime = runtime
         self.onGrant = onGrant
@@ -91,6 +98,8 @@ public struct EventBubbleView: View {
         self.onDelete = onDelete
         self.replyQuote = replyQuote
         self.onTapQuote = onTapQuote
+        self.onReply = onReply
+        self.onSelect = onSelect
     }
 
     /// True when this event was produced by an actor other than the
@@ -240,18 +249,7 @@ public struct EventBubbleView: View {
                             }
                         }
                         ForEach(Array(parsed.imageURLs.enumerated()), id: \.offset) { _, url in
-                            AsyncImage(url: url) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image.resizable().scaledToFit()
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                                default:
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color.amux.pebble)
-                                        .overlay(ProgressView())
-                                        .frame(height: 150)
-                                }
-                            }
+                            ChatURLImage(url: url)
                         }
                         ForEach(Array(parsed.fileURLs.enumerated()), id: \.offset) { _, url in
                             AttachmentFileCard(url: url)
@@ -267,7 +265,17 @@ public struct EventBubbleView: View {
                                              tint: Color.amux.cinnabar,
                                              interactive: false)
                                 .contextMenu {
+                                    if let onReply {
+                                        Button { onReply() } label: {
+                                            Label("Reply", systemImage: "arrowshape.turn.up.left")
+                                        }
+                                    }
                                     MessageContextMenu(text: MentionDisplayText.plainText(event.text ?? ""))
+                                    if let onSelect {
+                                        Button { onSelect() } label: {
+                                            Label("Select", systemImage: "checkmark.circle")
+                                        }
+                                    }
                                     if onEdit != nil || onDelete != nil {
                                         Divider()
                                     }
@@ -324,7 +332,17 @@ public struct EventBubbleView: View {
                                      tint: Color.amux.slate,
                                      interactive: false)
                         .contextMenu {
+                            if let onReply {
+                                Button { onReply() } label: {
+                                    Label("Reply", systemImage: "arrowshape.turn.up.left")
+                                }
+                            }
                             MessageContextMenu(text: MentionDisplayText.plainText(event.text ?? ""))
+                            if let onSelect {
+                                Button { onSelect() } label: {
+                                    Label("Select", systemImage: "checkmark.circle")
+                                }
+                            }
                         }
                 }
                 .frame(maxWidth: sizeClass == .regular ? 500 : 260, alignment: .trailing)
@@ -578,12 +596,22 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
     /// Invoked with the desired kind; the parent owns toggle semantics
     /// (tapping the active kind again clears it).
     public let onFeedback: ((String) -> Void)?
+    /// Starts a quoted reply to this answer.
+    public let onReply: (() -> Void)?
+    /// Resends the turn's prompt to the agent as a new message (not an
+    /// in-place regenerate); nil when there is no text-only prompt above.
+    public let onRegenerate: (() -> Void)?
+    /// Enters multi-select with this reply selected.
+    public let onSelect: (() -> Void)?
 
     public init(finalEvent: AgentEvent,
                 runtime: AgentAttachment?,
                 agentName: String?,
                 feedbackKind: String? = nil,
                 onFeedback: ((String) -> Void)? = nil,
+                onReply: (() -> Void)? = nil,
+                onRegenerate: (() -> Void)? = nil,
+                onSelect: (() -> Void)? = nil,
                 attachments: [MessageAttachment] = [],
                 @ViewBuilder detailIcon: @escaping () -> DetailIcon = { EmptyView() }) {
         self.finalEvent = finalEvent
@@ -591,6 +619,9 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
         self.agentName = agentName
         self.feedbackKind = feedbackKind
         self.onFeedback = onFeedback
+        self.onReply = onReply
+        self.onRegenerate = onRegenerate
+        self.onSelect = onSelect
         self.detailIcon = detailIcon
         self.attachments = attachments
     }
@@ -619,7 +650,22 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .liquidGlass(in: RoundedRectangle(cornerRadius: 18), interactive: false)
                 .contextMenu {
+                    if let onReply {
+                        Button { onReply() } label: {
+                            Label("Reply", systemImage: "arrowshape.turn.up.left")
+                        }
+                    }
                     MessageContextMenu(text: finalEvent.text ?? "")
+                    if let onRegenerate {
+                        Button { onRegenerate() } label: {
+                            Label("Ask Again", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    if let onSelect {
+                        Button { onSelect() } label: {
+                            Label("Select", systemImage: "checkmark.circle")
+                        }
+                    }
                     if let onFeedback {
                         Divider()
                         Button {
@@ -917,9 +963,11 @@ struct FullScreenSessionImageViewer: View {
     private func imagePhaseView(_ phase: AsyncImagePhase) -> some View {
         switch phase {
         case .success(let image):
-            image.resizable()
-                .scaledToFit()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ZoomableContainer {
+                image.resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .failure:
             VStack(spacing: 12) {
                 Image(systemName: "photo.badge.exclamationmark")
@@ -1016,18 +1064,8 @@ private struct SentAttachmentsView: View {
     var body: some View {
         ForEach(Array(attachmentURLs.enumerated()), id: \.offset) { _, url in
             if ParsedMessageContent.imageExtensions.contains(url.pathExtension.lowercased()) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    default:
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.amux.pebble)
-                            .frame(height: 150)
-                    }
-                }
-                .onTapGesture { onTap?(url, sessionID) }
+                ChatURLImage(url: url)
+                    .onTapGesture { onTap?(url, sessionID) }
             } else {
                 // Non-image uploads used to render through the AsyncImage
                 // failure branch — a bare grey block with the filename
@@ -1076,6 +1114,7 @@ struct AttachmentImageView: View {
     let attachment: MessageAttachment
     var maxHeight: CGFloat = 220
 
+    @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
     @State private var failed = false
 
@@ -1104,12 +1143,17 @@ struct AttachmentImageView: View {
             if attachment.bucketPath == nil { failed = true }
             return
         }
+        // M7, Instruments only: fetch (or disk hit) + the downsampling
+        // decode, all off the main thread; a memory hit is near zero.
+        let signpost = ChatMetrics.beginSignpost("image_load", attachment.filename)
+        defer { ChatMetrics.endSignpost("image_load", signpost, "") }
         do {
-            let data = try await AttachmentContentLoader.shared.data(
-                bucketPath: path, fileName: attachment.filename
+            // Decoded at what the bubble can show — the height cap on the
+            // longest edge — not at the photo's own size.
+            image = try await ChatImageLoader.shared.attachment(
+                bucketPath: path, fileName: attachment.filename,
+                maxPixel: Int(max(maxHeight, 260) * displayScale)
             )
-            guard let decoded = UIImage(data: data) else { failed = true; return }
-            image = decoded
         } catch {
             failed = true
         }
@@ -1354,6 +1398,7 @@ struct MessageContextMenu: View {
     var body: some View {
         Button {
             UIPasteboard.general.string = text
+            Haptics.success()
         } label: {
             Label("Copy", systemImage: "doc.on.doc")
         }

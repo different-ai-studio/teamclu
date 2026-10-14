@@ -20,3 +20,40 @@ extension XCUIApplication {
         return true
     }
 }
+
+/// The E2E account from the scheme (`TEAMCLU_TEST_EMAIL` /
+/// `TEAMCLU_TEST_PASSWORD`, or the older `AMUX_TEST_*` spellings). Empty when
+/// unset.
+enum E2EAccount {
+    static var email: String {
+        ProcessInfo.processInfo.environment["TEAMCLU_TEST_EMAIL"]
+            ?? ProcessInfo.processInfo.environment["AMUX_TEST_EMAIL"] ?? ""
+    }
+    static var password: String {
+        ProcessInfo.processInfo.environment["TEAMCLU_TEST_PASSWORD"]
+            ?? ProcessInfo.processInfo.environment["AMUX_TEST_PASSWORD"] ?? ""
+    }
+    static var isConfigured: Bool { !email.isEmpty && !password.isEmpty }
+}
+
+extension XCUIApplication {
+    /// Signs in with the E2E account unless the app already shows the main
+    /// tabs. Returns false when it is signed out and no account is set.
+    @discardableResult
+    func signInIfNeeded(timeout: TimeInterval = 30) -> Bool {
+        if tabBars.firstMatch.waitForExistence(timeout: 8) { return true }
+        guard E2EAccount.isConfigured, openLoginFromOnboarding() else { return false }
+        let methodPicker = segmentedControls["login.methodPicker"]
+        guard methodPicker.waitForExistence(timeout: 5) else { return false }
+        methodPicker.buttons["Password"].tap()
+        let emailField = textFields["login.emailField"]
+        guard emailField.waitForExistence(timeout: 5) else { return false }
+        emailField.tap()
+        emailField.typeText(E2EAccount.email)
+        let passwordField = secureTextFields["login.passwordField"]
+        passwordField.tap()
+        passwordField.typeText(E2EAccount.password)
+        buttons["login.submitButton"].tap()
+        return tabBars.firstMatch.waitForExistence(timeout: timeout)
+    }
+}

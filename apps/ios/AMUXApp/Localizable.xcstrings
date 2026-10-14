@@ -1,6 +1,46 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%@ (not set up yet)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（还没初始化）"
+          }
+        }
+      }
+    },
+    "%lld new messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 条新消息"
+          }
+        }
+      }
+    },
+    "%lld selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %lld 条"
+          }
+        }
+      }
+    },
+    "%lld unread": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 条未读"
+          }
+        }
+      }
+    },
     "\"%@\" is currently responding. Stopping will interrupt the reply mid-stream.": {
       "localizations": {
         "zh-Hans": {
@@ -523,12 +563,32 @@
         }
       }
     },
+    "An app session needs an agent. Add an agent as a collaborator first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用会话需要一个 agent，请先添加协作的 agent。"
+          }
+        }
+      }
+    },
     "Answer each question before submitting.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "请回答所有问题后再提交。"
+          }
+        }
+      }
+    },
+    "App": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用"
           }
         }
       }
@@ -589,6 +649,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "归档的想法会显示在这里。"
+          }
+        }
+      }
+    },
+    "Ask Again": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再问一次"
           }
         }
       }
@@ -689,6 +759,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "取消"
+          }
+        }
+      }
+    },
+    "Cancel reply": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消回复"
           }
         }
       }
@@ -963,6 +1043,16 @@
         }
       }
     },
+    "Couldn't forward": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发失败"
+          }
+        }
+      }
+    },
     "Couldn't read a token from that link.": {
       "localizations": {
         "zh-Hans": {
@@ -1079,6 +1169,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "自定义服务器"
+          }
+        }
+      }
+    },
+    "Delete %lld messages?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除 %lld 条消息？"
           }
         }
       }
@@ -1280,6 +1380,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "完成排序"
+          }
+        }
+      }
+    },
+    "Draft: ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿："
           }
         }
       }
@@ -1510,6 +1620,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "财务"
+          }
+        }
+      }
+    },
+    "Forward": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发"
+          }
+        }
+      }
+    },
+    "Forward to": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发到"
+          }
+        }
+      }
+    },
+    "Forwarded from %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发自「%@」"
+          }
+        }
+      }
+    },
+    "Forwarded messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转发的消息"
           }
         }
       }
@@ -1885,6 +2035,16 @@
         }
       }
     },
+    "Jump to latest": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回到最新"
+          }
+        }
+      }
+    },
     "Just you": {
       "localizations": {
         "zh-Hans": {
@@ -2002,6 +2162,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "稍后再说"
+          }
+        }
+      }
+    },
+    "Me": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "我"
           }
         }
       }
@@ -2176,6 +2346,16 @@
         }
       }
     },
+    "Next match": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一个"
+          }
+        }
+      }
+    },
     "No Actors Yet": {
       "localizations": {
         "zh-Hans": {
@@ -2242,6 +2422,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "还没有人回复"
+          }
+        }
+      }
+    },
+    "No results": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无结果"
           }
         }
       }
@@ -2512,6 +2702,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "未连接——请检查网络后重试。"
+          }
+        }
+      }
+    },
+    "Not selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未选中"
           }
         }
       }
@@ -2926,6 +3126,16 @@
         }
       }
     },
+    "Previous match": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一个"
+          }
+        }
+      }
+    },
     "Process": {
       "localizations": {
         "zh-Hans": {
@@ -3166,6 +3376,36 @@
         }
       }
     },
+    "Reply": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复"
+          }
+        }
+      }
+    },
+    "Reply not sent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复未发出"
+          }
+        }
+      }
+    },
+    "Replying to %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复 %@"
+          }
+        }
+      }
+    },
     "Restart": {
       "localizations": {
         "zh-Hans": {
@@ -3252,6 +3492,66 @@
           "stringUnit": {
             "state": "translated",
             "value": "运行时尚未就绪——请稍后重试。"
+          }
+        }
+      }
+    },
+    "Saved as a draft. Open the conversation to send it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已存为草稿，打开会话即可发送。"
+          }
+        }
+      }
+    },
+    "Search in Conversation": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在会话中搜索"
+          }
+        }
+      }
+    },
+    "Search loaded messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索已加载的消息"
+          }
+        }
+      }
+    },
+    "Select": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择"
+          }
+        }
+      }
+    },
+    "Selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选中"
+          }
+        }
+      }
+    },
+    "Send": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送"
           }
         }
       }
@@ -3996,6 +4296,16 @@
         }
       }
     },
+    "The messages are removed for everyone in this session.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些消息会对会话中的所有人删除。"
+          }
+        }
+      }
+    },
     "The starred directory is this agent's default — pre-selected when it joins a new session. Tap another to move the star.": {
       "localizations": {
         "zh-Hans": {
@@ -4447,6 +4757,16 @@
         }
       }
     },
+    "Untitled": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未命名"
+          }
+        }
+      }
+    },
     "Untitled Session": {
       "localizations": {
         "zh-Hans": {
@@ -4747,6 +5067,16 @@
         }
       }
     },
+    "Yesterday": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "昨天"
+          }
+        }
+      }
+    },
     "YOU": {
       "localizations": {
         "zh-Hans": {
@@ -4983,6 +5313,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "你"
+          }
+        }
+      }
+    },
+    "yourself": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自己"
+          }
+        }
+      }
+    },
+    "Zoom": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缩放"
           }
         }
       }

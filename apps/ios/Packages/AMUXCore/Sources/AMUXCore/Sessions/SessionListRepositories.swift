@@ -133,6 +133,8 @@ public struct MessageInsertInput: Equatable, Sendable {
     /// same URLs also ride on `Teamclu_Message.attachment_urls` for the
     /// daemon to feed the agent; this is the copy that survives on the row.
     public let attachments: [MessageAttachment]
+    /// The persisted message this one quotes (`messages.reply_to_message_id`).
+    public let replyToMessageID: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -142,7 +144,8 @@ public struct MessageInsertInput: Equatable, Sendable {
         kind: String = "text",
         content: String,
         mentionActorIDs: [String] = [],
-        attachments: [MessageAttachment] = []
+        attachments: [MessageAttachment] = [],
+        replyToMessageID: String? = nil
     ) {
         self.id = id
         self.teamID = teamID
@@ -152,6 +155,7 @@ public struct MessageInsertInput: Equatable, Sendable {
         self.content = content
         self.mentionActorIDs = mentionActorIDs
         self.attachments = attachments
+        self.replyToMessageID = replyToMessageID
     }
 }
 

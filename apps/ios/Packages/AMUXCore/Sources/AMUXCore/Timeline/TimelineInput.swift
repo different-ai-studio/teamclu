@@ -47,6 +47,25 @@ public enum TimelineInput: Sendable {
     case historyMessage(HistoryInput)
     case localPrompt(LocalPromptInput)
     case permissionResolution(PermissionResolutionInput)
+    case persistedReply(PersistedReplyInput)
+}
+
+/// The daemon's `message.created` for an agent reply it just persisted. It
+/// is never drawn — the ACP output already is — but it carries the row id
+/// that quoting, feedback and jump-to need, which a live-rendered reply
+/// otherwise only gets from the next history load.
+public struct PersistedReplyInput: Equatable, Sendable {
+    public let messageID: String
+    public let senderActorID: String
+    public let content: String
+    public let turnID: String?
+
+    public init(messageID: String, senderActorID: String, content: String, turnID: String?) {
+        self.messageID = messageID
+        self.senderActorID = senderActorID
+        self.content = content
+        self.turnID = turnID
+    }
 }
 
 // MARK: - Per-variant payloads
@@ -116,19 +135,22 @@ public struct LiveMessageInput: Sendable {
     /// kinds (or a relaxed filter) can keep the same merge semantics
     /// the history path uses.
     public let turnID: String?
+    public let replyToMessageID: String?
 
     public init(messageID: String,
                 clientLocalID: String? = nil,
                 senderActorID: String,
                 content: String,
                 createdAt: Date,
-                turnID: String? = nil) {
+                turnID: String? = nil,
+                replyToMessageID: String? = nil) {
         self.messageID = messageID
         self.clientLocalID = clientLocalID
         self.senderActorID = senderActorID
         self.content = content
         self.createdAt = createdAt
         self.turnID = turnID
+        self.replyToMessageID = replyToMessageID
     }
 }
 
@@ -168,6 +190,7 @@ public struct HistoryInput: Sendable {
     /// `messages.attachments` — files this message carries, structured.
     /// Empty for rows written before the column was plumbed through.
     public let attachments: [MessageAttachment]
+    public let replyToMessageID: String?
 
     public init(supabaseMessageID: String,
                 kind: HistoryKind,
@@ -178,7 +201,8 @@ public struct HistoryInput: Sendable {
                 turnID: String? = nil,
                 sequence: Int64 = 0,
                 closesTurn: Bool = false,
-                attachments: [MessageAttachment] = []) {
+                attachments: [MessageAttachment] = [],
+                replyToMessageID: String? = nil) {
         self.supabaseMessageID = supabaseMessageID
         self.kind = kind
         self.senderActorID = senderActorID
@@ -189,6 +213,7 @@ public struct HistoryInput: Sendable {
         self.sequence = sequence
         self.closesTurn = closesTurn
         self.attachments = attachments
+        self.replyToMessageID = replyToMessageID
     }
 }
 
@@ -205,15 +230,18 @@ public struct LocalPromptInput: Sendable {
     public let senderActorID: String
     public let content: String
     public let createdAt: Date
+    public let replyToMessageID: String?
 
     public init(clientID: String,
                 senderActorID: String,
                 content: String,
-                createdAt: Date) {
+                createdAt: Date,
+                replyToMessageID: String? = nil) {
         self.clientID = clientID
         self.senderActorID = senderActorID
         self.content = content
         self.createdAt = createdAt
+        self.replyToMessageID = replyToMessageID
     }
 }
 

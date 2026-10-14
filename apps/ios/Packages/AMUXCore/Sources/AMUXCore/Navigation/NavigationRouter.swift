@@ -21,14 +21,27 @@ public final class NavigationRouter {
     /// pending. `RootTabView` consumes this and resets it to `nil`.
     public var pendingSessionID: String?
 
+    /// Session id → the message a push pointed at, waiting for that session's
+    /// screen to scroll to it. One-shot: `takeFocusMessage` removes it.
+    @ObservationIgnored private var focusMessageBySession: [String: String] = [:]
+
     public init() {}
+
+    /// The message to bring into view when `sessionID` opens, if a push
+    /// asked for one. Consumed on read, so reopening later starts normally.
+    public func takeFocusMessage(for sessionID: String) -> String? {
+        focusMessageBySession.removeValue(forKey: sessionID)
+    }
 
     /// Record an intent to open the given session. Setting it to `nil` first
     /// guarantees the observer fires even when the same session id arrives
     /// twice in a row (e.g. two taps on the same notification).
-    public func openSession(_ id: String) {
+    public func openSession(_ id: String, focusMessageID: String? = nil) {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        if let focusMessageID, !focusMessageID.isEmpty {
+            focusMessageBySession[trimmed] = focusMessageID
+        }
         pendingSessionID = trimmed
     }
 }
