@@ -765,6 +765,7 @@ public final class AppOnboardingCoordinator {
     /// signed-in account. See `signOutAndWipeCache`.
     public func wipeLocalCache(modelContext: ModelContext) async {
         SessionDraftStore.shared.removeAll()
+        NotificationReply.forgetActors()
         SessionReadPositionStore.shared.removeAll()
         do {
             try modelContext.delete(model: AgentAttachment.self)

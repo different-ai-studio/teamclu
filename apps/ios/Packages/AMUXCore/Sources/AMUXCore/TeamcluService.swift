@@ -39,7 +39,10 @@ public final class TeamcluService {
     /// list by matching our own peer_id. Populated once
     /// PeerList arrives; used as `sender_actor_id` on outgoing RPCs so the
     /// daemon records the creator as a member rather than a device.
-    public private(set) var localMemberId: String = ""
+    public private(set) var localMemberId: String = "" {
+        // Kept for replying from a notification, when none of this is loaded.
+        didSet { NotificationReply.rememberActor(localMemberId, team: teamId) }
+    }
     public private(set) var localDisplayName: String = ""
     private var foregroundSessionIDsSet: Set<String> = []
     /// The session list's dot store, told whenever this device sends a prompt.

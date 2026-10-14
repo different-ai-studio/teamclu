@@ -27,6 +27,7 @@
 		70245B4A62E76BFBC234FE03 /* PushBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 933101253D0E0056ED286BFB /* PushBootstrap.swift */; };
 		770B07D7DCA6D5A3D19E114E /* ServerSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B1DDBE39CD8A28D7D0F9354 /* ServerSettingsSheet.swift */; };
 		989AF52819F1BFC91A3315B1 /* AMUXSharedUI in Frameworks */ = {isa = PBXBuildFile; productRef = 5400E9174EF5F9869349C3EF /* AMUXSharedUI */; };
+		9A510474DD8EEC00FCB010E0 /* NotificationReplySender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B2A590C829AFEEB80853960 /* NotificationReplySender.swift */; };
 		9F1C704FA9F8243CDB69EC7D /* OrgTeamPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */; };
 		A5C58ED1E2D4F96A34494416 /* InviteJoinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */; };
 		A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */; };
@@ -54,6 +55,7 @@
 /* Begin PBXFileReference section */
 		194E71B71F97908AD85A630C /* AMUXSessionLiveCaptureTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionLiveCaptureTest.swift; sourceTree = "<group>"; };
 		1B1DDBE39CD8A28D7D0F9354 /* ServerSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettingsSheet.swift; sourceTree = "<group>"; };
+		1B2A590C829AFEEB80853960 /* NotificationReplySender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationReplySender.swift; sourceTree = "<group>"; };
 		2304BE28BB84D7C798F28A65 /* AMUXSessionLiveDiagTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionLiveDiagTest.swift; sourceTree = "<group>"; };
 		25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		278531282E6CC92737596EAF /* AMUXCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXCore; path = Packages/AMUXCore; sourceTree = SOURCE_ROOT; };
@@ -155,6 +157,7 @@
 				4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */,
 				514F7615E8C226A5F3660A5F /* LoginView.swift */,
 				E22D691967D8CFCEC9C7CECF /* NoTeamView.swift */,
+				1B2A590C829AFEEB80853960 /* NotificationReplySender.swift */,
 				E150614525CD79BA72BBC06D /* OnboardingChoiceView.swift */,
 				A57443CB6DA7A01B751BBA00 /* OnboardingViews.swift */,
 				37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */,
@@ -291,6 +294,7 @@
 				A5C58ED1E2D4F96A34494416 /* InviteJoinSheet.swift in Sources */,
 				EC3990515ABE38A90617C32E /* LoginView.swift in Sources */,
 				F7495A3C8805D7956FA5B578 /* NoTeamView.swift in Sources */,
+				9A510474DD8EEC00FCB010E0 /* NotificationReplySender.swift in Sources */,
 				373E86A34B6908422880D2D7 /* OnboardingChoiceView.swift in Sources */,
 				29C3F045A406DBA4AD7D1F32 /* OnboardingViews.swift in Sources */,
 				9F1C704FA9F8243CDB69EC7D /* OrgTeamPickerView.swift in Sources */,

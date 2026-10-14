@@ -47,6 +47,7 @@ struct AMUXApp: App {
         // AMUXSchema.swift for the upgrade checklist when models evolve.
         do {
             modelContainer = try AMUXModelContainerFactory.make()
+            NotificationReplySender.modelContainer = modelContainer
         } catch {
             fatalError("Failed to initialise ModelContainer: \(error)")
         }

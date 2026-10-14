@@ -3386,6 +3386,16 @@
         }
       }
     },
+    "Reply not sent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复未发出"
+          }
+        }
+      }
+    },
     "Replying to %@": {
       "localizations": {
         "zh-Hans": {
@@ -3486,6 +3496,16 @@
         }
       }
     },
+    "Saved as a draft. Open the conversation to send it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已存为草稿，打开会话即可发送。"
+          }
+        }
+      }
+    },
     "Search in Conversation": {
       "localizations": {
         "zh-Hans": {
@@ -3522,6 +3542,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "已选中"
+          }
+        }
+      }
+    },
+    "Send": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送"
           }
         }
       }
