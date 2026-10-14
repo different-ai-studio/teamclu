@@ -1,4 +1,8 @@
-import { resolveQuickChatTarget, type QuickChatTarget } from '@/lib/session/resolve-quick-chat-target'
+import {
+  LocalAgentUnavailableError,
+  resolveQuickChatTarget,
+  type QuickChatTarget,
+} from '@/lib/session/resolve-quick-chat-target'
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { useUIStore } from '@/stores/ui'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -14,8 +18,16 @@ import { useWorkspaceStore } from '@/stores/workspace'
  * - `no_actor`     — retained for toast mapping compatibility; draft-first
  *                    no longer hits this path.
  * - `server_error` — target resolution threw (backend/transport error).
+ * - `local_unavailable` — the local Agent is enabled, so it is the target, but
+ *                    its daemon did not answer in time and this client cannot
+ *                    tell which agent it is. The user picks an agent by hand.
  */
-export type QuickSessionFailureReason = 'no_team' | 'no_agent' | 'no_actor' | 'server_error'
+export type QuickSessionFailureReason =
+  | 'no_team'
+  | 'no_agent'
+  | 'no_actor'
+  | 'server_error'
+  | 'local_unavailable'
 
 type QuickSessionOutcome =
   | { ok: true; agentDisplayName: string }
@@ -39,6 +51,9 @@ export async function createQuickSession(
         workspacePath: useWorkspaceStore.getState().workspacePath,
       }))
   } catch (error) {
+    if (error instanceof LocalAgentUnavailableError) {
+      return { ok: false, reason: 'local_unavailable', error }
+    }
     return { ok: false, reason: 'server_error', error }
   }
   if (!target) return { ok: false, reason: 'no_agent' }
@@ -69,6 +84,14 @@ export function describeQuickSessionFailure(
         description: t(
           'chat.quickSessionNoAgentHint',
           '请设置个人默认 Agent，或联系管理员设置团队默认 Agent。',
+        ),
+      }
+    case 'local_unavailable':
+      return {
+        title: t('chat.quickSessionLocalUnavailableTitle', '本机 Agent 暂不可用'),
+        description: t(
+          'chat.quickSessionLocalUnavailableHint',
+          '本机 Agent 还没有响应。请稍后重试，或在「高级会话」中手动选择 Agent。',
         ),
       }
     case 'no_team':

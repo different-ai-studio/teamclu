@@ -48,6 +48,9 @@ export function TeamDirInitPanel({ mode = 'missing-dir', onScaffolded }: Props) 
     setBusy(true)
     setError(null)
     try {
+      // The team folder is the daemon's synced tree; enable it first (#1678).
+      const { ensureLocalAgentEnabled } = await import('@/lib/daemon/local-agent-gate')
+      if (!(await ensureLocalAgentEnabled())) return
       if (missingDir) {
         await linkDaemonTeamWorkspace(workspacePath, { strict: true })
         await loadSection('knowledge', { force: true })

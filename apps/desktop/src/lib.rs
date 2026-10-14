@@ -504,6 +504,9 @@ pub fn run() {
             commands::daemon_onboarding::daemon_clear,
             commands::amuxd_supervisor::daemon_ensure_running,
             commands::amuxd_supervisor::daemon_restart_managed,
+            commands::local_agent::local_agent_enabled,
+            commands::local_agent::local_agent_enable,
+            commands::local_agent::local_agent_disable,
             commands::setup::setup_list_requirements,
             commands::setup::setup_install,
             commands::setup::restart_local_daemon,
@@ -682,17 +685,25 @@ pub fn run() {
 
             // Desktop-managed amuxd: spawn bundled sidecar (no ~/.amuxd/bin copy,
             // no LaunchAgent). Continues while the app stays in Dock; Exit stops it.
+            // Only when the local Agent is enabled (#1678): a machine that talks
+            // to remote agents alone never starts amuxd.
             {
                 let app_handle = app.handle().clone();
                 commands::amuxd_supervisor::AmuxdSupervisor::install_signal_handlers(&app_handle);
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) =
-                        commands::amuxd_supervisor::AmuxdSupervisor::ensure_started(&app_handle)
+                let local_agent_enabled = commands::local_agent::is_enabled();
+                log::info!("[amuxd-supervisor] local agent enabled: {local_agent_enabled}");
+                if local_agent_enabled {
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) =
+                            commands::amuxd_supervisor::AmuxdSupervisor::ensure_started(
+                                &app_handle,
+                            )
                             .await
-                    {
-                        log::error!("[amuxd-supervisor] ensure_started failed: {e}");
-                    }
-                });
+                        {
+                            log::error!("[amuxd-supervisor] ensure_started failed: {e}");
+                        }
+                    });
+                }
             }
 
             // Team sync will be triggered from the frontend after workspace is set,
