@@ -12,10 +12,16 @@ const h = vi.hoisted(() => ({
   teamDefaultThrows: false,
   directoryCalls: 0,
   directory: [] as Array<Record<string, unknown>>,
+  legacyActorId: null as string | null,
+  adoptAgentId: null as string | null,
+  adoptDisplayName: null as string | null,
+  adoptThrows: false,
+  adoptCalls: 0,
 }))
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
+    if (cmd === 'read_local_daemon_actor_id') return h.legacyActorId
     if (cmd !== 'read_stable_device_id') throw new Error(cmd)
     if (h.invokeThrows) throw new Error('invoke failed')
     return h.deviceId
@@ -30,6 +36,11 @@ vi.mock('@/lib/backend', () => ({
         if (h.findWait) await h.findWait
         if (h.findThrows) throw new Error('for-device failed')
         return { agentId: h.agentId, displayName: h.displayName }
+      }),
+      adoptLegacyAgentDevice: vi.fn(async () => {
+        h.adoptCalls += 1
+        if (h.adoptThrows) throw new Error('adopt failed')
+        return { agentId: h.adoptAgentId, displayName: h.adoptDisplayName }
       }),
       getTeamDefaultAgent: vi.fn(async () => {
         if (h.teamDefaultThrows) throw new Error('default failed')
@@ -77,6 +88,11 @@ describe('local agent install classification', () => {
     h.teamDefaultThrows = false
     h.directoryCalls = 0
     h.directory = []
+    h.legacyActorId = null
+    h.adoptAgentId = null
+    h.adoptDisplayName = null
+    h.adoptThrows = false
+    h.adoptCalls = 0
     useAuthStore.setState({ session: null })
     resetLocalAgentInstallForTests()
     useLocalAgentInstallStore.setState({ byTeam: {}, wizardOpen: false, gateSkippedTeamId: null })
@@ -90,6 +106,32 @@ describe('local agent install classification', () => {
     const record = await resolveLocalAgentInstall('team-1')
     expect(record.status).toBe('absent')
     expect(useLocalAgentInstallStore.getState().byTeam['team-1']?.status).toBe('absent')
+    expect(h.adoptCalls).toBe(0)
+  })
+
+  it('stamps the daemon actor when for-device is empty', async () => {
+    h.legacyActorId = 'agent-legacy'
+    h.adoptAgentId = 'agent-legacy'
+    h.adoptDisplayName = 'UFO'
+    const record = await resolveLocalAgentInstall('team-1')
+    expect(record).toEqual({
+      status: 'installed',
+      agentId: 'agent-legacy',
+      displayName: 'UFO',
+    })
+    expect(h.adoptCalls).toBe(1)
+  })
+
+  it('stays absent when the legacy actor is not eligible to stamp', async () => {
+    h.legacyActorId = 'agent-legacy'
+    h.adoptAgentId = null
+    expect((await resolveLocalAgentInstall('team-1')).status).toBe('absent')
+  })
+
+  it('stays unknown when stamping the legacy actor fails', async () => {
+    h.legacyActorId = 'agent-legacy'
+    h.adoptThrows = true
+    expect((await resolveLocalAgentInstall('team-1')).status).toBe('unknown')
   })
 
   it('treats a returned agent as installed', async () => {
