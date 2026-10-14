@@ -26,7 +26,8 @@ private actor OutboxAttemptLeases {
 ///
 /// Lifecycle: scoped to a chat detail view today. `start()` spawns a
 /// loop task; `stop()` cancels it. The loop wakes once per second when
-/// idle and drains all due rows in a single pass.
+/// idle — or at once when a row is enqueued or re-armed — and drains all
+/// due rows in a single pass.
 ///
 /// Concurrency model: this is an `actor` so all SwiftData mutations
 /// (insert, save, fetch) happen on a single isolation domain. Each
@@ -45,6 +46,8 @@ public actor OutboxSender {
     private weak var teamclu: TeamcluService?
     private let modelContainer: ModelContainer
     private var task: Task<Void, Never>?
+    /// The idle loop's current nap; cancelled to wake it early.
+    private var nap: Task<Void, Never>?
     private var onDelivered: (@Sendable (String) async -> Void)?
 
     public init(teamclu: TeamcluService, modelContainer: ModelContainer) {
@@ -74,10 +77,15 @@ public actor OutboxSender {
     public func stop() {
         task?.cancel()
         task = nil
+        nap?.cancel()
     }
 
-    /// Insert a fresh `OutboxMessage` row. The next loop tick (at most
-    /// 1 second later) picks it up. Idempotent on `messageID` — if a
+    private func wake() {
+        nap?.cancel()
+    }
+
+    /// Insert a fresh `OutboxMessage` row and wake the loop, which picks
+    /// it up straight away. Idempotent on `messageID` — if a
     /// row with the same id already exists this is a no-op so callers
     /// can safely re-enqueue without double-sending.
     public func enqueue(messageID: String, sessionID: String, senderActorID: String,
@@ -96,6 +104,9 @@ public actor OutboxSender {
         do {
             try ctx.save()
             ChatMetrics.shared.mark(.send, key: messageID, "enqueued")
+            // An idle loop naps for up to a second; the user is watching
+            // this message's dot, so don't make it wait for the tick.
+            wake()
             outboxLogger.notice("outbox enqueued msgId=\(String(messageID.prefix(8)), privacy: .public) sid=\(String(sessionID.prefix(8)), privacy: .public)")
         } catch {
             outboxLogger.error("outbox enqueue save FAILED msgId=\(String(messageID.prefix(8)), privacy: .public) err=\(String(describing: error), privacy: .public)")
@@ -120,6 +131,7 @@ public actor OutboxSender {
         row.nextAttemptAt = nil
         row.lastError = nil
         try? ctx.save()
+        wake()
         outboxLogger.notice("outbox retry: msgId=\(String(messageID.prefix(8)), privacy: .public) re-armed")
     }
 
@@ -135,7 +147,10 @@ public actor OutboxSender {
                 await attempt(rowID: row.persistentModelID, messageID: row.messageID)
             }
             if due.isEmpty {
-                try? await Task.sleep(for: .seconds(1))
+                let nap = Task<Void, Never> { try? await Task.sleep(for: .seconds(1)) }
+                self.nap = nap
+                await nap.value
+                self.nap = nil
             }
         }
     }
