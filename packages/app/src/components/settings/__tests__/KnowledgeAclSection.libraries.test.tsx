@@ -143,4 +143,37 @@ describe('KnowledgeAclSection document libraries', () => {
     )
     expect(deleteKnowledgeAcl).not.toHaveBeenCalled()
   })
+
+  it('does not show the knowledge empty notice when only a document library is restricted', async () => {
+    listKnowledgeAcl.mockResolvedValue([
+      {
+        id: 'rule-finance-top',
+        pathPrefix: FINANCE_PREFIX,
+        actorIds: [],
+      },
+    ])
+    listDocumentLibraries.mockResolvedValue([
+      {
+        id: 'lib-finance',
+        pathPrefix: FINANCE_PREFIX,
+        audience: 'roles',
+        roles: [
+          { id: 'role-owner', code: 'owner', name: '拥有者', status: 'active' },
+          { id: 'role-finance', code: 'finance', name: '财务', status: 'active' },
+        ],
+        actorIds: [],
+      },
+    ])
+
+    render(<KnowledgeAclSection />)
+    await waitLoaded()
+
+    expect(screen.getByText(FINANCE_PREFIX)).toBeTruthy()
+    expect(screen.queryByText('没有受限目录')).toBeNull()
+    expect(
+      screen.queryByText(
+        'No restricted directories. Every member receives the whole knowledge vault.',
+      ),
+    ).toBeNull()
+  })
 })

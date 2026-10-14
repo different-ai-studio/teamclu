@@ -231,7 +231,7 @@ export function KnowledgeAclSection() {
           </div>
 
           {/* ── Knowledge / nested rules (per-member) ───────────────────── */}
-          {rules.length === 0 ? (
+          {rules.length === 0 && libraries.length === 0 ? (
             <SettingCard>
               <p className="text-sm text-muted-foreground">
                 {t(
@@ -240,7 +240,7 @@ export function KnowledgeAclSection() {
                 )}
               </p>
             </SettingCard>
-          ) : (
+          ) : rules.length === 0 ? null : (
             rules.map((rule) => (
               <SettingCard key={rule.id}>
                 <div className="flex items-start justify-between gap-4">
