@@ -636,9 +636,9 @@ public final class SessionDetailViewModel {
     /// when the user typed only the prompt body. Manual @-picks are
     /// already inserted by the composer, so the contains() check skips
     /// them to avoid double-prepend.
-    func composeBodyWithMentions(_ text: String) -> String {
+    func composeBodyWithMentions(_ text: String, agentIDs: Set<String>? = nil) -> String {
         var body = text
-        for agentID in agentChipSelection {
+        for agentID in agentIDs ?? agentChipSelection {
             guard let agent = memberSheetAgents.first(where: { $0.id == agentID }) else { continue }
             let token = "@\(agent.displayName)"
             if !body.localizedCaseInsensitiveContains(token) {
@@ -2845,7 +2845,8 @@ public final class SessionDetailViewModel {
 
     /// `replyTo` is the persisted id of the message being quoted, if any.
     public func sendPrompt(_ text: String, modelId: String? = nil, attachmentURLs: [URL] = [],
-                           replyTo: String? = nil, modelContext: ModelContext? = nil) async throws {
+                           replyTo: String? = nil, agentIDs: Set<String>? = nil,
+                           modelContext: ModelContext? = nil) async throws {
         if let session, let teamcluService {
             // Session-backed chats use the session live stream as the
             // canonical messaging channel so other collaborators see the
@@ -2858,13 +2859,15 @@ public final class SessionDetailViewModel {
             // any visible mention even though the chip is engaging an
             // agent — confusing in chat history, especially for other
             // collaborators reading along.
-            let body = composeBodyWithMentions(text)
+            let body = composeBodyWithMentions(text, agentIDs: agentIDs)
             // Lowercase: the server stores this id in a `uuid` column, which
             // hands it back lowercase, and the daemon dedupes on the exact
             // string — an uppercase id reached it twice, once per spelling,
             // and the agent answered both (#1696).
             let messageID = UUID().uuidString.lowercased()
-            let mentionIDs = Array(agentChipSelection)
+            // `agentIDs` addresses a specific agent (regenerate) without
+            // touching the composer's chip selection.
+            let mentionIDs = Array(agentIDs ?? agentChipSelection)
             ChatMetrics.shared.begin(.send, key: messageID)
             ChatMetrics.shared.set(.send, key: messageID, "attachments", Double(attachmentURLs.count))
 
@@ -3488,6 +3491,30 @@ public final class SessionDetailViewModel {
     /// the event isn't a reply. A reply whose quoted row isn't cached still
     /// returns (with empty content) so the chip can say "message unavailable"
     /// instead of vanishing.
+    /// The prompt that started the turn shown as feed item `turnItemID`:
+    /// the nearest chat message above it. Nil when there is none, or when
+    /// it carried files — a text-only resend would ask a different question.
+    public func promptForRegeneration(turnItemID: String) -> AgentEvent? {
+        guard let index = feedItems.firstIndex(where: { $0.id == turnItemID }) else { return nil }
+        for item in feedItems[..<index].reversed() {
+            guard case .userMessage(let prompt) = item else { continue }
+            guard prompt.attachments.isEmpty,
+                  let text = prompt.text, !text.isEmpty else { return nil }
+            return prompt
+        }
+        return nil
+    }
+
+    /// Asks `agentID` the turn's prompt again. This is not a true
+    /// regenerate: there is no server-side "replace this answer", so the
+    /// prompt goes out as a new message and the agent sees its earlier
+    /// answer in context — a prompt that refers back ("double it") builds
+    /// on that answer instead of redoing it. The quote, if any, goes along.
+    public func regenerate(turnItemID: String, agentID: String, modelContext: ModelContext?) async throws {
+        guard let prompt = promptForRegeneration(turnItemID: turnItemID), let text = prompt.text else { return }
+        try await sendPrompt(text, replyTo: prompt.replyToMessageID, agentIDs: [agentID], modelContext: modelContext)
+    }
+
     /// The quote to draw above `event`'s bubble. A reply composed here (or
     /// seeded from history) carries `replyToMessageID` itself; older live
     /// messages from others only have it on their `SessionMessage` row.

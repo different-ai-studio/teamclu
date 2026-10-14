@@ -595,6 +595,9 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
     public let onFeedback: ((String) -> Void)?
     /// Starts a quoted reply to this answer.
     public let onReply: (() -> Void)?
+    /// Resends the turn's prompt to the agent as a new message (not an
+    /// in-place regenerate); nil when there is no text-only prompt above.
+    public let onRegenerate: (() -> Void)?
 
     public init(finalEvent: AgentEvent,
                 runtime: AgentAttachment?,
@@ -602,6 +605,7 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                 feedbackKind: String? = nil,
                 onFeedback: ((String) -> Void)? = nil,
                 onReply: (() -> Void)? = nil,
+                onRegenerate: (() -> Void)? = nil,
                 attachments: [MessageAttachment] = [],
                 @ViewBuilder detailIcon: @escaping () -> DetailIcon = { EmptyView() }) {
         self.finalEvent = finalEvent
@@ -610,6 +614,7 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
         self.feedbackKind = feedbackKind
         self.onFeedback = onFeedback
         self.onReply = onReply
+        self.onRegenerate = onRegenerate
         self.detailIcon = detailIcon
         self.attachments = attachments
     }
@@ -644,6 +649,11 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                         }
                     }
                     MessageContextMenu(text: finalEvent.text ?? "")
+                    if let onRegenerate {
+                        Button { onRegenerate() } label: {
+                            Label("Ask Again", systemImage: "arrow.clockwise")
+                        }
+                    }
                     if let onFeedback {
                         Divider()
                         Button {

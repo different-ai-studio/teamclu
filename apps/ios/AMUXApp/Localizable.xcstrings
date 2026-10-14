@@ -643,6 +643,16 @@
         }
       }
     },
+    "Ask Again": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再问一次"
+          }
+        }
+      }
+    },
     "Ask before running tools": {
       "localizations": {
         "zh-Hans": {

@@ -1221,6 +1221,14 @@ public struct SessionDetailView: View {
                     { kind in Task { await viewModel.setFeedback(messageID: messageID, kind: kind) } }
                 },
                 onReply: replyAction(for: final),
+                onRegenerate: viewModel.promptForRegeneration(turnItemID: id) == nil ? nil : {
+                    Haptics.tap()
+                    isAtBottom = true
+                    withAnimation(AMUXAnimation.fast) {
+                        scrollProxy?.scrollTo("session-detail-bottom", anchor: .bottom)
+                    }
+                    Task { try? await viewModel.regenerate(turnItemID: id, agentID: agentID, modelContext: modelContext) }
+                },
                 attachments: turnAttachments(final: final, runtimeEvents: runtimeEvents),
                 detailIcon: {
                     // Always offer the detail entry point — even text-only
