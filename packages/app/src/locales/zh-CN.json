@@ -4059,6 +4059,7 @@
   },
   "documentLibrary": {
     "title": "谁可以看",
+    "inactiveRole": "已停用",
     "open": "这个文件夹目前团队成员都能同步。",
     "actorLeftover": "当前仍按成员授权。保存后会改成按角色，并替换原来的成员名单。",
     "owner": "拥有者",

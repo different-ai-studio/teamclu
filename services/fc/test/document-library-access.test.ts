@@ -6,6 +6,7 @@ import {
   roleRuleDenies,
   membersLosingLibraryAccess,
   libraryPrefixesToResurface,
+  libraryGrantWidens,
 } from "../src/lib/document-library-access.js";
 
 describe("document library prefix", () => {
@@ -16,6 +17,12 @@ describe("document library prefix", () => {
     assert.equal(isDocumentLibraryPrefix("documents/财务/工资/"), false);
     assert.equal(isDocumentLibraryPrefix("documents/报表.pdf"), false);
     assert.equal(isDocumentLibraryPrefix("knowledge/财务/"), false);
+  });
+
+  test("dot segments and over-long prefixes are refused, as validateAclPrefix does", () => {
+    assert.equal(isDocumentLibraryPrefix("documents/../"), false);
+    assert.equal(isDocumentLibraryPrefix("documents/a..b/"), false);
+    assert.equal(isDocumentLibraryPrefix(`documents/${"x".repeat(1100)}/`), false);
   });
 
   test("overlap is segment-prefix, so a sibling folder is not a child", () => {
@@ -96,7 +103,6 @@ describe("libraryPrefixesToResurface", () => {
       ],
       addedRoleIds: ["role-finance"],
       addedOwner: false,
-      ownerRoleId: "role-owner",
     });
     assert.deepEqual(prefixes, ["documents/财务/"]);
   });
@@ -109,7 +115,6 @@ describe("libraryPrefixesToResurface", () => {
       ],
       addedRoleIds: ["role-owner"],
       addedOwner: true,
-      ownerRoleId: "role-owner",
     });
     assert.deepEqual(prefixes, ["documents/财务/", "documents/人事/"]);
   });
@@ -119,7 +124,23 @@ describe("libraryPrefixesToResurface", () => {
       libraries: [{ pathPrefix: "documents/财务/", roleIds: ["role-finance"] }],
       addedRoleIds: [],
       addedOwner: false,
-      ownerRoleId: "role-owner",
     }), []);
+  });
+});
+
+describe("libraryGrantWidens", () => {
+  test("restricting an open folder lets no one new in", () => {
+    assert.equal(libraryGrantWidens({ kind: "open" }, ["role-owner", "role-hr"]), false);
+  });
+
+  test("replacing a per-member rule can let people in", () => {
+    assert.equal(libraryGrantWidens({ kind: "actors" }, ["role-owner"]), true);
+  });
+
+  test("a role rule widens only when a role id is added", () => {
+    const before = { kind: "roles" as const, roleIds: ["role-owner", "role-hr", "role-fin"] };
+    assert.equal(libraryGrantWidens(before, ["role-owner", "role-hr"]), false);
+    assert.equal(libraryGrantWidens(before, ["role-owner", "role-hr", "role-fin"]), false);
+    assert.equal(libraryGrantWidens(before, ["role-owner", "role-ops"]), true);
   });
 });

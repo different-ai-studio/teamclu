@@ -84,12 +84,67 @@ export async function resurfaceAclPrefix(admin: any, teamId: string, pathPrefix:
     .eq("team_id", teamId);
   if (bumpErr) throw bumpErr;
 
-  const { error: filesErr } = await admin
-    .from("amuxc_files")
-    .update({ change_seq: nextSeq })
-    .eq("team_id", teamId)
-    .like("path", `${pathPrefix}%`);
-  if (filesErr) throw filesErr;
+  if (!hasLikeMetachars(pathPrefix)) {
+    const { error: filesErr } = await admin
+      .from("amuxc_files")
+      .update({ change_seq: nextSeq })
+      .eq("team_id", teamId)
+      .like("path", `${pathPrefix}%`);
+    if (filesErr) throw filesErr;
+    return;
+  }
+
+  const files = await filesUnderPrefix(admin, teamId, pathPrefix, { liveOnly: false });
+  for (let i = 0; i < files.length; i += ID_BATCH) {
+    const { error: filesErr } = await admin
+      .from("amuxc_files")
+      .update({ change_seq: nextSeq })
+      .in("id", files.slice(i, i + ID_BATCH).map((file) => file.id));
+    if (filesErr) throw filesErr;
+  }
+}
+
+/**
+ * `%` and `_` are LIKE wildcards, `\` is its escape character, and PostgREST
+ * also turns `*` into `%`. A folder name holding any of them cannot go into a
+ * `like` filter as-is: `documents/a_b/%` also matches `documents/axb/…`.
+ */
+export function hasLikeMetachars(pathPrefix: string): boolean {
+  return /[%_*\\]/.test(pathPrefix);
+}
+
+const PAGE = 1000;
+const ID_BATCH = 200;
+
+/**
+ * Files whose path starts with `pathPrefix`, for a prefix that
+ * {@link hasLikeMetachars}. The `like` filter is widened to a superset (each
+ * `\` becomes `_`) and the exact match is done here.
+ */
+export async function filesUnderPrefix(
+  admin: any,
+  teamId: string,
+  pathPrefix: string,
+  options: { liveOnly: boolean },
+): Promise<Array<{ id: string; path: string }>> {
+  const pattern = `${pathPrefix.replace(/\\/g, "_")}%`;
+  const matched: Array<{ id: string; path: string }> = [];
+  for (let from = 0; ; from += PAGE) {
+    let query = admin.from("amuxc_files").select("id, path").eq("team_id", teamId);
+    if (options.liveOnly) query = query.eq("deleted", false);
+    const { data, error } = await query
+      .like("path", pattern)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    const rows = data ?? [];
+    for (const row of rows) {
+      if (typeof row?.path === "string" && row.path.startsWith(pathPrefix)) {
+        matched.push({ id: row.id, path: row.path });
+      }
+    }
+    if (rows.length < PAGE) return matched;
+  }
 }
 
 export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {

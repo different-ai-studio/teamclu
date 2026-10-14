@@ -18,7 +18,7 @@ vi.mock('@/lib/backend', () => ({
       putDocumentLibrary,
       deleteDocumentLibrary,
     },
-    orgRoles: { listOrgRoles },
+    orgRoles: { list: listOrgRoles },
   }),
 }))
 
@@ -194,5 +194,38 @@ describe('DocumentLibraryDialog', () => {
 
     await waitFor(() => expect(createDocumentLibrary).toHaveBeenCalledTimes(1))
     expect(screen.queryByRole('button', { name: /停止同步|Stop syncing/ })).toBeNull()
+  })
+
+  it('lists a granted role that was deactivated so it can be kept or removed', async () => {
+    listOrgRoles.mockResolvedValue([
+      ...ROLES,
+      { id: 'role-hr', orgId: 'org-1', name: '人事', code: 'hr', description: null, isSystem: false, status: 'inactive', sort: 5, parentRoleId: null },
+    ])
+    listDocumentLibraries.mockResolvedValue([
+      {
+        id: 'lib-1',
+        pathPrefix: PREFIX,
+        audience: 'roles',
+        roles: [
+          { id: 'role-owner', code: 'owner', name: '拥有者', status: 'active' },
+          { id: 'role-finance', code: 'finance', name: '财务', status: 'active' },
+          { id: 'role-hr', code: 'hr', name: '人事', status: 'inactive' },
+        ],
+        actorIds: [],
+      },
+    ])
+    previewDocumentLibrary.mockResolvedValue({ pathPrefix: PREFIX, affectedFiles: 0, affectedMembers: 0 })
+
+    render(<DocumentLibraryDialog prefix={PREFIX} open onOpenChange={() => {}} />)
+    await waitLoaded()
+
+    const hr = roleCheckbox('人事')
+    expect(hr.getAttribute('data-state')).toBe('checked')
+    expect(screen.getByText('已停用')).toBeTruthy()
+
+    fireEvent.click(hr)
+    fireEvent.click(screen.getByRole('button', { name: /保存|Save/ }))
+    await waitFor(() => expect(putDocumentLibrary).toHaveBeenCalledTimes(1))
+    expect(putDocumentLibrary.mock.calls[0][2]).toMatchObject({ roleIds: ['role-finance'] })
   })
 })

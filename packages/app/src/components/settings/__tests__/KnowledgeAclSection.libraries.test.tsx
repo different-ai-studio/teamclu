@@ -176,4 +176,17 @@ describe('KnowledgeAclSection document libraries', () => {
       ),
     ).toBeNull()
   })
+
+  it('keeps the knowledge rules when the library endpoint is missing', async () => {
+    listDocumentLibraries.mockRejectedValue(new Error('404 not found'))
+
+    render(<KnowledgeAclSection />)
+    await waitLoaded()
+
+    expect(screen.getByText('knowledge/hr/')).toBeTruthy()
+    expect(screen.getByText('documents/财务/工资/')).toBeTruthy()
+    // Not classified as a library without the list, so it stays manageable here.
+    expect(screen.getByText(FINANCE_PREFIX)).toBeTruthy()
+    expect(screen.getByText('404 not found')).toBeTruthy()
+  })
 })

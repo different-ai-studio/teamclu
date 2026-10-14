@@ -3,7 +3,11 @@ import { useTranslation } from 'react-i18next'
 import { Loader2, Lock, AlertTriangle } from 'lucide-react'
 import { getBackend } from '@/lib/backend'
 import { useCurrentTeamStore } from '@/stores/current-team'
-import type { DocumentLibrary, DocumentLibraryImpact } from '@/lib/backend/cloud-api/document-libraries'
+import {
+  isDocumentLibraryPrefix,
+  type DocumentLibrary,
+  type DocumentLibraryImpact,
+} from '@/lib/backend/cloud-api/document-libraries'
 import type { OrgRole } from '@/lib/backend/cloud-api/org-roles'
 import {
   Dialog,
@@ -16,8 +20,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
-
-const DOCUMENT_LIBRARY_PREFIX = /^documents\/[^/]+\/$/
 
 export function DocumentLibraryDialog({
   prefix,
@@ -39,7 +41,7 @@ export function DocumentLibraryDialog({
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
 
-  const validPrefix = DOCUMENT_LIBRARY_PREFIX.test(prefix)
+  const validPrefix = isDocumentLibraryPrefix(prefix)
 
   const load = React.useCallback(async () => {
     if (!teamId || !open || !validPrefix) return
@@ -47,7 +49,7 @@ export function DocumentLibraryDialog({
     try {
       const [items, roles] = await Promise.all([
         getBackend().documentLibraries.listDocumentLibraries(teamId),
-        getBackend().orgRoles.listOrgRoles(teamId),
+        getBackend().orgRoles.list(teamId),
       ])
       const own = items.find((r) => r.pathPrefix === prefix) ?? null
       const selectableIds =
@@ -73,8 +75,16 @@ export function DocumentLibraryDialog({
 
   const ownRule = (libraries ?? []).find((r) => r.pathPrefix === prefix) ?? null
   const ownerRole = orgRoles.find((r) => r.code === 'owner' && r.status === 'active')
+  // Roles already granted stay listed even when the picker would not offer
+  // them now (deactivated, or `member`): the save sends back every selected
+  // id, so a hidden one could be neither seen nor unchecked.
+  const grantedIds = new Set(
+    ownRule?.audience === 'roles' ? ownRule.roles.map((r) => r.id) : [],
+  )
   const selectableRoles = orgRoles.filter(
-    (r) => r.status === 'active' && r.code !== 'owner' && r.code !== 'member',
+    (r) =>
+      r.code !== 'owner' &&
+      ((r.status === 'active' && r.code !== 'member') || grantedIds.has(r.id)),
   )
 
   const roleIdsForSave = () => selectedRoleIds.filter((id) => id !== ownerRole?.id)
@@ -200,6 +210,11 @@ export function DocumentLibraryDialog({
                     />
                     <Label htmlFor={id} className="text-sm font-normal">
                       {role.name}
+                      {role.status !== 'active' && (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          {t('documentLibrary.inactiveRole', '已停用')}
+                        </span>
+                      )}
                     </Label>
                   </div>
                 )

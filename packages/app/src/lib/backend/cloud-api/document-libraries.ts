@@ -1,5 +1,14 @@
 import type { CloudApiClient } from "@/lib/backend/cloud-api/http";
 
+/**
+ * A top-level `documents/<folder>/` prefix — the only shape the
+ * document-libraries API accepts. Mirrors `isDocumentLibraryPrefix` in
+ * services/fc/src/lib/document-library-access.ts.
+ */
+export function isDocumentLibraryPrefix(prefix: string): boolean {
+  return /^documents\/[^/]+\/$/.test(prefix) && !prefix.includes("..");
+}
+
 export interface DocumentLibraryRole {
   id: string;
   code: string;

@@ -34,6 +34,7 @@
 // everything. This is in-team access control, and revocation stops distribution
 // rather than recalling what was already synced.
 
+import { publicFrom } from './public-schema.js';
 import { createServiceRoleClient } from './supabase.js';
 import { roleRuleDenies, type CallerRoles } from './document-library-access.js';
 
@@ -197,14 +198,6 @@ export function validateAclPrefix(prefix: unknown): { ok: boolean; message?: str
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
-
-/** Prefer public schema; fall back for in-memory stubs that lack `.schema()`. */
-function publicFrom(supabase: any, table: string) {
-  if (typeof supabase?.schema === 'function') {
-    return supabase.schema('public').from(table);
-  }
-  return supabase.from(table);
-}
 
 /** Active org role ids and codes for an actor in a team (service-role reads). */
 export async function loadCallerRoles(

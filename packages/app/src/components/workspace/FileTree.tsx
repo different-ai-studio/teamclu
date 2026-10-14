@@ -18,6 +18,13 @@ const DocumentLibraryDialog = lazyNamed(
   () => import("@/components/teamshare/DocumentLibraryDialog"),
   "DocumentLibraryDialog",
 );
+// Per-member rules on nested documents/ folders that predate role-based
+// libraries. They can still be edited or removed, not created.
+const KnowledgeAclDialog = lazyNamed(
+  () => import("@/components/teamshare/KnowledgeAclDialog"),
+  "KnowledgeAclDialog",
+);
+import { isDocumentLibraryPrefix } from "@/lib/backend/cloud-api/document-libraries";
 import { getBackend } from "@/lib/backend";
 import { useCurrentTeamStore } from "@/stores/current-team";
 import { isIgnoredSyncKey } from "@/lib/knowledge/knowledge-ignored";
@@ -199,6 +206,12 @@ export function FileTree({
     // and in the client matcher alike.
     if (syncKey) setAclPrefix(`${syncKey}/`);
   }, [syncRoot, workspacePath]);
+  const handleAclDialogOpenChange = useCallback((open: boolean) => {
+    if (open) return;
+    setAclPrefix(null);
+    // The dialog may have added or dropped a rule.
+    void refreshRestricted();
+  }, [refreshRestricted]);
   const focusedPath = useWorkspaceStore(s => s.focusedPath);
   const selectFile = useWorkspaceStore(s => s.selectFile);
   const selectFileRange = useWorkspaceStore(s => s.selectFileRange);
@@ -1227,7 +1240,13 @@ export function FileTree({
       if (!canManageTeam || node.type !== 'directory') return undefined
       const syncKey = teamSyncKeyForPath(node.path, { syncRoot, workspacePath })
       if (syncKey === null) return undefined
-      return /^documents\/[^/]+\/$/.test(`${syncKey}/`) ? handleManagePermissions : undefined
+      const prefix = `${syncKey}/`
+      // A top-level folder is a role library; a nested one only when it
+      // already carries a legacy rule to edit or remove.
+      if (isDocumentLibraryPrefix(prefix)) return handleManagePermissions
+      return prefix.startsWith('documents/') && restrictedPrefixes.has(prefix)
+        ? handleManagePermissions
+        : undefined
     })(),
     // Its OWN rule, not one inherited from an ancestor: descendants are drawn
     // nested under the folder that is already marked.
@@ -1362,16 +1381,19 @@ export function FileTree({
       */}
       {aclPrefix && (
         <React.Suspense fallback={null}>
-          <DocumentLibraryDialog
-            prefix={aclPrefix}
-            open={aclPrefix !== null}
-            onOpenChange={(open) => {
-              if (open) return;
-              setAclPrefix(null);
-              // The dialog may have added or dropped a rule.
-              void refreshRestricted();
-            }}
-          />
+          {isDocumentLibraryPrefix(aclPrefix) ? (
+            <DocumentLibraryDialog
+              prefix={aclPrefix}
+              open={aclPrefix !== null}
+              onOpenChange={handleAclDialogOpenChange}
+            />
+          ) : (
+            <KnowledgeAclDialog
+              prefix={aclPrefix}
+              open={aclPrefix !== null}
+              onOpenChange={handleAclDialogOpenChange}
+            />
+          )}
         </React.Suspense>
       )}
 

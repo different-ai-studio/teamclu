@@ -10,9 +10,15 @@ export type LibraryAudience =
 export type MemberAccess = { actorId: string; roleCodes: string[] };
 
 const LIBRARY_PREFIX = /^documents\/[^/]+\/$/;
+/** Same ceiling as `validateAclPrefix` in sync-acl.ts. */
+const MAX_PREFIX_LENGTH = 1024;
 
+/**
+ * A top-level `documents/<folder>/` prefix. Also applies the legacy
+ * `validateAclPrefix` limits: no `..` anywhere and at most 1024 characters.
+ */
 export function isDocumentLibraryPrefix(prefix: string): boolean {
-  return LIBRARY_PREFIX.test(prefix);
+  return LIBRARY_PREFIX.test(prefix) && !prefix.includes("..") && prefix.length <= MAX_PREFIX_LENGTH;
 }
 
 /** Both arguments are stored prefixes and already end in `/`. */
@@ -49,7 +55,6 @@ export function libraryPrefixesToResurface(input: {
   libraries: Array<{ pathPrefix: string; roleIds: string[] }>;
   addedRoleIds: string[];
   addedOwner: boolean;
-  ownerRoleId: string | null;
 }): string[] {
   if (input.addedOwner) return input.libraries.map((library) => library.pathPrefix);
   const added = new Set(input.addedRoleIds);
@@ -66,4 +71,21 @@ export function membersLosingLibraryAccess(
 ): string[] {
   const next: LibraryAudience = { kind: "roles", roleCodes: nextRoleCodes };
   return members.filter((member) => canSee(member, previously) && !canSee(member, next)).map((member) => member.actorId);
+}
+
+/**
+ * Whether saving `nextRoleIds` over `previously` can let someone in who was
+ * shut out, so the folder's existing files must be resurfaced.
+ *
+ * Restricting an open folder lets no one new in. Replacing a per-member rule
+ * can. Changing a role rule widens only when it adds a role id.
+ */
+export function libraryGrantWidens(
+  previously: { kind: "open" } | { kind: "actors" } | { kind: "roles"; roleIds: string[] },
+  nextRoleIds: string[],
+): boolean {
+  if (previously.kind === "open") return false;
+  if (previously.kind === "actors") return true;
+  const before = new Set(previously.roleIds);
+  return nextRoleIds.some((id) => !before.has(id));
 }

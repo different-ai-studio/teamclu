@@ -8,14 +8,10 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SettingCard, SectionHeader } from './shared'
 import type { KnowledgeAclRule } from '@/lib/backend/cloud-api/knowledge-acl'
-import type { DocumentLibrary } from '@/lib/backend/cloud-api/document-libraries'
-
-/** Top-level `documents/<folder>/` prefixes are listed via document libraries, not person rules. */
-const TOP_LEVEL_DOCUMENT_LIBRARY_PREFIX = /^documents\/[^/]+\/$/
-
-function isTopLevelDocumentLibraryPrefix(pathPrefix: string): boolean {
-  return TOP_LEVEL_DOCUMENT_LIBRARY_PREFIX.test(pathPrefix)
-}
+import {
+  isDocumentLibraryPrefix,
+  type DocumentLibrary,
+} from '@/lib/backend/cloud-api/document-libraries'
 
 /**
  * Knowledge access — per-directory permissions for the team vault.
@@ -55,13 +51,27 @@ export function KnowledgeAclSection() {
     if (!teamId || !canManage) return
     setError(null)
     try {
+      // Libraries load on their own: an FC that predates the endpoint answers
+      // 404, and that must not hide the knowledge rules it can still serve.
+      const librariesLoad = getBackend()
+        .documentLibraries.listDocumentLibraries(teamId)
+        .catch((e: unknown) => {
+          setError(e instanceof Error ? e.message : String(e))
+          return null
+        })
       const [items, libraryItems, memberRows] = await Promise.all([
         getBackend().knowledgeAcl.listKnowledgeAcl(teamId),
-        getBackend().documentLibraries.listDocumentLibraries(teamId),
+        librariesLoad,
         getBackend().actors.listTeamMembersForAccess(teamId),
       ])
-      setRules(items.filter((rule) => !isTopLevelDocumentLibraryPrefix(rule.pathPrefix)))
-      setLibraries(libraryItems)
+      // Without the library list, top-level documents rules stay with the
+      // per-member rules so they remain visible and removable.
+      setRules(
+        libraryItems === null
+          ? items
+          : items.filter((rule) => !isDocumentLibraryPrefix(rule.pathPrefix)),
+      )
+      setLibraries(libraryItems ?? [])
       setMembers(
         memberRows.map((m: { id: string; displayName: string }) => ({
           id: m.id,

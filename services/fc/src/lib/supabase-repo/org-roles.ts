@@ -13,6 +13,7 @@
  * (and enforce is_system / binding / owner rules RLS does not).
  */
 
+import { publicFrom } from "../public-schema.js";
 import { ApiError } from "../http-utils.js";
 import { libraryPrefixesToResurface } from "../document-library-access.js";
 import { invalidateTeamAcl } from "../sync-acl.js";
@@ -67,14 +68,6 @@ interface OrgRolesHost {
   serviceRoleClient: (what: string) => Promise<any>;
   /** Resolves the bearer caller's actor in this team, or null. */
   resolveCallerActorForTeam: (teamId: string) => Promise<{ id: string } | null>;
-}
-
-/** Prefer public schema; fall back for in-memory stubs that lack `.schema()`. */
-function publicFrom(supabase: any, table: string) {
-  if (typeof supabase?.schema === "function") {
-    return supabase.schema("public").from(table);
-  }
-  return supabase.from(table);
 }
 
 function mapRole(row: any): OrgRole {
@@ -364,53 +357,51 @@ export async function enrichActorsWithOrgRoles<
 }
 
 /**
- * After a member gains roles, drop cached ACL views for every team in the org
- * and bump manifest seq for libraries those new roles can read. Removal does
- * not resurface: already-synced copies are not recalled.
+ * After a role change, drop cached ACL views for every team in the org, and
+ * bump manifest seq for the libraries that newly reachable roles can read.
+ * Removal does not resurface: already-synced copies are not recalled.
+ *
+ * Runs after the role change has committed, so it never fails the request: a
+ * failure here is logged, and access still converges once the cached view
+ * expires (sync-acl CACHE_TTL_MS). What is lost on failure is only the
+ * resurfacing of files that predate the grant.
  */
 async function refreshDocumentLibrariesAfterRoleChange(
   host: OrgRolesHost,
   orgId: string,
   change: { addedRoleIds: string[]; addedOwner: boolean },
 ): Promise<void> {
-  const admin = await host.serviceRoleClient("refresh document libraries after role change");
-  const { data: teamRows, error: teamsErr } = await admin
-    .from("teams")
-    .select("id")
-    .eq("oid", orgId);
-  if (teamsErr) throw teamsErr;
+  try {
+    const admin = await host.serviceRoleClient("refresh document libraries after role change");
+    const { data: teamRows, error: teamsErr } = await admin
+      .from("teams")
+      .select("id")
+      .eq("oid", orgId);
+    if (teamsErr) throw teamsErr;
 
-  const teamIds: string[] = [];
-  for (const row of teamRows ?? []) {
-    if (typeof row?.id === "string" && row.id) teamIds.push(row.id);
-  }
-  for (const id of teamIds) invalidateTeamAcl(id);
-  if (teamIds.length === 0) return;
+    const teamIds: string[] = [];
+    for (const row of teamRows ?? []) {
+      if (typeof row?.id === "string" && row.id) teamIds.push(row.id);
+    }
+    for (const id of teamIds) invalidateTeamAcl(id);
+    if (teamIds.length === 0) return;
+    if (!change.addedOwner && change.addedRoleIds.length === 0) return;
 
-  const { data: ownerRole, error: ownerErr } = await publicFrom(host.supabase, "roles")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("code", "owner")
-    .eq("is_system", true)
-    .maybeSingle();
-  if (ownerErr) throw ownerErr;
-  const ownerRoleId = typeof ownerRole?.id === "string" ? ownerRole.id : null;
-
-  for (const teamId of teamIds) {
     const { data: aclRows, error: aclErr } = await admin
       .from("amuxc_path_acl")
-      .select("id, path_prefix")
-      .eq("team_id", teamId)
+      .select("id, team_id, path_prefix")
+      .in("team_id", teamIds)
       .like("path_prefix", "documents/%");
     if (aclErr) throw aclErr;
 
     const documentRows = (aclRows ?? []).filter(
       (row: any) =>
         typeof row?.id === "string" &&
+        typeof row?.team_id === "string" &&
         typeof row?.path_prefix === "string" &&
         row.path_prefix.startsWith("documents/"),
     );
-    if (documentRows.length === 0) continue;
+    if (documentRows.length === 0) return;
 
     const { data: grantRows, error: grantErr } = await admin
       .from("amuxc_path_acl_role_grants")
@@ -429,24 +420,30 @@ async function refreshDocumentLibrariesAfterRoleChange(
       roleIdsByAcl.set(grant.acl_id, list);
     }
 
-    const libraries: Array<{ pathPrefix: string; roleIds: string[] }> = [];
+    const librariesByTeam = new Map<string, Array<{ pathPrefix: string; roleIds: string[] }>>();
     for (const row of documentRows) {
       const roleIds = roleIdsByAcl.get(row.id) ?? [];
       if (roleIds.length === 0) continue;
-      libraries.push({ pathPrefix: row.path_prefix, roleIds });
+      const list = librariesByTeam.get(row.team_id) ?? [];
+      list.push({ pathPrefix: row.path_prefix, roleIds });
+      librariesByTeam.set(row.team_id, list);
     }
 
-    const prefixes = libraryPrefixesToResurface({
-      libraries,
-      addedRoleIds: change.addedRoleIds,
-      addedOwner: change.addedOwner,
-      ownerRoleId,
-    });
-    const ownedByThisTeam = new Set(libraries.map((library) => library.pathPrefix));
-    for (const prefix of prefixes) {
-      if (!ownedByThisTeam.has(prefix)) continue;
-      await resurfaceAclPrefix(admin, teamId, prefix);
+    for (const [teamId, libraries] of librariesByTeam) {
+      const prefixes = libraryPrefixesToResurface({
+        libraries,
+        addedRoleIds: change.addedRoleIds,
+        addedOwner: change.addedOwner,
+      });
+      for (const prefix of prefixes) {
+        await resurfaceAclPrefix(admin, teamId, prefix);
+      }
     }
+  } catch (error) {
+    console.warn(
+      `[org-roles] document library refresh failed for org ${orgId}:`,
+      error instanceof Error ? error.message : error,
+    );
   }
 }
 
@@ -640,6 +637,7 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
         return mapRole(existing);
       }
 
+      const previousStatus = existing.status;
       const { data, error } = await publicFrom(host.supabase, "roles")
         .update(updates)
         .eq("id", roleId)
@@ -647,6 +645,14 @@ export function makeOrgRolesRepo(host: OrgRolesHost) {
         .select()
         .single();
       if (error) throw error;
+      // Activating a role lets its holders back into libraries granted to it;
+      // deactivating only needs the cached ACL views dropped.
+      if (updates.status !== undefined && updates.status !== previousStatus) {
+        await refreshDocumentLibrariesAfterRoleChange(host, orgId, {
+          addedRoleIds: updates.status === "active" ? [roleId] : [],
+          addedOwner: false,
+        });
+      }
       return mapRole(data);
     },
 

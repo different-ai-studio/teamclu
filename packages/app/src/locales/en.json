@@ -4059,6 +4059,7 @@
   },
   "documentLibrary": {
     "title": "Who can see this",
+    "inactiveRole": "Inactive",
     "open": "Everyone on the team can sync this folder today.",
     "actorLeftover": "This folder is still shared by named members. Saving will switch to roles and replace that list.",
     "owner": "Owner",

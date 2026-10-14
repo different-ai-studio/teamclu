@@ -4,19 +4,21 @@
  * Owner/admin is checked here, then every ACL read and write uses the service
  * role: `amuxc_path_acl*` has RLS with no policy. The service-role client
  * defaults to schema `amux`. `public.roles` and `public.roles_users` go through
- * `publicFrom`, the same fallback org-roles uses for in-memory stubs.
+ * `publicFrom` (../public-schema.ts).
  */
 
+import { publicFrom } from "../public-schema.js";
 import { ApiError } from "../http-utils.js";
 import {
   documentPrefixesOverlap,
   isDocumentLibraryPrefix,
+  libraryGrantWidens,
   membersLosingLibraryAccess,
   type LibraryAudience,
   type MemberAccess,
 } from "../document-library-access.js";
 import { invalidateTeamAcl, MAX_ACL_RULES_PER_TEAM } from "../sync-acl.js";
-import { resurfaceAclPrefix } from "./knowledge-acl.js";
+import { filesUnderPrefix, hasLikeMetachars, resurfaceAclPrefix } from "./knowledge-acl.js";
 
 export type DocumentLibraryRole = {
   id: string;
@@ -50,17 +52,15 @@ interface DocumentLibrariesHost {
   resolveCallerActorForTeam: (teamId: string) => Promise<{ id: string } | null>;
 }
 
-/** Prefer public schema; fall back for in-memory stubs that lack `.schema()`. */
-function publicFrom(supabase: any, table: string) {
-  if (typeof supabase?.schema === "function") {
-    return supabase.schema("public").from(table);
-  }
-  return supabase.from(table);
-}
-
+/**
+ * `alreadyGrantedIds` may stay on the library even if they were deactivated
+ * since: the dialog sends back what it loaded, and an admin must be able to
+ * save the rest without first reactivating them. A new grant must be active.
+ */
 export function prepareRoleIds(
   orgRoles: Array<{ id: string; code: string; status: string; isSystem: boolean }>,
   requestedIds: string[],
+  alreadyGrantedIds: ReadonlySet<string> = new Set(),
 ): { roleIds: string[] } {
   const owner = orgRoles.find(
     (role) => role.code === "owner" && role.status === "active" && role.isSystem,
@@ -76,7 +76,7 @@ export function prepareRoleIds(
     if (seen.has(id)) continue;
     seen.add(id);
     const role = byId.get(id);
-    if (!role || role.status !== "active") {
+    if (!role || (role.status !== "active" && !alreadyGrantedIds.has(id))) {
       throw new ApiError(400, "validation_failed", `role ${id} is missing or not active`);
     }
     unique.push(id);
@@ -195,6 +195,9 @@ async function loadMemberAccess(admin: any, teamId: string, orgId: string): Prom
 }
 
 async function countLiveFiles(admin: any, teamId: string, pathPrefix: string): Promise<number> {
+  if (hasLikeMetachars(pathPrefix)) {
+    return (await filesUnderPrefix(admin, teamId, pathPrefix, { liveOnly: true })).length;
+  }
   const { count, error } = await admin
     .from("amuxc_files")
     .select("id", { count: "exact", head: true })
@@ -209,8 +212,8 @@ async function previousAudience(
   admin: any,
   aclId: string | null,
   orgRoles: StoredRole[],
-): Promise<LibraryAudience> {
-  if (!aclId) return { kind: "open" };
+): Promise<{ audience: LibraryAudience; grantedRoleIds: string[] }> {
+  if (!aclId) return { audience: { kind: "open" }, grantedRoleIds: [] };
 
   const { data: roleRows, error } = await admin
     .from("amuxc_path_acl_role_grants")
@@ -225,7 +228,7 @@ async function previousAudience(
       const code = codeById.get(id);
       if (code && !roleCodes.includes(code)) roleCodes.push(code);
     }
-    return { kind: "roles", roleCodes };
+    return { audience: { kind: "roles", roleCodes }, grantedRoleIds };
   }
 
   const { data: actorRows, error: actorErr } = await admin
@@ -234,8 +237,11 @@ async function previousAudience(
     .eq("acl_id", aclId);
   if (actorErr) throw actorErr;
   return {
-    kind: "actors",
-    actorIds: (actorRows ?? []).map((row: any) => row.actor_id).filter(Boolean),
+    audience: {
+      kind: "actors",
+      actorIds: (actorRows ?? []).map((row: any) => row.actor_id).filter(Boolean),
+    },
+    grantedRoleIds: [],
   };
 }
 
@@ -359,10 +365,8 @@ export function makeDocumentLibrariesRepo(host: DocumentLibrariesHost) {
       pathPrefix = assertLibraryPrefix(body?.pathPrefix);
     }
 
-    // Owner is resolved before any ACL write. A missing active system owner is 500.
     const orgId = await loadOrgId(admin, teamId);
     const orgRoles = await loadOrgRoles(admin, orgId);
-    const { roleIds } = prepareRoleIds(orgRoles, readRoleIds(body));
 
     let existingId: string | null = putRowId;
     if (mode === "create") {
@@ -400,8 +404,12 @@ export function makeDocumentLibrariesRepo(host: DocumentLibrariesHost) {
       existingId = data?.id ?? null;
     }
 
+    const previous = await previousAudience(admin, existingId, orgRoles);
+    // Owner is resolved before any ACL write. A missing active system owner is 500.
+    const { roleIds } = prepareRoleIds(orgRoles, readRoleIds(body), new Set(previous.grantedRoleIds));
+
     const members = await loadMemberAccess(admin, teamId, orgId);
-    const previously = await previousAudience(admin, existingId, orgRoles);
+    const previously = previous.audience;
     const codeById = new Map(orgRoles.map((role) => [role.id, role.code]));
     const nextRoleCodes: string[] = [];
     for (const id of roleIds) {
@@ -437,6 +445,12 @@ export function makeDocumentLibrariesRepo(host: DocumentLibrariesHost) {
       affectedFiles,
       affectedMembers,
       existingId,
+      widens: libraryGrantWidens(
+        previously.kind === "roles"
+          ? { kind: "roles", roleIds: previous.grantedRoleIds }
+          : { kind: previously.kind },
+        roleIds,
+      ),
     };
   }
 
@@ -559,7 +573,8 @@ export function makeDocumentLibrariesRepo(host: DocumentLibrariesHost) {
       await replaceWithRoleGrants(plan.admin, aclId, plan.roleIds, plan.callerActorId, {
         deleteAclOnRoleInsertFailure: createdAcl,
       });
-      await resurfaceAclPrefix(plan.admin, teamId, plan.pathPrefix);
+      // Only a widened audience needs existing files put back in range.
+      if (plan.widens) await resurfaceAclPrefix(plan.admin, teamId, plan.pathPrefix);
       invalidateTeamAcl(teamId);
       return savedLibrary(plan, aclId);
     },
@@ -567,7 +582,8 @@ export function makeDocumentLibrariesRepo(host: DocumentLibrariesHost) {
     async putDocumentLibrary(teamId: string, aclId: string, body: any = {}) {
       const plan = await resolveWrite(teamId, body, "put", aclId);
       await replaceWithRoleGrants(plan.admin, aclId, plan.roleIds, plan.callerActorId);
-      await resurfaceAclPrefix(plan.admin, teamId, plan.pathPrefix);
+      // Narrowing is the client noticing files stopped arriving; nothing to resurface.
+      if (plan.widens) await resurfaceAclPrefix(plan.admin, teamId, plan.pathPrefix);
       invalidateTeamAcl(teamId);
       return savedLibrary(plan, aclId);
     },
