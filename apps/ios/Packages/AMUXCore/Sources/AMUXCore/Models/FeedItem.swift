@@ -1,7 +1,6 @@
 import Foundation
 
-/// A row in the main chat feed. Higher-level than `GroupedEvent`: hides
-/// in-turn runtime detail (thinking, tool_use, tool_result) behind an
+/// A row in the main chat feed. Hides in-turn runtime detail (thinking, tool_use, tool_result) behind an
 /// active-stream card or a completed-turn bubble, so multi-agent sessions
 /// don't drown the user in interleaved runtime events from concurrent
 /// agents.

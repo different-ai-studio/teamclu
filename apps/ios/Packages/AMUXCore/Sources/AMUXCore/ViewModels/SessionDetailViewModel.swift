@@ -69,11 +69,6 @@ public final class SessionDetailViewModel {
         SlashCommand(name: "model", description: String(localized: "Switch the active model"), inputHint: ""),
         SlashCommand(name: "cost", description: String(localized: "Show session token cost"), inputHint: ""),
     ]
-    /// Memoised tool-run grouping over `events`. Views should iterate this
-    /// instead of calling `groupEvents(vm.events)` in body, which previously
-    /// made grouping O(n) on every streaming delta frame. Recomputed by
-    /// `recomputeGroups()` at each mutation site.
-    public private(set) var groupedEvents: [GroupedEvent] = []
     /// Higher-level feed grouping that hides per-turn runtime detail
     /// (thinking / tool_use / tool_result) behind active-stream cards or
     /// completed-turn bubbles. Source for the main chat list. Detail view
@@ -404,11 +399,10 @@ public final class SessionDetailViewModel {
         return ""
     }
 
-    /// Rebuilds `groupedEvents` from `events`. Call after any mutation that
+    /// Rebuilds `feedItems` from `events`. Call after any mutation that
     /// adds, removes, or reorders events, or changes the grouping-relevant
     /// fields on an existing event (eventType, isComplete, toolId).
     private func recomputeGroups() {
-        groupedEvents = groupEvents(events)
         // Union the delta-driven `streamingAgentSet` with the computed
         // `streamingAgentIDs` (which also covers `isAgentWorking`) so the
         // active-stream card surfaces as soon as `markAgentWorking()` flips
@@ -416,11 +410,23 @@ public final class SessionDetailViewModel {
         // round-trip via MQTT. Before this union the card only appeared
         // once a real delta arrived, which could take seconds on a
         // cold-spawn agent.
-        feedItems = buildFeedItems(
-            events,
-            streamingAgentIDs: streamingAgentSet.union(streamingAgentIDs)
-        )
+        // The reducer's set, not the throttled mirror: a first delta must
+        // be able to surface its card without waiting for the mirror flush.
+        let streaming = timelineState.streamingAgentSet.union(streamingAgentIDs)
+        feedStreamingAgents = streaming
+        feedItems = buildFeedItems(events, streamingAgentIDs: streaming)
         feedTimeMarkers = AMUXCore.feedTimeMarkers(for: feedItems)
+    }
+
+    /// The streaming agents the current `feedItems` were built with. A
+    /// delta that only grows the text buffer leaves the feed's shape alone;
+    /// only a change in who is streaming needs a rebuild.
+    @ObservationIgnored private var feedStreamingAgents: Set<String> = []
+
+    private func recomputeGroupsIfStreamingAgentsChanged() {
+        if timelineState.streamingAgentSet.union(streamingAgentIDs) != feedStreamingAgents {
+            recomputeGroups()
+        }
     }
 
     private func sortEventsForDisplay() {
@@ -3142,8 +3148,12 @@ public final class SessionDetailViewModel {
     }
 
     private func markAgentWorking() {
+        // Every work event lands here — each of a reply's deltas too — so
+        // the feed is rebuilt only on the idle → working edge. Rebuilding it
+        // per delta walked every event of the session 100+ times a turn.
+        let wasWorking = isAgentWorking
         isAgentWorking = true
-        recomputeGroups()
+        if !wasWorking { recomputeGroups() }
         armAgentWorkingSafetyReset()
     }
 
@@ -3322,6 +3332,7 @@ public final class SessionDetailViewModel {
             // most one mirror per interval. The first delta of a stream
             // arrives via `.entriesChanged` and mirrors immediately.
             scheduleStreamingMirrorFlush()
+            recomputeGroupsIfStreamingAgentsChanged()
             #if DEBUG
             SessionDetailViewModel._testFastPathSkipCount &+= 1
             #endif
@@ -4025,9 +4036,8 @@ extension SessionDetailViewModel {
     /// Fills this session with `PerfFixtures.history` through the reducer, so
     /// the rows are the ones a real seed leaves behind.
     public func _installPerfFixture(turns: Int, modelContext: ModelContext) {
-        for input in PerfFixtures.history(turns: turns) {
-            _ = applyTimelineInput(.historyMessage(input), modelContext: modelContext)
-        }
+        _ = applyTimelineInputs(PerfFixtures.history(turns: turns).map { .historyMessage($0) },
+                                modelContext: modelContext)
         try? modelContext.save()
         recomputeGroups()
     }
