@@ -93,6 +93,20 @@ export function registerActors(router) {
     return { body: { agentId: result.agentId ?? null, displayName: result.displayName ?? null } };
   });
 
+  // Upgrade path: the daemon is already this actor, but the row predates
+  // device-scoped binding so for-device misses it. Stamp, don't create.
+  router.post("/v1/teams/:teamId/agents/adopt-device", async (ctx) => {
+    const teamId = decodeURIComponent(ctx.params.teamId);
+    const body = ctx.json ?? {};
+    requireString(body.deviceId, "deviceId");
+    requireString(body.agentId, "agentId");
+    const result = await ctx.repository.adoptLegacyAgentDevice(teamId, {
+      deviceId: body.deviceId,
+      agentId: body.agentId,
+    });
+    return { body: { agentId: result.agentId ?? null, displayName: result.displayName ?? null } };
+  });
+
   // Idempotent per (team, device): the desktop calls this after login instead of
   // asking the user to create an agent, bind an existing one, or reset a machine
   // bound to another team. deviceId is write-only — it is deliberately absent

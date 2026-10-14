@@ -394,6 +394,28 @@ export function runBusinessRepositoryContract({ test, assert, createRepository }
     assert.equal(after.agentId, created.agentId);
   });
 
+  test("repository contract: adoptLegacyAgentDevice stamps a device onto an existing agent", async () => {
+    const repo = createRepository();
+    const before = await repo.findAgentForDevice("team-1", { deviceId: "device-legacy" });
+    assert.equal(before.agentId, null);
+
+    const adopted = await repo.adoptLegacyAgentDevice("team-1", {
+      deviceId: "device-legacy",
+      agentId: "agent-legacy",
+    });
+    assert.equal(adopted.agentId, "agent-legacy");
+
+    const after = await repo.findAgentForDevice("team-1", { deviceId: "device-legacy" });
+    assert.equal(after.agentId, "agent-legacy");
+
+    // A device already held is not given to a second agent.
+    const refused = await repo.adoptLegacyAgentDevice("team-1", {
+      deviceId: "device-legacy",
+      agentId: "agent-other",
+    });
+    assert.equal(refused.agentId, null);
+  });
+
   test("repository contract: ensureAgentForDevice is idempotent per device", async () => {
     const repo = createRepository();
     const first = await repo.ensureAgentForDevice("team-1", {

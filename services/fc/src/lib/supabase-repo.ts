@@ -4519,6 +4519,30 @@ export function createSupabaseBusinessRepository(options) {
       };
     },
 
+    async adoptLegacyAgentDevice(teamId, input) {
+      const { data, error } = await supabase.rpc("adopt_legacy_agent_device", {
+        p_team_id: teamId,
+        p_device_id: input.deviceId,
+        p_agent_id: input.agentId,
+      });
+      if (error) {
+        if (error.code === "22023") {
+          throw new ApiError(400, "validation_failed", error.message ?? "invalid device agent request");
+        }
+        if (error.code === "42501") {
+          throw new ApiError(403, "forbidden", error.message ?? "team membership required");
+        }
+        throw error;
+      }
+      // Zero rows means the agent was not eligible. That is a normal answer,
+      // not a fault: the desktop then keeps the install card.
+      const row = Array.isArray(data) ? data[0] : data;
+      return {
+        agentId: row?.agent_id ?? null,
+        displayName: row?.display_name ?? null,
+      };
+    },
+
     async ensureAgentForDevice(teamId, input) {
       // The RPC owns the whole decision: advisory lock on (team, device), find
       // the caller-owned agent for this machine or create it (visibility comes
