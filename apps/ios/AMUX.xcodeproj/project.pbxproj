@@ -30,6 +30,8 @@
 		A5C58ED1E2D4F96A34494416 /* InviteJoinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */; };
 		A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */; };
 		B3373E2BF0AEBF0F52946F65 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */; };
+		CA24785455F00588EBD8ED47 /* PerfFixtureInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88DAD62047B1D395BAAA1110 /* PerfFixtureInstaller.swift */; };
+		CE55C1FE43C2565BA380AB1B /* AMUXChatPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */; };
 		E162A3FC8793994442C23372 /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5C333674232A156EF5A6D1 /* WelcomeView.swift */; };
 		EB09506708CCBE1B923FBFAE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */; };
 		EC3990515ABE38A90617C32E /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 514F7615E8C226A5F3660A5F /* LoginView.swift */; };
@@ -37,12 +39,23 @@
 		F7495A3C8805D7956FA5B578 /* NoTeamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E22D691967D8CFCEC9C7CECF /* NoTeamView.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		ECAD942BB3E54FD949E54B9A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B5450DF3EE729297DB2BFD31 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 88EBDC80E588A3914F746958;
+			remoteInfo = AMUX;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		194E71B71F97908AD85A630C /* AMUXSessionLiveCaptureTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionLiveCaptureTest.swift; sourceTree = "<group>"; };
 		1B1DDBE39CD8A28D7D0F9354 /* ServerSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettingsSheet.swift; sourceTree = "<group>"; };
 		2304BE28BB84D7C798F28A65 /* AMUXSessionLiveDiagTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionLiveDiagTest.swift; sourceTree = "<group>"; };
 		25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		278531282E6CC92737596EAF /* AMUXCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXCore; path = Packages/AMUXCore; sourceTree = SOURCE_ROOT; };
+		33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXChatPerformanceTests.swift; sourceTree = "<group>"; };
 		36A3DEF3E6D09E05594735B5 /* InviteJoinSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteJoinSheet.swift; sourceTree = "<group>"; };
 		37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrgTeamPickerView.swift; sourceTree = "<group>"; };
 		499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXApp.swift; sourceTree = "<group>"; };
@@ -53,6 +66,7 @@
 		5A17336F2708FD5E2A0C62C8 /* AMUXSharedUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXSharedUI; path = Packages/AMUXSharedUI; sourceTree = SOURCE_ROOT; };
 		67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushAppDelegate.swift; sourceTree = "<group>"; };
 		7089CE9863C2F15703551691 /* AMUXSessionStreamingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXSessionStreamingUITests.swift; sourceTree = "<group>"; };
+		88DAD62047B1D395BAAA1110 /* PerfFixtureInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerfFixtureInstaller.swift; sourceTree = "<group>"; };
 		913DCF0E3CEDD1823F52E8D6 /* AMUXUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXUI; path = Packages/AMUXUI; sourceTree = SOURCE_ROOT; };
 		92EC5FA726FD730FCA929AD0 /* AMUX.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AMUX.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		933101253D0E0056ED286BFB /* PushBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushBootstrap.swift; sourceTree = "<group>"; };
@@ -90,6 +104,7 @@
 			isa = PBXGroup;
 			children = (
 				E16412C0DABEF538623C6257 /* AMUXAuthUITests.swift */,
+				33A6D258C12BAFB65B4287E2 /* AMUXChatPerformanceTests.swift */,
 				194E71B71F97908AD85A630C /* AMUXSessionLiveCaptureTest.swift */,
 				2304BE28BB84D7C798F28A65 /* AMUXSessionLiveDiagTest.swift */,
 				9E532B070FBC309D7EB883CE /* AMUXSessionMessageRegressionTests.swift */,
@@ -137,6 +152,7 @@
 				E150614525CD79BA72BBC06D /* OnboardingChoiceView.swift */,
 				A57443CB6DA7A01B751BBA00 /* OnboardingViews.swift */,
 				37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */,
+				88DAD62047B1D395BAAA1110 /* PerfFixtureInstaller.swift */,
 				67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */,
 				933101253D0E0056ED286BFB /* PushBootstrap.swift */,
 				1B1DDBE39CD8A28D7D0F9354 /* ServerSettingsSheet.swift */,
@@ -190,6 +206,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				7A219B90C99E5FA3772A952D /* PBXTargetDependency */,
 			);
 			name = AMUXUITests;
 			packageProductDependencies = (
@@ -271,6 +288,7 @@
 				373E86A34B6908422880D2D7 /* OnboardingChoiceView.swift in Sources */,
 				29C3F045A406DBA4AD7D1F32 /* OnboardingViews.swift in Sources */,
 				9F1C704FA9F8243CDB69EC7D /* OrgTeamPickerView.swift in Sources */,
+				CA24785455F00588EBD8ED47 /* PerfFixtureInstaller.swift in Sources */,
 				5D9C7760A6A171683819C4A0 /* PushAppDelegate.swift in Sources */,
 				70245B4A62E76BFBC234FE03 /* PushBootstrap.swift in Sources */,
 				770B07D7DCA6D5A3D19E114E /* ServerSettingsSheet.swift in Sources */,
@@ -283,6 +301,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A77EC78143196C418FE87C82 /* AMUXAuthUITests.swift in Sources */,
+				CE55C1FE43C2565BA380AB1B /* AMUXChatPerformanceTests.swift in Sources */,
 				29502E986D717CDB6A9EE9FC /* AMUXSessionLiveCaptureTest.swift in Sources */,
 				F4C758D14EA8FC4DFFD453E8 /* AMUXSessionLiveDiagTest.swift in Sources */,
 				2468D5A7710326FCAE98EED5 /* AMUXSessionMessageRegressionTests.swift in Sources */,
@@ -293,6 +312,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7A219B90C99E5FA3772A952D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 88EBDC80E588A3914F746958 /* AMUX */;
+			targetProxy = ECAD942BB3E54FD949E54B9A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1C850D8FBC08BD5B2CFA0C42 /* Release */ = {

@@ -670,7 +670,8 @@ public final class SessionListViewModel {
         if let validIDs = validSessionIDs {
             let all = (try? modelContext.fetch(FetchDescriptor<Session>())) ?? []
             var didDelete = false
-            for row in all where !validIDs.contains(row.sessionId) {
+            // Perf fixtures are local by design (DEBUG only), never on the server.
+            for row in all where !validIDs.contains(row.sessionId) && !PerfFixtures.isFixture(row.sessionId) {
                 modelContext.delete(row)
                 didDelete = true
             }
@@ -749,7 +750,7 @@ public final class SessionListViewModel {
             }
         }
 
-        for stale in byID.values {
+        for stale in byID.values where !PerfFixtures.isFixture(stale.sessionId) {
             modelContext.delete(stale)
         }
 

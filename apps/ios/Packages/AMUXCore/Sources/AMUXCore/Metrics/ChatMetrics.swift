@@ -188,6 +188,19 @@ public final class ChatMetrics: @unchecked Sendable {
         return report
     }
 
+    /// Ends the interval once every phase in `required` has been marked —
+    /// for an end that is "both of these happened", in whichever order.
+    /// Call it after each of the marks; only the last one ends it.
+    @discardableResult
+    public func endWhenMarked(_ metric: ChatMetric, key: String = "", _ required: Set<String>) -> ChatMetricReport? {
+        let ready = lock.withLock {
+            guard let interval = open[Key(metric: metric, key: key)] else { return false }
+            return required.isSubset(of: Set(interval.phases.map(\.name)))
+        }
+        guard ready else { return nil }
+        return end(metric, key: key)
+    }
+
     /// A point event with no interval, for Instruments only — e.g. counting
     /// how often a view body runs.
     public static func event(_ name: StaticString) {

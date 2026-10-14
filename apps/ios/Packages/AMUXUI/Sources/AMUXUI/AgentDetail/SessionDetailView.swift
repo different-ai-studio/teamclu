@@ -210,7 +210,9 @@ public struct SessionDetailView: View {
                 await Task.yield()
                 isInitialFeedVisible = true
                 // M1's headline number: the cached feed is now on screen.
-                ChatMetrics.shared.mark(.openSession, key: viewModel.session?.sessionId ?? "", "first_frame")
+                let metricKey = viewModel.session?.sessionId ?? ""
+                ChatMetrics.shared.mark(.openSession, key: metricKey, "first_frame")
+                ChatMetrics.shared.endWhenMarked(.openSession, key: metricKey, SessionDetailViewModel.openSessionEndPhases)
             }
             // Store the proxy so the composer's onSend callback (inside
             // safeAreaInset, outside this ScrollViewReader scope) can
@@ -649,6 +651,20 @@ public struct SessionDetailView: View {
                 // start() just marked the session read; its pushes are stale.
                 Task { await AppIconBadge.clearDeliveredNotifications(forSession: sessionID) }
             }
+            #if DEBUG
+            // Perf UI tests: stream a scripted turn into a fixture session
+            // once its feed is up, to measure M2 without a daemon. Not behind
+            // the member / feedback fetches below: for a local-only fixture
+            // those fail, and how long that takes must not gate the replay.
+            if UserDefaults.standard.bool(forKey: "AMUXPerfReplay"),
+               let sessionID = viewModel.session?.sessionId,
+               PerfFixtures.isFixture(sessionID) {
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    await viewModel._replayPerfTurn()
+                }
+            }
+            #endif
             await viewModel.refreshMemberSheet()
             await viewModel.loadFeedback()
         }

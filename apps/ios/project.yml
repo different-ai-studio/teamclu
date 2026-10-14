@@ -43,6 +43,10 @@ targets:
     platform: iOS
     sources:
       - path: AMUXUITests
+    # Without this the AMUXUITests scheme neither builds nor installs the
+    # app: tests ran against whatever binary the simulator last had.
+    dependencies:
+      - target: AMUX
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.teamclu.mobile.uitests

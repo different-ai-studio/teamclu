@@ -5,7 +5,9 @@ import AMUXCore
 /// rendered (M2). Each display-link tick that arrives later than the frame
 /// the previous tick asked for adds the overshoot to `hitch_ms`; every tick
 /// adds its length to `observed_ms`, so hitch_ms / observed seconds is the
-/// hitch rate Apple grades (< 5 ms/s good, > 10 ms/s bad).
+/// hitch rate Apple grades (< 5 ms/s good, > 10 ms/s bad). Read it from a
+/// device: the simulator throttles occluded windows and reports hitches
+/// that never happened (check `frames` against the observed time).
 ///
 /// Writes into the `turnRender` interval the view model opens and closes, so
 /// it only counts while a turn is live and costs nothing between turns
@@ -32,6 +34,7 @@ final class FrameHitchMonitor {
     }
 
     fileprivate func tick(_ link: CADisplayLink) {
+        let previousExpected = expectedFrame
         defer {
             lastTimestamp = link.timestamp
             expectedFrame = link.targetTimestamp - link.timestamp
@@ -41,9 +44,16 @@ final class FrameHitchMonitor {
         guard metrics.isOpen(.turnRender, key: key) else { return }
         let actual = link.timestamp - lastTimestamp
         metrics.add(.turnRender, key: key, "observed_ms", actual * 1000)
-        let hitch = actual - expectedFrame
-        // Half a millisecond of slack: timestamps jitter even on idle frames.
-        if hitch > 0.0005 {
+        // A low frame count for the observed time means the numbers are not
+        // trustworthy: the simulator throttles an occluded window to ~12 fps.
+        metrics.add(.turnRender, key: key, "frames", 1)
+        // ProMotion changes the refresh rate on its own; the first tick at a
+        // new rate is a rate change, not a late frame.
+        let expected = link.targetTimestamp - link.timestamp
+        guard abs(expected - previousExpected) < 0.001 else { return }
+        // Half a frame of slack: one late frame is a hitch, jitter is not.
+        let hitch = actual - previousExpected
+        if hitch > previousExpected * 0.5 {
             metrics.add(.turnRender, key: key, "hitch_ms", hitch * 1000)
         }
     }

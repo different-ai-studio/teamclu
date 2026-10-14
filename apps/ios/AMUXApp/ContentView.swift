@@ -255,6 +255,12 @@ struct ContentView: View {
             // from a build without the intro — never needs the intro cards.
             if route == .ready {
                 ChatMetrics.shared.mark(.coldStart, "route_ready")
+                #if DEBUG
+                PerfFixtureInstaller.installIfEnabled(
+                    teamID: onboarding.currentContext?.team.id,
+                    modelContext: modelContext
+                )
+                #endif
                 UserDefaults.standard.set(true, forKey: OnboardingFlags.hasSeenIntroKey)
             }
             // Signed out, by hand or by a dead session: nothing of that

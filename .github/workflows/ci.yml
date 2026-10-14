@@ -558,3 +558,14 @@ jobs:
             exit 1
           fi
           echo "Nothing over ${BUDGET_MS}ms."
+
+      # The packages' unit tests had no CI at all: about 600 of them across
+      # AMUXCore (timeline reducer, outbox, MQTT reconnect, ChatMetrics, perf
+      # fixtures) and AMUXSharedUI. Both build for macOS, so plain `swift test`
+      # runs them without a simulator. AMUXUI declares no macOS platform and
+      # only tests on a simulator, so it stays out of this step.
+      - name: Package unit tests (AMUXCore, AMUXSharedUI)
+        run: |
+          set -euo pipefail
+          swift test --package-path apps/ios/Packages/AMUXCore
+          swift test --package-path apps/ios/Packages/AMUXSharedUI

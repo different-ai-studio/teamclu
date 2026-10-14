@@ -1640,7 +1640,8 @@ public final class SessionDetailViewModel {
             guard let self, !Task.isCancelled else { return }
             self.hasFinishedInitialSeed = true
             ChatMetrics.shared.set(.openSession, key: metricKey, "events_after_seed", Double(self.events.count))
-            ChatMetrics.shared.end(.openSession, key: metricKey)
+            ChatMetrics.shared.mark(.openSession, key: metricKey, "seeded")
+            ChatMetrics.shared.endWhenMarked(.openSession, key: metricKey, Self.openSessionEndPhases)
         }
 
         // Single subscription path: session/{sid}/live. iOS only ever
@@ -2363,6 +2364,9 @@ public final class SessionDetailViewModel {
     /// represented; only `user_*` and `agent_reply` kinds become AgentEvents.
     public func seedFromSupabaseMessages(modelContext: ModelContext) async {
         guard let session else { return }
+        // Fixture sessions are local only; a fetch would 404 and add network
+        // noise to exactly the numbers they exist to measure.
+        guard !PerfFixtures.isFixture(session.sessionId) else { return }
         guard let repo = messagesRepository else { return }
         // Own key per run: the open-time seed and the subscribe-time seed
         // can overlap, and must not end each other's interval.
@@ -2436,6 +2440,11 @@ public final class SessionDetailViewModel {
     }
 
     // MARK: - Metrics
+
+    /// M1 is over when the cached feed is on screen and the Cloud API
+    /// history is in — usually in that order, but a local-only session
+    /// (perf fixtures) seeds before the first frame.
+    public static let openSessionEndPhases: Set<String> = ["first_frame", "seeded"]
 
     static func milliseconds(since start: ContinuousClock.Instant) -> Double {
         let elapsed = ContinuousClock.now - start
@@ -3799,6 +3808,41 @@ extension SessionDetailViewModel {
         interruptPendingAgents.insert(bucket)
         forceSettleInterruptedAgent(bucket)
     }
+
+    #if DEBUG
+    /// Fills this session with `PerfFixtures.history` through the reducer, so
+    /// the rows are the ones a real seed leaves behind.
+    public func _installPerfFixture(turns: Int, modelContext: ModelContext) {
+        for input in PerfFixtures.history(turns: turns) {
+            _ = applyTimelineInput(.historyMessage(input), modelContext: modelContext)
+        }
+        try? modelContext.save()
+        recomputeGroups()
+    }
+
+    /// Plays `PerfFixtures.streamedTurn` through the live-envelope path —
+    /// the same handler and M2 accounting as the MQTT loop — one event per
+    /// `interval`, like a daemon streaming a reply.
+    public func _replayPerfTurn(interval: Duration = .milliseconds(25)) async {
+        guard let modelContext = startModelContext else { return }
+        let turnID = "perf-live-\(UUID().uuidString.prefix(8).lowercased())"
+        var sequence: UInt64 = 1
+        for acp in PerfFixtures.streamedTurn() {
+            var envelope = Amux_Envelope()
+            envelope.actorID = PerfFixtures.agentID
+            envelope.turnID = turnID
+            envelope.sequence = sequence
+            envelope.timestamp = Int64(Date().timeIntervalSince1970)
+            envelope.acpEvent = acp
+            sequence += 1
+            let start = ContinuousClock.now
+            handleEnvelope(envelope, modelContext: modelContext)
+            recordTurnRenderCost(since: start)
+            try? await Task.sleep(for: interval)
+            if Task.isCancelled { return }
+        }
+    }
+    #endif
 
     /// Direct test entry: build an AcpInput and run it through
     /// `applyTimelineInput` without a live MQTT session.

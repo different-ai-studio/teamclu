@@ -102,3 +102,16 @@ final class ChatMetricsTests: XCTestCase {
         XCTAssertTrue(sink.all.isEmpty, "a pruned interval is dropped, not reported")
     }
 }
+
+extension ChatMetricsTests {
+    func testEndWhenMarkedWaitsForEveryRequiredPhaseInAnyOrder() throws {
+        metrics.begin(.openSession, key: "s1")
+        metrics.mark(.openSession, key: "s1", "seeded")
+        XCTAssertNil(metrics.endWhenMarked(.openSession, key: "s1", ["first_frame", "seeded"]))
+        XCTAssertTrue(metrics.isOpen(.openSession, key: "s1"))
+        metrics.mark(.openSession, key: "s1", "first_frame")
+        let report = try XCTUnwrap(metrics.endWhenMarked(.openSession, key: "s1", ["first_frame", "seeded"]))
+        XCTAssertEqual(report.phases.map(\.name), ["seeded", "first_frame"])
+        XCTAssertFalse(metrics.isOpen(.openSession, key: "s1"))
+    }
+}
