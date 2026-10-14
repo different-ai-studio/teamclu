@@ -58,7 +58,7 @@ struct AttachmentDrawerSheet: View {
                                 do {
                                     let upload = try await uploadManager.startUpload(
                                         filePath: url,
-                                        messageID: UUID().uuidString,
+                                        messageID: UUID().uuidString.lowercased(),
                                         sessionID: sessionID,
                                         teamID: teamID
                                     )
@@ -83,7 +83,7 @@ struct AttachmentDrawerSheet: View {
                                 do {
                                     let upload = try await uploadManager.startUpload(
                                         filePath: url,
-                                        messageID: UUID().uuidString,
+                                        messageID: UUID().uuidString.lowercased(),
                                         sessionID: sessionID,
                                         teamID: teamID
                                     )
@@ -120,7 +120,7 @@ struct AttachmentDrawerSheet: View {
                                     do {
                                         let upload = try await uploadManager.startUpload(
                                             filePath: url,
-                                            messageID: UUID().uuidString,
+                                            messageID: UUID().uuidString.lowercased(),
                                             sessionID: sessionID,
                                             teamID: teamID
                                         )

@@ -600,7 +600,8 @@ public final class TeamcluService {
         // Honor caller-provided id (outbox flow) so retries and the
         // daemon's slice-B dedup land on a stable key. Falls back to a
         // fresh UUID when the caller doesn't care (legacy callers).
-        message.messageID = messageID ?? UUID().uuidString
+        // Lowercase, matching how the server stores it (see sendPrompt, #1696).
+        message.messageID = messageID ?? UUID().uuidString.lowercased()
         message.sessionID = sessionId
         message.senderActorID = actorId
         message.kind = .text

@@ -2716,7 +2716,11 @@ public final class SessionDetailViewModel {
             // agent — confusing in chat history, especially for other
             // collaborators reading along.
             let body = composeBodyWithMentions(text)
-            let messageID = UUID().uuidString
+            // Lowercase: the server stores this id in a `uuid` column, which
+            // hands it back lowercase, and the daemon dedupes on the exact
+            // string — an uppercase id reached it twice, once per spelling,
+            // and the agent answered both (#1696).
+            let messageID = UUID().uuidString.lowercased()
             let mentionIDs = Array(agentChipSelection)
 
             // 1. Local user_prompt entry for the bubble. The

@@ -596,7 +596,7 @@ public struct NewSessionSheet: View {
         }
 
         let createdAt = Date()
-        let sessionID = UUID().uuidString
+        let sessionID = UUID().uuidString.lowercased()
         let session = Session(
             sessionId: sessionID,
             teamId: teamID,
@@ -611,7 +611,7 @@ public struct NewSessionSheet: View {
         )
 
         let message = SessionMessage(
-            messageId: UUID().uuidString,
+            messageId: UUID().uuidString.lowercased(),
             sessionId: sessionID,
             senderActorId: currentActorID,
             kind: "text",
