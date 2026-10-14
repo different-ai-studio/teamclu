@@ -1,7 +1,7 @@
 // services/fc/test/push-dispatch.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchPush } from '../src/lib/push-dispatch.js';
+import { buildApnsPayload, dispatchPush } from '../src/lib/push-dispatch.js';
 
 function makeDeps({ recipients, claim = true, mqtt = null }) {
   const sent = [];
@@ -167,4 +167,25 @@ test('inbox: MQTT publish failure is counted, does not break APNs flow', async (
   assert.equal(r.sent, 1);          // APNs succeeded
   assert.equal(r.inboxSent, 0);
   assert.equal(r.inboxFailed, 1);
+});
+
+test('message push carries the reply category and what a reply needs', async () => {
+  const d = makeDeps({ recipients: [{
+    user_id: 'u1', muted: false, prefs: { enabled: true },
+    tokens: [{ provider: 'apns', token: 'GOOD1', device_id: 'D1' }],
+    presence: [],
+  }] });
+  await dispatchPush({ id: 'm1', team_id: 't1', session_id: 's', sender_actor_id: 'agent-a',
+                       kind: 'text', content: 'hi' }, d);
+  const { payload } = d.sent[0];
+  assert.equal(payload.aps.category, 'SESSION_MESSAGE');
+  assert.equal(payload.data.team_id, 't1');
+  assert.equal(payload.data.sender_actor_id, 'agent-a');
+  assert.equal(payload.data.message_id, 'm1');
+});
+
+test('payload without team still builds (older callers)', () => {
+  const p = buildApnsPayload({ title: 'A', body: 'b', sessionId: 's', messageId: 'm' });
+  assert.equal(p.data.team_id, null);
+  assert.equal(p.aps.category, 'SESSION_MESSAGE');
 });

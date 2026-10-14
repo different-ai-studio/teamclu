@@ -130,6 +130,8 @@ export async function dispatchPush(msg, deps) {
     body: truncate(content, 80),
     sessionId: session_id,
     messageId,
+    teamId: msg.team_id ?? null,
+    senderActorId: sender_actor_id ?? null,
   });
 
   // Inbox fan-out: every non-muted recipient gets a lightweight ping on their
@@ -188,14 +190,27 @@ export async function dispatchPush(msg, deps) {
   };
 }
 
-export function buildApnsPayload({ title, body, sessionId, messageId }) {
+/**
+ * `category` turns on the iOS notification's reply field; a client that has
+ * not registered it shows the plain notification, as before. `team_id` and
+ * `sender_actor_id` are what that reply needs to post into the session and
+ * address an agent sender — the app may be woken with nothing loaded.
+ */
+export function buildApnsPayload({ title, body, sessionId, messageId, teamId = null, senderActorId = null }) {
   return {
     aps: {
       alert: { title, body },
       'thread-id': sessionId,
+      category: 'SESSION_MESSAGE',
       sound: 'default',
       badge: 1,
     },
-    data: { session_id: sessionId, message_id: messageId, kind: 'message' },
+    data: {
+      session_id: sessionId,
+      message_id: messageId,
+      kind: 'message',
+      team_id: teamId,
+      sender_actor_id: senderActorId,
+    },
   };
 }
