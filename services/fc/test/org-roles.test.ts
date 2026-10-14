@@ -622,8 +622,35 @@ function makeStubHost(opts: {
     },
   };
 
+  function emptyServiceQuery() {
+    const api: any = {
+      select() {
+        return api;
+      },
+      eq() {
+        return api;
+      },
+      like() {
+        return api;
+      },
+      in() {
+        return api;
+      },
+      then(resolve: (v: unknown) => void) {
+        return Promise.resolve({ data: [], error: null }).then(resolve);
+      },
+    };
+    return api;
+  }
+
   return {
     supabase,
+    serviceRoleClient: async () => ({
+      from(table: string) {
+        if (table === "teams" || table === "amuxc_path_acl") return emptyServiceQuery();
+        throw new Error(`unexpected service table ${table}`);
+      },
+    }),
     resolveCallerActorForTeam: async () =>
       opts.member === false ? null : { id: "actor-1" },
     _roles: roles,

@@ -39,6 +39,25 @@ function canSee(member: MemberAccess, audience: LibraryAudience): boolean {
   return member.roleCodes.some((code) => audience.roleCodes.includes(code));
 }
 
+/**
+ * Prefixes to push back into the manifest after roles are added.
+ * `addedOwner` includes every library: owner can read one even when the owner
+ * role id is absent from its grant rows. Removal passes an empty `addedRoleIds`
+ * and resurfaces nothing.
+ */
+export function libraryPrefixesToResurface(input: {
+  libraries: Array<{ pathPrefix: string; roleIds: string[] }>;
+  addedRoleIds: string[];
+  addedOwner: boolean;
+  ownerRoleId: string | null;
+}): string[] {
+  if (input.addedOwner) return input.libraries.map((library) => library.pathPrefix);
+  const added = new Set(input.addedRoleIds);
+  return input.libraries
+    .filter((library) => library.roleIds.some((roleId) => added.has(roleId)))
+    .map((library) => library.pathPrefix);
+}
+
 /** Member actor ids who can see `previously` and cannot see the next role set. */
 export function membersLosingLibraryAccess(
   members: MemberAccess[],

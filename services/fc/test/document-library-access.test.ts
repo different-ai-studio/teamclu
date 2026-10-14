@@ -5,6 +5,7 @@ import {
   documentPrefixesOverlap,
   roleRuleDenies,
   membersLosingLibraryAccess,
+  libraryPrefixesToResurface,
 } from "../src/lib/document-library-access.js";
 
 describe("document library prefix", () => {
@@ -83,5 +84,42 @@ describe("membersLosingLibraryAccess", () => {
       ["owner", "finance", "hr"],
     );
     assert.deepEqual(lost, []);
+  });
+});
+
+describe("libraryPrefixesToResurface", () => {
+  test("adding finance resurfaces only libraries that grant finance", () => {
+    const prefixes = libraryPrefixesToResurface({
+      libraries: [
+        { pathPrefix: "documents/财务/", roleIds: ["role-finance", "role-owner"] },
+        { pathPrefix: "documents/人事/", roleIds: ["role-hr", "role-owner"] },
+      ],
+      addedRoleIds: ["role-finance"],
+      addedOwner: false,
+      ownerRoleId: "role-owner",
+    });
+    assert.deepEqual(prefixes, ["documents/财务/"]);
+  });
+
+  test("adding owner resurfaces every role library", () => {
+    const prefixes = libraryPrefixesToResurface({
+      libraries: [
+        { pathPrefix: "documents/财务/", roleIds: ["role-finance"] },
+        { pathPrefix: "documents/人事/", roleIds: ["role-hr"] },
+      ],
+      addedRoleIds: ["role-owner"],
+      addedOwner: true,
+      ownerRoleId: "role-owner",
+    });
+    assert.deepEqual(prefixes, ["documents/财务/", "documents/人事/"]);
+  });
+
+  test("removing a role resurfaces nothing", () => {
+    assert.deepEqual(libraryPrefixesToResurface({
+      libraries: [{ pathPrefix: "documents/财务/", roleIds: ["role-finance"] }],
+      addedRoleIds: [],
+      addedOwner: false,
+      ownerRoleId: "role-owner",
+    }), []);
   });
 });

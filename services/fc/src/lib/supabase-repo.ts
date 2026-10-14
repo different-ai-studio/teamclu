@@ -7734,6 +7734,7 @@ export function createSupabaseBusinessRepository(options) {
     // Authz: current_team_role (owner/admin) + system immutable + binding 409.
     ...makeOrgRolesRepo({
       supabase,
+      serviceRoleClient,
       resolveCallerActorForTeam: async (teamId: string) => {
         const { data: userData, error: userErr } = await supabase.auth.getUser();
         if (userErr) throw userErr;
