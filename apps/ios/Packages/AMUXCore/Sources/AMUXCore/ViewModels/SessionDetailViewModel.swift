@@ -79,6 +79,9 @@ public final class SessionDetailViewModel {
     /// completed-turn bubbles. Source for the main chat list. Detail view
     /// reads `runtimeEvents` off each item to render the full turn.
     public private(set) var feedItems: [FeedItem] = []
+    /// Day / time labels to draw above feed rows, by row id. Rebuilt with
+    /// `feedItems`, so the view does no date math while scrolling.
+    public private(set) var feedTimeMarkers: [String: FeedTimeMarker] = [:]
     /// True after `start(modelContext:)` has loaded the initial local event
     /// snapshot and projected it into `feedItems`. The detail view uses this
     /// to reveal the scroll view only after the first real layout pass can
@@ -398,6 +401,7 @@ public final class SessionDetailViewModel {
             events,
             streamingAgentIDs: streamingAgentSet.union(streamingAgentIDs)
         )
+        feedTimeMarkers = AMUXCore.feedTimeMarkers(for: feedItems)
     }
 
     private func sortEventsForDisplay() {

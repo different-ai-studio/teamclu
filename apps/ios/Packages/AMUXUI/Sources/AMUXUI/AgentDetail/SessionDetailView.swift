@@ -190,6 +190,9 @@ public struct SessionDetailView: View {
                     }
 
                     ForEach(viewModel.feedItems) { item in
+                        if let marker = viewModel.feedTimeMarkers[item.id] {
+                            FeedTimeMarkerLabel(marker: marker)
+                        }
                         feedItemRow(item, actorMap: actorMap, attachmentsByActor: attachmentsByActor)
                             .id(item.id)
                     }
