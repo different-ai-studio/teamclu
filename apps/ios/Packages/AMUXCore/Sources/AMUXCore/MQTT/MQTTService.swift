@@ -202,7 +202,7 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         if let subscribeHook {
             try await subscribeHook(topic)
             if recordTopicOperations {
-                subscribedTopics.append(topic)
+                recordTopicOperation(topic, subscribe: true)
             }
             return
         }
@@ -214,7 +214,7 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         // callers repair theirs by calling this again. SUBSCRIBE is idempotent.
         try await waitForSubscribeAck(topic: topic)
         if recordTopicOperations {
-            subscribedTopics.append(topic)
+            recordTopicOperation(topic, subscribe: true)
         }
     }
 
@@ -224,7 +224,7 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         if let unsubscribeHook {
             try await unsubscribeHook(topic)
             if recordTopicOperations {
-                unsubscribedTopics.append(topic)
+                recordTopicOperation(topic, subscribe: false)
             }
             return
         }
@@ -233,7 +233,16 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         }
         mqtt.unsubscribe(topic)
         if recordTopicOperations {
-            unsubscribedTopics.append(topic)
+            recordTopicOperation(topic, subscribe: false)
+        }
+    }
+
+    /// Test bookkeeping. Serialised: lifecycle stop unsubscribes from one
+    /// unstructured task per topic, and two of them appending to the same
+    /// array at once lost a write (flaky `testStopClearsForegroundSubscriptions`).
+    private func recordTopicOperation(_ topic: String, subscribe: Bool) {
+        stateQueue.sync {
+            if subscribe { subscribedTopics.append(topic) } else { unsubscribedTopics.append(topic) }
         }
     }
 
@@ -266,7 +275,7 @@ public final class MQTTService: NSObject, @unchecked Sendable {
             Task {
                 try? await unsubscribeHook(topic)
                 if self.recordTopicOperations {
-                    self.unsubscribedTopics.append(topic)
+                    self.recordTopicOperation(topic, subscribe: false)
                 }
             }
             return
@@ -276,7 +285,7 @@ public final class MQTTService: NSObject, @unchecked Sendable {
         }
         mqtt.unsubscribe(topic)
         if recordTopicOperations {
-            unsubscribedTopics.append(topic)
+            recordTopicOperation(topic, subscribe: false)
         }
     }
 
@@ -305,7 +314,7 @@ public final class MQTTService: NSObject, @unchecked Sendable {
             for topic in topics {
                 try? await subscribeHook(topic)
                 if recordTopicOperations {
-                    subscribedTopics.append(topic)
+                    recordTopicOperation(topic, subscribe: true)
                 }
             }
             return
