@@ -276,7 +276,7 @@ public struct NewSessionSheet: View {
     /// along when the sheet is opened from an idea (`preselectedIdeaId`).
     private var appSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HaiSectionLabel("应用")
+            HaiSectionLabel(String(localized: "App"))
             HaiPaperCard {
                 Menu {
                     Button {
@@ -290,7 +290,7 @@ public struct NewSessionSheet: View {
                             Button {
                                 selectedAppID = app.id
                             } label: {
-                                Label(app.needsDesktopSetup ? "\(app.name)（还没初始化）" : app.name,
+                                Label(app.needsDesktopSetup ? String(localized: "\(app.name) (not set up yet)") : app.name,
                                       systemImage: selectedAppID == app.id ? "checkmark" : "circle")
                             }
                             // No code yet, so no agent can have a checkout of it.
@@ -299,7 +299,7 @@ public struct NewSessionSheet: View {
                     }
                 } label: {
                     HaiSheetRow(
-                        label: "应用",
+                        label: String(localized: "App"),
                         value: selectedApp?.name ?? String(localized: "None"),
                         valueIsMuted: selectedApp == nil,
                         showsChevron: true
@@ -366,7 +366,7 @@ public struct NewSessionSheet: View {
     private var appBlocker: String? {
         guard let app = selectedApp else { return nil }
         if !collaborators.contains(where: \.isAgent) {
-            return "应用会话需要一个 agent，请先添加协作的 agent。"
+            return String(localized: "An app session needs an agent. Add an agent as a collaborator first.")
         }
         let missing = agentsMissingAppCheckout
         guard !missing.isEmpty else { return nil }

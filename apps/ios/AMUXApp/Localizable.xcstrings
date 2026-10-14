@@ -1,6 +1,16 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%@ (not set up yet)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（还没初始化）"
+          }
+        }
+      }
+    },
     "%lld new messages": {
       "localizations": {
         "zh-Hans": {
@@ -543,12 +553,32 @@
         }
       }
     },
+    "An app session needs an agent. Add an agent as a collaborator first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用会话需要一个 agent，请先添加协作的 agent。"
+          }
+        }
+      }
+    },
     "Answer each question before submitting.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "请回答所有问题后再提交。"
+          }
+        }
+      }
+    },
+    "App": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用"
           }
         }
       }
