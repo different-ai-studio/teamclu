@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   basenameOf,
+  dirnameOf,
   isPathAtOrUnder,
   isPathUnder,
   isSamePath,
@@ -70,5 +71,19 @@ describe('basenameOf', () => {
     expect(basenameOf('/a/b/report.pdf')).toBe('report.pdf')
     expect(basenameOf('C:\\a\\b\\')).toBe('b')
     expect(basenameOf('report.pdf')).toBe('report.pdf')
+  })
+})
+
+describe('dirnameOf', () => {
+  it('drops the last segment under either separator', () => {
+    expect(dirnameOf('C:\\a\\b\\报告.pdf')).toBe('C:\\a\\b')
+    expect(dirnameOf('/a/b/report.pdf')).toBe('/a/b')
+    expect(dirnameOf('C:\\a\\b\\')).toBe('C:\\a')
+    expect(dirnameOf('C:\\a/b\\c.md')).toBe('C:\\a/b')
+  })
+
+  it('returns an empty string when there is no parent segment', () => {
+    expect(dirnameOf('report.pdf')).toBe('')
+    expect(dirnameOf('/report.pdf')).toBe('')
   })
 })

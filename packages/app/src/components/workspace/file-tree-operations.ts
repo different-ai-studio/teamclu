@@ -1,3 +1,4 @@
+import { basenameOf, dirnameOf, isSamePath, joinPathLike } from '@/lib/fs-path';
 import { isTauri } from '@/lib/utils';
 
 // File operation helpers
@@ -70,8 +71,7 @@ export async function revealInFinder(path: string): Promise<void> {
     // Fallback: try shell open on the parent directory
     try {
       const { open } = await import("@tauri-apps/plugin-shell");
-      const parentDir = path.substring(0, path.lastIndexOf("/"));
-      await open(parentDir);
+      await open(dirnameOf(path));
     } catch (error) {
       console.error("[FileTree] Failed to reveal in finder:", error);
     }
@@ -102,9 +102,9 @@ export async function moveItem(fromPath: string, toDir: string): Promise<boolean
   if (!isTauri()) return false;
   try {
     const { rename } = await import("@tauri-apps/plugin-fs");
-    const fileName = fromPath.substring(fromPath.lastIndexOf("/") + 1);
-    const newPath = `${toDir}/${fileName}`;
-    if (fromPath === newPath) return false;
+    const fileName = basenameOf(fromPath);
+    const newPath = joinPathLike(toDir, fileName);
+    if (isSamePath(fromPath, newPath)) return false;
     await rename(fromPath, newPath);
     return true;
   } catch (error) {
@@ -118,18 +118,21 @@ export async function copyItem(sourcePath: string, targetDir: string): Promise<b
   if (!isTauri()) return false;
   try {
     const { exists, readDir, readFile, writeFile, mkdir } = await import("@tauri-apps/plugin-fs");
-    const name = sourcePath.substring(sourcePath.lastIndexOf("/") + 1);
-    let destPath = `${targetDir}/${name}`;
+    // The name comes from the last segment under either separator: the file
+    // dialog hands back `C:\…` on Windows, and cutting at `/` alone used the
+    // whole path as the name, so the write failed on the colon.
+    const name = basenameOf(sourcePath);
+    let destPath = joinPathLike(targetDir, name);
 
     // Handle naming conflict: append " copy" or " copy N"
     if (await exists(destPath)) {
       const ext = name.includes('.') ? '.' + name.split('.').pop() : '';
       const base = ext ? name.slice(0, -ext.length) : name;
       let suffix = 1;
-      destPath = `${targetDir}/${base} copy${ext}`;
+      destPath = joinPathLike(targetDir, `${base} copy${ext}`);
       while (await exists(destPath)) {
         suffix++;
-        destPath = `${targetDir}/${base} copy ${suffix}${ext}`;
+        destPath = joinPathLike(targetDir, `${base} copy ${suffix}${ext}`);
       }
     }
 
@@ -139,7 +142,7 @@ export async function copyItem(sourcePath: string, targetDir: string): Promise<b
       // It's a directory — create it and copy contents recursively
       await mkdir(destPath);
       for (const entry of entries) {
-        const childPath = `${sourcePath}/${entry.name}`;
+        const childPath = joinPathLike(sourcePath, entry.name);
         const success = await copyItem(childPath, destPath);
         if (!success) return false;
       }
@@ -175,8 +178,7 @@ export async function copyExternalFiles(sourcePaths: string[], targetDir: string
 /** Duplicate a file or folder in the same directory (appends " copy" / " copy N") */
 export async function duplicateItem(sourcePath: string): Promise<boolean> {
   if (!isTauri()) return false;
-  const parentDir = sourcePath.substring(0, sourcePath.lastIndexOf("/"));
-  return copyItem(sourcePath, parentDir);
+  return copyItem(sourcePath, dirnameOf(sourcePath));
 }
 
 function isFsScopeError(error: unknown): boolean {
