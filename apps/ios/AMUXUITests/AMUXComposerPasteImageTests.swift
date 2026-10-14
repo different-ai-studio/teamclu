@@ -35,6 +35,9 @@ final class AMUXComposerPasteImageTests: XCTestCase {
         let paste = app.buttons["composer.pasteImageButton"]
         XCTAssertTrue(paste.waitForExistence(timeout: 5),
                       "No Paste button with an image on the pasteboard\n\(app.debugDescription)")
+        // The simulator syncs the host's pasteboard in and can replace the
+        // image between focus and tap; put it back right before pasting.
+        UIPasteboard.general.image = solidImage()
         paste.tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["composer.attachmentTile"].waitForExistence(timeout: 10),
