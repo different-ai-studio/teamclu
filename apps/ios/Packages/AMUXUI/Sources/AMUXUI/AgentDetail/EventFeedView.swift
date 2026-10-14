@@ -917,9 +917,11 @@ struct FullScreenSessionImageViewer: View {
     private func imagePhaseView(_ phase: AsyncImagePhase) -> some View {
         switch phase {
         case .success(let image):
-            image.resizable()
-                .scaledToFit()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ZoomableContainer {
+                image.resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .failure:
             VStack(spacing: 12) {
                 Image(systemName: "photo.badge.exclamationmark")

@@ -5037,6 +5037,16 @@
         }
       }
     },
+    "Zoom": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缩放"
+          }
+        }
+      }
+    },
     "… %lld more lines": {
       "localizations": {
         "zh-Hans": {

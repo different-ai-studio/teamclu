@@ -240,8 +240,10 @@ struct FullScreenAttachmentViewer: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-            AttachmentImageView(attachment: attachment, maxHeight: .infinity)
-                .padding()
+            ZoomableContainer {
+                AttachmentImageView(attachment: attachment, maxHeight: .infinity)
+                    .padding()
+            }
             Button {
                 dismiss()
             } label: {
