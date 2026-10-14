@@ -29,6 +29,57 @@ const DEVICE_ID_ENV: &str = "AMUXD_DEVICE_ID";
 const DEVICE_ID_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6f2a_1c84_9d3b_4e57_a0f1_5c8e_7b26_d431);
 
+/// Actor id the daemon is already running for `team_id`, read from that
+/// team's `backend.toml`. Does not start amuxd and does not return the
+/// refresh token that sits next to the id.
+///
+/// Used to stamp `agents.device_id` onto a pre-device-binding install.
+/// Anything that is not a team uuid, or a file whose `team_id` does not
+/// match, is `None`.
+#[tauri::command]
+pub fn read_local_daemon_actor_id(team_id: String) -> Option<String> {
+    let team_id = team_id.trim();
+    if !is_team_uuid(team_id) {
+        return None;
+    }
+    let path = super::amuxd_team_state_dir(team_id).join("backend.toml");
+    actor_id_in_backend(&path, team_id)
+}
+
+fn is_team_uuid(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    bytes.iter().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => *c == b'-',
+        _ => c.is_ascii_hexdigit(),
+    })
+}
+
+fn actor_id_in_backend(path: &Path, team_id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let parsed: BackendProbe = toml::from_str(&text).ok()?;
+    let cloud = parsed.cloud_api?;
+    if cloud.team_id.as_deref().unwrap_or("").trim() != team_id {
+        return None;
+    }
+    let actor = cloud.actor_id.unwrap_or_default();
+    let actor = actor.trim();
+    (!actor.is_empty()).then(|| actor.to_string())
+}
+
+#[derive(serde::Deserialize)]
+struct BackendProbe {
+    cloud_api: Option<CloudApiProbe>,
+}
+
+#[derive(serde::Deserialize)]
+struct CloudApiProbe {
+    team_id: Option<String>,
+    actor_id: Option<String>,
+}
+
 /// `Some` is an id the daemon would bind with. `None` means we could not
 /// resolve one without inventing it.
 #[tauri::command]
@@ -214,5 +265,34 @@ mod tests {
     #[test]
     fn cache_path_is_the_branded_daemon_home() {
         assert_eq!(device_id_path(), amuxd_home_dir().join("device-id"));
+    }
+
+    #[test]
+    fn backend_actor_id_matches_the_requested_team_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("backend.toml");
+        let team = "30b7006d-4225-4160-8c12-0a057268a914";
+        std::fs::write(
+            &path,
+            format!(
+                "kind = \"cloud_api\"\n\n[cloud_api]\nurl = \"https://example.test\"\nrefresh_token = \"secret\"\nteam_id = \"{team}\"\nactor_id = \"e35db247-fe50-4a8a-bf1f-9974807e7f6b\"\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            actor_id_in_backend(&path, team).as_deref(),
+            Some("e35db247-fe50-4a8a-bf1f-9974807e7f6b")
+        );
+        assert_eq!(
+            actor_id_in_backend(&path, "00000000-0000-4000-8000-000000000001"),
+            None
+        );
+    }
+
+    #[test]
+    fn non_uuid_team_id_is_not_a_path() {
+        assert!(!is_team_uuid("../secrets"));
+        assert!(!is_team_uuid(""));
+        assert!(is_team_uuid("30b7006d-4225-4160-8c12-0a057268a914"));
     }
 }

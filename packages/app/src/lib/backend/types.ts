@@ -837,6 +837,17 @@ export interface ActorsBackend {
     deviceId: string;
   }): Promise<{ agentId: string | null; displayName: string | null }>;
   /**
+   * Stamp `deviceId` onto an agent this machine's daemon is already running,
+   * when that row was created before device-scoped binding and still has no
+   * device id. Nulls mean the row was not eligible — do not create a second
+   * agent from this call.
+   */
+  adoptLegacyAgentDevice(input: {
+    teamId: string;
+    deviceId: string;
+    agentId: string;
+  }): Promise<{ agentId: string | null; displayName: string | null }>;
+  /**
    * The agent actor bound to this machine in this team — created if absent —
    * plus a one-shot invite for the local daemon to claim. Idempotent per
    * (team, deviceId): calling it twice re-binds the same actor instead of

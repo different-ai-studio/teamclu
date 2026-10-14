@@ -63,10 +63,13 @@ const UNKNOWN: LocalAgentInstallRecord = {
 /**
  * Classify this team on this machine for the signed-in account.
  *
- * `installed` — for-device returned an agent. Later failures stay on that
- * agent; they do not fall through to a member or team default.
- * `absent` — the device id resolved and for-device came back empty.
- * `unknown` — the id could not be resolved, or the lookup failed. Do not
+ * `installed` — for-device returned an agent, or this machine's daemon is
+ * already running an owned agent that had no device id yet and that row was
+ * just stamped. Later failures stay on that agent; they do not fall through
+ * to a member or team default.
+ * `absent` — the device id resolved, for-device came back empty, and there
+ * was no eligible legacy daemon actor to stamp.
+ * `unknown` — the id could not be resolved, or a lookup failed. Do not
  * skip the install gate.
  *
  * One in-flight promise per team so AuthGate and switchToTeam share it
@@ -130,13 +133,33 @@ async function classify(teamId: string): Promise<LocalAgentInstallRecord> {
   const deviceId = await readStableDeviceId()
   if (!deviceId) return UNKNOWN
   try {
-    const found = await getBackend().actors.findAgentForDevice({ teamId, deviceId })
+    const actors = getBackend().actors
+    const found = await actors.findAgentForDevice({ teamId, deviceId })
     const agentId = found?.agentId?.trim() || ''
-    if (!agentId) return { status: 'absent', agentId: null, displayName: null }
+    if (agentId) {
+      return {
+        status: 'installed',
+        agentId,
+        displayName: found.displayName?.trim() || null,
+      }
+    }
+    // Pre-device-binding installs kept the actor in backend.toml and left
+    // agents.device_id null. Stamp that actor. A miss is "not installed";
+    // a failed call stays unknown so a blip does not offer to create a
+    // second agent.
+    const legacyId = await readLocalDaemonActorId(teamId)
+    if (!legacyId) return { status: 'absent', agentId: null, displayName: null }
+    const adopted = await actors.adoptLegacyAgentDevice({
+      teamId,
+      deviceId,
+      agentId: legacyId,
+    })
+    const adoptedId = adopted?.agentId?.trim() || ''
+    if (!adoptedId) return { status: 'absent', agentId: null, displayName: null }
     return {
       status: 'installed',
-      agentId,
-      displayName: found.displayName?.trim() || null,
+      agentId: adoptedId,
+      displayName: adopted.displayName?.trim() || null,
     }
   } catch {
     return UNKNOWN
@@ -146,6 +169,17 @@ async function classify(teamId: string): Promise<LocalAgentInstallRecord> {
 async function readStableDeviceId(): Promise<string | null> {
   try {
     const id = await invoke<string | null>('read_stable_device_id')
+    const trimmed = id?.trim() ?? ''
+    return trimmed || null
+  } catch {
+    return null
+  }
+}
+
+/** Actor id in this team's backend.toml. Does not start the daemon. */
+async function readLocalDaemonActorId(teamId: string): Promise<string | null> {
+  try {
+    const id = await invoke<string | null>('read_local_daemon_actor_id', { teamId })
     const trimmed = id?.trim() ?? ''
     return trimmed || null
   } catch {

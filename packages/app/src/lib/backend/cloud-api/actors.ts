@@ -177,6 +177,14 @@ export function createActorsModule(client: CloudApiClient): ActorsBackend {
         `/v1/teams/${encodeURIComponent(input.teamId)}/agents/for-device?deviceId=${encodeURIComponent(input.deviceId)}`,
       );
     },
+    async adoptLegacyAgentDevice(input) {
+      return await afterWrite(
+        client.post<{ agentId: string | null; displayName: string | null }>(
+          `/v1/teams/${encodeURIComponent(input.teamId)}/agents/adopt-device`,
+          { deviceId: input.deviceId, agentId: input.agentId },
+        ),
+      );
+    },
     async ensureAgentForDevice(input) {
       return await afterWrite(
         client.post<{
