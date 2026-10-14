@@ -58,6 +58,8 @@ import { createSessionMutesApi } from "../../../../src/features/sessions/session
 import { supabaseAccessToken } from "../../../../src/lib/cloud-api/client";
 import { SessionDetailScreen } from "../../../../src/features/sessions/screens/SessionDetailScreen";
 import { ModelPickerSheet } from "../../../../src/features/sessions/screens/ModelPickerSheet";
+import { uploadPastedImage } from "../../../../src/features/sessions/attachment-upload";
+import { appendPendingAttachment } from "../../../../src/features/sessions/pending-attachments";
 import { ForwardTargetSheet } from "../../../../src/features/sessions/screens/ForwardTargetSheet";
 import type { SessionSummary } from "../../../../src/features/sessions/session-types";
 import {
@@ -1032,6 +1034,24 @@ export default function SessionDetailRoute() {
             });
           }}
           onForwardText={setForwardText}
+          onPasteImage={(data) => {
+            if (!sessionId || !currentTeam?.id) return;
+            const teamId = currentTeam.id;
+            impactLight();
+            void uploadPastedImage({
+              getAccessToken: supabaseAccessToken(supabase),
+              teamId,
+              sessionId,
+              data,
+            })
+              .then((uploaded) => appendPendingAttachment(teamId, sessionId, uploaded))
+              .catch((err) => {
+                showToast(
+                  "error",
+                  err instanceof Error ? err.message : t("Couldn't upload the file."),
+                );
+              });
+          }}
           onDeleteMessages={(messageIds) => {
             const run = async () => {
               const api = createConfiguredSessionsApi(supabase);

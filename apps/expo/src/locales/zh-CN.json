@@ -1104,5 +1104,8 @@
   "No other sessions": "没有其他会话",
   "Delete {{value}} messages?": "删除 {{value}} 条消息？",
   "Forwarded to “{{value}}”": "已转发到「{{value}}」",
-  "Couldn't forward": "转发失败"
+  "Couldn't forward": "转发失败",
+  "Image on clipboard": "剪贴板里有图片",
+  "Paste image": "粘贴图片",
+  "Double-tap to zoom": "双击缩放"
 }

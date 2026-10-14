@@ -144,6 +144,8 @@ type SessionDetailScreenProps = {
   onForwardText?: (text: string) => void;
   /** Multi-select "Delete" (own, persisted messages only). */
   onDeleteMessages?: (messageIds: string[]) => void;
+  /** An image pasted from the clipboard, to attach. */
+  onPasteImage?: (data: string) => void;
   /**
    * A message to scroll to and highlight on open — the one a tapped push was
    * about. Older pages are pulled until it turns up.
@@ -678,6 +680,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     onAskAgain,
     onForwardText,
     onDeleteMessages,
+    onPasteImage,
     onClearReply,
     onDeleteMessage,
     onEditMessage,
@@ -1647,6 +1650,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               isSending={isSending}
               onAttach={onAttach}
               onOpenAgents={onOpenMembers}
+              onPasteImage={onPasteImage}
               selectedAgentNames={(agentChips ?? []).map((chip) => chip.displayName)}
               onChangeText={onChangeComposerText}
               onRemovePendingAttachment={(path) => {

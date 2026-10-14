@@ -15,6 +15,7 @@ import {
   buildComposerPresentation,
 } from "./session-composer-copy";
 import { useVoiceRecorder } from "./voice-recorder";
+import { ClipboardImagePasteButton, useClipboardHasImage } from "./ClipboardImagePaste";
 import type { UploadedAttachment } from "../attachment-upload";
 import type { SessionDetailConnectionState } from "../session-detail-controller";
 import { impactLight } from "../../../lib/haptics";
@@ -33,6 +34,8 @@ type SessionComposerShellProps = {
   selectedAgentNames?: ReadonlyArray<string>;
   /** Opens the agents sheet — iOS's row-2 `@` button. */
   onOpenAgents?: () => void;
+  /** A clipboard image to attach; the paste button shows only when given. */
+  onPasteImage?: (data: string) => void;
 };
 
 
@@ -45,6 +48,7 @@ export function SessionComposerShell({
   onRemovePendingAttachment,
   onSend,
   onOpenAgents,
+  onPasteImage,
   pendingAttachments = [],
   selectedAgentNames = [],
   sendErrorMessage,
@@ -58,6 +62,8 @@ export function SessionComposerShell({
     sendErrorMessage,
   });
   const recorder = useVoiceRecorder();
+  const [inputFocused, setInputFocused] = useState(false);
+  const clipboardHasImage = useClipboardHasImage(Boolean(onPasteImage) && inputFocused);
   const [recordError, setRecordError] = useState<string | null>(null);
   const hasPendingAttachments = pendingAttachments.length > 0;
   const rightButton = composerRightButton({
@@ -86,6 +92,9 @@ export function SessionComposerShell({
 
   return (
     <View style={styles.wrapper}>
+      {onPasteImage && clipboardHasImage ? (
+        <ClipboardImagePasteButton onPaste={onPasteImage} />
+      ) : null}
       {hasPendingAttachments ? (
         <ScrollView
           horizontal
@@ -117,7 +126,9 @@ export function SessionComposerShell({
             <TextInput
               editable={!isSending && connectionState !== "disconnected"}
               multiline
+              onBlur={() => setInputFocused(false)}
               onChangeText={onChangeText}
+              onFocus={() => setInputFocused(true)}
               placeholder={presentation.placeholder}
               placeholderTextColor={colors.faint}
               selectionColor={colors.coral}

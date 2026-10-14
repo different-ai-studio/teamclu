@@ -1104,5 +1104,8 @@
   "No other sessions": "No other sessions",
   "Delete {{value}} messages?": "Delete {{value}} messages?",
   "Forwarded to “{{value}}”": "Forwarded to “{{value}}”",
-  "Couldn't forward": "Couldn't forward"
+  "Couldn't forward": "Couldn't forward",
+  "Image on clipboard": "Image on clipboard",
+  "Paste image": "Paste image",
+  "Double-tap to zoom": "Double-tap to zoom"
 }

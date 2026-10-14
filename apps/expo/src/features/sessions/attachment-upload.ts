@@ -151,6 +151,46 @@ export async function uploadAttachment(args: {
   return { path, publicUrl: url, mime, size };
 }
 
+/** Base64 image bytes, with or without a `data:<mime>;base64,` prefix. */
+export function decodePastedImage(
+  data: string,
+  fallbackMime: string,
+): { bytes: Uint8Array; mime: string } {
+  const match = /^data:([^;,]+);base64,/i.exec(data);
+  const mime = match?.[1] ?? fallbackMime;
+  const bytes = Buffer.from(match ? data.slice(match[0].length) : data, "base64");
+  return { bytes: new Uint8Array(bytes), mime };
+}
+
+/**
+ * Uploads an image pasted from the clipboard (iOS #1709): the same bucket and
+ * path convention as a picked photo, straight from the pasted bytes.
+ */
+export async function uploadPastedImage(args: {
+  getAccessToken: () => Promise<string | null>;
+  teamId: string;
+  sessionId: string;
+  /** What the clipboard handed over (base64, possibly a data URI). */
+  data: string;
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<UploadedAttachment> {
+  const { bytes, mime } = decodePastedImage(args.data, "image/jpeg");
+  if (bytes.byteLength === 0) throw new Error("The clipboard image is empty.");
+  const ext = mime === "image/png" ? "png" : "jpg";
+  const path = `${args.teamId}/${args.sessionId}/${uuidV4()}.${ext}`;
+  const { url } = await postBytesToCloud({
+    getAccessToken: args.getAccessToken,
+    path,
+    bucket: "attachments",
+    body: copyToArrayBuffer(bytes),
+    mime,
+    baseUrl: args.baseUrl,
+    fetchImpl: args.fetchImpl,
+  });
+  return { path, publicUrl: url, mime, size: bytes.byteLength };
+}
+
 /**
  * Reads the image behind `localUri` and uploads it to the public `avatars`
  * bucket under `<actorId>/<uuid>.<ext>` (mirrors iOS `uploadAvatar`). Returns
