@@ -355,3 +355,24 @@ extension Array where Element == FeedItem {
         }?.id
     }
 }
+
+extension Array where Element == FeedItem {
+    /// Rows whose visible text contains `query` (case- and diacritic-
+    /// insensitive), in feed order: chat messages and finished agent
+    /// replies. Mention tokens are matched as displayed (`@Name`), not as
+    /// their wire form. Searches only what is loaded on this device.
+    public func feedItemIDs(matching query: String) -> [String] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        return compactMap { item in
+            let text: String?
+            switch item {
+            case .userMessage(let e): text = e.text
+            case .completedTurn(_, _, let finalEvent, _): text = finalEvent.text
+            case .activeStream, .permission, .todo, .error: text = nil
+            }
+            guard let text, MentionDisplayText.plainText(text).localizedStandardContains(needle) else { return nil }
+            return item.id
+        }
+    }
+}

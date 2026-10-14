@@ -209,6 +209,13 @@ struct SessionListContent: View {
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
                         searchFieldFrame = $0
                     }
+                    // Search message text too, once typing pauses: the scan
+                    // walks every cached message.
+                    .task(id: viewModel.searchText) {
+                        try? await Task.sleep(for: .milliseconds(250))
+                        guard !Task.isCancelled else { return }
+                        viewModel.updateContentSearch(modelContext: modelContext)
+                    }
                 // Clock view: show ONLY scheduled (cron) sessions — they are
                 // hidden from the default list, mirroring the desktop.
                 Button {

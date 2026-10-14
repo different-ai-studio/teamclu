@@ -57,6 +57,12 @@ public struct SessionDetailView: View {
     @State private var visibleRows = VisibleRows()
     /// "N unread ↑": the first row that arrived since the reader last left.
     @State private var unreadJump: (id: String, count: Int)?
+    /// Find-in-conversation: open, its query, the matching rows (feed order)
+    /// and which one is current.
+    @State private var isSearching = false
+    @State private var searchQuery = ""
+    @State private var searchMatches: [String] = []
+    @State private var searchIndex = 0
     /// The message the composer is replying to, shown as a bar above it.
     @State private var replyTarget: AgentEvent?
     /// Row briefly tinted after a push brought the reader to it.
@@ -379,6 +385,13 @@ public struct SessionDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
+                        unreadJump = nil
+                        isSearching = true
+                    } label: {
+                        Label("Search in Conversation", systemImage: "magnifyingglass")
+                    }
+                    .accessibilityIdentifier("session.searchMenuItem")
+                    Button {
                         isMemberSheetPresented = true
                     } label: {
                         Label("Members", systemImage: "person.2")
@@ -538,7 +551,9 @@ public struct SessionDetailView: View {
                     jumpToBottomOverlay
                         .animation(AMUXAnimation.fast, value: isAtBottom)
                 }
-                .overlay(alignment: .top) { unreadJumpOverlay }
+                .overlay(alignment: .top) {
+                    if isSearching { searchOverlay } else { unreadJumpOverlay }
+                }
         }
         // Mist canvas — matches `agent-session.jsx`. Without an explicit
         // background, plain ScrollView falls back to systemBackground (stark
@@ -550,6 +565,47 @@ public struct SessionDetailView: View {
         .toolbarBackground(Color.amux.mist.opacity(0.85), for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar { sessionToolbar }
+    }
+
+    private var searchOverlay: some View {
+        SessionSearchBar(
+            query: $searchQuery,
+            position: searchMatches.isEmpty ? 0 : searchIndex + 1,
+            total: searchMatches.count,
+            onPrevious: { stepSearch(by: -1) },
+            onNext: { stepSearch(by: 1) },
+            onDone: {
+                isSearching = false
+                searchQuery = ""
+                searchMatches = []
+                highlightedFeedID = nil
+            }
+        )
+        .onChange(of: searchQuery) { _, query in
+            searchMatches = viewModel.feedItems.feedItemIDs(matching: query)
+            // Newest first, as in IM apps: the latest mention is usually
+            // the one being looked for.
+            searchIndex = max(searchMatches.count - 1, 0)
+            showCurrentMatch()
+        }
+    }
+
+    private func stepSearch(by delta: Int) {
+        guard !searchMatches.isEmpty else { return }
+        searchIndex = (searchIndex + delta + searchMatches.count) % searchMatches.count
+        Haptics.selection()
+        showCurrentMatch()
+    }
+
+    private func showCurrentMatch() {
+        guard searchMatches.indices.contains(searchIndex) else {
+            highlightedFeedID = nil
+            return
+        }
+        let id = searchMatches[searchIndex]
+        highlightedFeedID = id
+        isAtBottom = false
+        Task { await scrollUntilVisible(id, anchor: .center) }
     }
 
     @ViewBuilder

@@ -2256,6 +2256,16 @@
         }
       }
     },
+    "Next match": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一个"
+          }
+        }
+      }
+    },
     "No Actors Yet": {
       "localizations": {
         "zh-Hans": {
@@ -2322,6 +2332,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "还没有人回复"
+          }
+        }
+      }
+    },
+    "No results": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无结果"
           }
         }
       }
@@ -3006,6 +3026,16 @@
         }
       }
     },
+    "Previous match": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一个"
+          }
+        }
+      }
+    },
     "Process": {
       "localizations": {
         "zh-Hans": {
@@ -3352,6 +3382,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "运行时尚未就绪——请稍后重试。"
+          }
+        }
+      }
+    },
+    "Search in Conversation": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在会话中搜索"
+          }
+        }
+      }
+    },
+    "Search loaded messages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索已加载的消息"
           }
         }
       }
