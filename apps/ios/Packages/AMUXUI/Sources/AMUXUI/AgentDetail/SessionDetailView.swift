@@ -48,6 +48,7 @@ public struct SessionDetailView: View {
     @State private var plansPageIndex: Int = 0
     @State private var hasAutoOpenedPlans: Bool = false
     @State private var isInitialFeedVisible: Bool = false
+    @State private var hitchMonitor = FrameHitchMonitor()
     @State private var isAtBottom: Bool = true
     /// A finger is on the transcript. Content growth never re-pins the
     /// bottom while this is set, so a drag isn't fought mid-gesture.
@@ -208,6 +209,8 @@ public struct SessionDetailView: View {
                 proxy.scrollTo("session-detail-bottom", anchor: .bottom)
                 await Task.yield()
                 isInitialFeedVisible = true
+                // M1's headline number: the cached feed is now on screen.
+                ChatMetrics.shared.mark(.openSession, key: viewModel.session?.sessionId ?? "", "first_frame")
             }
             // Store the proxy so the composer's onSend callback (inside
             // safeAreaInset, outside this ScrollViewReader scope) can
@@ -519,7 +522,15 @@ public struct SessionDetailView: View {
         }
     }
 
+    /// M2: how often the whole screen's body runs. Each run during a turn is
+    /// counted against it; between turns only the signpost fires.
+    private func recordBodyEvaluation() {
+        ChatMetrics.event("session_detail_body")
+        ChatMetrics.shared.add(.turnRender, key: viewModel.session?.sessionId ?? "", "body_evals", 1)
+    }
+
     public var body: some View {
+        let _ = recordBodyEvaluation()
         liveSessionSurface
         .sheet(isPresented: $isMemberSheetPresented) {
             SessionMemberSheet(
@@ -632,6 +643,9 @@ public struct SessionDetailView: View {
             await viewModel.outboxSender?.start()
             viewModel.start(modelContext: modelContext)
             if let sessionID = viewModel.session?.sessionId {
+                hitchMonitor.start(key: sessionID)
+            }
+            if let sessionID = viewModel.session?.sessionId {
                 // start() just marked the session read; its pushes are stale.
                 Task { await AppIconBadge.clearDeliveredNotifications(forSession: sessionID) }
             }
@@ -693,6 +707,9 @@ public struct SessionDetailView: View {
             }
         }
         .onDisappear {
+            // Covered or gone: its frames are no longer this screen's.
+            // `.task` restarts it when the view shows again.
+            hitchMonitor.stop()
             // Do NOT call viewModel.stop() here. SwiftUI fires this hook
             // both when this view is being popped out of the nav stack
             // (true exit) AND when a destination is pushed on top of it

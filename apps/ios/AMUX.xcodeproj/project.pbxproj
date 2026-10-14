@@ -16,6 +16,7 @@
 		2C36DC72B69CF16E00B4ECB5 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F467BD534BE686B6EACBD702 /* ContentView.swift */; };
 		3203553BEAE4D5D79B881582 /* SentrySwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = 5821CF422126708735E13341 /* SentrySwiftUI */; };
 		373E86A34B6908422880D2D7 /* OnboardingChoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E150614525CD79BA72BBC06D /* OnboardingChoiceView.swift */; };
+		4422C0DDF33A846C04684D00 /* ChatMetricsReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */; };
 		4553E608B533CD245A887A39 /* AMUXSessionStreamingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7089CE9863C2F15703551691 /* AMUXSessionStreamingUITests.swift */; };
 		48A4F0655EACAE64B0B0232B /* AMUXUI in Frameworks */ = {isa = PBXBuildFile; productRef = 984FDD5CB983CACB65198166 /* AMUXUI */; };
 		5D9C7760A6A171683819C4A0 /* PushAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67C23CE506628F56CB70DAB6 /* PushAppDelegate.swift */; };
@@ -46,6 +47,7 @@
 		37F62CC876FCD92CBF6E057C /* OrgTeamPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrgTeamPickerView.swift; sourceTree = "<group>"; };
 		499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMUXApp.swift; sourceTree = "<group>"; };
 		49C7D6D00C1238186A33A1DD /* IntroIllustrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntroIllustrations.swift; sourceTree = "<group>"; };
+		49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMetricsReporting.swift; sourceTree = "<group>"; };
 		4E946A65F7A02F07C9CB9C1E /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		514F7615E8C226A5F3660A5F /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		5A17336F2708FD5E2A0C62C8 /* AMUXSharedUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMUXSharedUI; path = Packages/AMUXSharedUI; sourceTree = SOURCE_ROOT; };
@@ -123,6 +125,7 @@
 				AC8A7DFE566257A39578823C /* AMUX.entitlements */,
 				499D508CBB7FB4FD1F584D9D /* AMUXApp.swift */,
 				25D67C6EB2C2948CCFE684D1 /* Assets.xcassets */,
+				49E2BB71C63141EF1D32EB89 /* ChatMetricsReporting.swift */,
 				F467BD534BE686B6EACBD702 /* ContentView.swift */,
 				B3E733A6BFCE193CA325C33B /* DesktopGuideView.swift */,
 				FDEFC0BF7C8A215582AF7257 /* Info.plist */,
@@ -258,6 +261,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				16C83AF390462FDDFA5ABAEE /* AMUXApp.swift in Sources */,
+				4422C0DDF33A846C04684D00 /* ChatMetricsReporting.swift in Sources */,
 				2C36DC72B69CF16E00B4ECB5 /* ContentView.swift in Sources */,
 				65085082F4465D5B43C99A9A /* DesktopGuideView.swift in Sources */,
 				5E27EDA155611636668E8AED /* IntroIllustrations.swift in Sources */,

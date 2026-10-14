@@ -1104,10 +1104,17 @@ struct AttachmentImageView: View {
             if attachment.bucketPath == nil { failed = true }
             return
         }
+        // M7, Instruments only. UIImage(data:) defers the real decode to
+        // first draw, so this covers fetch + header parse; the size in the
+        // detail is what to look for when a scroll hitches on an image.
+        let signpost = ChatMetrics.beginSignpost("image_load", attachment.filename)
+        var bytes = 0
+        defer { ChatMetrics.endSignpost("image_load", signpost, "bytes=\(bytes)") }
         do {
             let data = try await AttachmentContentLoader.shared.data(
                 bucketPath: path, fileName: attachment.filename
             )
+            bytes = data.count
             guard let decoded = UIImage(data: data) else { failed = true; return }
             image = decoded
         } catch {

@@ -686,6 +686,7 @@ public final class TeamcluService {
                 sidPrefix: sidPrefix,
                 msgIdPrefix: msgIdPrefix
             )
+            ChatMetrics.shared.mark(.send, key: message.messageID, "persisted")
         }
 
         do {
@@ -695,6 +696,7 @@ public final class TeamcluService {
             throw SendMessageError.publishFailed(String(describing: error))
         }
         teamcluLogger.notice("sendMessage[\(sidPrefix, privacy: .public)] msgId=\(msgIdPrefix, privacy: .public) publish OK")
+        ChatMetrics.shared.mark(.send, key: message.messageID, "published")
 
         // Standard flow: persist after the MQTT publish has succeeded so
         // perceived latency stays minimal. Fire-and-forget; failures are

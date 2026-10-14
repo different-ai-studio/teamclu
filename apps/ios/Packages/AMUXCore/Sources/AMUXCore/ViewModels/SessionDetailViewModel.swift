@@ -105,7 +105,17 @@ public final class SessionDetailViewModel {
     /// Set of agents whose `output` stream is in flight (first delta seen,
     /// no `isComplete` yet). Drives the active-stream-card visibility and
     /// the legacy `isStreaming` / `streamingText` shims.
-    public private(set) var streamingAgentSet: Set<String> = []
+    public private(set) var streamingAgentSet: Set<String> = [] {
+        // Every path that ends a turn (reducer completion, final reply,
+        // interrupt, timeout, seed settle) lands here; M2 closes on it.
+        didSet {
+            if streamingAgentSet.isEmpty, !oldValue.isEmpty {
+                closeTurnRenderInterval()
+            } else if !streamingAgentSet.isEmpty, oldValue.isEmpty, let key = session?.sessionId {
+                ChatMetrics.shared.begin(.turnRender, key: key)
+            }
+        }
+    }
     /// Per-agent active turn id captured at the first delta. The MQTT
     /// subscribe loop reads this on reconnect to replay any envelopes
     /// (incl. the trailing `status_change=idle`) the broker may have
@@ -195,6 +205,9 @@ public final class SessionDetailViewModel {
     /// Refetches after every MQTT reconnect. The live stream stays open
     /// across a reconnect, so the subscribe loop never sees one.
     nonisolated(unsafe) private var reconnectCatchUpTask: Task<Void, Never>?
+    /// The M6 interval of the seed currently applying rows, so the reducer
+    /// path can count its SwiftData syncs against it.
+    @ObservationIgnored private var activeSeedMetricKey: String?
     /// Actor IDs for which this session-detail view has added an MQTT
     /// runtime-state subscription (beyond what SessionListViewModel manages
     /// for ConnectedAgentsStore agents). Tracked so we can unsubscribe on stop().
@@ -1518,6 +1531,10 @@ public final class SessionDetailViewModel {
         // replay in via incremental sync.)
         if task != nil { return }
         startModelContext = modelContext
+        // M1 normally starts at the push (SessionsTab); this is the fallback
+        // for any other way in. A begin for an open interval is a no-op.
+        let metricKey = session?.sessionId ?? ""
+        ChatMetrics.shared.begin(.openSession, key: metricKey)
 
         // Bind session persistence for chip-bar selection (idempotent —
         // bind() is a no-op after the first start() returns since `task`
@@ -1600,6 +1617,8 @@ public final class SessionDetailViewModel {
 
         recomputeGroups()
         hasLoadedInitialFeed = true
+        ChatMetrics.shared.set(.openSession, key: metricKey, "cached_events", Double(events.count))
+        ChatMetrics.shared.mark(.openSession, key: metricKey, "cache_ready")
         // Resume streaming state from any stop()-saved incomplete output
         // rows — one per agent that was mid-stream. Handles every agent
         // (multi-agent sessions persist one synthetic row each) and drops
@@ -1620,6 +1639,8 @@ public final class SessionDetailViewModel {
             await self?.seedFromSupabaseMessages(modelContext: modelContext)
             guard let self, !Task.isCancelled else { return }
             self.hasFinishedInitialSeed = true
+            ChatMetrics.shared.set(.openSession, key: metricKey, "events_after_seed", Double(self.events.count))
+            ChatMetrics.shared.end(.openSession, key: metricKey)
         }
 
         // Single subscription path: session/{sid}/live. iOS only ever
@@ -1702,14 +1723,20 @@ public final class SessionDetailViewModel {
 
                     if live.eventType == "acp.event",
                        let envelope = try? Amux_Envelope(serializedBytes: live.body) {
+                        let handleStart = ContinuousClock.now
                         handleEnvelope(envelope, modelContext: modelContext)
+                        recordTurnRenderCost(since: handleStart)
                     } else if live.eventType.hasPrefix("message."),
                               let msgEnv = try? Teamclu_SessionMessageEnvelope(serializedBytes: live.body),
                               msgEnv.hasMessage {
                         // Other collaborators' chat messages — convert to a
                         // user_prompt AgentEvent so EventFeedView renders
                         // them. Loopback / dedupe handled inside.
+                        let handleStart = ContinuousClock.now
                         handleIncomingChatMessage(msgEnv.message, modelContext: modelContext)
+                        // The agent's final reply arrives here and can be
+                        // what closes the turn, so M2 must see it too.
+                        recordTurnRenderCost(since: handleStart)
                     }
                 }
                 // Stream finished — connection likely dropped. Loop and resubscribe.
@@ -1731,6 +1758,12 @@ public final class SessionDetailViewModel {
     }
 
     public func stop() {
+        if let sessionId = session?.sessionId {
+            // Left before the history came in, or mid-turn: not a sample of
+            // either experience.
+            ChatMetrics.shared.end(.openSession, key: sessionId, outcome: .cancelled)
+            ChatMetrics.shared.end(.turnRender, key: sessionId, outcome: .cancelled)
+        }
         task?.cancel(); task = nil
         reconnectCatchUpTask?.cancel(); reconnectCatchUpTask = nil
         initialSeedTask?.cancel(); initialSeedTask = nil
@@ -2331,14 +2364,30 @@ public final class SessionDetailViewModel {
     public func seedFromSupabaseMessages(modelContext: ModelContext) async {
         guard let session else { return }
         guard let repo = messagesRepository else { return }
+        // Own key per run: the open-time seed and the subscribe-time seed
+        // can overlap, and must not end each other's interval.
+        let seedKey = "\(session.sessionId)#\(UUID().uuidString.prefix(8))"
+        let metrics = ChatMetrics.shared
+        metrics.begin(.historySeed, key: seedKey)
         let messages: [MessageRecord]
         do {
             messages = try await repo.listForSession(sessionID: session.sessionId)
         } catch {
             print("[SessionDetailVM] supabase messages seed failed: \(error)")
+            metrics.end(.historySeed, key: seedKey, outcome: .failed)
             return
         }
-        guard !messages.isEmpty else { return }
+        metrics.mark(.historySeed, key: seedKey, "fetched")
+        metrics.set(.historySeed, key: seedKey, "rows", Double(messages.count))
+        guard !messages.isEmpty else {
+            metrics.end(.historySeed, key: seedKey)
+            return
+        }
+        // Everything below runs on the main actor without a suspension
+        // point; its length is what the batch-apply fix (P1) should cut.
+        let applyStart = ContinuousClock.now
+        activeSeedMetricKey = seedKey
+        defer { activeSeedMetricKey = nil }
 
         let streamingBeforeSeed = timelineState.streamingTurnIDByAgent
 
@@ -2381,6 +2430,39 @@ public final class SessionDetailViewModel {
         if pruneTracedTurnRuntimeRows(modelContext: modelContext) { anyChange = true }
         if anyChange { recomputeGroups() }
         settleTurnsClosedByTrace(streamingBeforeSeed: streamingBeforeSeed)
+        metrics.set(.historySeed, key: seedKey, "apply_main_ms", Self.milliseconds(since: applyStart))
+        metrics.set(.historySeed, key: seedKey, "changed", anyChange ? 1 : 0)
+        metrics.end(.historySeed, key: seedKey)
+    }
+
+    // MARK: - Metrics
+
+    static func milliseconds(since start: ContinuousClock.Instant) -> Double {
+        let elapsed = ContinuousClock.now - start
+        return Double(elapsed.components.seconds) * 1000
+            + Double(elapsed.components.attoseconds) / 1e15
+    }
+
+    /// M2. A turn is the span during which the reducer has an agent
+    /// streaming; every live envelope handled meanwhile adds its main-thread
+    /// cost. The view adds frame hitches and body re-evaluations to the same
+    /// interval (keyed by session id).
+    private func recordTurnRenderCost(since start: ContinuousClock.Instant) {
+        guard let key = session?.sessionId else { return }
+        let metrics = ChatMetrics.shared
+        let streaming = !timelineState.streamingAgentSet.isEmpty
+        if streaming { metrics.begin(.turnRender, key: key) }
+        guard metrics.isOpen(.turnRender, key: key) else { return }
+        let ms = Self.milliseconds(since: start)
+        metrics.add(.turnRender, key: key, "envelopes", 1)
+        metrics.add(.turnRender, key: key, "main_ms", ms)
+        metrics.max(.turnRender, key: key, "main_ms_max", ms)
+    }
+
+    private func closeTurnRenderInterval() {
+        guard let key = session?.sessionId else { return }
+        ChatMetrics.shared.set(.turnRender, key: key, "events_total", Double(events.count))
+        ChatMetrics.shared.end(.turnRender, key: key)
     }
 
     // MARK: - Turn traces
@@ -2722,6 +2804,8 @@ public final class SessionDetailViewModel {
             // and the agent answered both (#1696).
             let messageID = UUID().uuidString.lowercased()
             let mentionIDs = Array(agentChipSelection)
+            ChatMetrics.shared.begin(.send, key: messageID)
+            ChatMetrics.shared.set(.send, key: messageID, "attachments", Double(attachmentURLs.count))
 
             // 1. Local user_prompt entry for the bubble. The
             //    reducer's .localPrompt path stamps `outboxMessageID =
@@ -3089,6 +3173,9 @@ public final class SessionDetailViewModel {
             #endif
             return false
         case .entriesChanged:
+            if let activeSeedMetricKey {
+                ChatMetrics.shared.add(.historySeed, key: activeSeedMetricKey, "timeline_syncs", 1)
+            }
             mirrorReducerStreamingState()
             timelineState.entries.sort {
                 if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }

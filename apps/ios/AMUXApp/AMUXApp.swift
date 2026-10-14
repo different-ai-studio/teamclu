@@ -12,6 +12,9 @@ struct AMUXApp: App {
     let modelContainer: ModelContainer
 
     init() {
+        // M4 runs from process start to the session list's first rows.
+        ChatMetrics.shared.begin(.coldStart, at: ProcessLaunch.startDate())
+        ChatMetrics.shared.tag(.coldStart, "prewarmed", ProcessLaunch.isPrewarmed ? "true" : "false")
         SentrySDK.start { options in
             options.dsn = "https://7551f3236520b84b27ec473a1d7c1480@o60909.ingest.us.sentry.io/4511233545011200"
             options.tracesSampleRate = 0.2
@@ -24,6 +27,9 @@ struct AMUXApp: App {
             options.enableCoreDataTracing = false
             options.attachScreenshot = true
             options.attachViewHierarchy = true
+            // Hang / crash / CPU diagnostics from MetricKit; the daily metric
+            // payloads go through MetricKitReporter.
+            options.enableMetricKit = true
             #if DEBUG
             options.debug = true
             options.environment = "development"
@@ -31,6 +37,10 @@ struct AMUXApp: App {
             options.environment = "production"
             #endif
         }
+
+        ChatMetrics.shared.setSink(SentryChatMetricsSink())
+        MetricKitReporter.shared.start()
+        ChatMetrics.shared.mark(.coldStart, "app_init")
 
         // Explicit VersionedSchema + migration plan so SwiftData never falls
         // back to destructive migration on a field-shape change. See

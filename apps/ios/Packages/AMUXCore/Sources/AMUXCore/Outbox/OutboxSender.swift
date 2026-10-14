@@ -95,6 +95,7 @@ public actor OutboxSender {
         ctx.insert(row)
         do {
             try ctx.save()
+            ChatMetrics.shared.mark(.send, key: messageID, "enqueued")
             outboxLogger.notice("outbox enqueued msgId=\(String(messageID.prefix(8)), privacy: .public) sid=\(String(sessionID.prefix(8)), privacy: .public)")
         } catch {
             outboxLogger.error("outbox enqueue save FAILED msgId=\(String(messageID.prefix(8)), privacy: .public) err=\(String(describing: error), privacy: .public)")
@@ -278,6 +279,9 @@ public actor OutboxSender {
         row.state = .inFlight
         row.lastAttemptAt = .now
         try? ctx.save()
+        // M3: the gap from "enqueued" to here is the poll wait (P6).
+        ChatMetrics.shared.mark(.send, key: messageID, "attempt_started")
+        ChatMetrics.shared.add(.send, key: messageID, "attempts", 1)
 
         // 1.5. Wait for attachments to complete before sending
         if row.attachmentIDs.count > 0 {
@@ -287,6 +291,7 @@ public actor OutboxSender {
                 row.state = .failed
                 row.lastError = "Attachment upload failed or timed out"
                 try? ctx.save()
+                ChatMetrics.shared.end(.send, key: messageID, outcome: .failed)
                 outboxLogger.error("outbox FAILED (attachments) msgId=\(msgPrefix, privacy: .public) err=Attachment upload failed or timed out")
                 return
             }
@@ -313,6 +318,7 @@ public actor OutboxSender {
             row.lastError = nil
             try? ctx.save()
             outboxLogger.notice("outbox delivered msgId=\(msgPrefix, privacy: .public) attempts=\(row.attemptCount + 1, privacy: .public)")
+            ChatMetrics.shared.end(.send, key: messageID)
             await onDelivered?(row.messageID)
         } catch {
             // 409 Conflict: the server already persisted this message (idempotent
@@ -322,6 +328,8 @@ public actor OutboxSender {
                 row.lastError = nil
                 try? ctx.save()
                 outboxLogger.notice("outbox delivered (409 conflict, idempotent) msgId=\(msgPrefix, privacy: .public)")
+                ChatMetrics.shared.tag(.send, key: messageID, "conflict", "true")
+                ChatMetrics.shared.end(.send, key: messageID)
                 await onDelivered?(row.messageID)
                 return
             }
@@ -330,6 +338,7 @@ public actor OutboxSender {
             if row.attemptCount >= Self.maxAttempts {
                 row.state = .failed
                 row.nextAttemptAt = nil
+                ChatMetrics.shared.end(.send, key: messageID, outcome: .failed)
                 outboxLogger.error("outbox FAILED (budget exhausted) msgId=\(msgPrefix, privacy: .public) attempts=\(row.attemptCount, privacy: .public) err=\(row.lastError ?? "", privacy: .public)")
             } else {
                 let delay = Self.backoff(forAttempt: row.attemptCount)
