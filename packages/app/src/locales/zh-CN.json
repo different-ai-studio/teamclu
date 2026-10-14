@@ -4054,6 +4054,18 @@
     "closeAria": "关闭标签页",
     "findClose": "关闭（Esc）"
   },
+  "documentLibrary": {
+    "title": "谁可以看",
+    "open": "这个文件夹目前团队成员都能同步。",
+    "actorLeftover": "当前仍按成员授权。保存后会改成按角色，并替换原来的成员名单。",
+    "owner": "拥有者",
+    "confirmTitle": "停止同步",
+    "confirmBody": "{{members}} 名成员将停止同步这个文件夹里的 {{files}} 个文件。已经拷走的文件收不回来。",
+    "confirmCaveat": "已经拷走的文件收不回来。",
+    "save": "保存",
+    "remove": "改为团队可见",
+    "scopeNotice": "停止同步后不会再下发新文件，已经拷到本机的副本收不回来。"
+  },
   "thread": {
     "agentFallback": "Agent",
     "anchorLabel": "话题起点 · 只读",

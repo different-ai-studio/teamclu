@@ -13,10 +13,10 @@ import { mergeKnownDocuments } from "@/lib/knowledge/known-documents-tree";
 import { useTeamPermissions } from "@/lib/team/team-permissions";
 import { lazyNamed } from "@/lib/lazy-component";
 
-// Team-share subtree; loads the first time a folder's ACL dialog is opened.
-const KnowledgeAclDialog = lazyNamed(
-  () => import("@/components/teamshare/KnowledgeAclDialog"),
-  "KnowledgeAclDialog",
+// 资料库顶层文件夹「谁可以看」；首次打开时才加载。
+const DocumentLibraryDialog = lazyNamed(
+  () => import("@/components/teamshare/DocumentLibraryDialog"),
+  "DocumentLibraryDialog",
 );
 import { getBackend } from "@/lib/backend";
 import { useCurrentTeamStore } from "@/stores/current-team";
@@ -1223,13 +1223,12 @@ export function FileTree({
         false)
         ? handleImportLocal
         : undefined,
-    onManagePermissions:
-      canManageTeam &&
-      node.type === 'directory' &&
-      (teamSyncKeyForPath(node.path, { syncRoot, workspacePath })?.startsWith('documents/') ??
-        false)
-        ? handleManagePermissions
-        : undefined,
+    onManagePermissions: (() => {
+      if (!canManageTeam || node.type !== 'directory') return undefined
+      const syncKey = teamSyncKeyForPath(node.path, { syncRoot, workspacePath })
+      if (syncKey === null) return undefined
+      return /^documents\/[^/]+\/$/.test(`${syncKey}/`) ? handleManagePermissions : undefined
+    })(),
     // Its OWN rule, not one inherited from an ancestor: descendants are drawn
     // nested under the folder that is already marked.
     isPermissionRestricted:
@@ -1363,7 +1362,7 @@ export function FileTree({
       */}
       {aclPrefix && (
         <React.Suspense fallback={null}>
-          <KnowledgeAclDialog
+          <DocumentLibraryDialog
             prefix={aclPrefix}
             open={aclPrefix !== null}
             onOpenChange={(open) => {

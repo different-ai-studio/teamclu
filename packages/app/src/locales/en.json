@@ -4054,6 +4054,18 @@
     "closeAria": "Close tab",
     "findClose": "Close (Escape)"
   },
+  "documentLibrary": {
+    "title": "Who can see this",
+    "open": "Everyone on the team can sync this folder today.",
+    "actorLeftover": "This folder is still shared by named members. Saving will switch to roles and replace that list.",
+    "owner": "Owner",
+    "confirmTitle": "Stop syncing",
+    "confirmBody": "{{members}} member(s) will stop syncing {{files}} file(s) in this folder. Files already copied away cannot be taken back.",
+    "confirmCaveat": "Files already copied away cannot be taken back.",
+    "save": "Save",
+    "remove": "Make visible to the team",
+    "scopeNotice": "Removing access stops future syncing. It cannot take back copies already on someone's device."
+  },
   "thread": {
     "agentFallback": "Agent",
     "anchorLabel": "Thread anchor · read-only",
