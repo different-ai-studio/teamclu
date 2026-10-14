@@ -28,6 +28,11 @@ import {
   saveComposerDraft,
 } from "../../../../src/features/sessions/composer-drafts";
 import type { AgentChip } from "../../../../src/features/sessions/components/AgentChipBar";
+import {
+  endChatMetric,
+  markChatMetric,
+  startChatMetric,
+} from "../../../../src/lib/telemetry/chat-metrics";
 import { hydrateReadPositions } from "../../../../src/features/sessions/session-read-position";
 import { createOutboxDao } from "../../../../src/features/sessions/outbox-db";
 import { createOutboxSender } from "../../../../src/features/sessions/outbox-sender";
@@ -234,7 +239,10 @@ export default function SessionDetailRoute() {
         send: (row) => {
           // Track this id so onChange can sync its status from the DAO.
           recentMessageIdsRef.current.add(row.messageId);
-          return publishOutboxRowViaOptionalMqtt(row, mqttSnapshot);
+          return publishOutboxRowViaOptionalMqtt(row, mqttSnapshot).then(() => {
+            markChatMetric("chat.send", row.messageId, "published");
+            endChatMetric("chat.send", row.messageId);
+          });
         },
         onChange: () => {
           void syncOutboxFromDao(dao, Array.from(recentMessageIdsRef.current));
@@ -298,6 +306,14 @@ export default function SessionDetailRoute() {
       resetOutbox();
     };
   }, [currentTeam, sessionId, state.currentMemberActorId, state.route, teamMqtt]);
+
+  // M1: push of this screen → first frame on screen + network history in.
+  // The screen marks both; leaving first means no sample.
+  useEffect(() => {
+    if (!sessionId) return;
+    startChatMetric("chat.open_session", sessionId, { endWhenMarked: ["first_frame", "seeded"] });
+    return () => endChatMetric("chat.open_session", sessionId, "cancelled");
+  }, [sessionId]);
 
   // Persist composer text per-session as it changes (debounced via ref).
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

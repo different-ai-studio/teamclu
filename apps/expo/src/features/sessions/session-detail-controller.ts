@@ -46,6 +46,7 @@ import {
   type TimelineState,
 } from "./timeline-reducer";
 import type { createCloudSessionsApi } from "./cloud-api";
+import { endChatMetric, markChatMetric, startChatMetric } from "../../lib/telemetry/chat-metrics";
 
 export type SessionDetailConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -1136,6 +1137,8 @@ export function createSessionDetailController(
         const createdAtSeconds = BigInt(Math.floor(Date.parse(createdAt) / 1000));
         const messageId = uuidV4();
         outboxMessageId = messageId;
+        // M3: ends when the outbox has published it (see the route's send).
+        startChatMetric("chat.send", messageId);
         setOutboxStatus(messageId, "sending");
 
         const pendingAttachments = takePendingAttachments(deps.teamId, deps.sessionId);
@@ -1166,6 +1169,7 @@ export function createSessionDetailController(
           attachments: attachmentsPayload,
           replyToMessageId: replyTo,
         });
+        markChatMetric("chat.send", messageId, "persisted");
 
         const optimisticMessage: SessionMessage = {
           content,
@@ -1211,6 +1215,7 @@ export function createSessionDetailController(
             })),
             createdAt: Date.parse(createdAt),
           });
+          markChatMetric("chat.send", messageId, "enqueued");
           await syncOutboxFromDao(deps.outbox.dao, [messageId]);
         } else {
           // Fallback path (existing inline publish)
@@ -1242,8 +1247,11 @@ export function createSessionDetailController(
               toBinary(LiveEventEnvelopeSchema, envelope),
               false,
             );
+            markChatMetric("chat.send", messageId, "published");
+            endChatMetric("chat.send", messageId);
           } catch {
             setOutboxStatus(messageId, "failed");
+            endChatMetric("chat.send", messageId, "failed");
             setState({
               ...state,
               messages: mergedMessages,
@@ -1270,6 +1278,7 @@ export function createSessionDetailController(
       } catch (error) {
         if (outboxMessageId) {
           setOutboxStatus(outboxMessageId, "failed");
+          endChatMetric("chat.send", outboxMessageId, "failed");
         }
         setState({
           ...state,

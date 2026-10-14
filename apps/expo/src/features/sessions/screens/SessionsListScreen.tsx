@@ -27,6 +27,7 @@ import { t } from "../../../lib/i18n";
 import { colors, spacing, typography } from "../../../ui/theme";
 import { matchesAnyField } from "../../search/search-matcher";
 import { SessionRow, type SessionRowRuntime } from "../components/SessionRow";
+import { endChatMetric, markChatMetric } from "../../../lib/telemetry/chat-metrics";
 import {
   getComposerDraftsSnapshot,
   hydrateComposerDrafts,
@@ -208,6 +209,12 @@ export function SessionsListScreen({
   useEffect(() => {
     void hydrateComposerDrafts();
   }, []);
+  const hasRows = state.groups.some((group) => group.sessions.length > 0);
+  useEffect(() => {
+    if (!hasRows) return;
+    markChatMetric("app.cold_start", "", "list_rows");
+    endChatMetric("app.cold_start");
+  }, [hasRows]);
   const [placeholderMessage, setPlaceholderMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   // iOS #1603: the search keyboard goes away on scroll and on any tap outside

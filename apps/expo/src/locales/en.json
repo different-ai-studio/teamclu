@@ -1087,5 +1087,8 @@
   "Draft:": "Draft: ",
   "{{value}} unread": "{{value}} unread",
   "{{value}} new messages": "{{value}} new messages",
-  "Jump to latest": "Jump to latest"
+  "Jump to latest": "Jump to latest",
+  "Reply…": "Reply…",
+  "Reply not sent": "Reply not sent",
+  "Saved as a draft in the session.": "Saved as a draft in the session."
 }

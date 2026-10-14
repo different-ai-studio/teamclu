@@ -1087,5 +1087,8 @@
   "Draft:": "草稿：",
   "{{value}} unread": "{{value}} 条未读",
   "{{value}} new messages": "{{value}} 条新消息",
-  "Jump to latest": "回到最新"
+  "Jump to latest": "回到最新",
+  "Reply…": "回复…",
+  "Reply not sent": "回复未发出",
+  "Saved as a draft in the session.": "已存为该会话的草稿。"
 }

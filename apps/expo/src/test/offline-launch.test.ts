@@ -209,3 +209,82 @@ describe("offline launch", () => {
     expect(controller.getState().route).toBe("ready");
   });
 });
+
+describe("launch on the cached team", () => {
+  const fresh = () => ({ user: { id: "user-1" }, expires_at: Date.now() / 1000 + 3600 });
+
+  function setupLaunch(api: OnboardingApi, pendingInvite = false) {
+    const storage = memoryStorage();
+    const lastContext = createLastAppContextStore(storage);
+    const rememberedTeam = createRememberedTeamStore(storage);
+    const controller = createOnboardingController(
+      api,
+      rememberedTeam,
+      createOnboardingIntentStore(storage as never),
+      lastContext,
+      async () => pendingInvite,
+    );
+    return { controller, lastContext, rememberedTeam };
+  }
+
+  it("enters the cached team without waiting for the team list, then rechecks it", async () => {
+    let releaseBootstrap: (value: BootstrapResult) => void = () => {};
+    const loadBootstrap = vi.fn(
+      () => new Promise<BootstrapResult>((resolve) => { releaseBootstrap = resolve; }),
+    );
+    const { controller, lastContext, rememberedTeam } = setupLaunch(
+      apiMock({ getCurrentSession: vi.fn().mockResolvedValue(fresh()), loadBootstrap }),
+    );
+    await lastContext.save(CACHED);
+    await rememberedTeam.save(TEAM.id);
+
+    await controller.launch();
+    expect(controller.getState()).toMatchObject({ route: "ready", currentTeam: TEAM });
+    expect(controller.isOfflineLaunch()).toBe(true);
+
+    await flush();
+    releaseBootstrap({ isAnonymous: false, team: TEAM, memberActorId: "member-1", teamChoices: [] });
+    for (let i = 0; i < 3; i += 1) await flush();
+    expect(loadBootstrap).toHaveBeenCalledTimes(1);
+    expect(controller.isOfflineLaunch()).toBe(false);
+    expect(controller.getState().route).toBe("ready");
+  });
+
+  it("lands where a fresh launch would when the background check finds the team gone", async () => {
+    const { controller, lastContext, rememberedTeam } = setupLaunch(
+      apiMock({
+        getCurrentSession: vi.fn().mockResolvedValue(fresh()),
+        loadBootstrap: vi.fn().mockResolvedValue({
+          isAnonymous: false, team: null, memberActorId: null, teamChoices: [],
+        } satisfies BootstrapResult),
+      }),
+    );
+    await lastContext.save(CACHED);
+    await rememberedTeam.save(TEAM.id);
+    await controller.launch();
+    for (let i = 0; i < 3; i += 1) await flush();
+    expect(controller.getState().currentTeam).toBeNull();
+    expect(controller.getState().route).not.toBe("ready");
+  });
+
+  it("takes the full bootstrap for a pending invite, a stale session, or another remembered team", async () => {
+    for (const variant of ["invite", "stale", "otherTeam"] as const) {
+      const loadBootstrap = vi.fn().mockResolvedValue({
+        isAnonymous: false, team: TEAM, memberActorId: "member-1", teamChoices: [],
+      } satisfies BootstrapResult);
+      const session = variant === "stale"
+        ? { user: { id: "user-1" }, expires_at: Date.now() / 1000 + 30 }
+        : fresh();
+      const { controller, lastContext, rememberedTeam } = setupLaunch(
+        apiMock({ getCurrentSession: vi.fn().mockResolvedValue(session), loadBootstrap }),
+        variant === "invite",
+      );
+      await lastContext.save(CACHED);
+      await rememberedTeam.save(variant === "otherTeam" ? "team-2" : TEAM.id);
+      await controller.launch();
+      expect(controller.isOfflineLaunch()).toBe(false);
+      expect(loadBootstrap).toHaveBeenCalledTimes(1);
+      expect(controller.getState().route).toBe("ready");
+    }
+  });
+});

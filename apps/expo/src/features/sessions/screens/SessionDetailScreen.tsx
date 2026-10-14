@@ -95,6 +95,7 @@ import {
 } from "../session-read-position";
 import type { SessionMessage, SessionSummary } from "../session-types";
 import { selectionTick } from "../../../lib/haptics";
+import { markChatMetric, measureChatMetric } from "../../../lib/telemetry/chat-metrics";
 import type { PendingAcpQuestion } from "../pending-questions";
 import { AcpQuestionCard } from "../components/AcpQuestionCard";
 import { SheetModal } from "../../../ui/SheetModal";
@@ -944,6 +945,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
   useEffect(() => {
     if (unreadComputed.current || !state.historySettled) return;
     unreadComputed.current = true;
+    measureChatMetric("chat.open_session", sessionKey, "rows", readRows.length);
+    // An empty session never lays out a feed; its empty state is the frame.
+    if (readRows.length === 0) markChatMetric("chat.open_session", sessionKey, "first_frame");
+    markChatMetric("chat.open_session", sessionKey, "seeded");
     const { count, firstKey } = unreadSince(readRows, openedReadPosition?.readAt ?? null);
     if (firstKey && count >= FIRST_UNREAD_THRESHOLD && !visibleKeysRef.current.includes(firstKey)) {
       setUnreadPill({ count, firstKey });
@@ -1105,6 +1110,9 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             onContentSizeChange={() => {
               // Opening on a target already positioned the feed; the first
               // layout must not snap it back to the end.
+              if (!hasMeasuredFeedLayout.current) {
+                markChatMetric("chat.open_session", sessionKey, "first_frame");
+              }
               const isInitialLayout = !hasMeasuredFeedLayout.current && !openedOnTarget.current;
               hasMeasuredFeedLayout.current = true;
               // Opening on a pushed message or a saved position, not the end.

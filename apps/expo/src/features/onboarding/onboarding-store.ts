@@ -1,4 +1,5 @@
 import { clearCachedMqttUrl } from "../../lib/mqtt/config";
+import { loadPendingInviteToken } from "./pending-invite";
 import { clearComposerDrafts } from "../sessions/composer-drafts";
 import { clearReadPositions } from "../sessions/session-read-position";
 import {
@@ -57,6 +58,9 @@ export function createOnboardingController(
   rememberedTeam: RememberedTeamStore = createRememberedTeamStore(),
   intentStore: OnboardingIntentStore = createOnboardingIntentStore(),
   lastContext: LastAppContextStore = createLastAppContextStore(),
+  /** An invite waiting to be claimed must be claimed before a team is chosen. */
+  hasPendingInvite: () => Promise<boolean> = async () =>
+    (await loadPendingInviteToken().catch(() => null)) !== null,
 ) {
   let state: OnboardingState = initialOnboardingState;
   let activeOperationToken = 0;
@@ -188,6 +192,51 @@ export function createOnboardingController(
       }
       throw new BootstrapFailureError(error);
     }
+  };
+
+  /**
+   * App launch (iOS #1709 P5): open straight on the last team instead of
+   * waiting for `GET /v1/teams` and the team switch, then check memberships in
+   * the background — the same quiet recheck an offline launch gets. Only when
+   * nothing has to be decided first: a pending invite, a remembered team that
+   * is not the cached one, or a session about to expire all take the full
+   * bootstrap.
+   */
+  const launch = async () => {
+    const token = beginOperation();
+    try {
+      const [session, cached, remembered, pendingInvite] = await Promise.all([
+        api.getCurrentSession(),
+        lastContext.load(),
+        rememberedTeam.load(),
+        hasPendingInvite(),
+      ]);
+      if (
+        isActiveOperation(token) &&
+        session !== null &&
+        hasFreshSession(session) &&
+        !pendingInvite &&
+        cached !== null &&
+        cached.team.id === remembered
+      ) {
+        offlineLaunch = true;
+        dispatch({
+          type: "bootstrapResolved",
+          payload: {
+            isAnonymous: cached.isAnonymous,
+            team: cached.team,
+            memberActorId: cached.memberActorId,
+            teamChoices: [],
+          },
+        });
+        void revalidateAfterOfflineLaunch();
+        return;
+      }
+    } catch {
+      // Fall through to the full bootstrap, which reports its own failures.
+    }
+    if (!isActiveOperation(token)) return;
+    await bootstrap(token);
   };
 
   /**
@@ -771,6 +820,7 @@ export function createOnboardingController(
       };
     },
     bootstrap,
+    launch,
     selectTeam,
     chooseIdentity,
     joinByLink,
@@ -798,4 +848,13 @@ export function createOnboardingController(
     joinWithInvite,
     createTeamFromNoTeam,
   };
+}
+
+/** Two minutes of validity left, so the first requests don't race a refresh. */
+const FRESH_SESSION_MARGIN_S = 120;
+
+function hasFreshSession(session: unknown): boolean {
+  const expiresAt = (session as { expires_at?: unknown } | null)?.expires_at;
+  if (typeof expiresAt !== "number") return false;
+  return expiresAt - Date.now() / 1000 >= FRESH_SESSION_MARGIN_S;
 }
