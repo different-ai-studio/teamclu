@@ -107,7 +107,7 @@ export default function SessionsIndexRoute() {
   useFocusEffect(
     useCallback(() => {
       if (!activeTeamId) return;
-      void controller.refresh();
+      void controller.refresh({ quiet: true });
     }, [activeTeamId, controller]),
   );
 
@@ -277,7 +277,7 @@ export default function SessionsIndexRoute() {
         if (refreshTimer) return;
         refreshTimer = setTimeout(() => {
           refreshTimer = null;
-          void controllerRef.current?.refresh();
+          void controllerRef.current?.refresh({ quiet: true });
         }, 400);
       });
     });
