@@ -35,6 +35,7 @@
 // rather than recalling what was already synced.
 
 import { createServiceRoleClient } from './supabase.js';
+import { roleRuleDenies, type CallerRoles } from './document-library-access.js';
 
 /** Audit actions, matching the CHECK constraint on `amuxc_access_log.action`. */
 export type AclAction = 'manifest' | 'download' | 'upload' | 'delete' | 'versions';
@@ -58,6 +59,8 @@ export interface SyncAclDeps {
    * would make that pass-through a type error at every call site.
    */
   nowMs?: () => number;
+  /** Override org-role lookup for tests; defaults to {@link loadCallerRoles}. */
+  activeRoleCodes?: (teamId: string, actorId: string) => Promise<CallerRoles>;
 }
 
 /**
@@ -195,6 +198,67 @@ export function validateAclPrefix(prefix: unknown): { ok: boolean; message?: str
 // Loading
 // ---------------------------------------------------------------------------
 
+/** Prefer public schema; fall back for in-memory stubs that lack `.schema()`. */
+function publicFrom(supabase: any, table: string) {
+  if (typeof supabase?.schema === 'function') {
+    return supabase.schema('public').from(table);
+  }
+  return supabase.from(table);
+}
+
+/** Active org role ids and codes for an actor in a team (service-role reads). */
+export async function loadCallerRoles(
+  supabase: any,
+  teamId: string,
+  actorId: string,
+): Promise<CallerRoles> {
+  const { data: actor, error: actorErr } = await supabase
+    .from('actors')
+    .select('user_id')
+    .eq('id', actorId)
+    .eq('team_id', teamId)
+    .maybeSingle();
+  if (actorErr) throw new Error(actorErr.message);
+  const userId = actor?.user_id;
+  if (!userId) return { ids: [], codes: [] };
+
+  const { data: team, error: teamErr } = await supabase
+    .from('teams')
+    .select('oid')
+    .eq('id', teamId)
+    .maybeSingle();
+  if (teamErr) throw new Error(teamErr.message);
+  const orgId = typeof team?.oid === 'string' ? team.oid.trim() : '';
+  if (!orgId) throw new Error(`team ${teamId} has no org_id`);
+
+  const { data: bindings, error: bindErr } = await publicFrom(supabase, 'roles_users')
+    .select('role_id')
+    .eq('org_id', orgId)
+    .eq('user_id', userId)
+    .eq('status', 'active')
+    .is('store_id', null);
+  if (bindErr) throw new Error(bindErr.message);
+  const roleIds = [
+    ...new Set(
+      (bindings ?? []).map((b: { role_id: string }) => b.role_id).filter(Boolean),
+    ),
+  ];
+  if (!roleIds.length) return { ids: [], codes: [] };
+
+  const { data: roles, error: rolesErr } = await publicFrom(supabase, 'roles')
+    .select('id, code')
+    .in('id', roleIds)
+    .eq('status', 'active')
+    .eq('org_id', orgId);
+  if (rolesErr) throw new Error(rolesErr.message);
+
+  const rows = (roles ?? []) as { id: string; code: string }[];
+  return {
+    ids: rows.map((r) => r.id),
+    codes: rows.map((r) => r.code),
+  };
+}
+
 /** Rules + this actor's grants, straight from the backend. No caching here. */
 async function loadView(
   teamId: string,
@@ -216,10 +280,38 @@ async function loadView(
   if (grantsErr) throw new Error(`acl grants query failed: ${grantsErr.message}`);
   const granted = new Set((grants ?? []).map((g: { acl_id: string }) => g.acl_id));
 
+  const ruleIds = (rules as { id: string }[]).map((r) => r.id);
+  const { data: roleGrantRows, error: roleGrantsErr } = await supabase
+    .from('amuxc_path_acl_role_grants')
+    .select('acl_id, role_id')
+    .in('acl_id', ruleIds);
+  if (roleGrantsErr) throw new Error(`acl role grants query failed: ${roleGrantsErr.message}`);
+
+  const rolesByAcl = new Map<string, string[]>();
+  for (const row of (roleGrantRows ?? []) as { acl_id: string; role_id: string }[]) {
+    const list = rolesByAcl.get(row.acl_id) ?? [];
+    list.push(row.role_id);
+    rolesByAcl.set(row.acl_id, list);
+  }
+
+  const hasRoleRules = [...rolesByAcl.values()].some((ids) => ids.length > 0);
+  const caller: CallerRoles = hasRoleRules
+    ? await (deps.activeRoleCodes ??
+        ((tid, aid) => loadCallerRoles(supabase, tid, aid)))(teamId, actorId)
+    : { ids: [], codes: [] };
+
+  const denied: string[] = [];
+  for (const rule of rules as { id: string; path_prefix: string }[]) {
+    const grantedRoleIds = rolesByAcl.get(rule.id) ?? [];
+    if (grantedRoleIds.length > 0) {
+      if (roleRuleDenies(caller, grantedRoleIds)) denied.push(rule.path_prefix);
+    } else if (!granted.has(rule.id)) {
+      denied.push(rule.path_prefix);
+    }
+  }
+
   return {
-    denied: (rules as { id: string; path_prefix: string }[])
-      .filter((r) => !granted.has(r.id))
-      .map((r) => r.path_prefix),
+    denied,
     allPrefixes: (rules as { path_prefix: string }[]).map((r) => r.path_prefix),
   };
 }
