@@ -2,6 +2,7 @@ import type { TeamSkillsBackend } from "@/lib/backend/cloud-api/team-skills";
 import type { MarketplaceBackend } from "@/lib/backend/cloud-api/marketplace";
 import type { TeamMcpBackend } from "@/lib/backend/cloud-api/team-mcp";
 import type { KnowledgeAclBackend } from "@/lib/backend/cloud-api/knowledge-acl";
+import type { DocumentLibrariesBackend } from "@/lib/backend/cloud-api/document-libraries";
 import type { WikiMaintainerBackend } from "@/lib/backend/cloud-api/wiki-maintainer";
 import type { TeamEnvSecretsBackend } from "@/lib/backend/cloud-api/team-env-secrets";
 import type { MemberRoleRef, OrgRolesBackend } from "@/lib/backend/cloud-api/org-roles";
@@ -1889,6 +1890,7 @@ export interface TeamCluBackend {
   marketplace: MarketplaceBackend;
   teamMcp: TeamMcpBackend;
   knowledgeAcl: KnowledgeAclBackend;
+  documentLibraries: DocumentLibrariesBackend;
   wikiMaintainer: WikiMaintainerBackend;
   teamEnvSecrets: TeamEnvSecretsBackend;
   orgRoles: OrgRolesBackend;
