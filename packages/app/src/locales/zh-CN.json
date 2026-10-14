@@ -3548,7 +3548,10 @@
       "empty": "没有受限目录。每个成员都会收到完整的知识库。",
       "grantedCount": "{{count}} 人有权限",
       "removeRule": "移除限制",
-      "addHint": "要限制某个目录，在知识库树里右键它选「权限」。在那里设置意味着目录已经确定，而且弹窗能显示它从上级继承了什么。"
+      "addHint": "要限制某个目录，在知识库树里右键它选「权限」。在那里设置意味着目录已经确定，而且弹窗能显示它从上级继承了什么。",
+      "documentLibrariesTitle": "资料库文件夹",
+      "documentLibrariesEmpty": "没有按角色限制的资料库文件夹。",
+      "documentLibraryActorAudience": "当前仍按成员授权"
     }
   },
   "skillssh": {

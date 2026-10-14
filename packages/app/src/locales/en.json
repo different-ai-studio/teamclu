@@ -3548,7 +3548,10 @@
       "empty": "No restricted directories. Every member receives the whole knowledge vault.",
       "grantedCount": "{{count}} member(s) have access",
       "removeRule": "Remove restriction",
-      "addHint": "To restrict a folder, right-click it in the knowledge tree and choose Permissions. Setting it there means the folder is already chosen, and the dialog can show what it inherits from its parent."
+      "addHint": "To restrict a folder, right-click it in the knowledge tree and choose Permissions. Setting it there means the folder is already chosen, and the dialog can show what it inherits from its parent.",
+      "documentLibrariesTitle": "Document folders",
+      "documentLibrariesEmpty": "No document folders are restricted by role.",
+      "documentLibraryActorAudience": "Still granted by member."
     }
   },
   "skillssh": {
