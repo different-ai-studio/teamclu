@@ -6,12 +6,14 @@ import XCTest
 /// or daemon in the measured path.
 ///
 /// The numbers are the os_signpost intervals `ChatMetrics` emits
-/// (subsystem `com.teamclu.mobile`, category `ChatMetrics`). Like the other
-/// UI tests this expects a simulator that is already signed in to a team:
-/// fixtures are installed when the app reaches its ready route.
+/// (subsystem `com.teamclu.mobile`, category `ChatMetrics`). Signs in with
+/// the E2E account when needed: fixtures are installed when the app reaches
+/// its ready route.
 final class AMUXChatPerformanceTests: XCTestCase {
     private let largeSessionTitle = "Perf · large (220)"
-    private let replyTail = "Want me to open a PR with this change?"
+    /// The newest history turn's heading: only in the detail feed, unlike
+    /// the reply tail, which the list row also shows as its preview.
+    private let detailOnlyText = "Turn 109: findings"
 
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -30,6 +32,7 @@ final class AMUXChatPerformanceTests: XCTestCase {
     }
 
     private func largeSessionRow(in app: XCUIApplication) -> XCUIElement {
+        XCTAssertTrue(app.signInIfNeeded(), "Not signed in and no E2E account configured")
         let row = app.staticTexts[largeSessionTitle]
         XCTAssertTrue(
             row.waitForExistence(timeout: 30),
@@ -73,7 +76,7 @@ final class AMUXChatPerformanceTests: XCTestCase {
         options.iterationCount = 5
         measure(metrics: [signpost("open_session")], options: options) {
             open(row, in: app)
-            XCTAssertTrue(element(containing: replyTail, in: app).waitForExistence(timeout: 15))
+            XCTAssertTrue(element(containing: detailOnlyText, in: app).waitForExistence(timeout: 15))
             goBack(in: app)
             XCTAssertTrue(row.waitForExistence(timeout: 10))
         }

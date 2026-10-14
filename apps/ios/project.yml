@@ -65,7 +65,8 @@ schemes:
     test:
       config: Debug
       targets:
-        - AMUXUITests
+        - name: AMUXUITests
+          skippedTests: [AMUXSessionLiveCaptureTest, AMUXSessionLiveDiagTest]
     profile:
       config: Release
     analyze:
@@ -78,7 +79,22 @@ schemes:
         AMUXUITests: test
     test:
       targets:
-        - AMUXUITests
+        # The two Live* classes are opt-in capture / diagnosis scripts, not
+        # regression tests; they live in AMUXUIDiagnostics so the default
+        # suite can be held to zero skips.
+        - name: AMUXUITests
+          skippedTests: [AMUXSessionLiveCaptureTest, AMUXSessionLiveDiagTest]
+      environmentVariables:
+        TEAMCLU_TEST_EMAIL: $(TEAMCLU_TEST_EMAIL)
+        TEAMCLU_TEST_PASSWORD: $(TEAMCLU_TEST_PASSWORD)
+  AMUXUIDiagnostics:
+    build:
+      targets:
+        AMUXUITests: test
+    test:
+      targets:
+        - name: AMUXUITests
+          selectedTests: [AMUXSessionLiveCaptureTest, AMUXSessionLiveDiagTest]
       environmentVariables:
         TEAMCLU_TEST_EMAIL: $(TEAMCLU_TEST_EMAIL)
         TEAMCLU_TEST_PASSWORD: $(TEAMCLU_TEST_PASSWORD)

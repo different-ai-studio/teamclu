@@ -49,6 +49,14 @@
                BlueprintName = "AMUXUITests"
                ReferencedContainer = "container:AMUX.xcodeproj">
             </BuildableReference>
+            <SkippedTests>
+               <Test
+                  Identifier = "AMUXSessionLiveCaptureTest">
+               </Test>
+               <Test
+                  Identifier = "AMUXSessionLiveDiagTest">
+               </Test>
+            </SkippedTests>
          </TestableReference>
       </Testables>
       <CommandLineArguments>

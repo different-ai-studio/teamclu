@@ -5,40 +5,24 @@ final class AMUXUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// New Session with the E2E agent lands in that session's detail, titled
+    /// by the prompt.
     @MainActor
     func testNewSessionNavigatesToFreshAgentDetail() throws {
         let app = XCUIApplication()
         app.launch()
-        sleep(8)
+        XCTAssertTrue(app.signInIfNeeded(), "Not signed in and no E2E account configured")
 
-        let sessionsTab = app.tabBars.buttons["Sessions"]
-        if sessionsTab.waitForExistence(timeout: 5) {
-            sessionsTab.tap()
-        }
-
-        let newSessionButton = app.buttons["sessions.newSessionButton"]
-        XCTAssertTrue(newSessionButton.waitForExistence(timeout: 10), "New Session button did not appear")
-        newSessionButton.tap()
-
-        let messageField = app.textFields["newSession.messageField"]
-        XCTAssertTrue(messageField.waitForExistence(timeout: 10), "New Session message field did not appear")
-
+        let messageField = app.openNewSessionWithE2EAgent()
         let prompt = "UITest \(UUID().uuidString.prefix(8))"
-        messageField.tap()
-        messageField.typeText(prompt)
+        app.sendNewSession(prompt, in: messageField)
 
-        let sendButton = app.buttons["newSession.sendButton"]
-        XCTAssertTrue(sendButton.isEnabled, "Send button should be enabled after typing a prompt")
-        sendButton.tap()
-
-        let title = app.staticTexts[prompt]
-        guard title.waitForExistence(timeout: 25) else {
-            let screenshot = XCUIScreen.main.screenshot()
-            let attachment = XCTAttachment(screenshot: screenshot)
+        guard app.element(containing: prompt).waitForExistence(timeout: 25) else {
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             attachment.name = "new-session-agent-failure"
             attachment.lifetime = .keepAlways
             add(attachment)
-            XCTFail("Expected Agent detail title for prompt \(prompt) to appear.\nHierarchy:\n\(app.debugDescription)")
+            XCTFail("Expected the prompt \(prompt) in the new session's detail.\n\(app.debugDescription)")
             return
         }
     }
