@@ -2377,13 +2377,22 @@ public final class SessionDetailViewModel {
         let seedKey = "\(session.sessionId)#\(UUID().uuidString.prefix(8))"
         let metrics = ChatMetrics.shared
         metrics.begin(.historySeed, key: seedKey)
-        let messages: [MessageRecord]
+        let page: MessagePage
         do {
-            messages = try await repo.listForSession(sessionID: session.sessionId)
+            page = try await repo.listPage(sessionID: session.sessionId, limit: nil, cursor: nil)
         } catch {
             print("[SessionDetailVM] supabase messages seed failed: \(error)")
             metrics.end(.historySeed, key: seedKey, outcome: .failed)
             return
+        }
+        let messages = page.messages
+        // The newest page's cursor is where scrolling back starts. Only the
+        // first seed sets it: a reseed on reconnect must not rewind a reader
+        // who has already paged back past it.
+        if !hasResolvedOlderHistoryCursor {
+            hasResolvedOlderHistoryCursor = true
+            olderHistoryCursor = page.nextCursor
+            hasOlderHistory = page.nextCursor != nil
         }
         metrics.mark(.historySeed, key: seedKey, "fetched")
         metrics.set(.historySeed, key: seedKey, "rows", Double(messages.count))
@@ -2399,11 +2408,22 @@ public final class SessionDetailViewModel {
 
         let streamingBeforeSeed = timelineState.streamingTurnIDByAgent
 
-        // Reducer dedupes by `supabaseMessageID` and backfills the
-        // id onto an existing content-equal entry when one exists.
-        // Apply per record, project once at the end.
+        var anyChange = applyHistoryRecords(messages, modelContext: modelContext)
+        if pruneTracedTurnRuntimeRows(modelContext: modelContext) { anyChange = true }
+        if anyChange { recomputeGroups() }
+        settleTurnsClosedByTrace(streamingBeforeSeed: streamingBeforeSeed)
+        metrics.set(.historySeed, key: seedKey, "apply_main_ms", Self.milliseconds(since: applyStart))
+        metrics.set(.historySeed, key: seedKey, "changed", anyChange ? 1 : 0)
+        metrics.end(.historySeed, key: seedKey)
+    }
+
+    /// Feeds Cloud API history rows through the reducer one by one. The
+    /// reducer dedupes by `supabaseMessageID` and backfills the id onto an
+    /// existing content-equal entry, so a row seen before is a no-op. Returns
+    /// whether anything changed; callers project (`recomputeGroups`) once.
+    private func applyHistoryRecords(_ records: [MessageRecord], modelContext: ModelContext) -> Bool {
         var anyChange = false
-        for record in messages {
+        for record in records {
             let kind: HistoryKind
             switch record.kind {
             case "agent_reply": kind = .output
@@ -2435,12 +2455,36 @@ public final class SessionDetailViewModel {
             )
             if dirty { anyChange = true }
         }
-        if pruneTracedTurnRuntimeRows(modelContext: modelContext) { anyChange = true }
-        if anyChange { recomputeGroups() }
-        settleTurnsClosedByTrace(streamingBeforeSeed: streamingBeforeSeed)
-        metrics.set(.historySeed, key: seedKey, "apply_main_ms", Self.milliseconds(since: applyStart))
-        metrics.set(.historySeed, key: seedKey, "changed", anyChange ? 1 : 0)
-        metrics.end(.historySeed, key: seedKey)
+        return anyChange
+    }
+
+    /// Whether the server holds rows older than the oldest page loaded.
+    public private(set) var hasOlderHistory = false
+    public private(set) var isLoadingOlderHistory = false
+    @ObservationIgnored private var olderHistoryCursor: String?
+    @ObservationIgnored private var hasResolvedOlderHistoryCursor = false
+
+    /// The page before the oldest one loaded — what the reader sees when they
+    /// scroll to the top. Rows go through the same reducer path as the seed,
+    /// so they land in the local cache and are there next time offline. A
+    /// failed fetch keeps the cursor, so the next scroll to the top retries.
+    public func loadOlderHistory(modelContext: ModelContext) async {
+        guard let session, let repo = messagesRepository,
+              let cursor = olderHistoryCursor, !isLoadingOlderHistory else { return }
+        isLoadingOlderHistory = true
+        defer { isLoadingOlderHistory = false }
+        do {
+            let page = try await repo.listPage(sessionID: session.sessionId, limit: nil, cursor: cursor)
+            let streamingBefore = timelineState.streamingTurnIDByAgent
+            var changed = applyHistoryRecords(page.messages, modelContext: modelContext)
+            if pruneTracedTurnRuntimeRows(modelContext: modelContext) { changed = true }
+            if changed { recomputeGroups() }
+            settleTurnsClosedByTrace(streamingBeforeSeed: streamingBefore)
+            olderHistoryCursor = page.nextCursor
+            hasOlderHistory = page.nextCursor != nil
+        } catch {
+            print("[SessionDetailVM] older history fetch failed: \(error)")
+        }
     }
 
     // MARK: - Metrics

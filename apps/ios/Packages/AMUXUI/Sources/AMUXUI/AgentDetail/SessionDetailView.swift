@@ -175,6 +175,9 @@ public struct SessionDetailView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    if viewModel.hasOlderHistory {
+                        olderHistoryRow
+                    }
                     if viewModel.events.isEmpty && viewModel.streamingAgentSet.isEmpty
                         && !viewModel.hasFinishedInitialSeed {
                         // No local cache and the history fetch hasn't come
@@ -551,6 +554,30 @@ public struct SessionDetailView: View {
         return (anchor, (unread?.count ?? 0) >= Self.unreadJumpThreshold ? unread : nil)
     }
 
+    /// Sits above the oldest loaded row while the server has more; reaching
+    /// it loads the page before. `.task` also runs when the first frame
+    /// shows, so a session too short to scroll still fills in.
+    private var olderHistoryRow: some View {
+        ProgressView()
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .accessibilityIdentifier("session.olderHistoryLoader")
+            .task(id: isInitialFeedVisible) {
+                guard isInitialFeedVisible else { return }
+                await loadOlderHistoryKeepingPosition()
+            }
+    }
+
+    /// Older rows go in above the reader; without re-anchoring, the content
+    /// they were reading would slide down out of view.
+    private func loadOlderHistoryKeepingPosition() async {
+        let anchor = topVisibleFeedID()
+        await viewModel.loadOlderHistory(modelContext: modelContext)
+        guard let anchor else { return }
+        await Task.yield()
+        scrollProxy?.scrollTo(anchor, anchor: .top)
+    }
+
     private func topVisibleFeedID() -> String? {
         viewModel.feedItems.first { visibleFeedIDs.contains($0.id) }?.id
     }
@@ -589,11 +616,18 @@ public struct SessionDetailView: View {
     private var liveSessionSurface: some View {
         sessionSurface
         .animation(AMUXAnimation.fast, value: isAtBottom)
-        .onChange(of: viewModel.feedItems.count) { old, new in
-            // Only what lands while the reader is away from the bottom; at
-            // the bottom it scrolls into view on its own.
-            guard !isAtBottom, isInitialFeedVisible, new > old else { return }
-            unseenCount += new - old
+        .onChange(of: viewModel.feedItems.last?.id) { oldLastID, _ in
+            // Only rows appended after the old last one, and only while the
+            // reader is away from the bottom (there they scroll into view).
+            // Counting by total would also count older history paged in
+            // above the reader.
+            guard !isAtBottom, isInitialFeedVisible else { return }
+            let items = viewModel.feedItems
+            if let oldLastID, let index = items.firstIndex(where: { $0.id == oldLastID }) {
+                unseenCount += items.count - index - 1
+            } else {
+                unseenCount += 1
+            }
         }
         .onChange(of: isAtBottom) { _, atBottom in
             if atBottom { unseenCount = 0 }
