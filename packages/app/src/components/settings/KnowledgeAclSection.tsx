@@ -8,6 +8,14 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { SettingCard, SectionHeader } from './shared'
 import type { KnowledgeAclRule } from '@/lib/backend/cloud-api/knowledge-acl'
+import type { DocumentLibrary } from '@/lib/backend/cloud-api/document-libraries'
+
+/** Top-level `documents/<folder>/` prefixes are listed via document libraries, not person rules. */
+const TOP_LEVEL_DOCUMENT_LIBRARY_PREFIX = /^documents\/[^/]+\/$/
+
+function isTopLevelDocumentLibraryPrefix(pathPrefix: string): boolean {
+  return TOP_LEVEL_DOCUMENT_LIBRARY_PREFIX.test(pathPrefix)
+}
 
 /**
  * Knowledge access — per-directory permissions for the team vault.
@@ -36,6 +44,7 @@ export function KnowledgeAclSection() {
   const { canManageTeam: canManage } = useTeamPermissions()
 
   const [rules, setRules] = React.useState<KnowledgeAclRule[] | null>(null)
+  const [libraries, setLibraries] = React.useState<DocumentLibrary[] | null>(null)
   const [members, setMembers] = React.useState<{ id: string; displayName: string }[]>([])
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
@@ -46,11 +55,13 @@ export function KnowledgeAclSection() {
     if (!teamId || !canManage) return
     setError(null)
     try {
-      const [items, memberRows] = await Promise.all([
+      const [items, libraryItems, memberRows] = await Promise.all([
         getBackend().knowledgeAcl.listKnowledgeAcl(teamId),
+        getBackend().documentLibraries.listDocumentLibraries(teamId),
         getBackend().actors.listTeamMembersForAccess(teamId),
       ])
-      setRules(items)
+      setRules(items.filter((rule) => !isTopLevelDocumentLibraryPrefix(rule.pathPrefix)))
+      setLibraries(libraryItems)
       setMembers(
         memberRows.map((m: { id: string; displayName: string }) => ({
           id: m.id,
@@ -60,6 +71,7 @@ export function KnowledgeAclSection() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setRules([])
+      setLibraries([])
     }
   }, [teamId, canManage])
 
@@ -90,6 +102,20 @@ export function KnowledgeAclSection() {
     setError(null)
     try {
       await getBackend().knowledgeAcl.deleteKnowledgeAcl(teamId, rule.id)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeLibrary = async (library: DocumentLibrary) => {
+    if (!teamId) return
+    setBusy(true)
+    setError(null)
+    try {
+      await getBackend().documentLibraries.deleteDocumentLibrary(teamId, library.id)
       await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -147,60 +173,112 @@ export function KnowledgeAclSection() {
         </SettingCard>
       )}
 
-      {/* ── Existing rules ─────────────────────────────────────────────── */}
-      {rules === null ? (
+      {rules === null || libraries === null ? (
         <SettingCard>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             {t('common.loading', 'Loading…')}
           </div>
         </SettingCard>
-      ) : rules.length === 0 ? (
-        <SettingCard>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              'settings.knowledgeAcl.empty',
-              'No restricted directories. Every member receives the whole knowledge vault.',
-            )}
-          </p>
-        </SettingCard>
       ) : (
-        rules.map((rule) => (
-          <SettingCard key={rule.id}>
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <p className="font-mono text-sm">{rule.pathPrefix}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t('settings.knowledgeAcl.grantedCount', {
-                    defaultValue: '{{count}} member(s) have access',
-                    count: rule.actorIds.length,
-                  })}
+        <>
+          {/* ── Document library folders (role-gated) ───────────────────── */}
+          <div className="flex flex-col gap-3">
+            <h4 className="text-[13px] font-semibold text-ink-2">
+              {t('settings.knowledgeAcl.documentLibrariesTitle', '资料库文件夹')}
+            </h4>
+            {libraries.length === 0 ? (
+              <SettingCard>
+                <p className="text-sm text-muted-foreground">
+                  {t(
+                    'settings.knowledgeAcl.documentLibrariesEmpty',
+                    'No document folders are restricted by role.',
+                  )}
                 </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={() => void remove(rule)}
-                aria-label={t('settings.knowledgeAcl.removeRule', 'Remove restriction')}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-3">
-              {members.map((m) => (
-                <label key={m.id} className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={rule.actorIds.includes(m.id)}
+              </SettingCard>
+            ) : (
+              libraries.map((library) => (
+                <SettingCard key={library.id}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="font-mono text-sm">{library.pathPrefix}</p>
+                      {library.audience === 'actors' ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {t(
+                            'settings.knowledgeAcl.documentLibraryActorAudience',
+                            '当前仍按成员授权',
+                          )}
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {library.roles.map((role) => role.name).join(' · ')}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void removeLibrary(library)}
+                      aria-label={t('settings.knowledgeAcl.removeRule', 'Remove restriction')}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </SettingCard>
+              ))
+            )}
+          </div>
+
+          {/* ── Knowledge / nested rules (per-member) ───────────────────── */}
+          {rules.length === 0 ? (
+            <SettingCard>
+              <p className="text-sm text-muted-foreground">
+                {t(
+                  'settings.knowledgeAcl.empty',
+                  'No restricted directories. Every member receives the whole knowledge vault.',
+                )}
+              </p>
+            </SettingCard>
+          ) : (
+            rules.map((rule) => (
+              <SettingCard key={rule.id}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm">{rule.pathPrefix}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t('settings.knowledgeAcl.grantedCount', {
+                        defaultValue: '{{count}} member(s) have access',
+                        count: rule.actorIds.length,
+                      })}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     disabled={busy}
-                    onCheckedChange={() => void toggleGrant(rule, m.id)}
-                  />
-                  <span className="truncate">{m.displayName}</span>
-                </label>
-              ))}
-            </div>
-          </SettingCard>
-        ))
+                    onClick={() => void remove(rule)}
+                    aria-label={t('settings.knowledgeAcl.removeRule', 'Remove restriction')}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-3">
+                  {members.map((m) => (
+                    <label key={m.id} className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={rule.actorIds.includes(m.id)}
+                        disabled={busy}
+                        onCheckedChange={() => void toggleGrant(rule, m.id)}
+                      />
+                      <span className="truncate">{m.displayName}</span>
+                    </label>
+                  ))}
+                </div>
+              </SettingCard>
+            ))
+          )}
+        </>
       )}
 
       <SettingCard>
