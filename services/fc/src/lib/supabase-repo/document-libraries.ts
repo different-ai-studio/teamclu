@@ -263,23 +263,36 @@ async function replaceWithRoleGrants(
   aclId: string,
   roleIds: string[],
   grantedBy: string,
+  options: { deleteAclOnRoleInsertFailure?: boolean } = {},
 ): Promise<void> {
-  const { error: actorErr } = await admin.from("amuxc_path_acl_grants").delete().eq("acl_id", aclId);
-  if (actorErr) throw actorErr;
-  const { error: roleErr } = await admin
-    .from("amuxc_path_acl_role_grants")
-    .delete()
-    .eq("acl_id", aclId);
-  if (roleErr) throw roleErr;
-  if (roleIds.length === 0) return;
-  const { error: insertErr } = await admin.from("amuxc_path_acl_role_grants").insert(
+  // Role rows land before any delete. A failed insert must not leave the rule
+  // with zero grants: sync would treat that as an actor rule that denies owner.
+  const { error: insertErr } = await admin.from("amuxc_path_acl_role_grants").upsert(
     roleIds.map((roleId) => ({
       acl_id: aclId,
       role_id: roleId,
       granted_by: grantedBy,
     })),
+    { onConflict: "acl_id,role_id" },
   );
-  if (insertErr) throw insertErr;
+  if (insertErr) {
+    if (options.deleteAclOnRoleInsertFailure) {
+      const { error: cleanupErr } = await admin.from("amuxc_path_acl").delete().eq("id", aclId);
+      if (cleanupErr) throw cleanupErr;
+    }
+    throw insertErr;
+  }
+
+  const { error: actorErr } = await admin.from("amuxc_path_acl_grants").delete().eq("acl_id", aclId);
+  if (actorErr) throw actorErr;
+
+  if (roleIds.length === 0) return;
+  const { error: roleErr } = await admin
+    .from("amuxc_path_acl_role_grants")
+    .delete()
+    .eq("acl_id", aclId)
+    .not("role_id", "in", `(${roleIds.join(",")})`);
+  if (roleErr) throw roleErr;
 }
 
 async function grantsByAcl(
@@ -519,6 +532,7 @@ export function makeDocumentLibrariesRepo(host: DocumentLibrariesHost) {
     async createDocumentLibrary(teamId: string, body: any = {}) {
       const plan = await resolveWrite(teamId, body, "create");
       let aclId = plan.existingId;
+      const createdAcl = !aclId;
       if (!aclId) {
         const { count, error: countErr } = await adminCount(plan.admin, teamId);
         if (countErr) throw countErr;
@@ -542,7 +556,9 @@ export function makeDocumentLibrariesRepo(host: DocumentLibrariesHost) {
         aclId = inserted.id;
       }
 
-      await replaceWithRoleGrants(plan.admin, aclId, plan.roleIds, plan.callerActorId);
+      await replaceWithRoleGrants(plan.admin, aclId, plan.roleIds, plan.callerActorId, {
+        deleteAclOnRoleInsertFailure: createdAcl,
+      });
       await resurfaceAclPrefix(plan.admin, teamId, plan.pathPrefix);
       invalidateTeamAcl(teamId);
       return savedLibrary(plan, aclId);
