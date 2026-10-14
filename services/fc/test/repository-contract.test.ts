@@ -433,6 +433,16 @@ function contractRepo() {
       const agentId = deviceAgentStore.get(`${teamId}:${input.deviceId}`) ?? null;
       return { agentId, displayName: agentId ? `name-of-${agentId}` : null };
     },
+    async adoptLegacyAgentDevice(teamId, input) {
+      assert.equal(teamId, "team-1");
+      assert.ok(input.deviceId, "deviceId is required");
+      assert.ok(input.agentId, "agentId is required");
+      const key = `${teamId}:${input.deviceId}`;
+      const existing = deviceAgentStore.get(key);
+      if (existing && existing !== input.agentId) return { agentId: null, displayName: null };
+      deviceAgentStore.set(key, input.agentId);
+      return { agentId: input.agentId, displayName: `name-of-${input.agentId}` };
+    },
     async ensureAgentForDevice(teamId, input) {
       assert.equal(teamId, "team-1");
       assert.ok(input.deviceId, "deviceId is required");

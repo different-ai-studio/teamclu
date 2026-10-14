@@ -4630,6 +4630,68 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /v1/teams/{teamId}/agents/adopt-device:
+    post:
+      operationId: adoptLegacyAgentDevice
+      summary: Stamp this machine onto the agent it is already running
+      tags: [Actors]
+      description: >-
+        Upgrade path for an agent created before device-scoped binding, whose
+        `device_id` is still null. The desktop sends the actor id its local
+        daemon is already running as. The row is stamped with `deviceId` and
+        then `find-agent-for-device` finds it. An agent that is already bound,
+        or a device this caller already holds on another agent, is left alone
+        and the response carries nulls — the desktop then treats the machine
+        as not installed. Does not mint an invite and does not create an agent.
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, agentId]
+              properties:
+                deviceId:
+                  type: string
+                  minLength: 1
+                  description: This machine's `~/.amuxd/device-id`.
+                agentId:
+                  type: string
+                  format: uuid
+                  description: >-
+                    Actor id from this team's `backend.toml` — the agent the
+                    daemon is already running as, not a guess among the
+                    caller's other agents.
+      responses:
+        "200":
+          description: >-
+            The stamped agent, or nulls when the row was not eligible.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agentId, displayName]
+                properties:
+                  agentId:
+                    type:
+                      - string
+                      - "null"
+                    format: uuid
+                  displayName:
+                    type:
+                      - string
+                      - "null"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /v1/agents/{agentActorId}:
     patch:
       operationId: updateOwnedAgentProfile
