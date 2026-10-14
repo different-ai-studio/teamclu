@@ -88,6 +88,7 @@ function turnTraceRpcError(error: { code?: string; message?: string }): unknown 
 }
 
 import { makeSupabaseMarketplaceMethods } from "./supabase-repo/marketplace.js";
+import { makeDocumentLibrariesRepo } from "./supabase-repo/document-libraries.js";
 import { makeKnowledgeAclRepo } from "./supabase-repo/knowledge-acl.js";
 import { makeWikiMaintainerRepo } from "./supabase-repo/wiki-maintainer.js";
 import {
@@ -1056,6 +1057,23 @@ export function createSupabaseBusinessRepository(options) {
       authKind: "deploy_key" as const,
       ...jit,
     };
+  }
+
+  /** The bearer caller's actor in `teamId`, or null; same lookup as the `resolveCallerActorForTeam` method, for the module hosts below. */
+  async function callerActorForTeam(teamId: string): Promise<{ id: string } | null> {
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr) throw userErr;
+    const userId = userData?.user?.id;
+    if (!userId) return null;
+    const { data, error } = await supabase
+      .from("actors")
+      .select("id")
+      .eq("team_id", teamId)
+      .eq("user_id", userId)
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? { id: data.id } : null;
   }
 
   return {
@@ -7641,21 +7659,7 @@ export function createSupabaseBusinessRepository(options) {
       supabase,
       serviceRoleClient,
       mapTeamSkillRow,
-      resolveCallerActorForTeam: async (teamId: string) => {
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) throw userErr;
-        const userId = userData?.user?.id;
-        if (!userId) return null;
-        const { data, error } = await supabase
-          .from("actors")
-          .select("id")
-          .eq("team_id", teamId)
-          .eq("user_id", userId)
-          .limit(1)
-          .maybeSingle();
-        if (error) throw error;
-        return data ? { id: data.id } : null;
-      },
+      resolveCallerActorForTeam: callerActorForTeam,
     }),
 
     // ─── Knowledge path ACL ──────────────────────────────────────────────────
@@ -7669,42 +7673,21 @@ export function createSupabaseBusinessRepository(options) {
     ...makeKnowledgeAclRepo({
       supabase,
       serviceRoleClient,
-      resolveCallerActorForTeam: async (teamId: string) => {
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) throw userErr;
-        const userId = userData?.user?.id;
-        if (!userId) return null;
-        const { data, error } = await supabase
-          .from("actors")
-          .select("id")
-          .eq("team_id", teamId)
-          .eq("user_id", userId)
-          .limit(1)
-          .maybeSingle();
-        if (error) throw error;
-        return data ? { id: data.id } : null;
-      },
+      resolveCallerActorForTeam: callerActorForTeam,
+    }),
+
+    // Document libraries share the knowledge-ACL host: owner/admin, then service role.
+    ...makeDocumentLibrariesRepo({
+      supabase,
+      serviceRoleClient,
+      resolveCallerActorForTeam: callerActorForTeam,
     }),
 
     // ─── Cross-device Wiki maintainer checkpoints ───────────────────────────
     ...makeWikiMaintainerRepo({
       supabase,
       serviceRoleClient,
-      resolveCallerActorForTeam: async (teamId: string) => {
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) throw userErr;
-        const userId = userData?.user?.id;
-        if (!userId) return null;
-        const { data, error } = await supabase
-          .from("actors")
-          .select("id")
-          .eq("team_id", teamId)
-          .eq("user_id", userId)
-          .limit(1)
-          .maybeSingle();
-        if (error) throw error;
-        return data ? { id: data.id } : null;
-      },
+      resolveCallerActorForTeam: callerActorForTeam,
     }),
 
     // ─── Org roles catalog ───────────────────────────────────────────────────
@@ -7712,21 +7695,8 @@ export function createSupabaseBusinessRepository(options) {
     // Authz: current_team_role (owner/admin) + system immutable + binding 409.
     ...makeOrgRolesRepo({
       supabase,
-      resolveCallerActorForTeam: async (teamId: string) => {
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr) throw userErr;
-        const userId = userData?.user?.id;
-        if (!userId) return null;
-        const { data, error } = await supabase
-          .from("actors")
-          .select("id")
-          .eq("team_id", teamId)
-          .eq("user_id", userId)
-          .limit(1)
-          .maybeSingle();
-        if (error) throw error;
-        return data ? { id: data.id } : null;
-      },
+      serviceRoleClient,
+      resolveCallerActorForTeam: callerActorForTeam,
     }),
 
     // ─── Team MCP catalog ────────────────────────────────────────────────────

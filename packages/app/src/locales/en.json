@@ -3561,7 +3561,10 @@
       "empty": "No restricted directories. Every member receives the whole knowledge vault.",
       "grantedCount": "{{count}} member(s) have access",
       "removeRule": "Remove restriction",
-      "addHint": "To restrict a folder, right-click it in the knowledge tree and choose Permissions. Setting it there means the folder is already chosen, and the dialog can show what it inherits from its parent."
+      "addHint": "To restrict a folder, right-click it in the knowledge tree and choose Permissions. Setting it there means the folder is already chosen, and the dialog can show what it inherits from its parent.",
+      "documentLibrariesTitle": "Document folders",
+      "documentLibrariesEmpty": "No document folders are restricted by role.",
+      "documentLibraryActorAudience": "Still granted by member."
     }
   },
   "skillssh": {
@@ -4089,6 +4092,19 @@
   "tabBar": {
     "closeAria": "Close tab",
     "findClose": "Close (Escape)"
+  },
+  "documentLibrary": {
+    "title": "Who can see this",
+    "inactiveRole": "Inactive",
+    "open": "Everyone on the team can sync this folder today.",
+    "actorLeftover": "This folder is still shared by named members. Saving will switch to roles and replace that list.",
+    "owner": "Owner",
+    "confirmTitle": "Stop syncing",
+    "confirmBody": "{{members}} member(s) will stop syncing {{files}} file(s) in this folder. Files already copied away cannot be taken back.",
+    "confirmCaveat": "Files already copied away cannot be taken back.",
+    "save": "Save",
+    "remove": "Make visible to the team",
+    "scopeNotice": "Removing access stops future syncing. It cannot take back copies already on someone's device."
   },
   "thread": {
     "agentFallback": "Agent",

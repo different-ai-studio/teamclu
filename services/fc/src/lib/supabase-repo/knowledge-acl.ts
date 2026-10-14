@@ -27,6 +27,22 @@ export interface AclImpact {
   affectedMembers: number;
 }
 
+export function assertLegacyDocumentCreate(pathPrefix: string): void {
+  if (pathPrefix.startsWith("documents/")) {
+    throw new ApiError(
+      400,
+      "validation_failed",
+      "document folders are restricted via /v1/teams/{teamId}/document-libraries",
+    );
+  }
+}
+
+export function assertLegacyDocumentUpdate(roleGrantCount: number): void {
+  if (roleGrantCount > 0) {
+    throw new ApiError(409, "conflict", "this folder is granted by role");
+  }
+}
+
 interface KnowledgeAclHost {
   /** Caller-token client; RLS applies. */
   supabase: any;
@@ -34,6 +50,101 @@ interface KnowledgeAclHost {
   serviceRoleClient: (what: string) => Promise<any>;
   /** Resolves the bearer caller's actor in this team, or null. */
   resolveCallerActorForTeam: (teamId: string) => Promise<{ id: string } | null>;
+}
+
+/**
+ * Put every file under `pathPrefix` back into manifest range for everyone.
+ *
+ * A newly granted actor would otherwise never receive the directory's existing
+ * files: the client advances `last_server_seq` past rows it was not shown, and
+ * asks for the manifest by `afterSeq`. Bumping `change_seq` — NOT `version` —
+ * makes those rows visible again while staying a no-op for teammates who
+ * already hold them, because the client only downloads when the server version
+ * is strictly greater than its own.
+ *
+ * The team counter is bumped first, matching the waterline invariant every
+ * other writer follows.
+ *
+ * Best effort by design: a team that has never synced has no
+ * `team_workspace_config` row, and that must not stop an admin from writing
+ * rules ahead of first sync.
+ */
+export async function resurfaceAclPrefix(admin: any, teamId: string, pathPrefix: string): Promise<void> {
+  const { data: wc, error: wcErr } = await admin
+    .from("team_workspace_config")
+    .select("oss_change_seq")
+    .eq("team_id", teamId)
+    .maybeSingle();
+  if (wcErr || !wc) return;
+
+  const nextSeq = Number(wc.oss_change_seq) + 1;
+  const { error: bumpErr } = await admin
+    .from("team_workspace_config")
+    .update({ oss_change_seq: nextSeq })
+    .eq("team_id", teamId);
+  if (bumpErr) throw bumpErr;
+
+  if (!hasLikeMetachars(pathPrefix)) {
+    const { error: filesErr } = await admin
+      .from("amuxc_files")
+      .update({ change_seq: nextSeq })
+      .eq("team_id", teamId)
+      .like("path", `${pathPrefix}%`);
+    if (filesErr) throw filesErr;
+    return;
+  }
+
+  const files = await filesUnderPrefix(admin, teamId, pathPrefix, { liveOnly: false });
+  for (let i = 0; i < files.length; i += ID_BATCH) {
+    const { error: filesErr } = await admin
+      .from("amuxc_files")
+      .update({ change_seq: nextSeq })
+      .in("id", files.slice(i, i + ID_BATCH).map((file) => file.id));
+    if (filesErr) throw filesErr;
+  }
+}
+
+/**
+ * `%` and `_` are LIKE wildcards, `\` is its escape character, and PostgREST
+ * also turns `*` into `%`. A folder name holding any of them cannot go into a
+ * `like` filter as-is: `documents/a_b/%` also matches `documents/axb/…`.
+ */
+export function hasLikeMetachars(pathPrefix: string): boolean {
+  return /[%_*\\]/.test(pathPrefix);
+}
+
+const PAGE = 1000;
+const ID_BATCH = 200;
+
+/**
+ * Files whose path starts with `pathPrefix`, for a prefix that
+ * {@link hasLikeMetachars}. The `like` filter is widened to a superset (each
+ * `\` becomes `_`) and the exact match is done here.
+ */
+export async function filesUnderPrefix(
+  admin: any,
+  teamId: string,
+  pathPrefix: string,
+  options: { liveOnly: boolean },
+): Promise<Array<{ id: string; path: string }>> {
+  const pattern = `${pathPrefix.replace(/\\/g, "_")}%`;
+  const matched: Array<{ id: string; path: string }> = [];
+  for (let from = 0; ; from += PAGE) {
+    let query = admin.from("amuxc_files").select("id, path").eq("team_id", teamId);
+    if (options.liveOnly) query = query.eq("deleted", false);
+    const { data, error } = await query
+      .like("path", pattern)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    const rows = data ?? [];
+    for (const row of rows) {
+      if (typeof row?.path === "string" && row.path.startsWith(pathPrefix)) {
+        matched.push({ id: row.id, path: row.path });
+      }
+    }
+    if (rows.length < PAGE) return matched;
+  }
 }
 
 export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
@@ -92,51 +203,12 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
     };
   }
 
-  /**
-   * Put every file under `pathPrefix` back into manifest range for everyone.
-   *
-   * A newly granted actor would otherwise never receive the directory's existing
-   * files: the client advances `last_server_seq` past rows it was not shown, and
-   * asks for the manifest by `afterSeq`. Bumping `change_seq` — NOT `version` —
-   * makes those rows visible again while staying a no-op for teammates who
-   * already hold them, because the client only downloads when the server version
-   * is strictly greater than its own.
-   *
-   * The team counter is bumped first, matching the waterline invariant every
-   * other writer follows.
-   *
-   * Best effort by design: a team that has never synced has no
-   * `team_workspace_config` row, and that must not stop an admin from writing
-   * rules ahead of first sync.
-   */
-  async function resurfacePrefix(admin: any, teamId: string, pathPrefix: string): Promise<void> {
-    const { data: wc, error: wcErr } = await admin
-      .from("team_workspace_config")
-      .select("oss_change_seq")
-      .eq("team_id", teamId)
-      .maybeSingle();
-    if (wcErr || !wc) return;
-
-    const nextSeq = Number(wc.oss_change_seq) + 1;
-    const { error: bumpErr } = await admin
-      .from("team_workspace_config")
-      .update({ oss_change_seq: nextSeq })
-      .eq("team_id", teamId);
-    if (bumpErr) throw bumpErr;
-
-    const { error: filesErr } = await admin
-      .from("amuxc_files")
-      .update({ change_seq: nextSeq })
-      .eq("team_id", teamId)
-      .like("path", `${pathPrefix}%`);
-    if (filesErr) throw filesErr;
-  }
-
-  function mapRule(row: any, actorIds: string[]) {
+  function mapRule(row: any, actorIds: string[], roleGrantCount = 0) {
     return {
       id: row.id,
       pathPrefix: row.path_prefix,
       actorIds,
+      audience: roleGrantCount > 0 ? ("roles" as const) : ("actors" as const),
       createdBy: row.created_by,
       createdAt: row.created_at ?? null,
       updatedAt: row.updated_at ?? null,
@@ -171,6 +243,20 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
     return byAcl;
   }
 
+  async function roleGrantCountsFor(admin: any, aclIds: string[]): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    if (aclIds.length === 0) return counts;
+    const { data, error } = await admin
+      .from("amuxc_path_acl_role_grants")
+      .select("acl_id")
+      .in("acl_id", aclIds);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      counts.set(row.acl_id, (counts.get(row.acl_id) ?? 0) + 1);
+    }
+    return counts;
+  }
+
   return {
     async listKnowledgeAcl(teamId: string) {
       await requireTeamAdmin(teamId);
@@ -182,8 +268,14 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
         .order("path_prefix", { ascending: true });
       if (error) throw error;
       const rules = data ?? [];
-      const byAcl = await grantsFor(admin, rules.map((r: any) => r.id));
-      return { items: rules.map((r: any) => mapRule(r, byAcl.get(r.id) ?? [])) };
+      const aclIds = rules.map((r: any) => r.id);
+      const byAcl = await grantsFor(admin, aclIds);
+      const roleCounts = await roleGrantCountsFor(admin, aclIds);
+      return {
+        items: rules.map((r: any) =>
+          mapRule(r, byAcl.get(r.id) ?? [], roleCounts.get(r.id) ?? 0),
+        ),
+      };
     },
 
     /** Dry run for the confirmation screen. Reads only. */
@@ -198,6 +290,7 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
     async createKnowledgeAcl(teamId: string, body: any = {}) {
       const callerActorId = await requireTeamAdmin(teamId);
       const pathPrefix = assertPrefix(body.pathPrefix);
+      assertLegacyDocumentCreate(pathPrefix);
       const actorIds: string[] = Array.isArray(body.actorIds) ? body.actorIds : [];
       const admin = await host.serviceRoleClient("create a knowledge ACL rule");
 
@@ -245,7 +338,7 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
       }
 
       // Granted actors may be missing files that predate this rule.
-      await resurfacePrefix(admin, teamId, pathPrefix);
+      await resurfaceAclPrefix(admin, teamId, pathPrefix);
       invalidateTeamAcl(teamId);
       return { ...mapRule(rule, actorIds), ...impact };
     },
@@ -257,6 +350,15 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
 
       const add: string[] = Array.isArray(body.addActorIds) ? body.addActorIds : [];
       const remove: string[] = Array.isArray(body.removeActorIds) ? body.removeActorIds : [];
+
+      if (add.length > 0 || remove.length > 0) {
+        const { count: roleGrantCount, error: roleCountErr } = await admin
+          .from("amuxc_path_acl_role_grants")
+          .select("acl_id", { count: "exact", head: true })
+          .eq("acl_id", aclId);
+        if (roleCountErr) throw roleCountErr;
+        assertLegacyDocumentUpdate(roleGrantCount ?? 0);
+      }
 
       if (remove.length > 0) {
         const { error } = await admin
@@ -280,7 +382,7 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
         if (error) throw error;
         // Only a grant needs files put back in range; a revocation is the client
         // noticing they stopped arriving.
-        await resurfacePrefix(admin, teamId, rule.path_prefix);
+        await resurfaceAclPrefix(admin, teamId, rule.path_prefix);
       }
 
       await admin
@@ -290,7 +392,8 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
 
       invalidateTeamAcl(teamId);
       const byAcl = await grantsFor(admin, [aclId]);
-      return mapRule(rule, byAcl.get(aclId) ?? []);
+      const roleCounts = await roleGrantCountsFor(admin, [aclId]);
+      return mapRule(rule, byAcl.get(aclId) ?? [], roleCounts.get(aclId) ?? 0);
     },
 
     /** Remove the rule, reopening the prefix to the whole team. */
@@ -301,7 +404,7 @@ export function makeKnowledgeAclRepo(host: KnowledgeAclHost) {
       const { error } = await admin.from("amuxc_path_acl").delete().eq("id", aclId);
       if (error) throw error;
       // Everyone gains the directory at once, and none of them hold its files.
-      await resurfacePrefix(admin, teamId, rule.path_prefix);
+      await resurfaceAclPrefix(admin, teamId, rule.path_prefix);
       invalidateTeamAcl(teamId);
     },
   };

@@ -26,6 +26,7 @@ import { registerMarketplace } from "./marketplace.js";
 import { registerTeamMcp } from "./team-mcp.js";
 import { registerTeamEnvSecrets } from "./team-env-secrets.js";
 import { registerKnowledgeAcl } from "./knowledge-acl.js";
+import { registerDocumentLibraries } from "./document-libraries.js";
 import { registerOrgRoles } from "./org-roles.js";
 import { registerAdmin } from "./admin.js";
 import { registerWikiMaintainer } from "./wiki-maintainer.js";
@@ -64,6 +65,9 @@ export function registerAllRoutes(router) {
   // Same ordering reason as every other team-scoped module here: this owns
   // /v1/teams/:teamId/knowledge-acl* and must precede workspaces' broader match.
   registerKnowledgeAcl(router);
+  // Same ordering reason as knowledge-acl: this owns
+  // /v1/teams/:teamId/document-libraries* and must precede workspaces' broader match.
+  registerDocumentLibraries(router);
   // Owns /v1/teams/:teamId/wiki-maintainer* and must precede workspaces'
   // broader team route.
   registerWikiMaintainer(router);

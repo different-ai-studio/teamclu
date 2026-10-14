@@ -3561,7 +3561,10 @@
       "empty": "没有受限目录。每个成员都会收到完整的知识库。",
       "grantedCount": "{{count}} 人有权限",
       "removeRule": "移除限制",
-      "addHint": "要限制某个目录，在知识库树里右键它选「权限」。在那里设置意味着目录已经确定，而且弹窗能显示它从上级继承了什么。"
+      "addHint": "要限制某个目录，在知识库树里右键它选「权限」。在那里设置意味着目录已经确定，而且弹窗能显示它从上级继承了什么。",
+      "documentLibrariesTitle": "资料库文件夹",
+      "documentLibrariesEmpty": "没有按角色限制的资料库文件夹。",
+      "documentLibraryActorAudience": "当前仍按成员授权"
     }
   },
   "skillssh": {
@@ -4089,6 +4092,19 @@
   "tabBar": {
     "closeAria": "关闭标签页",
     "findClose": "关闭（Esc）"
+  },
+  "documentLibrary": {
+    "title": "谁可以看",
+    "inactiveRole": "已停用",
+    "open": "这个文件夹目前团队成员都能同步。",
+    "actorLeftover": "当前仍按成员授权。保存后会改成按角色，并替换原来的成员名单。",
+    "owner": "拥有者",
+    "confirmTitle": "停止同步",
+    "confirmBody": "{{members}} 名成员将停止同步这个文件夹里的 {{files}} 个文件。已经拷走的文件收不回来。",
+    "confirmCaveat": "已经拷走的文件收不回来。",
+    "save": "保存",
+    "remove": "改为团队可见",
+    "scopeNotice": "停止同步后不会再下发新文件，已经拷到本机的副本收不回来。"
   },
   "thread": {
     "agentFallback": "Agent",

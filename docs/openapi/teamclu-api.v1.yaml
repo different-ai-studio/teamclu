@@ -3745,6 +3745,165 @@ paths:
         "204": { description: Removed. }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/document-libraries:
+    get:
+      operationId: listDocumentLibraries
+      summary: List document-library folder rules
+      description: >
+        Owner/admin only. Returns every role- or actor-granted top-level folder
+        under `documents/` in the team.
+
+
+        Ordinary members never receive this list — folder names may be sensitive,
+        and restricted folders are absent from their sync tree rather than shown
+        as locked.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: Folder rules with grants.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/DocumentLibrary" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createDocumentLibrary
+      summary: Restrict a document-library folder by role
+      description: >
+        Owner/admin only. Whitelist semantics — once a top-level `documents/<folder>/`
+        prefix has a rule it is closed to every member who lacks one of the listed
+        roles (plus the org `owner` role, always merged server-side).
+
+
+        Restricting a folder that already holds files removes those files from
+        every member who loses access on their next sync. Because that is not
+        reversible for copies already taken, the call returns 409
+        `confirmation_required` (with the affected counts in `details`) unless
+        `confirmRevokeExisting` is true. Use the `preview` endpoint to obtain
+        those counts before asking the user to confirm.
+
+
+        Can convert an existing actor-grant rule on the same prefix to a role
+        rule. Revocation stops distribution; it does not recall content that was
+        already synced.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/DocumentLibraryWrite"
+                - type: object
+                  required: [pathPrefix]
+      responses:
+        "201":
+          description: Created or converted, with impact counts when applicable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentLibrary" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Overlap, confirmation required, or actor-grant conflict.
+          $ref: "#/components/responses/Error"
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/document-libraries/preview:
+    post:
+      operationId: previewDocumentLibrary
+      summary: Preview the impact of restricting a document-library folder
+      description: >
+        Owner/admin only. Dry run — writes nothing. Answers how many live files
+        and how many members a proposed role restriction would cut off.
+
+
+        `affectedMembers` counts member actors only. Agents inherit the
+        permissions of the device owner they run for, so they are not counted.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pathPrefix, roleIds]
+              properties:
+                pathPrefix: { type: string, example: "documents/财务/" }
+                roleIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Impact of the proposed rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pathPrefix, affectedFiles, affectedMembers]
+                properties:
+                  pathPrefix: { type: string }
+                  affectedFiles: { type: integer }
+                  affectedMembers: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/teams/{teamId}/document-libraries/{aclId}:
+    put:
+      operationId: putDocumentLibrary
+      summary: Replace roles on a document-library folder rule
+      description: >
+        Owner/admin only. Replaces the role set on an existing folder rule.
+        The org `owner` role is always merged server-side.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: aclId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentLibraryWrite" }
+      responses:
+        "200":
+          description: Updated rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentLibrary" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteDocumentLibrary
+      summary: Remove a document-library folder restriction
+      description: >
+        Owner/admin only. The folder reopens to the whole team and its files are
+        re-surfaced so every member receives them on the next sync.
+      tags: [DocumentLibraries]
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - name: aclId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Removed. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/teams/{teamId}/mcp-servers:
     get:
       operationId: listTeamMcpServers
@@ -9627,6 +9786,38 @@ components:
         affectedMembers:
           type: integer
           description: Member actors that would lose access. Agents are not counted — they inherit their device owner.
+    DocumentLibraryRole:
+      type: object
+      required: [id, code, name, status]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [active, inactive] }
+    DocumentLibrary:
+      type: object
+      required: [id, pathPrefix, audience]
+      properties:
+        id: { type: string, format: uuid }
+        pathPrefix: { type: string, example: "documents/财务/" }
+        audience: { type: string, enum: [roles, actors] }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/DocumentLibraryRole" }
+        actorIds:
+          type: array
+          items: { type: string, format: uuid }
+        affectedFiles: { type: integer }
+        affectedMembers: { type: integer }
+    DocumentLibraryWrite:
+      type: object
+      required: [roleIds]
+      properties:
+        pathPrefix: { type: string }
+        roleIds:
+          type: array
+          items: { type: string, format: uuid }
+        confirmRevokeExisting: { type: boolean, default: false }
     TeamMcpServer:
       type: object
       description: >
