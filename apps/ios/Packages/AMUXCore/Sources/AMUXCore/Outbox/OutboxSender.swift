@@ -82,7 +82,7 @@ public actor OutboxSender {
     /// can safely re-enqueue without double-sending.
     public func enqueue(messageID: String, sessionID: String, senderActorID: String,
                         content: String, mentionActorIDs: [String], modelID: String?,
-                        attachmentURLs: [URL] = []) async {
+                        attachmentURLs: [URL] = [], replyToMessageID: String? = nil) async {
         let ctx = ModelContext(modelContainer)
         if let existing = fetchRow(messageID: messageID, in: ctx) {
             outboxLogger.notice("outbox enqueue skipped (already exists) msgId=\(String(messageID.prefix(8)), privacy: .public) state=\(existing.stateRaw, privacy: .public)")
@@ -91,7 +91,7 @@ public actor OutboxSender {
         let row = OutboxMessage(messageID: messageID, sessionID: sessionID,
                                 senderActorID: senderActorID, content: content,
                                 mentionActorIDs: mentionActorIDs, modelID: modelID,
-                                attachmentURLs: attachmentURLs)
+                                attachmentURLs: attachmentURLs, replyToMessageID: replyToMessageID)
         ctx.insert(row)
         do {
             try ctx.save()
@@ -312,7 +312,8 @@ public actor OutboxSender {
                 attachmentURLs: row.attachmentURLs,
                 attachments: attachmentRefs(for: row, in: ctx),
                 persistFirst: true,
-                messageID: row.messageID
+                messageID: row.messageID,
+                replyToMessageID: row.replyToMessageID
             )
             row.state = .delivered
             row.lastError = nil

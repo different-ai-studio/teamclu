@@ -585,7 +585,9 @@ public final class TeamcluService {
         /// stay on the proto for the daemon's prompt builder.
         attachments: [MessageAttachment] = [],
         persistFirst: Bool = false,
-        messageID: String? = nil
+        messageID: String? = nil,
+        /// The persisted message this one quotes, if it is a reply.
+        replyToMessageID: String? = nil
     ) async throws -> String {
         let sidPrefix = String(sessionId.prefix(8))
         guard let mqtt else {
@@ -602,6 +604,7 @@ public final class TeamcluService {
         // fresh UUID when the caller doesn't care (legacy callers).
         // Lowercase, matching how the server stores it (see sendPrompt, #1696).
         message.messageID = messageID ?? UUID().uuidString.lowercased()
+        if let replyToMessageID { message.replyToMessageID = replyToMessageID }
         message.sessionID = sessionId
         message.senderActorID = actorId
         message.kind = .text
@@ -683,6 +686,7 @@ public final class TeamcluService {
                 content: content,
                 mentionActorIDs: mentionActorIDs,
                 attachments: attachments,
+                replyToMessageID: replyToMessageID,
                 sidPrefix: sidPrefix,
                 msgIdPrefix: msgIdPrefix
             )
@@ -712,6 +716,7 @@ public final class TeamcluService {
                     content: content,
                     mentionActorIDs: mentionActorIDs,
                     attachments: attachments,
+                    replyToMessageID: replyToMessageID,
                     sidPrefix: sidPrefix,
                     msgIdPrefix: msgIdPrefix
                 )
@@ -732,6 +737,7 @@ public final class TeamcluService {
         content: String,
         mentionActorIDs: [String] = [],
         attachments: [MessageAttachment] = [],
+        replyToMessageID: String? = nil,
         sidPrefix: String,
         msgIdPrefix: String
     ) async throws {
@@ -753,7 +759,8 @@ public final class TeamcluService {
                 kind: "text",
                 content: content,
                 mentionActorIDs: mentionActorIDs,
-                attachments: attachments
+                attachments: attachments,
+                replyToMessageID: replyToMessageID
             ))
             teamcluLogger.notice("sendMessage[\(sidPrefix, privacy: .public)] msgId=\(msgIdPrefix, privacy: .public) supabase persist OK")
         } catch {
@@ -774,6 +781,7 @@ public final class TeamcluService {
         content: String,
         mentionActorIDs: [String] = [],
         attachments: [MessageAttachment] = [],
+        replyToMessageID: String? = nil,
         sidPrefix: String,
         msgIdPrefix: String
     ) async {
@@ -794,7 +802,8 @@ public final class TeamcluService {
                 kind: "text",
                 content: content,
                 mentionActorIDs: mentionActorIDs,
-                attachments: attachments
+                attachments: attachments,
+                replyToMessageID: replyToMessageID
             ))
             teamcluLogger.notice("sendMessage[\(sidPrefix, privacy: .public)] msgId=\(msgIdPrefix, privacy: .public) supabase persist OK")
         } catch {

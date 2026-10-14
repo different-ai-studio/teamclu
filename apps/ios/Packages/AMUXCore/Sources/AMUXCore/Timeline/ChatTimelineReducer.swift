@@ -435,7 +435,8 @@ public enum ChatTimelineReducer {
             text: input.content,
             isComplete: true,
             senderActorID: input.senderActorID,
-            timestamp: input.createdAt
+            timestamp: input.createdAt,
+            replyToMessageID: input.replyToMessageID
         ))
         return .entriesChanged
     }
@@ -501,7 +502,12 @@ public enum ChatTimelineReducer {
         // own. Every merge branch below is a row that came from somewhere
         // else, so each one adopts them. Backfill, never overwrite — a
         // re-seed must not churn a row that already has them.
+        // Fields only the persisted row knows, copied onto whichever local
+        // entry the history row merges into.
         func adoptAttachments(_ idx: Int) {
+            if state.entries[idx].replyToMessageID == nil {
+                state.entries[idx].replyToMessageID = input.replyToMessageID
+            }
             guard !input.attachments.isEmpty, state.entries[idx].attachments.isEmpty else { return }
             state.entries[idx].attachments = input.attachments
         }
@@ -628,7 +634,8 @@ public enum ChatTimelineReducer {
             model: input.model,
             supabaseMessageID: input.supabaseMessageID,
             turnID: input.turnID,
-            attachments: input.attachments
+            attachments: input.attachments,
+            replyToMessageID: input.replyToMessageID
         ))
         // History entries land sorted by createdAt; keep the array
         // ordered so feed-rendering downstream stays consistent.
@@ -653,7 +660,8 @@ public enum ChatTimelineReducer {
             // clientID doubles as the outboxMessageID so the chat
             // view's status-dot accessory keeps working after the
             // reducer takes over from the inline handler.
-            outboxMessageID: input.clientID
+            outboxMessageID: input.clientID,
+            replyToMessageID: input.replyToMessageID
         ))
         return .entriesChanged
     }

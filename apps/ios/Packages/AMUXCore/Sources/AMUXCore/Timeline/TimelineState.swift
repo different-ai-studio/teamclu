@@ -62,6 +62,8 @@ public struct TimelineEntry: Identifiable, Equatable, Sendable {
     /// of their own. Empty for rows written before the column was plumbed
     /// through; those have their URLs inlined in `text` instead.
     public var attachments: [MessageAttachment] = []
+    /// The persisted message this one replies to (`messages.reply_to_message_id`).
+    public var replyToMessageID: String?
 
     public init(id: String = UUID().uuidString,
                 sequence: UInt64 = 0,
@@ -82,7 +84,8 @@ public struct TimelineEntry: Identifiable, Equatable, Sendable {
                 diffPath: String? = nil,
                 diffOldText: String? = nil,
                 diffNewText: String? = nil,
-                attachments: [MessageAttachment] = []) {
+                attachments: [MessageAttachment] = [],
+                replyToMessageID: String? = nil) {
         self.id = id
         self.sequence = sequence
         self.eventType = eventType
@@ -103,6 +106,7 @@ public struct TimelineEntry: Identifiable, Equatable, Sendable {
         self.diffOldText = diffOldText
         self.diffNewText = diffNewText
         self.attachments = attachments
+        self.replyToMessageID = replyToMessageID
     }
 }
 

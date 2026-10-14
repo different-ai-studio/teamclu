@@ -56,6 +56,9 @@ public struct EventBubbleView: View {
     /// tapping invokes `onTapQuote` (jump to the quoted message).
     let replyQuote: SessionDetailViewModel.ReplyQuote?
     let onTapQuote: (() -> Void)?
+    /// Starts a quoted reply to this message; nil when it has no persisted
+    /// id yet to point at.
+    let onReply: (() -> Void)?
 
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var fullscreenImageContext: FullscreenImageContext?
@@ -76,7 +79,8 @@ public struct EventBubbleView: View {
                 onEdit: (() -> Void)? = nil,
                 onDelete: (() -> Void)? = nil,
                 replyQuote: SessionDetailViewModel.ReplyQuote? = nil,
-                onTapQuote: (() -> Void)? = nil) {
+                onTapQuote: (() -> Void)? = nil,
+                onReply: (() -> Void)? = nil) {
         self.event = event
         self.runtime = runtime
         self.onGrant = onGrant
@@ -91,6 +95,7 @@ public struct EventBubbleView: View {
         self.onDelete = onDelete
         self.replyQuote = replyQuote
         self.onTapQuote = onTapQuote
+        self.onReply = onReply
     }
 
     /// True when this event was produced by an actor other than the
@@ -267,6 +272,11 @@ public struct EventBubbleView: View {
                                              tint: Color.amux.cinnabar,
                                              interactive: false)
                                 .contextMenu {
+                                    if let onReply {
+                                        Button { onReply() } label: {
+                                            Label("Reply", systemImage: "arrowshape.turn.up.left")
+                                        }
+                                    }
                                     MessageContextMenu(text: MentionDisplayText.plainText(event.text ?? ""))
                                     if onEdit != nil || onDelete != nil {
                                         Divider()
@@ -324,6 +334,11 @@ public struct EventBubbleView: View {
                                      tint: Color.amux.slate,
                                      interactive: false)
                         .contextMenu {
+                            if let onReply {
+                                Button { onReply() } label: {
+                                    Label("Reply", systemImage: "arrowshape.turn.up.left")
+                                }
+                            }
                             MessageContextMenu(text: MentionDisplayText.plainText(event.text ?? ""))
                         }
                 }
@@ -578,12 +593,15 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
     /// Invoked with the desired kind; the parent owns toggle semantics
     /// (tapping the active kind again clears it).
     public let onFeedback: ((String) -> Void)?
+    /// Starts a quoted reply to this answer.
+    public let onReply: (() -> Void)?
 
     public init(finalEvent: AgentEvent,
                 runtime: AgentAttachment?,
                 agentName: String?,
                 feedbackKind: String? = nil,
                 onFeedback: ((String) -> Void)? = nil,
+                onReply: (() -> Void)? = nil,
                 attachments: [MessageAttachment] = [],
                 @ViewBuilder detailIcon: @escaping () -> DetailIcon = { EmptyView() }) {
         self.finalEvent = finalEvent
@@ -591,6 +609,7 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
         self.agentName = agentName
         self.feedbackKind = feedbackKind
         self.onFeedback = onFeedback
+        self.onReply = onReply
         self.detailIcon = detailIcon
         self.attachments = attachments
     }
@@ -619,6 +638,11 @@ public struct CompletedTurnBubbleView<DetailIcon: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .liquidGlass(in: RoundedRectangle(cornerRadius: 18), interactive: false)
                 .contextMenu {
+                    if let onReply {
+                        Button { onReply() } label: {
+                            Label("Reply", systemImage: "arrowshape.turn.up.left")
+                        }
+                    }
                     MessageContextMenu(text: finalEvent.text ?? "")
                     if let onFeedback {
                         Divider()

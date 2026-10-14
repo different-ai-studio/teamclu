@@ -57,6 +57,8 @@ public struct SessionDetailView: View {
     @State private var visibleRows = VisibleRows()
     /// "N unread ↑": the first row that arrived since the reader last left.
     @State private var unreadJump: (id: String, count: Int)?
+    /// The message the composer is replying to, shown as a bar above it.
+    @State private var replyTarget: AgentEvent?
     /// Row briefly tinted after a push brought the reader to it.
     @State private var highlightedFeedID: String?
     /// A finger is on the transcript. Content growth never re-pins the
@@ -452,6 +454,8 @@ public struct SessionDetailView: View {
                     )
                     .id(question.id)
                 } else {
+                    VStack(spacing: 6) {
+                    replyBar
                     SessionComposer(
                     promptText: $promptText,
                     attachments: $attachments,
@@ -483,6 +487,8 @@ public struct SessionDetailView: View {
                     onSend: { attachmentURLs in
                         let text = promptText
                         let modelId = resolvedModelId
+                        let replyTo = replyTarget?.supabaseMessageId
+                        replyTarget = nil
                         promptText = ""
                         attachments = []
                         // Snap to bottom when the user sends so the outbox
@@ -493,7 +499,8 @@ public struct SessionDetailView: View {
                             scrollProxy?.scrollTo("session-detail-bottom", anchor: .bottom)
                         }
                         Task {
-                            try? await viewModel.sendPrompt(text, modelId: modelId, attachmentURLs: attachmentURLs, modelContext: modelContext)
+                            try? await viewModel.sendPrompt(text, modelId: modelId, attachmentURLs: attachmentURLs,
+                                                            replyTo: replyTo, modelContext: modelContext)
                         }
                     },
                     onAgentMention: { target in
@@ -501,6 +508,7 @@ public struct SessionDetailView: View {
                     },
                     inputFocused: $composerFocused
                     )
+                    }
                 }
             }
             // The gap under the composer card lives here rather than inside
@@ -646,6 +654,36 @@ public struct SessionDetailView: View {
             scrollProxy?.scrollTo(id, anchor: anchor)
             try? await Task.sleep(for: .milliseconds(40))
             if visibleRows.ids.contains(id) { return }
+        }
+    }
+
+    @ViewBuilder
+    private var replyBar: some View {
+        if let replyTarget {
+            ReplyComposerBar(
+                senderName: replySenderName(replyTarget),
+                text: replyTarget.text ?? "",
+                onCancel: { self.replyTarget = nil }
+            )
+        }
+    }
+
+    private func replySenderName(_ event: AgentEvent) -> String {
+        guard let sender = event.senderActorID, !sender.isEmpty else {
+            return String(localized: "Agent")
+        }
+        if sender == viewModel.currentHumanActorIDRef { return String(localized: "yourself") }
+        return cachedActorMap.displayName(for: sender) ?? agentDisplayName(for: sender)
+    }
+
+    /// Quoting needs the message's persisted id; a bubble still in the
+    /// outbox has none yet, so it offers no Reply.
+    private func replyAction(for event: AgentEvent) -> (() -> Void)? {
+        guard let id = event.supabaseMessageId, !id.isEmpty else { return nil }
+        return {
+            Haptics.selection()
+            replyTarget = event
+            composerFocused = true
         }
     }
 
@@ -1078,13 +1116,14 @@ public struct SessionDetailView: View {
                 actorMap: actorMap,
                 onEdit: canModifyMessage(event) ? { editingEvent = event } : nil,
                 onDelete: canModifyMessage(event) ? { pendingDeleteEvent = event } : nil,
-                replyQuote: viewModel.replyQuote(forSupabaseMessageID: event.supabaseMessageId),
+                replyQuote: viewModel.replyQuote(for: event),
                 onTapQuote: {
-                    guard let quote = viewModel.replyQuote(forSupabaseMessageID: event.supabaseMessageId),
+                    guard let quote = viewModel.replyQuote(for: event),
                           let targetID = viewModel.feedItemID(forSupabaseMessageID: quote.messageID)
                     else { return }
                     withAnimation { scrollProxy?.scrollTo(targetID, anchor: .center) }
-                }
+                },
+                onReply: replyAction(for: event)
             )
         case .activeStream(_, let agentID, let runtimeEvents):
             // NavigationLink(destination:) instead of value-based push
@@ -1125,6 +1164,7 @@ public struct SessionDetailView: View {
                 onFeedback: final.supabaseMessageId.map { messageID in
                     { kind in Task { await viewModel.setFeedback(messageID: messageID, kind: kind) } }
                 },
+                onReply: replyAction(for: final),
                 attachments: turnAttachments(final: final, runtimeEvents: runtimeEvents),
                 detailIcon: {
                     // Always offer the detail entry point — even text-only

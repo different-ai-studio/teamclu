@@ -1954,7 +1954,8 @@ public final class SessionDetailViewModel {
                 content: content,
                 createdAt: message.createdAt > 0
                     ? Date(timeIntervalSince1970: TimeInterval(message.createdAt))
-                    : .now
+                    : .now,
+                replyToMessageID: message.replyToMessageID.isEmpty ? nil : message.replyToMessageID
             )),
             modelContext: modelContext
         )
@@ -2449,7 +2450,8 @@ public final class SessionDetailViewModel {
                     turnID: record.turnID,
                     sequence: record.sequence,
                     closesTurn: kind == .output && record.trace != nil,
-                    attachments: record.attachments
+                    attachments: record.attachments,
+                    replyToMessageID: record.replyToMessageID
                 )),
                 modelContext: modelContext
             )
@@ -2841,7 +2843,9 @@ public final class SessionDetailViewModel {
         return (address, target)
     }
 
-    public func sendPrompt(_ text: String, modelId: String? = nil, attachmentURLs: [URL] = [], modelContext: ModelContext? = nil) async throws {
+    /// `replyTo` is the persisted id of the message being quoted, if any.
+    public func sendPrompt(_ text: String, modelId: String? = nil, attachmentURLs: [URL] = [],
+                           replyTo: String? = nil, modelContext: ModelContext? = nil) async throws {
         if let session, let teamcluService {
             // Session-backed chats use the session live stream as the
             // canonical messaging channel so other collaborators see the
@@ -2876,7 +2880,8 @@ public final class SessionDetailViewModel {
                         clientID: messageID,
                         senderActorID: teamcluService.currentHumanActorId ?? "",
                         content: body,
-                        createdAt: .now
+                        createdAt: .now,
+                        replyToMessageID: replyTo
                     )),
                     modelContext: ctx
                 )
@@ -2910,7 +2915,8 @@ public final class SessionDetailViewModel {
                     content: body,
                     mentionActorIDs: mentionIDs,
                     modelID: modelId,
-                    attachmentURLs: attachmentURLs
+                    attachmentURLs: attachmentURLs,
+                    replyToMessageID: replyTo
                 )
                 return
             }
@@ -2926,7 +2932,8 @@ public final class SessionDetailViewModel {
                     modelId: modelId,
                     mentionActorIDs: mentionIDs,
                     attachmentURLs: attachmentURLs,
-                    messageID: messageID
+                    messageID: messageID,
+                    replyToMessageID: replyTo
                 )
                 // Same rule as the outbox path: the card goes up once the
                 // message is out, not when the button was pressed — and
@@ -3481,6 +3488,21 @@ public final class SessionDetailViewModel {
     /// the event isn't a reply. A reply whose quoted row isn't cached still
     /// returns (with empty content) so the chip can say "message unavailable"
     /// instead of vanishing.
+    /// The quote to draw above `event`'s bubble. A reply composed here (or
+    /// seeded from history) carries `replyToMessageID` itself; older live
+    /// messages from others only have it on their `SessionMessage` row.
+    public func replyQuote(for event: AgentEvent) -> ReplyQuote? {
+        if let target = event.replyToMessageID, !target.isEmpty {
+            let quoted = events.first { $0.supabaseMessageId == target || $0.id == target }
+            return ReplyQuote(
+                messageID: target,
+                senderActorID: quoted?.senderActorID ?? "",
+                content: quoted?.text ?? ""
+            )
+        }
+        return replyQuote(forSupabaseMessageID: event.supabaseMessageId)
+    }
+
     public func replyQuote(forSupabaseMessageID id: String?) -> ReplyQuote? {
         guard let id, !id.isEmpty, let ctx = startModelContext else { return nil }
         if let cached = replyQuoteCache[id] { return cached }

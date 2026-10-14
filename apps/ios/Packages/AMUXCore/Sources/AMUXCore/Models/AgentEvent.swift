@@ -54,6 +54,9 @@ public final class AgentEvent {
     /// agent's, not the user's. Permission requests DO carry one: the
     /// reducer stamps them from the envelope like any other ACP event.
     public var turnID: String?
+    /// The persisted message this one replies to. Optional and additive
+    /// (schema 1.22.0): rows from before it read as "not a reply".
+    public var replyToMessageID: String?
     /// Mirror of `TimelineEntry.resultSummary` — populated on `tool_use`
     /// rows when the matching `ToolResult` envelope lands. nil while the
     /// tool is still running or for non-tool_use rows.
