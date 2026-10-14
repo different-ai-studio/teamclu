@@ -43,6 +43,8 @@ export type SessionMessageRowProps = {
   onDelete?: (messageId: string) => void;
   onEdit?: (message: SessionMessage) => void;
   onJumpToReply?: (messageId: string) => void;
+  /** Long-press "Select": start multi-select with this message. */
+  onSelect?: (message: SessionMessage) => void;
   onReply?: (message: SessionMessage) => void;
   /** Click handler for the trailing outbox dot when the row is in `failed` state. */
   onRetryOutbox?: (messageId: string) => void;
@@ -121,6 +123,7 @@ export function SessionMessageRow({
   onEdit,
   onJumpToReply,
   onReply,
+  onSelect,
   onRetryOutbox,
   outboxStatus,
   onGrantPermission,
@@ -200,6 +203,9 @@ export function SessionMessageRow({
     ];
     if (onReply) {
       actions.push({ label: tHook("Reply"), run: () => onReply(message) });
+    }
+    if (onSelect) {
+      actions.push({ label: tHook("Select"), run: () => onSelect(message) });
     }
     if (isOwnMessage && onEdit) {
       actions.push({ label: tHook("Edit"), run: () => onEdit(message) });

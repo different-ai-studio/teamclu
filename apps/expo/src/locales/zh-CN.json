@@ -1090,5 +1090,19 @@
   "Jump to latest": "回到最新",
   "Reply…": "回复…",
   "Reply not sent": "回复未发出",
-  "Saved as a draft in the session.": "已存为该会话的草稿。"
+  "Saved as a draft in the session.": "已存为该会话的草稿。",
+  "Search in conversation": "在会话中搜索",
+  "Previous match": "上一个",
+  "Next match": "下一个",
+  "{{value}} selected": "已选 {{value}} 条",
+  "Forward": "转发",
+  "Select": "选择",
+  "Ask again": "再问一次",
+  "Conversation options": "会话选项",
+  "Forwarded from “{{value}}”": "转发自「{{value}}」",
+  "Forward to": "转发到",
+  "No other sessions": "没有其他会话",
+  "Delete {{value}} messages?": "删除 {{value}} 条消息？",
+  "Forwarded to “{{value}}”": "已转发到「{{value}}」",
+  "Couldn't forward": "转发失败"
 }

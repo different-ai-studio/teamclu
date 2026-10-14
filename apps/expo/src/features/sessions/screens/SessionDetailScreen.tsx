@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -94,7 +95,20 @@ import {
   type ReadPositionRow,
 } from "../session-read-position";
 import type { SessionMessage, SessionSummary } from "../session-types";
-import { selectionTick } from "../../../lib/haptics";
+import { impactLight, selectionTick, successTone } from "../../../lib/haptics";
+import { showActionSheet, type SheetAction } from "../../../ui/action-sheet";
+import { showToast } from "../../../ui/Toast";
+import { MessageSelectionBar } from "../components/MessageSelectionBar";
+import { SessionSearchBar } from "../components/SessionSearchBar";
+import {
+  canDeleteSelection,
+  composeTranscript,
+  displayText,
+  feedSearchMatches,
+  promptForTurn,
+  selectableMessage,
+  selectedMessages,
+} from "../message-actions";
 import { markChatMetric, measureChatMetric } from "../../../lib/telemetry/chat-metrics";
 import type { PendingAcpQuestion } from "../pending-questions";
 import { AcpQuestionCard } from "../components/AcpQuestionCard";
@@ -124,6 +138,12 @@ type SessionDetailScreenProps = {
   onAttach?: () => void;
   onBack: () => void;
   onChangeComposerText: (value: string) => void;
+  /** "Ask again" on an agent reply: resend the turn's prompt to that agent. */
+  onAskAgain?: (input: { content: string; replyToMessageId: string | null; agentId: string }) => void;
+  /** Multi-select "Forward": the route picks the target session. */
+  onForwardText?: (text: string) => void;
+  /** Multi-select "Delete" (own, persisted messages only). */
+  onDeleteMessages?: (messageIds: string[]) => void;
   /**
    * A message to scroll to and highlight on open — the one a tapped push was
    * about. Older pages are pulled until it turns up.
@@ -220,6 +240,7 @@ function SessionHeader({
   onBack,
   onOpenMembers,
   onShare,
+  onSearch,
   onTogglePlans,
   plansPanelOpen,
   onToggleMute,
@@ -233,6 +254,7 @@ function SessionHeader({
   onBack: () => void;
   onOpenMembers?: () => void;
   onShare?: () => void;
+  onSearch?: () => void;
   onTogglePlans?: () => void;
   plansPanelOpen?: boolean;
   onToggleMute?: () => void;
@@ -298,9 +320,23 @@ function SessionHeader({
             />
           </Pressable>
         ) : null}
-        {onShare ? (
-          <Pressable hitSlop={8} onPress={onShare} style={styles.headerSlot}>
-            <Ionicons color={colors.onyx} name="share-outline" size={20} />
+        {onShare || onSearch ? (
+          // Search and share share one "…" menu, as on iOS, so the header
+          // keeps room for the title.
+          <Pressable
+            accessibilityLabel={tHook("Conversation options")}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => {
+              const actions: SheetAction[] = [];
+              if (onSearch) actions.push({ label: tHook("Search in conversation"), run: onSearch });
+              if (onShare) actions.push({ label: tHook("Share"), run: onShare });
+              showActionSheet(actions, { cancelLabel: tHook("Cancel") });
+            }}
+            style={styles.headerSlot}
+            testID="session.optionsMenu"
+          >
+            <Ionicons color={colors.onyx} name="ellipsis-horizontal" size={20} />
           </Pressable>
         ) : null}
         <Pressable hitSlop={8} onPress={onOpenMembers} style={styles.headerSlot}>
@@ -424,6 +460,7 @@ const turnMarkdown = {
 };
 
 function AgentTurnCard({
+  onLongPress,
   onOpenDetail,
   onInterrupt,
   feedbackKind = null,
@@ -433,6 +470,8 @@ function AgentTurnCard({
   senderName,
   turn,
 }: {
+  /** Copy / reply / ask again / select, for a finished reply. */
+  onLongPress?: () => void;
   onOpenDetail?: (turn: AgentTurnFeedItem) => void;
   onInterrupt?: (agentId: string) => void;
   /** The member's own 👍/👎 on this turn's final reply. */
@@ -477,6 +516,8 @@ function AgentTurnCard({
       <Pressable
         accessibilityHint={tHook("Open agent turn details")}
         accessibilityRole="button"
+        delayLongPress={350}
+        onLongPress={onLongPress}
         onPress={onOpenDetail ? () => onOpenDetail(turn) : undefined}
         style={({ pressed }) => [
           styles.turnCard,
@@ -634,6 +675,9 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     onChangeComposerText,
     onChangeRuntimeModel,
     focusMessageId,
+    onAskAgain,
+    onForwardText,
+    onDeleteMessages,
     onClearReply,
     onDeleteMessage,
     onEditMessage,
@@ -1011,6 +1055,135 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
     scrollToFeedIndex(index, 0);
   };
 
+  const sourceByKey = useMemo(
+    () => new Map(feedSources.map((source) => [source.key, source] as const)),
+    [feedSources],
+  );
+  const scrollToKey = (key: string, viewPosition: number) => {
+    shouldStickToFeedBottom.current = false;
+    scrollToFeedIndex(feedItems.findIndex((item) => item.key === key), viewPosition);
+  };
+
+  // Find in conversation (iOS #1709): matches over what is loaded here, the
+  // current one centred and highlighted, starting from the newest.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(-1);
+  const searchMatches = useMemo(
+    () => (searchOpen ? feedSearchMatches(feedSources, searchQuery) : []),
+    [feedSources, searchOpen, searchQuery],
+  );
+  const searchMatchCount = searchMatches.length;
+  useEffect(() => {
+    setSearchIndex(searchMatchCount - 1);
+    // A new query starts again from the newest match; new rows arriving
+    // while browsing matches must not move the reader.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOpen, searchQuery]);
+  const currentMatchKey = searchMatches[searchIndex] ?? null;
+  useEffect(() => {
+    if (!searchOpen) return;
+    setHighlightKey(currentMatchKey);
+    if (currentMatchKey) scrollToKey(currentMatchKey, 0.5);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMatchKey, searchOpen]);
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setHighlightKey(null);
+  };
+
+  // Multi-select: copy, forward or delete several messages at once.
+  const [selection, setSelection] = useState<ReadonlySet<string> | null>(null);
+  const startSelection = (key: string) => {
+    selectionTick();
+    closeSearch();
+    setSelection(new Set([key]));
+  };
+  const toggleSelected = (key: string) => {
+    selectionTick();
+    setSelection((previous) => {
+      const next = new Set(previous ?? []);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const pickedMessages = useMemo(
+    () => (selection ? selectedMessages(feedSources, selection) : []),
+    [feedSources, selection],
+  );
+  const senderLabel = (actorId: string) => senderNames?.get(actorId) ?? tHook("Unknown");
+  const transcriptOf = (header?: string) =>
+    composeTranscript(
+      pickedMessages.map((m) => ({ sender: senderLabel(m.senderActorId), text: displayText(m) })),
+      header,
+    );
+  const selectionCanDelete =
+    Boolean(onDeleteMessages) &&
+    canDeleteSelection(pickedMessages, ownActorId, (id) => {
+      const status = outboxByMessageId.get(id);
+      return status === undefined || status === "sent";
+    });
+
+  const showTurnActions = (key: string, turn: AgentTurnFeedItem) => {
+    const final = turn.finalMessage;
+    if (!final || turn.isActive) return;
+    const actions: SheetAction[] = [
+      {
+        label: tHook("Copy"),
+        run: () => {
+          void Clipboard.setStringAsync(displayText(final));
+          successTone();
+        },
+      },
+    ];
+    if (onReplyToMessage) {
+      actions.push({ label: tHook("Reply"), run: () => onReplyToMessage(final.messageId) });
+    }
+    const prompt = promptForTurn(feedSources, key);
+    if (prompt && onAskAgain) {
+      // Not a true regenerate: the agent sees its earlier answer in context.
+      actions.push({
+        label: tHook("Ask again"),
+        run: () => {
+          impactLight();
+          onAskAgain({
+            content: prompt.content,
+            replyToMessageId: prompt.replyToMessageId || null,
+            agentId: turn.agentId,
+          });
+        },
+      });
+    }
+    actions.push({ label: tHook("Select"), run: () => startSelection(key) });
+    showActionSheet(actions, { cancelLabel: tHook("Cancel") });
+  };
+
+  const wrapRow = (key: string, node: React.ReactNode) => {
+    const highlighted = key === highlightKey ? styles.highlightRow : null;
+    const source = sourceByKey.get(key);
+    if (!selection || !source || !selectableMessage(source)) {
+      return <View style={highlighted}>{node}</View>;
+    }
+    const checked = selection.has(key);
+    return (
+      <Pressable
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked }}
+        onPress={() => toggleSelected(key)}
+        style={[styles.selectRow, highlighted]}
+      >
+        <View style={[styles.selectCircle, checked ? styles.selectCircleOn : null]}>
+          {checked ? <Ionicons color={colors.background} name="checkmark" size={13} /> : null}
+        </View>
+        <View pointerEvents="none" style={styles.selectRowBody}>
+          {node}
+        </View>
+      </Pressable>
+    );
+  };
+
   return (
     <View style={styles.screen}>
       <SessionHeader
@@ -1020,6 +1193,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         onBack={onBack}
         onOpenMembers={onOpenMembers}
         onShare={onShare}
+        onSearch={() => {
+          setSelection(null);
+          setSearchOpen(true);
+        }}
         onTogglePlans={
           planSnapshots.length > 0
             ? () => setPlansPanelOpen((value) => !value)
@@ -1154,6 +1331,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
               ) : undefined
             }
             ref={messageListRef}
+            extraData={`${highlightKey ?? ""}|${selection ? [...selection].join(",") : "-"}`}
             scrollEventThrottle={80}
             stickyHeaderIndices={stickyIndices}
             renderItem={({ item }) => {
@@ -1161,9 +1339,10 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                 return <DaySeparator label={item.label} />;
               }
               if (item.kind === "agentTurn") {
-                return (
-                  <View style={item.key === highlightKey ? styles.highlightRow : undefined}>
+                return wrapRow(
+                  item.key,
                   <AgentTurnCard
+                    onLongPress={selection ? undefined : () => showTurnActions(item.key, item.turn)}
                     onOpenDetail={() => setSelectedTurnKey(item.key)}
                     onInterrupt={onAgentInterrupt}
                     feedbackKind={
@@ -1178,8 +1357,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                     senderAvatarUrl={senderAvatars?.get(item.turn.agentId) ?? null}
                     senderName={senderNames?.get(item.turn.agentId) ?? undefined}
                     turn={item.turn}
-                  />
-                  </View>
+                  />,
                 );
               }
               const msg = item.message;
@@ -1189,10 +1367,16 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                   ? state.messages.find((m) => m.messageId === msg.replyToMessageId) ??
                     null
                   : null;
-              return (
-                <View style={item.key === highlightKey ? styles.highlightRow : undefined}>
+              const rowSource = sourceByKey.get(item.key);
+              return wrapRow(
+                item.key,
                 <SessionMessageRow
                   isOwnMessage={isOwn}
+                  onSelect={
+                    !selection && rowSource && selectableMessage(rowSource)
+                      ? () => startSelection(item.key)
+                      : undefined
+                  }
                   message={msg}
                   onDelete={onDeleteMessage}
                   onEdit={
@@ -1256,8 +1440,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
                   senderName={
                     !isOwn ? senderNames?.get(msg.senderActorId) ?? undefined : undefined
                   }
-                />
-                </View>
+                />,
               );
             }}
           />
@@ -1274,7 +1457,26 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
             </Text>
           </View>
         )}
-        {hasMessages && unreadPill ? (
+        {searchOpen ? (
+          <View style={styles.searchOverlay}>
+            <SessionSearchBar
+              currentIndex={searchIndex}
+              matchCount={searchMatchCount}
+              onChangeQuery={setSearchQuery}
+              onDone={closeSearch}
+              onNewer={() => {
+                selectionTick();
+                setSearchIndex((index) => Math.min(index + 1, searchMatchCount - 1));
+              }}
+              onOlder={() => {
+                selectionTick();
+                setSearchIndex((index) => Math.max(index - 1, 0));
+              }}
+              query={searchQuery}
+            />
+          </View>
+        ) : null}
+        {hasMessages && unreadPill && !searchOpen ? (
           <Pressable
             accessibilityLabel={tHook("{{value}} unread", { value: unreadPill.count })}
             accessibilityRole="button"
@@ -1310,7 +1512,7 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         ) : null}
       </View>
 
-      {replyTarget ? (
+      {replyTarget && !selection ? (
         <View style={styles.replyBar}>
           <View style={styles.replyBarAccent} />
           <View style={styles.replyBarBody}>
@@ -1407,7 +1609,29 @@ export function SessionDetailScreen(props: SessionDetailScreenProps) {
         <View style={{ paddingBottom: bottomInset }}>
           {/* An unanswered question blocks the turn, so it takes the composer's
               place until it is answered or skipped — same swap iOS does. */}
-          {pendingQuestion && onAnswerQuestion && onSkipQuestion ? (
+          {selection ? (
+            <MessageSelectionBar
+              canDelete={selectionCanDelete}
+              count={pickedMessages.length}
+              onCancel={() => setSelection(null)}
+              onCopy={() => {
+                void Clipboard.setStringAsync(transcriptOf());
+                successTone();
+                showToast("success", tHook("Copied"));
+                setSelection(null);
+              }}
+              onDelete={() => {
+                onDeleteMessages?.(pickedMessages.map((m) => m.messageId));
+                setSelection(null);
+              }}
+              onForward={() => {
+                if (!onForwardText) return;
+                const title = session.title.trim() || tHook("Untitled session");
+                onForwardText(transcriptOf(tHook("Forwarded from “{{value}}”", { value: title })));
+                setSelection(null);
+              }}
+            />
+          ) : pendingQuestion && onAnswerQuestion && onSkipQuestion ? (
             <AcpQuestionCard
               errorMessage={questionErrorMessage}
               isSubmitting={isAnsweringQuestion}
@@ -1470,6 +1694,33 @@ const styles = StyleSheet.create({
   },
   floatingPressed: {
     opacity: 0.7,
+  },
+  searchOverlay: {
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: GLASS_HEADER_HEIGHT,
+  },
+  selectCircle: {
+    alignItems: "center",
+    borderColor: colors.slate,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    height: 22,
+    justifyContent: "center",
+    marginLeft: spacing.md,
+    width: 22,
+  },
+  selectCircleOn: {
+    backgroundColor: hai.cinnabar,
+    borderColor: hai.cinnabar,
+  },
+  selectRow: {
+    alignItems: "center",
+    flexDirection: "row",
+  },
+  selectRowBody: {
+    flex: 1,
   },
   highlightRow: {
     backgroundColor: colors.paper,

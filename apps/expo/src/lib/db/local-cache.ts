@@ -206,6 +206,22 @@ export async function loadMessages(
   }));
 }
 
+/**
+ * Every cached chat message and agent reply in a team, for the session list's
+ * search by message content (iOS #1709). Only this device's cache is searched.
+ */
+export async function loadSearchableMessages(
+  db: CacheDb,
+  teamId: string,
+): Promise<Array<{ sessionId: string; content: string }>> {
+  if (!teamId) return [];
+  const rows = await db.getAllAsync(
+    "SELECT session_id, content FROM cached_messages WHERE team_id = ? AND kind IN ('text', 'agent_reply')",
+    teamId,
+  );
+  return rows.map((raw) => ({ sessionId: str(raw.session_id), content: str(raw.content) }));
+}
+
 // ── Ideas ───────────────────────────────────────────────────────────────────
 
 export type CachedIdea = {

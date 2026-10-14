@@ -14,6 +14,9 @@ import { createSessionMutesApi } from "../../../../src/features/sessions/session
 import { t } from "../../../../src/lib/i18n";
 import { showToast } from "../../../../src/ui/Toast";
 import { createSessionsCache } from "../../../../src/features/sessions/session-cache";
+import { sessionIdsMatchingMessages } from "../../../../src/features/sessions/message-actions";
+import { loadSearchableMessages } from "../../../../src/lib/db/local-cache";
+import { openCacheDb } from "../../../../src/lib/db/cache-db";
 import { createSessionsController } from "../../../../src/features/sessions/session-controller";
 import { inboxTopic, parseInboxPing } from "../../../../src/features/sessions/inbox";
 import type { SessionLiveActivity } from "../../../../src/features/sessions/live-activity";
@@ -357,6 +360,14 @@ export default function SessionsIndexRoute() {
     agentsStore?.getState ?? emptyAgentsState,
   );
 
+  const searchMessageContent = useCallback(
+    async (query: string) => {
+      const rows = await loadSearchableMessages(await openCacheDb(), activeTeamId);
+      return sessionIdsMatchingMessages(rows, query);
+    },
+    [activeTeamId],
+  );
+
   if (state.route !== "ready") {
     return <Redirect href={href ?? "/"} />;
   }
@@ -374,6 +385,7 @@ export default function SessionsIndexRoute() {
   return (
     <>
     <SessionsListScreen
+      searchMessageContent={searchMessageContent}
       actorGlyphById={actorGlyphById}
       runtimeBySessionId={runtimeBySessionId}
       contextBySessionId={contextBySessionId}

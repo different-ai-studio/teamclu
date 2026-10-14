@@ -58,6 +58,8 @@ import { createSessionMutesApi } from "../../../../src/features/sessions/session
 import { supabaseAccessToken } from "../../../../src/lib/cloud-api/client";
 import { SessionDetailScreen } from "../../../../src/features/sessions/screens/SessionDetailScreen";
 import { ModelPickerSheet } from "../../../../src/features/sessions/screens/ModelPickerSheet";
+import { ForwardTargetSheet } from "../../../../src/features/sessions/screens/ForwardTargetSheet";
+import type { SessionSummary } from "../../../../src/features/sessions/session-types";
 import {
   agentBackendDisplayName,
   runtimeStatusName,
@@ -549,6 +551,33 @@ export default function SessionDetailRoute() {
     return map;
   }, [teamActors]);
 
+  // Multi-select "Forward": the transcript waiting for a target session.
+  const [forwardText, setForwardText] = useState<string | null>(null);
+  const [forwardTargets, setForwardTargets] = useState<SessionSummary[] | null>(null);
+  useEffect(() => {
+    if (forwardText === null || !currentTeam?.id) return;
+    let cancelled = false;
+    setForwardTargets(null);
+    void createConfiguredSessionsApi(supabase)
+      .listSessions(currentTeam.id)
+      .then((sessions) => {
+        if (cancelled) return;
+        setForwardTargets(
+          sessions
+            .filter((session) => session.sessionId !== sessionId)
+            .sort((a, b) =>
+              (b.lastMessageAt || b.createdAt).localeCompare(a.lastMessageAt || a.createdAt),
+            ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setForwardTargets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTeam?.id, forwardText, sessionId]);
+
   const senderAvatars = useMemo(() => {
     const map = new Map<string, string | null>();
     for (const actor of teamActors) {
@@ -994,6 +1023,43 @@ export default function SessionDetailRoute() {
       {canRenderSessionDetail(detailState) ? (
         <SessionDetailScreen
           focusMessageId={focusMessageId}
+          onAskAgain={({ content, replyToMessageId, agentId }) => {
+            if (sessionId) noteLocalPrompt(sessionId);
+            void controller?.sendMessage({
+              content,
+              mentionActorIds: [agentId],
+              replyToMessageId,
+            });
+          }}
+          onForwardText={setForwardText}
+          onDeleteMessages={(messageIds) => {
+            const run = async () => {
+              const api = createConfiguredSessionsApi(supabase);
+              let failed = 0;
+              for (const id of messageIds) {
+                try {
+                  await api.deleteMessage(id);
+                } catch {
+                  failed += 1;
+                }
+              }
+              if (failed > 0) {
+                showToast("error", t("Couldn't delete message"));
+              } else {
+                successTone();
+                showToast("success", t("Message deleted"));
+              }
+              void controller?.load({ preserveExisting: true });
+            };
+            Alert.alert(
+              t("Delete {{value}} messages?", { value: messageIds.length }),
+              t("The message is removed for everyone in this session."),
+              [
+                { text: t("Delete"), style: "destructive", onPress: () => void run() },
+                { text: t("Cancel"), style: "cancel" },
+              ],
+            );
+          }}
           agentChips={agentChips}
           composerText={detailState.composerText}
           connectionState={detailState.connectionState}
@@ -1168,6 +1234,28 @@ export default function SessionDetailRoute() {
           streamingAgentIds={streamingAgentIds}
         />
       ) : null}
+
+      <SheetModal onRequestClose={() => setForwardText(null)} visible={forwardText !== null}>
+        <ForwardTargetSheet
+          isLoading={forwardTargets === null}
+          onCancel={() => setForwardText(null)}
+          onSelect={(target) => {
+            const text = forwardText;
+            setForwardText(null);
+            if (!text || !controller) return;
+            void controller
+              .forwardText(target.sessionId, text)
+              .then(() => {
+                successTone();
+                showToast("success", t("Forwarded to “{{value}}”", { value: target.title.trim() || t("Untitled session") }));
+              })
+              .catch((err) => {
+                showToast("error", err instanceof Error ? err.message : t("Couldn't forward"));
+              });
+          }}
+          sessions={forwardTargets}
+        />
+      </SheetModal>
 
       <SheetModal
         onRequestClose={() => setIsModelPromptOpen(false)}

@@ -295,6 +295,90 @@ describe("createSessionDetailController", () => {
     expect(mqtt.publish).toHaveBeenCalledTimes(1);
   });
 
+  it("asks again with the given text, leaving the composer and reply target alone", async () => {
+    const { createSessionDetailController } = await import(
+      "../features/sessions/session-detail-controller"
+    );
+    const mqtt = createMockMqtt();
+    const api = {
+      getSession: vi.fn().mockResolvedValue(createSession()),
+      insertOutgoingMessage: vi.fn().mockResolvedValue(undefined),
+      listMessagesPage: vi.fn().mockResolvedValue(page([])),
+      resolveMemberActorId: vi.fn().mockResolvedValue("actor-1"),
+      markSessionRead: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = createSessionDetailController({
+      api: api as any,
+      currentMemberActorId: "actor-1",
+      getAuth: vi.fn().mockResolvedValue({ accessToken: "jwt-token", userId: "user-1" }),
+      mqtt: mqtt as any,
+      mqttUrl: "wss://broker.example.com/mqtt",
+      sessionId: "session-1",
+      teamId: "team-1",
+    });
+
+    await controller.load();
+    controller.setComposerText("half typed");
+    controller.setReplyTarget({ messageId: "m-quoted", content: "q" });
+    await controller.sendMessage({
+      content: "Double it",
+      mentionActorIds: ["actor-agent"],
+      replyToMessageId: "m-prev",
+    });
+
+    expect(api.insertOutgoingMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "Double it",
+        metadata: { mention_actor_ids: ["actor-agent"] },
+        replyToMessageId: "m-prev",
+      }),
+    );
+    expect(controller.getState().composerText).toBe("half typed");
+    expect(controller.getState().replyTarget?.messageId).toBe("m-quoted");
+  });
+
+  it("forwards text into another session: written first, mentioning no one", async () => {
+    const { createSessionDetailController } = await import(
+      "../features/sessions/session-detail-controller"
+    );
+    const mqtt = createMockMqtt();
+    const order: string[] = [];
+    const api = {
+      getSession: vi.fn().mockResolvedValue(createSession()),
+      insertOutgoingMessage: vi.fn(async () => { order.push("insert"); }),
+      listMessagesPage: vi.fn().mockResolvedValue(page([])),
+      resolveMemberActorId: vi.fn().mockResolvedValue("actor-1"),
+      markSessionRead: vi.fn().mockResolvedValue(undefined),
+    };
+    mqtt.publish.mockImplementation(async () => { order.push("publish"); });
+    const controller = createSessionDetailController({
+      api: api as any,
+      currentMemberActorId: "actor-1",
+      getAuth: vi.fn().mockResolvedValue({ accessToken: "jwt-token", userId: "user-1" }),
+      mqtt: mqtt as any,
+      mqttUrl: "wss://broker.example.com/mqtt",
+      sessionId: "session-1",
+      teamId: "team-1",
+    });
+    await controller.load();
+
+    await controller.forwardText("session-2", "Forwarded from “A”\n\nMe: hi");
+
+    expect(api.insertOutgoingMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-2",
+        metadata: { mention_actor_ids: [] },
+        replyToMessageId: null,
+      }),
+    );
+    expect(mqtt.publish).toHaveBeenCalledWith(
+      "amux/team-1/session/session-2/live",
+      expect.any(Uint8Array),
+      false,
+    );
+    expect(order).toEqual(["insert", "publish"]);
+  });
+
   it("mentions the sole agent participant when sending from the composer", async () => {
     const { createSessionDetailController } = await import(
       "../features/sessions/session-detail-controller"
