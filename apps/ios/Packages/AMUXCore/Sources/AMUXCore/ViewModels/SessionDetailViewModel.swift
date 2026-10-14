@@ -3363,10 +3363,25 @@ public final class SessionDetailViewModel {
     private func mirrorReducerStreamingState() {
         streamingMirrorFlushTask?.cancel()
         streamingMirrorFlushTask = nil
-        streamingTextByAgent = timelineState.streamingTextByAgent
-        streamingModelByAgent = timelineState.streamingModelByAgent
-        streamingAgentSet = timelineState.streamingAgentSet
-        streamingTurnIDByAgent = timelineState.streamingTurnIDByAgent
+        copyStreamingMirror()
+    }
+
+    /// @Observable notifies on every assignment, equal value or not, so a
+    /// mirror that re-assigned all four fields at 10 Hz invalidated every
+    /// view reading the set / models / turn ids even when only the text grew.
+    private func copyStreamingMirror() {
+        if streamingTextByAgent != timelineState.streamingTextByAgent {
+            streamingTextByAgent = timelineState.streamingTextByAgent
+        }
+        if streamingModelByAgent != timelineState.streamingModelByAgent {
+            streamingModelByAgent = timelineState.streamingModelByAgent
+        }
+        if streamingAgentSet != timelineState.streamingAgentSet {
+            streamingAgentSet = timelineState.streamingAgentSet
+        }
+        if streamingTurnIDByAgent != timelineState.streamingTurnIDByAgent {
+            streamingTurnIDByAgent = timelineState.streamingTurnIDByAgent
+        }
     }
 
     /// Throttle leg of `mirrorReducerStreamingState` for the per-token
@@ -3381,10 +3396,7 @@ public final class SessionDetailViewModel {
             try? await Task.sleep(for: .milliseconds(100))
             guard let self, !Task.isCancelled else { return }
             self.streamingMirrorFlushTask = nil
-            self.streamingTextByAgent = self.timelineState.streamingTextByAgent
-            self.streamingModelByAgent = self.timelineState.streamingModelByAgent
-            self.streamingAgentSet = self.timelineState.streamingAgentSet
-            self.streamingTurnIDByAgent = self.timelineState.streamingTurnIDByAgent
+            self.copyStreamingMirror()
         }
     }
 
