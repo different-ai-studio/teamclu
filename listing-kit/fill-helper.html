@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TeamClu 扩展 · Chrome 商店填写助手</title>
+  <style>
+    :root {
+      --bg: #fbfaf7;
+      --paper: #fff;
+      --ink: #1a1a14;
+      --muted: #75736a;
+      --border: rgba(26,26,20,0.08);
+      --coral: #e85a4a;
+      --font: "PingFang SC", "Noto Sans SC", -apple-system, system-ui, sans-serif;
+      --mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; }
+    body { font-family: var(--font); background: var(--bg); color: var(--ink); line-height: 1.6; padding: 24px 32px 48px; max-width: 920px; margin: 0 auto; }
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    .lead { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+    .banner {
+      background: #fff3ef; border: 1px solid #f5d6cf; border-radius: 10px;
+      padding: 12px 16px; font-size: 13px; margin-bottom: 24px;
+    }
+    .banner strong { color: var(--coral); }
+    section {
+      background: var(--paper); border: 1px solid var(--border);
+      border-radius: 12px; padding: 16px 18px; margin-bottom: 16px;
+    }
+    section h2 { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+    section p, section li { font-size: 13px; color: var(--muted); }
+    ol { padding-left: 20px; }
+    li { margin: 6px 0; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button, a.btn {
+      appearance: none; border: 1px solid var(--border); background: var(--paper);
+      border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 600;
+      cursor: pointer; text-decoration: none; color: var(--ink);
+    }
+    button.primary, a.btn.primary { background: var(--coral); color: #fff; border-color: var(--coral); }
+    button:hover, a.btn:hover { filter: brightness(0.97); }
+    pre {
+      background: #f5f3ed; border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; font-size: 12px; font-family: var(--mono); white-space: pre-wrap;
+      word-break: break-word; margin-top: 10px; max-height: 200px; overflow: auto;
+    }
+    .ok { color: #2eb872; font-size: 12px; margin-left: 8px; display: none; }
+    .ok.show { display: inline; }
+    code { font-family: var(--mono); font-size: 11px; background: #f0ede6; padding: 2px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>TeamClu Chrome 扩展 · 商店填写助手</h1>
+  <p class="lead">左侧本页复制文案，右侧 Chrome 开发者后台粘贴。<strong>只保存草稿，不要提交审核。</strong></p>
+
+  <div class="banner">
+    <strong>提醒：</strong>请先在新标签页打开
+    <a href="https://chrome.google.com/webstore/devconsole" target="_blank">Chrome Web Store 开发者后台</a>
+    并用 Google 账号登录。上传包文件：<code>extension.zip</code>（仓库根目录，5.1 MB）。
+  </div>
+
+  <section>
+    <h2>① 上传扩展包</h2>
+    <ol>
+      <li>后台 → <strong>New item</strong>（或已有条目 → Package → Upload）</li>
+      <li>选择 <code>/Users/lingling/codes/teamclaw/extension.zip</code></li>
+    </ol>
+    <div class="row">
+      <button type="button" class="primary" id="reveal-zip">在 Finder 中显示 extension.zip</button>
+    </div>
+    <p style="margin-top:8px;font-size:12px">Finder 无法由网页直接打开时，请手动前往上述路径。</p>
+  </section>
+
+  <section>
+    <h2>② Store listing → Product details</h2>
+    <p>Category: <strong>Productivity</strong> · Language: <strong>中文（简体）</strong></p>
+    <pre id="desc">TeamClu 是一款面向团队的 AI 协作平台。这个 Chrome 扩展把 TeamClu 聊天窗口嵌入浏览器侧边栏，让你在浏览任意网页时都能与 AI agent 对话、协作。
+
+主要功能
+
+• 侧边栏聊天 — 点击工具栏图标打开 Chrome Side Panel，登录 TeamClu 账号后即可与团队 AI agent 进行多人协作对话
+• 抓取当前页 — 一键把正在浏览的页面标题、URL 与正文（或选中文本）作为上下文发给 agent，无需复制粘贴
+• 链接悬停发送 — 在网页链接上悬停时出现「发给 agent」按钮，快速把链接交给 agent 分析
+• 远程浏览器工具 — agent 可通过你已授权的操作读取当前页 DOM 或导航（仅在会话中、由 agent 发起时执行）
+
+数据与隐私
+
+扩展仅在您主动操作时读取页面内容；不会后台静默采集浏览历史。账号登录与聊天消息经 TeamClu Cloud API（HTTPS + MQTT over WSS）传输，凭证保存在扩展本地 storage，不上传至第三方。
+
+适用对象
+
+• 需要在浏览 admin portal、文档站、工单系统时随手向 AI 提问的团队
+• 已部署 TeamClu Cloud API 的企业或自托管用户
+
+安装后请点击扩展图标打开侧边栏，使用邮箱或 Google 登录 TeamClu 账号即可开始。</pre>
+    <div class="row">
+      <button type="button" data-copy="desc">复制 Description</button>
+      <span class="ok" id="ok-desc">已复制</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>③ Graphic assets</h2>
+    <p>上传以下 PNG（在 <code>listing-kit/</code> 文件夹）：</p>
+    <ul style="font-size:13px;color:var(--muted);margin:8px 0 0 18px">
+      <li>screenshots/01-side-panel-chat.png</li>
+      <li>screenshots/02-page-capture.png</li>
+      <li>screenshots/03-link-hover.png</li>
+      <li>promo-small/promo-small.png（可选）</li>
+    </ul>
+    <div class="row">
+      <a class="btn" href="file:///Users/lingling/codes/teamclaw/listing-kit/screenshots/" target="_blank">打开 screenshots 文件夹</a>
+      <a class="btn" href="file:///Users/lingling/codes/teamclaw/listing-kit/promo-small/" target="_blank">打开 promo-small 文件夹</a>
+    </div>
+  </section>
+
+  <section>
+    <h2>④ Privacy → Single purpose</h2>
+    <pre id="single">TeamClu is a browser sidebar that lets a user chat with their AI agent and, on explicit user action, send the content of the currently active tab to that agent as context for the conversation.</pre>
+    <div class="row"><button type="button" data-copy="single">复制</button><span class="ok" id="ok-single">已复制</span></div>
+  </section>
+
+  <section>
+    <h2>⑤ Privacy → Permission justifications</h2>
+    <p style="font-size:12px;margin-bottom:8px">在后台逐项粘贴（permission 名 → 理由）：</p>
+    <pre id="perms">activeTab:
+Used to read the content of the tab the user is currently viewing only when the user explicitly invokes the extension (toolbar icon or in-page action), so that page content can be shared with their AI agent as conversation context.
+
+scripting:
+Used to inject the content script that extracts the visible text/link context of the active page on user request, and to render an in-page link-hover affordance for sending a link to the agent.
+
+tabs:
+Used to query the currently active tab (chrome.tabs.query) and to send messages to it (chrome.tabs.sendMessage) when relaying page content to the side panel chat, and when agent-initiated browser tools need to interact with the active tab.
+
+sidePanel:
+Used to open the Chrome side panel that hosts the chat UI where the user talks to their AI agent.
+
+storage:
+Used only for local ephemeral session state (chrome.storage.session) to pass a pending "open this link in the agent" action from the content script to the side panel, and a small local allowlist (chrome.storage.local) of domains the user has enabled the link-hover affordance on. Account session tokens and chat content are stored in the side panel's localStorage for the extension origin. No browsing history is persisted in chrome.storage.
+
+host_permissions:
+The extension's core feature is letting the user send the page they are currently on to their AI agent from any website, so the content script and page-read capability must be available on all sites rather than an allowlist. No page content is read or transmitted unless the user takes an explicit action (opening the side panel / using the "send to agent" link affordance) or an agent tool call the user has already authorized through an active chat session — there is no passive/background collection.</pre>
+    <div class="row"><button type="button" data-copy="perms">复制全部权限说明</button><span class="ok" id="ok-perms">已复制</span></div>
+  </section>
+
+  <section>
+    <h2>⑥ Privacy → 其他</h2>
+    <ul style="font-size:13px;margin-left:18px">
+      <li><strong>Remote code</strong>：选 <strong>No</strong></li>
+      <li><strong>Data collected</strong>：勾选 Website content + Personally identifiable information</li>
+      <li><strong>Privacy policy URL</strong>：<button type="button" data-copy-text="https://github.com/different-ai-studio/teamclu/blob/main/docs/chrome-extension-privacy.md">复制 URL</button></li>
+      <li><strong>Contact email</strong>：teamclaw@ucar.cc</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>⑦ 保存草稿</h2>
+    <p>填写完成后点 <strong>Save draft</strong>。<span style="color:var(--coral);font-weight:600">不要点 Submit for review。</span></p>
+  </section>
+
+  <script>
+    document.querySelectorAll('[data-copy]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-copy');
+        const text = document.getElementById(id).textContent;
+        navigator.clipboard.writeText(text).then(() => {
+          const ok = document.getElementById('ok-' + id);
+          if (ok) { ok.classList.add('show'); setTimeout(() => ok.classList.remove('show'), 2000); }
+        });
+      });
+    });
+    document.querySelectorAll('[data-copy-text]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(btn.getAttribute('data-copy-text'));
+        btn.textContent = '已复制';
+        setTimeout(() => { btn.textContent = '复制 URL'; }, 2000);
+      });
+    });
+    document.getElementById('reveal-zip').addEventListener('click', () => {
+      window.open('file:///Users/lingling/codes/teamclaw/extension.zip');
+    });
+  </script>
+</body>
+</html>
