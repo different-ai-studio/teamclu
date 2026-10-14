@@ -145,24 +145,6 @@ export function AuthGate({ children }: AuthGateProps) {
     (s) => !!currentTeamId && s.gateSkippedTeamId === currentTeamId,
   );
   const [daemonOnboardingAck, setDaemonOnboardingAck] = useState(() => devSkipDaemonOnboarding());
-  // Entering another team with the local Agent off is "entering a team" again
-  // (#1678): if that team has no default either, the enable it triggers must
-  // hold the gate just like at launch. With the agent on, a switch only
-  // rebinds and keeps the old non-blocking behaviour.
-  const lastGateTeamId = useRef<string | null>(null);
-  useEffect(() => {
-    const previous = lastGateTeamId.current;
-    lastGateTeamId.current = currentTeamId;
-    if (!previous || !currentTeamId || previous === currentTeamId) return;
-    if (devSkipDaemonOnboarding()) return;
-    if (useDaemonOnboardingStore.getState().enabled === false) setDaemonOnboardingAck(false);
-  }, [currentTeamId]);
-  // Passing on 'disabled' is a decision, not a moment in transit: acknowledge
-  // it, so an enable started later by a feature (which runs in its own dialog)
-  // does not pull the whole window back into the full-screen setup.
-  useEffect(() => {
-    if (daemonStatus === "disabled") setDaemonOnboardingAck(true);
-  }, [daemonStatus]);
 
   // Multi-team (cross-org) picker. Match iOS onboarding: restore the last team
   // the user entered when it is still a membership, activate it to mint an
@@ -792,10 +774,7 @@ export function AuthGate({ children }: AuthGateProps) {
   // valid token. None of these states prompt for input any more — needs-onboard
   // and mismatch are resolved by binding (team, device id) server-side, and the
   // screen below is progress plus a retry on failure. 'ready'/'unknown' fall
-  // through, and so does 'disabled': the local Agent is off and the team has a
-  // default agent to talk to (#1678). 'defaults-error' holds the gate — a
-  // failed defaults lookup is never read as "no default". Skipping the
-  // not-installed gate must not pull this wizard back over the shell.
+  // through.
   if (isTauri() && !daemonOnboardingAck && !installGateSkipped) {
     if (!daemonLoaded) {
       return null;
@@ -805,11 +784,9 @@ export function AuthGate({ children }: AuthGateProps) {
       daemonStatus === 'needs-onboard' ||
       daemonStatus === 'mismatch' ||
       daemonStatus === 'starting' ||
-      daemonStatus === 'error' ||
-      daemonStatus === 'defaults-error'
+      daemonStatus === 'error'
     ) {
       removeStartupSkeleton();
-      const canSwitchTeam = !!myTeams && memberTeams(narrowToHomeOrg(myTeams)).length > 1;
       return (
         <>
           {joinLinkNotice ? <p role="alert">{joinLinkNotice}</p> : null}
@@ -822,8 +799,6 @@ export function AuthGate({ children }: AuthGateProps) {
                 void m.refreshAfterLocalAgentInstall(id);
               });
             }}
-            onSwitchTeam={canSwitchTeam ? () => setTeamChosen(false) : undefined}
-            onSignOut={() => void signOut("local_agent_setup")}
           />
         </>
       );

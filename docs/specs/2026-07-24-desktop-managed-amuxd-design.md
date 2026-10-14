@@ -10,16 +10,6 @@
 > 1. 关 App 后 agent / 渠道 / cron **离线** — 接受，v1 唯一行为。  
 > 2. `teamclu-introspect` **也不拷贝**，由桌面 sidecar 管理（启动 amuxd 时注入绝对路径）。  
 > 3. macOS 关窗口但 App 仍在 Dock — amuxd **继续跑**；仅真正退出 App 时 stop。
->
-> ### 补充（#1678，2026-10-13）：按需启用
->
-> 「App 开则起」改为「**本机 Agent 已启用**才起」。amuxd 仍随安装包分发，但只有
-> `<brand home>/local-agent.json` 记为 `enabled: true` 时，setup 才调用
-> `ensure_started`；`ensure_started_locked` 本身也检查这个开关，所以任何启动路径
-> （启动、heal、重启、装完 pi 后的重启）在未启用时都会以 `local agent is not enabled`
-> 拒绝。文件不存在时按 `daemon.toml` 的 `active_team` 判定（存量用户视为已启用并写回）。
-> 一次性子进程（`init` / `doctor` / `install-pi` / `clear`）不受开关限制。
-> 前端的启用、停用与两级默认判定见 `packages/app/src/stores/daemon-onboarding.ts`。
 
 ---
 

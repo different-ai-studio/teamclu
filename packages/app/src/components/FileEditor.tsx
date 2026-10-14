@@ -39,6 +39,7 @@ import { useWorkspaceStore } from "@/stores/workspace";
 import { useCurrentTeamStore } from '@/stores/current-team'
 import { OssHistoryProvider } from '@/lib/history/oss-provider'
 import { Button } from "@/components/ui/button";
+import { relativePathUnder } from "@/lib/fs-path";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -112,9 +113,7 @@ function ImageViewer({
   };
 
   const displayPath =
-    workspacePath && filePath.startsWith(workspacePath + "/")
-      ? filePath.slice(workspacePath.length + 1)
-      : filePath;
+    (workspacePath && relativePathUnder(filePath, workspacePath)) || filePath;
 
   return (
     <div className="flex flex-col h-full" data-testid="file-editor">
@@ -397,9 +396,7 @@ export function FileEditor({
   const [gitHeadContent, setGitHeadContent] = useState<string | null>(null);
   const workspacePath = useWorkspaceStore((s) => s.workspacePath);
   const displayPath =
-    workspacePath && filePath && filePath.startsWith(workspacePath + "/")
-      ? filePath.slice(workspacePath.length + 1)
-      : (filePath ?? "");
+    (workspacePath && filePath && relativePathUnder(filePath, workspacePath)) || (filePath ?? "");
 
   // The team's real knowledge dir (`~/.amuxd[-<brand>]/teams/<id>/shared/
   // knowledge`) — the directory the OSS sync engine owns, resolved by absolute

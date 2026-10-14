@@ -84,11 +84,9 @@ vi.mock("@/stores/auth-store", () => {
 });
 
 vi.mock("@/stores/current-team", () => {
-  const useCurrentTeamStore = Object.assign(
-    (selector?: (state: typeof currentTeamMock) => unknown) =>
-      selector ? selector(currentTeamMock) : currentTeamMock,
-    { getState: () => currentTeamMock },
-  );
+  const useCurrentTeamStore = (selector?: (s: typeof currentTeamMock) => unknown) =>
+    selector ? selector(currentTeamMock) : currentTeamMock;
+  useCurrentTeamStore.getState = () => currentTeamMock;
   return {
     useCurrentTeamStore,
     setLocalCacheTeamGate: setLocalCacheTeamGateMock,

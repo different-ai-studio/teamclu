@@ -15,7 +15,6 @@ const mocks = vi.hoisted(() => ({
   effectiveDefaultTeamId: null as string | null,
   resolvedTarget: null as { agentId: string; displayName: string; source: 'team_default' } | null,
   resolveThrows: false,
-  resolveUnavailable: false,
   mqttConnected: null as boolean | null,
   mqttReconnectNonce: 0,
 }))
@@ -46,17 +45,12 @@ vi.mock('@/stores/member-preferences-store', () => ({
     }),
 }))
 
-vi.mock('@/lib/session/resolve-quick-chat-target', () => {
-  class LocalAgentUnavailableError extends Error {}
-  return {
-    resolveQuickChatTarget: vi.fn(async () => {
-      if (mocks.resolveUnavailable) throw new LocalAgentUnavailableError()
-      if (mocks.resolveThrows) throw new Error('resolve failed')
-      return mocks.resolvedTarget
-    }),
-    LocalAgentUnavailableError,
-  }
-})
+vi.mock('@/lib/session/resolve-quick-chat-target', () => ({
+  resolveQuickChatTarget: vi.fn(async () => {
+    if (mocks.resolveThrows) throw new Error('resolve failed')
+    return mocks.resolvedTarget
+  }),
+}))
 
 const readyTarget = {
   agentId: 'agent-1',
@@ -69,7 +63,6 @@ describe('useQuickChatReadiness', () => {
     vi.clearAllMocks()
     mocks.teamId = 'team-1'
     mocks.workspacePath = '/ws'
-    mocks.resolveUnavailable = false
     mocks.defaultAgentId = null
     mocks.effectiveDefaultAgentId = null
     mocks.effectiveDefaultTeamId = 'team-1'
@@ -112,14 +105,6 @@ describe('useQuickChatReadiness', () => {
     const { result } = renderHook(() => useQuickChatReadiness())
     await waitFor(() => {
       expect(result.current).toEqual({ kind: 'no_agent' })
-    })
-  })
-
-  it('returns local_unavailable when the enabled local agent did not answer', async () => {
-    mocks.resolveUnavailable = true
-    const { result } = renderHook(() => useQuickChatReadiness())
-    await waitFor(() => {
-      expect(result.current).toEqual({ kind: 'local_unavailable' })
     })
   })
 
@@ -283,6 +268,32 @@ describe('useQuickChatReadiness', () => {
 
     expect(resolveQuickChatTarget).toHaveBeenCalledTimes(callsAfterReady)
     expect(result.current).toEqual({ kind: 'ready', target: readyTarget })
+  })
+
+  it('re-resolves to the local agent once an install reclassifies the team', async () => {
+    const { resolveQuickChatTarget } = await import('@/lib/session/resolve-quick-chat-target')
+    const { useLocalAgentInstallStore } = await import('@/stores/local-agent-install')
+    useLocalAgentInstallStore.setState({
+      byTeam: { 'team-1': { status: 'absent', agentId: null, displayName: null } },
+    })
+    mocks.resolvedTarget = readyTarget
+
+    const { result } = renderHook(() => useQuickChatReadiness())
+    await waitFor(() => {
+      expect(result.current).toEqual({ kind: 'ready', target: readyTarget })
+    })
+
+    const localTarget = { agentId: 'local-1', displayName: 'HAIGANGBot', source: 'local' }
+    vi.mocked(resolveQuickChatTarget).mockResolvedValueOnce(localTarget as never)
+    await act(async () => {
+      useLocalAgentInstallStore.setState({
+        byTeam: { 'team-1': { status: 'installed', agentId: 'local-1', displayName: 'HAIGANGBot' } },
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current).toEqual({ kind: 'ready', target: localTarget })
+    })
   })
 
   it('keeps ready UI while silently re-resolving after prefs change', async () => {

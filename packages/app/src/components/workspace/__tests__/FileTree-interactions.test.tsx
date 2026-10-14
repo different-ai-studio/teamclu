@@ -193,6 +193,9 @@ vi.mock('@/stores/tabs', () => ({
 }));
 
 import { FileTree } from '@/components/workspace/FileTree';
+import { renameItem } from '../file-tree-operations';
+import { toast } from 'sonner';
+import { waitFor } from '@testing-library/react';
 
 describe('FileTree interactions', () => {
   beforeEach(() => {
@@ -482,6 +485,53 @@ describe('FileTree interactions', () => {
         fireEvent.click(fileItem, { metaKey: true });
         expect(mockToggleFileSelection).toHaveBeenCalledWith('/workspace/README.md');
       }
+    });
+  });
+
+  // ── Windows paths ──────────────────────────────────────────────────
+
+  describe('rename on Windows paths', () => {
+    beforeEach(() => {
+      mockFileTree = [
+        { name: 'README.md', path: 'C:\\ws\\README.md', type: 'file' },
+      ];
+      mockExpandedPaths = new Set();
+      mockFocusedPath = 'C:\\ws\\README.md';
+    });
+
+    async function renameTo(newName: string) {
+      const { container } = render(<FileTree />);
+      fireEvent.keyDown(container.querySelector('[tabindex]')!, { key: 'F2' });
+      const input = await waitFor(() => {
+        const el = container.querySelector('input.inline-edit-input') as HTMLInputElement | null;
+        if (!el) throw new Error('rename input not shown');
+        return el;
+      });
+      fireEvent.change(input, { target: { value: newName } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+    }
+
+    it('renames inside the same directory, keeping the backslashes', async () => {
+      await renameTo('notes.md');
+      await waitFor(() =>
+        expect(renameItem).toHaveBeenCalledWith('C:\\ws\\README.md', 'C:\\ws\\notes.md'),
+      );
+      expect(mockPushUndo).toHaveBeenCalledWith(
+        expect.objectContaining({ description: 'Rename README.md → notes.md' }),
+      );
+    });
+
+    it('refuses a name Windows cannot write, and says so', async () => {
+      await renameTo('会议: 周一.md');
+      await waitFor(() => expect(toast.error).toHaveBeenCalled());
+      expect(renameItem).not.toHaveBeenCalled();
+    });
+
+    it('reports a rename the filesystem refused', async () => {
+      vi.mocked(renameItem).mockResolvedValueOnce(false);
+      await renameTo('notes.md');
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Rename failed'));
+      expect(mockPushUndo).not.toHaveBeenCalled();
     });
   });
 });

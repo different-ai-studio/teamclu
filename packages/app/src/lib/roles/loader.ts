@@ -16,6 +16,7 @@ import { isTauri } from "@/lib/utils"
 import { encodeWorkspaceId, getDaemonRolesSkillsState, putDaemonRole, deleteDaemonRole } from "@/lib/daemon/daemon-local-client"
 
 import { TEAMCLU_DIR } from "@/lib/config/build-config"
+import { basenameOf, dirnameOf, joinPathLike } from "@/lib/fs-path"
 
 const ROLE_ROOT = `${TEAMCLU_DIR}/roles`
 const ROLE_SKILL_DIR = `${TEAMCLU_DIR}/roles/skills`
@@ -484,7 +485,7 @@ export async function saveRole(workspacePath: string, editor: RoleEditorState, t
 
   await ensureRolesRoot(workspacePath)
   const rolePath = targetFilePath ?? `${workspacePath}/${ROLE_ROOT}/${slug}/ROLE.md`
-  const roleDir = rolePath.slice(0, rolePath.lastIndexOf("/"))
+  const roleDir = dirnameOf(rolePath)
   if (!(await exists(roleDir))) {
     await mkdir(roleDir, { recursive: true })
   }
@@ -508,7 +509,7 @@ export async function deleteRole(workspacePath: string, roleSlug: string, roleFi
   }
 
   if (roleFilePath) {
-    const roleDirFromPath = roleFilePath.slice(0, roleFilePath.lastIndexOf("/"))
+    const roleDirFromPath = dirnameOf(roleFilePath)
     if (await exists(roleDirFromPath)) {
       await remove(roleDirFromPath, { recursive: true })
       return
@@ -555,9 +556,9 @@ export async function loadAttachableSkills(workspacePath: string): Promise<Attac
 }
 
 async function copyItem(sourcePath: string, targetDir: string): Promise<void> {
-  const name = sourcePath.split("/").pop()
+  const name = basenameOf(sourcePath)
   if (!name) throw new Error(`Invalid source path: ${sourcePath}`)
-  const destinationPath = `${targetDir}/${name}`
+  const destinationPath = joinPathLike(targetDir, name)
 
   try {
     const entries = await readDir(sourcePath)
@@ -566,7 +567,7 @@ async function copyItem(sourcePath: string, targetDir: string): Promise<void> {
     }
     for (const entry of entries) {
       if (!entry.name) continue
-      await copyItem(`${sourcePath}/${entry.name}`, destinationPath)
+      await copyItem(joinPathLike(sourcePath, entry.name), destinationPath)
     }
     return
   } catch {

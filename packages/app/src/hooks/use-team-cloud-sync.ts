@@ -39,10 +39,6 @@ export function useTeamCloudSync() {
    */
   const syncNow = React.useCallback(async (opts?: { allowBulkAdd?: boolean }) => {
     if (!available || syncing) return
-    // The daemon runs the sync. A first sync on a machine with the local Agent
-    // off enables it, then syncs (#1678).
-    const { ensureLocalAgentEnabled } = await import('@/lib/daemon/local-agent-gate')
-    if (!(await ensureLocalAgentEnabled())) return
     await ossSyncNow(workspacePath, opts)
     const { lastError: err, failed } = useOssSyncStore.getState()
     if (err) {

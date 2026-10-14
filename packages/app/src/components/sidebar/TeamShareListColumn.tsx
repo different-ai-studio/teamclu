@@ -62,7 +62,8 @@ import { useEnvVarsStore } from '@/stores/env-vars'
 import { FileBrowser } from '@/components/workspace/FileBrowser'
 import { TeamDirInitPanel } from '@/components/teamshare/TeamDirInitPanel'
 import { scaffoldKnowledgeVault } from '@/lib/knowledge/scaffold-client'
-import { isPathUnder } from '@/lib/fs-path'
+import { isPathUnder, joinPathLike } from '@/lib/fs-path'
+import { fileNameError } from '@/lib/file-name'
 import { isKnowledgeVaultEmpty } from '@/lib/knowledge/is-knowledge-vault-empty'
 import { useTeamCloudSync } from '@/hooks/use-team-cloud-sync'
 import { TEAM_SYNCED_EVENT } from '@/lib/config/build-config'
@@ -944,16 +945,24 @@ export function TeamShareListColumn({ section }: { section: TeamShareSection }) 
         : withDefaultExtension(name, KNOWLEDGE_DEFAULT_EXTENSION)
     setRootCreating(null)
     if (!trimmed || !syncRoot) return
+    const nameError = fileNameError(t, trimmed)
+    if (nameError) {
+      toast.error(nameError)
+      return
+    }
     const ok =
       rootCreating === 'folder'
         ? await createNewFolder(syncRoot, trimmed)
         : await createNewFile(syncRoot, trimmed)
-    if (!ok) return
+    if (!ok) {
+      toast.error(t('fileExplorer.createFailed', { name: trimmed, defaultValue: 'Could not create "{{name}}"' }))
+      return
+    }
     // The knowledge tree is its own root in the store — re-list THAT. The
     // workspace tree has nothing to do with this column any more.
     await openExternalRoot(syncRoot)
     void loadSection('knowledge', { force: true })
-    if (rootCreating !== 'folder') selectFile(`${syncRoot}/${trimmed}`)
+    if (rootCreating !== 'folder') selectFile(joinPathLike(syncRoot, trimmed))
   }
 
   return (

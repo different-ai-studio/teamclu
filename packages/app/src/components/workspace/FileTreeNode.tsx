@@ -38,6 +38,7 @@ import type { SyncBadge } from '@/lib/team/team-sync-badges';
 import { openKnowledgeConflict, openCloudVersion } from '@/lib/tabs/knowledge-tabs';
 import { getFileIcon } from '@/lib/ui/file-icons';
 import type { FileNode } from "@/stores/workspace";
+import { dirnameOf } from "@/lib/fs-path";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -595,7 +596,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
   // Determine terminal path: for files, use parent directory
   const terminalPath = isDirectory
     ? node.path
-    : node.path.substring(0, node.path.lastIndexOf("/"));
+    : dirnameOf(node.path);
 
   return (
     <ContextMenu>
@@ -689,7 +690,7 @@ export const FileTreeItem = React.memo(function FileTreeItem({
             </ContextMenuItem>
             {hasClipboard && (
               <ContextMenuItem onSelect={guardedMenuAction(() => onPaste(
-                isDirectory ? node.path : node.path.substring(0, node.path.lastIndexOf("/"))
+                isDirectory ? node.path : dirnameOf(node.path)
               ))}>
                 <ClipboardPaste className="h-4 w-4" />
                 {t("fileExplorer.pasteFile", "Paste")}

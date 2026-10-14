@@ -22,7 +22,18 @@ export const useLocalAgentInstallStore = create<LocalAgentInstallState>((set) =>
   byTeam: {},
   wizardOpen: false,
   gateSkippedTeamId: null,
-  openWizard: () => set({ wizardOpen: true }),
+  openWizard: () => {
+    set({ wizardOpen: true })
+    // Settings is a dialog drawn above the full-screen wizard. Leaving it open
+    // hides the install steps.
+    void import('@/stores/ui').then(({ useUIStore }) => {
+      if (useUIStore.getState().currentView !== 'settings') return
+      useUIStore.getState().closeSettings()
+      void import('@/lib/ui/modal-layer-cleanup').then((m) => {
+        m.scheduleReleaseStuckModalLayers()
+      })
+    })
+  },
   closeWizard: () => set({ wizardOpen: false }),
 }))
 

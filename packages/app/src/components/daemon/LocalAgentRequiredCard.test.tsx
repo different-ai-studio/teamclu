@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LocalAgentRequiredCard } from './LocalAgentRequiredCard'
 import { useLocalAgentInstallStore } from '@/stores/local-agent-install'
+import { useUIStore } from '@/stores/ui'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -13,6 +14,7 @@ vi.mock('react-i18next', () => ({
 describe('LocalAgentRequiredCard', () => {
   beforeEach(() => {
     useLocalAgentInstallStore.setState({ wizardOpen: false })
+    useUIStore.setState({ currentView: 'chat' })
   })
 
   it('asks before opening the install wizard', () => {
@@ -27,5 +29,18 @@ describe('LocalAgentRequiredCard', () => {
     fireEvent.click(installButtons[installButtons.length - 1])
 
     expect(useLocalAgentInstallStore.getState().wizardOpen).toBe(true)
+  })
+
+  it('closes settings so the wizard is not covered', async () => {
+    useUIStore.setState({ currentView: 'settings' })
+    render(<LocalAgentRequiredCard />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    const installButtons = screen.getAllByRole('button', { name: 'Install' })
+    fireEvent.click(installButtons[installButtons.length - 1])
+
+    await vi.waitFor(() => {
+      expect(useUIStore.getState().currentView).toBe('chat')
+    })
   })
 })

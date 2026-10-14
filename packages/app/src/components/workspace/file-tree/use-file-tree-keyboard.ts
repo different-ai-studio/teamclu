@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useWorkspaceStore } from "@/stores/workspace";
 import type { FlatTreeNode } from "./flatten";
+import { dirnameOf, isSamePath } from "@/lib/fs-path";
 
 type WorkspaceState = ReturnType<typeof useWorkspaceStore.getState>;
 
@@ -104,7 +105,7 @@ export function useFileTreeKeyboard({
             if (node?.node.type === 'directory') {
               targetDir = focusedPath;
             } else {
-              targetDir = focusedPath.substring(0, focusedPath.lastIndexOf('/'));
+              targetDir = dirnameOf(focusedPath);
             }
           }
           if (targetDir) {
@@ -170,8 +171,8 @@ export function useFileTreeKeyboard({
             }
           } else {
             // Navigate to parent directory
-            const parentPath = node.path.substring(0, node.path.lastIndexOf("/"));
-            if (parentPath && parentPath !== treeRoot) {
+            const parentPath = dirnameOf(node.path);
+            if (parentPath && !(treeRoot && isSamePath(parentPath, treeRoot))) {
               setFocusedPath(parentPath);
               const el = treeContainerRef.current?.querySelector(
                 `[data-path="${CSS.escape(parentPath)}"]`,

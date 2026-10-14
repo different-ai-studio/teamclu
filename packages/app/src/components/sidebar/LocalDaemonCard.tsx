@@ -7,13 +7,11 @@ import { getLocalDaemonAgent } from '@/lib/daemon/daemon-agent-admin'
 import { getKnownLocalDaemonActorId, noteLocalDaemonActorId } from '@/lib/daemon/local-daemon-identity'
 import { useLocalDaemonRuntimeStatus } from '@/hooks/use-local-daemon-http-status'
 import { useLocalDaemonTokenUsage } from '@/hooks/use-local-daemon-token-usage'
-import { cn, isTauri } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 import { ActorDetailDialog } from '@/components/sidebar/ActorDetailDialog'
 import { useMemberPreferencesStore } from '@/stores/member-preferences-store'
 import { LocalAgentRequiredCard } from '@/components/daemon/LocalAgentRequiredCard'
 import { useLocalAgentAbsent } from '@/hooks/use-local-agent-install'
-import { useDaemonOnboardingStore } from '@/stores/daemon-onboarding'
-import { LocalAgentEnableCard } from '@/components/sidebar/LocalAgentEnableCard'
 
 /**
  * The local daemon agent, pinned to the BOTTOM of the sidebar (just above the
@@ -29,13 +27,12 @@ export function LocalDaemonCard() {
   const absent = useLocalAgentAbsent()
   const { actors, refetch, teamId } = useActorDirectory()
   const defaultAgentId = useMemberPreferencesStore((s) => s.defaultAgentId)
-  const localAgentEnabled = useDaemonOnboardingStore((s) => s.enabled)
 
   const [detailFor, setDetailFor] = React.useState<ActorRow | null>(null)
 
   const [localDaemonAgentId, setLocalDaemonAgentId] = React.useState<string | null>(null)
   React.useEffect(() => {
-    if (!teamId || localAgentEnabled === false) {
+    if (!teamId) {
       setLocalDaemonAgentId(null)
       return
     }
@@ -52,7 +49,7 @@ export function LocalDaemonCard() {
       noteLocalDaemonActorId(a.id)
     })
     return () => { cancelled = true }
-  }, [teamId, actors, localAgentEnabled])
+  }, [teamId, actors])
 
   const localDaemonActor = React.useMemo(
     () => actors.find((a) => a.id === localDaemonAgentId) ?? null,
@@ -82,8 +79,6 @@ export function LocalDaemonCard() {
   }
 
   if (absent) return <LocalAgentRequiredCard />
-  // Installed but turned off (#1678): the slot stays, and offers enable.
-  if (isTauri() && localAgentEnabled === false) return <LocalAgentEnableCard />
   if (!localDaemonActor) return null
 
   return (

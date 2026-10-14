@@ -37,11 +37,6 @@ async function appWorkdirPath(
   teamId?: string | null,
 ): Promise<string | null> {
   if (!isTauri()) return null
-  // An app session runs in this machine's daemon; with the local Agent off,
-  // enable it first (#1678). Declining leaves the session without a workdir,
-  // the same as a daemon that is down.
-  const { ensureLocalAgentEnabled } = await import('@/lib/daemon/local-agent-gate')
-  if (!(await ensureLocalAgentEnabled())) return null
   const { daemonAppWorkdir } = await import('@/lib/daemon/daemon-local-client')
   const info = await daemonAppWorkdir(appId, teamId)
   return info?.workdir ?? null

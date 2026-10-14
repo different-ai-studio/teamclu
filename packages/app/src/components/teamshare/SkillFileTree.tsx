@@ -12,6 +12,7 @@ import {
   FolderSearch,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { fileNameError } from '@/lib/file-name'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -202,6 +203,11 @@ export function SkillFileTree({
         (parentRel === '' && trimmed === ORIGIN_DIR)
       if (invalid) {
         toast.error(t('teamShare.skillFileNameInvalid', 'Enter a plain file name'))
+        return
+      }
+      const nameError = fileNameError(t, trimmed)
+      if (nameError) {
+        toast.error(nameError)
         return
       }
       const parentAbs = abs(parentRel)

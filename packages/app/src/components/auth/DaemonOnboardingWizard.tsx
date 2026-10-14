@@ -157,21 +157,7 @@ function StepList({
  * Mounting it is what starts the work: `refresh()` looks the machine up and either
  * binds it or parks the naming prompt.
  */
-export function DaemonOnboardingWizard({
-  onDone,
-  onSwitchTeam,
-  onSignOut,
-  variant = 'screen',
-}: {
-  onDone: () => void
-  /** Offered while setup blocks entering the team (#1678). Omitted when the
-   * user has only one team to go to. */
-  onSwitchTeam?: () => void
-  onSignOut?: () => void
-  /** 'dialog' renders inside a modal (setup triggered by a feature) instead of
-   * taking over the window. */
-  variant?: 'screen' | 'dialog'
-}) {
+export function DaemonOnboardingWizard({ onDone }: { onDone: () => void }) {
   const { t } = useTranslation()
   const {
     status,
@@ -186,46 +172,17 @@ export function DaemonOnboardingWizard({
     pendingName,
     nameDeviceAgent,
     refresh,
-    retry,
     forceReset,
     autoHealCloudSession,
   } = useDaemonOnboardingStore(
-    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, daemonOutdated: s.daemonOutdated, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, retry: s.retry, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
+    useShallow((s) => ({ status: s.status, busy: s.busy, error: s.error, step: s.step, completedSteps: s.completedSteps, failedStep: s.failedStep, daemonOutdated: s.daemonOutdated, runStartedAt: s.runStartedAt, completedAgent: s.completedAgent, pendingName: s.pendingName, nameDeviceAgent: s.nameDeviceAgent, refresh: s.refresh, forceReset: s.forceReset, autoHealCloudSession: s.autoHealCloudSession })),
   )
-  const Shell = variant === 'dialog' ? DialogShell : ScreenShell
-  // Ways out while setup holds the gate: another team may have a default
-  // agent, and a different account may not need this machine's agent at all.
-  const exits =
-    onSwitchTeam || onSignOut ? (
-      <div className="flex items-center justify-center gap-4 border-t border-border-soft pt-3">
-        {onSwitchTeam && (
-          <button
-            type="button"
-            onClick={onSwitchTeam}
-            className="rounded-[6px] text-[12px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
-          >
-            {t('settings.daemonOnboarding.switchTeam', 'Switch team')}
-          </button>
-        )}
-        {onSignOut && (
-          <button
-            type="button"
-            onClick={onSignOut}
-            className="rounded-[6px] text-[12px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
-          >
-            {t('settings.daemonOnboarding.signOut', 'Sign out')}
-          </button>
-        )}
-      </div>
-    ) : null
   const elapsed = useElapsedSeconds(runStartedAt)
   const [name, setName] = React.useState('')
 
-  // The full-screen gate re-resolves on mount. The dialog does not: it opens on
-  // an enable already under way, which a refresh here would race.
   React.useEffect(() => {
-    if (variant === 'screen') void refresh()
-  }, [refresh, variant])
+    void refresh()
+  }, [refresh])
 
   // Prefill with the hostname once the prompt appears, so "just press enter" is a
   // sane default and the field is never empty.
@@ -281,7 +238,6 @@ export function DaemonOnboardingWizard({
             t('settings.daemonOnboarding.nameConfirm', 'Continue')
           )}
         </Button>
-        {exits}
       </Shell>
     )
   }
@@ -352,7 +308,6 @@ export function DaemonOnboardingWizard({
             )}
           </div>
         )}
-        {exits}
       </Shell>
     )
   }
@@ -399,7 +354,7 @@ export function DaemonOnboardingWizard({
           className="mt-1 h-10 w-full rounded-[10px] bg-coral text-coral-foreground hover:opacity-90"
           disabled={busy}
           onClick={() =>
-            void (failedStep === 'cloud-auth' ? autoHealCloudSession() : retry())
+            void (failedStep === 'cloud-auth' ? autoHealCloudSession() : refresh())
           }
         >
           {busy ? (
@@ -422,32 +377,6 @@ export function DaemonOnboardingWizard({
             {t('settings.daemonOnboarding.resetReinit', 'Reset and re-initialize')}
           </button>
         )}
-        {exits}
-      </Shell>
-    )
-  }
-
-  // The local Agent is off and the team's defaults could not be read. Whether
-  // this machine needs its agent depends on the answer, so ask again rather
-  // than guess — guessing "none" would install a runtime nobody needs.
-  if (status === 'defaults-error') {
-    return (
-      <Shell
-        title={t('settings.daemonOnboarding.defaultsErrorTitle', "Can't open this team yet")}
-        subtitle={t(
-          'settings.daemonOnboarding.defaultsErrorSubtitle',
-          "Couldn't check whether this team has a default agent. Check your network, then retry.",
-        )}
-      >
-        {error && <ErrorLine error={error} />}
-        <Button
-          className="mt-1 h-10 w-full rounded-[10px] bg-coral text-coral-foreground hover:opacity-90"
-          disabled={busy}
-          onClick={() => void refresh()}
-        >
-          {t('settings.daemonOnboarding.retry', 'Retry')}
-        </Button>
-        {exits}
       </Shell>
     )
   }
@@ -464,23 +393,15 @@ export function DaemonOnboardingWizard({
   )
 }
 
-type ShellProps = {
+function Shell({
+  title,
+  subtitle,
+  children,
+}: {
   title?: string
   subtitle?: string
   children: React.ReactNode
-}
-
-function DialogShell({ title, subtitle, children }: ShellProps) {
-  return (
-    <div>
-      {title && <h2 className="text-[15px] font-semibold text-foreground">{title}</h2>}
-      {subtitle && <p className="mt-1.5 text-[12.5px] leading-5 text-muted-foreground">{subtitle}</p>}
-      <div className="mt-5 flex flex-col gap-4">{children}</div>
-    </div>
-  )
-}
-
-function ScreenShell({ title, subtitle, children }: ShellProps) {
+}) {
   return (
     <div className="flex h-screen items-center justify-center bg-background px-6" data-tauri-drag-region>
       <div className="w-full max-w-[440px] rounded-[16px] border border-border bg-paper p-6 shadow-sm">

@@ -20,7 +20,6 @@ function isPrimaryDisabled(state: QuickChatState, creating: boolean): boolean {
   return (
     state.kind === 'no_team'
     || state.kind === 'no_agent'
-    || state.kind === 'local_unavailable'
     || state.kind === 'loading'
   )
 }
@@ -39,12 +38,7 @@ export function NewChatSplitButton({
           'chat.quickSessionNoAgentHint',
           'Set a personal default agent, or ask admin for a team default.',
         )
-      : quickChatState.kind === 'local_unavailable'
-        ? t(
-            'chat.quickSessionLocalUnavailableHint',
-            'The local Agent is not responding yet. Retry shortly, or choose an agent in Advanced session.',
-          )
-        : undefined
+      : undefined
 
   const advancedLabel = t('chat.advancedSession', 'Advanced session')
 

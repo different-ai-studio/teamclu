@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { publishLocalAgentInstall, useLocalAgentInstallStore } from './local-agent-install'
 import { useCurrentTeamStore } from './current-team'
-import { useDaemonOnboardingStore } from './daemon-onboarding'
 import {
   ensureIssuedMqttBroker,
   reconnectDesktopMqttWhenLocalAgentAbsent,
@@ -79,7 +78,6 @@ describe('desktop mqtt probe vs local agent', () => {
     fetchAndApplyBootstrap.mockReset()
     getEffectiveServerConfig.mockResolvedValue({ mqttHost: 'mqtt.example.com' })
     fetchAndApplyBootstrap.mockResolvedValue('applied')
-    useDaemonOnboardingStore.setState({ enabled: null })
   })
 
   it('keeps a connected daemon snapshot when a local agent is installed', async () => {
@@ -148,13 +146,6 @@ describe('desktop mqtt probe vs local agent', () => {
     getEffectiveServerConfig.mockResolvedValue({})
     await expect(ensureIssuedMqttBroker('token')).resolves.toBe('skipped')
     expect(fetchAndApplyBootstrap).not.toHaveBeenCalled()
-
-    useDaemonOnboardingStore.setState({ enabled: false })
-    getEffectiveServerConfig
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ mqttHost: 'mqtt.teamclu-dev.ucar.cc' })
-    await expect(ensureIssuedMqttBroker('token')).resolves.toBe('ready')
-    expect(fetchAndApplyBootstrap).toHaveBeenCalledWith({ accessToken: 'token' })
   })
 
   it('uses the desktop client when no local agent is installed, even if the daemon snapshot is down', async () => {
