@@ -72,8 +72,9 @@ function isValidEmail(value: string) {
  * with Google" rails below an "or" divider.
  *
  * Password, phone and Google are gated by `features.auth` from
- * `GET /v1/config/public`, as on iOS; email OTP and Apple never are. A phone
- * number that maps to several accounts opens an account picker.
+ * `GET /v1/config/public`, as on iOS; email OTP never is. Apple is iOS-only:
+ * on Android it is a stranger's brand with a browser round-trip behind it. A
+ * phone number that maps to several accounts opens an account picker.
  */
 export function AuthScreen({
   errorMessage,
@@ -164,6 +165,8 @@ export function AuthScreen({
       onResetPendingEmail();
     }
   };
+
+  const showApple = Platform.OS === "ios";
 
   const handleApple = () => {
     if (onSignInWithApple) {
@@ -406,28 +409,34 @@ export function AuthScreen({
           <Text style={styles.error}>{errorMessage}</Text>
         ) : null}
 
-        <View style={styles.divider}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>{t("or")}</Text>
-          <View style={styles.dividerLine} />
-        </View>
+        {showApple || authFlags.google ? (
+          <>
+            <View style={styles.divider}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>{t("or")}</Text>
+              <View style={styles.dividerLine} />
+            </View>
 
-        <View style={styles.socialColumn}>
-          <SocialButton
-            disabled={isBusy}
-            icon="logo-apple"
-            label={t("Sign in with Apple")}
-            onPress={handleApple}
-          />
-          {authFlags.google ? (
-            <SocialButton
-              disabled={isBusy}
-              icon="globe-outline"
-              label={t("Sign in with Google")}
-              onPress={handleGoogle}
-            />
-          ) : null}
-        </View>
+            <View style={styles.socialColumn}>
+              {showApple ? (
+                <SocialButton
+                  disabled={isBusy}
+                  icon="logo-apple"
+                  label={t("Sign in with Apple")}
+                  onPress={handleApple}
+                />
+              ) : null}
+              {authFlags.google ? (
+                <SocialButton
+                  disabled={isBusy}
+                  icon="globe-outline"
+                  label={t("Sign in with Google")}
+                  onPress={handleGoogle}
+                />
+              ) : null}
+            </View>
+          </>
+        ) : null}
       </ScrollView>
 
       <SheetModal
