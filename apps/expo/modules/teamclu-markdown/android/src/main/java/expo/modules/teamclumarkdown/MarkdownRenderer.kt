@@ -13,6 +13,7 @@ import io.noties.markwon.Markwon
 import io.noties.markwon.core.MarkwonTheme
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
+import io.noties.markwon.ext.tables.TableRowSpan
 import io.noties.markwon.ext.tables.TableTheme
 
 /**
@@ -24,12 +25,18 @@ object MarkdownRenderer {
   private val markwons = HashMap<String, Markwon>()
   private val rendered = LruCache<String, Spanned>(96)
 
+  fun markwon(context: Context, config: MarkdownConfig): Markwon =
+    markwons.getOrPut(config.key) { build(context.applicationContext, config) }
+
   fun render(context: Context, config: MarkdownConfig, markdown: String): Spanned {
     val cacheKey = config.key + "\u0000" + markdown
     rendered.get(cacheKey)?.let { return it }
-    val markwon = markwons.getOrPut(config.key) { build(context.applicationContext, config) }
-    val spanned = tightenBlockGaps(markwon.toMarkdown(markdown), sp(context, config.blockGap))
-    rendered.put(cacheKey, spanned)
+    val spanned = tightenBlockGaps(markwon(context, config).toMarkdown(markdown), sp(context, config.blockGap))
+    // A table row keeps its measured layout (per width) inside its span, so a
+    // Spanned with tables cannot be shared between views; render it per view.
+    if (spanned.getSpans(0, spanned.length, TableRowSpan::class.java).isEmpty()) {
+      rendered.put(cacheKey, spanned)
+    }
     return spanned
   }
 

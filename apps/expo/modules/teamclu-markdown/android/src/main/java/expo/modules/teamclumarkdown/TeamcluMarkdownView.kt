@@ -18,7 +18,20 @@ class TeamcluMarkdownView(context: Context, appContext: AppContext) : ExpoView(c
   var markdown: String = ""
   var config: MarkdownConfig? = null
 
-  private val textView = TextView(context).apply {
+  private var ready = false
+
+  /**
+   * Re-measures whenever the text lays itself out again. React Native ignores
+   * a child's requestLayout, and Markwon's table rows only learn their height
+   * on the first draw, then re-set the text to lay out at that height — a
+   * table whose cells wrap stayed at single-line rows, overlapping, until this.
+   */
+  private val textView = object : TextView(context) {
+    override fun requestLayout() {
+      super.requestLayout()
+      if (ready) post { remeasure() }
+    }
+  }.apply {
     includeFontPadding = false
     isFocusable = false
     setTextIsSelectable(false)
@@ -29,6 +42,7 @@ class TeamcluMarkdownView(context: Context, appContext: AppContext) : ExpoView(c
 
   init {
     addView(textView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+    ready = true
   }
 
   fun update() {
@@ -47,13 +61,16 @@ class TeamcluMarkdownView(context: Context, appContext: AppContext) : ExpoView(c
       textView.setLineSpacing((lineHeightPx - fontHeight).toFloat(), 1f)
     }
     val spanned = MarkdownRenderer.render(context, config, markdown)
+    // Through Markwon, not `text =`: its plugins hook the set — the table plugin
+    // schedules the re-layout that gives wrapped rows their real height.
+    MarkdownRenderer.markwon(context, config).setParsedMarkdown(textView, spanned)
     // Links only: a movement method makes the TextView take touches, and the
-    // row's own press and long-press must still reach React Native.
+    // row's own press and long-press must still reach React Native. Set after
+    // Markwon, which installs one on every text it sets.
     val hasLinks = spanned.getSpans(0, spanned.length, ClickableSpan::class.java).isNotEmpty()
     textView.movementMethod = if (hasLinks) LinkMovementMethod.getInstance() else null
     textView.isClickable = hasLinks
     textView.isLongClickable = false
-    textView.text = spanned
     remeasure()
   }
 
