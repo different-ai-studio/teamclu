@@ -3,7 +3,7 @@ import { Tabs, usePathname, useRouter } from "expo-router";
 import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Platform, StyleSheet, type ColorValue } from "react-native";
+import { Platform, Pressable, StyleSheet, View, type ColorValue } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -200,32 +200,74 @@ function AndroidPlainTabs({ unread }: { unread: number }) {
           tabBarIcon: makeIcon("people", "people-outline"),
         }}
       />
+      {/* Off the Android bar: three places plus an action read cleaner than
+          five slots. `href: null` drops the tab, not the route. */}
+      <Tabs.Screen name="search" options={{ href: null }} />
+      {/* The button never selects the tab, so the route stays unvisited and
+          pressing it opens the capture modal instead. */}
       <Tabs.Screen
-        name="search"
-        options={{
-          title: t("Search"),
-          tabBarIcon: makeIcon("search", "search-outline"),
-        }}
-      />
-      <Tabs.Screen
-        listeners={{
-          tabPress: (event) => {
-            event.preventDefault();
-            router.push(VOICE_CAPTURE_HREF);
-          },
-        }}
         name="voice"
         options={{
           title: t("Voice"),
-          tabBarIcon: makeIcon("mic", "mic-outline"),
+          tabBarButton: () => (
+            <VoiceTabButton onPress={() => router.push(VOICE_CAPTURE_HREF)} />
+          ),
         }}
       />
     </Tabs>
   );
 }
 
+/**
+ * Voice is an action, not a place (see `VOICE_CAPTURE_HREF`), so on Android it
+ * does not dress as a fourth tab: a cinnabar disc on the far right, set off from
+ * the three places by a hairline. Same split iOS 26 draws for its search pill.
+ */
+function VoiceTabButton({ onPress }: { onPress: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <View style={styles.voiceSlot}>
+      <View style={styles.voiceDivider} />
+      <Pressable
+        accessibilityLabel={t("Voice")}
+        accessibilityRole="button"
+        android_ripple={{ borderless: true, color: "rgba(255,255,255,0.25)", radius: 24 }}
+        hitSlop={8}
+        onPress={onPress}
+        style={({ pressed }) => [styles.voiceDisc, pressed ? styles.voiceDiscPressed : null]}
+        testID="tabs.voice"
+      >
+        <Ionicons color={colors.paper} name="mic" size={22} />
+      </Pressable>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   scene: {
     backgroundColor: colors.mist,
+  },
+  voiceDisc: {
+    alignItems: "center",
+    backgroundColor: colors.cinnabar,
+    borderRadius: 22,
+    height: 44,
+    justifyContent: "center",
+    width: 44,
+  },
+  voiceDiscPressed: {
+    backgroundColor: colors.cinnabarDeep,
+  },
+  voiceDivider: {
+    backgroundColor: colors.hairline,
+    height: 28,
+    left: 0,
+    position: "absolute",
+    width: StyleSheet.hairlineWidth,
+  },
+  voiceSlot: {
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "center",
   },
 });
