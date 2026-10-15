@@ -1,0 +1,4 @@
+{
+  "ios": { "CFBundleDisplayName": "TeamClu", "CFBundleName": "TeamClu" },
+  "android": { "app_name": "TeamClu" }
+}

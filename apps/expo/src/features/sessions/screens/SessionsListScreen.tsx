@@ -28,6 +28,7 @@ import { colors, spacing, typography } from "../../../ui/theme";
 import { matchesAnyField } from "../../search/search-matcher";
 import { SessionRow, type SessionRowRuntime } from "../components/SessionRow";
 import { endChatMetric, markChatMetric } from "../../../lib/telemetry/chat-metrics";
+import { MESSAGE_SEARCH_MIN_LENGTH } from "../message-actions";
 import {
   getComposerDraftsSnapshot,
   hydrateComposerDrafts,
@@ -66,6 +67,11 @@ type SessionsListScreenProps = {
   onShortcuts?: () => void;
   selectedSessionId?: string | null;
   state: SessionsListState;
+  /**
+   * Sessions whose cached messages contain the query (iOS #1709): the list
+   * search also finds a session by what was said in it, not only its title.
+   */
+  searchMessageContent?: (query: string) => Promise<ReadonlySet<string>>;
 };
 
 export function SessionGroupSection({
@@ -199,6 +205,7 @@ export function SessionsListScreen({
   selectedSessionId = null,
   state,
   contextBySessionId,
+  searchMessageContent,
 }: SessionsListScreenProps) {
   const { t } = useTranslation();
   const draftBySessionId = useSyncExternalStore(
@@ -217,6 +224,27 @@ export function SessionsListScreen({
   }, [hasRows]);
   const [placeholderMessage, setPlaceholderMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Message-content hits for the query, looked up after a 250ms pause.
+  const [contentMatches, setContentMatches] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!searchMessageContent || trimmed.length < MESSAGE_SEARCH_MIN_LENGTH) {
+      setContentMatches(new Set());
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void searchMessageContent(trimmed)
+        .then((ids) => {
+          if (!cancelled) setContentMatches(ids);
+        })
+        .catch(() => {});
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query, searchMessageContent]);
   // iOS #1603: the search keyboard goes away on scroll and on any tap outside
   // the search box (row taps still go through), and when a session opens.
   const searchInputRef = useRef<TextInput>(null);
@@ -342,11 +370,13 @@ export function SessionsListScreen({
         : state.groups
             .map((group) => ({
               ...group,
-              sessions: group.sessions.filter((session) =>
-                matchesAnyField(
-                  [session.title, session.summary, session.lastMessagePreview],
-                  query,
-                ),
+              sessions: group.sessions.filter(
+                (session) =>
+                  contentMatches.has(session.sessionId) ||
+                  matchesAnyField(
+                    [session.title, session.summary, session.lastMessagePreview],
+                    query,
+                  ),
               ),
             }))
             .filter((group) => group.sessions.length > 0);
@@ -369,7 +399,7 @@ export function SessionsListScreen({
     (pinnedGroup as unknown as { label: string }).label = `PINNED · ${pinned.length}`;
     void rest;
     return [pinnedGroup, ...remainingGroups];
-  }, [state.groups, query, pinnedSessionIds]);
+  }, [state.groups, query, pinnedSessionIds, contentMatches]);
 
   const handleNewSession = () => {
     if (onNewSession) {

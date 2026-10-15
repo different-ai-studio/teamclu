@@ -20,6 +20,7 @@ import type { Actor } from "../actors/actor-types";
 import { setOutboxStatus, syncOutboxFromDao } from "./outbox-store";
 import type { OutboxDao } from "./outbox-db";
 import type { OutboxSender } from "./outbox-sender";
+import { attachmentMetadata, attachmentUrlsForAgent } from "./message-attachments";
 import { peekPendingAttachments, takePendingAttachments } from "./pending-attachments";
 import {
   decodePendingQuestion,
@@ -33,6 +34,7 @@ import type { SessionDetailCache } from "./session-detail-cache";
 import type { StreamingSnapshotStore } from "./streaming-snapshot";
 import {
   buildSessionDetailState,
+  type MessageAttachment,
   type SessionDetailState,
   type SessionMessage,
   type SessionSummary,
@@ -47,6 +49,7 @@ import {
 } from "./timeline-reducer";
 import type { createCloudSessionsApi } from "./cloud-api";
 import { endChatMetric, markChatMetric, startChatMetric } from "../../lib/telemetry/chat-metrics";
+import { publishOutboxRowViaMqtt } from "./session-outbox-publish";
 
 export type SessionDetailConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -84,12 +87,20 @@ export type SessionDetailControllerState = {
 
 type SessionsApi = ReturnType<typeof createCloudSessionsApi>;
 
+export type OutgoingOverride = {
+  content: string;
+  mentionActorIds: string[];
+  replyToMessageId: string | null;
+};
+
 /** iOS `runWatchdog`: a stream silent this long is treated as over. */
 export const STALE_STREAM_TIMEOUT_MS = 90_000;
 
 type SessionDetailControllerDeps = {
   /** Test seam for the stale-stream watchdog. */
   staleStreamTimeoutMs?: number;
+  /** How often a growing stream is published; 0 publishes every chunk. */
+  streamEmitIntervalMs?: number;
   api: Pick<
     SessionsApi,
     | "getSession"
@@ -125,7 +136,18 @@ type SessionDetailController = {
   loadOlderMessages: () => Promise<void>;
   setComposerText: (value: string) => void;
   setReplyTarget: (target: { messageId: string; content: string } | null) => void;
-  sendMessage: () => Promise<void>;
+  /**
+   * Sends the composer. With `outgoing`, sends that text instead — "ask
+   * again" — leaving the composer, its reply target and attachments alone.
+   */
+  sendMessage: (outgoing?: OutgoingOverride) => Promise<void>;
+  /**
+   * Posts `text` into another session of this team as an ordinary message,
+   * mentioning no one, so agents there take it in as context without
+   * answering (iOS multi-select forward). Written to the server before it is
+   * published: that session is not open here, so nothing would retry it.
+   */
+  forwardText: (targetSessionId: string, text: string) => Promise<void>;
   /**
    * Drop a question locally once its answer has been published. The daemon also
    * emits `question_replied`/`question_rejected`, but a slow broker echo would
@@ -494,7 +516,38 @@ export function createSessionDetailController(
     // background snapshots, which never pass `publishTimelineState` — so the
     // stale-stream watchdog is armed here rather than there.
     armStaleStreamWatchdog(timeline);
+    cancelDeferredEmit();
     emit();
+  }
+
+  /**
+   * Streamed text arrives one network chunk at a time — often dozens a second
+   * — and every emit is a synchronous render of the whole session screen. A
+   * change that only grows a stream's text is published at most once per
+   * interval instead; `getState` still returns it at once, and any other
+   * change emits immediately and takes the pending text with it.
+   */
+  const STREAM_EMIT_INTERVAL_MS = deps.streamEmitIntervalMs ?? 50;
+  let deferredEmitTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function cancelDeferredEmit() {
+    if (!deferredEmitTimer) return;
+    clearTimeout(deferredEmitTimer);
+    deferredEmitTimer = null;
+  }
+
+  function setStreamingState(nextState: SessionDetailControllerState) {
+    state = nextState;
+    armStaleStreamWatchdog(timeline);
+    if (STREAM_EMIT_INTERVAL_MS <= 0) {
+      emit();
+      return;
+    }
+    if (deferredEmitTimer) return;
+    deferredEmitTimer = setTimeout(() => {
+      deferredEmitTimer = null;
+      emit();
+    }, STREAM_EMIT_INTERVAL_MS);
   }
 
   function disconnectRealtime() {
@@ -566,14 +619,21 @@ export function createSessionDetailController(
   }
 
   function publishTimelineState(next: TimelineState) {
+    const messagesChanged = next.messages !== timeline.messages;
     timeline = next;
-    setState({
+    const nextState = {
       ...state,
       messages: next.messages,
       streamingByAgent: next.streamingByAgent,
       status: nextStatusForMessages(state.session, next.messages, state.status),
-    });
-    scheduleTimelinePersist();
+    };
+    if (messagesChanged) {
+      setState(nextState);
+      // Streamed text is not a row yet; it is persisted when it commits.
+      scheduleTimelinePersist();
+    } else {
+      setStreamingState(nextState);
+    }
   }
 
   /**
@@ -1094,8 +1154,8 @@ export function createSessionDetailController(
         replyTarget: target,
       });
     },
-    async sendMessage() {
-      const content = state.composerText.trim();
+    async sendMessage(outgoing) {
+      const content = (outgoing ? outgoing.content : state.composerText).trim();
       const session = state.session;
 
       if (!session) {
@@ -1103,7 +1163,7 @@ export function createSessionDetailController(
       }
 
       const hasPendingAttachments =
-        peekPendingAttachments(deps.teamId, deps.sessionId).length > 0;
+        !outgoing && peekPendingAttachments(deps.teamId, deps.sessionId).length > 0;
       if (!content && !hasPendingAttachments) {
         return;
       }
@@ -1141,8 +1201,18 @@ export function createSessionDetailController(
         startChatMetric("chat.send", messageId);
         setOutboxStatus(messageId, "sending");
 
-        const pendingAttachments = takePendingAttachments(deps.teamId, deps.sessionId);
-        const attachmentsPayload = pendingAttachments.length > 0
+        const pendingAttachments = outgoing ? [] : takePendingAttachments(deps.teamId, deps.sessionId);
+
+        const replyTo = outgoing ? outgoing.replyToMessageId : state.replyTarget?.messageId ?? null;
+        const mentionActorIds = outgoing
+          ? outgoing.mentionActorIds
+          : resolveMentionActorIdsForComposer({
+              content,
+              session,
+              teamActors: deps.getTeamActors?.() ?? [],
+            });
+
+        const attachmentsPayload: MessageAttachment[] | undefined = pendingAttachments.length > 0
           ? pendingAttachments.map((row) => ({
               url: row.publicUrl || row.path,
               path: row.path,
@@ -1150,13 +1220,12 @@ export function createSessionDetailController(
               size: row.size,
             }))
           : undefined;
-
-        const replyTo = state.replyTarget?.messageId ?? null;
-        const mentionActorIds = resolveMentionActorIdsForComposer({
-          content,
-          session,
-          teamActors: deps.getTeamActors?.() ?? [],
-        });
+        // Files ride in `metadata` (iOS + desktop keys) — FC drops a top-level
+        // `attachments`, which left every Expo upload off the stored row.
+        const outgoingMetadata = {
+          mention_actor_ids: mentionActorIds,
+          ...attachmentMetadata(attachmentsPayload),
+        };
 
         await deps.api.insertOutgoingMessage({
           id: messageId,
@@ -1165,8 +1234,7 @@ export function createSessionDetailController(
           senderActorId: actorId,
           content,
           createdAt,
-          metadata: { mention_actor_ids: mentionActorIds },
-          attachments: attachmentsPayload,
+          metadata: outgoingMetadata,
           replyToMessageId: replyTo,
         });
         markChatMetric("chat.send", messageId, "persisted");
@@ -1176,7 +1244,7 @@ export function createSessionDetailController(
           createdAt,
           kind: "text",
           messageId,
-          metadata: { mention_actor_ids: mentionActorIds },
+          metadata: outgoingMetadata,
           model: "",
           replyToMessageId: replyTo ?? "",
           senderActorId: actorId,
@@ -1191,10 +1259,10 @@ export function createSessionDetailController(
         const mergedMessages = optimisticNext.messages;
         setState({
           ...state,
-          composerText: "",
+          composerText: outgoing ? state.composerText : "",
           messages: mergedMessages,
           streamingByAgent: optimisticNext.streamingByAgent,
-          replyTarget: null,
+          replyTarget: outgoing ? state.replyTarget : null,
           status: nextStatusForMessages(session, mergedMessages, state.status),
         });
 
@@ -1207,12 +1275,7 @@ export function createSessionDetailController(
             content,
             mentionActorIds,
             replyToMessageId: replyTo,
-            attachments: pendingAttachments.map((row) => ({
-              url: row.publicUrl || row.path,
-              path: row.path,
-              mime: row.mime,
-              size: row.size,
-            })),
+            attachments: attachmentsPayload ?? [],
             createdAt: Date.parse(createdAt),
           });
           markChatMetric("chat.send", messageId, "enqueued");
@@ -1227,6 +1290,7 @@ export function createSessionDetailController(
             content,
             createdAt: createdAtSeconds,
             replyToMessageId: replyTo ?? "",
+            attachmentUrls: attachmentUrlsForAgent(attachmentsPayload),
           });
           const sessionMessage = create(SessionMessageEnvelopeSchema, {
             message: protoMessage,
@@ -1257,7 +1321,7 @@ export function createSessionDetailController(
               messages: mergedMessages,
               streamingByAgent: optimisticNext.streamingByAgent,
               status: nextStatusForMessages(session, mergedMessages, state.status),
-              composerText: "",
+              composerText: outgoing ? state.composerText : "",
               isSending: false,
               sendErrorMessage: "消息已写入，但实时分发失败，请稍后刷新确认。",
             });
@@ -1271,7 +1335,7 @@ export function createSessionDetailController(
           messages: mergedMessages,
           streamingByAgent: optimisticNext.streamingByAgent,
           status: nextStatusForMessages(session, mergedMessages, state.status),
-          composerText: "",
+          composerText: outgoing ? state.composerText : "",
           isSending: false,
           sendErrorMessage: null,
         });
@@ -1286,6 +1350,44 @@ export function createSessionDetailController(
           sendErrorMessage: toErrorMessage(error, "发送失败。"),
         });
       }
+    },
+    async forwardText(targetSessionId, text) {
+      const content = text.trim();
+      if (!content || targetSessionId === deps.sessionId) return;
+      const actorId = await resolveSenderActorId();
+      const messageId = uuidV4();
+      const createdAt = Date.now();
+      await deps.api.insertOutgoingMessage({
+        id: messageId,
+        teamId: deps.teamId,
+        sessionId: targetSessionId,
+        senderActorId: actorId,
+        content,
+        createdAt: new Date(createdAt).toISOString(),
+        metadata: { mention_actor_ids: [] },
+        replyToMessageId: null,
+      });
+      // Best effort: the row is written, and open clients pick it up on
+      // their next load if the live publish is lost.
+      await publishOutboxRowViaMqtt(
+        {
+          messageId,
+          sessionId: targetSessionId,
+          teamId: deps.teamId,
+          senderActorId: actorId,
+          content,
+          mentionActorIds: [],
+          replyToMessageId: null,
+          attachments: [],
+          state: "pending",
+          attemptCount: 0,
+          lastError: null,
+          lastAttemptAt: null,
+          nextAttemptAt: null,
+          createdAt,
+        },
+        deps.mqtt,
+      ).catch(() => {});
     },
     async dispose() {
       disposed = true;

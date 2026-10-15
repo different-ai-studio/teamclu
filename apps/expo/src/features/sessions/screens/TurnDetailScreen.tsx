@@ -1,8 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { propsEqualIgnoringFunctions } from "../../../lib/memo-props";
 import { Hairline } from "../../../ui/atoms/Hairline";
 import { StatusDot } from "../../../ui/atoms/StatusDot";
 import { colors, hai, iosType, spacing } from "../../../ui/theme";
@@ -50,6 +51,9 @@ export function TurnDetailScreen({
 }: TurnDetailScreenProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<ScrollView | null>(null);
+  // Rows skip renders (see `EventRow`), so their callbacks read these at call time.
+  const permissionHandlers = useRef({ onGrantPermission, onDenyPermission });
+  permissionHandlers.current = { onGrantPermission, onDenyPermission };
 
   const events = useMemo(() => {
     const all = turn.finalMessage
@@ -130,11 +134,19 @@ export function TurnDetailScreen({
         ) : null}
 
         {visibleEvents.map((event) => (
-          <SessionMessageRow
+          <EventRow
             key={event.messageId}
             message={event}
-            onDenyPermission={onDenyPermission}
-            onGrantPermission={onGrantPermission}
+            onDenyPermission={
+              onDenyPermission
+                ? (requestId, m) => permissionHandlers.current.onDenyPermission?.(requestId, m)
+                : undefined
+            }
+            onGrantPermission={
+              onGrantPermission
+                ? (requestId, m) => permissionHandlers.current.onGrantPermission?.(requestId, m)
+                : undefined
+            }
             senderName={agentName}
             toolResult={resultForCall(event, resultByToolId)}
           />
@@ -160,6 +172,13 @@ export function TurnDetailScreen({
     </View>
   );
 }
+
+/**
+ * A finished event in the trace. The trace re-renders on every streamed chunk
+ * and holds one row per thinking chunk and tool call, so without this every
+ * row it had ever shown re-rendered along with the live text.
+ */
+const EventRow = memo(SessionMessageRow, propsEqualIgnoringFunctions);
 
 function resultForCall(
   event: SessionMessage,
@@ -191,7 +210,9 @@ function streamingMessage(turn: AgentTurnFeedItem, text: string): SessionMessage
     turnId: "",
     replyToMessageId: "",
     metadata: null,
-    createdAt: new Date().toISOString(),
+    // When the stream began, not "now": a fresh timestamp per render made the
+    // row's props differ on every chunk even when nothing else had.
+    createdAt: turn.stream?.startedAt ?? "",
     attachments: [],
   };
 }

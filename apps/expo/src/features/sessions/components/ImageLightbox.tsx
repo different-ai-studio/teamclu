@@ -1,8 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
-import { Image, Modal, Pressable, StyleSheet, View } from "react-native";
+import { Modal, Pressable, StyleSheet } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { hai } from "../../../ui/theme";
+import { ZoomableImage } from "./ZoomableImage";
 
 export type ImageLightboxProps = {
   onClose: () => void;
@@ -12,21 +14,17 @@ export type ImageLightboxProps = {
 /**
  * Full-screen image viewer used when the user taps an image
  * attachment in the message feed. Mirrors iOS `ImageLightbox`: black
- * backdrop, dismiss on tap-anywhere, close affordance top-left. Heavy
- * pan/zoom can land later with `react-native-image-zoom-viewer`.
+ * backdrop, dismiss on a single tap, close affordance top-left. Pinch,
+ * double-tap and drag zoom the image (iOS #1709 `ZoomableContainer`).
  */
 export function ImageLightbox({ onClose, url }: ImageLightboxProps) {
   const { t } = useTranslation();
   if (!url) return null;
   return (
     <Modal animationType="fade" onRequestClose={onClose} transparent visible>
-      <Pressable onPress={onClose} style={styles.backdrop}>
-        <Image
-          accessibilityRole="image"
-          resizeMode="contain"
-          source={{ uri: url }}
-          style={styles.image}
-        />
+      {/* A modal renders outside the app's gesture root; it needs its own. */}
+      <GestureHandlerRootView style={styles.backdrop}>
+        <ZoomableImage onTap={onClose} uri={url} />
         <Pressable
           accessibilityLabel={t("Close")}
           accessibilityRole="button"
@@ -36,7 +34,7 @@ export function ImageLightbox({ onClose, url }: ImageLightboxProps) {
         >
           <Ionicons color={hai.paper} name="close" size={24} />
         </Pressable>
-      </Pressable>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -58,10 +56,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 48,
     width: 36,
-  },
-  image: {
-    height: "100%",
-    width: "100%",
   },
 });
 

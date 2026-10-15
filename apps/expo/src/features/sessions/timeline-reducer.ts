@@ -34,8 +34,21 @@ function insertSorted(messages: SessionMessage[], next: SessionMessage): Session
     }
     return messages;
   }
-  const out = [...messages, next];
-  out.sort(compareMessages);
+  // A live event almost always lands at the end, so check that first and
+  // binary-search otherwise — a full re-sort per streamed event parsed every
+  // timestamp in the session each time.
+  const out = messages.slice();
+  let lo = 0;
+  let hi = out.length;
+  if (hi > 0 && compareMessages(out[hi - 1], next) <= 0) {
+    lo = hi;
+  }
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (compareMessages(out[mid], next) <= 0) lo = mid + 1;
+    else hi = mid;
+  }
+  out.splice(lo, 0, next);
   return out;
 }
 

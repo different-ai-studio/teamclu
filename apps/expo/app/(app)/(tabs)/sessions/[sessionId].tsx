@@ -51,6 +51,7 @@ import {
   permissionOptionsOf,
 } from "../../../../src/features/sessions/permission-options";
 import { createSessionDetailController } from "../../../../src/features/sessions/session-detail-controller";
+import { openingSession } from "../../../../src/features/sessions/opening-session";
 import { emptyTimelineState } from "../../../../src/features/sessions/timeline-reducer";
 import { createSessionDetailCache } from "../../../../src/features/sessions/session-detail-cache";
 import { createStreamingSnapshotStore } from "../../../../src/features/sessions/streaming-snapshot";
@@ -58,6 +59,10 @@ import { createSessionMutesApi } from "../../../../src/features/sessions/session
 import { supabaseAccessToken } from "../../../../src/lib/cloud-api/client";
 import { SessionDetailScreen } from "../../../../src/features/sessions/screens/SessionDetailScreen";
 import { ModelPickerSheet } from "../../../../src/features/sessions/screens/ModelPickerSheet";
+import { uploadPastedImage } from "../../../../src/features/sessions/attachment-upload";
+import { appendPendingAttachment } from "../../../../src/features/sessions/pending-attachments";
+import { ForwardTargetSheet } from "../../../../src/features/sessions/screens/ForwardTargetSheet";
+import type { SessionSummary } from "../../../../src/features/sessions/session-types";
 import {
   agentBackendDisplayName,
   runtimeStatusName,
@@ -333,10 +338,21 @@ export default function SessionDetailRoute() {
         ? "/(app)/sessions"
         : null;
 
-  const detailState = useSyncExternalStore(
+  const liveDetailState = useSyncExternalStore(
     controller?.subscribe ?? (() => () => {}),
     controller?.getState ?? (() => fallbackDetailState),
     controller?.getState ?? (() => fallbackDetailState),
+  );
+  // Opened from the list: paint the screen from the summary the list already
+  // had, instead of a "Loading session" card until the disk read lands. The
+  // feed stays blank until there is history to show (`historySettled`).
+  const openingSummary = useMemo(() => (sessionId ? openingSession(sessionId) : null), [sessionId]);
+  const detailState = useMemo<SessionDetailControllerState>(
+    () =>
+      liveDetailState.status === "loading" && openingSummary
+        ? { ...liveDetailState, status: "ready", session: liveDetailState.session ?? openingSummary }
+        : liveDetailState,
+    [liveDetailState, openingSummary],
   );
 
   // Save the in-flight streaming buffers on the way out, drop them on the way
@@ -548,6 +564,33 @@ export default function SessionDetailRoute() {
     }
     return map;
   }, [teamActors]);
+
+  // Multi-select "Forward": the transcript waiting for a target session.
+  const [forwardText, setForwardText] = useState<string | null>(null);
+  const [forwardTargets, setForwardTargets] = useState<SessionSummary[] | null>(null);
+  useEffect(() => {
+    if (forwardText === null || !currentTeam?.id) return;
+    let cancelled = false;
+    setForwardTargets(null);
+    void createConfiguredSessionsApi(supabase)
+      .listSessions(currentTeam.id)
+      .then((sessions) => {
+        if (cancelled) return;
+        setForwardTargets(
+          sessions
+            .filter((session) => session.sessionId !== sessionId)
+            .sort((a, b) =>
+              (b.lastMessageAt || b.createdAt).localeCompare(a.lastMessageAt || a.createdAt),
+            ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setForwardTargets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTeam?.id, forwardText, sessionId]);
 
   const senderAvatars = useMemo(() => {
     const map = new Map<string, string | null>();
@@ -994,6 +1037,61 @@ export default function SessionDetailRoute() {
       {canRenderSessionDetail(detailState) ? (
         <SessionDetailScreen
           focusMessageId={focusMessageId}
+          onAskAgain={({ content, replyToMessageId, agentId }) => {
+            if (sessionId) noteLocalPrompt(sessionId);
+            void controller?.sendMessage({
+              content,
+              mentionActorIds: [agentId],
+              replyToMessageId,
+            });
+          }}
+          onForwardText={setForwardText}
+          onPasteImage={(data) => {
+            if (!sessionId || !currentTeam?.id) return;
+            const teamId = currentTeam.id;
+            impactLight();
+            void uploadPastedImage({
+              getAccessToken: supabaseAccessToken(supabase),
+              teamId,
+              sessionId,
+              data,
+            })
+              .then((uploaded) => appendPendingAttachment(teamId, sessionId, uploaded))
+              .catch((err) => {
+                showToast(
+                  "error",
+                  err instanceof Error ? err.message : t("Couldn't upload the file."),
+                );
+              });
+          }}
+          onDeleteMessages={(messageIds) => {
+            const run = async () => {
+              const api = createConfiguredSessionsApi(supabase);
+              let failed = 0;
+              for (const id of messageIds) {
+                try {
+                  await api.deleteMessage(id);
+                } catch {
+                  failed += 1;
+                }
+              }
+              if (failed > 0) {
+                showToast("error", t("Couldn't delete message"));
+              } else {
+                successTone();
+                showToast("success", t("Message deleted"));
+              }
+              void controller?.load({ preserveExisting: true });
+            };
+            Alert.alert(
+              t("Delete {{value}} messages?", { value: messageIds.length }),
+              t("The message is removed for everyone in this session."),
+              [
+                { text: t("Delete"), style: "destructive", onPress: () => void run() },
+                { text: t("Cancel"), style: "cancel" },
+              ],
+            );
+          }}
           agentChips={agentChips}
           composerText={detailState.composerText}
           connectionState={detailState.connectionState}
@@ -1097,6 +1195,12 @@ export default function SessionDetailRoute() {
           }}
           onSend={() => {
             impactLight();
+            // A keystroke's debounced save still pending would land after
+            // this clear and bring the sent text back as a draft.
+            if (draftSaveTimer.current) {
+              clearTimeout(draftSaveTimer.current);
+              draftSaveTimer.current = null;
+            }
             if (sessionId) {
               void saveComposerDraft(sessionId, "");
             }
@@ -1168,6 +1272,28 @@ export default function SessionDetailRoute() {
           streamingAgentIds={streamingAgentIds}
         />
       ) : null}
+
+      <SheetModal onRequestClose={() => setForwardText(null)} visible={forwardText !== null}>
+        <ForwardTargetSheet
+          isLoading={forwardTargets === null}
+          onCancel={() => setForwardText(null)}
+          onSelect={(target) => {
+            const text = forwardText;
+            setForwardText(null);
+            if (!text || !controller) return;
+            void controller
+              .forwardText(target.sessionId, text)
+              .then(() => {
+                successTone();
+                showToast("success", t("Forwarded to “{{value}}”", { value: target.title.trim() || t("Untitled session") }));
+              })
+              .catch((err) => {
+                showToast("error", err instanceof Error ? err.message : t("Couldn't forward"));
+              });
+          }}
+          sessions={forwardTargets}
+        />
+      </SheetModal>
 
       <SheetModal
         onRequestClose={() => setIsModelPromptOpen(false)}

@@ -1,8 +1,10 @@
 import {
+  deleteMessages,
   loadMessages,
   loadSessions,
   saveMessages,
   saveSessions,
+  upsertMessages,
 } from "../../lib/db/local-cache";
 import { openCacheDb, type CacheDb } from "../../lib/db/cache-db";
 import type { MessageAttachment, SessionMessage, SessionSummary } from "./session-types";
@@ -32,6 +34,9 @@ export type SessionDetailCache = {
 export function createSessionDetailCache(
   getCacheDb: () => Promise<CacheDb> = openCacheDb,
 ): SessionDetailCache {
+  /** What each session's last write held, by message id. */
+  const lastSaved = new Map<string, Map<string, SessionMessage>>();
+  const FIRST_PAINT_MESSAGES = 120;
   const toSessionMessage = (row: {
     messageId: string;
     sessionId: string;
@@ -65,7 +70,10 @@ export function createSessionDetailCache(
       if (!sessionId) return null;
       try {
         const db = await getCacheDb();
-        const messages = await loadMessages(db, sessionId);
+        // The newest rows only: enough to fill the screen and the network's
+        // first page, without reading a long session's whole history before
+        // the first frame. Older pages come from the network as you scroll.
+        const messages = await loadMessages(db, sessionId, FIRST_PAINT_MESSAGES);
         // The session row is scoped by team, and the caller only knows the
         // session id, so find it by walking the message rows' team back into
         // the sessions table. A session with no cached messages still has a
@@ -77,6 +85,10 @@ export function createSessionDetailCache(
             )
           : undefined;
         if (!session) return null;
+        const loaded = messages.map(toSessionMessage);
+        // What disk holds, as far as this load saw: the next write diffs
+        // against it, so it never rewrites or trims the rows it did not read.
+        lastSaved.set(sessionId, new Map(loaded.map((message) => [message.messageId, message])));
         return {
           session: {
             sessionId: session.sessionId,
@@ -91,7 +103,7 @@ export function createSessionDetailCache(
             createdBy: session.createdBy,
             hasUnread: session.hasUnread,
           },
-          messages: messages.map(toSessionMessage),
+          messages: loaded,
         };
       } catch {
         return null;
@@ -132,11 +144,25 @@ export function createSessionDetailCache(
     },
     async saveMessages(sessionId, messages) {
       if (!sessionId) return;
+      // Timeline rows are immutable: a message that changed is a new object.
+      // When nothing was removed since the last write, only the rows whose
+      // object changed need writing — during a busy turn that is a handful,
+      // against rewriting the whole session every second.
+      // After a load, rows older than what it read stay on disk: only rows
+      // that were known and are now gone get deleted.
+      const previous = lastSaved.get(sessionId);
+      const nextIds = new Set(messages.map((message) => message.messageId));
+      const removed = previous ? [...previous.keys()].filter((id) => !nextIds.has(id)) : [];
+      const toWrite = previous
+        ? messages.filter((message) => previous.get(message.messageId) !== message)
+        : messages;
       try {
-        await saveMessages(
-          await getCacheDb(),
+        const db = await getCacheDb();
+        if (previous) await deleteMessages(db, sessionId, removed);
+        await (previous ? upsertMessages : saveMessages)(
+          db,
           sessionId,
-          messages.map((message) => ({
+          toWrite.map((message) => ({
             messageId: message.messageId,
             sessionId: message.sessionId || sessionId,
             teamId: message.teamId,
@@ -151,12 +177,15 @@ export function createSessionDetailCache(
             createdAt: message.createdAt,
           })),
         );
+        // Only after the write landed, so rows a failed write missed go next time.
+        lastSaved.set(sessionId, new Map(messages.map((message) => [message.messageId, message])));
       } catch {
         // best-effort
       }
     },
     async clear(sessionId) {
       if (!sessionId) return;
+      lastSaved.delete(sessionId);
       try {
         await saveMessages(await getCacheDb(), sessionId, []);
       } catch {

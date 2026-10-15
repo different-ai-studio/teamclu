@@ -1090,5 +1090,22 @@
   "Jump to latest": "Jump to latest",
   "Reply…": "Reply…",
   "Reply not sent": "Reply not sent",
-  "Saved as a draft in the session.": "Saved as a draft in the session."
+  "Saved as a draft in the session.": "Saved as a draft in the session.",
+  "Search in conversation": "Search in conversation",
+  "Previous match": "Previous match",
+  "Next match": "Next match",
+  "{{value}} selected": "{{value}} selected",
+  "Forward": "Forward",
+  "Select": "Select",
+  "Ask again": "Ask again",
+  "Conversation options": "Conversation options",
+  "Forwarded from “{{value}}”": "Forwarded from “{{value}}”",
+  "Forward to": "Forward to",
+  "No other sessions": "No other sessions",
+  "Delete {{value}} messages?": "Delete {{value}} messages?",
+  "Forwarded to “{{value}}”": "Forwarded to “{{value}}”",
+  "Couldn't forward": "Couldn't forward",
+  "Image on clipboard": "Image on clipboard",
+  "Paste image": "Paste image",
+  "Double-tap to zoom": "Double-tap to zoom"
 }
