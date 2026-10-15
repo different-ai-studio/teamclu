@@ -208,23 +208,6 @@ export default function IdeaDetailRoute() {
     [currentActorId, ideaId, ideasApi, loadActivities, tHook],
   );
 
-  const handleToggleStatus = idea
-    ? async () => {
-        setBusyAction("toggleStatus");
-        const previous = idea.status;
-        const next: IdeaStatus = idea.status === "done" ? "open" : "done";
-        try {
-          await ideasApi.updateStatus(idea.ideaId, next);
-          setIdea({ ...idea, status: next, updatedAt: new Date().toISOString() });
-          await logStatusChange(previous, next);
-        } catch {
-          // Surface via screen busy state release — keep idea as-is.
-        } finally {
-          setBusyAction(null);
-        }
-      }
-    : undefined;
-
   const handleSetStatus = idea
     ? async (next: IdeaStatus) => {
         if (next === idea.status) return;
@@ -233,7 +216,7 @@ export default function IdeaDetailRoute() {
         try {
           await ideasApi.updateStatus(idea.ideaId, next);
           setIdea({ ...idea, status: next, updatedAt: new Date().toISOString() });
-          showToast("success", tHook("Marked {{status}}", { status: next.replace("_", " ") }));
+          showToast("success", tHook("Marked {{status}}", { status: statusLabel(next) }));
           await logStatusChange(previous, next);
         } catch (err) {
           showToast(
@@ -362,7 +345,6 @@ export default function IdeaDetailRoute() {
             }
           : undefined
       }
-      onToggleStatus={handleToggleStatus}
       relatedSessions={relatedSessions}
     />
   );

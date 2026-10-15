@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -49,7 +50,6 @@ export type IdeaDetailScreenProps = {
   onSelectSession?: (sessionId: string) => void;
   onSetStatus?: (next: IdeaStatus) => void;
   onStartSession?: () => void;
-  onToggleStatus?: () => void;
   /** Like/unlike the idea; `liked` is the desired state, not a toggle. */
   onToggleLike?: (liked: boolean) => void;
   relatedSessions?: ReadonlyArray<{
@@ -132,7 +132,6 @@ export function IdeaDetailScreen({
   onSelectSession,
   onSetStatus,
   onStartSession,
-  onToggleStatus,
   onToggleLike,
   relatedSessions,
   activities,
@@ -163,12 +162,67 @@ export function IdeaDetailScreen({
       descDraft.trim() !== (idea.description ?? "").trim());
   return (
     <View style={styles.screen}>
+      {/* iOS keeps the page's actions in the navigation bar: start a session,
+          and archive behind "⋯" with a confirmation. They used to be three
+          full-width buttons under the post — Archive the loudest thing on a
+          page whose subject is the idea. Status changes through the pill. */}
       <GlassHeader>
-        <View style={styles.headerSlot} />
+        <View style={styles.headerSide}>
+          <Pressable
+            accessibilityLabel={tHook("Close")}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={onClose}
+            style={styles.headerSlot}
+          >
+            <Ionicons color={colors.onyx} name="close" size={26} />
+          </Pressable>
+        </View>
         <Text style={styles.headerTitle}>{tHook("Idea")}</Text>
-        <Pressable hitSlop={8} onPress={onClose} style={styles.headerSlot}>
-          <Ionicons color={colors.onyx} name="close" size={26} />
-        </Pressable>
+        <View style={[styles.headerSide, styles.headerSideEnd]}>
+          {idea && onStartSession ? (
+            <Pressable
+              accessibilityLabel={tHook("Start a session")}
+              accessibilityRole="button"
+              hitSlop={8}
+              onPress={onStartSession}
+              style={styles.headerIconButton}
+            >
+              <Ionicons color={colors.onyx} name="chatbubbles-outline" size={22} />
+            </Pressable>
+          ) : null}
+          {idea && onArchive ? (
+            <Pressable
+              accessibilityLabel={tHook("More")}
+              accessibilityRole="button"
+              disabled={busyAction !== null}
+              hitSlop={8}
+              onPress={() =>
+                showActionSheet(
+                  [
+                    {
+                      label: tHook("Archive"),
+                      style: "destructive",
+                      run: () =>
+                        Alert.alert(
+                          tHook("Archive this idea?"),
+                          tHook("Archived ideas are hidden from the main list but can be restored later."),
+                          [
+                            { text: tHook("Cancel"), style: "cancel" },
+                            { text: tHook("Archive"), style: "destructive", onPress: onArchive },
+                          ],
+                        ),
+                    },
+                  ],
+                  { cancelLabel: tHook("Cancel") },
+                )
+              }
+              style={[styles.headerIconButton, busyAction !== null ? styles.actionBusy : null]}
+            >
+              <Ionicons color={colors.onyx} name="ellipsis-horizontal" size={22} />
+            </Pressable>
+          ) : null}
+        </View>
       </GlassHeader>
 
       <ScrollView
@@ -369,73 +423,6 @@ export function IdeaDetailScreen({
               </View>
             ) : null}
 
-            {onStartSession ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={onStartSession}
-                style={({ pressed }) => [
-                  styles.actionButton,
-                  styles.actionStart,
-                  pressed ? styles.actionPressed : null,
-                ]}
-              >
-                <Text style={[styles.actionText, styles.actionStartText]}>
-                  {tHook("Start a session")}
-                </Text>
-              </Pressable>
-            ) : null}
-
-            {(onToggleStatus || onArchive) ? (
-              <View style={styles.actions}>
-                {onToggleStatus ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={busyAction !== null}
-                    onPress={onToggleStatus}
-                    style={({ pressed }) => [
-                      styles.actionButton,
-                      idea.status === "done"
-                        ? styles.actionReopen
-                        : styles.actionDone,
-                      busyAction !== null ? styles.actionBusy : null,
-                      pressed && busyAction === null ? styles.actionPressed : null,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.actionText,
-                        idea.status === "done"
-                          ? styles.actionReopenText
-                          : styles.actionDoneText,
-                      ]}
-                    >
-                      {busyAction === "toggleStatus"
-                        ? tHook("Saving…")
-                        : idea.status === "done"
-                        ? tHook("Reopen")
-                        : tHook("Mark done")}
-                    </Text>
-                  </Pressable>
-                ) : null}
-                {onArchive ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={busyAction !== null}
-                    onPress={onArchive}
-                    style={({ pressed }) => [
-                      styles.actionButton,
-                      styles.actionArchive,
-                      busyAction !== null ? styles.actionBusy : null,
-                      pressed && busyAction === null ? styles.actionPressed : null,
-                    ]}
-                  >
-                    <Text style={[styles.actionText, styles.actionArchiveText]}>
-                      {busyAction === "archive" ? tHook("Archiving…") : tHook("Archive")}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            ) : null}
           </>
         )}
       </ScrollView>
@@ -490,53 +477,17 @@ const styles = StyleSheet.create({
   engagement: {
     paddingHorizontal: spacing.xs,
   },
-  actionArchive: {
-    backgroundColor: "rgba(184,75,54,0.10)",
-  },
-  actionArchiveText: {
-    color: hai.cinnabar,
-  },
   actionBusy: {
     opacity: 0.5,
   },
-  actionButton: {
-    alignItems: "center",
-    borderRadius: radii.button,
-    paddingVertical: 14,
-  },
-  actionDone: {
-    backgroundColor: hai.onyx,
-  },
-  actionDoneText: {
-    color: hai.paper,
-  },
   actionPressed: {
     opacity: 0.85,
-  },
-  actionReopen: {
-    backgroundColor: hai.pebble,
   },
   composerDock: {
     backgroundColor: colors.mist,
     paddingBottom: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
-  },
-  actionStart: {
-    backgroundColor: hai.cinnabar,
-    marginBottom: spacing.sm,
-  },
-  actionStartText: {
-    color: hai.paper,
-  },
-  actionReopenText: {
-    color: hai.onyx,
-  },
-  actionText: {
-    ...typography.cardTitle,
-  },
-  actions: {
-    gap: spacing.sm,
   },
   saveButton: {
     alignItems: "center",
@@ -583,6 +534,20 @@ const styles = StyleSheet.create({
     color: colors.onyx,
     flexShrink: 1,
     ...typography.body,
+  },
+  // Both sides as wide as the two actions, so the title stays centred.
+  headerSide: {
+    flexDirection: "row",
+    width: 88,
+  },
+  headerSideEnd: {
+    justifyContent: "flex-end",
+  },
+  headerIconButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 40,
+    minWidth: 40,
   },
   headerSlot: {
     alignItems: "center",
