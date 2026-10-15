@@ -174,6 +174,14 @@ function AppContent() {
 
   // UI store - individual selectors
   const embedMode = useUIStore((s) => s.embedMode);
+  // Below the wide breakpoint the sidebar is a drawer (SidebarProvider's
+  // `overlay`). The narrow layout only offers it where there is a nav to reach:
+  // solo builds and the extension's embed mode have their own single-column UI.
+  const showSidebar = breakpoint !== 'narrow' || (!isSoloBuild() && !embedMode);
+  const openNarrowListSheet = React.useCallback(
+    () => useUIStore.getState().setNarrowListSheetOpen(true),
+    [],
+  );
   const currentView = useUIStore((s) => s.currentView);
   const closeSettings = useUIStore((s) => s.closeSettings);
   const sidebarFilter = useUIStore((s) => s.sidebarFilter);
@@ -555,7 +563,12 @@ function AppContent() {
   return (
     <>
       {appWiring}
-      {breakpoint === 'wide' && <AppSidebar />}
+      {/* Inline when wide, a drawer below that. Medium used to drop it
+          outright, which left the second column's expand button with nothing
+          to expand — clicking it only made the button itself disappear. */}
+      {showSidebar && (
+        <AppSidebar onPickSection={breakpoint === 'narrow' ? openNarrowListSheet : undefined} />
+      )}
       {breakpoint !== 'narrow' && (
         <div className={cn('w-(--session-list-width) shrink-0 h-svh overflow-hidden', SIDEBAR_INTERACTIVE_CURSOR)}>
           <SidebarSecondColumn showNewSessionActions={breakpoint === 'medium'} />
@@ -789,6 +802,8 @@ function App() {
     }
   }, []);
 
+  const breakpoint = useLayoutBreakpoint()
+
   // ── Global webview shortcuts (find, zoom, context menu) ──
   useWebviewShortcuts()
   useTerminalShortcuts()
@@ -913,6 +928,7 @@ function App() {
   const mainContent = (
     <>
       <SidebarProvider
+        overlay={breakpoint !== 'wide'}
         style={
           {
             "--sidebar-width": "220px",

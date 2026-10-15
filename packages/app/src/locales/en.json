@@ -603,6 +603,7 @@
     "restoreTabs": "Show files",
     "collapsePanel": "Collapse panel",
     "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar",
     "settings": "Settings"
   },
   "chat": {

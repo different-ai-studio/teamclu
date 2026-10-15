@@ -9,7 +9,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { SessionListColumn } from '@/components/sidebar/SessionListColumn'
+import { SidebarSecondColumn } from '@/components/sidebar/SidebarSecondColumn'
+import { SidebarCollapseToggle } from '@/components/app-sidebar'
+import { isSoloBuild } from '@/lib/config/solo-build'
 import { SIDEBAR_INTERACTIVE_CURSOR } from '@/components/sidebar/sidebar-interactive-cursor'
 import { cn } from '@/lib/utils'
 import { TrafficLights } from '@/components/ui/traffic-lights'
@@ -31,12 +33,19 @@ export function NarrowChatHeader() {
   const embedMode = useUIStore((s) => s.embedMode)
   const currentView = useUIStore((s) => s.currentView)
   const activeSessionId = useSessionSelectionStore((s) => s.activeSessionId)
-  const [sheetOpen, setSheetOpen] = React.useState(false)
+  // In the store so the nav drawer can open it on the section it just picked.
+  const sheetOpen = useUIStore((s) => s.narrowListSheetOpen)
+  const setSheetOpen = useUIStore((s) => s.setNarrowListSheetOpen)
+  // Leaving the narrow layout unmounts this header; a sheet left open must not
+  // pop back up the next time the window narrows.
+  React.useEffect(() => () => setSheetOpen(false), [setSheetOpen])
   const [moreOpen, setMoreOpen] = React.useState(false)
   const [creatingSession, setCreatingSession] = React.useState(false)
 
   const showHeaderNewChat = currentView === 'chat' && !!activeSessionId
   const showSettingsButton = !hideExtensionSettingsButton
+  // Same gate App.tsx uses to mount the sidebar drawer in this layout.
+  const showNavToggle = !isSoloBuild() && !embedMode
 
   const handleQuickNewChat = React.useCallback(() => {
     if (creatingSession) return
@@ -76,6 +85,7 @@ export function NarrowChatHeader() {
     <div className="flex h-11 shrink-0 items-center border-b border-border bg-background px-2" data-tauri-drag-region>
       <TrafficLights />
       <div className="flex items-center gap-0.5">
+        {showNavToggle ? <SidebarCollapseToggle className="h-8 w-8" /> : null}
         {showHeaderNewChat ? (
           <Button
             variant="ghost"
@@ -200,7 +210,7 @@ export function NarrowChatHeader() {
             <SheetTitle>{t('sidebar.sessions', 'Sessions')}</SheetTitle>
           </SheetHeader>
           <div className={cn('flex-1 min-h-0', SIDEBAR_INTERACTIVE_CURSOR)}>
-            <SessionListColumn onDismiss={() => setSheetOpen(false)} />
+            <SidebarSecondColumn onDismiss={() => setSheetOpen(false)} />
           </div>
         </SheetContent>
       </Sheet>
