@@ -172,8 +172,51 @@ export function ActorsListScreen({
 
   if (state.status === "loading" || (state.status === "idle" && state.actors.length === 0)) {
     return (
+      <View style={styles.screen}>
+        {headerBar}
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
+          refreshControl={
+            <RefreshControl
+              onRefresh={onRefresh}
+              refreshing={state.isRefreshing}
+              tintColor={colors.slate}
+            />
+          }
+          style={styles.scroll}
+        >
+          <View>
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (state.status === "error" && state.actors.length === 0) {
+    return (
+      <View style={styles.screen}>
+        {headerBar}
+        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]} style={styles.scroll}>
+          <View style={styles.stateBlock}>
+            <Text style={styles.stateTitle}>{t("Couldn't load actors")}</Text>
+            <Text style={styles.stateBody}>{state.errorMessage ?? t("Try again in a moment.")}</Text>
+            <PrimaryButton fullWidth={false} label={t("Retry")} onPress={onLoad} />
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.screen}>
+      {headerBar}
       <ScrollView
         contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl
             onRefresh={onRefresh}
@@ -181,116 +224,78 @@ export function ActorsListScreen({
             tintColor={colors.slate}
           />
         }
-        style={styles.screen}
+        style={styles.scroll}
       >
-        {headerBar}
-        <View>
-          <SkeletonRow />
-          <SkeletonRow />
-          <SkeletonRow />
+        <View style={styles.searchField}>
+          <Ionicons color={colors.slate} name="search" size={16} />
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={setQuery}
+            placeholder={t("Search actors")}
+            placeholderTextColor={colors.slate}
+            selectionColor={colors.cinnabar}
+            style={styles.searchInput}
+            value={query}
+          />
+          {query.length > 0 ? (
+            <Pressable
+              accessibilityLabel={t("Clear search")}
+              accessibilityRole="button"
+              hitSlop={6}
+              onPress={() => setQuery("")}
+            >
+              <Ionicons color={colors.slate} name="close-circle" size={16} />
+            </Pressable>
+          ) : null}
         </View>
-      </ScrollView>
-    );
-  }
 
-  if (state.status === "error" && state.actors.length === 0) {
-    return (
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]} style={styles.screen}>
-        {headerBar}
-        <View style={styles.stateBlock}>
-          <Text style={styles.stateTitle}>{t("Couldn't load actors")}</Text>
-          <Text style={styles.stateBody}>{state.errorMessage ?? t("Try again in a moment.")}</Text>
-          <PrimaryButton fullWidth={false} label={t("Retry")} onPress={onLoad} />
-        </View>
-      </ScrollView>
-    );
-  }
+        <SegmentedFilter onSelect={setFilter} segments={segments} selection={filter} />
 
-  return (
-    <ScrollView
-      contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
-      keyboardDismissMode="interactive"
-      keyboardShouldPersistTaps="handled"
-      refreshControl={
-        <RefreshControl
-          onRefresh={onRefresh}
-          refreshing={state.isRefreshing}
-          tintColor={colors.slate}
-        />
-      }
-      style={styles.screen}
-    >
-      {headerBar}
-
-      <View style={styles.searchField}>
-        <Ionicons color={colors.slate} name="search" size={16} />
-        <TextInput
-          autoCapitalize="none"
-          autoCorrect={false}
-          onChangeText={setQuery}
-          placeholder={t("Search actors")}
-          placeholderTextColor={colors.slate}
-          selectionColor={colors.cinnabar}
-          style={styles.searchInput}
-          value={query}
-        />
-        {query.length > 0 ? (
+        {/* "The current user has no accessible agent" — distinct from "the team
+            has none", which the zero-agent reminder sheet covers on first run. */}
+        {showAddYourAgentNotice && onInvite ? (
           <Pressable
-            accessibilityLabel={t("Clear search")}
             accessibilityRole="button"
-            hitSlop={6}
-            onPress={() => setQuery("")}
+            onPress={onInvite}
+            style={({ pressed }) => [styles.ownAgentNotice, pressed ? { opacity: 0.8 } : null]}
+            testID="members.addYourAgentNotice"
           >
-            <Ionicons color={colors.slate} name="close-circle" size={16} />
+            <Ionicons color={colors.cinnabar} name="bulb-outline" size={16} />
+            <Text style={styles.ownAgentNoticeText}>{t("Add your own agent")}</Text>
+            <Ionicons color={colors.slate} name="chevron-forward" size={14} />
           </Pressable>
         ) : null}
-      </View>
 
-      <SegmentedFilter onSelect={setFilter} segments={segments} selection={filter} />
-
-      {/* "The current user has no accessible agent" — distinct from "the team
-          has none", which the zero-agent reminder sheet covers on first run. */}
-      {showAddYourAgentNotice && onInvite ? (
-        <Pressable
-          accessibilityRole="button"
-          onPress={onInvite}
-          style={({ pressed }) => [styles.ownAgentNotice, pressed ? { opacity: 0.8 } : null]}
-          testID="members.addYourAgentNotice"
-        >
-          <Ionicons color={colors.cinnabar} name="bulb-outline" size={16} />
-          <Text style={styles.ownAgentNoticeText}>{t("Add your own agent")}</Text>
-          <Ionicons color={colors.slate} name="chevron-forward" size={14} />
-        </Pressable>
-      ) : null}
-
-      {humans.length + agents.length === 0 ? (
-        <View style={styles.stateBlock}>
-          <Text style={styles.stateTitle}>{t("No Actors Yet")}</Text>
-          <Text style={styles.stateBody}>
-            {t("Invite teammates or agents to see them here.")}
-          </Text>
-        </View>
-      ) : (
-        <View style={styles.groups}>
-          {visibleHumans.length > 0 ? (
-            <Section
-              actors={visibleHumans}
-              currentActorId={currentActorId}
-              onSelectActor={onSelectActor}
-              title={t("Humans · {{count}}", { count: visibleHumans.length })}
-            />
-          ) : null}
-          {visibleAgents.length > 0 ? (
-            <Section
-              actors={visibleAgents}
-              currentActorId={currentActorId}
-              onSelectActor={onSelectActor}
-              title={t("Agent Actors · {{count}}", { count: visibleAgents.length })}
-            />
-          ) : null}
-        </View>
-      )}
-    </ScrollView>
+        {humans.length + agents.length === 0 ? (
+          <View style={styles.stateBlock}>
+            <Text style={styles.stateTitle}>{t("No Actors Yet")}</Text>
+            <Text style={styles.stateBody}>
+              {t("Invite teammates or agents to see them here.")}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.groups}>
+            {visibleHumans.length > 0 ? (
+              <Section
+                actors={visibleHumans}
+                currentActorId={currentActorId}
+                onSelectActor={onSelectActor}
+                title={t("Humans · {{count}}", { count: visibleHumans.length })}
+              />
+            ) : null}
+            {visibleAgents.length > 0 ? (
+              <Section
+                actors={visibleAgents}
+                currentActorId={currentActorId}
+                onSelectActor={onSelectActor}
+                title={t("Agent Actors · {{count}}", { count: visibleAgents.length })}
+              />
+            ) : null}
+          </View>
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
@@ -298,6 +303,9 @@ const styles = StyleSheet.create({
   content: {
     gap: spacing.md,
     paddingBottom: spacing.xxxl,
+    // The header sits above the scroll view, fixed; this is the gap it used to
+    // put between itself and the first scrolled row.
+    paddingTop: spacing.md,
   },
   groups: {
     gap: spacing.lg,
@@ -312,6 +320,9 @@ const styles = StyleSheet.create({
   },
   screen: {
     backgroundColor: colors.mist,
+    flex: 1,
+  },
+  scroll: {
     flex: 1,
   },
   searchField: {

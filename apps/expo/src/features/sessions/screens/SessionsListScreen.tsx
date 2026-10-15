@@ -538,52 +538,57 @@ export function SessionsListScreen({
 
   if (isWaitingForRows) {
     return (
-      <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
-        refreshControl={
-          <RefreshControl
-            onRefresh={onRefresh}
-            refreshing={state.isRefreshing}
-            tintColor={colors.slate}
-          />
-        }
-        style={styles.screen}
-      >
+      <View style={styles.screen}>
         {headerBar}
-        {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
-        {skeletonDue ? (
-          <View>
-            <SkeletonRow />
-            <SkeletonRow />
-            <SkeletonRow />
-            <SkeletonRow />
-          </View>
-        ) : null}
-      </ScrollView>
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]}
+          refreshControl={
+            <RefreshControl
+              onRefresh={onRefresh}
+              refreshing={state.isRefreshing}
+              tintColor={colors.slate}
+            />
+          }
+          style={styles.scroll}
+        >
+          {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
+          {skeletonDue ? (
+            <View>
+              <SkeletonRow />
+              <SkeletonRow />
+              <SkeletonRow />
+              <SkeletonRow />
+            </View>
+          ) : null}
+        </ScrollView>
+      </View>
     );
   }
 
   if (state.status === "error" && state.sessions.length === 0) {
     return (
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]} style={styles.screen}>
+      <View style={styles.screen}>
         {headerBar}
-        {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
-        <View style={styles.stateBlock}>
-          <Text style={styles.stateTitle}>{t("Couldn't load sessions")}</Text>
-          <Text style={styles.stateBody}>{state.errorMessage ?? t("Try again in a moment.")}</Text>
-          <PrimaryButton
-            fullWidth={false}
-            isLoading={state.isLoading}
-            label={t("Retry")}
-            onPress={onLoad}
-          />
-        </View>
-      </ScrollView>
+        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: bottomInset + spacing.xxxl }]} style={styles.scroll}>
+          {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
+          <View style={styles.stateBlock}>
+            <Text style={styles.stateTitle}>{t("Couldn't load sessions")}</Text>
+            <Text style={styles.stateBody}>{state.errorMessage ?? t("Try again in a moment.")}</Text>
+            <PrimaryButton
+              fullWidth={false}
+              isLoading={state.isLoading}
+              label={t("Retry")}
+              onPress={onLoad}
+            />
+          </View>
+        </ScrollView>
+      </View>
     );
   }
 
   return (
     <View style={styles.screen}>
+    <View onTouchStart={dismissSearchKeyboard}>{headerBar}</View>
     <FlashList
       contentContainerStyle={{ paddingBottom: bottomInset + spacing.xxxl }}
       data={listItems}
@@ -616,7 +621,6 @@ export function SessionsListScreen({
       }
       ListHeaderComponent={
         <View style={styles.listHeader}>
-          <View onTouchStart={dismissSearchKeyboard}>{headerBar}</View>
           {placeholderMessage ? <Text style={styles.feedback}>{placeholderMessage}</Text> : null}
 
           {state.status === "error" && state.errorMessage ? (
@@ -770,6 +774,9 @@ const styles = StyleSheet.create({
   content: {
     gap: spacing.lg,
     paddingBottom: spacing.xxxl,
+    // The header sits above the scroll view, fixed; this is the gap it used to
+    // put between itself and the first scrolled row.
+    paddingTop: spacing.lg,
   },
   feedback: {
     color: colors.slate,
@@ -782,6 +789,7 @@ const styles = StyleSheet.create({
   groupItems: {},
   listHeader: {
     gap: spacing.lg,
+    paddingTop: spacing.lg,
   },
   // A group label in the flat list: the space the group gap and the label's
   // own gap used to give it.
@@ -862,6 +870,9 @@ const styles = StyleSheet.create({
   },
   screen: {
     backgroundColor: colors.mist,
+    flex: 1,
+  },
+  scroll: {
     flex: 1,
   },
   sessionRowChecked: {
