@@ -68,26 +68,24 @@ final class SessionDetailLoadingStateTests: XCTestCase {
             "agent with empty text buffer must NOT be restored after stop/start — no incomplete event was persisted")
     }
 
-    func test_completeOutputFallbackClearsOptimisticLoadingCard() async throws {
+    func test_completeOutputFallbackClearsOptimisticLoadingCard() async {
         let vm = SessionDetailViewModel.testInstance()
         vm._test_markAgentWorking()
         XCTAssertTrue(vm.isAgentWorking)
 
-        vm._test_armCompletedOutputSettle(bucket: "agent-a")
-        try await Task.sleep(for: .milliseconds(400))
+        await vm._test_armCompletedOutputSettle(bucket: "agent-a")?.value
 
         XCTAssertFalse(vm.isAgentWorking,
             "complete output should dismiss Agent loading even when idle is missing")
     }
 
-    func test_followOnWorkCancelsCompleteOutputFallback() async throws {
+    func test_followOnWorkCancelsCompleteOutputFallback() async {
         let vm = SessionDetailViewModel.testInstance()
         vm._test_markAgentWorking()
-        vm._test_armCompletedOutputSettle(bucket: "agent-a")
+        let settle = vm._test_armCompletedOutputSettle(bucket: "agent-a")
 
-        try await Task.sleep(for: .milliseconds(100))
         vm._test_markAgentWorking()
-        try await Task.sleep(for: .milliseconds(300))
+        await settle?.value
 
         XCTAssertTrue(vm.isAgentWorking,
             "a follow-on tool/output event should keep the loading card active")
