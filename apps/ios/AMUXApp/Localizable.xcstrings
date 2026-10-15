@@ -5856,6 +5856,16 @@
           }
         }
       }
+    },
+    "Current": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

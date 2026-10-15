@@ -528,23 +528,23 @@ public final class AppOnboardingCoordinator {
         }
     }
 
-    /// Entry point for switching teams after login (Settings → Switch Team).
-    /// Loads the full membership list (grouped by org, like the login-time
-    /// picker) and routes to the org→team picker. The current context stays
-    /// live so `cancelTeamSwitch()` can drop straight back to `.ready`.
-    public func beginTeamSwitch() async {
-        guard currentContext != nil else { return }
-        do {
-            teamChoices = try await store.listAllMyTeams()
-            errorMessage = nil
-            route = .selectTeam
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+    /// Settings' team-switch sheet: the full membership list, without leaving
+    /// `.ready` (the sheet sits on top of the live shell).
+    public func loadSwitchableTeams() async throws -> [MembershipTeam] {
+        try await store.listAllMyTeams()
     }
 
-    /// Backs the picker's Cancel button when it was reached from Settings
-    /// rather than login: the previous team context is still intact, so
+    /// Commit a pick made in Settings' team-switch sheet. Seeds `teamChoices`
+    /// first so a failed switch lands on the full-screen picker with the same
+    /// list (and its Cancel button) instead of an empty one.
+    public func switchTeam(to teamID: String, choices: [MembershipTeam]) async {
+        guard currentContext != nil, teamID != currentContext?.team.id else { return }
+        teamChoices = choices
+        await selectTeam(teamID: teamID)
+    }
+
+    /// Backs the picker's Cancel button when it was reached from a failed
+    /// Settings switch rather than login: the previous team context is still intact, so
     /// returning to `.ready` is a pure route flip.
     public func cancelTeamSwitch() {
         guard currentContext != nil else { return }
