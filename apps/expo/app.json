@@ -1,15 +1,25 @@
 {
   "expo": {
-    "name": "TeamClu Expo",
+    "name": "TeamClu",
     "slug": "teamclu-expo",
     "scheme": "teamclu",
     "version": "0.1.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "locales": {
+      "en": "./locales/en.json",
+      "zh-Hans": "./locales/zh-Hans.json",
+      "zh": "./locales/zh-Hans.json"
+    },
     "assetBundlePatterns": [
       "**/*"
     ],
     "android": {
       "package": "com.teamclu",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#FAF7F0"
+      },
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
