@@ -3908,8 +3908,12 @@ extension SessionDetailViewModel {
         handleAgentWorkingSafetyTimeout()
     }
 
-    public func _test_armCompletedOutputSettle(bucket: String) {
+    /// Arms the complete-output settle and returns its task, so tests await
+    /// the 300 ms delay instead of sleeping past it.
+    @discardableResult
+    public func _test_armCompletedOutputSettle(bucket: String) -> Task<Void, Never>? {
         armCompletedOutputSettle(bucket: bucket)
+        return agentWorkingResetTask
     }
 
     public var _test_streamingTurnIDByAgent: [String: String] {
