@@ -29,6 +29,20 @@ test("checkpoint retention keeps three baselines and the chain after the newest"
   );
 });
 
+test("checkpoint retention keeps a caller-supplied parent under the newest baseline", () => {
+  assert.deepEqual(
+    retainedCheckpointGenerations(
+      [
+        { generation: 74, baseline: false },
+        { generation: 75, baseline: false },
+        { generation: 76, baseline: true },
+      ],
+      [76, 75],
+    ).sort((left, right) => left - right),
+    [75, 76],
+  );
+});
+
 test("checkpoint descriptors reject non-canonical uppercase hashes", () => {
   assert.throws(
     () => assertCheckpointDescriptor({ teamId: TEAM, sha256: HASH.toUpperCase(), size: 10 }),

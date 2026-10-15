@@ -128,6 +128,7 @@ export function assertCheckpointDescriptor(input: {
 
 export function retainedCheckpointGenerations(
   rows: { generation: number; baseline: boolean }[],
+  alsoKeep: number[] = [],
 ): number[] {
   const baselines = rows
     .filter((row) => row.baseline)
@@ -136,6 +137,9 @@ export function retainedCheckpointGenerations(
     .slice(0, 3);
   const latestBaseline = baselines[0] ?? 0;
   const kept = new Set(baselines);
+  for (const generation of alsoKeep) {
+    if (Number.isInteger(generation) && generation >= 1) kept.add(generation);
+  }
   return rows
     .filter((row) => kept.has(row.generation) || row.generation > latestBaseline)
     .map((row) => row.generation);
