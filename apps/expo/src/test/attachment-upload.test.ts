@@ -5,7 +5,7 @@ const fileSystemMock = vi.hoisted(() => ({
   EncodingType: { Base64: "base64" },
 }));
 
-vi.mock("expo-file-system", () => fileSystemMock);
+vi.mock("expo-file-system/legacy", () => fileSystemMock);
 
 const BASE_URL = "https://fc.example.com";
 

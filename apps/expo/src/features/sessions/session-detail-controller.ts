@@ -20,6 +20,7 @@ import type { Actor } from "../actors/actor-types";
 import { setOutboxStatus, syncOutboxFromDao } from "./outbox-store";
 import type { OutboxDao } from "./outbox-db";
 import type { OutboxSender } from "./outbox-sender";
+import { attachmentMetadata, attachmentUrlsForAgent } from "./message-attachments";
 import { peekPendingAttachments, takePendingAttachments } from "./pending-attachments";
 import {
   decodePendingQuestion,
@@ -33,6 +34,7 @@ import type { SessionDetailCache } from "./session-detail-cache";
 import type { StreamingSnapshotStore } from "./streaming-snapshot";
 import {
   buildSessionDetailState,
+  type MessageAttachment,
   type SessionDetailState,
   type SessionMessage,
   type SessionSummary,
@@ -1160,14 +1162,6 @@ export function createSessionDetailController(
         setOutboxStatus(messageId, "sending");
 
         const pendingAttachments = outgoing ? [] : takePendingAttachments(deps.teamId, deps.sessionId);
-        const attachmentsPayload = pendingAttachments.length > 0
-          ? pendingAttachments.map((row) => ({
-              url: row.publicUrl || row.path,
-              path: row.path,
-              mime: row.mime,
-              size: row.size,
-            }))
-          : undefined;
 
         const replyTo = outgoing ? outgoing.replyToMessageId : state.replyTarget?.messageId ?? null;
         const mentionActorIds = outgoing
@@ -1178,6 +1172,21 @@ export function createSessionDetailController(
               teamActors: deps.getTeamActors?.() ?? [],
             });
 
+        const attachmentsPayload: MessageAttachment[] | undefined = pendingAttachments.length > 0
+          ? pendingAttachments.map((row) => ({
+              url: row.publicUrl || row.path,
+              path: row.path,
+              mime: row.mime,
+              size: row.size,
+            }))
+          : undefined;
+        // Files ride in `metadata` (iOS + desktop keys) — FC drops a top-level
+        // `attachments`, which left every Expo upload off the stored row.
+        const outgoingMetadata = {
+          mention_actor_ids: mentionActorIds,
+          ...attachmentMetadata(attachmentsPayload),
+        };
+
         await deps.api.insertOutgoingMessage({
           id: messageId,
           teamId: deps.teamId,
@@ -1185,8 +1194,7 @@ export function createSessionDetailController(
           senderActorId: actorId,
           content,
           createdAt,
-          metadata: { mention_actor_ids: mentionActorIds },
-          attachments: attachmentsPayload,
+          metadata: outgoingMetadata,
           replyToMessageId: replyTo,
         });
         markChatMetric("chat.send", messageId, "persisted");
@@ -1196,7 +1204,7 @@ export function createSessionDetailController(
           createdAt,
           kind: "text",
           messageId,
-          metadata: { mention_actor_ids: mentionActorIds },
+          metadata: outgoingMetadata,
           model: "",
           replyToMessageId: replyTo ?? "",
           senderActorId: actorId,
@@ -1227,12 +1235,7 @@ export function createSessionDetailController(
             content,
             mentionActorIds,
             replyToMessageId: replyTo,
-            attachments: pendingAttachments.map((row) => ({
-              url: row.publicUrl || row.path,
-              path: row.path,
-              mime: row.mime,
-              size: row.size,
-            })),
+            attachments: attachmentsPayload ?? [],
             createdAt: Date.parse(createdAt),
           });
           markChatMetric("chat.send", messageId, "enqueued");
@@ -1247,6 +1250,7 @@ export function createSessionDetailController(
             content,
             createdAt: createdAtSeconds,
             replyToMessageId: replyTo ?? "",
+            attachmentUrls: attachmentUrlsForAgent(attachmentsPayload),
           });
           const sessionMessage = create(SessionMessageEnvelopeSchema, {
             message: protoMessage,

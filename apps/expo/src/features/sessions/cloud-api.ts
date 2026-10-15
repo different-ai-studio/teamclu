@@ -29,7 +29,6 @@ type OutgoingMessageInput = {
   model?: string | null;
   turnId?: string | null;
   replyToMessageId?: string | null;
-  attachments?: unknown[] | null;
 };
 
 type CloudSessionFull = {
@@ -280,9 +279,6 @@ export function createCloudSessionsApi(options: CreateCloudSessionsApiOptions) {
         turnId: input.turnId ?? null,
         replyToMessageId: input.replyToMessageId ?? null,
       };
-      if (input.attachments && input.attachments.length > 0) {
-        body.attachments = input.attachments;
-      }
       if (input.createdAt) {
         body.createdAt = input.createdAt;
       }

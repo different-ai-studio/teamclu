@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Animated, Image, StyleSheet, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 
+import { useAttachmentImageSource } from "./attachment-image-source";
+
 const MIN_SCALE = 1;
 const MAX_SCALE = 5;
 const DOUBLE_TAP_SCALE = 2.5;
@@ -29,6 +31,7 @@ function clamp(value: number, bound: number): number {
 export function ZoomableImage({ uri, onTap }: { uri: string; onTap?: () => void }) {
   const { t } = useTranslation();
   const { width, height } = useWindowDimensions();
+  const source = useAttachmentImageSource(uri);
   const scale = useRef(new Animated.Value(1)).current;
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
@@ -121,7 +124,9 @@ export function ZoomableImage({ uri, onTap }: { uri: string; onTap?: () => void 
           { transform: [{ translateX }, { translateY }, { scale }] },
         ]}
       >
-        <Image accessibilityRole="image" resizeMode="contain" source={{ uri }} style={styles.fill} />
+        {source ? (
+          <Image accessibilityRole="image" resizeMode="contain" source={source} style={styles.fill} />
+        ) : null}
       </Animated.View>
     </GestureDetector>
   );

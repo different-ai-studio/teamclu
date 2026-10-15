@@ -489,19 +489,28 @@ describe("createSessionDetailController", () => {
     await controller.load();
     await controller.sendMessage();
 
+    // Stored where iOS and desktop read it — FC ignores a top-level field.
     expect(api.insertOutgoingMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         content: "",
-        attachments: [
-          {
-            url: "https://storage.example.test/photo.png?token=abc",
-            path: "team-1/session-1/photo.png",
-            mime: "image/png",
-            size: 123,
-          },
-        ],
+        metadata: {
+          mention_actor_ids: [],
+          attachments: [
+            {
+              filename: "photo.png",
+              mime: "image/png",
+              size: 123,
+              bucket_path: "team-1/session-1/photo.png",
+            },
+          ],
+          attachment_urls: ["https://storage.example.test/photo.png?token=abc"],
+        },
       }),
     );
+    expect(api.insertOutgoingMessage.mock.calls[0]?.[0]).not.toHaveProperty("attachments");
+    const live = fromBinary(LiveEventEnvelopeSchema, mqtt.publish.mock.calls[0]?.[1] as Uint8Array);
+    const sent = fromBinary(SessionMessageEnvelopeSchema, live.body);
+    expect(sent.message?.attachmentUrls).toEqual(["https://storage.example.test/photo.png?token=abc"]);
     expect(controller.getState().messages[0]).toMatchObject({
       content: "",
       attachments: [

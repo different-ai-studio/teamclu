@@ -21,6 +21,7 @@ import type { FeedbackKind } from "../cloud-api";
 import type { MessageAttachment, SessionMessage } from "../session-types";
 import { buildThinkingBody, buildThinkingPreview } from "./agent-thinking-presentation";
 import { AudioPlayerChip } from "./AudioPlayerChip";
+import { useAttachmentImageSource } from "./attachment-image-source";
 import { ImageLightbox } from "./ImageLightbox";
 import { PermissionBanner } from "./PermissionBanner";
 import { ToolCallLine } from "./ToolCallLine";
@@ -569,6 +570,15 @@ function OutboxStatusDot({
   return null;
 }
 
+function AttachmentImage({ url }: { url: string }) {
+  const source = useAttachmentImageSource(url);
+  return source ? (
+    <Image resizeMode="cover" source={source} style={styles.attachmentImage} />
+  ) : (
+    <View style={styles.attachmentImage} />
+  );
+}
+
 function AttachmentChip({
   attachment,
   isOwn,
@@ -585,11 +595,7 @@ function AttachmentChip({
         accessibilityRole="image"
         onPress={onOpenImage ? () => onOpenImage(attachment.url) : undefined}
       >
-        <Image
-          resizeMode="cover"
-          source={{ uri: attachment.url }}
-          style={styles.attachmentImage}
-        />
+        <AttachmentImage url={attachment.url} />
       </Pressable>
     );
   }

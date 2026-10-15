@@ -1,5 +1,7 @@
 import { Buffer } from "buffer";
-import * as FileSystem from "expo-file-system";
+// The root export's readAsStringAsync is a deprecation stub on SDK 54+, and
+// RN's Blob has no arrayBuffer() — so the picked file must come from here.
+import * as FileSystem from "expo-file-system/legacy";
 
 import { cloudApiBaseUrl } from "../../lib/cloud-api/client";
 import { uuidV4 } from "../../lib/uuid";
